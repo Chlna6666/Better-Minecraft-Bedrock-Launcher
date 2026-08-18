@@ -1,7 +1,8 @@
-//! Explicit BlockState conversion between persisted Minecraft Bedrock storage versions.
+//! Minecraft Bedrock BlockState identity and explicit storage-version rewriting.
 
 mod block_state_graph;
 mod block_state_upgrade;
+mod identity;
 
 use crate::block::version::AuthoritativeBlockStateCatalog;
 use crate::block::BlockState;
@@ -13,9 +14,9 @@ pub use block_state_upgrade::{
     BlockStateValueRewrite,
 };
 
-/// Common semantic BlockState conversion backend used only by explicit cross-version operations.
+/// BlockState version writer used only when a caller explicitly selects another persisted version.
 pub trait BlockStateMigrator: Send + Sync {
-    /// Converts one BlockState to the requested persisted storage version.
+    /// Writes one BlockState for the requested persisted `version` value.
     fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState>;
 }
 
@@ -29,7 +30,7 @@ impl BlockStateMigrator for AuthoritativeBlockStateCatalog {
     fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState> {
         if self.output_version().raw() != target_version {
             return Err(BedrockWorldError::Validation(format!(
-                "authoritative BlockState data outputs version {}, but conversion targets {target_version}; load target-bound version data first",
+                "BlockState history data outputs version {}, requested {target_version}",
                 self.output_version().raw()
             )));
         }

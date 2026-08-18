@@ -1,17 +1,14 @@
-//! High-level Minecraft Bedrock world lifecycle, data access and explicit whole-world conversion.
+//! High-level Minecraft Bedrock world lifecycle and data access.
 
 mod access;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
-/// Explicit caller-requested whole-world conversion and legacy Pocket import.
-pub mod conversion;
+mod pocket_chunks_dat;
 pub(crate) mod surface;
 
 pub use access::*;
-pub use crate::parsed::{
-    RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport,
-};
-pub use conversion::{
-    ChunkConversionTarget, ConversionBlocker, PocketChunksDatImportOptions,
-    PocketChunksDatImportReport, WorldConversionPlan, import_pocket_chunks_dat_records_blocking,
+pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
+pub use pocket_chunks_dat::{
+    PocketChunksDatImportOptions, PocketChunksDatImportReport,
+    import_pocket_chunks_dat_records_blocking,
 };

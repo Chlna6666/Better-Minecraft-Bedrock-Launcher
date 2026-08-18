@@ -1,24 +1,23 @@
-//! Minecraft Bedrock blocks, BlockStates, palettes, BlockEntity data and versioned representations.
+//! Minecraft Bedrock blocks, BlockStates, palettes and BlockEntity records.
 
-mod state;
-/// Explicit BlockEntity data conversion.
-pub mod entity_conversion;
-/// Minecraft Bedrock BlockState persisted version data and authoritative historical resources.
+/// Minecraft Bedrock BlockState identity and persisted `version` history.
+pub mod block_state;
+/// Minecraft Bedrock BlockEntity NBT.
+pub mod block_entity;
+/// Authoritative BlockState storage-version data.
 pub mod version;
-/// Explicit BlockState conversion between persisted storage versions.
-pub mod conversion;
 
-pub use crate::chunk::position::BlockPos;
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
+pub use crate::chunk::position::BlockPos;
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
-pub use conversion::{
-    BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator, BlockStateUpgradeResult,
-    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
-};
-pub use entity_conversion::{
+pub use block_entity::{
     BlockEntityChunkMigrationReport, BlockEntityMigrationContext, BlockEntityMigrationOutcome,
     BlockEntityMigrationStatus, BlockEntityMigrator, VanillaBlockEntityMigrator,
     migrate_block_entity_chunk_blocking, migrate_block_entity_chunk_to_modern_blocking,
+};
+pub use block_state::{
+    BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator, BlockStateUpgradeResult,
+    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
 };
 pub use version::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,

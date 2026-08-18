@@ -1,25 +1,19 @@
-//! Multi-version Minecraft Bedrock player records and persisted player-data formats.
+//! Minecraft Bedrock player data from `level.dat.Player`, `~local_player` and `player_<xuid>`.
 //!
-//! Reads automatically detect the source storage/data representation and never convert it. Callers
-//! may write the same representation directly or request an explicit conversion through
-//! [`conversion`].
+//! Reads detect the source and saved-item generation automatically. Normal writes keep the caller's
+//! selected Bedrock record; no game-version rewrite is performed implicitly.
 
 mod data;
-/// Explicit cross-format player-data conversion.
-pub mod conversion;
-/// Persisted player-data format detection.
-pub mod format;
-/// Read/write access to `level.dat.Player`, `~local_player` and `player_<xuid>`.
-pub mod storage;
+mod level_dat;
+mod local_player;
+mod server_player;
 
 pub use crate::parsed::{ItemStack, ParsedPlayer};
-pub use conversion::{
-    PlayerDataTarget, convert_player_data, player_conversion_compatibility,
+pub use data::{PlayerData, PlayerId, SavedItemKind};
+pub use level_dat::{read_level_dat_player, remove_level_dat_player, write_level_dat_player};
+pub use local_player::{
+    delete_local_player, read_local_player, read_local_player_with_level, write_local_player,
 };
-pub use data::{PlayerData, PlayerId};
-pub use format::{PlayerDataFormat, PlayerStorage, SavedItemFormat};
-pub use storage::{
-    delete_player_record, read_level_dat_player, read_player_record,
-    read_player_record_with_level, remove_level_dat_player, write_level_dat_player,
-    write_player_record,
+pub use server_player::{
+    delete_server_player, read_server_player, read_server_player_with_level, write_server_player,
 };

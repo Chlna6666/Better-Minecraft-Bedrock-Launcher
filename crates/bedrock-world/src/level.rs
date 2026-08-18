@@ -1,8 +1,5 @@
-//! `level.dat` document access, atomic writes and explicit version conversion.
+//! Minecraft Bedrock `level.dat` read/write support.
 
-mod document;
-/// Explicit caller-requested `level.dat` conversion.
-pub mod conversion;
+mod level_dat;
 
-pub use conversion::{LevelDatConversionOptions, convert_level_dat_document};
-pub use document::*;
+pub use level_dat::*;

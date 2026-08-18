@@ -1,8 +1,4 @@
-//! Explicit import helpers for pre-LevelDB Pocket Edition worlds.
-//!
-//! `chunks.dat` is not a LevelDB database. The importer deliberately separates container migration
-//! from chunk-format migration: it copies decoded legacy terrain records into a caller-provided
-//! writable database backend, but it does not pretend those records are modern paletted chunks.
+//! Pre-LevelDB Minecraft Pocket Edition `chunks.dat` records.
 
 use crate::chunk::{BedrockDbKey, ChunkRecordTag};
 use crate::database::{
@@ -14,10 +10,10 @@ use std::path::Path;
 
 const DEFAULT_IMPORT_BATCH_ENTRIES: usize = 128;
 
-/// Settings controlling a pre-LevelDB Pocket `chunks.dat` import.
+/// Settings for copying Pocket Edition `chunks.dat` records into a Bedrock world database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PocketChunksDatImportOptions {
-    /// Maximum raw records written in one target-storage batch.
+    /// Maximum raw records written in one target batch.
     pub batch_entries: usize,
 }
 
@@ -29,29 +25,24 @@ impl Default for PocketChunksDatImportOptions {
     }
 }
 
-/// Report produced after importing a Pocket `chunks.dat` container.
+/// Result of copying one Pocket Edition `chunks.dat` container.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PocketChunksDatImportReport {
-    /// Number of legacy terrain records copied to the target storage.
+    /// Number of `LegacyTerrain` records copied.
     pub terrain_records: usize,
-    /// Number of target-storage batches committed.
+    /// Number of target database batches committed.
     pub commits: usize,
     /// Number of value bytes copied.
     pub bytes_copied: usize,
-    /// Whether the imported data still requires a semantic chunk-format migration.
-    pub requires_chunk_migration: bool,
+    /// Whether copied records remain `LegacyTerrain` exactly as read from the source container.
+    pub legacy_terrain_retained: bool,
 }
 
-/// Imports pre-LevelDB Pocket `chunks.dat` terrain into a writable raw world database.
+/// Copies Pocket Edition `chunks.dat` terrain into a writable raw Bedrock database.
 ///
-/// The source [`PocketChunksDatStorage`] decoder converts the old container layout into Bedrock
-/// `LegacyTerrain` chunk records. Those records are copied without converting block IDs, metadata,
-/// biomes or heights into a newer paletted chunk schema. Callers that need a modern world must run an
-/// explicit historical chunk upgrade after this container import.
-///
-/// `level.dat`, `entities.dat`, and other sidecar files are intentionally not written through this
-/// function because they are not LevelDB key/value records. Higher-level world import tools should
-/// copy/upgrade those files separately and preserve unknown metadata.
+/// The source container is decoded into `LegacyTerrain` records and those records are copied without
+/// changing block IDs, metadata, biome columns or heights. `level.dat`, `entities.dat` and other
+/// sidecar files are intentionally outside this function.
 pub fn import_pocket_chunks_dat_records_blocking(
     source_world_path: impl AsRef<Path>,
     target: &dyn WorldStorage,
@@ -67,7 +58,7 @@ pub fn import_pocket_chunks_dat_records_blocking(
     let mut batch = StorageBatch::new();
     let mut pending = 0usize;
     let mut report = PocketChunksDatImportReport {
-        requires_chunk_migration: true,
+        legacy_terrain_retained: true,
         ..PocketChunksDatImportReport::default()
     };
 
@@ -98,21 +89,5 @@ pub fn import_pocket_chunks_dat_records_blocking(
         target.write_batch(&batch)?;
         report.commits = report.commits.saturating_add(1);
     }
-    target.flush()?;
     Ok(report)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_import_is_explicitly_a_two_stage_migration() {
-        let report = PocketChunksDatImportReport {
-            requires_chunk_migration: true,
-            ..PocketChunksDatImportReport::default()
-        };
-        assert!(report.requires_chunk_migration);
-        assert_eq!(PocketChunksDatImportOptions::default().batch_entries, 128);
-    }
 }

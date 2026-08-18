@@ -1,48 +1,61 @@
-# Multi-version Bedrock data model
+# Multi-version Minecraft Bedrock world data
 
-`bedrock-world` is a multi-version Minecraft Bedrock save/world read-write library. It is not an
-implicit save upgrader.
+`bedrock-world` reads and writes multiple generations of Minecraft Bedrock world data. Opening an old
+world does not rewrite it to a newer generation.
 
-## Rules
+## General rule
 
-1. Reading detects the persisted representation from Bedrock data itself.
-2. Reading never upgrades or normalises a historical representation as a side effect.
-3. Raw source bytes are retained whenever they are required for an exact round-trip.
-4. The default write path preserves the source representation/version.
-5. Cross-version conversion is an explicit caller request.
-6. Conversion support is directional and reported as `Lossless`, `Lossy` or `Unsupported`.
-7. Unknown/future data is preserved rather than stamped with a guessed version.
+The public API follows Bedrock data names rather than framework-layer names.
 
-## Public responsibility names
+Examples:
 
-- `version`: persisted game/data/storage version evidence and authoritative version data;
-- `legacy`: actual historical Bedrock representations;
-- `conversion`: explicit caller-requested conversion between representations.
+- `SubChunk` V0, V1, V2-V7, V8 and V9;
+- `LegacyTerrain`;
+- `Data2D`, `Data2DLegacy` and `Data3D`;
+- `Entity`, `digp` and `actorprefix`;
+- `level.dat.Player`, `~local_player` and `player_<xuid>`;
+- BlockState persisted `version`;
+- classic numeric saved-item ID/meta and named saved items.
 
-The crate is in active development; replaced `migration` module paths are removed instead of retained
-as compatibility aliases.
+There is no public `migration`, `conversion`, `transcode`, `codec`, `adapter`, `schema`, `format` or
+`storage` bucket that owns unrelated Bedrock data.
 
-## SubChunk
+## Reading
 
-`SubChunkVersion` is the actual payload byte (`V0` through `V9`, plus `Unknown(u8)`). Reads select the
-format automatically. Unknown future versions remain raw. Same-version writes preserve the selected
-SubChunk generation; a different target is only selected through explicit conversion.
+The reader detects the representation from the bytes/key/tag that Bedrock actually stored. Unknown
+future records are retained raw where possible. Player data only uses an exact game version when that
+version is present in `level.dat`; it does not invent a Player V1/V2-style version number.
+
+## Writing
+
+Normal writes keep the selected Bedrock representation. Selecting another generation is explicit and
+belongs to the concrete data object, for example writing a specific SubChunk version or writing
+`Entity` actors as `digp`/`actorprefix`.
+
+A reverse write is supported only when the older representation can express the data. For example,
+`Data3D -> Data2D` is accepted only when every biome column is vertically uniform and every biome id
+fits the `Data2D` representation.
 
 ## Player
 
-Player data is detected from actual storage and NBT evidence: `level.dat.Player`, `~local_player`,
-`player_<xuid>`, saved-item representation and real `level.dat` version fields. Reading never invents a
-precise Player schema version.
+Player modules are named after the actual record locations:
 
-## Actor storage
+- `level.dat.Player`;
+- `~local_player`;
+- `player_<xuid>`.
 
-Both inline chunk `Entity` and `digp`/`actorprefix` are supported Bedrock actor-storage
-representations. `entity::conversion` exposes explicit lossless conversion in both directions. The
-`digest -> inline` path retains actorprefix payloads because deleting them safely requires a complete
-world reference analysis.
+`PlayerData` records the detected saved-item generation and optional real `level.dat` version evidence.
+No read operation changes those values automatically.
 
-## Other domains
+## Actor records
 
-Item, biome, entity, chunk and whole-world cross-version operations live under `conversion`.
-BlockState schema/corpus/numeric-ID resources live under `block::version`; BlockState transforms live
-under `block::conversion`.
+`write_digp_from_entity()` writes a chunk `Entity` record as `digp` plus `actorprefix` payloads.
+`write_entity_from_digp()` performs the reverse operation. The reverse write deliberately retains
+`actorprefix` values because deleting them safely requires proving that no other `digp` references the
+same actor.
+
+## SubChunk
+
+The next split keeps the SubChunk implementation under its real version numbers (`v0`, `v1`,
+`v2_v7`, `v8`, `v9`). The leading version byte is the primary source of truth; V10+ remains raw until
+the library has an implementation for that Bedrock generation.
