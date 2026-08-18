@@ -12,36 +12,28 @@ use crate::version::GameVersion;
 /// Exact result of matching one source Modern saved item against a concrete older Modern release.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModernSavedItemTargetMatch {
-    /// No target-release item identity forward-resolves to the source item.
     MissingItem,
-    /// Multiple target-release item identities converge to the source item.
     AmbiguousItem {
         first: NamedSavedItemId,
         second: NamedSavedItemId,
         matches: usize,
     },
-    /// Exact ordinary item with no persisted target BlockState.
     Item { item: NamedSavedItemId },
-    /// Source carries `Block`, but the target item is not a blockitem.
     UnexpectedSourceBlock { item: NamedSavedItemId },
-    /// Target item->block data maps one item to multiple block identifiers.
     AmbiguousTargetBlockItem {
         item: NamedSavedItemId,
         first_block: String,
         second_block: String,
         matches: usize,
     },
-    /// Target is a blockitem but source Modern data has no persisted `Block` payload.
     SourceBlockRequired {
         item: NamedSavedItemId,
         target_block_id: String,
     },
-    /// Source BlockState has no representation in the target vanilla block palette.
     MissingBlockState {
         item: NamedSavedItemId,
         target_block_id: String,
     },
-    /// Multiple target BlockStates converge to the source BlockState.
     AmbiguousBlockState {
         item: NamedSavedItemId,
         target_block_id: String,
@@ -49,14 +41,12 @@ pub enum ModernSavedItemTargetMatch {
         second: BlockState,
         matches: usize,
     },
-    /// Item->block mapping and reversed target BlockState disagree on block identity.
     BlockIdentityMismatch {
         item: NamedSavedItemId,
         expected_block_id: String,
         actual_block_id: String,
         block: BlockState,
     },
-    /// Target item and target BlockState are both unique and mutually consistent.
     BlockItem {
         item: NamedSavedItemId,
         block: BlockState,
@@ -64,7 +54,6 @@ pub enum ModernSavedItemTargetMatch {
 }
 
 impl ModernSavedItemTargetMatch {
-    /// Returns whether this result can be written without choosing aliases or inventing data.
     #[must_use]
     pub const fn is_exact(&self) -> bool {
         matches!(self, Self::Item { .. } | Self::BlockItem { .. })
@@ -73,9 +62,9 @@ impl ModernSavedItemTargetMatch {
 
 /// Reusable exact target for Modern (MCPE 1.9+) saved items in one concrete Bedrock release.
 ///
-/// The three target data sets must describe the same `GameVersion`: complete item registry reverse
-/// index, complete vanilla BlockState reverse index, and generated block-ID -> item-ID relation.
-/// Blockitems never fall back to comparing item and block names for equality.
+/// Item and BlockState reverse indices must share the same concrete source and target game versions.
+/// The target block-ID -> item-ID relation must share the same target version. Blockitems never fall
+/// back to item/block string-name equality.
 #[derive(Debug, Clone)]
 pub struct ModernSavedItemTarget {
     items: SavedItemVersionTarget,
@@ -84,12 +73,19 @@ pub struct ModernSavedItemTarget {
 }
 
 impl ModernSavedItemTarget {
-    /// Combines target-version item, block and item<->block evidence.
     pub fn new(
         items: SavedItemVersionTarget,
         blocks: BlockStateVersionTarget,
         item_blocks: VanillaSavedItemBlockMap,
     ) -> Result<Self> {
+        let source = items.source_game_version();
+        if blocks.source_game_version() != source {
+            return Err(BedrockWorldError::Validation(format!(
+                "Modern saved-item source version mismatch: item source {source}, BlockState source {}",
+                blocks.source_game_version()
+            )));
+        }
+
         let target = items.target_game_version();
         if blocks.target_game_version() != target {
             return Err(BedrockWorldError::Validation(format!(
@@ -115,35 +111,27 @@ impl ModernSavedItemTarget {
         })
     }
 
-    /// Source game version used by the item-version reverse index.
     #[must_use]
     pub fn source_game_version(&self) -> &GameVersion {
         self.items.source_game_version()
     }
 
-    /// Concrete target game version shared by all target evidence.
     #[must_use]
     pub fn target_game_version(&self) -> &GameVersion {
         self.items.target_game_version()
     }
 
-    /// Source BlockState storage endpoint used by the block reverse index.
     #[must_use]
     pub const fn source_block_state_version(&self) -> crate::block::BlockStateStorageVersion {
         self.blocks.source_storage_version()
     }
 
-    /// Target BlockState storage endpoint retained by returned target states.
     #[must_use]
     pub const fn target_block_state_version(&self) -> crate::block::BlockStateStorageVersion {
         self.blocks.target_storage_version()
     }
 
     /// Matches one source Modern saved item to this concrete older target release.
-    ///
-    /// `source_block` is the parsed persisted `Block` BlockState when present. A target blockitem
-    /// requires it; a target ordinary item rejects it. Block identity is validated through the
-    /// generated target block->item relation rather than inferred from string-name equality.
     pub fn match_item(
         &self,
         source_item: &NamedSavedItemId,
