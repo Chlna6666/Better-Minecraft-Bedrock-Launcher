@@ -1,9 +1,11 @@
-//! Historical saved-item representation checks for Minecraft Bedrock player NBT.
+//! Historical saved-item representation checks and explicit conversion for Minecraft Bedrock player NBT.
 
 use crate::error::Result;
 use crate::item::{
-    LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemIdTable,
-    check_legacy_numeric_saved_items, check_legacy_numeric_saved_items_with_blocks,
+    LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemConversionReport,
+    LegacySavedItemIdTable, check_legacy_numeric_saved_items,
+    check_legacy_numeric_saved_items_with_blocks, convert_saved_items_to_legacy_numeric,
+    convert_saved_items_to_legacy_numeric_with_blocks,
 };
 use crate::player::PlayerData;
 
@@ -30,6 +32,36 @@ impl PlayerData {
         blocks: &LegacySavedItemBlockStateTables<'_>,
     ) -> Result<LegacySavedItemCheckReport> {
         check_legacy_numeric_saved_items_with_blocks(&self.nbt, table, blocks)
+    }
+
+    /// Explicitly converts named saved items in this player to historical numeric `id` + `Damage`.
+    ///
+    /// The player is changed only after the complete owned NBT tree passes preflight and conversion.
+    /// Named blockitems are refused unless BlockState context is supplied through the `_with_blocks`
+    /// variant. Existing numeric saved items remain untouched.
+    pub fn convert_saved_items_to_legacy_numeric(
+        &mut self,
+        table: &LegacySavedItemIdTable,
+    ) -> Result<LegacySavedItemConversionReport> {
+        let outcome = convert_saved_items_to_legacy_numeric(&self.nbt, table)?;
+        self.nbt = outcome.nbt;
+        self.finish_edit();
+        Ok(outcome.report)
+    }
+
+    /// Explicitly converts named saved items to historical numeric form with blockitem proof.
+    ///
+    /// Proven modern `Block` payloads are removed only when the historical item and block mappings
+    /// agree on the same old block identifier and metadata. The player is unchanged on any error.
+    pub fn convert_saved_items_to_legacy_numeric_with_blocks(
+        &mut self,
+        table: &LegacySavedItemIdTable,
+        blocks: &LegacySavedItemBlockStateTables<'_>,
+    ) -> Result<LegacySavedItemConversionReport> {
+        let outcome = convert_saved_items_to_legacy_numeric_with_blocks(&self.nbt, table, blocks)?;
+        self.nbt = outcome.nbt;
+        self.finish_edit();
+        Ok(outcome.report)
     }
 }
 
@@ -69,5 +101,43 @@ mod tests {
         assert!(report.is_fully_proven());
         assert_eq!(player.nbt, nbt);
         assert!(!player.is_modified());
+    }
+
+    #[test]
+    fn player_conversion_marks_record_modified_only_after_success() {
+        let table = LegacySavedItemIdTable::from_sources(
+            r#"{"minecraft:old":1}"#,
+            "{}",
+            &[SavedItemUpgradeSource {
+                name: "0001_test.json",
+                json: r#"{"renamedIds":{"minecraft:old":"minecraft:new"}}"#,
+            }],
+        )
+        .unwrap();
+        let nbt = NbtTag::Compound(IndexMap::from([(
+            "Inventory".to_string(),
+            NbtTag::List(vec![NbtTag::Compound(IndexMap::from([
+                (
+                    "Name".to_string(),
+                    NbtTag::String("minecraft:new".to_string()),
+                ),
+                ("Count".to_string(), NbtTag::Byte(1)),
+            ]))]),
+        )]));
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let report = player.convert_saved_items_to_legacy_numeric(&table).unwrap();
+        assert_eq!(report.converted, 1);
+        assert!(player.is_modified());
+        let NbtTag::Compound(root) = &player.nbt else {
+            panic!("player root must be compound");
+        };
+        let Some(NbtTag::List(inventory)) = root.get("Inventory") else {
+            panic!("Inventory must be a list");
+        };
+        let NbtTag::Compound(item) = &inventory[0] else {
+            panic!("item must be compound");
+        };
+        assert_eq!(item.get("id"), Some(&NbtTag::Short(1)));
+        assert!(!item.contains_key("Name"));
     }
 }

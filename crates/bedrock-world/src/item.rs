@@ -2,6 +2,7 @@
 
 mod legacy_saved_item;
 mod legacy_saved_item_check;
+mod legacy_saved_item_conversion;
 mod saved_item;
 
 pub use crate::parsed::ItemStack;
@@ -13,6 +14,10 @@ pub use legacy_saved_item_check::{
     LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemIssue,
     LegacySavedItemIssueKind, check_legacy_numeric_saved_items,
     check_legacy_numeric_saved_items_with_blocks,
+};
+pub use legacy_saved_item_conversion::{
+    LegacySavedItemConversionOutcome, LegacySavedItemConversionReport,
+    convert_saved_items_to_legacy_numeric, convert_saved_items_to_legacy_numeric_with_blocks,
 };
 
 // The historical forward rule executor remains crate-private while public APIs are expressed through
