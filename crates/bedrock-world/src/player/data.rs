@@ -85,7 +85,9 @@ impl SavedItemKind {
 /// Parsed Minecraft Bedrock player record with source/version evidence retained.
 ///
 /// The original NBT and bytes are retained so an unchanged record can be written byte-for-byte.
-/// Editing does not select or apply another historical representation automatically.
+/// Editing does not select or apply another historical representation automatically. Constructors
+/// always interpret their NBT argument as the player record itself; they never unwrap a surrounding
+/// `level.dat` root implicitly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerData {
     /// Bedrock player source/id.
@@ -102,12 +104,12 @@ pub struct PlayerData {
 }
 
 impl PlayerData {
-    /// Reads one player payload and detects its saved-item representation automatically.
+    /// Reads one exact player payload and detects its saved-item representation automatically.
     pub fn from_raw(id: PlayerId, raw: Bytes) -> Result<Self> {
         Self::from_raw_with_level_version(id, raw, None)
     }
 
-    /// Reads one player payload with actual version evidence from its owning `level.dat`.
+    /// Reads one exact player payload with actual version evidence from its owning `level.dat`.
     pub fn from_raw_with_level(id: PlayerId, raw: Bytes, level: &LevelDatDocument) -> Result<Self> {
         Self::from_raw_with_level_version(id, raw, Some(LevelVersion::detect(level)?))
     }
@@ -238,7 +240,6 @@ impl PlayerData {
         nbt: NbtTag,
         level_version: Option<LevelVersion>,
     ) -> Result<Self> {
-        let (nbt, _) = normalize_level_dat_player(&id, nbt)?;
         ensure_player_compound(&nbt)?;
         let raw = Bytes::from(serialize_root_nbt(&nbt)?);
         let saved_items = detect_saved_items(&nbt);
@@ -257,20 +258,14 @@ impl PlayerData {
         raw: Bytes,
         level_version: Option<LevelVersion>,
     ) -> Result<Self> {
-        let parsed = parse_root_nbt(&raw)?;
-        let (nbt, unwrapped) = normalize_level_dat_player(&id, parsed)?;
+        let nbt = parse_root_nbt(&raw)?;
         ensure_player_compound(&nbt)?;
-        let stored_raw = if unwrapped {
-            Bytes::from(serialize_root_nbt(&nbt)?)
-        } else {
-            raw
-        };
         let saved_items = detect_saved_items(&nbt);
         Ok(Self {
             id,
             original_nbt: nbt.clone(),
             nbt,
-            raw: stored_raw,
+            raw,
             saved_items,
             level_version,
         })
@@ -284,24 +279,6 @@ fn ensure_player_compound(nbt: &NbtTag) -> Result<()> {
         Err(BedrockWorldError::CorruptWorld(
             "player root is not an NBT compound".to_string(),
         ))
-    }
-}
-
-fn normalize_level_dat_player(id: &PlayerId, nbt: NbtTag) -> Result<(NbtTag, bool)> {
-    if !matches!(id, PlayerId::LegacyLevelDat) {
-        return Ok((nbt, false));
-    }
-    let NbtTag::Compound(root) = &nbt else {
-        return Ok((nbt, false));
-    };
-    let Some(player) = root.get("Player") else {
-        return Ok((nbt, false));
-    };
-    match player {
-        NbtTag::Compound(_) => Ok((player.clone(), true)),
-        other => Err(BedrockWorldError::CorruptWorld(format!(
-            "level.dat Player field has unexpected NBT type: {other:?}"
-        ))),
     }
 }
 
@@ -414,16 +391,18 @@ mod tests {
     }
 
     #[test]
-    fn level_dat_root_is_unwrapped_when_supplied_by_world_access() {
+    fn legacy_level_dat_constructor_does_not_guess_a_surrounding_level_root() {
         let player_nbt = NbtTag::Compound(IndexMap::from([(
             "PlayerLevel".to_string(),
             NbtTag::Int(4),
         )]));
         let level_root = NbtTag::Compound(IndexMap::from([(
             "Player".to_string(),
-            player_nbt.clone(),
+            player_nbt,
         )]));
-        let player = PlayerData::from_nbt(PlayerId::LegacyLevelDat, level_root).unwrap();
-        assert_eq!(player.nbt, player_nbt);
+        let raw = Bytes::from(serialize_root_nbt(&level_root).unwrap());
+        let player = PlayerData::from_raw(PlayerId::LegacyLevelDat, raw.clone()).unwrap();
+        assert_eq!(player.nbt, level_root);
+        assert_eq!(player.to_raw().unwrap(), raw);
     }
 }
