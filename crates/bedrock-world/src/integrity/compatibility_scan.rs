@@ -256,18 +256,7 @@ pub fn scan_world_compatibility_blocking(
     for (pos, records) in chunk_records {
         let mut capabilities = ChunkCapabilities::inspect(&records);
         let legacy_terrain_payload_len = legacy_terrain_lengths.get(&pos).copied();
-        match legacy_terrain_payload_len {
-            Some(POCKET_TERRAIN_VALUE_LEN) => {
-                capabilities.compatibility = worst_compatibility(
-                    capabilities.compatibility,
-                    CompatibilityLevel::ReadCompatible,
-                );
-            }
-            Some(LEGACY_TERRAIN_VALUE_LEN) | None => {}
-            Some(_) => {
-                capabilities.compatibility = CompatibilityLevel::Corrupt;
-            }
-        }
+        capabilities.apply_legacy_terrain_payload_len(legacy_terrain_payload_len);
         if corrupt_actor_chunks.contains(&pos) {
             capabilities.compatibility = CompatibilityLevel::Corrupt;
         }
@@ -497,12 +486,25 @@ mod tests {
         assert_eq!(report.complete_legacy_terrain_records, 1);
         assert_eq!(report.malformed_legacy_terrain_records, 0);
         assert_eq!(report.compatibility, CompatibilityLevel::ReadCompatible);
+
         let short = report
             .chunks
             .iter()
             .find(|entry| entry.pos == short_pos)
             .expect("short terrain chunk");
         assert_eq!(short.legacy_terrain_payload_len, Some(POCKET_TERRAIN_VALUE_LEN));
+        assert!(short.capabilities.has_pocket_terrain_core);
+        assert!(!short.capabilities.has_complete_legacy_terrain);
         assert_eq!(short.capabilities.compatibility, CompatibilityLevel::ReadCompatible);
+
+        let full = report
+            .chunks
+            .iter()
+            .find(|entry| entry.pos == full_pos)
+            .expect("complete legacy terrain chunk");
+        assert_eq!(full.legacy_terrain_payload_len, Some(LEGACY_TERRAIN_VALUE_LEN));
+        assert!(!full.capabilities.has_pocket_terrain_core);
+        assert!(full.capabilities.has_complete_legacy_terrain);
+        assert_eq!(full.capabilities.compatibility, CompatibilityLevel::Exact);
     }
 }
