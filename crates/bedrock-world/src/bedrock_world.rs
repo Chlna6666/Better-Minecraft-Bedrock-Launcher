@@ -27,22 +27,8 @@ mod mcstructure;
 mod nbt_ref;
 mod parsed;
 pub mod player;
-
-/// Biome and height-map data stored by Bedrock chunks.
-pub mod biome {
-    pub use crate::chunk::legacy::LegacyBiomeSample;
-    pub use crate::parsed::{Biome2d, Biome3d, HeightMap2d, ParsedBiomeData, ParsedBiomeStorage};
-}
-
-/// Bedrock actor/entity records and actor-index identities.
-pub mod entity {
-    pub use crate::chunk::key::{ActorDigestKey, ActorUid};
-    pub use crate::chunk::EntityData;
-    pub use crate::parsed::{
-        ActorRecord, ActorResolution, ActorSource, ParsedActorDigest, ParsedEntity,
-        encode_actor_digest_ids, parse_actor_digest_ids,
-    };
-}
+pub mod biome;
+pub mod entity;
 
 /// Bedrock map item records.
 pub mod map {
@@ -72,9 +58,6 @@ pub mod level;
 
 /// Bedrock world database records, scanning and LevelDB-backed world storage.
 pub mod database;
-
-/// Explicit historical Bedrock world and BlockState upgrades.
-pub mod upgrade;
 
 /// Bedrock world compatibility and integrity validation.
 pub mod integrity;
