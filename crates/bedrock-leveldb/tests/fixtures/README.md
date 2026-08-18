@@ -41,3 +41,18 @@ For every fixture that is safe to mutate in a temporary copy, also verify:
 
 Do not put BlockState, chunk-version, actor, biome or other Minecraft semantic expectations here; those
 belong to `bedrock-world` fixtures.
+
+## Enforcing the corpus
+
+Normal developer tests may run without private historical databases; missing local fixtures are then
+reported as skipped. Release/compatibility validation must not treat that as proof of compatibility.
+Set:
+
+```text
+BEDROCK_LEVELDB_REQUIRE_HISTORICAL_FIXTURES=1
+```
+
+to make every required matrix entry mandatory. The default root is this `tests/fixtures` directory.
+Use `BEDROCK_LEVELDB_FIXTURE_ROOT=/path/to/corpus` to point the test suite at a private or externally
+mounted corpus. When enforcement is enabled, a missing `CURRENT` file fails the suite before an
+individual compatibility test can silently skip the database.
