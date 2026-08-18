@@ -150,8 +150,11 @@ pub enum BedrockDbKey {
     Chunk(ChunkKey),
     /// Local-player key, accepting both `LocalPlayer` and `~local_player`.
     LocalPlayer,
-    /// Remote-player key using the `player_` prefix.
-    RemotePlayer(String),
+    /// Remote-player key suffix stored after the exact `player_` prefix.
+    ///
+    /// The suffix is retained as raw bytes because historical/custom worlds do not guarantee UTF-8
+    /// and the library must not assume the suffix is an Xbox XUID.
+    RemotePlayer(Bytes),
     /// Modern actor payload key `actorprefix<uid>`.
     ActorPrefix {
         /// Actor id encoded in an `actorprefix` key.
@@ -417,7 +420,7 @@ impl BedrockDbKey {
             return Self::LocalPlayer;
         }
         if let Some(remote_player) = key.strip_prefix(b"player_") {
-            return Self::RemotePlayer(String::from_utf8_lossy(remote_player).into_owned());
+            return Self::RemotePlayer(Bytes::copy_from_slice(remote_player));
         }
         if let Some(actor_id) = parse_i64_suffix(key, b"actorprefix") {
             return Self::ActorPrefix { actor_id };
@@ -489,7 +492,12 @@ impl BedrockDbKey {
         match self {
             Self::Chunk(key) => Some(key.encode()),
             Self::LocalPlayer => Some(Bytes::from_static(b"~local_player")),
-            Self::RemotePlayer(xuid) => Some(Bytes::from(format!("player_{xuid}"))),
+            Self::RemotePlayer(suffix) => {
+                let mut key = Vec::with_capacity(b"player_".len().saturating_add(suffix.len()));
+                key.extend_from_slice(b"player_");
+                key.extend_from_slice(suffix);
+                Some(Bytes::from(key))
+            }
             Self::ActorPrefix { actor_id } => Some(ActorUid(*actor_id).storage_key()),
             Self::ActorDigest { pos } => Some(ActorDigestKey::new(*pos).storage_key()),
             Self::Map(id) => Some(MapRecordId::unchecked(id.clone()).storage_key()),
@@ -600,7 +608,14 @@ fn encoded_chunk_tag(key: &[u8]) -> Option<ChunkRecordTag> {
         _ => return None,
     };
     let tag = ChunkRecordTag::from_byte(*key.get(tag_index)?);
-    (!matches!(tag, ChunkRecordTag::Unknown(_))).then_some(tag)
+    let has_subchunk_y = matches!(key.len(), 10 | 14);
+    match (tag, has_subchunk_y) {
+        (ChunkRecordTag::SubChunkPrefix, true) => Some(tag),
+        (ChunkRecordTag::SubChunkPrefix, false) => None,
+        (ChunkRecordTag::Unknown(_), _) => None,
+        (_, false) => Some(tag),
+        (_, true) => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -719,11 +734,18 @@ impl ChunkKey {
             *key.get(tag_index)
                 .ok_or_else(|| BedrockWorldError::InvalidKey("missing record tag".to_string()))?,
         );
-        let subchunk_y = if matches!(key.len(), 10 | 14) {
-            Some(i8::from_ne_bytes([key[tag_index + 1]]))
-        } else {
-            None
-        };
+        let has_subchunk_y = matches!(key.len(), 10 | 14);
+        if tag == ChunkRecordTag::SubChunkPrefix && !has_subchunk_y {
+            return Err(BedrockWorldError::InvalidKey(
+                "SubChunkPrefix key is missing its Y byte".to_string(),
+            ));
+        }
+        if tag != ChunkRecordTag::SubChunkPrefix && has_subchunk_y {
+            return Err(BedrockWorldError::InvalidKey(format!(
+                "chunk key tag {tag:?} must not carry a SubChunk Y byte"
+            )));
+        }
+        let subchunk_y = has_subchunk_y.then(|| i8::from_ne_bytes([key[tag_index + 1]]));
         Ok(Self {
             pos: ChunkPos { x, z, dimension },
             tag,
@@ -814,4 +836,44 @@ fn parse_village_key(key: &[u8]) -> Option<ParsedVillageKey> {
         uuid: uuid.to_string(),
         kind,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_player_key_roundtrips_non_utf8_suffix_exactly() {
+        let raw = b"player_\xff\x00custom";
+        let decoded = BedrockDbKey::decode(raw);
+        assert_eq!(
+            decoded,
+            BedrockDbKey::RemotePlayer(Bytes::from_static(b"\xff\x00custom"))
+        );
+        assert_eq!(decoded.encode().as_deref(), Some(raw.as_slice()));
+    }
+
+    #[test]
+    fn chunk_key_requires_subchunk_y_only_for_subchunk_tag() {
+        let pos = ChunkPos {
+            x: 7,
+            z: -3,
+            dimension: Dimension::Overworld,
+        };
+        let valid = ChunkKey::subchunk(pos, -4).encode();
+        assert_eq!(ChunkKey::decode(&valid).unwrap().subchunk_y, Some(-4));
+
+        let mut missing_y = Vec::new();
+        missing_y.extend_from_slice(&pos.x.to_le_bytes());
+        missing_y.extend_from_slice(&pos.z.to_le_bytes());
+        missing_y.push(ChunkRecordTag::SubChunkPrefix.byte());
+        assert!(ChunkKey::decode(&missing_y).is_err());
+
+        let mut illegal_y = Vec::new();
+        illegal_y.extend_from_slice(&pos.x.to_le_bytes());
+        illegal_y.extend_from_slice(&pos.z.to_le_bytes());
+        illegal_y.push(ChunkRecordTag::Data2D.byte());
+        illegal_y.push(0);
+        assert!(ChunkKey::decode(&illegal_y).is_err());
+    }
 }
