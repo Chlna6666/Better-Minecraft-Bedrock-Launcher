@@ -9,6 +9,7 @@ use super::local_player::read_local_player_with_level;
 use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::Result;
 use crate::level::LevelDatDocument;
+use crate::player::PlayerData;
 use bytes::Bytes;
 
 /// Actual local-player records present across `level.dat.Player` and `~local_player`.
@@ -67,14 +68,12 @@ impl PlayerStorageOverview {
     }
 }
 
-/// Inspects player storage without modifying `level.dat` or LevelDB.
-pub fn inspect_player_storage(
-    storage: &dyn WorldStorage,
-    level: &LevelDatDocument,
-) -> Result<PlayerStorageOverview> {
-    let level_dat_player = read_level_dat_player(level)?;
-    let local_player = read_local_player_with_level(storage, level)?;
-    let local_player = match (level_dat_player.as_ref(), local_player.as_ref()) {
+/// Classifies already-read local player records without additional storage I/O.
+pub(crate) fn classify_local_player_records(
+    level_dat_player: Option<&PlayerData>,
+    local_player: Option<&PlayerData>,
+) -> LocalPlayerRecords {
+    match (level_dat_player, local_player) {
         (None, None) => LocalPlayerRecords::None,
         (Some(_), None) => LocalPlayerRecords::LevelDatPlayer,
         (None, Some(_)) => LocalPlayerRecords::LocalPlayer,
@@ -82,7 +81,17 @@ pub fn inspect_player_storage(
             LocalPlayerRecords::MatchingLevelDatAndLocalPlayer
         }
         (Some(_), Some(_)) => LocalPlayerRecords::ConflictingLevelDatAndLocalPlayer,
-    };
+    }
+}
+
+/// Inspects player storage without modifying `level.dat` or LevelDB.
+pub fn inspect_player_storage(
+    storage: &dyn WorldStorage,
+    level: &LevelDatDocument,
+) -> Result<PlayerStorageOverview> {
+    let level_dat_player = read_level_dat_player(level)?;
+    let local_player = read_local_player_with_level(storage, level)?;
+    let local_player = classify_local_player_records(level_dat_player.as_ref(), local_player.as_ref());
 
     let mut player_keys = Vec::<Bytes>::new();
     storage.for_each_prefix_key(
@@ -107,6 +116,7 @@ mod tests {
     use super::*;
     use crate::database::MemoryStorage;
     use crate::nbt::{NbtTag, serialize_root_nbt};
+    use crate::player::PlayerId;
     use indexmap::IndexMap;
 
     fn player(unique_id: i64, name: &str) -> NbtTag {
@@ -123,6 +133,23 @@ mod tests {
             root.insert("Player".to_string(), player);
         }
         LevelDatDocument::new(10, NbtTag::Compound(root))
+    }
+
+    #[test]
+    fn classifier_uses_already_read_player_nbt() {
+        let source = player(1, "Alex");
+        let embedded = PlayerData::from_nbt(PlayerId::LegacyLevelDat, source.clone()).unwrap();
+        let local = PlayerData::from_nbt(PlayerId::Local, source).unwrap();
+        assert_eq!(
+            classify_local_player_records(Some(&embedded), Some(&local)),
+            LocalPlayerRecords::MatchingLevelDatAndLocalPlayer
+        );
+
+        let other = PlayerData::from_nbt(PlayerId::Local, player(2, "Steve")).unwrap();
+        assert_eq!(
+            classify_local_player_records(Some(&embedded), Some(&other)),
+            LocalPlayerRecords::ConflictingLevelDatAndLocalPlayer
+        );
     }
 
     #[test]

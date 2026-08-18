@@ -1,6 +1,7 @@
 //! Minecraft Bedrock `~local_player` LevelDB record and explicit movement to/from `level.dat.Player`.
 
 use super::level_dat::{read_level_dat_player, remove_level_dat_player, write_level_dat_player};
+use super::storage::{LocalPlayerRecords, classify_local_player_records};
 use crate::database::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::level::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
@@ -75,35 +76,37 @@ pub fn delete_local_player(storage: &dyn WorldStorage) -> Result<()> {
 /// abilities, attributes, or any other player NBT to a newer game representation.
 ///
 /// The destination is written first. If replacing `level.dat` then fails, both copies remain and a
-/// retry completes the source removal. An existing `~local_player` with different NBT is treated as a
-/// conflict and neither source is removed nor destination overwritten.
+/// retry completes the source removal. Matching duplicate records are therefore a recoverable state.
+/// Conflicting `level.dat.Player` and `~local_player` NBT is rejected before any write.
 pub fn move_level_dat_player_to_local_player(
     world_path: &Path,
     storage: &dyn WorldStorage,
 ) -> Result<LocalPlayerStorageMoveReport> {
     let level_path = world_path.join("level.dat");
     let mut level = read_level_dat_document(&level_path)?;
-    let Some(source) = read_level_dat_player(&level)? else {
-        return Ok(LocalPlayerStorageMoveReport::default());
-    };
-
-    let target = PlayerData::from_nbt_with_level(PlayerId::Local, source.nbt.clone(), &level)?;
+    let source = read_level_dat_player(&level)?;
     let existing = read_local_player_with_level(storage, &level)?;
-    let mut report = LocalPlayerStorageMoveReport {
-        source_found: true,
-        ..LocalPlayerStorageMoveReport::default()
-    };
+    let state = classify_local_player_records(source.as_ref(), existing.as_ref());
 
-    if let Some(existing) = existing {
-        if existing.nbt != target.nbt {
+    let mut report = LocalPlayerStorageMoveReport::default();
+    match state {
+        LocalPlayerRecords::None | LocalPlayerRecords::LocalPlayer => return Ok(report),
+        LocalPlayerRecords::ConflictingLevelDatAndLocalPlayer => {
             return Err(BedrockWorldError::ConcurrentWrite(
-                "~local_player already exists with different player NBT".to_string(),
+                "level.dat.Player and ~local_player contain different player NBT".to_string(),
             ));
         }
-        report.target_reused = true;
-    } else {
-        write_local_player(storage, &target)?;
-        report.target_created = true;
+        LocalPlayerRecords::MatchingLevelDatAndLocalPlayer => {
+            report.source_found = true;
+            report.target_reused = true;
+        }
+        LocalPlayerRecords::LevelDatPlayer => {
+            let source = source.as_ref().expect("classified level.dat player exists");
+            let target = PlayerData::from_nbt_with_level(PlayerId::Local, source.nbt.clone(), &level)?;
+            write_local_player(storage, &target)?;
+            report.source_found = true;
+            report.target_created = true;
+        }
     }
 
     if remove_level_dat_player(&mut level)?.is_some() {
@@ -117,40 +120,42 @@ pub fn move_level_dat_player_to_local_player(
 ///
 /// This is the reverse physical-storage operation, not a reverse game-version upgrade. The player NBT
 /// is preserved as-is. `level.dat` is atomically replaced before `~local_player` is deleted, so an
-/// interruption can leave two identical copies but does not intentionally lose the player. An
-/// existing different `level.dat.Player` is a conflict and is never overwritten.
+/// interruption can leave two identical copies but does not intentionally lose the player. Matching
+/// duplicates are safely resumed; conflicting copies are rejected before any write.
 pub fn move_local_player_to_level_dat(
     world_path: &Path,
     storage: &dyn WorldStorage,
 ) -> Result<LocalPlayerStorageMoveReport> {
     let level_path = world_path.join("level.dat");
     let mut level = read_level_dat_document(&level_path)?;
-    let Some(source) = read_local_player_with_level(storage, &level)? else {
-        return Ok(LocalPlayerStorageMoveReport::default());
-    };
-
-    let target = PlayerData::from_nbt_with_level(
-        PlayerId::LegacyLevelDat,
-        source.nbt.clone(),
-        &level,
-    )?;
     let existing = read_level_dat_player(&level)?;
-    let mut report = LocalPlayerStorageMoveReport {
-        source_found: true,
-        ..LocalPlayerStorageMoveReport::default()
-    };
+    let source = read_local_player_with_level(storage, &level)?;
+    let state = classify_local_player_records(existing.as_ref(), source.as_ref());
 
-    if let Some(existing) = existing {
-        if existing.nbt != target.nbt {
+    let mut report = LocalPlayerStorageMoveReport::default();
+    match state {
+        LocalPlayerRecords::None | LocalPlayerRecords::LevelDatPlayer => return Ok(report),
+        LocalPlayerRecords::ConflictingLevelDatAndLocalPlayer => {
             return Err(BedrockWorldError::ConcurrentWrite(
-                "level.dat.Player already exists with different player NBT".to_string(),
+                "level.dat.Player and ~local_player contain different player NBT".to_string(),
             ));
         }
-        report.target_reused = true;
-    } else {
-        write_level_dat_player(&mut level, &target)?;
-        write_level_dat_document(&level_path, &level)?;
-        report.target_created = true;
+        LocalPlayerRecords::MatchingLevelDatAndLocalPlayer => {
+            report.source_found = true;
+            report.target_reused = true;
+        }
+        LocalPlayerRecords::LocalPlayer => {
+            let source = source.as_ref().expect("classified local player exists");
+            let target = PlayerData::from_nbt_with_level(
+                PlayerId::LegacyLevelDat,
+                source.nbt.clone(),
+                &level,
+            )?;
+            write_level_dat_player(&mut level, &target)?;
+            write_level_dat_document(&level_path, &level)?;
+            report.source_found = true;
+            report.target_created = true;
+        }
     }
 
     delete_local_player(storage)?;
@@ -230,6 +235,27 @@ mod tests {
         assert!(read_local_player(&storage).expect("read local").is_none());
 
         fs::remove_dir_all(world).expect("cleanup");
+    }
+
+    #[test]
+    fn matching_duplicate_resumes_forward_move_by_removing_only_source() {
+        let world = temporary_world("player-storage-forward-resume");
+        let original = player_nbt(42, "Alex");
+        write_level_with_player(&world, original.clone());
+        let storage = MemoryStorage::new();
+        let local = PlayerData::from_nbt(PlayerId::Local, original.clone()).unwrap();
+        write_local_player(&storage, &local).unwrap();
+
+        let report = move_level_dat_player_to_local_player(&world, &storage).unwrap();
+        assert!(report.source_found);
+        assert!(report.target_reused);
+        assert!(!report.target_created);
+        assert!(report.source_removed);
+
+        let level = read_level_dat_document(&world.join("level.dat")).unwrap();
+        assert!(read_level_dat_player(&level).unwrap().is_none());
+        assert_eq!(read_local_player(&storage).unwrap().unwrap().nbt, original);
+        fs::remove_dir_all(world).unwrap();
     }
 
     #[test]
