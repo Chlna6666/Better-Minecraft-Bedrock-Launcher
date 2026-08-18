@@ -1,46 +1,60 @@
-//! MCPE 1.6-1.8 saved-item checks and same-record writes for Bedrock player storage.
+//! MCPE 1.6-1.8 saved-item preflight for persisted Bedrock player storage.
+//!
+//! World-scope operations here are read-only. Saved-item conversion remains available on owned player
+//! or item data, but writing only that older representation into an otherwise newer source world is not
+//! exposed because it would create mixed-version player state.
 
 use crate::database::{StorageReadOptions, StorageVisitorControl};
 use crate::error::{BedrockWorldError, Result};
 use crate::item::{
     LegacySavedItemBlockStateTables, LegacySavedItemIdTable, MedievalSavedItemCheckReport,
-    MedievalSavedItemConversionOutcome, MedievalSavedItemConversionReport,
     check_saved_items_for_medieval, check_saved_items_for_medieval_with_blocks,
-    convert_saved_items_to_medieval, convert_saved_items_to_medieval_with_blocks,
 };
 use crate::nbt::{NbtTag, parse_root_nbt};
-use crate::player::{
-    PlayerData, read_level_dat_player, read_local_player_with_level, read_player_key,
-    write_level_dat_player, write_local_player, write_player_key,
-};
+use crate::player::{PlayerData, read_level_dat_player, read_local_player_with_level};
 use crate::world::{BedrockWorld, PlayerSavedItemStorage, WorldStorageHandle};
 use bytes::Bytes;
 
 /// One physical player record whose saved items are not fully proven for Medieval format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerMedievalSavedItemCheckEntry {
+    /// Exact physical player storage record.
     pub storage: PlayerSavedItemStorage,
+    /// Per-record Medieval representation evidence.
     pub report: MedievalSavedItemCheckReport,
 }
 
 /// Aggregate Medieval saved-item preflight across all physical player records.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorldPlayerMedievalSavedItemCheckReport {
+    /// Number of physical player records inspected.
     pub records_checked: usize,
+    /// Number of saved items inspected.
     pub items_seen: usize,
+    /// Number of Classic numeric saved-item sources.
     pub classic_sources: usize,
+    /// Number of string-form saved-item sources.
     pub string_sources: usize,
+    /// Number of items exactly representable in Medieval form.
     pub representable: usize,
+    /// Number of items with no proven Medieval identity.
     pub missing: usize,
+    /// Number of items with ambiguous Medieval identities.
     pub ambiguous: usize,
+    /// Number of metadata values outside the target representation.
     pub metadata_out_of_range: usize,
+    /// Number of modern block-item states proven for the target.
     pub block_states_proven: usize,
+    /// Number of block items requiring authoritative reverse BlockState evidence.
     pub block_states_required: usize,
+    /// Number of block items incompatible with the target identity/meta.
     pub block_states_incompatible: usize,
+    /// Physical records that are not fully representable.
     pub unresolved_records: Vec<PlayerMedievalSavedItemCheckEntry>,
 }
 
 impl WorldPlayerMedievalSavedItemCheckReport {
+    /// Returns whether every inspected saved item has a fully proven Medieval representation.
     #[must_use]
     pub fn is_fully_proven(&self) -> bool {
         self.missing == 0
@@ -105,27 +119,6 @@ where
         self.check_player_saved_items_for_medieval_inner(table, Some(blocks))
     }
 
-    /// Converts exactly one physical player record to Medieval saved-item representation.
-    ///
-    /// A modern `Block` payload makes this variant refuse conversion. Missing records return None.
-    pub fn convert_player_saved_items_to_medieval_blocking(
-        &self,
-        storage: &PlayerSavedItemStorage,
-        table: &LegacySavedItemIdTable,
-    ) -> Result<Option<MedievalSavedItemConversionReport>> {
-        self.convert_player_saved_items_to_medieval_inner(storage, table, None)
-    }
-
-    /// Converts exactly one physical player record to Medieval representation with blockitem proof.
-    pub fn convert_player_saved_items_to_medieval_with_blocks_blocking(
-        &self,
-        storage: &PlayerSavedItemStorage,
-        table: &LegacySavedItemIdTable,
-        blocks: &LegacySavedItemBlockStateTables<'_>,
-    ) -> Result<Option<MedievalSavedItemConversionReport>> {
-        self.convert_player_saved_items_to_medieval_inner(storage, table, Some(blocks))
-    }
-
     fn check_player_saved_items_for_medieval_inner(
         &self,
         table: &LegacySavedItemIdTable,
@@ -171,45 +164,6 @@ where
         )?;
         Ok(aggregate)
     }
-
-    fn convert_player_saved_items_to_medieval_inner(
-        &self,
-        storage: &PlayerSavedItemStorage,
-        table: &LegacySavedItemIdTable,
-        blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
-    ) -> Result<Option<MedievalSavedItemConversionReport>> {
-        match storage {
-            PlayerSavedItemStorage::LevelDatPlayer => {
-                let mut level = self.read_level_dat_blocking()?;
-                let Some(mut player) = read_level_dat_player(&level)? else {
-                    return Ok(None);
-                };
-                let report = convert_player(&mut player, table, blocks)?;
-                write_level_dat_player(&mut level, &player)?;
-                self.write_level_dat_blocking(&level)?;
-                Ok(Some(report))
-            }
-            PlayerSavedItemStorage::LocalPlayer => {
-                let level = self.read_level_dat_blocking()?;
-                let Some(mut player) = read_local_player_with_level(self.storage(), &level)? else {
-                    return Ok(None);
-                };
-                let report = convert_player(&mut player, table, blocks)?;
-                write_local_player(self.storage(), &player)?;
-                Ok(Some(report))
-            }
-            PlayerSavedItemStorage::PlayerKey(key) => {
-                let Some(mut player) = read_player_key(self.storage(), key)? else {
-                    return Ok(None);
-                };
-                let outcome = convert_nbt(&player.nbt, table, blocks)?;
-                let report = outcome.report;
-                player.edit_nbt(|nbt| *nbt = outcome.nbt);
-                write_player_key(self.storage(), &player)?;
-                Ok(Some(report))
-            }
-        }
-    }
 }
 
 fn check_player(
@@ -231,27 +185,5 @@ fn check_nbt(
     match blocks {
         Some(blocks) => check_saved_items_for_medieval_with_blocks(nbt, table, blocks),
         None => check_saved_items_for_medieval(nbt, table),
-    }
-}
-
-fn convert_player(
-    player: &mut PlayerData,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
-) -> Result<MedievalSavedItemConversionReport> {
-    match blocks {
-        Some(blocks) => player.convert_saved_items_to_medieval_with_blocks(table, blocks),
-        None => player.convert_saved_items_to_medieval(table),
-    }
-}
-
-fn convert_nbt(
-    nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
-) -> Result<MedievalSavedItemConversionOutcome> {
-    match blocks {
-        Some(blocks) => convert_saved_items_to_medieval_with_blocks(nbt, table, blocks),
-        None => convert_saved_items_to_medieval(nbt, table),
     }
 }
