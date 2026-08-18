@@ -37,10 +37,13 @@ path = "src/bedrock_world.rs"
 all-features = true
 
 [features]
-default = ["async", "backend-bedrock-leveldb"]
+default = ["async", "bedrock-leveldb"]
 async = ["dep:tokio", "bedrock-leveldb?/async"]
+# Canonical public feature name. Keep the old backend-prefixed name as a compatibility alias
+# for downstream crates that have not migrated yet.
+bedrock-leveldb = ["backend-bedrock-leveldb"]
 backend-bedrock-leveldb = ["dep:bedrock-leveldb", "bedrock-leveldb/zlib", "bedrock-leveldb/snappy"]
-leveldb-mmap = ["backend-bedrock-leveldb", "bedrock-leveldb/mmap"]
+leveldb-mmap = ["bedrock-leveldb", "bedrock-leveldb/mmap"]
 
 [dependencies]
 bedrock-leveldb = { path = "../bedrock-leveldb", version = "0.7.0", default-features = false, optional = true }
