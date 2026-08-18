@@ -44,5 +44,5 @@ pub use server_player::{
     PlayerKeyRecord, delete_player_key, delete_server_player, read_player_key, read_server_player,
     read_server_player_with_level, write_player_key, write_server_player,
 };
-pub use storage::{PlayerStorageOverview, inspect_player_storage};
-pub(crate) use storage::{LocalPlayerRecords, LocalPlayerStorage};
+pub use storage::{LocalPlayerRecords, PlayerStorageOverview, inspect_player_storage};
+pub(crate) use storage::LocalPlayerStorage;
