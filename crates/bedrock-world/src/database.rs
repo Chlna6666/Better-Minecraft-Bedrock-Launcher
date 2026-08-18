@@ -5,6 +5,7 @@
 //! world layer so their missing historical fields remain explicit instead of being normalised into a
 //! later LevelDB representation.
 
+mod pocket_chunks;
 mod storage;
 
 pub use crate::chunk::key::{BedrockDbKey, BedrockDbKeyKind, GlobalRecordKind};
@@ -25,3 +26,4 @@ pub mod backend {
 #[cfg(feature = "backend-bedrock-leveldb")]
 pub use backend::BedrockLevelDbStorage;
 pub(crate) use crate::world::CancelFlag;
+pub(crate) use pocket_chunks::PocketChunksDatStorage;
