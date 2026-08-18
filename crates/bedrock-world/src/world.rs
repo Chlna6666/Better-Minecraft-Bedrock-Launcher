@@ -10,6 +10,7 @@ mod legacy_terrain;
 mod level_dat;
 mod player_classic_saved_items;
 mod player_medieval_saved_items;
+mod player_modern_saved_items;
 mod player_saved_item_conversion;
 mod player_saved_items;
 mod player_storage;
@@ -31,6 +32,9 @@ pub use player_classic_saved_items::{
 };
 pub use player_medieval_saved_items::{
     PlayerMedievalSavedItemCheckEntry, WorldPlayerMedievalSavedItemCheckReport,
+};
+pub use player_modern_saved_items::{
+    PlayerModernSavedItemCheckEntry, WorldPlayerModernSavedItemCheckReport,
 };
 pub use player_saved_items::{
     PlayerSavedItemCheckEntry, PlayerSavedItemStorage, WorldPlayerSavedItemCheckReport,
