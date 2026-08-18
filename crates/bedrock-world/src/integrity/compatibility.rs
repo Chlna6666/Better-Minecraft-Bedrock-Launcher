@@ -4,7 +4,10 @@
 //! normal supported representation when this crate can read and write that representation. Upgrade
 //! and downgrade are separate caller-requested operations and do not participate in this classification.
 
-use crate::chunk::{ChunkRecord, ChunkRecordTag, SubChunkFormat, SubChunkVersion};
+use crate::chunk::{
+    ChunkRecord, ChunkRecordTag, LEGACY_TERRAIN_VALUE_LEN, POCKET_TERRAIN_VALUE_LEN,
+    SubChunkFormat, SubChunkVersion,
+};
 use crate::entity::ActorSource;
 use crate::world::WorldFormat;
 use serde::{Deserialize, Serialize};
@@ -167,8 +170,15 @@ pub struct ChunkCapabilities {
     pub actor_storage: ActorStorage,
     /// Whether a chunk version record is present.
     pub has_version_record: bool,
-    /// Whether a `LegacyTerrain` record is present.
+    /// Whether any historical terrain record is present.
     pub has_legacy_terrain: bool,
+    /// Whether the historical terrain is the 82,176-byte pre-LevelDB Pocket core.
+    ///
+    /// This representation has block/metadata/light/height data but no persisted biome/RGB tail,
+    /// so exact later-LevelDB `LegacyTerrain` reconstruction is not possible without external data.
+    pub has_pocket_terrain_core: bool,
+    /// Whether the historical terrain is the complete 83,200-byte LevelDB-era representation.
+    pub has_complete_legacy_terrain: bool,
     /// Whether a chunk-scoped `Entity` record is present.
     pub has_entity: bool,
     /// Whether `Data2D`/`Data2DLegacy` is present.
@@ -184,7 +194,10 @@ pub struct ChunkCapabilities {
 }
 
 impl ChunkCapabilities {
-    /// Inspects raw chunk records without mutating or normalising them.
+    /// Inspects raw chunk record kinds without mutating or normalising them.
+    ///
+    /// Payload-size facts that are intentionally not retained by lightweight whole-world scans are
+    /// applied separately by the compatibility scanner.
     #[must_use]
     pub fn inspect(records: &[ChunkRecord]) -> Self {
         let mut capabilities = Self {
@@ -192,6 +205,8 @@ impl ChunkCapabilities {
             actor_storage: ActorStorage::Unknown,
             has_version_record: false,
             has_legacy_terrain: false,
+            has_pocket_terrain_core: false,
+            has_complete_legacy_terrain: false,
             has_entity: false,
             has_data2d: false,
             has_data3d: false,
@@ -246,6 +261,31 @@ impl ChunkCapabilities {
         capabilities
     }
 
+    /// Applies the exact persisted historical-terrain payload length observed by a lightweight scan.
+    pub(crate) fn apply_legacy_terrain_payload_len(&mut self, payload_len: Option<usize>) {
+        self.has_pocket_terrain_core = false;
+        self.has_complete_legacy_terrain = false;
+        match payload_len {
+            Some(POCKET_TERRAIN_VALUE_LEN) => {
+                self.has_legacy_terrain = true;
+                self.has_pocket_terrain_core = true;
+                self.compatibility = merge_compatibility(
+                    self.compatibility,
+                    CompatibilityLevel::ReadCompatible,
+                );
+            }
+            Some(LEGACY_TERRAIN_VALUE_LEN) => {
+                self.has_legacy_terrain = true;
+                self.has_complete_legacy_terrain = true;
+            }
+            Some(_) => {
+                self.has_legacy_terrain = true;
+                self.compatibility = CompatibilityLevel::Corrupt;
+            }
+            None => {}
+        }
+    }
+
     /// Returns whether all inspected records are safe for same-representation structured writes.
     #[must_use]
     pub const fn directly_writable(&self) -> bool {
@@ -297,6 +337,54 @@ mod tests {
         assert_eq!(capabilities.compatibility, CompatibilityLevel::Exact);
         assert_eq!(capabilities.actor_storage, ActorStorage::Entity);
         assert_eq!(capabilities.subchunk_versions, vec![SubChunkVersion::V7]);
+    }
+
+    #[test]
+    fn pocket_terrain_core_is_read_compatible_not_complete_legacy_terrain() {
+        let mut capabilities = ChunkCapabilities::inspect(&[record(
+            ChunkRecordTag::LegacyTerrain,
+            None,
+            &[0],
+        )]);
+        capabilities.apply_legacy_terrain_payload_len(Some(POCKET_TERRAIN_VALUE_LEN));
+
+        assert!(capabilities.has_legacy_terrain);
+        assert!(capabilities.has_pocket_terrain_core);
+        assert!(!capabilities.has_complete_legacy_terrain);
+        assert_eq!(
+            capabilities.compatibility,
+            CompatibilityLevel::ReadCompatible
+        );
+    }
+
+    #[test]
+    fn complete_legacy_terrain_is_exact_same_representation_data() {
+        let mut capabilities = ChunkCapabilities::inspect(&[record(
+            ChunkRecordTag::LegacyTerrain,
+            None,
+            &[0],
+        )]);
+        capabilities.apply_legacy_terrain_payload_len(Some(LEGACY_TERRAIN_VALUE_LEN));
+
+        assert!(capabilities.has_legacy_terrain);
+        assert!(!capabilities.has_pocket_terrain_core);
+        assert!(capabilities.has_complete_legacy_terrain);
+        assert_eq!(capabilities.compatibility, CompatibilityLevel::Exact);
+    }
+
+    #[test]
+    fn malformed_legacy_terrain_is_corrupt() {
+        let mut capabilities = ChunkCapabilities::inspect(&[record(
+            ChunkRecordTag::LegacyTerrain,
+            None,
+            &[0],
+        )]);
+        capabilities.apply_legacy_terrain_payload_len(Some(123));
+
+        assert!(capabilities.has_legacy_terrain);
+        assert!(!capabilities.has_pocket_terrain_core);
+        assert!(!capabilities.has_complete_legacy_terrain);
+        assert_eq!(capabilities.compatibility, CompatibilityLevel::Corrupt);
     }
 
     #[test]
