@@ -7,6 +7,7 @@ mod legacy_numeric;
 mod legacy_numeric_upgrade;
 mod upgrade_data;
 mod vanilla_palette;
+mod version_target;
 
 pub use authoritative::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
@@ -31,3 +32,4 @@ pub use legacy_numeric_upgrade::{
 };
 pub use upgrade_data::{BlockUpgradeData, load_pinned_block_upgrade_data_for_palette};
 pub use vanilla_palette::VanillaBlockStatePalette;
+pub use version_target::{BlockStateVersionMatch, BlockStateVersionTarget};

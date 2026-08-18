@@ -7,18 +7,18 @@ use super::BlockStateStorageVersion;
 use crate::chunk::BlockState;
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Complete vanilla BlockState set for one concrete Minecraft Bedrock game version.
 ///
-/// Entries are grouped by block identifier for allocation-free lookup by `&str`. Semantic matching
-/// compares the ordered state assignment and deliberately ignores the source BlockState storage
-/// version; the returned target entry carries the actual target storage version.
+/// Entries are grouped by block identifier for lookup by `&str`. Semantic states inside each group are
+/// retained in canonical-byte order, giving deterministic iteration and ambiguity reporting across
+/// processes and platforms. Storage `version` is ignored by semantic identity but retained in values.
 #[derive(Debug, Clone)]
 pub struct VanillaBlockStatePalette {
     game_version: GameVersion,
     storage_version: BlockStateStorageVersion,
-    states: HashMap<String, Vec<BlockState>>,
+    states: BTreeMap<String, Vec<BlockState>>,
     len: usize,
 }
 
@@ -41,7 +41,7 @@ impl VanillaBlockStatePalette {
             ))
         })?;
         let storage_version = BlockStateStorageVersion::from_raw(first_version);
-        let mut grouped = HashMap::<String, Vec<BlockState>>::new();
+        let mut canonical = BTreeMap::<String, BTreeMap<Vec<u8>, BlockState>>::new();
         let mut len = 0usize;
 
         for state in states {
@@ -57,21 +57,29 @@ impl VanillaBlockStatePalette {
                 )));
             }
 
-            let siblings = grouped.entry(state.name.clone()).or_default();
-            if siblings.iter().any(|existing| existing.states == state.states) {
-                return Err(BedrockWorldError::Validation(format!(
-                    "vanilla BlockState palette contains duplicate semantic state {} {:?}",
-                    state.name, state.states
-                )));
+            let key = state.canonical_bytes()?;
+            let block_name = state.name.clone();
+            if canonical
+                .entry(block_name)
+                .or_default()
+                .insert(key, state)
+                .is_some()
+            {
+                return Err(BedrockWorldError::Validation(
+                    "vanilla BlockState palette contains duplicate semantic state".to_string(),
+                ));
             }
-            siblings.push(state);
             len = len.saturating_add(1);
         }
 
+        let states = canonical
+            .into_iter()
+            .map(|(name, states)| (name, states.into_values().collect()))
+            .collect();
         Ok(Self {
             game_version,
             storage_version,
-            states: grouped,
+            states,
             len,
         })
     }
@@ -98,6 +106,11 @@ impl VanillaBlockStatePalette {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Iterates every exact target-palette state in deterministic semantic order without allocating.
+    pub fn states(&self) -> impl Iterator<Item = &BlockState> {
+        self.states.values().flat_map(|states| states.iter())
     }
 
     /// Finds the exact target-game representation of a semantic BlockState.
@@ -153,6 +166,26 @@ mod tests {
                 .target_state(&state("minecraft:test", 3, 18_168_865))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn state_iterator_is_canonical_and_deterministic() {
+        let palette = VanillaBlockStatePalette::new(
+            GameVersion::new(vec![1, 17, 40]).unwrap(),
+            vec![
+                state("minecraft:second", 0, 17_000_001),
+                state("minecraft:first", 1, 17_000_001),
+                state("minecraft:first", 0, 17_000_001),
+            ],
+        )
+        .unwrap();
+        let order = palette
+            .states()
+            .map(|state| (state.name.as_str(), state.states["facing_direction"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(order[0].0, "minecraft:first");
+        assert_eq!(order[1].0, "minecraft:first");
+        assert_eq!(order[2].0, "minecraft:second");
     }
 
     #[test]
