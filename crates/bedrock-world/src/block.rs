@@ -1,12 +1,19 @@
 //! Blocks, block states, palettes, block-entity data and versioned block-state migration.
 
 mod state;
+/// Preservation-first block-entity NBT migration.
+pub mod entity_migration;
 /// Version-aware block-state migration rules, authoritative schema execution and legacy numeric maps.
 pub mod migration;
 
 pub use crate::chunk::position::BlockPos;
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
+pub use entity_migration::{
+    BlockEntityChunkMigrationReport, BlockEntityMigrationContext, BlockEntityMigrationOutcome,
+    BlockEntityMigrationStatus, BlockEntityMigrator, VanillaBlockEntityMigrator,
+    migrate_block_entity_chunk_blocking, migrate_block_entity_chunk_to_modern_blocking,
+};
 pub use migration::{
     AuthoritativeBlockStateCatalog, BlockStateMigrationGraph, BlockStateMigrationStep,
     BlockStateMigrator, BlockStateSchemaSource, BlockStateStorageVersion, BlockStateUpgradeResult,
