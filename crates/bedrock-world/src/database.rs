@@ -17,9 +17,11 @@ pub use storage::{
 };
 
 /// Concrete Mojang LevelDB storage backend.
+#[cfg(feature = "backend-bedrock-leveldb")]
 pub mod backend {
     pub use super::storage::backend::BedrockLevelDbStorage;
 }
 
+#[cfg(feature = "backend-bedrock-leveldb")]
 pub use backend::BedrockLevelDbStorage;
 pub(crate) use crate::world::CancelFlag;
