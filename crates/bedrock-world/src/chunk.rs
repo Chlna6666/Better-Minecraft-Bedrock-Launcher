@@ -1,6 +1,7 @@
 //! Minecraft Bedrock chunk data grouped by game-data responsibility.
 
 mod encoding;
+mod legacy_numeric_resolver;
 mod level_chunk;
 
 /// Bedrock world, chunk and block coordinates and dimension identities.

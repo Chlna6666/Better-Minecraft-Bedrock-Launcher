@@ -13,7 +13,7 @@ pub use historical::{
 };
 
 use crate::biome::{Biome2d, Biome2dLegacy, promote_data2d_to_data3d};
-use crate::block::{BlockPalette, BlockState, BlockStateMigrationGraph};
+use crate::block::{BlockPalette, BlockState, BlockStateMigrator};
 use crate::chunk::encoding::encode_paletted_subchunk_from_palettes;
 use crate::chunk::legacy::{LegacySubChunk, LegacyTerrain};
 use crate::chunk::{
@@ -58,16 +58,16 @@ pub struct HistoricalChunkMigrationReport {
 
 /// Converts one historical or mixed-version chunk to a validated target representation in one batch.
 ///
-/// Historical numeric blocks must resolve through `resolver`. Every old BlockState must have an
-/// explicit path in `graph`, and every final state must pass `target_palette_contains`. SubChunk
-/// versions newer than this library understands and unknown chunk record tags abort before mutation.
-/// Explicit SubChunk records take precedence over overlapping `LegacyTerrain` blocks because partially
-/// upgraded Bedrock worlds can legitimately retain both generations.
+/// Historical numeric blocks must resolve through `resolver`. Every old BlockState must migrate
+/// through `migrator`, and every final state must pass `target_palette_contains`. SubChunk versions
+/// newer than this library understands and unknown chunk record tags abort before mutation. Explicit
+/// SubChunk records take precedence over overlapping `LegacyTerrain` blocks because partially upgraded
+/// Bedrock worlds can legitimately retain both generations.
 pub fn migrate_historical_chunk_blocking(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
     resolver: &dyn LegacyBlockResolver,
-    graph: &BlockStateMigrationGraph,
+    migrator: &dyn BlockStateMigrator,
     target_palette_contains: &dyn Fn(&BlockState) -> bool,
     options: HistoricalChunkMigrationOptions,
 ) -> Result<HistoricalChunkMigrationReport> {
@@ -201,7 +201,7 @@ pub fn migrate_historical_chunk_blocking(
             for state in &mut palette.states {
                 *state = migrate_state(
                     state,
-                    graph,
+                    migrator,
                     options.target_block_state_version,
                     target_palette_contains,
                 )?;
@@ -269,15 +269,20 @@ pub fn migrate_historical_chunk_blocking(
 
 fn migrate_state(
     state: &BlockState,
-    graph: &BlockStateMigrationGraph,
+    migrator: &dyn BlockStateMigrator,
     target_version: i32,
     validator: &dyn Fn(&BlockState) -> bool,
 ) -> Result<BlockState> {
-    let migrated = if state.version == Some(target_version) {
-        state.clone()
-    } else {
-        graph.migrate_to(state, target_version)?
-    };
+    // Always delegate, even when the source version already equals the selected target version.
+    // Mojang has shipped schema changes without incrementing the BlockState version; authoritative
+    // migrators must be allowed to apply those same-version schema groups.
+    let migrated = migrator.migrate_to(state, target_version)?;
+    if migrated.version != Some(target_version) {
+        return Err(BedrockWorldError::Validation(format!(
+            "BlockState migrator returned version {:?} for {}, expected {target_version}",
+            migrated.version, migrated.name
+        )));
+    }
     if !validator(&migrated) {
         return Err(BedrockWorldError::Validation(format!(
             "historical block state {} is not registered in target authoritative palette",

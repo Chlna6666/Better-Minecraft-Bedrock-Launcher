@@ -22,7 +22,7 @@ include = [
     "docs/**/*.md",
     "src/**/*.rs",
     "tests/**/*.rs",
-    "tests/fixtures/README.md",
+    "tests/fixtures/**/*",
     "benches/**/*.rs",
 ]
 
