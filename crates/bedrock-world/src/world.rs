@@ -42,8 +42,8 @@ pub use player_saved_items::{
 };
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use pocket_chunks_dat::{
-    PocketChunksDatImportOptions, PocketChunksDatImportReport,
-    import_pocket_chunks_dat_records_blocking,
+    PocketChunksDatImportCheck, PocketChunksDatImportOptions, PocketChunksDatImportReport,
+    check_pocket_chunks_dat_leveldb_import_blocking, import_pocket_chunks_dat_records_blocking,
 };
 pub use pocket_entities_dat::{
     PocketEntitiesDatDocument, PocketEntitiesDatImportOptions, PocketEntitiesDatImportReport,
