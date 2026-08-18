@@ -599,13 +599,13 @@ pub mod backend {
     use super::*;
 
     /// Bedrock LevelDB storage adapter.
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     #[derive(Clone)]
     pub struct BedrockLevelDbStorage {
         db: Arc<bedrock_leveldb::Db>,
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     impl BedrockLevelDbStorage {
         /// Opens an existing Bedrock LevelDB for writes.
         pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -660,7 +660,7 @@ pub mod backend {
         }
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     impl WorldStorage for BedrockLevelDbStorage {
         fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
             self.db.get(key).map_err(map_leveldb_error)
@@ -822,7 +822,7 @@ pub mod backend {
         }
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     impl PartitionedWorldStorage for BedrockLevelDbStorage {
         fn scan_keys_partitioned<T, I, F>(
             &self,
@@ -865,7 +865,7 @@ pub mod backend {
         }
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     fn finish_scan(
         result: bedrock_leveldb::Result<bedrock_leveldb::ScanOutcome>,
         visitor_error: Option<BedrockWorldError>,
@@ -876,12 +876,12 @@ pub mod backend {
         result.map(to_storage_outcome).map_err(map_leveldb_error)
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     const fn write_options() -> bedrock_leveldb::WriteOptions {
         bedrock_leveldb::WriteOptions { sync: true }
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     fn map_leveldb_error(error: bedrock_leveldb::LevelDbError) -> BedrockWorldError {
         match error.kind() {
             bedrock_leveldb::ErrorKind::Cancelled => BedrockWorldError::Cancelled {
@@ -892,7 +892,7 @@ pub mod backend {
         }
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     fn to_leveldb_read_options(options: StorageReadOptions) -> bedrock_leveldb::ReadOptions {
         bedrock_leveldb::ReadOptions {
             checksum: bedrock_leveldb::ChecksumMode::Inherit,
@@ -931,7 +931,7 @@ pub mod backend {
         }
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     const fn to_storage_outcome(outcome: bedrock_leveldb::ScanOutcome) -> StorageScanOutcome {
         StorageScanOutcome {
             visited: outcome.visited,
@@ -950,12 +950,12 @@ pub mod backend {
         }
     }
 
-    /// Placeholder backend returned when `backend-bedrock-leveldb` is disabled.
-    #[cfg(not(feature = "backend-bedrock-leveldb"))]
+    /// Placeholder backend returned when `bedrock-leveldb` is disabled.
+    #[cfg(not(feature = "bedrock-leveldb"))]
     #[derive(Debug, Clone, Copy)]
     pub struct BedrockLevelDbStorage;
 
-    #[cfg(not(feature = "backend-bedrock-leveldb"))]
+    #[cfg(not(feature = "bedrock-leveldb"))]
     impl BedrockLevelDbStorage {
         /// Returns an error because the LevelDB backend feature is disabled.
         pub fn open(_path: impl AsRef<Path>) -> Result<Self> {
@@ -973,7 +973,7 @@ pub mod backend {
         }
     }
 
-    #[cfg(not(feature = "backend-bedrock-leveldb"))]
+    #[cfg(not(feature = "bedrock-leveldb"))]
     impl WorldStorage for BedrockLevelDbStorage {
         fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
             Err(feature_disabled())
@@ -1021,7 +1021,7 @@ pub mod backend {
         }
     }
 
-    #[cfg(not(feature = "backend-bedrock-leveldb"))]
+    #[cfg(not(feature = "bedrock-leveldb"))]
     impl PartitionedWorldStorage for BedrockLevelDbStorage {
         fn scan_keys_partitioned<T, I, F>(
             &self,
@@ -1038,11 +1038,9 @@ pub mod backend {
         }
     }
 
-    #[cfg(not(feature = "backend-bedrock-leveldb"))]
+    #[cfg(not(feature = "bedrock-leveldb"))]
     fn feature_disabled() -> BedrockWorldError {
-        BedrockWorldError::LevelDb(
-            "backend-bedrock-leveldb feature is disabled".to_string(),
-        )
+        BedrockWorldError::LevelDb("bedrock-leveldb feature is disabled".to_string())
     }
 }
 
@@ -1102,7 +1100,7 @@ mod tests {
         assert_eq!(entries[1].value, Bytes::from_static(b"two"));
     }
 
-    #[cfg(feature = "backend-bedrock-leveldb")]
+    #[cfg(feature = "bedrock-leveldb")]
     #[test]
     fn bedrock_leveldb_storage_roundtrips_raw_records() {
         use std::time::{SystemTime, UNIX_EPOCH};
