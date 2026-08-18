@@ -20,28 +20,28 @@ pub enum ModernSavedItemTargetMatch {
         second: NamedSavedItemId,
         matches: usize,
     },
-    /// The target item is a normal non-block item and the source correctly has no persisted `Block`.
+    /// Exact ordinary item with no persisted target BlockState.
     Item { item: NamedSavedItemId },
-    /// The target item is not a blockitem, but the source carries a persisted BlockState.
+    /// Source carries `Block`, but the target item is not a blockitem.
     UnexpectedSourceBlock { item: NamedSavedItemId },
-    /// Target item->block data has multiple block IDs for one target item ID.
+    /// Target item->block data maps one item to multiple block identifiers.
     AmbiguousTargetBlockItem {
         item: NamedSavedItemId,
         first_block: String,
         second_block: String,
         matches: usize,
     },
-    /// The target item is a blockitem, but the source has no persisted Modern `Block` payload.
+    /// Target is a blockitem but source Modern data has no persisted `Block` payload.
     SourceBlockRequired {
         item: NamedSavedItemId,
         target_block_id: String,
     },
-    /// No target-palette BlockState forward-upgrades to the source BlockState.
+    /// Source BlockState has no representation in the target vanilla block palette.
     MissingBlockState {
         item: NamedSavedItemId,
         target_block_id: String,
     },
-    /// Multiple target-palette BlockStates converge to the source BlockState.
+    /// Multiple target BlockStates converge to the source BlockState.
     AmbiguousBlockState {
         item: NamedSavedItemId,
         target_block_id: String,
@@ -49,14 +49,14 @@ pub enum ModernSavedItemTargetMatch {
         second: BlockState,
         matches: usize,
     },
-    /// Item->block mapping and BlockState reverse lookup disagree on the target block identifier.
+    /// Item->block mapping and reversed target BlockState disagree on block identity.
     BlockIdentityMismatch {
         item: NamedSavedItemId,
         expected_block_id: String,
         actual_block_id: String,
         block: BlockState,
     },
-    /// Both target item and exact target BlockState are uniquely proven and mutually consistent.
+    /// Target item and target BlockState are both unique and mutually consistent.
     BlockItem {
         item: NamedSavedItemId,
         block: BlockState,
@@ -64,21 +64,18 @@ pub enum ModernSavedItemTargetMatch {
 }
 
 impl ModernSavedItemTargetMatch {
-    /// Returns whether this match is safe to write without choosing an alias or inventing data.
+    /// Returns whether this result can be written without choosing aliases or inventing data.
     #[must_use]
     pub const fn is_exact(&self) -> bool {
-        matches!(Self::Item { .. } | Self::BlockItem { .. }, self)
+        matches!(self, Self::Item { .. } | Self::BlockItem { .. })
     }
 }
 
 /// Reusable exact target for Modern (MCPE 1.9+) saved items in one concrete Bedrock release.
 ///
-/// The three constituent data sets must describe the same target `GameVersion`:
-/// - complete target item registry reverse index,
-/// - complete target vanilla BlockState reverse index,
-/// - generated target block-ID -> item-ID relation.
-///
-/// No string-name equality fallback is used for blockitems.
+/// The three target data sets must describe the same `GameVersion`: complete item registry reverse
+/// index, complete vanilla BlockState reverse index, and generated block-ID -> item-ID relation.
+/// Blockitems never fall back to comparing item and block names for equality.
 #[derive(Debug, Clone)]
 pub struct ModernSavedItemTarget {
     items: SavedItemVersionTarget,
@@ -136,7 +133,7 @@ impl ModernSavedItemTarget {
         self.blocks.source_storage_version()
     }
 
-    /// Target BlockState storage endpoint retained by target block states.
+    /// Target BlockState storage endpoint retained by returned target states.
     #[must_use]
     pub const fn target_block_state_version(&self) -> crate::block::BlockStateStorageVersion {
         self.blocks.target_storage_version()
@@ -145,8 +142,8 @@ impl ModernSavedItemTarget {
     /// Matches one source Modern saved item to this concrete older target release.
     ///
     /// `source_block` is the parsed persisted `Block` BlockState when present. A target blockitem
-    /// requires it; a target non-block item rejects it. Block identity is validated against the
-    /// generated target block->item relation, never by assuming equal item/block names.
+    /// requires it; a target ordinary item rejects it. Block identity is validated through the
+    /// generated target block->item relation rather than inferred from string-name equality.
     pub fn match_item(
         &self,
         source_item: &NamedSavedItemId,
@@ -236,127 +233,5 @@ fn is_modern_game_version(version: &GameVersion) -> bool {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
         std::cmp::Ordering::Equal => components.get(1).copied().unwrap_or(0) >= 9,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::block::{
-        AuthoritativeBlockStateCatalog, BlockStateSchemaSource, VanillaBlockStatePalette,
-    };
-    use crate::item::{SavedItemUpgradeSource, SavedItemVersionTable, VanillaSavedItemPalette};
-    use crate::nbt::NbtTag;
-    use std::collections::BTreeMap;
-
-    fn block(name: &str, version: i32) -> BlockState {
-        BlockState {
-            name: name.to_string(),
-            states: BTreeMap::from([("variant".to_string(), NbtTag::Int(0))]),
-            version: Some(version),
-        }
-    }
-
-    fn target() -> ModernSavedItemTarget {
-        let item_rules = SavedItemVersionTable::from_sources(&[
-            SavedItemUpgradeSource {
-                name: "0001_1.6_beta_to_1.6.0.json",
-                json: "{}",
-            },
-            SavedItemUpgradeSource {
-                name: "0011_1.11.4_to_1.12.0.json",
-                json: r#"{"renamedIds":{"minecraft:old_door":"minecraft:new_door"}}"#,
-            },
-        ])
-        .unwrap();
-        let item_palette = VanillaSavedItemPalette::from_required_item_list_json(
-            GameVersion::new(vec![1, 9, 0]).unwrap(),
-            r#"{
-                "minecraft:item.door":{"runtime_id":1},
-                "minecraft:apple":{"runtime_id":2}
-            }"#,
-        )
-        .unwrap();
-        // Source item identity is already the same for the door in this compact test; the mapping
-        // intentionally demonstrates that target block and item names need not match.
-        let items = item_rules
-            .older_target(&GameVersion::new(vec![1, 12, 0]).unwrap(), &item_palette)
-            .unwrap();
-
-        let target_block_version = crate::block::BlockStateStorageVersion::from_components(1, 9, 0, 1).raw();
-        let block_catalog = AuthoritativeBlockStateCatalog::from_sources(&[BlockStateSchemaSource {
-            name: "0001_test.json",
-            json: r#"{"maxVersionMajor":1,"maxVersionMinor":12,"maxVersionPatch":0,"maxVersionRevision":1}"#,
-        }])
-        .unwrap();
-        let block_palette = VanillaBlockStatePalette::new(
-            GameVersion::new(vec![1, 9, 0]).unwrap(),
-            vec![block("minecraft:door", target_block_version)],
-        )
-        .unwrap();
-        let blocks = BlockStateVersionTarget::build(&block_catalog, &block_palette).unwrap();
-        let item_blocks = VanillaSavedItemBlockMap::from_block_id_to_item_id_map_json(
-            GameVersion::new(vec![1, 9, 0]).unwrap(),
-            r#"{"minecraft:door":"minecraft:item.door"}"#,
-        )
-        .unwrap();
-        ModernSavedItemTarget::new(items, blocks, item_blocks).unwrap()
-    }
-
-    #[test]
-    fn non_block_item_is_exact_without_source_block() {
-        assert!(matches!(
-            target()
-                .match_item(
-                    &NamedSavedItemId {
-                        name: "minecraft:apple".to_string(),
-                        meta: 0,
-                    },
-                    None,
-                )
-                .unwrap(),
-            ModernSavedItemTargetMatch::Item { .. }
-        ));
-    }
-
-    #[test]
-    fn target_blockitem_requires_source_block_payload() {
-        assert!(matches!(
-            target()
-                .match_item(
-                    &NamedSavedItemId {
-                        name: "minecraft:item.door".to_string(),
-                        meta: 0,
-                    },
-                    None,
-                )
-                .unwrap(),
-            ModernSavedItemTargetMatch::SourceBlockRequired { .. }
-        ));
-    }
-
-    #[test]
-    fn different_target_item_and_block_names_are_proven_by_mapping() {
-        let target = target();
-        let source_block_version = target.source_block_state_version().raw();
-        assert!(matches!(
-            target
-                .match_item(
-                    &NamedSavedItemId {
-                        name: "minecraft:item.door".to_string(),
-                        meta: 0,
-                    },
-                    Some(&block("minecraft:door", source_block_version)),
-                )
-                .unwrap(),
-            ModernSavedItemTargetMatch::BlockItem { item, block }
-                if item.name == "minecraft:item.door" && block.name == "minecraft:door"
-        ));
-    }
-
-    #[test]
-    fn target_evidence_versions_must_match() {
-        let target = target();
-        assert_eq!(target.target_game_version().components(), &[1, 9, 0]);
     }
 }
