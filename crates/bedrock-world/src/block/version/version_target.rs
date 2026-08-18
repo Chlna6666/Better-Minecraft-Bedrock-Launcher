@@ -4,6 +4,7 @@ use super::{AuthoritativeBlockStateCatalog, BlockStateStorageVersion, VanillaBlo
 use crate::chunk::BlockState;
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// Result of reversing one semantic source BlockState to a concrete older vanilla palette.
@@ -35,13 +36,15 @@ impl BlockStateVersionMatch {
     }
 }
 
-/// Reusable reverse index from one source BlockState storage endpoint to one older vanilla palette.
+/// Reusable reverse index from one concrete source Bedrock release to one older vanilla palette.
 ///
 /// Every target state is upgraded once through the source-bound authoritative catalog. The upgraded
 /// semantic state becomes the reverse key, while the retained value is the exact target-palette state
-/// including its persisted target storage version.
+/// including its persisted target storage version. `source_game_version` is explicit because a packed
+/// BlockState storage version does not uniquely identify a Minecraft game release.
 #[derive(Debug, Clone)]
 pub struct BlockStateVersionTarget {
+    source_game_version: GameVersion,
     source_storage_version: BlockStateStorageVersion,
     target_storage_version: BlockStateStorageVersion,
     target_game_version: GameVersion,
@@ -51,10 +54,21 @@ pub struct BlockStateVersionTarget {
 
 impl BlockStateVersionTarget {
     /// Builds a proof-by-forward-execution reverse target.
+    ///
+    /// The caller binds the authoritative source catalog to the concrete source game release. The
+    /// target palette must not represent a newer game or a newer BlockState storage version.
     pub fn build(
+        source_game_version: GameVersion,
         source_catalog: &AuthoritativeBlockStateCatalog,
         target_palette: &VanillaBlockStatePalette,
     ) -> Result<Self> {
+        if compare_release(target_palette.game_version(), &source_game_version) == Ordering::Greater {
+            return Err(BedrockWorldError::Validation(format!(
+                "BlockState target game version {} is newer than source {}",
+                target_palette.game_version(), source_game_version
+            )));
+        }
+
         let source_storage_version = source_catalog.output_version();
         let target_storage_version = target_palette.storage_version();
         if target_storage_version > source_storage_version {
@@ -85,6 +99,7 @@ impl BlockStateVersionTarget {
         }
 
         Ok(Self {
+            source_game_version,
             source_storage_version,
             target_storage_version,
             target_game_version: target_palette.game_version().clone(),
@@ -93,13 +108,19 @@ impl BlockStateVersionTarget {
         })
     }
 
+    /// Concrete source Minecraft Bedrock release used to interpret source BlockStates.
+    #[must_use]
+    pub fn source_game_version(&self) -> &GameVersion {
+        &self.source_game_version
+    }
+
     /// Source BlockState storage endpoint used for forward verification.
     #[must_use]
     pub const fn source_storage_version(&self) -> BlockStateStorageVersion {
         self.source_storage_version
     }
 
-    /// Target BlockState storage version retained in returned palette states.
+    /// Target BlockState storage version retained by returned target states.
     #[must_use]
     pub const fn target_storage_version(&self) -> BlockStateStorageVersion {
         self.target_storage_version
@@ -164,6 +185,19 @@ impl ReverseEntry {
     }
 }
 
+fn compare_release(left: &GameVersion, right: &GameVersion) -> Ordering {
+    let len = left.components().len().max(right.components().len());
+    for index in 0..len {
+        let left = left.components().get(index).copied().unwrap_or(0);
+        let right = right.components().get(index).copied().unwrap_or(0);
+        match left.cmp(&right) {
+            Ordering::Equal => {}
+            order => return order,
+        }
+    }
+    Ordering::Equal
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,9 +233,15 @@ mod tests {
             vec![state("minecraft:old", target_version)],
         )
         .unwrap();
+        let reverse = BlockStateVersionTarget::build(
+            GameVersion::new(vec![1, 13, 0]).unwrap(),
+            &source_catalog,
+            &target_palette,
+        )
+        .unwrap();
+        assert_eq!(reverse.source_game_version().components(), &[1, 13, 0]);
         assert_eq!(
-            BlockStateVersionTarget::build(&source_catalog, &target_palette)
-                .unwrap()
+            reverse
                 .match_state(&state("minecraft:new", source_version))
                 .unwrap()
                 .unique(),
@@ -225,10 +265,14 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            BlockStateVersionTarget::build(&source_catalog, &target_palette)
-                .unwrap()
-                .match_state(&state("minecraft:new", source_version))
-                .unwrap(),
+            BlockStateVersionTarget::build(
+                GameVersion::new(vec![1, 13, 0]).unwrap(),
+                &source_catalog,
+                &target_palette,
+            )
+            .unwrap()
+            .match_state(&state("minecraft:new", source_version))
+            .unwrap(),
             BlockStateVersionMatch::Ambiguous { matches: 2, .. }
         ));
     }
@@ -246,11 +290,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            BlockStateVersionTarget::build(&source_catalog, &target_palette)
-                .unwrap()
-                .match_state(&state("minecraft:future", source_version))
-                .unwrap(),
+            BlockStateVersionTarget::build(
+                GameVersion::new(vec![1, 13, 0]).unwrap(),
+                &source_catalog,
+                &target_palette,
+            )
+            .unwrap()
+            .match_state(&state("minecraft:future", source_version))
+            .unwrap(),
             BlockStateVersionMatch::Missing
+        );
+    }
+
+    #[test]
+    fn newer_target_game_version_is_rejected_even_if_storage_version_is_older() {
+        let target_version = BlockStateStorageVersion::from_components(1, 12, 0, 1).raw();
+        let source_catalog = catalog(
+            r#"{"maxVersionMajor":1,"maxVersionMinor":13,"maxVersionPatch":0,"maxVersionRevision":1}"#,
+        );
+        let target_palette = VanillaBlockStatePalette::new(
+            GameVersion::new(vec![1, 14, 0]).unwrap(),
+            vec![state("minecraft:stone", target_version)],
+        )
+        .unwrap();
+        assert!(
+            BlockStateVersionTarget::build(
+                GameVersion::new(vec![1, 13, 0]).unwrap(),
+                &source_catalog,
+                &target_palette,
+            )
+            .is_err()
         );
     }
 }
