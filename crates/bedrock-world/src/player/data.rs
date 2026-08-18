@@ -13,10 +13,16 @@ use std::borrow::Cow;
 pub enum PlayerId {
     /// Local player record stored under `~local_player`.
     Local,
-    /// Player record stored under a `player_<id>` LevelDB key.
+    /// Player record stored under a textual `player_<id>` LevelDB key.
     ///
-    /// The suffix is retained verbatim. The library does not assume that it is an Xbox XUID.
+    /// Historical naming is retained for source compatibility; the string suffix is not assumed to
+    /// be an Xbox XUID by the storage layer.
     Xuid(String),
+    /// Player record stored under `player_<raw suffix>` when the suffix is not valid UTF-8.
+    ///
+    /// Bytes are retained verbatim so listing, reading and writing never replace unknown bytes with
+    /// Unicode replacement characters.
+    RawPlayerKey(Vec<u8>),
     /// Historical player data embedded in `level.dat.Player`.
     LegacyLevelDat,
     /// Player-like identifier whose Bedrock source is not known.
@@ -24,33 +30,56 @@ pub enum PlayerId {
 }
 
 impl PlayerId {
-    /// Encodes this id as its Bedrock LevelDB key when applicable.
+    /// Encodes this id as its exact Bedrock LevelDB key when applicable.
     #[must_use]
     pub fn storage_key(&self) -> Option<Cow<'_, [u8]>> {
         match self {
             Self::Local => Some(Cow::Borrowed(b"~local_player")),
             Self::Xuid(id) => Some(Cow::Owned(format!("player_{id}").into_bytes())),
+            Self::RawPlayerKey(suffix) => {
+                let mut key = Vec::with_capacity(b"player_".len().saturating_add(suffix.len()));
+                key.extend_from_slice(b"player_");
+                key.extend_from_slice(suffix);
+                Some(Cow::Owned(key))
+            }
             Self::LegacyLevelDat | Self::Unknown(_) => None,
         }
     }
 
-    /// Detects a player id directly from a Bedrock LevelDB key.
+    /// Detects a player id directly from an exact Bedrock LevelDB key.
+    ///
+    /// Non-UTF-8 `player_*` suffixes are retained as [`Self::RawPlayerKey`] rather than skipped or
+    /// lossily decoded.
     #[must_use]
     pub fn from_storage_key(key: &[u8]) -> Option<Self> {
         if key == b"~local_player" {
             return Some(Self::Local);
         }
-        let text = std::str::from_utf8(key).ok()?;
-        text.strip_prefix("player_")
-            .filter(|id| !id.is_empty())
-            .map(|id| Self::Xuid(id.to_string()))
+        let suffix = key.strip_prefix(b"player_")?;
+        if suffix.is_empty() {
+            return None;
+        }
+        match std::str::from_utf8(suffix) {
+            Ok(id) => Some(Self::Xuid(id.to_string())),
+            Err(_) => Some(Self::RawPlayerKey(suffix.to_vec())),
+        }
     }
 
-    /// Returns the suffix of a `player_<id>` key when this is such a record.
+    /// Returns the textual suffix of a `player_<id>` key when it is valid UTF-8.
     #[must_use]
     pub fn player_key_id(&self) -> Option<&str> {
         match self {
             Self::Xuid(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Returns the exact suffix bytes of a `player_*` key for both textual and raw identifiers.
+    #[must_use]
+    pub fn player_key_suffix(&self) -> Option<&[u8]> {
+        match self {
+            Self::Xuid(id) => Some(id.as_bytes()),
+            Self::RawPlayerKey(suffix) => Some(suffix),
             _ => None,
         }
     }
@@ -346,6 +375,14 @@ mod tests {
         assert_eq!(
             PlayerId::from_storage_key(b"player_-123"),
             Some(PlayerId::Xuid("-123".to_string()))
+        );
+        assert_eq!(
+            PlayerId::from_storage_key(b"player_\xff"),
+            Some(PlayerId::RawPlayerKey(vec![0xff]))
+        );
+        assert_eq!(
+            PlayerId::RawPlayerKey(vec![0xff]).storage_key().as_deref(),
+            Some(b"player_\xff".as_slice())
         );
         assert_eq!(PlayerId::from_storage_key(b"player_"), None);
         assert_eq!(PlayerId::from_storage_key(b"actorprefix123"), None);
