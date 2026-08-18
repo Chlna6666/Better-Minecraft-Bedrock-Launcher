@@ -34,4 +34,6 @@ pub use local_player::{
 pub use server_player::{
     delete_server_player, read_server_player, read_server_player_with_level, write_server_player,
 };
-pub use storage::{LocalPlayerRecords, PlayerStorageOverview, inspect_player_storage};
+pub use storage::{
+    LocalPlayerRecords, LocalPlayerStorage, PlayerStorageOverview, inspect_player_storage,
+};

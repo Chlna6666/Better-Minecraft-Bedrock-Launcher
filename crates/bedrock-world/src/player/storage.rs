@@ -12,6 +12,15 @@ use crate::level::LevelDatDocument;
 use crate::player::PlayerData;
 use bytes::Bytes;
 
+/// Explicit physical storage target for the Bedrock local player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalPlayerStorage {
+    /// Historical player compound embedded at `level.dat.Player`.
+    LevelDatPlayer,
+    /// LevelDB record stored under the exact `~local_player` key.
+    LocalPlayer,
+}
+
 /// Actual local-player records present across `level.dat.Player` and `~local_player`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LocalPlayerRecords {
