@@ -1,4 +1,4 @@
-#![cfg(feature = "backend-bedrock-leveldb")]
+#![cfg(feature = "bedrock-leveldb")]
 
 use bedrock_world::{
     BedrockDbKey, BedrockLevelDbStorage, BedrockWorld, ChunkPos, ChunkRecordTag, NbtTag,
