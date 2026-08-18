@@ -25,9 +25,9 @@ pub(crate) use block_state::{
     BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
 };
 pub(crate) use block_entity::{
-    BlockEntityChunkMigrationReport, BlockEntityMigrationContext, BlockEntityMigrationOutcome,
-    BlockEntityMigrationStatus, BlockEntityMigrator, VanillaBlockEntityMigrator,
-    migrate_block_entity_chunk_blocking, migrate_block_entity_chunk_to_modern_blocking,
+    BlockEntityChunkRewriteReport, BlockEntityRewriteContext, BlockEntityRewriteOutcome,
+    BlockEntityRewriteStatus, BlockEntityRewriter, VanillaBlockEntityRewriter,
+    rewrite_block_entity_chunk_blocking, rewrite_block_entity_sign_text_blocking,
 };
 pub(crate) use version::{
     PINNED_BLOCK_MIGRATION_CORPUS_FILES, PINNED_LEGACY_BLOCK_ID_MAP_FILE,

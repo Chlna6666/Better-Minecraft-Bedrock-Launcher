@@ -1,8 +1,8 @@
-//! Preservation-first migration for historical Bedrock block-entity NBT.
+//! Preservation-first handling for historical Minecraft Bedrock `BlockEntity` NBT.
 //!
-//! Bedrock block entities remain chunk-scoped `BlockEntity` records rather than actor records. There
-//! is no universal Mojang block-entity schema version embedded in every root compound, so migration is
-//! content-driven and receives explicit caller context instead of inferring a fake version number.
+//! Block entities remain chunk-scoped `BlockEntity` records rather than actor records. There is no
+//! universal block-entity schema version embedded in every root compound, so writes are selected by
+//! concrete caller evidence and only rewrite layouts whose historical shape is known.
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
 use crate::database::{StorageBatch, WorldStorage};
@@ -11,117 +11,116 @@ use crate::nbt::{NbtTag, parse_root_nbt_with_consumed, serialize_root_nbt};
 use bytes::Bytes;
 use indexmap::IndexMap;
 
-/// Context supplied to one block-entity migration pass.
+/// Version evidence supplied to one block-entity rewrite pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BlockEntityMigrationContext {
-    /// Source chunk format version when the caller has already classified it.
+pub struct BlockEntityRewriteContext {
+    /// Source `LevelChunk` version when already known by the caller.
     pub source_chunk_version: Option<u8>,
-    /// Target chunk format version selected by the caller.
+    /// Target `LevelChunk` version selected by the caller.
     pub target_chunk_version: Option<u8>,
 }
 
 /// Result classification for one block-entity root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockEntityMigrationStatus {
-    /// The root was already compatible with the selected migrator.
+pub enum BlockEntityRewriteStatus {
+    /// The root already uses the requested persisted shape.
     Unchanged,
-    /// The root was upgraded while retaining fields not owned by the migrator.
-    Upgraded,
-    /// The migrator does not have an authoritative rewrite for this root and preserved it unchanged.
+    /// The root was rewritten while retaining fields not owned by the rewriter.
+    Rewritten,
+    /// No authoritative rewrite matched and the original root must be retained byte-for-byte.
     Preserved,
 }
 
-/// Result of migrating one root NBT compound.
+/// Result of rewriting one block-entity root NBT compound.
 #[derive(Debug, Clone, PartialEq)]
-pub struct BlockEntityMigrationOutcome {
-    /// Migrated or preserved NBT root.
+pub struct BlockEntityRewriteOutcome {
+    /// Rewritten or preserved NBT root.
     pub nbt: NbtTag,
-    /// Classification of the migration action.
-    pub status: BlockEntityMigrationStatus,
+    /// Classification of the write action.
+    pub status: BlockEntityRewriteStatus,
 }
 
-/// Semantic block-entity migration backend.
+/// Block-entity rewrite backend for one explicitly selected persisted shape.
 ///
 /// Implementations must preserve fields they do not explicitly own. Returning an error aborts the
 /// whole chunk rewrite before storage mutation.
-pub trait BlockEntityMigrator: Send + Sync {
-    /// Migrates one parsed block-entity NBT root.
-    fn migrate(
+pub trait BlockEntityRewriter: Send + Sync {
+    /// Rewrites one parsed block-entity NBT root.
+    fn rewrite(
         &self,
         nbt: &NbtTag,
-        context: BlockEntityMigrationContext,
-    ) -> Result<BlockEntityMigrationOutcome>;
+        context: BlockEntityRewriteContext,
+    ) -> Result<BlockEntityRewriteOutcome>;
 }
 
-/// Conservative vanilla-compatible migrator for block-entity layouts with confirmed historical forms.
+/// Conservative vanilla rewriter for confirmed historical block-entity layouts.
 ///
-/// Currently this upgrades Sign text storage from the old `Text1`..`Text4` or `Text` forms to the
-/// modern `FrontText`/`BackText` shape. Unknown block-entity identifiers and unrecognised layouts are
-/// preserved unchanged.
+/// The current built-in rule rewrites Sign text from `Text1`..`Text4` or `Text` into the
+/// `FrontText`/`BackText` representation. Unknown identifiers and unrecognised layouts are preserved
+/// unchanged.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VanillaBlockEntityMigrator;
+pub struct VanillaBlockEntityRewriter;
 
-impl BlockEntityMigrator for VanillaBlockEntityMigrator {
-    fn migrate(
+impl BlockEntityRewriter for VanillaBlockEntityRewriter {
+    fn rewrite(
         &self,
         nbt: &NbtTag,
-        _context: BlockEntityMigrationContext,
-    ) -> Result<BlockEntityMigrationOutcome> {
+        _context: BlockEntityRewriteContext,
+    ) -> Result<BlockEntityRewriteOutcome> {
         let NbtTag::Compound(root) = nbt else {
             return Err(BedrockWorldError::Validation(
                 "block-entity root must be an NBT compound".to_string(),
             ));
         };
         let Some(id) = string_field(root, "id") else {
-            return Ok(BlockEntityMigrationOutcome {
+            return Ok(BlockEntityRewriteOutcome {
                 nbt: nbt.clone(),
-                status: BlockEntityMigrationStatus::Preserved,
+                status: BlockEntityRewriteStatus::Preserved,
             });
         };
         if !is_sign_identifier(id) {
-            return Ok(BlockEntityMigrationOutcome {
+            return Ok(BlockEntityRewriteOutcome {
                 nbt: nbt.clone(),
-                status: BlockEntityMigrationStatus::Preserved,
+                status: BlockEntityRewriteStatus::Preserved,
             });
         }
-        migrate_sign(root)
+        rewrite_sign(root)
     }
 }
 
-/// Summary of one chunk-scoped `BlockEntity` payload migration.
+/// Summary of one chunk-scoped `BlockEntity` payload rewrite.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BlockEntityChunkMigrationReport {
+pub struct BlockEntityChunkRewriteReport {
     /// Number of consecutive NBT roots inspected.
     pub roots_seen: usize,
-    /// Number of roots rewritten by the migrator.
-    pub roots_upgraded: usize,
-    /// Number of already-compatible roots.
+    /// Number of roots rewritten by the selected rewriter.
+    pub roots_rewritten: usize,
+    /// Number of roots already using the selected representation.
     pub roots_unchanged: usize,
     /// Number of roots preserved because no authoritative rewrite matched.
     pub roots_preserved: usize,
-    /// Whether the LevelDB value was rewritten.
+    /// Whether the LevelDB value changed.
     pub payload_rewritten: bool,
 }
 
-/// Migrates one chunk's `BlockEntity` payload atomically.
+/// Rewrites one chunk's `BlockEntity` payload atomically.
 ///
-/// All consecutive NBT roots are parsed and migrated before any storage write is issued. Roots marked
-/// `Unchanged` or `Preserved` are copied byte-for-byte from the original payload; only `Upgraded`
-/// roots are serialized again. A payload with no roots is treated as corrupt rather than deleted or
-/// silently replaced.
-pub fn migrate_block_entity_chunk_blocking(
+/// Every consecutive NBT root is parsed and processed before any storage write is issued. Roots marked
+/// `Unchanged` or `Preserved` are copied byte-for-byte from the source payload; only `Rewritten` roots
+/// are serialized again. An empty payload is treated as corrupt rather than deleted or replaced.
+pub fn rewrite_block_entity_chunk_blocking(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
-    migrator: &dyn BlockEntityMigrator,
-    context: BlockEntityMigrationContext,
-) -> Result<BlockEntityChunkMigrationReport> {
+    rewriter: &dyn BlockEntityRewriter,
+    context: BlockEntityRewriteContext,
+) -> Result<BlockEntityChunkRewriteReport> {
     let key = ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode();
     let Some(raw) = storage.get(&key)? else {
-        return Ok(BlockEntityChunkMigrationReport::default());
+        return Ok(BlockEntityChunkRewriteReport::default());
     };
 
     let mut remaining = raw.as_ref();
-    let mut report = BlockEntityChunkMigrationReport::default();
+    let mut report = BlockEntityChunkRewriteReport::default();
     let mut encoded = Vec::with_capacity(raw.len());
     while !remaining.is_empty() {
         let (root, consumed) = parse_root_nbt_with_consumed(remaining)?;
@@ -131,25 +130,25 @@ pub fn migrate_block_entity_chunk_blocking(
             ));
         }
         report.roots_seen = report.roots_seen.saturating_add(1);
-        let outcome = migrator.migrate(&root, context)?;
+        let outcome = rewriter.rewrite(&root, context)?;
         match outcome.status {
-            BlockEntityMigrationStatus::Unchanged => {
+            BlockEntityRewriteStatus::Unchanged => {
                 if outcome.nbt != root {
                     return Err(BedrockWorldError::Validation(
-                        "BlockEntity migrator returned modified NBT with Unchanged status".to_string(),
+                        "BlockEntity rewriter returned modified NBT with Unchanged status".to_string(),
                     ));
                 }
                 encoded.extend_from_slice(&remaining[..consumed]);
                 report.roots_unchanged = report.roots_unchanged.saturating_add(1);
             }
-            BlockEntityMigrationStatus::Upgraded => {
+            BlockEntityRewriteStatus::Rewritten => {
                 encoded.extend_from_slice(&serialize_root_nbt(&outcome.nbt)?);
-                report.roots_upgraded = report.roots_upgraded.saturating_add(1);
+                report.roots_rewritten = report.roots_rewritten.saturating_add(1);
             }
-            BlockEntityMigrationStatus::Preserved => {
+            BlockEntityRewriteStatus::Preserved => {
                 if outcome.nbt != root {
                     return Err(BedrockWorldError::Validation(
-                        "BlockEntity migrator returned modified NBT with Preserved status".to_string(),
+                        "BlockEntity rewriter returned modified NBT with Preserved status".to_string(),
                     ));
                 }
                 encoded.extend_from_slice(&remaining[..consumed]);
@@ -177,33 +176,33 @@ pub fn migrate_block_entity_chunk_blocking(
     Ok(report)
 }
 
-/// Convenience wrapper using the conservative built-in vanilla migrator.
-pub fn migrate_block_entity_chunk_to_modern_blocking(
+/// Rewrites confirmed historical Sign text layouts using the built-in vanilla rules.
+pub fn rewrite_block_entity_sign_text_blocking(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
-    context: BlockEntityMigrationContext,
-) -> Result<BlockEntityChunkMigrationReport> {
-    migrate_block_entity_chunk_blocking(storage, pos, &VanillaBlockEntityMigrator, context)
+    context: BlockEntityRewriteContext,
+) -> Result<BlockEntityChunkRewriteReport> {
+    rewrite_block_entity_chunk_blocking(storage, pos, &VanillaBlockEntityRewriter, context)
 }
 
-fn migrate_sign(root: &IndexMap<String, NbtTag>) -> Result<BlockEntityMigrationOutcome> {
+fn rewrite_sign(root: &IndexMap<String, NbtTag>) -> Result<BlockEntityRewriteOutcome> {
     if matches!(root.get("FrontText"), Some(NbtTag::Compound(_))) {
-        let mut migrated = root.clone();
+        let mut rewritten = root.clone();
         let mut changed = false;
-        if !matches!(migrated.get("BackText"), Some(NbtTag::Compound(_))) {
-            migrated.insert("BackText".to_string(), empty_sign_text());
+        if !matches!(rewritten.get("BackText"), Some(NbtTag::Compound(_))) {
+            rewritten.insert("BackText".to_string(), empty_sign_text());
             changed = true;
         }
-        if !matches!(migrated.get("IsWaxed"), Some(NbtTag::Byte(_))) {
-            migrated.insert("IsWaxed".to_string(), NbtTag::Byte(0));
+        if !matches!(rewritten.get("IsWaxed"), Some(NbtTag::Byte(_))) {
+            rewritten.insert("IsWaxed".to_string(), NbtTag::Byte(0));
             changed = true;
         }
-        return Ok(BlockEntityMigrationOutcome {
-            nbt: NbtTag::Compound(migrated),
+        return Ok(BlockEntityRewriteOutcome {
+            nbt: NbtTag::Compound(rewritten),
             status: if changed {
-                BlockEntityMigrationStatus::Upgraded
+                BlockEntityRewriteStatus::Rewritten
             } else {
-                BlockEntityMigrationStatus::Unchanged
+                BlockEntityRewriteStatus::Unchanged
             },
         });
     }
@@ -211,9 +210,9 @@ fn migrate_sign(root: &IndexMap<String, NbtTag>) -> Result<BlockEntityMigrationO
     let legacy_blob = string_field(root, "Text").map(str::to_string);
     let legacy_lines = read_legacy_sign_lines(root);
     let Some(text) = legacy_blob.or(legacy_lines) else {
-        return Ok(BlockEntityMigrationOutcome {
+        return Ok(BlockEntityRewriteOutcome {
             nbt: NbtTag::Compound(root.clone()),
-            status: BlockEntityMigrationStatus::Preserved,
+            status: BlockEntityRewriteStatus::Preserved,
         });
     };
 
@@ -237,18 +236,18 @@ fn migrate_sign(root: &IndexMap<String, NbtTag>) -> Result<BlockEntityMigrationO
         NbtTag::Byte(persist_formatting),
     );
 
-    let mut migrated = root.clone();
-    migrated.insert("FrontText".to_string(), NbtTag::Compound(front));
-    migrated
+    let mut rewritten = root.clone();
+    rewritten.insert("FrontText".to_string(), NbtTag::Compound(front));
+    rewritten
         .entry("BackText".to_string())
         .or_insert_with(empty_sign_text);
-    migrated
+    rewritten
         .entry("IsWaxed".to_string())
         .or_insert(NbtTag::Byte(0));
 
-    Ok(BlockEntityMigrationOutcome {
-        nbt: NbtTag::Compound(migrated),
-        status: BlockEntityMigrationStatus::Upgraded,
+    Ok(BlockEntityRewriteOutcome {
+        nbt: NbtTag::Compound(rewritten),
+        status: BlockEntityRewriteStatus::Rewritten,
     })
 }
 
@@ -325,15 +324,15 @@ mod tests {
     }
 
     #[test]
-    fn four_line_sign_is_promoted_without_dropping_legacy_fields() {
+    fn four_line_sign_is_rewritten_without_dropping_legacy_fields() {
         let root = sign_with([
             ("Text1".to_string(), NbtTag::String("one".to_string())),
             ("Text2".to_string(), NbtTag::String("two".to_string())),
         ]);
-        let output = VanillaBlockEntityMigrator
-            .migrate(&root, BlockEntityMigrationContext::default())
-            .expect("migrate sign");
-        assert_eq!(output.status, BlockEntityMigrationStatus::Upgraded);
+        let output = VanillaBlockEntityRewriter
+            .rewrite(&root, BlockEntityRewriteContext::default())
+            .expect("rewrite sign");
+        assert_eq!(output.status, BlockEntityRewriteStatus::Rewritten);
         let NbtTag::Compound(values) = output.nbt else {
             panic!("compound");
         };
@@ -351,9 +350,9 @@ mod tests {
             ("Text".to_string(), NbtTag::String("hello".to_string())),
             ("IgnoreLighting".to_string(), NbtTag::Byte(1)),
         ]);
-        let output = VanillaBlockEntityMigrator
-            .migrate(&root, BlockEntityMigrationContext::default())
-            .expect("migrate sign");
+        let output = VanillaBlockEntityRewriter
+            .rewrite(&root, BlockEntityRewriteContext::default())
+            .expect("rewrite sign");
         let NbtTag::Compound(values) = output.nbt else {
             panic!("compound");
         };
@@ -369,10 +368,10 @@ mod tests {
             ("id".to_string(), NbtTag::String("FutureThing".to_string())),
             ("future".to_string(), NbtTag::Long(42)),
         ]));
-        let output = VanillaBlockEntityMigrator
-            .migrate(&root, BlockEntityMigrationContext::default())
+        let output = VanillaBlockEntityRewriter
+            .rewrite(&root, BlockEntityRewriteContext::default())
             .expect("preserve");
-        assert_eq!(output.status, BlockEntityMigrationStatus::Preserved);
+        assert_eq!(output.status, BlockEntityRewriteStatus::Preserved);
         assert_eq!(output.nbt, root);
     }
 
@@ -395,14 +394,14 @@ mod tests {
         payload.extend_from_slice(&serialize_root_nbt(&sign).unwrap());
         storage.put(&key, &payload).unwrap();
 
-        let report = migrate_block_entity_chunk_to_modern_blocking(
+        let report = rewrite_block_entity_sign_text_blocking(
             &storage,
             pos,
-            BlockEntityMigrationContext::default(),
+            BlockEntityRewriteContext::default(),
         )
         .unwrap();
         assert_eq!(report.roots_preserved, 1);
-        assert_eq!(report.roots_upgraded, 1);
+        assert_eq!(report.roots_rewritten, 1);
         let rewritten = storage.get(&key).unwrap().unwrap();
         assert_eq!(&rewritten[..future_raw.len()], future_raw.as_slice());
     }
@@ -419,19 +418,19 @@ mod tests {
         let root = sign_with([("Text".to_string(), NbtTag::String("hello".to_string()))]);
         storage.put(&key, &serialize_root_nbt(&root).unwrap()).unwrap();
 
-        let first = migrate_block_entity_chunk_to_modern_blocking(
+        let first = rewrite_block_entity_sign_text_blocking(
             &storage,
             pos,
-            BlockEntityMigrationContext::default(),
+            BlockEntityRewriteContext::default(),
         )
         .unwrap();
-        assert_eq!(first.roots_upgraded, 1);
+        assert_eq!(first.roots_rewritten, 1);
         assert!(first.payload_rewritten);
 
-        let second = migrate_block_entity_chunk_to_modern_blocking(
+        let second = rewrite_block_entity_sign_text_blocking(
             &storage,
             pos,
-            BlockEntityMigrationContext::default(),
+            BlockEntityRewriteContext::default(),
         )
         .unwrap();
         assert_eq!(second.roots_unchanged, 1);
