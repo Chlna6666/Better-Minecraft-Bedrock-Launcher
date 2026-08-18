@@ -96,8 +96,8 @@ impl SavedItemKind {
 ///
 /// The original NBT and bytes are retained so an unchanged record can be written byte-for-byte.
 /// Editing does not select or apply another historical representation automatically. Constructors
-/// always interpret their NBT argument as the player record itself; they never unwrap a surrounding
-/// `level.dat` root implicitly.
+/// normally interpret their NBT argument as the player record itself; the level-aware convenience
+/// constructor has one narrow compatibility case for the exact owning `LevelDatDocument::root`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerData {
     /// Bedrock player source/id.
@@ -155,7 +155,38 @@ impl PlayerData {
     }
 
     /// Builds one player record with actual version evidence from its owning `level.dat`.
-    pub fn from_nbt_with_level(id: PlayerId, nbt: NbtTag, level: &LevelDatDocument) -> Result<Self> {
+    ///
+    /// Ordinarily `nbt` is interpreted exactly as the player record. For the historical
+    /// [`PlayerId::LegacyLevelDat`] convenience path only, when `nbt` is exactly equal to the supplied
+    /// `level.root`, this method extracts that document's `Player` compound. It does not unwrap an
+    /// arbitrary compound merely because a field named `Player` exists.
+    pub fn from_nbt_with_level(
+        id: PlayerId,
+        nbt: NbtTag,
+        level: &LevelDatDocument,
+    ) -> Result<Self> {
+        let nbt = if matches!(id, PlayerId::LegacyLevelDat) && nbt == level.root {
+            let NbtTag::Compound(root) = &level.root else {
+                return Err(BedrockWorldError::CorruptWorld(
+                    "level.dat root is not an NBT compound".to_string(),
+                ));
+            };
+            match root.get("Player") {
+                Some(NbtTag::Compound(_)) => root["Player"].clone(),
+                Some(other) => {
+                    return Err(BedrockWorldError::CorruptWorld(format!(
+                        "level.dat Player field has unexpected NBT type: {other:?}"
+                    )));
+                }
+                None => {
+                    return Err(BedrockWorldError::CorruptWorld(
+                        "level.dat does not contain a Player compound".to_string(),
+                    ));
+                }
+            }
+        } else {
+            nbt
+        };
         Self::from_nbt_with_level_version(id, nbt, Some(LevelVersion::detect(level)?))
     }
 
@@ -403,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_level_dat_constructor_does_not_guess_a_surrounding_level_root() {
+    fn raw_legacy_constructor_does_not_guess_a_surrounding_level_root() {
         let player_nbt = NbtTag::Compound(IndexMap::from([(
             "PlayerLevel".to_string(),
             NbtTag::Int(4),
@@ -416,5 +447,41 @@ mod tests {
         let player = PlayerData::from_raw(PlayerId::LegacyLevelDat, raw.clone()).unwrap();
         assert_eq!(player.nbt, level_root);
         assert_eq!(player.to_raw().unwrap(), raw);
+    }
+
+    #[test]
+    fn level_aware_legacy_constructor_extracts_only_exact_owning_level_root() {
+        let player_nbt = NbtTag::Compound(IndexMap::from([(
+            "PlayerLevel".to_string(),
+            NbtTag::Int(4),
+        )]));
+        let level_root = NbtTag::Compound(IndexMap::from([
+            ("Player".to_string(), player_nbt.clone()),
+            ("LevelName".to_string(), NbtTag::String("legacy".to_string())),
+        ]));
+        let level = LevelDatDocument::new(10, level_root.clone());
+        let player = PlayerData::from_nbt_with_level(
+            PlayerId::LegacyLevelDat,
+            level_root,
+            &level,
+        )
+        .unwrap();
+        assert_eq!(player.nbt, player_nbt);
+        assert_eq!(player.id, PlayerId::LegacyLevelDat);
+
+        let unrelated = NbtTag::Compound(IndexMap::from([(
+            "Player".to_string(),
+            NbtTag::Compound(IndexMap::from([(
+                "PlayerLevel".to_string(),
+                NbtTag::Int(99),
+            )])),
+        )]));
+        let not_unwrapped = PlayerData::from_nbt_with_level(
+            PlayerId::LegacyLevelDat,
+            unrelated.clone(),
+            &level,
+        )
+        .unwrap();
+        assert_eq!(not_unwrapped.nbt, unrelated);
     }
 }
