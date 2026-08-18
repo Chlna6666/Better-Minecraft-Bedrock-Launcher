@@ -1,228 +1,211 @@
-# API Guide
+# `bedrock-world` API
 
-`bedrock-world` is a multi-version Minecraft Bedrock world library. The storage engine boundary is raw
-key/value data; Minecraft record semantics live in this crate, while Mojang LevelDB table/WAL mechanics
-live in `bedrock-leveldb`.
+本文件记录当前公开接口和语义边界。公开 API 以 Rust 文档为准；这里不保留已经删除的旧接口别名。
 
-The main compatibility rule is **preserve the representation that is actually present**. Ordinary reads
-and writes do not silently upgrade, downgrade, normalise, or invent fields. Operations that change a
-storage generation or target a historical game version are explicit and preflighted.
+## 打开世界
 
-## Opening worlds
-
-For normal read-only tooling, use:
+只知道世界目录时优先使用自动识别：
 
 ```rust
-let world = bedrock_world::BedrockWorld::open_auto_blocking("world")?;
-println!("format={:?}", world.format());
+use bedrock_world::{BedrockWorld, Result};
+
+fn open_world(path: &str) -> Result<()> {
+    let world = BedrockWorld::open_auto_blocking(path)?;
+    println!("{:?}", world.format());
+    Ok(())
+}
 ```
 
-`open_auto_blocking` detects:
+需要控制只读、格式或扫描策略时使用 `OpenOptions`。
 
-- modern/current Mojang LevelDB worlds;
-- old LevelDB worlds that still contain `LegacyTerrain`;
-- pre-LevelDB Pocket Edition worlds with `chunks.dat`;
-- Pocket `entities.dat` alongside `chunks.dat`, exposed through the same read-only world handle as
-  legacy chunk `Entity` and `BlockEntity` records.
+## LevelDB 语义
 
-The async `BedrockWorld::open_auto` wrapper is available with the `async` feature.
+启用 `bedrock-leveldb` feature 后，公开具体后端为 `BedrockLevelDbStorage`。公开 storage 抽象还包括 `WorldStorage`、`PartitionedWorldStorage`、`MemoryStorage`、扫描控制/结果以及 `StorageBatch`。
 
-`BedrockWorld::open_blocking(path, OpenOptions)` remains available when a caller needs an explicit
-format hint or writable LevelDB handle. A pre-LevelDB Pocket world is always read-only at the raw world
-backend; converting it to another storage generation is a separate operation.
+`bedrock-world` 只负责 Minecraft Bedrock 的 key/value 语义；WAL、SST、MANIFEST、压缩、校验和、缓存、compaction 等数据库引擎机制属于 `bedrock-leveldb`。
 
-## Real version evidence
+正式 Bedrock LevelDB 表写出默认使用 Mojang/Bedrock compression id `4` 的 raw DEFLATE。id `2` 的 zlib framing 只作为显式底层兼容策略存在。
 
-Do not infer a whole world's format from only `level.dat.lastOpenedWithVersion`. Worlds may be partially
-upgraded and can contain multiple record generations at once.
+## 世界版本证据
 
 ```rust
 let versions = world.versions_blocking()?;
-println!("level={:?}", versions.level);
-println!("format={:?}", versions.world_format);
-println!("mixed={}", versions.has_mixed_version_storage());
-println!("future={}", versions.has_future_storage());
 ```
 
-`WorldVersions` records literal persisted evidence including:
+版本证据来自实际 world data，而不是由单一版本字符串推导。报告可包含：
 
-- `Version`, `VersionOld`, and `LegacyVersion` chunk bytes;
-- SubChunk version bytes;
-- `LegacyTerrain`, `BlockExtraData`, `Data2DLegacy`, `Data2D`, and `Data3D` generations;
-- legacy inline `Entity` and modern `digp`/`actorprefix` actor storage;
-- `BlockEntity` and `ActorDigestVersion` records;
-- unknown chunk tags, unknown database keys, and unknown SubChunk versions.
+- `level.dat` header / `StorageVersion`；
+- `lastOpenedWithVersion` / `MinimumCompatibleClientVersion`；
+- 实际 LevelChunk version；
+- SubChunk V0-V9 与未知 version byte；
+- `LegacyTerrain`；
+- `Data2D` / `Data2DLegacy` / `Data3D`；
+- chunk `Entity`；
+- `digp` / `actorprefix`；
+- 未知或未来 record。
 
-Unknown/future records are evidence to preserve, not permission to reinterpret them.
+mixed-version 世界会保留这些证据，不被强制折叠成一个内部 schema。
 
-## Pocket Edition `chunks.dat`
+## Biome
 
-Old Pocket terrain has a confirmed 82,176-byte core containing block IDs, metadata, sky light, block
-light, and a 16x16 height map. Later LevelDB `LegacyTerrain` adds a 1,024-byte tail containing 256
-`[biome_id, red, green, blue]` samples.
-
-The library keeps these forms distinct:
+磁盘层始终保留真实数值 ID：
 
 ```rust
-let terrain: bedrock_world::chunk::legacy::LegacyTerrain = /* parsed terrain */;
-println!("bytes={}", terrain.raw().len());
-println!("has biome samples={}", terrain.has_biome_samples());
+let id: Option<u32> = world.get_biome_id_blocking(chunk, x, z, y)?;
 ```
 
-A real 82,176-byte Pocket source remains 82,176 bytes. `LegacyTerrain::biomes()` returns an empty slice
-for that form and `biome_sample_at` returns `None`. No default biome id or RGB colour is appended.
+`Data2D`、`Data2DLegacy`、`Data3D` 的解析和写回不依赖最新版 biome 名称表。未知/未来 ID 仍按原数值保留。
 
-`LegacyTerrainBuilder::from_terrain` preserves the source size. Block, metadata, light, and height edits
-remain valid on the Pocket core. `set_biome_sample` returns an error when the source has no biome tail;
-it does not extend the record implicitly.
+### 版本化 vanilla biome registry
 
-Use `check_pocket_chunks_dat_leveldb_import_blocking` before attempting an exact later-LevelDB copy.
-`import_pocket_chunks_dat_records_blocking` refuses the operation before target mutation if any source
-record lacks the persisted biome/RGB tail. This is intentional: a game-compatible later record cannot be
-constructed losslessly from bytes that never existed in the old source.
-
-## Pocket Edition `entities.dat`
-
-Confirmed MCPE `entities.dat` is handled as its real file type:
-
-- four-byte `ENT\0` magic;
-- little-endian file version;
-- little-endian NBT byte length;
-- one little-endian NBT root with `Entities` and `TileEntities` lists.
+`bedrock-world` 通过嵌入式只读 registry 解释特定游戏版本的 vanilla biome：
 
 ```rust
-let mut document = bedrock_world::read_pocket_entities_dat("world")?;
-let entities = document.entities()?;
-let tile_entities = document.tile_entities()?;
+use bedrock_world::{GameVersion, biome::embedded_biome_registry};
+
+let version = GameVersion::new(vec![1, 26, 44, 3])?;
+let registry = embedded_biome_registry()?;
+if let Some(snapshot) = registry.snapshot(&version) {
+    if let Some(biome) = snapshot.biome_by_id(1) {
+        println!("{}", biome.name());
+    }
+}
 ```
 
-Unmodified documents return the exact original bytes. Edited documents preserve unknown root fields and
-source trailing bytes. `write_pocket_entities_dat_atomic` uses the historical sidecar replacement style.
+registry 使用精确 Minecraft version 匹配，不使用“最近版本”“最新版”猜测。查不到版本或 ID 时返回 `None`。
 
-`import_pocket_entities_dat_records_blocking` is explicit. It maps entities to old chunk `Entity`
-records and tile entities to `BlockEntity`; it does **not** jump directly to `digp`/`actorprefix`.
-Positions and collisions are completely preflighted and the target receives one atomic `StorageBatch`.
-Unpositioned records are rejected unless `skip_unpositioned` is explicitly enabled.
-
-## `level.dat` and NBT
-
-Use the file-level API when a launcher or management tool only needs metadata:
-
-```rust
-let document = bedrock_world::read_level_dat_document("world/level.dat".as_ref())?;
-println!("header version={}", document.version());
-```
-
-`LevelDatDocument` retains header information and non-fatal read warnings. NBT is little-endian Bedrock
-NBT and supports owned, borrowed/event, and consecutive-root paths.
-
-Normal write helpers validate serialized data before replacing the target file. Existing world seed and
-unknown fields remain authoritative unless the caller explicitly edits them.
-
-## Player data
-
-Player data can live in several physical locations depending on the game/storage generation:
-
-- historical `level.dat.Player`;
-- `~local_player`;
-- `player_<id>` records.
-
-Normal player writes return to the same record family and do not move or rewrite the player to another
-game version implicitly.
-
-Historical saved-item conversion is exposed through concrete target families rather than one generic
-"legacy" writer. Exact mapping checks run before mutation and reject missing/ambiguous item or BlockState
-mappings.
-
-For the confirmed MCPE 0.6.1 target, `write_mcpe_0_6_1_level_dat_player` requires the actual old field
-shape, including numeric inventory items, old Armor list, exact NBT scalar widths, header version 3, and
-`StorageVersion=3`. It does not manufacture missing historical fields.
-
-## Chunk and SubChunk access
-
-Use targeted APIs for interactive tools:
-
-- `list_render_chunk_positions_blocking`;
-- `list_chunk_positions_in_region_blocking`;
-- `query_chunk_data_blocking`;
-- `query_chunk_data_many_blocking`;
-- `query_chunk_region_blocking`;
-- `parse_chunk_blocking` for a complete structured chunk inspection.
-
-`ChunkDataRequest` composes the representation a consumer actually needs: surface columns, a fixed
-layer, cave slice, full 3D indices, height map, biome data, and block entities. Avoid full-world/raw
-materialisation in render loops.
-
-`SubChunkVersion` retains unknown future version bytes. Unsupported payloads must remain raw/preserved
-unless the caller chooses a destructive operation whose target format is fully proven.
-
-## Entities and BlockEntities
-
-Legacy inline chunk entities and modern actors are separate storage generations. Reads support both;
-ordinary writes do not silently move one to the other.
-
-Modern actor writes update `actorprefix` and `digp` consistently. BlockEntity chunk payloads are
-consecutive NBT roots. Unknown BlockEntity roots remain byte-for-byte unchanged when a concrete rewrite
-only modifies a recognised sibling root.
-
-Concrete block-entity rewrites use `BlockEntityRewriter` and `rewrite_block_entity_chunk_blocking` rather
-than a generic world migration manager.
-
-## Maps, villages, global records, and structures
-
-Typed helpers exist for map records, village/global keys, hardcoded spawn areas, `.mcstructure`, player
-records, block entities, actors, biomes, and chunk records. Raw storage remains available through
-`WorldStorage` for tools that need exact key/value access.
-
-Structure placement and other multi-record edits preflight their target data before committing. Use a
-writable LevelDB world only for explicit edits:
-
-```rust
-let world = bedrock_world::BedrockWorld::open_blocking(
-    "world",
-    bedrock_world::OpenOptions {
-        read_only: false,
-        ..Default::default()
-    },
-)?;
-```
-
-Pre-LevelDB Pocket world handles remain read-only.
-
-## Storage backends
-
-Public storage abstractions include `WorldStorage`, `PartitionedWorldStorage`, `MemoryStorage`, scan
-options/results, and `StorageBatch`. With the `backend-bedrock-leveldb` feature enabled,
-`BedrockLevelDbStorage` provides Mojang LevelDB access.
-
-The old synthetic `PocketChunksDatStorage` public backend has been removed. Pocket world opening belongs
-to the world layer because the source representation is not equivalent to later LevelDB `LegacyTerrain`.
-
-When `backend-bedrock-leveldb` is disabled, LevelDB open paths fail with an explicit unsupported-feature
-error instead of disappearing from internal compilation.
-
-## Compatibility fixture corpus
-
-Historical compatibility tests are intentionally separate from ordinary synthetic unit tests. Local or
-sanitised real-world corpora can be mounted with:
+registry 由 `bedrock-world-tool` 在维护/更新阶段生成，然后作为紧凑 `.bin` 通过 `include_bytes!` 嵌入。运行时不联网、不读取 JSON，也不会构建整张 `HashMap`。
 
 ```text
-BEDROCK_WORLD_FIXTURE_ROOT=/path/to/world-corpus
-BEDROCK_WORLD_REQUIRE_HISTORICAL_FIXTURES=1
+cargo run -p bedrock-world --bin bedrock-world-tool -- biome update ...
+cargo run -p bedrock-world --bin bedrock-world-tool -- biome pack
+cargo run -p bedrock-world --bin bedrock-world-tool -- biome verify
 ```
 
-and raw Mojang LevelDB corpora with:
+Windows 上可以直接运行：
+
+```powershell
+./crates/bedrock-world/scripts/update-biome-registry.ps1 -Channel release -Version latest
+```
+
+该脚本使用 `EndstoneMC/bedrock-server-data` 锁定 BDS build，使用 `protocol-docs` 锁定 network version，并通过无头 Endstone runtime exporter 从对应 BDS 的 `BiomeRegistry` 导出真实 vanilla biome。生成数据只负责解释 ID，不参与 world record 的隐式转换。
+
+## 高度图与 biome 写回
+
+高度图是 biome record 的组成部分，不能把它当成独立无上下文数组写入。
+
+安全写回必须遵守：
+
+- `Data2D`：只替换 height map，保留原 256 个 biome ID；
+- `Data2DLegacy`：只替换 height map，同时保留原 biome ID 与 RGB；
+- `Data3D`：只替换 height map，保留全部 paletted biome storages；
+- 目标 chunk 没有可确定的同代 biome record 时拒绝写；
+- mixed/冲突表示不能凭调用者传入的 `ChunkVersion` 静默选一份；
+- 禁止通过 `vec![0; 256]`、空 Data3D storage 或其它默认数据补造世界里不存在的信息。
+
+## SubChunk
+
+SubChunk 版本使用实际持久化 version byte：
 
 ```text
-BEDROCK_LEVELDB_FIXTURE_ROOT=/path/to/leveldb-corpus
-BEDROCK_LEVELDB_REQUIRE_HISTORICAL_FIXTURES=1
+V0 V1 V2 V3 V4 V5 V6 V7 V8 V9 Unknown(u8)
 ```
 
-When the `REQUIRE` flag is enabled, missing fixtures fail the suite. A skipped private fixture is not a
-compatibility pass.
+未知 version 保留 raw bytes，并禁止不了解格式的结构化写回。
 
-## Error handling
+跨版本 SubChunk 写出必须使用具体目标：
 
-All public fallible APIs return `bedrock_world::Result<T>`. Match `BedrockWorldError::kind()` for stable
-categories rather than parsing display text. Important categories include `ReadOnly`, `Validation`,
-`UnsupportedChunkFormat`, `CorruptWorld`, `Cancelled`, and `LevelDb`.
+- `upgrade_subchunks_blocking(target_game_version, upgrade_data, target_palette)`；
+- `write_subchunks_as_legacy_numeric_blocking(target_subchunk_version, numeric_table)`。
+
+历史 numeric ID/meta 的反向写出必须通过正向升级结果验证，不能把 rename 表直接反转后猜值。
+
+## Actor
+
+旧版：
+
+```text
+chunk Entity
+```
+
+新版：
+
+```text
+digp<ChunkKey>
+  -> actor storage id list
+actorprefix<Actor storage id>
+  -> actor NBT
+```
+
+转换要求 actor 顺序和 NBT 一致。mixed storage 同时存在时，两边必须表示同一批 actor；库不会把两套额外实体合并成第三份状态。
+
+## Player
+
+Player 物理记录保持区分：
+
+- `level.dat.Player`；
+- `~local_player`；
+- `player_<raw suffix>`。
+
+底层数据库 key 不要求 `player_` suffix 为 UTF-8；文本 `PlayerId` 只是便利接口，完整工具可通过 raw player-key API 保留任意 key bytes。
+
+普通读写不自动执行玩家存储位置迁移，也不把“只转换 inventory”伪装成整个 Player/世界的目标版本转换。
+
+## BlockEntity
+
+BlockEntity 没有统一的全局 schema version。公共 `BlockEntityRewriter` 用于由调用者根据明确版本证据实现具体规则；未绑定 target version 的便利转换不作为版本兼容保证。
+
+## pre-LevelDB Pocket 世界
+
+`open_auto_blocking()` 可以识别历史 `chunks.dat`，并在 world 层叠加 `entities.dat`。
+
+必须区分：
+
+```text
+82,176 bytes  Pocket terrain core，没有 biome/RGB tail
+83,200 bytes  LevelDB LegacyTerrain，包含完整 1,024-byte biome/RGB tail
+```
+
+库不会把 82,176-byte 数据补默认 biome 后伪装成 83,200-byte `LegacyTerrain`。缺失信息继续表现为缺失；需要这些数据的无损转换会拒绝执行。
+
+## 扫描 API
+
+大量数据查询使用面向 world data 的 `query_*` / `scan_*` API。不要引入渲染层命名，例如已经废弃的 `load_render_chunks_with_stats_blocking`；渲染、mesh、atlas、纹理缓存属于 `bedrock-render` 或应用层，而不是 `bedrock-world` 的公共接口语义。
+
+对于高吞吐 key scan，可使用 `PartitionedWorldStorage::scan_keys_partitioned`；worker 持有本地 reduction 状态，避免共享 `Mutex<HashMap<...>>`。
+
+## 完整性与兼容性
+
+兼容级别：
+
+```text
+Exact
+ReadCompatible
+UnsupportedFuture
+Corrupt
+```
+
+whole-world compatibility/integrity scan 会检查包括：
+
+- malformed / duplicate `digp`；
+- dangling actor reference；
+- orphan `actorprefix`；
+- 同一 actor id 被多个 chunk 引用；
+- Pocket terrain core / complete LegacyTerrain；
+- malformed terrain length；
+- unknown storage key / chunk record；
+- 实际 SubChunk version 分布。
+
+`ReadCompatible` 表示能保真读取但不能假装拥有缺失字段；它不等于“可以自动升级”。
+
+## 原子写入
+
+同一 LevelDB 内跨多个 record 的修改必须先完成全部 preflight，再构造一个 `StorageBatch` / transaction 后一次提交，例如：
+
+- `digp` + `actorprefix`；
+- SubChunk 多记录写入；
+- biome 整批转换；
+- `entities.dat` 显式导入；
+- chunk 删除及 actor reference 更新。
+
+跨 `level.dat` 和 LevelDB 无法提供真正的单文件系统事务，因此 API 不应把这类操作描述成原子 world conversion。
