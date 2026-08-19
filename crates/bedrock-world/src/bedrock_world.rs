@@ -92,10 +92,14 @@ pub use chunk::{
 pub use database::*;
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub use integrity::{ChunkCapabilities, CompatibilityLevel};
+pub use item::ItemStack;
 pub use level::*;
 pub use nbt::{NbtReader, NbtTag, NbtWriter};
 pub use parsed::ParsedChunkRecord;
-pub use query::WriteGuard;
+pub use query::{
+    ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, WriteGuard,
+    query_selection_stats_exact_blocking, rasterize_chunk_line,
+};
 pub use world::*;
 
 pub(crate) mod level_dat {
