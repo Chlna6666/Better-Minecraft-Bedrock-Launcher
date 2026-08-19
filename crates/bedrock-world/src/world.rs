@@ -1,6 +1,7 @@
 //! High-level Minecraft Bedrock world lifecycle and data access.
 
 mod bedrock_world;
+mod biome;
 mod biome_downgrade;
 mod biome_upgrade;
 /// Filesystem discovery for Minecraft Bedrock world folders.
@@ -19,6 +20,7 @@ mod subchunk_numeric;
 mod subchunk_upgrade;
 pub(crate) mod surface;
 
+pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use bedrock_world::*;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
@@ -35,7 +37,6 @@ pub use player_modern_saved_items::{
 pub use player_saved_items::{
     PlayerSavedItemCheckEntry, PlayerSavedItemStorage, WorldPlayerSavedItemCheckReport,
 };
-pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use pocket_chunks_dat::{
     PocketChunksDatImportCheck, PocketChunksDatImportOptions, PocketChunksDatImportReport,
     check_pocket_chunks_dat_leveldb_import_blocking, import_pocket_chunks_dat_records_blocking,

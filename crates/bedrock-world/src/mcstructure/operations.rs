@@ -4,11 +4,12 @@
 //! arrays use the structure file order documented by Bedrock tooling: X outer,
 //! then Y, then Z.
 
+use crate::biome::Biome2dLegacy;
 use crate::parsed::encode_consecutive_roots;
 use crate::{
-    BedrockWorld, BedrockWorldError, Biome2d, Biome2dLegacy, Biome3d, BlockPalette, BlockState,
-    ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, NbtReader, NbtTag, NbtWriter,
-    Result, SubChunkFormat, WorldStorageHandle, WriteGuard, block_storage_index,
+    BedrockWorld, BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockState, ChunkKey,
+    ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, NbtReader, NbtTag, NbtWriter, Result,
+    SubChunkFormat, WorldStorageHandle, WriteGuard, block_storage_index,
 };
 use bytes::Bytes;
 use indexmap::IndexMap;

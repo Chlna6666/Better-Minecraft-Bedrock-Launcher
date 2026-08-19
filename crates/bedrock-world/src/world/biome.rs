@@ -1,0 +1,433 @@
+//! Minecraft Bedrock biome and height-map world records.
+//!
+//! Height maps are stored as the first 512 bytes of `Data2D`, `Data2DLegacy`, and `Data3D`.
+//! Ordinary height-map edits preserve the exact biome payload that follows those bytes instead of
+//! decoding and rebuilding unrelated persisted data.
+
+use super::bedrock_world::{BedrockWorld, WorldStorageHandle};
+use crate::biome::Biome2dLegacy;
+use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion};
+use crate::error::{BedrockWorldError, Result};
+use crate::parsed::{Biome2d, Biome3d, HeightMap2d, ParsedBiomeData};
+use bytes::Bytes;
+
+const HEIGHT_MAP_BYTE_LEN: usize = 256 * 2;
+
+impl<S> BedrockWorld<S>
+where
+    S: WorldStorageHandle,
+{
+    /// Reads the `Data2D`/`Data2DLegacy`/`Data3D` height map for a chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors or biome/height-map parse errors.
+    pub fn get_heightmap_blocking(&self, pos: ChunkPos) -> Result<Option<HeightMap2d>> {
+        self.get_biome_data_blocking(pos)?
+            .map(|data| HeightMap2d::new(data.height_map))
+            .transpose()
+    }
+
+    /// Writes a chunk height map without changing its persisted biome representation.
+    ///
+    /// `ChunkVersion::Old` updates exactly one existing `Data2D` or `Data2DLegacy` record.
+    /// `ChunkVersion::New` requires an existing `Data3D` record. Missing or ambiguous records are
+    /// rejected instead of fabricating biome IDs or storages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation errors when the
+    /// requested persisted representation is missing or ambiguous, parse errors for corrupt biome
+    /// records, or storage errors.
+    pub fn put_heightmap_blocking(
+        &self,
+        pos: ChunkPos,
+        version: ChunkVersion,
+        height_map: HeightMap2d,
+    ) -> Result<()> {
+        self.ensure_writable()?;
+        let heights = HeightMap2d::new(height_map.values)?.values;
+        match version {
+            ChunkVersion::Old => self.put_old_heightmap_blocking(pos, &heights),
+            ChunkVersion::New => self.put_data3d_heightmap_blocking(pos, &heights),
+        }
+    }
+
+    /// Writes a full `Data3D` biome payload after roundtrip validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation errors for
+    /// malformed biome storage, or storage errors.
+    pub fn put_biome_storage_blocking(&self, pos: ChunkPos, biome: Biome3d) -> Result<()> {
+        self.ensure_writable()?;
+        let value = biome.encode()?;
+        Biome3d::parse(&value)?;
+        self.put_raw_record_blocking(&ChunkKey::new(pos, ChunkRecordTag::Data3D), &value)
+    }
+
+    pub(super) fn get_biome_data_blocking(&self, pos: ChunkPos) -> Result<Option<ParsedBiomeData>> {
+        for (tag, version) in [
+            (ChunkRecordTag::Data3D, ChunkVersion::New),
+            (ChunkRecordTag::Data2D, ChunkVersion::Old),
+            (ChunkRecordTag::Data2DLegacy, ChunkVersion::Old),
+        ] {
+            let key = ChunkKey::new(pos, tag).encode();
+            let Some(value) = self.storage().get(&key)? else {
+                continue;
+            };
+            let biome_data = match version {
+                ChunkVersion::New => crate::parsed::parse_data3d(&value),
+                ChunkVersion::Old => crate::parsed::parse_legacy_data2d(&value),
+            }
+            .map_err(|error| BedrockWorldError::CorruptWorld(format!("biome data: {error}")))?;
+            return Ok(Some(biome_data));
+        }
+        Ok(None)
+    }
+
+    fn put_old_heightmap_blocking(&self, pos: ChunkPos, heights: &[i16]) -> Result<()> {
+        let data2d_key = ChunkKey::new(pos, ChunkRecordTag::Data2D);
+        let legacy_key = ChunkKey::new(pos, ChunkRecordTag::Data2DLegacy);
+        let data2d = self.storage().get(&data2d_key.encode())?;
+        let legacy = self.storage().get(&legacy_key.encode())?;
+
+        match (data2d, legacy) {
+            (Some(value), None) => {
+                Biome2d::parse(&value).map_err(|error| {
+                    BedrockWorldError::CorruptWorld(format!("Data2D biome data: {error}"))
+                })?;
+                let value = replace_height_map_prefix(value, heights)?;
+                self.put_raw_record_blocking(&data2d_key, &value)
+            }
+            (None, Some(value)) => {
+                Biome2dLegacy::parse(&value).map_err(|error| {
+                    BedrockWorldError::CorruptWorld(format!("Data2DLegacy biome data: {error}"))
+                })?;
+                let value = replace_height_map_prefix(value, heights)?;
+                self.put_raw_record_blocking(&legacy_key, &value)
+            }
+            (None, None) => Err(BedrockWorldError::Validation(
+                "cannot write old height map: chunk has neither Data2D nor Data2DLegacy"
+                    .to_string(),
+            )),
+            (Some(_), Some(_)) => Err(BedrockWorldError::Validation(
+                "cannot write old height map: chunk contains both Data2D and Data2DLegacy"
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn put_data3d_heightmap_blocking(&self, pos: ChunkPos, heights: &[i16]) -> Result<()> {
+        let key = ChunkKey::new(pos, ChunkRecordTag::Data3D);
+        let value = self.storage().get(&key.encode())?.ok_or_else(|| {
+            BedrockWorldError::Validation(
+                "cannot write new height map: chunk has no Data3D record".to_string(),
+            )
+        })?;
+        Biome3d::parse(&value).map_err(|error| {
+            BedrockWorldError::CorruptWorld(format!("Data3D biome data: {error}"))
+        })?;
+        let value = replace_height_map_prefix(value, heights)?;
+        self.put_raw_record_blocking(&key, &value)
+    }
+}
+
+fn replace_height_map_prefix(value: Bytes, heights: &[i16]) -> Result<Vec<u8>> {
+    if heights.len() != 256 {
+        return Err(BedrockWorldError::Validation(format!(
+            "height map must contain 256 values, got {}",
+            heights.len()
+        )));
+    }
+    if value.len() < HEIGHT_MAP_BYTE_LEN {
+        return Err(BedrockWorldError::CorruptWorld(format!(
+            "biome record is {} bytes, shorter than the {HEIGHT_MAP_BYTE_LEN}-byte height map",
+            value.len()
+        )));
+    }
+
+    let mut value = value.to_vec();
+    for (slot, height) in value[..HEIGHT_MAP_BYTE_LEN]
+        .chunks_exact_mut(2)
+        .zip(heights.iter().copied())
+    {
+        slot.copy_from_slice(&height.to_le_bytes());
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::biome::data2d_to_data3d;
+    use crate::chunk::LegacyBiomeSample;
+    use crate::{Dimension, MemoryStorage, OpenOptions, WorldStorage};
+    use std::sync::Arc;
+
+    fn chunk() -> ChunkPos {
+        ChunkPos {
+            x: 3,
+            z: -2,
+            dimension: Dimension::Overworld,
+        }
+    }
+
+    fn writable_world(storage: Arc<MemoryStorage>) -> BedrockWorld<Arc<dyn WorldStorage>> {
+        BedrockWorld::from_storage(
+            "memory",
+            storage,
+            OpenOptions {
+                read_only: false,
+                ..OpenOptions::default()
+            },
+        )
+    }
+
+    #[test]
+    fn heightmap_write_preserves_data2d_biomes_byte_for_byte() {
+        let pos = chunk();
+        let storage = Arc::new(MemoryStorage::new());
+        let biomes = (0..256).map(|index| (index % 251) as u8).collect();
+        let original = Biome2d::new(vec![64; 256], biomes)
+            .expect("Data2D")
+            .encode()
+            .expect("encode Data2D");
+        let key = ChunkKey::new(pos, ChunkRecordTag::Data2D);
+        storage.put(&key.encode(), &original).expect("put Data2D");
+        let world = writable_world(storage.clone());
+
+        world
+            .put_heightmap_blocking(
+                pos,
+                ChunkVersion::Old,
+                HeightMap2d::new(vec![91; 256]).expect("height map"),
+            )
+            .expect("write height map");
+
+        let written = storage
+            .get(&key.encode())
+            .expect("get Data2D")
+            .expect("Data2D exists");
+        assert_eq!(
+            &written[HEIGHT_MAP_BYTE_LEN..],
+            &original[HEIGHT_MAP_BYTE_LEN..]
+        );
+        assert_eq!(
+            Biome2d::parse(&written).expect("parse Data2D").height_map,
+            vec![91; 256]
+        );
+    }
+
+    #[test]
+    fn heightmap_write_preserves_data2d_legacy_id_and_rgb_byte_for_byte() {
+        let pos = chunk();
+        let storage = Arc::new(MemoryStorage::new());
+        let biomes = (0_u16..256)
+            .map(|index| LegacyBiomeSample {
+                biome_id: (index % 251) as u8,
+                red: index as u8,
+                green: index.wrapping_mul(3) as u8,
+                blue: index.wrapping_mul(7) as u8,
+            })
+            .collect();
+        let original = Biome2dLegacy::new(vec![64; 256], biomes)
+            .expect("Data2DLegacy")
+            .encode()
+            .expect("encode Data2DLegacy");
+        let key = ChunkKey::new(pos, ChunkRecordTag::Data2DLegacy);
+        storage
+            .put(&key.encode(), &original)
+            .expect("put Data2DLegacy");
+        let world = writable_world(storage.clone());
+
+        world
+            .put_heightmap_blocking(
+                pos,
+                ChunkVersion::Old,
+                HeightMap2d::new(vec![37; 256]).expect("height map"),
+            )
+            .expect("write height map");
+
+        let written = storage
+            .get(&key.encode())
+            .expect("get Data2DLegacy")
+            .expect("Data2DLegacy exists");
+        assert_eq!(
+            &written[HEIGHT_MAP_BYTE_LEN..],
+            &original[HEIGHT_MAP_BYTE_LEN..]
+        );
+        assert_eq!(
+            Biome2dLegacy::parse(&written)
+                .expect("parse Data2DLegacy")
+                .height_map,
+            vec![37; 256]
+        );
+    }
+
+    #[test]
+    fn heightmap_write_preserves_data3d_biome_storages_byte_for_byte() {
+        let pos = chunk();
+        let storage = Arc::new(MemoryStorage::new());
+        let mut biomes = vec![5; 256];
+        biomes[17] = 42;
+        let original = data2d_to_data3d(
+            &Biome2d::new(vec![64; 256], biomes).expect("Data2D"),
+            -4..=-3,
+        )
+        .expect("Data3D")
+        .encode()
+        .expect("encode Data3D");
+        let key = ChunkKey::new(pos, ChunkRecordTag::Data3D);
+        storage.put(&key.encode(), &original).expect("put Data3D");
+        let world = writable_world(storage.clone());
+
+        world
+            .put_heightmap_blocking(
+                pos,
+                ChunkVersion::New,
+                HeightMap2d::new(vec![123; 256]).expect("height map"),
+            )
+            .expect("write height map");
+
+        let written = storage
+            .get(&key.encode())
+            .expect("get Data3D")
+            .expect("Data3D exists");
+        assert_eq!(
+            &written[HEIGHT_MAP_BYTE_LEN..],
+            &original[HEIGHT_MAP_BYTE_LEN..]
+        );
+        assert_eq!(
+            Biome3d::parse(&written).expect("parse Data3D").height_map,
+            vec![123; 256]
+        );
+    }
+
+    #[test]
+    fn heightmap_write_never_cross_feeds_old_and_new_biome_records() {
+        let pos = chunk();
+        let storage = Arc::new(MemoryStorage::new());
+        let data2d_key = ChunkKey::new(pos, ChunkRecordTag::Data2D);
+        let data3d_key = ChunkKey::new(pos, ChunkRecordTag::Data3D);
+        let data2d = Biome2d::new(vec![64; 256], vec![11; 256])
+            .expect("Data2D")
+            .encode()
+            .expect("encode Data2D");
+        let data3d = data2d_to_data3d(
+            &Biome2d::new(vec![70; 256], vec![27; 256]).expect("Data2D"),
+            -4..=-4,
+        )
+        .expect("Data3D")
+        .encode()
+        .expect("encode Data3D");
+        storage
+            .put(&data2d_key.encode(), &data2d)
+            .expect("put Data2D");
+        storage
+            .put(&data3d_key.encode(), &data3d)
+            .expect("put Data3D");
+        let world = writable_world(storage.clone());
+
+        world
+            .put_heightmap_blocking(
+                pos,
+                ChunkVersion::Old,
+                HeightMap2d::new(vec![80; 256]).expect("old height map"),
+            )
+            .expect("write old height map");
+        assert_eq!(
+            storage.get(&data3d_key.encode()).expect("get Data3D"),
+            Some(Bytes::from(data3d.clone()))
+        );
+
+        let old_after = storage
+            .get(&data2d_key.encode())
+            .expect("get Data2D")
+            .expect("Data2D exists");
+        world
+            .put_heightmap_blocking(
+                pos,
+                ChunkVersion::New,
+                HeightMap2d::new(vec![90; 256]).expect("new height map"),
+            )
+            .expect("write new height map");
+        assert_eq!(
+            storage.get(&data2d_key.encode()).expect("get Data2D"),
+            Some(old_after)
+        );
+    }
+
+    #[test]
+    fn heightmap_write_rejects_missing_or_ambiguous_persisted_representation() {
+        let pos = chunk();
+        let storage = Arc::new(MemoryStorage::new());
+        let world = writable_world(storage.clone());
+        let height_map = HeightMap2d::new(vec![72; 256]).expect("height map");
+
+        assert!(
+            world
+                .put_heightmap_blocking(pos, ChunkVersion::Old, height_map.clone())
+                .is_err()
+        );
+        assert!(
+            world
+                .put_heightmap_blocking(pos, ChunkVersion::New, height_map.clone())
+                .is_err()
+        );
+        assert!(
+            storage
+                .get(&ChunkKey::new(pos, ChunkRecordTag::Data2D).encode())
+                .expect("get Data2D")
+                .is_none()
+        );
+        assert!(
+            storage
+                .get(&ChunkKey::new(pos, ChunkRecordTag::Data3D).encode())
+                .expect("get Data3D")
+                .is_none()
+        );
+
+        let data2d_key = ChunkKey::new(pos, ChunkRecordTag::Data2D);
+        let legacy_key = ChunkKey::new(pos, ChunkRecordTag::Data2DLegacy);
+        let data2d = Biome2d::new(vec![64; 256], vec![9; 256])
+            .expect("Data2D")
+            .encode()
+            .expect("encode Data2D");
+        let legacy = Biome2dLegacy::new(
+            vec![65; 256],
+            vec![
+                LegacyBiomeSample {
+                    biome_id: 10,
+                    red: 20,
+                    green: 30,
+                    blue: 40,
+                };
+                256
+            ],
+        )
+        .expect("Data2DLegacy")
+        .encode()
+        .expect("encode Data2DLegacy");
+        storage
+            .put(&data2d_key.encode(), &data2d)
+            .expect("put Data2D");
+        storage
+            .put(&legacy_key.encode(), &legacy)
+            .expect("put Data2DLegacy");
+
+        assert!(
+            world
+                .put_heightmap_blocking(pos, ChunkVersion::Old, height_map)
+                .is_err()
+        );
+        assert_eq!(
+            storage.get(&data2d_key.encode()).expect("get Data2D"),
+            Some(Bytes::from(data2d))
+        );
+        assert_eq!(
+            storage.get(&legacy_key.encode()).expect("get Data2DLegacy"),
+            Some(Bytes::from(legacy))
+        );
+    }
+}

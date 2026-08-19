@@ -54,6 +54,7 @@ serde_json = "1.0.145"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
 walkdir = "2.5.0"
+xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
 
 [dev-dependencies]
 criterion = "0.5"

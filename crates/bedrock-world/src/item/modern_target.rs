@@ -4,7 +4,7 @@ use super::{
     NamedSavedItemId, SavedItemVersionMatch, SavedItemVersionTarget, VanillaSavedItemBlockMap,
     VanillaSavedItemBlockMatch,
 };
-use crate::block::{BlockStateVersionMatch, BlockStateVersionTarget};
+use crate::block::version::{BlockStateVersionMatch, BlockStateVersionTarget};
 use crate::chunk::BlockState;
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
@@ -18,8 +18,12 @@ pub enum ModernSavedItemTargetMatch {
         second: NamedSavedItemId,
         matches: usize,
     },
-    Item { item: NamedSavedItemId },
-    UnexpectedSourceBlock { item: NamedSavedItemId },
+    Item {
+        item: NamedSavedItemId,
+    },
+    UnexpectedSourceBlock {
+        item: NamedSavedItemId,
+    },
     AmbiguousTargetBlockItem {
         item: NamedSavedItemId,
         first_block: String,

@@ -15,15 +15,15 @@ use crate::error::{BedrockWorldError, Result};
 use crate::level_dat::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt};
 use crate::parsed::{
-    ActorRecord, ActorSource, Biome2d, Biome3d, BlockEntityRecord, HeightMap2d, ItemStack,
-    ParsedBiomeData, ParsedBiomeStorage, ParsedBlockEntity, ParsedChunkData, ParsedDbEntry,
-    ParsedDbValue, ParsedEntity, ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData,
-    ParsedVillageData, ParsedWorld, WorldParseOptions, WorldParseReport, collect_item_stacks,
-    encode_actor_digest_ids, encode_consecutive_roots, encode_global_record,
-    encode_hardcoded_spawn_area_records, encode_map_record, parse_actor_digest_ids,
-    parse_block_entities_from_value, parse_chunk_records, parse_chunk_records_with_options,
-    parse_data3d, parse_entities_from_value, parse_global_record, parse_global_storage_entries,
-    parse_hardcoded_spawn_area_records, parse_legacy_data2d, parse_map_record, parse_world_storage,
+    ActorRecord, ActorSource, Biome3d, BlockEntityRecord, HeightMap2d, ItemStack, ParsedBiomeData,
+    ParsedBiomeStorage, ParsedBlockEntity, ParsedChunkData, ParsedDbEntry, ParsedDbValue,
+    ParsedEntity, ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData, ParsedVillageData,
+    ParsedWorld, WorldParseOptions, WorldParseReport, collect_item_stacks, encode_actor_digest_ids,
+    encode_consecutive_roots, encode_global_record, encode_hardcoded_spawn_area_records,
+    encode_map_record, parse_actor_digest_ids, parse_block_entities_from_value,
+    parse_chunk_records, parse_chunk_records_with_options, parse_data3d, parse_entities_from_value,
+    parse_global_record, parse_global_storage_entries, parse_hardcoded_spawn_area_records,
+    parse_legacy_data2d, parse_map_record, parse_world_storage,
 };
 use crate::player::{PlayerData, PlayerId};
 use crate::storage::backend::BedrockLevelDbStorage;
@@ -1720,26 +1720,6 @@ where
             .map(|biome_data| biome_data.storages))
     }
 
-    fn get_biome_data_blocking(&self, pos: ChunkPos) -> Result<Option<ParsedBiomeData>> {
-        for (tag, version) in [
-            (ChunkRecordTag::Data3D, crate::ChunkVersion::New),
-            (ChunkRecordTag::Data2D, crate::ChunkVersion::Old),
-            (ChunkRecordTag::Data2DLegacy, crate::ChunkVersion::Old),
-        ] {
-            let key = ChunkKey::new(pos, tag).encode();
-            let Some(value) = self.storage().get(&key)? else {
-                continue;
-            };
-            let biome_data = match version {
-                crate::ChunkVersion::New => parse_data3d(&value),
-                crate::ChunkVersion::Old => parse_legacy_data2d(&value),
-            }
-            .map_err(|error| BedrockWorldError::CorruptWorld(format!("biome data: {error}")))?;
-            return Ok(Some(biome_data));
-        }
-        Ok(None)
-    }
-
     fn has_render_chunk_records_blocking(
         &self,
         pos: ChunkPos,
@@ -2720,56 +2700,6 @@ where
         transaction.commit()
     }
 
-    /// Reads the Data2D/Data3D height map for a chunk.
-    ///
-    /// # Errors
-    ///
-    /// Returns storage errors or biome/heightmap parse errors.
-    pub fn get_heightmap_blocking(&self, pos: ChunkPos) -> Result<Option<HeightMap2d>> {
-        self.get_biome_data_blocking(pos)?
-            .map(|data| HeightMap2d::new(data.height_map))
-            .transpose()
-    }
-
-    /// Writes a chunk height map while preserving existing `Data3D` biome storages.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation
-    /// errors for invalid height map length, or storage errors.
-    pub fn put_heightmap_blocking(
-        &self,
-        pos: ChunkPos,
-        version: ChunkVersion,
-        height_map: HeightMap2d,
-    ) -> Result<()> {
-        self.ensure_writable()?;
-        let existing = self.get_biome_data_blocking(pos)?;
-        let storages = existing.map_or_else(Vec::new, |data| data.storages);
-        let value = match version {
-            ChunkVersion::Old => Biome2d::new(height_map.values, vec![0; 256])?.encode()?,
-            ChunkVersion::New => Biome3d::new(height_map.values, storages)?.encode()?,
-        };
-        let tag = match version {
-            ChunkVersion::Old => ChunkRecordTag::Data2D,
-            ChunkVersion::New => ChunkRecordTag::Data3D,
-        };
-        self.put_raw_record_blocking(&ChunkKey::new(pos, tag), &value)
-    }
-
-    /// Writes a full `Data3D` biome payload after roundtrip validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation
-    /// errors for malformed biome storage, or storage errors.
-    pub fn put_biome_storage_blocking(&self, pos: ChunkPos, biome: Biome3d) -> Result<()> {
-        self.ensure_writable()?;
-        let value = biome.encode()?;
-        Biome3d::parse(&value)?;
-        self.put_raw_record_blocking(&ChunkKey::new(pos, ChunkRecordTag::Data3D), &value)
-    }
-
     /// Scans hardcoded spawn area records across the world.
     ///
     /// # Errors
@@ -3734,7 +3664,7 @@ where
         }
     }
 
-    fn ensure_writable(&self) -> Result<()> {
+    pub(super) fn ensure_writable(&self) -> Result<()> {
         if self.options.read_only {
             return Err(BedrockWorldError::ReadOnly);
         }
