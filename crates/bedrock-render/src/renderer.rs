@@ -27,12 +27,13 @@ mod bedrock_api {
         terrain_surface_overlay_alpha,
     };
 
-    /// Render-side world storage handle backed by `bedrock-world` automatic world opening.
+    /// Renderer storage handle backed by `bedrock-world` automatic world opening.
     ///
-    /// The historical renderer code still names this handle `BedrockLevelDbStorage`, but it no longer
-    /// opens or drives `bedrock-leveldb` directly. It asks `bedrock-world` to detect the world folder,
-    /// then delegates raw access through that public world storage handle. This keeps renderer reads on
-    /// the same public path used by servers, tools, and BMCBL.
+    /// The included renderer pipeline still uses a storage-handle type parameter for historical
+    /// reasons. This handle no longer opens or drives `bedrock-leveldb` directly: it asks
+    /// `bedrock-world` to detect the world folder and delegates raw access through the public world
+    /// storage handle. Renderer reads therefore follow the same version-aware path as servers, tools,
+    /// and BMCBL.
     #[derive(Clone)]
     pub struct BedrockLevelDbStorage {
         inner: Arc<dyn ::bedrock_world::WorldStorage>,
@@ -48,7 +49,7 @@ mod bedrock_api {
             let db_path = db_path.as_ref();
             let world_path = db_path
                 .parent()
-                .filter(|parent| db_path.file_name().is_some_and(|name| name == "db"))
+                .filter(|_| db_path.file_name().is_some_and(|name| name == "db"))
                 .unwrap_or(db_path);
             let world: ::bedrock_world::BedrockWorld<Arc<dyn ::bedrock_world::WorldStorage>> =
                 ::bedrock_world::BedrockWorld::open_auto_blocking(world_path)?;
@@ -169,25 +170,27 @@ mod pipeline {
     include!("renderer/pipeline.rs");
 }
 
+/// Render source backed by `bedrock-world` automatic world opening.
+pub type WorldRenderSource = pipeline::LevelDbRenderSource;
+
 pub use pipeline::{
     AtlasRenderOptions, BakeDiagnostics, BakeOptions, BlockBoundaryRenderOptions,
     BlockVolumeRenderOptions, ChunkRegion, ChunkTileLayout, DEFAULT_PALETTE_VERSION,
     DecodedTileImage, DepthPlane, FastRgbaZstdHeader, FastRgbaZstdTile, HeightPlane, ImageFormat,
-    LevelDbRenderSource, MAX_RENDER_THREADS, MAX_TILE_SIZE_PIXELS, MapRenderSession,
-    MapRenderSessionConfig, MapRenderer, PlannedTile, RENDERER_CACHE_VERSION, RegionBake,
-    RegionBakePayload, RegionCoord, RegionLayout, RenderBackend, RenderCachePolicy,
-    RenderCancelFlag, RenderChunkSource, RenderCpuPipelineOptions, RenderDiagnostics,
-    RenderDiagnosticsSink, RenderExecutionProfile, RenderGpuBackend, RenderGpuDiagnostics,
-    RenderGpuFallbackPolicy, RenderGpuOptions, RenderGpuPipelineLevel, RenderJob, RenderLayout,
-    RenderMemoryBudget, RenderMode, RenderOptions, RenderPerformanceOptions,
-    RenderPerformanceProfile, RenderPipelineStats, RenderProgress, RenderProgressSink,
-    RenderSurfaceLoadPolicy, RenderTaskControl, RenderThreadingOptions, RenderTileOutputOptions,
-    RenderTilePriority, RenderWebTilesResult, ResolvedRenderBackend, RgbaPlane, SurfacePlane,
-    SurfacePlaneAtlas, SurfaceRenderOptions, TerrainLightingOptions, TerrainLightingPreset,
-    TileCache, TileCacheKey, TileCoord, TileImage, TilePathScheme, TilePixelFormat,
-    TileReadySource, TileSet, TileStreamEvent, TileStreamEventV2, decode_fast_rgba_zstd,
-    decode_fast_rgba_zstd_header, encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation,
-    tile_cache_validation_value,
+    MAX_RENDER_THREADS, MAX_TILE_SIZE_PIXELS, MapRenderSession, MapRenderSessionConfig,
+    MapRenderer, PlannedTile, RENDERER_CACHE_VERSION, RegionBake, RegionBakePayload, RegionCoord,
+    RegionLayout, RenderBackend, RenderCachePolicy, RenderCancelFlag, RenderChunkSource,
+    RenderCpuPipelineOptions, RenderDiagnostics, RenderDiagnosticsSink, RenderExecutionProfile,
+    RenderGpuBackend, RenderGpuDiagnostics, RenderGpuFallbackPolicy, RenderGpuOptions,
+    RenderGpuPipelineLevel, RenderJob, RenderLayout, RenderMemoryBudget, RenderMode,
+    RenderOptions, RenderPerformanceOptions, RenderPerformanceProfile, RenderPipelineStats,
+    RenderProgress, RenderProgressSink, RenderSurfaceLoadPolicy, RenderTaskControl,
+    RenderThreadingOptions, RenderTileOutputOptions, RenderTilePriority, RenderWebTilesResult,
+    ResolvedRenderBackend, RgbaPlane, SurfacePlane, SurfacePlaneAtlas, SurfaceRenderOptions,
+    TerrainLightingOptions, TerrainLightingPreset, TileCache, TileCacheKey, TileCoord, TileImage,
+    TilePathScheme, TilePixelFormat, TileReadySource, TileSet, TileStreamEvent, TileStreamEventV2,
+    decode_fast_rgba_zstd, decode_fast_rgba_zstd_header, encode_fast_rgba_zstd,
+    encode_fast_rgba_zstd_with_validation, tile_cache_validation_value,
 };
 
 pub use occupancy::{
