@@ -1,20 +1,13 @@
 //! Minecraft Bedrock saved-item NBT, including historical persisted representations.
 
-// These reverse-migration report modules intentionally expose detailed, unstable diagnostic
-// structures so callers can audit why a saved-item downgrade is or is not byte-safe. Keep the
-// allowance scoped to these modules instead of lowering the crate-wide `missing_docs` policy.
-#[allow(missing_docs)]
 mod classic_saved_item;
 mod format;
 mod format_evidence;
 mod legacy_saved_item;
 mod legacy_saved_item_check;
 mod legacy_saved_item_conversion;
-#[allow(missing_docs)]
 mod medieval_saved_item;
-#[allow(missing_docs)]
 mod modern_saved_item;
-#[allow(missing_docs)]
 mod modern_target;
 mod saved_item;
 mod vanilla_saved_item_block_map;
