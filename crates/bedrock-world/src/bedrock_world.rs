@@ -96,6 +96,7 @@ pub use item::ItemStack;
 pub use level::*;
 pub use nbt::{NbtReader, NbtTag, NbtWriter};
 pub use parsed::ParsedChunkRecord;
+pub use player::{PlayerData, PlayerId};
 pub use query::{
     ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, WriteGuard,
     query_selection_stats_exact_blocking, rasterize_chunk_line,
