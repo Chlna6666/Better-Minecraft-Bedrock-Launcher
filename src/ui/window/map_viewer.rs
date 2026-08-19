@@ -105,7 +105,7 @@ pub(crate) mod bedrock_world_domains {
             pos: ::bedrock_world::ChunkPos,
             records: &[::bedrock_world::ChunkRecord],
             options: ::bedrock_world::WorldParseOptions,
-        ) -> ::bedrock_world::ParsedChunkData {
+        ) -> ::bedrock_world::chunk::ParsedChunkData {
             ::bedrock_world::chunk::parse_chunk_records_with_options(pos, records.to_vec(), options)
         }
     }
