@@ -74,7 +74,12 @@ pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-pub(crate) use world::{discover, surface};
+/// Bedrock world-folder discovery APIs.
+pub mod discover {
+    pub use crate::world::discover::*;
+}
+
+pub(crate) use world::surface;
 
 pub use biome::{Biome2d, Biome3d};
 pub use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
