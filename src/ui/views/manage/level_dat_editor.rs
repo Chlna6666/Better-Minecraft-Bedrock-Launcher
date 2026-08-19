@@ -1338,7 +1338,7 @@ fn scope_prefix(scope: TagScope) -> &'static str {
 
 fn root_compound(document: &LevelDatDocument) -> Option<&IndexMap<String, NbtTag>> {
     match &document.root {
-        NbtTag::Compound(map) => Some(map),
+        &NbtTag::Compound(ref map) => Some(map),
         _ => None,
     }
 }
@@ -1348,7 +1348,7 @@ fn root_compound_mut(document: &mut LevelDatDocument) -> &mut IndexMap<String, N
         document.root = NbtTag::Compound(IndexMap::new());
     }
     match &mut document.root {
-        NbtTag::Compound(map) => map,
+        &mut NbtTag::Compound(ref mut map) => map,
         _ => unreachable!(),
     }
 }
@@ -1362,7 +1362,7 @@ fn abilities_compound_mut(document: &mut LevelDatDocument) -> &mut IndexMap<Stri
         *abilities = NbtTag::Compound(IndexMap::new());
     }
     match abilities {
-        NbtTag::Compound(map) => map,
+        &mut NbtTag::Compound(ref mut map) => map,
         _ => unreachable!(),
     }
 }
@@ -1375,7 +1375,7 @@ fn read_tag<'a>(document: &'a LevelDatDocument, scope: TagScope, key: &str) -> O
     match scope {
         TagScope::Root => root_compound(document)?.get(key),
         TagScope::Abilities => match root_compound(document)?.get("abilities")? {
-            NbtTag::Compound(map) => map.get(key),
+            &NbtTag::Compound(ref map) => map.get(key),
             _ => None,
         },
     }
