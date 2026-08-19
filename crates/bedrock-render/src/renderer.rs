@@ -156,8 +156,8 @@ mod bedrock_api {
 }
 
 mod cache {
-    use super::bedrock_api as bedrock_world;
     include!("renderer/cache.rs");
+    use super::bedrock_api as bedrock_world;
 }
 #[path = "renderer/gpu.rs"]
 mod gpu;
