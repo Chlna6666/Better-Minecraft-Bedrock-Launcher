@@ -25,40 +25,71 @@ pub enum MedievalSavedItemIssueKind {
     /// Classic numeric air ID zero is an invalid persisted item stack and is not invented as Medieval air.
     ClassicAir,
     /// A Classic numeric ID has no authoritative historical string identifier.
-    ClassicNumericIdMissing { numeric_id: i32 },
+    ClassicNumericIdMissing {
+        /// Numeric Classic source item ID that could not be resolved.
+        numeric_id: i32,
+    },
     /// A string source has no proven 1.6.0 ID/meta representation.
-    MissingStringId { item: NamedSavedItemId },
+    MissingStringId {
+        /// Named source item identity that could not be mapped.
+        item: NamedSavedItemId,
+    },
     /// More than one distinct 1.6.0 ID/meta representation reaches the string source.
     AmbiguousStringId {
+        /// Named source item identity being reversed.
         item: NamedSavedItemId,
+        /// First candidate Medieval item identity.
         first: MedievalSavedItemId,
+        /// Second candidate Medieval item identity.
         second: MedievalSavedItemId,
     },
     /// The Medieval metadata cannot be persisted as TAG_Short `Damage`.
-    MetadataOutOfRange { item: MedievalSavedItemId },
+    MetadataOutOfRange {
+        /// Candidate Medieval item identity with out-of-range metadata.
+        item: MedievalSavedItemId,
+    },
     /// A modern `Block` payload exists but no block reverse tables were supplied.
-    BlockStateRequired { item: MedievalSavedItemId },
+    BlockStateRequired {
+        /// Medieval item identity that needs block payload proof.
+        item: MedievalSavedItemId,
+    },
     /// The Medieval item is not present in the authoritative item->block map at the 1.12 endpoint.
-    BlockItemMappingMissing { item: MedievalSavedItemId },
+    BlockItemMappingMissing {
+        /// Medieval item identity that could not be mapped to a historical block.
+        item: MedievalSavedItemId,
+    },
     /// The persisted modern BlockState has no historical numeric block representation.
-    BlockNumericMissing { item: MedievalSavedItemId },
+    BlockNumericMissing {
+        /// Medieval item identity associated with the missing block mapping.
+        item: MedievalSavedItemId,
+    },
     /// More than one historical numeric block represents the persisted modern BlockState.
     BlockNumericAmbiguous {
+        /// Medieval item identity associated with the ambiguous block mapping.
         item: MedievalSavedItemId,
+        /// First candidate historical numeric block.
         first: LegacyNumericBlock,
+        /// Second candidate historical numeric block.
         second: LegacyNumericBlock,
+        /// Number of matching historical numeric block candidates.
         matches: usize,
     },
     /// The persisted BlockState resolves to a different historical block identifier.
     BlockIdentityMismatch {
+        /// Medieval item identity associated with the mismatched block payload.
         item: MedievalSavedItemId,
+        /// Candidate historical numeric block resolved from the source BlockState.
         block: LegacyNumericBlock,
+        /// Historical block identifier expected by the item->block map.
         expected: String,
+        /// Historical block identifier produced by the block reverse mapping.
         actual: String,
     },
     /// The persisted BlockState resolves to a different metadata value than the Medieval item.
     BlockMetadataMismatch {
+        /// Medieval item identity associated with the mismatched block metadata.
         item: MedievalSavedItemId,
+        /// Candidate historical numeric block resolved from the source BlockState.
         block: LegacyNumericBlock,
     },
 }
@@ -66,20 +97,32 @@ pub enum MedievalSavedItemIssueKind {
 /// Non-mutating preflight for an exact Medieval saved-item target.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MedievalSavedItemCheckReport {
+    /// Number of item-like NBT compounds inspected.
     pub items_seen: usize,
+    /// Number of inspected items that came from Classic numeric identities.
     pub classic_sources: usize,
+    /// Number of inspected items that used string identities.
     pub string_sources: usize,
+    /// Number of items proven writable as Medieval string ID/meta values.
     pub representable: usize,
+    /// Number of items missing from the Medieval reverse table.
     pub missing: usize,
+    /// Number of items with multiple possible Medieval identities.
     pub ambiguous: usize,
+    /// Number of target metadata values outside TAG_Short range.
     pub metadata_out_of_range: usize,
+    /// Number of modern block payloads proven compatible with Medieval block data.
     pub block_states_proven: usize,
+    /// Number of modern block payloads that require block reverse tables before conversion.
     pub block_states_required: usize,
+    /// Number of modern block payloads that conflict with Medieval block data.
     pub block_states_incompatible: usize,
+    /// Ordered audit trail of individual compatibility issues.
     pub issues: Vec<MedievalSavedItemIssue>,
 }
 
 impl MedievalSavedItemCheckReport {
+    /// Returns true when no issue counters can block an exact Medieval write.
     #[must_use]
     pub fn is_fully_proven(&self) -> bool {
         self.missing == 0
@@ -93,15 +136,20 @@ impl MedievalSavedItemCheckReport {
 /// Result of explicitly rewriting a tree to Medieval saved-item representation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MedievalSavedItemConversionOutcome {
+    /// Converted NBT tree with unrelated fields preserved.
     pub nbt: NbtTag,
+    /// Preflight and mutation counters produced by the conversion.
     pub report: MedievalSavedItemConversionReport,
 }
 
 /// Counters for an explicit Medieval conversion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MedievalSavedItemConversionReport {
+    /// Non-mutating compatibility report used to authorize the conversion.
     pub check: MedievalSavedItemCheckReport,
+    /// Number of item compounds whose identity or metadata changed.
     pub items_changed: usize,
+    /// Number of item `Block` payloads removed after block compatibility was proven.
     pub block_payloads_removed: usize,
 }
 
