@@ -81,11 +81,11 @@ pub mod discover {
 
 pub(crate) use world::surface;
 
-pub use biome::{Biome2d, Biome3d};
+pub use biome::{Biome2d, Biome3d, LegacyBiomeSample};
 pub use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
 pub use chunk::{
     ActorDigestKey, ActorUid, Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
-    Dimension, ParsedVillageKey, SubChunk, SubChunkFormat,
+    Dimension, ParsedVillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat,
 };
 pub use database::*;
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
