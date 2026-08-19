@@ -25,7 +25,8 @@ pub mod chunk;
 pub mod error;
 mod mcstructure;
 mod nbt_ref;
-mod parsed;
+/// Structured Bedrock record parsing and consecutive-record encoding APIs.
+pub mod parsed;
 pub mod player;
 pub mod biome;
 pub mod entity;
