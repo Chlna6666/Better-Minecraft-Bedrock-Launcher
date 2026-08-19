@@ -185,6 +185,26 @@ Rayon pool 或额外全局 executor：
 - 文件系统/进程/环境值使用 `Path`、`PathBuf`、`OsStr` 等跨平台类型；平台差异使用
   `cfg` 和目标特定模块隔离。
 
+### Rust 模块、代码生成与文本包含
+
+普通 Rust 模块必须使用标准模块系统：`mod name;` 或确实需要作为公共 API 时使用
+`pub mod name;`，并让 rustc 按 `name.rs` 或 `name/mod.rs` 规则解析文件。不要为了绕过
+目录结构、可见性、导入顺序或循环依赖使用 `#[path = "..."]`、`include!("*.rs")` 或
+其它文本拼接方式导入手写 `.rs` 文件。
+
+`#[path = "..."]` 只允许用于确有必要的构建/平台隔离边界，例如无法用普通 `cfg` 模块
+表达的目标平台 shim，并且必须在代码旁说明原因。普通源码、UI、core、renderer、world、
+LevelDB 和插件模块不得使用它代替标准模块声明。
+
+`include!` 只允许包含构建期生成代码，例如 `build.rs`、proc-macro 或 protobuf/codegen
+输出到 `OUT_DIR` 后通过 `include!(concat!(env!("OUT_DIR"), ...))` 接入；生成代码必须隔离
+在小模块内，不得反向依赖业务层。仓库中 `crates/easytier/src/proto/*` 这类生成 proto
+绑定属于历史/供应商生成边界，不能作为手写模块拆分的示例。
+
+静态资源嵌入使用 `include_str!`、`include_bytes!` 或资源生成表，不使用 `include!`。
+新增 `include!`、`#[path]` 或 `OUT_DIR` 代码生成前必须先确认普通模块、`cfg` 子模块、
+build script 生成资源表或显式 trait adapter 无法满足，并在变更摘要中说明理由。
+
 ## 资源、本地化与日志
 
 - `assets/` 是构建期输入；`src/assets` 是应用侧加载/生成辅助。`build.rs` 负责 Windows
