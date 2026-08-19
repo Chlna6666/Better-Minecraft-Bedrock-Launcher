@@ -12,8 +12,8 @@ mod palette;
 mod renderer;
 
 pub use bedrock_world::{
+    BedrockWorld, ChunkData, ChunkLoadOptions,
     query::{ExactChunkSelection, SlimeChunkBounds},
-    world::{BedrockWorld, ChunkData, ChunkLoadOptions},
 };
 pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
@@ -27,9 +27,9 @@ pub use renderer::{
     AtlasRenderOptions, BakeDiagnostics, BakeOptions, BlockBoundaryRenderOptions,
     BlockVolumeRenderOptions, ChunkBounds, ChunkPos, ChunkRegion, ChunkTileLayout,
     DEFAULT_PALETTE_VERSION, DecodedTileImage, DepthPlane, Dimension, FastRgbaZstdHeader,
-    FastRgbaZstdTile, HeightPlane, ImageFormat, LevelDbRenderSource, MAX_RENDER_THREADS,
-    MAX_TILE_SIZE_PIXELS, MapRenderSession, MapRenderSessionConfig, MapRenderer, NbtTag,
-    PlannedTile, RENDERER_CACHE_VERSION, RegionBake, RegionBakePayload, RegionCoord, RegionLayout,
+    FastRgbaZstdTile, HeightPlane, ImageFormat, MAX_RENDER_THREADS, MAX_TILE_SIZE_PIXELS,
+    MapRenderSession, MapRenderSessionConfig, MapRenderer, NbtTag, PlannedTile,
+    RENDERER_CACHE_VERSION, RegionBake, RegionBakePayload, RegionCoord, RegionLayout,
     RenderBackend, RenderCachePolicy, RenderCancelFlag, RenderChunkSource,
     RenderCpuPipelineOptions, RenderDiagnostics, RenderDiagnosticsSink, RenderExecutionProfile,
     RenderGpuBackend, RenderGpuDiagnostics, RenderGpuFallbackPolicy, RenderGpuOptions,
@@ -40,8 +40,8 @@ pub use renderer::{
     RgbaPlane, SurfacePlane, SurfacePlaneAtlas, SurfaceRenderOptions, TerrainLightingOptions,
     TerrainLightingPreset, TileCache, TileCacheKey, TileCoord, TileImage, TilePathScheme,
     TilePixelFormat, TileReadySource, TileSet, TileStreamEvent, TileStreamEventV2,
-    decode_fast_rgba_zstd, decode_fast_rgba_zstd_header, encode_fast_rgba_zstd,
-    encode_fast_rgba_zstd_with_validation, tile_cache_validation_value,
+    WorldRenderSource, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
+    encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation, tile_cache_validation_value,
 };
 pub use renderer::{
     ChunkFingerprintInput, TILE_AUTHORITY_FLAG_EMPTY, TILE_AUTHORITY_FLAG_NON_EMPTY,
