@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::Path;
 
 #[allow(unused_imports)]
-pub use bedrock_world::level_dat::{LevelDatDocument, LevelDatHeader, LevelDatReadWarning};
+pub use bedrock_world::{LevelDatDocument, LevelDatHeader, LevelDatReadWarning};
 #[allow(unused_imports)]
 pub use bedrock_world::nbt::{NbtReader, NbtRef, NbtTag, NbtValue, NbtWriter};
 
@@ -28,7 +28,7 @@ pub fn parse_root_nbt_header(data: &[u8]) -> Result<(u32, NbtTag)> {
 }
 
 pub fn parse_level_dat_document(data: &[u8]) -> Result<LevelDatDocument> {
-    bedrock_world::level_dat::parse_level_dat_document(data).map_err(Into::into)
+    bedrock_world::parse_level_dat_document(data).map_err(Into::into)
 }
 
 pub fn read_level_dat(path: &Path) -> Result<NbtTag> {
@@ -41,7 +41,7 @@ pub fn read_level_dat_with_version(path: &Path) -> Result<(u32, NbtTag)> {
 }
 
 pub fn read_level_dat_document(path: &Path) -> Result<LevelDatDocument> {
-    bedrock_world::level_dat::read_level_dat_document(path).map_err(Into::into)
+    bedrock_world::read_level_dat_document(path).map_err(Into::into)
 }
 
 pub fn write_level_dat(path: &Path, tag: &NbtTag, version: u32) -> Result<()> {
@@ -49,7 +49,7 @@ pub fn write_level_dat(path: &Path, tag: &NbtTag, version: u32) -> Result<()> {
 }
 
 pub fn write_level_dat_document(path: &Path, document: &LevelDatDocument) -> Result<()> {
-    bedrock_world::level_dat::write_level_dat_document(path, document).map_err(Into::into)
+    bedrock_world::write_level_dat_document(path, document).map_err(Into::into)
 }
 
 #[cfg(test)]
