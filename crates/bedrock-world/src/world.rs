@@ -4,6 +4,7 @@ mod bedrock_world;
 mod biome;
 mod biome_downgrade;
 mod biome_upgrade;
+mod create;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
 mod legacy_terrain;
@@ -37,6 +38,9 @@ pub use bedrock_world::OpenOptions as BedrockWorldOpenOptions;
 pub type OpenOptions = BedrockWorldOpenOptions;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
+pub use create::{
+    BedrockDifficulty, BedrockGameMode, BedrockWorldCreateOptions, BedrockWorldSpawn,
+};
 pub use level_dat::{LevelChunkVersionCount, SubChunkVersionCount, WorldVersions};
 pub use migration::{
     BedrockWorldDowngradeOptions, BedrockWorldDowngradeReport, BedrockWorldMigrationGap,
