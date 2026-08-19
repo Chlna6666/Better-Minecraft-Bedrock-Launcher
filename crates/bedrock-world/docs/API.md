@@ -54,41 +54,11 @@ mixed-version 世界会保留这些证据，不被强制折叠成一个内部 sc
 let id: Option<u32> = world.get_biome_id_blocking(chunk, x, z, y)?;
 ```
 
-`Data2D`、`Data2DLegacy`、`Data3D` 的解析和写回不依赖最新版 biome 名称表。未知/未来 ID 仍按原数值保留。
+`Data2D`、`Data2DLegacy`、`Data3D` 的解析和写回不依赖 biome 名称表。未知、未来版本或第三方世界中的 ID 仍按原数值保留。
 
-### 版本化 vanilla biome registry
+`bedrock-world` 不维护或嵌入 `Biome ID -> 名称/属性` registry，也不会根据游戏版本猜测数值 ID 的语义。名称显示、属性查询、按 biome 名称编辑以及草地/树叶/水体着色规则属于上层应用或 `bedrock-render`；需要这些能力时应由调用方提供明确的数据源。
 
-`bedrock-world` 通过嵌入式只读 registry 解释特定游戏版本的 vanilla biome：
-
-```rust
-use bedrock_world::{GameVersion, biome::embedded_biome_registry};
-
-let version = GameVersion::new(vec![1, 26, 44, 3])?;
-let registry = embedded_biome_registry()?;
-if let Some(snapshot) = registry.snapshot(&version) {
-    if let Some(biome) = snapshot.biome_by_id(1) {
-        println!("{}", biome.name());
-    }
-}
-```
-
-registry 使用精确 Minecraft version 匹配，不使用“最近版本”“最新版”猜测。查不到版本或 ID 时返回 `None`。
-
-registry 由 `bedrock-world-tool` 在维护/更新阶段生成，然后作为紧凑 `.bin` 通过 `include_bytes!` 嵌入。运行时不联网、不读取 JSON，也不会构建整张 `HashMap`。
-
-```text
-cargo run -p bedrock-world --bin bedrock-world-tool -- biome update ...
-cargo run -p bedrock-world --bin bedrock-world-tool -- biome pack
-cargo run -p bedrock-world --bin bedrock-world-tool -- biome verify
-```
-
-Windows 上可以直接运行：
-
-```powershell
-./crates/bedrock-world/scripts/update-biome-registry.ps1 -Channel release -Version latest
-```
-
-该脚本使用 `EndstoneMC/bedrock-server-data` 锁定 BDS build，使用 `protocol-docs` 锁定 network version，并通过无头 Endstone runtime exporter 从对应 BDS 的 `BiomeRegistry` 导出真实 vanilla biome。生成数据只负责解释 ID，不参与 world record 的隐式转换。
+核心 world API 只保证持久化事实的保真读写。只修改与 biome 无关的数据时，原始 biome 数值必须原样保留。
 
 ## 高度图与 biome 写回
 

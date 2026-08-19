@@ -22,11 +22,9 @@ include = [
     "docs/**/*.md",
     "src/**/*.rs",
     "src/**/*.bin",
-    "tools/**/*.rs",
     "tests/**/*.rs",
     "tests/fixtures/**/*",
     "scripts/**/*.ps1",
-    "vendor/biome-registry/**/*",
     "vendor/blockstate-schema/**/*",
     "vendor/item-upgrade-schema/**/*",
     "benches/**/*.rs",
@@ -35,10 +33,6 @@ include = [
 [lib]
 name = "bedrock_world"
 path = "src/bedrock_world.rs"
-
-[[bin]]
-name = "bedrock-world-tool"
-path = "tools/main.rs"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -60,7 +54,6 @@ serde_json = "1.0.145"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
 walkdir = "2.5.0"
-xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
 
 [dev-dependencies]
 criterion = "0.5"
