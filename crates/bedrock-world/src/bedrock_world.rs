@@ -81,7 +81,9 @@ pub mod discover {
 
 pub(crate) use world::surface;
 
-pub use biome::{Biome2d, Biome3d, LegacyBiomeSample};
+pub use biome::{
+    Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeData, ParsedBiomeStorage,
+};
 pub use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
 pub use chunk::{
     ActorDigestKey, ActorUid, Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
