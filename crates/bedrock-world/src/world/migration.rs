@@ -7,7 +7,8 @@
 use crate::block::{BlockUpgradeData, VanillaBlockStatePalette};
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
-use crate::world::{BedrockWorld, BedrockWorldSubChunkUpgradeReport, WorldStorageHandle};
+use crate::world::subchunk_upgrade::BedrockWorldSubChunkUpgradeReport;
+use crate::world::{BedrockWorld, WorldStorageHandle};
 
 /// One Minecraft Bedrock migration phase that is known but not yet wired into the whole-world entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,7 @@ pub enum BedrockWorldMigrationGap {
 }
 
 /// SubChunk-specific material required by the whole-world Bedrock upgrade entry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct BedrockWorldSubChunkUpgradeOptions<'a> {
     /// Authoritative block-state upgrade data for the requested target game version.
     pub block_upgrade_data: &'a BlockUpgradeData,
@@ -34,7 +35,7 @@ pub struct BedrockWorldSubChunkUpgradeOptions<'a> {
 }
 
 /// Options for upgrading a Minecraft Bedrock world toward a newer game version.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub struct BedrockWorldUpgradeOptions<'a> {
     /// Target Minecraft Bedrock game version.
     pub target: GameVersion,
@@ -64,7 +65,7 @@ impl BedrockWorldUpgradeReport {
 }
 
 /// Options for downgrading a Minecraft Bedrock world toward an older game version.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub struct BedrockWorldDowngradeOptions {
     /// Target Minecraft Bedrock game version.
     pub target: GameVersion,
@@ -125,6 +126,7 @@ where
         &self,
         options: BedrockWorldDowngradeOptions,
     ) -> Result<BedrockWorldDowngradeReport> {
+        let _ = self;
         Err(BedrockWorldError::UnsupportedChunkFormat(format!(
             "Minecraft Bedrock world downgrade to {} is not complete; missing phases: {:?}",
             options.target,
