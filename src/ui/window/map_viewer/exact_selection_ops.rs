@@ -9,7 +9,7 @@ use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::ExactChunkRenderPlan;
-use bedrock_world::{ExactChunkSelection, query_selection_stats_exact_blocking};
+use ::bedrock_world::{ExactChunkSelection, query_selection_stats_exact_blocking};
 use std::collections::BTreeSet;
 
 impl MapViewerWindowView {
@@ -46,7 +46,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        ::bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     query_selection_stats_exact_blocking(&world, &exact_selection, options)
