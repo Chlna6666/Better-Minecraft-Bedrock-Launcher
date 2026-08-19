@@ -27,86 +27,99 @@ mod prelude;
 
 // Private current-domain import surface for large map-viewer compilation units. This does not expose
 // or restore removed bedrock-world crate-root APIs: every binding originates from a public 0.7 domain.
-pub(super) mod bedrock_world_domains {
-    pub(super) use ::bedrock_world::biome::{
+pub(crate) mod bedrock_world_domains {
+    pub(crate) use ::bedrock_world::biome::{
         Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeStorage,
     };
-    pub(super) use ::bedrock_world::block::{
+    pub(crate) use ::bedrock_world::block::{
         BlockEntityRecord, BlockPalette, BlockPos, BlockState, ParsedBlockEntity,
         block_storage_index,
     };
-    pub(super) use ::bedrock_world::chunk::{
+    pub(crate) use ::bedrock_world::chunk::{
         Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension,
         HardcodedSpawnAreaKind, LegacyTerrain, ParsedChunkData, ParsedChunkRecord,
         ParsedChunkRecordValue, ParsedHardcodedSpawnArea, SubChunk, SubChunkDecodeMode,
         SubChunkFormat,
     };
-    pub(super) use ::bedrock_world::database::{
+    pub(crate) use ::bedrock_world::database::{
         BedrockDbKey, BedrockLevelDbStorage, MemoryStorage, PartitionedWorldStorage, StorageBatch,
         StorageCachePolicy, StorageCancelFlag, StorageEntry, StorageEntryRef, StorageOp,
         StoragePipelineOptions, StorageProgressSink, StorageReadOptions, StorageScanMode,
         StorageScanOutcome, StorageScanProgress, StorageThreadingOptions, StorageVisitorControl,
         WorldStorage,
     };
-    pub(super) use ::bedrock_world::entity::{
+    pub(crate) use ::bedrock_world::entity::{
         ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, ParsedEntity,
     };
-    pub(super) use ::bedrock_world::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
-    pub(super) use ::bedrock_world::map::{MapKnownFields, MapPixels, MapRecordId, ParsedMapData};
-    pub(super) use ::bedrock_world::nbt::NbtTag;
-    pub(super) use ::bedrock_world::player::{PlayerData, PlayerId};
-    pub(super) use ::bedrock_world::query::*;
-    pub(super) use ::bedrock_world::structure::{
+    pub(crate) use ::bedrock_world::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+    pub(crate) use ::bedrock_world::item::ItemStack;
+    pub(crate) use ::bedrock_world::level::*;
+    pub(crate) use ::bedrock_world::map::{MapKnownFields, MapPixels, MapRecordId, ParsedMapData};
+    pub(crate) use ::bedrock_world::nbt::{NbtTag, NbtWriter};
+    pub(crate) use ::bedrock_world::player::{PlayerData, PlayerId};
+    pub(crate) use ::bedrock_world::query::*;
+    pub(crate) use ::bedrock_world::structure::{
         McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
         McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
     };
-    pub(super) use ::bedrock_world::editor::McStructureWritePhase;
-    pub(super) use ::bedrock_world::world::*;
+    pub(crate) use ::bedrock_world::editor::McStructureWritePhase;
+    pub(crate) use ::bedrock_world::world::*;
 
-    pub(super) mod biome {
-        pub(super) use ::bedrock_world::biome::*;
+    pub(crate) mod biome {
+        pub(crate) use ::bedrock_world::biome::*;
     }
-    pub(super) mod block {
-        pub(super) use ::bedrock_world::block::*;
+    pub(crate) mod block {
+        pub(crate) use ::bedrock_world::block::*;
     }
-    pub(super) mod chunk {
-        pub(super) use ::bedrock_world::chunk::*;
+    pub(crate) mod chunk {
+        pub(crate) use ::bedrock_world::chunk::*;
     }
-    pub(super) mod database {
-        pub(super) use ::bedrock_world::database::*;
+    pub(crate) mod database {
+        pub(crate) use ::bedrock_world::database::*;
     }
-    pub(super) mod entity {
-        pub(super) use ::bedrock_world::entity::*;
+    pub(crate) mod entity {
+        pub(crate) use ::bedrock_world::entity::*;
     }
-    pub(super) mod error {
-        pub(super) use ::bedrock_world::error::*;
+    pub(crate) mod error {
+        pub(crate) use ::bedrock_world::error::*;
     }
-    pub(super) mod level {
-        pub(super) use ::bedrock_world::level::*;
+    pub(crate) mod item {
+        pub(crate) use ::bedrock_world::item::*;
     }
-    pub(super) mod map {
-        pub(super) use ::bedrock_world::map::*;
+    pub(crate) mod level {
+        pub(crate) use ::bedrock_world::level::*;
     }
-    pub(super) mod nbt {
-        pub(super) use ::bedrock_world::nbt::*;
+    pub(crate) mod map {
+        pub(crate) use ::bedrock_world::map::*;
     }
-    pub(super) mod parsed {
-        pub(super) use ::bedrock_world::chunk::{
+    pub(crate) mod nbt {
+        pub(crate) use ::bedrock_world::nbt::*;
+    }
+    pub(crate) mod parsed {
+        pub(crate) use ::bedrock_world::chunk::{
             ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,
             parse_chunk_records, parse_chunk_records_with_options,
         };
+
+        pub(crate) fn parse_chunk_records_ref_with_options(
+            pos: ::bedrock_world::ChunkPos,
+            records: &[::bedrock_world::ChunkRecord],
+            options: ::bedrock_world::WorldParseOptions,
+        ) -> ::bedrock_world::ParsedChunkData {
+            ::bedrock_world::chunk::parse_chunk_records_with_options(pos, records.to_vec(), options)
+        }
     }
-    pub(super) mod player {
-        pub(super) use ::bedrock_world::player::*;
+    pub(crate) mod player {
+        pub(crate) use ::bedrock_world::player::*;
     }
-    pub(super) mod query {
-        pub(super) use ::bedrock_world::query::*;
+    pub(crate) mod query {
+        pub(crate) use ::bedrock_world::query::*;
     }
-    pub(super) mod structure {
-        pub(super) use ::bedrock_world::structure::*;
+    pub(crate) mod structure {
+        pub(crate) use ::bedrock_world::structure::*;
     }
-    pub(super) mod world {
-        pub(super) use ::bedrock_world::world::*;
+    pub(crate) mod world {
+        pub(crate) use ::bedrock_world::world::*;
     }
 }
 
