@@ -767,7 +767,7 @@ pub fn field_exists(document: &LevelDatDocument, scope: TagScope, key: &str) -> 
         TagScope::Abilities => root_compound(document)
             .and_then(|root| root.get("abilities"))
             .and_then(|tag| match tag {
-                NbtTag::Compound(map) => Some(map),
+                &NbtTag::Compound(ref map) => Some(map),
                 _ => None,
             })
             .is_some_and(|abilities| abilities.contains_key(key)),
@@ -776,7 +776,7 @@ pub fn field_exists(document: &LevelDatDocument, scope: TagScope, key: &str) -> 
 
 fn root_compound(document: &LevelDatDocument) -> Option<&indexmap::IndexMap<String, NbtTag>> {
     match &document.root {
-        NbtTag::Compound(map) => Some(map),
+        &NbtTag::Compound(ref map) => Some(map),
         _ => None,
     }
 }
