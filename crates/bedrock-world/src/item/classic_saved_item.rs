@@ -12,40 +12,88 @@ use indexmap::IndexMap;
 /// One Classic target-format compatibility problem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassicSavedItemIssue {
+    /// Stable NBT path from the checked root to the item-like compound.
     pub path: String,
+    /// Exact reason the item cannot be written to Classic format.
     pub kind: ClassicSavedItemIssueKind,
 }
 
 /// Reason one saved item is not proven writable in Classic format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassicSavedItemIssueKind {
+    /// Numeric ID zero represents air and is refused as a persisted item stack.
     ClassicAir,
-    NumericIdMissing { numeric_id: i32 },
-    MissingNumericId { item: NamedSavedItemId },
-    AmbiguousNumericId {
+    /// A numeric source ID is not present in the authoritative Classic item table.
+    NumericIdMissing {
+        /// Numeric source item ID that could not be resolved.
+        numeric_id: i32,
+    },
+    /// A named source item has no proven Classic numeric ID/meta representation.
+    MissingNumericId {
+        /// Named source item identity that could not be mapped.
         item: NamedSavedItemId,
+    },
+    /// More than one Classic numeric ID/meta representation maps to the named source item.
+    AmbiguousNumericId {
+        /// Named source item identity being reversed.
+        item: NamedSavedItemId,
+        /// First candidate Classic numeric item identity.
         first: LegacySavedItemId,
+        /// Second candidate Classic numeric item identity.
         second: LegacySavedItemId,
     },
-    IdOutOfRange { item: LegacySavedItemId },
-    MetadataOutOfRange { item: LegacySavedItemId },
-    BlockStateRequired { item: LegacySavedItemId },
-    BlockItemMappingMissing { item: LegacySavedItemId },
-    BlockNumericMissing { item: LegacySavedItemId },
-    BlockNumericAmbiguous {
+    /// The Classic numeric item ID cannot be persisted as TAG_Short `id`.
+    IdOutOfRange {
+        /// Candidate Classic item identity with an out-of-range numeric ID.
         item: LegacySavedItemId,
+    },
+    /// The Classic metadata cannot be persisted as TAG_Short `Damage`.
+    MetadataOutOfRange {
+        /// Candidate Classic item identity with out-of-range metadata.
+        item: LegacySavedItemId,
+    },
+    /// A modern `Block` payload exists but no block reverse tables were supplied.
+    BlockStateRequired {
+        /// Classic item identity that needs block payload proof.
+        item: LegacySavedItemId,
+    },
+    /// The Classic item is not present in the authoritative item->block map.
+    BlockItemMappingMissing {
+        /// Classic item identity that could not be mapped to a historical block.
+        item: LegacySavedItemId,
+    },
+    /// The persisted modern BlockState has no historical numeric block representation.
+    BlockNumericMissing {
+        /// Classic item identity associated with the missing block mapping.
+        item: LegacySavedItemId,
+    },
+    /// More than one historical numeric block represents the persisted modern BlockState.
+    BlockNumericAmbiguous {
+        /// Classic item identity associated with the ambiguous block mapping.
+        item: LegacySavedItemId,
+        /// First candidate historical numeric block.
         first: LegacyNumericBlock,
+        /// Second candidate historical numeric block.
         second: LegacyNumericBlock,
+        /// Number of matching historical numeric block candidates.
         matches: usize,
     },
+    /// The persisted BlockState resolves to a different historical block identifier.
     BlockIdentityMismatch {
+        /// Classic item identity associated with the mismatched block payload.
         item: LegacySavedItemId,
+        /// Candidate historical numeric block resolved from the source BlockState.
         block: LegacyNumericBlock,
+        /// Historical block identifier expected by the item->block map.
         expected: String,
+        /// Historical block identifier produced by the block reverse mapping.
         actual: String,
     },
+    /// The persisted BlockState resolves to a different metadata value than the Classic item.
     BlockMetadataMismatch {
+        /// Classic item identity associated with the mismatched block metadata.
         item: LegacySavedItemId,
+        /// Candidate historical numeric block resolved from the source BlockState.
         block: LegacyNumericBlock,
     },
 }
@@ -53,21 +101,34 @@ pub enum ClassicSavedItemIssueKind {
 /// Non-mutating preflight for an exact Classic saved-item target.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClassicSavedItemCheckReport {
+    /// Number of item-like NBT compounds inspected.
     pub items_seen: usize,
+    /// Number of inspected items that already used numeric identities.
     pub numeric_sources: usize,
+    /// Number of inspected items that used string identities.
     pub string_sources: usize,
+    /// Number of items proven writable as Classic numeric ID/meta values.
     pub representable: usize,
+    /// Number of items missing from the Classic reverse table.
     pub missing: usize,
+    /// Number of items with multiple possible Classic numeric identities.
     pub ambiguous: usize,
+    /// Number of target numeric IDs outside TAG_Short range.
     pub id_out_of_range: usize,
+    /// Number of target metadata values outside TAG_Short range.
     pub metadata_out_of_range: usize,
+    /// Number of modern block payloads proven compatible with Classic block data.
     pub block_states_proven: usize,
+    /// Number of modern block payloads that require block reverse tables before conversion.
     pub block_states_required: usize,
+    /// Number of modern block payloads that conflict with Classic block data.
     pub block_states_incompatible: usize,
+    /// Ordered audit trail of individual compatibility issues.
     pub issues: Vec<ClassicSavedItemIssue>,
 }
 
 impl ClassicSavedItemCheckReport {
+    /// Returns true when no issue counters can block an exact Classic write.
     #[must_use]
     pub fn is_fully_proven(&self) -> bool {
         self.missing == 0
@@ -82,15 +143,20 @@ impl ClassicSavedItemCheckReport {
 /// Result of explicitly rewriting a tree to exact Classic saved-item representation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassicSavedItemConversionOutcome {
+    /// Converted NBT tree with unrelated fields preserved.
     pub nbt: NbtTag,
+    /// Preflight and mutation counters produced by the conversion.
     pub report: ClassicSavedItemConversionReport,
 }
 
 /// Counters for an exact Classic conversion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClassicSavedItemConversionReport {
+    /// Non-mutating compatibility report used to authorize the conversion.
     pub check: ClassicSavedItemCheckReport,
+    /// Number of item compounds whose identity or metadata changed.
     pub items_changed: usize,
+    /// Number of item `Block` payloads removed after block compatibility was proven.
     pub block_payloads_removed: usize,
 }
 
