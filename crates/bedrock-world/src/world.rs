@@ -23,8 +23,18 @@ pub(crate) mod surface;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use bedrock_world::*;
-/// Minecraft Bedrock world-open options. Prefer this explicit name over the generic `OpenOptions`.
+/// Minecraft Bedrock world-open options.
+///
+/// This explicit name is the canonical public API and avoids collision with
+/// storage/backend-specific `OpenOptions` types.
 pub use bedrock_world::OpenOptions as BedrockWorldOpenOptions;
+/// Compatibility name retained for existing internal and downstream callers.
+///
+/// New code should use [`BedrockWorldOpenOptions`]. This alias is hidden from
+/// generated API documentation so the explicit world-domain name remains the
+/// authoritative public surface.
+#[doc(hidden)]
+pub type OpenOptions = BedrockWorldOpenOptions;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use level_dat::{LevelChunkVersionCount, SubChunkVersionCount, WorldVersions};
