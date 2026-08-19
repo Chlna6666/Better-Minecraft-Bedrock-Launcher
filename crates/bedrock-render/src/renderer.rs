@@ -154,14 +154,10 @@ mod bedrock_api {
     }
 }
 
-#[path = "renderer/cache.rs"]
-mod cache;
-#[path = "renderer/gpu.rs"]
-mod gpu;
-#[path = "renderer/occupancy.rs"]
-mod occupancy;
-#[path = "renderer/pipeline.rs"]
-mod pipeline;
+pub mod cache;
+pub mod gpu;
+pub mod occupancy;
+pub mod pipeline;
 
 /// Render source backed by `bedrock-world` automatic world opening.
 pub type WorldRenderSource = pipeline::LevelDbRenderSource;
