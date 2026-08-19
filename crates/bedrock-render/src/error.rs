@@ -8,8 +8,6 @@ pub type Result<T> = std::result::Result<T, BedrockRenderError>;
 pub enum BedrockRenderErrorKind {
     /// The backing `bedrock-world` crate returned an error.
     World,
-    /// The backing `bedrock-leveldb` crate returned an error.
-    LevelDb,
     /// Image encoding failed.
     Image,
     /// Filesystem or other I/O failed.
@@ -30,9 +28,6 @@ pub enum BedrockRenderError {
     /// Error propagated from `bedrock-world`.
     #[error("Bedrock world error: {0}")]
     World(#[from] bedrock_world::error::BedrockWorldError),
-    /// Error propagated from `bedrock-leveldb`.
-    #[error("Bedrock LevelDB error: {0}")]
-    LevelDb(#[from] bedrock_leveldb::LevelDbError),
     /// Error emitted while encoding image bytes.
     #[error("{message}: {source}")]
     Image {
@@ -89,7 +84,6 @@ impl BedrockRenderError {
     pub const fn kind(&self) -> BedrockRenderErrorKind {
         match self {
             Self::World(_) => BedrockRenderErrorKind::World,
-            Self::LevelDb(_) => BedrockRenderErrorKind::LevelDb,
             Self::Image { .. } => BedrockRenderErrorKind::Image,
             Self::Io { .. } => BedrockRenderErrorKind::Io,
             Self::Cancelled => BedrockRenderErrorKind::Cancelled,
