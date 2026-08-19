@@ -29,11 +29,10 @@ mod bedrock_api {
 
     /// Renderer storage handle backed by `bedrock-world` automatic world opening.
     ///
-    /// The included renderer pipeline still uses a storage-handle type parameter for historical
-    /// reasons. This handle no longer opens or drives `bedrock-leveldb` directly: it asks
-    /// `bedrock-world` to detect the world folder and delegates raw access through the public world
-    /// storage handle. Renderer reads therefore follow the same version-aware path as servers, tools,
-    /// and BMCBL.
+    /// The renderer pipeline still uses a storage-handle type parameter internally. This handle no
+    /// longer opens or drives `bedrock-leveldb` directly: it asks `bedrock-world` to detect the world
+    /// folder and delegates raw access through the public world storage handle. Renderer reads
+    /// therefore follow the same version-aware path as servers, tools, and BMCBL.
     #[derive(Clone)]
     pub struct BedrockLevelDbStorage {
         inner: Arc<dyn ::bedrock_world::WorldStorage>,
@@ -155,20 +154,14 @@ mod bedrock_api {
     }
 }
 
-mod cache {
-    include!("renderer/cache.rs");
-    use super::bedrock_api as bedrock_world;
-}
+#[path = "renderer/cache.rs"]
+mod cache;
 #[path = "renderer/gpu.rs"]
 mod gpu;
-mod occupancy {
-    use super::bedrock_api as bedrock_world;
-    include!("renderer/occupancy.rs");
-}
-mod pipeline {
-    use super::bedrock_api as bedrock_world;
-    include!("renderer/pipeline.rs");
-}
+#[path = "renderer/occupancy.rs"]
+mod occupancy;
+#[path = "renderer/pipeline.rs"]
+mod pipeline;
 
 /// Render source backed by `bedrock-world` automatic world opening.
 pub type WorldRenderSource = pipeline::LevelDbRenderSource;
