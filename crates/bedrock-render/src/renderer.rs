@@ -15,7 +15,7 @@ mod bedrock_api {
     };
     pub use ::bedrock_world::error::BedrockWorldErrorKind;
     pub use ::bedrock_world::nbt::NbtTag;
-    pub use ::bedrock_world::world::{
+    pub use ::bedrock_world::{
         BedrockWorld, BiomeDataRequirement, CancelFlag, ChunkBlockEntity, ChunkBounds, ChunkData,
         ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats,
         ExactSurfaceSubchunkPolicy, OpenOptions, SubchunkDataRequirement, TerrainColumnBiome,
@@ -86,8 +86,4 @@ pub use cache::{
     world_cache_signature,
 };
 
-pub use ::bedrock_world::{
-    chunk::{ChunkPos, Dimension},
-    nbt::NbtTag,
-    world::ChunkBounds,
-};
+pub use ::bedrock_world::{ChunkBounds, ChunkPos, Dimension, NbtTag};
