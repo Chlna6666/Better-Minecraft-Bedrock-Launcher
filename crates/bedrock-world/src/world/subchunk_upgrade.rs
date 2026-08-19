@@ -11,9 +11,9 @@ use crate::version::GameVersion;
 use crate::world::{BedrockWorld, WorldFormat, WorldStorageHandle};
 use std::cmp::Ordering;
 
-/// Result of one atomic SubChunk upgrade over both historical numeric and paletted source records.
+/// Result of one atomic Minecraft Bedrock SubChunk upgrade over legacy numeric and paletted records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WorldSubChunkUpgradeReport {
+pub struct BedrockWorldSubChunkUpgradeReport {
     /// Target persisted SubChunk version selected for the requested Bedrock game version.
     pub target: SubChunkVersion,
     /// Legacy V0/V2-V7 numeric SubChunks converted through the authoritative numeric table.
@@ -24,7 +24,7 @@ pub struct WorldSubChunkUpgradeReport {
     pub paletted: SubChunkUpgradeWriteReport,
 }
 
-impl WorldSubChunkUpgradeReport {
+impl BedrockWorldSubChunkUpgradeReport {
     /// Returns the total number of SubChunk records staged for rewriting.
     #[must_use]
     pub const fn rewritten_records(&self) -> usize {
@@ -59,12 +59,12 @@ where
     /// Only after both legacy and paletted staging complete successfully are their disjoint changes
     /// committed through one [`crate::world::WorldTransaction`]. `LegacyTerrain`, biomes, actors,
     /// player items and `level.dat` are deliberately outside this concrete operation.
-    pub fn upgrade_subchunks_blocking(
+    pub fn upgrade_bedrock_subchunks_blocking(
         &self,
         target: GameVersion,
         upgrade_data: &BlockUpgradeData,
         target_palette: &VanillaBlockStatePalette,
-    ) -> Result<WorldSubChunkUpgradeReport> {
+    ) -> Result<BedrockWorldSubChunkUpgradeReport> {
         validate_upgrade_source(self, &target)?;
         validate_target_data(&target, upgrade_data, target_palette)?;
 
@@ -97,7 +97,7 @@ where
         )?;
 
         commit_subchunk_upgrade(self, [&legacy_batch, &paletted_batch])?;
-        Ok(WorldSubChunkUpgradeReport {
+        Ok(BedrockWorldSubChunkUpgradeReport {
             target: target_version,
             legacy,
             paletted,
