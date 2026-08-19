@@ -35,7 +35,7 @@ path = "src/bedrock_render.rs"
 
 [features]
 default = ["async", "webp"]
-async = ["dep:tokio", "bedrock-leveldb/async", "bedrock-world/async"]
+async = ["dep:tokio", "bedrock-world/async"]
 gpu-core = []
 gpu-dx11 = ["gpu-core", "dep:windows"]
 gpu-vulkan = ["gpu-core", "dep:pollster", "dep:wgpu", "wgpu/std", "wgpu/wgsl", "wgpu/vulkan"]
@@ -45,7 +45,6 @@ webp = ["image/webp"]
 png = ["image/png"]
 
 [dependencies]
-bedrock-leveldb = { path = "../bedrock-leveldb", version = "0.7.0", default-features = false, features = ["zlib", "snappy"] }
 bedrock-world = { path = "../bedrock-world", version = "0.7.0", default-features = false, features = ["bedrock-leveldb"] }
 bytes = "1.10.1"
 crossbeam-channel = "0.5.15"
