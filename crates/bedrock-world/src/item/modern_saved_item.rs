@@ -10,72 +10,140 @@ use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use indexmap::IndexMap;
 
+/// One compatibility problem found while checking a Modern saved item against a target release.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModernSavedItemIssue {
+    /// Stable NBT path from the checked root to the item-like compound.
     pub path: String,
+    /// Exact reason the item cannot be written to the requested Modern target.
     pub kind: ModernSavedItemIssueKind,
 }
 
+/// Reason one Modern saved item is not proven writable in the requested target release.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModernSavedItemIssueKind {
+    /// Both `Name` and `id` identities are present, so the source identity is ambiguous.
     IdentityConflict,
-    MetadataConflict { damage: i32, aux: i32 },
-    NumericSource { numeric_id: i32 },
-    MissingItem { source: NamedSavedItemId },
-    AmbiguousItem {
+    /// `Damage` and `Aux` are both present and disagree.
+    MetadataConflict {
+        /// Metadata value read from `Damage`.
+        damage: i32,
+        /// Metadata value read from `Aux`.
+        aux: i32,
+    },
+    /// The source uses a numeric item ID, which this Modern-only reverse path refuses.
+    NumericSource {
+        /// Numeric source item ID found in the item stack.
+        numeric_id: i32,
+    },
+    /// The named source item has no authoritative target item identity.
+    MissingItem {
+        /// Source item identity that could not be mapped to the target release.
         source: NamedSavedItemId,
+    },
+    /// More than one target item identity maps back to the source item.
+    AmbiguousItem {
+        /// Source item identity being reversed.
+        source: NamedSavedItemId,
+        /// First candidate target item identity.
         first: NamedSavedItemId,
+        /// Second candidate target item identity.
         second: NamedSavedItemId,
+        /// Number of matching target candidates discovered by the reverse index.
         matches: usize,
     },
-    MetadataOutOfRange { target: NamedSavedItemId },
-    UnexpectedSourceBlock { target: NamedSavedItemId },
+    /// The target metadata value cannot be persisted as TAG_Short `Damage`.
+    MetadataOutOfRange {
+        /// Target item identity with metadata outside the persisted range.
+        target: NamedSavedItemId,
+    },
+    /// The source item contains a `Block` payload but the target item is not a block item.
+    UnexpectedSourceBlock {
+        /// Target item identity that does not allow a block payload.
+        target: NamedSavedItemId,
+    },
+    /// The target item maps to more than one target block identifier.
     AmbiguousTargetBlockItem {
+        /// Target item identity that needs a block payload.
         target: NamedSavedItemId,
+        /// First candidate target block identifier.
         first_block: String,
+        /// Second candidate target block identifier.
         second_block: String,
+        /// Number of block candidates discovered by the item/block map.
         matches: usize,
     },
+    /// The target item is a block item but the source item has no `Block` payload.
     SourceBlockRequired {
+        /// Target item identity that requires a block payload.
         target: NamedSavedItemId,
+        /// Target block identifier required by the item/block map.
         target_block_id: String,
     },
+    /// The source `Block` payload has no proven BlockState in the target release.
     MissingBlockState {
+        /// Target item identity associated with the missing block state.
         target: NamedSavedItemId,
+        /// Target block identifier required by the item/block map.
         target_block_id: String,
     },
+    /// More than one target BlockState can represent the source `Block` payload.
     AmbiguousBlockState {
+        /// Target item identity associated with the ambiguous block state.
         target: NamedSavedItemId,
+        /// Target block identifier required by the item/block map.
         target_block_id: String,
+        /// First candidate target BlockState.
         first: BlockState,
+        /// Second candidate target BlockState.
         second: BlockState,
+        /// Number of BlockState candidates discovered by the reverse index.
         matches: usize,
     },
+    /// The target BlockState identity disagrees with the target item/block map.
     BlockIdentityMismatch {
+        /// Target item identity associated with the mismatched block state.
         target: NamedSavedItemId,
+        /// Block identifier required by the target item/block map.
         expected_block_id: String,
+        /// Block identifier produced by the BlockState reverse mapping.
         actual_block_id: String,
+        /// Candidate target BlockState that failed identity validation.
         block: BlockState,
     },
 }
 
+/// Non-mutating preflight report for converting Modern saved items to an older Modern target.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModernSavedItemCheckReport {
+    /// Number of item-like NBT compounds inspected.
     pub items_seen: usize,
+    /// Number of inspected items that used string identifiers.
     pub string_sources: usize,
+    /// Number of inspected items that used numeric identifiers and were refused.
     pub numeric_sources: usize,
+    /// Number of items with conflicting `Name` and `id` identities.
     pub identity_conflicts: usize,
+    /// Number of items with conflicting `Damage` and `Aux` metadata.
     pub metadata_conflicts: usize,
+    /// Number of non-block items proven writable in the target release.
     pub items_proven: usize,
+    /// Number of block items proven writable with target BlockState payloads.
     pub block_items_proven: usize,
+    /// Number of named source items missing from the target reverse index.
     pub item_missing: usize,
+    /// Number of named source items that resolved to multiple target identities.
     pub item_ambiguous: usize,
+    /// Number of target metadata values outside TAG_Short `Damage` range.
     pub metadata_out_of_range: usize,
+    /// Number of block-item payloads that could not be proven compatible.
     pub block_incompatible: usize,
+    /// Ordered audit trail of individual compatibility issues.
     pub issues: Vec<ModernSavedItemIssue>,
 }
 
 impl ModernSavedItemCheckReport {
+    /// Returns true when no issue counters can block an exact target write.
     #[must_use]
     pub fn is_fully_proven(&self) -> bool {
         self.numeric_sources == 0
@@ -88,19 +156,27 @@ impl ModernSavedItemCheckReport {
     }
 }
 
+/// Result of converting an NBT tree to one exact older Modern saved-item target.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModernSavedItemConversionOutcome {
+    /// Converted NBT tree with unmodified unrelated fields preserved.
     pub nbt: NbtTag,
+    /// Preflight and mutation counters produced by the conversion.
     pub report: ModernSavedItemConversionReport,
 }
 
+/// Counters produced by an exact Modern-to-Modern saved-item conversion.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModernSavedItemConversionReport {
+    /// Non-mutating compatibility report used to authorize the conversion.
     pub check: ModernSavedItemCheckReport,
+    /// Number of item compounds whose item identity or metadata changed.
     pub items_changed: usize,
+    /// Number of item `Block` payloads whose BlockState payload changed.
     pub block_states_changed: usize,
 }
 
+/// Checks whether every recognised saved item can be written to a concrete older Modern target.
 pub fn check_saved_items_for_modern_target(
     nbt: &NbtTag,
     target: &ModernSavedItemTarget,
@@ -110,6 +186,11 @@ pub fn check_saved_items_for_modern_target(
     Ok(report)
 }
 
+/// Explicitly rewrites every recognised saved item to a concrete older Modern target.
+///
+/// The function refuses to mutate when the preflight report is not fully proven. Unknown fields on
+/// item compounds and existing `Block` payloads are preserved unless the target BlockState fields
+/// must be replaced.
 pub fn convert_saved_items_to_modern_target(
     nbt: &NbtTag,
     target: &ModernSavedItemTarget,
