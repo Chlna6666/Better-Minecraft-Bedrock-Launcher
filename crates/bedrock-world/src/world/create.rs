@@ -228,11 +228,11 @@ fn build_level_dat(options: &BedrockWorldCreateOptions) -> Result<LevelDatDocume
         ),
         (
             "commandsEnabled".to_string(),
-            NbtTag::Byte(i8::from(options.commands_enabled)),
+            NbtTag::Byte(if options.commands_enabled { 1 } else { 0 }),
         ),
         (
             "dodaylightcycle".to_string(),
-            NbtTag::Byte(i8::from(options.daylight_cycle)),
+            NbtTag::Byte(if options.daylight_cycle { 1 } else { 0 }),
         ),
         ("Time".to_string(), NbtTag::Long(0)),
         ("currentTick".to_string(), NbtTag::Long(0)),
