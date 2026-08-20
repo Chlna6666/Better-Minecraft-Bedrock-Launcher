@@ -20,6 +20,7 @@ mod pocket_entities_dat;
 mod pocket_world_storage;
 mod subchunk_numeric;
 mod subchunk_upgrade;
+mod world_clock;
 pub(crate) mod surface;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
