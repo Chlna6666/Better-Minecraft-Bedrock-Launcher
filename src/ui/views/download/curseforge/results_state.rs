@@ -140,7 +140,7 @@ fn ensure_results_loaded_impl(
             state.curseforge_sort_field,
             state.curseforge_sort_order,
             trimmed_search_query,
-            state.curseforge_page_index,
+            page_index,
             state.curseforge_page_size
         );
         (
