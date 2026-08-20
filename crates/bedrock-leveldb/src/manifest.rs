@@ -4,6 +4,7 @@ use crate::coding::{
 };
 use crate::error::{LevelDbError, Result};
 use crate::wal;
+use bytes::Bytes;
 use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
@@ -17,8 +18,8 @@ pub(crate) struct TableFileMeta {
     pub(crate) number: u64,
     pub(crate) level: u32,
     pub(crate) file_size: u64,
-    pub(crate) smallest_internal_key: Option<Vec<u8>>,
-    pub(crate) largest_internal_key: Option<Vec<u8>>,
+    pub(crate) smallest_internal_key: Option<Bytes>,
+    pub(crate) largest_internal_key: Option<Bytes>,
 }
 
 impl TableFileMeta {
@@ -45,8 +46,8 @@ impl TableFileMeta {
             number,
             level,
             file_size,
-            smallest_internal_key: Some(smallest_internal_key),
-            largest_internal_key: Some(largest_internal_key),
+            smallest_internal_key: Some(Bytes::from(smallest_internal_key)),
+            largest_internal_key: Some(Bytes::from(largest_internal_key)),
         }
     }
 
@@ -325,8 +326,8 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
                     number: file_number,
                     level,
                     file_size,
-                    smallest_internal_key: Some(smallest.to_vec()),
-                    largest_internal_key: Some(largest.to_vec()),
+                    smallest_internal_key: Some(Bytes::copy_from_slice(smallest)),
+                    largest_internal_key: Some(Bytes::copy_from_slice(largest)),
                 });
             }
             other => {
@@ -397,6 +398,25 @@ mod tests {
         assert_eq!(table.largest_user_key(), Some(b"omega".as_slice()));
         assert!(table.may_contain_user_key(b"middle"));
         assert!(!table.may_contain_user_key(b"zzz"));
+    }
+
+    #[test]
+    fn table_meta_clone_reuses_boundary_storage() {
+        let mut smallest = b"alpha".to_vec();
+        smallest.extend_from_slice(&1_u64.to_le_bytes());
+        let mut largest = b"omega".to_vec();
+        largest.extend_from_slice(&2_u64.to_le_bytes());
+        let table = TableFileMeta::native(7, 1, 123, smallest, largest);
+        let cloned = table.clone();
+
+        assert_eq!(
+            table.smallest_internal_key.as_ref().map(Bytes::as_ptr),
+            cloned.smallest_internal_key.as_ref().map(Bytes::as_ptr)
+        );
+        assert_eq!(
+            table.largest_internal_key.as_ref().map(Bytes::as_ptr),
+            cloned.largest_internal_key.as_ref().map(Bytes::as_ptr)
+        );
     }
 }
 
