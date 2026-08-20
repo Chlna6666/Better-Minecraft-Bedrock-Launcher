@@ -349,13 +349,10 @@ impl ScanPipelineOptions {
     /// Resolves the bounded queue depth for a scan.
     #[must_use]
     pub fn resolve_queue_depth(self, workers: usize, _tables: usize) -> usize {
-        self.queue_depth
-            .max(if self.queue_depth == 0 {
-                workers.max(1).saturating_mul(4)
-            } else {
-                1
-            })
-            .max(1)
+        if self.queue_depth != 0 {
+            return self.queue_depth.max(1);
+        }
+        workers.max(1).saturating_mul(2).min(64)
     }
 
     /// Resolves the table batch size for one Rayon task.
@@ -487,7 +484,8 @@ mod tests {
     fn scan_pipeline_options_resolve_automatic_bounds() {
         let options = ScanPipelineOptions::default();
 
-        assert!(options.resolve_queue_depth(4, 128) >= 1);
+        assert_eq!(options.resolve_queue_depth(4, 128), 8);
+        assert_eq!(options.resolve_queue_depth(128, 10_000), 64);
         assert!(options.resolve_table_batch_size(4, 128) >= 1);
         assert_eq!(options.resolve_progress_interval(), 8192);
 
