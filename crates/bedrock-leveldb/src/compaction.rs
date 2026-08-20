@@ -153,20 +153,24 @@ fn compaction_budget_bytes(table: &TableFileMeta) -> u64 {
     }
 }
 
-/// Merges compaction inputs with a bounded streaming k-way merge.
+/// Streams compacted output partitions to `emit_partition` as soon as each
+/// partition reaches the target size.
 ///
-/// Table scans feed small bounded queues and are activated lazily from manifest
-/// key ranges. The heap therefore retains only one current entry per active
-/// input instead of materializing every input table into a temporary map before
-/// merging. Output partitions keep the existing `Db` write contract and are
-/// capped by [`TARGET_OUTPUT_FILE_BYTES`]. Duplicate input-key buffers are
-/// recycled back to active producers so repeated versions do not continuously
-/// churn the allocator.
-pub(crate) fn merge(
+/// Input table scans feed small bounded queues and are activated lazily from
+/// manifest key ranges. The merge heap retains one current entry per active
+/// input. A completed output partition is handed to the caller immediately, so
+/// callers can persist and release it instead of retaining every compaction
+/// output in memory. Duplicate input-key buffers are recycled back to active
+/// producers to reduce allocator churn on overwritten keys.
+pub(crate) fn merge_into<F>(
     root: &Path,
     plan: &CompactionPlan,
     paranoid_checks: bool,
-) -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
+    mut emit_partition: F,
+) -> Result<()>
+where
+    F: FnMut(BTreeMap<Vec<u8>, Option<Bytes>>) -> Result<()>,
+{
     let mut priority_order = plan.inputs.clone();
     // Preserve the previous last-write-wins ordering: output-level tables are
     // older than the source level, while larger L0 file numbers are newer.
@@ -181,7 +185,7 @@ pub(crate) fn merge(
     let input_count = pending.len();
     let mut pending = VecDeque::from(pending);
 
-    thread::scope(|scope| -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
+    thread::scope(|scope| -> Result<()> {
         let spawn_stream = |path: std::path::PathBuf| {
             let (sender, receiver) = sync_channel(STREAM_QUEUE_DEPTH);
             let (recycle, recycled_keys) = sync_channel::<Vec<u8>>(STREAM_QUEUE_DEPTH);
@@ -219,15 +223,13 @@ pub(crate) fn merge(
             .take(input_count)
             .collect::<Vec<Option<StreamHandle>>>();
         let mut heap = BinaryHeap::<HeapEntry>::new();
-        let mut outputs = Vec::<BTreeMap<Vec<u8>, Option<Bytes>>>::new();
         let mut current = BTreeMap::<Vec<u8>, Option<Bytes>>::new();
         let mut current_bytes = 0_usize;
 
         loop {
             // A not-yet-opened table cannot contain a key below its manifest
-            // smallest key. Activate only the streams that could affect the
-            // current heap minimum. Unknown ranges are conservatively activated
-            // first; normal native tables carry exact user-key bounds.
+            // smallest key. Activate only streams that could affect the current
+            // heap minimum. Unknown ranges are conservatively activated first.
             loop {
                 let activate = pending.front().is_some_and(|next| {
                     let current_key = heap.peek().map(|entry| entry.key.as_slice());
@@ -290,7 +292,7 @@ pub(crate) fn merge(
             if !current.is_empty()
                 && current_bytes.saturating_add(entry_bytes) > TARGET_OUTPUT_FILE_BYTES
             {
-                outputs.push(std::mem::take(&mut current));
+                emit_partition(std::mem::take(&mut current))?;
                 current_bytes = 0;
             }
             current_bytes = current_bytes.saturating_add(entry_bytes);
@@ -298,10 +300,27 @@ pub(crate) fn merge(
         }
 
         if !current.is_empty() {
-            outputs.push(current);
+            emit_partition(current)?;
         }
-        Ok(outputs)
+        Ok(())
     })
+}
+
+/// Materializing compatibility helper retained only for focused compaction
+/// tests. Production compaction should call [`merge_into`] and persist each
+/// partition immediately.
+#[cfg(test)]
+fn merge(
+    root: &Path,
+    plan: &CompactionPlan,
+    paranoid_checks: bool,
+) -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
+    let mut outputs = Vec::new();
+    merge_into(root, plan, paranoid_checks, |partition| {
+        outputs.push(partition);
+        Ok(())
+    })?;
+    Ok(outputs)
 }
 
 fn recycle_key(priority: usize, key: Vec<u8>, streams: &[Option<StreamHandle>]) {
@@ -531,6 +550,41 @@ mod tests {
                 .iter()
                 .all(|partition| !partition.contains_key(b"gone".as_slice()))
         );
+    }
+
+    #[test]
+    fn streaming_merge_emits_partitions_incrementally() {
+        let dir = tempdir().expect("tempdir");
+        let mut entries = BTreeMap::new();
+        for index in 0..96_u32 {
+            let key = format!("chunk:{index:04}").into_bytes();
+            entries.insert(key, Some(Bytes::from(vec![index as u8; 32 * 1024])));
+        }
+        let table = write_table(dir.path(), 40, 0, entries);
+        let plan = CompactionPlan {
+            inputs: vec![table],
+            output_level: 1,
+        };
+
+        let mut partition_count = 0_usize;
+        let mut max_partition_bytes = 0_usize;
+        merge_into(dir.path(), &plan, true, |partition| {
+            partition_count = partition_count.saturating_add(1);
+            let bytes = partition
+                .iter()
+                .map(|(key, value)| {
+                    key.len()
+                        .saturating_add(value.as_ref().map_or(0, Bytes::len))
+                        .saturating_add(24)
+                })
+                .sum::<usize>();
+            max_partition_bytes = max_partition_bytes.max(bytes);
+            Ok(())
+        })
+        .expect("incremental merge");
+
+        assert!(partition_count >= 2);
+        assert!(max_partition_bytes <= TARGET_OUTPUT_FILE_BYTES + 32 * 1024 + 128);
     }
 
     #[test]
