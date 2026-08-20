@@ -6,8 +6,8 @@
 
 use super::{BedrockWorld, WorldStorageHandle};
 use crate::chunk::{
-    BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LEGACY_TERRAIN_VALUE_LEN,
-    LegacyTerrain, SubChunkDecodeMode, parse_subchunk_with_mode,
+    BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LegacyTerrain,
+    SubChunkDecodeMode, parse_subchunk_with_mode,
 };
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
@@ -167,6 +167,7 @@ fn legacy_block_state(id: u8, data: Option<u8>) -> BlockState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunk::LEGACY_TERRAIN_VALUE_LEN;
     use crate::database::{MemoryStorage, WorldStorage};
     use crate::world::{BedrockWorldOpenOptions, WorldFormatHint};
 
