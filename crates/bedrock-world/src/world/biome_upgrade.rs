@@ -48,11 +48,8 @@ where
         target_chunk_version: ChunkVersion,
         allow_saved_rgb_loss: bool,
     ) -> Result<BiomeData3dUpgradeReport> {
-        let (batch, report) = stage_biomes_to_data3d(
-            self.storage(),
-            target_chunk_version,
-            allow_saved_rgb_loss,
-        )?;
+        let (batch, report) =
+            stage_biomes_to_data3d(self.storage(), target_chunk_version, allow_saved_rgb_loss)?;
         if batch.is_empty() {
             return Ok(report);
         }
@@ -186,8 +183,7 @@ mod tests {
         let source = Biome2d::new(vec![72; 256], vec![4; 256]).unwrap();
         storage.put(&source_key, &source.encode().unwrap()).unwrap();
 
-        let (batch, report) =
-            stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).unwrap();
+        let (batch, report) = stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).unwrap();
         assert_eq!(report.data2d_records, 1);
         storage.write_batch(&batch).unwrap();
         let value = storage
@@ -197,7 +193,7 @@ mod tests {
         let parsed = crate::biome::Biome3d::parse(&value).unwrap();
         assert_eq!(parsed.storages.len(), 16);
         assert_eq!(parsed.storages.first().unwrap().y, Some(0));
-        assert_eq!(parsed.storages.last().unwrap().y, Some(15));
+        assert_eq!(parsed.storages.last().unwrap().y, Some(240));
     }
 
     #[test]
@@ -212,8 +208,7 @@ mod tests {
         let source = Biome2d::new(vec![72; 256], vec![4; 256]).unwrap();
         storage.put(&source_key, &source.encode().unwrap()).unwrap();
 
-        let (batch, _) =
-            stage_biomes_to_data3d(&storage, ChunkVersion::New, false).unwrap();
+        let (batch, _) = stage_biomes_to_data3d(&storage, ChunkVersion::New, false).unwrap();
         storage.write_batch(&batch).unwrap();
         let value = storage
             .get(&ChunkKey::new(pos, ChunkRecordTag::Data3D).encode())
@@ -221,8 +216,8 @@ mod tests {
             .unwrap();
         let parsed = crate::biome::Biome3d::parse(&value).unwrap();
         assert_eq!(parsed.storages.len(), 24);
-        assert_eq!(parsed.storages.first().unwrap().y, Some(-4));
-        assert_eq!(parsed.storages.last().unwrap().y, Some(19));
+        assert_eq!(parsed.storages.first().unwrap().y, Some(-64));
+        assert_eq!(parsed.storages.last().unwrap().y, Some(304));
         assert_eq!(parsed.height_map[0], 72);
     }
 
@@ -250,12 +245,9 @@ mod tests {
         .unwrap();
         storage.put(&source_key, &legacy.encode().unwrap()).unwrap();
 
-        assert!(
-            stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).is_err()
-        );
+        assert!(stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).is_err());
         assert!(storage.get(&source_key).unwrap().is_some());
-        let (batch, report) =
-            stage_biomes_to_data3d(&storage, ChunkVersion::Old, true).unwrap();
+        let (batch, report) = stage_biomes_to_data3d(&storage, ChunkVersion::Old, true).unwrap();
         assert_eq!(report.data2d_legacy_records, 1);
         assert_eq!(report.saved_rgb_samples_discarded, 256);
         storage.write_batch(&batch).unwrap();

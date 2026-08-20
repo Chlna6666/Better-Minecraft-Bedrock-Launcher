@@ -277,9 +277,9 @@ impl ActorUid {
     /// Derives the modern actor storage token from the NBT `UniqueID`.
     pub fn from_unique_id(unique_id: i64) -> Self {
         let unique = unique_id as u64;
-        let world_start_count = unique >> 32;
+        let world_start_count = (unique >> 32) as u32;
         let index = unique & 0xffff_ffff;
-        let storage = ((0xffff_ffff_u64.wrapping_sub(world_start_count)) << 32) | index;
+        let storage = (u64::from(0_u32.wrapping_sub(world_start_count)) << 32) | index;
         Self(i64::from_le_bytes(storage.to_be_bytes()))
     }
 

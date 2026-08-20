@@ -467,18 +467,21 @@ fn convert_tag(
                 return Err(validation("Modern preflight/conversion metadata mismatch"));
             };
             let SourceItemIdentity::Named(source) = read_item_identity(root, meta)? else {
-                return Err(validation("Modern preflight/conversion source identity mismatch"));
+                return Err(validation(
+                    "Modern preflight/conversion source identity mismatch",
+                ));
             };
             let source_block = read_source_block(root)?;
-            let (target_item, target_block) = match target.match_item(&source, source_block.as_ref())? {
-                ModernSavedItemTargetMatch::Item { item } => (item, None),
-                ModernSavedItemTargetMatch::BlockItem { item, block } => (item, Some(block)),
-                other => {
-                    return Err(validation(format!(
-                        "Modern preflight/conversion mismatch for {source:?}: {other:?}"
-                    )));
-                }
-            };
+            let (target_item, target_block) =
+                match target.match_item(&source, source_block.as_ref())? {
+                    ModernSavedItemTargetMatch::Item { item } => (item, None),
+                    ModernSavedItemTargetMatch::BlockItem { item, block } => (item, Some(block)),
+                    other => {
+                        return Err(validation(format!(
+                            "Modern preflight/conversion mismatch for {source:?}: {other:?}"
+                        )));
+                    }
+                };
 
             let damage = i16::try_from(target_item.meta)
                 .map_err(|_| validation("Modern preflight/conversion metadata width mismatch"))?;
@@ -544,12 +547,12 @@ enum SourceItemIdentity {
 fn read_item_identity(root: &IndexMap<String, NbtTag>, meta: i32) -> Result<SourceItemIdentity> {
     if let Some(value) = root.get("Name") {
         return match value {
-            NbtTag::String(name) if !name.is_empty() => Ok(SourceItemIdentity::Named(
-                NamedSavedItemId {
+            NbtTag::String(name) if !name.is_empty() => {
+                Ok(SourceItemIdentity::Named(NamedSavedItemId {
                     name: name.clone(),
                     meta,
-                },
-            )),
+                }))
+            }
             NbtTag::String(_) => Err(validation("saved item Name is empty")),
             other => Err(validation(format!(
                 "saved item Name has invalid NBT type: {other:?}"
@@ -560,12 +563,12 @@ fn read_item_identity(root: &IndexMap<String, NbtTag>, meta: i32) -> Result<Sour
         .get("id")
         .ok_or_else(|| validation("recognised saved item has neither Name nor id"))?;
     match value {
-        NbtTag::String(name) if !name.is_empty() => Ok(SourceItemIdentity::Named(
-            NamedSavedItemId {
+        NbtTag::String(name) if !name.is_empty() => {
+            Ok(SourceItemIdentity::Named(NamedSavedItemId {
                 name: name.clone(),
                 meta,
-            },
-        )),
+            }))
+        }
         NbtTag::String(_) => Err(validation("saved item string id is empty")),
         NbtTag::Byte(value) => Ok(SourceItemIdentity::Numeric(i32::from(*value))),
         NbtTag::Short(value) => Ok(SourceItemIdentity::Numeric(i32::from(*value))),
@@ -606,8 +609,9 @@ fn integer_i32(value: &NbtTag, field: &str) -> Result<i32> {
         NbtTag::Byte(value) => Ok(i32::from(*value)),
         NbtTag::Short(value) => Ok(i32::from(*value)),
         NbtTag::Int(value) => Ok(*value),
-        NbtTag::Long(value) => i32::try_from(*value)
-            .map_err(|_| validation(format!("saved item {field} exceeds i32"))),
+        NbtTag::Long(value) => {
+            i32::try_from(*value).map_err(|_| validation(format!("saved item {field} exceeds i32")))
+        }
         other => Err(validation(format!(
             "saved item {field} is not an integer: {other:?}"
         ))),
@@ -678,9 +682,9 @@ fn validation(message: impl Into<String>) -> BedrockWorldError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::version::BlockStateVersionTarget;
     use crate::block::{
-        AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateVersionTarget,
-        VanillaBlockStatePalette,
+        AuthoritativeBlockStateCatalog, BlockStateSchemaSource, VanillaBlockStatePalette,
     };
     use crate::item::{
         SavedItemUpgradeSource, SavedItemVersionTable, VanillaSavedItemBlockMap,
@@ -723,20 +727,26 @@ mod tests {
 
         let target_block_version =
             crate::block::BlockStateStorageVersion::from_components(1, 9, 0, 1).raw();
-        let block_catalog = AuthoritativeBlockStateCatalog::from_sources(&[BlockStateSchemaSource {
-            name: "0001_test.json",
-            json: r#"{
+        let block_catalog =
+            AuthoritativeBlockStateCatalog::from_sources(&[BlockStateSchemaSource {
+                name: "0001_test.json",
+                json: r#"{
                 "maxVersionMajor":1,"maxVersionMinor":12,"maxVersionPatch":0,"maxVersionRevision":1,
                 "renamedIds":{"minecraft:old_door":"minecraft:new_door"}
             }"#,
-        }])
-        .unwrap();
+            }])
+            .unwrap();
         let block_palette = VanillaBlockStatePalette::new(
             GameVersion::new(vec![1, 9, 0]).unwrap(),
             vec![block("minecraft:old_door", target_block_version)],
         )
         .unwrap();
-        let blocks = BlockStateVersionTarget::build(&block_catalog, &block_palette).unwrap();
+        let blocks = BlockStateVersionTarget::build(
+            GameVersion::new(vec![1, 12, 0]).unwrap(),
+            &block_catalog,
+            &block_palette,
+        )
+        .unwrap();
         let item_blocks = VanillaSavedItemBlockMap::from_block_id_to_item_id_map_json(
             GameVersion::new(vec![1, 9, 0]).unwrap(),
             r#"{"minecraft:old_door":"minecraft:item.old_door"}"#,
@@ -763,10 +773,7 @@ mod tests {
             ("name".to_string(), NbtTag::String(name.to_string())),
             (
                 "states".to_string(),
-                NbtTag::Compound(IndexMap::from([(
-                    "variant".to_string(),
-                    NbtTag::Int(0),
-                )])),
+                NbtTag::Compound(IndexMap::from([("variant".to_string(), NbtTag::Int(0))])),
             ),
             ("version".to_string(), NbtTag::Int(version)),
             ("FutureBlockField".to_string(), NbtTag::Long(99)),
@@ -777,7 +784,9 @@ mod tests {
     fn ordinary_item_rewrites_target_identity_and_preserves_unknown_fields() {
         let source = item("minecraft:apple", NbtTag::Int(4), None);
         let outcome = convert_saved_items_to_modern_target(&source, &target()).unwrap();
-        let NbtTag::Compound(root) = outcome.nbt else { panic!("compound") };
+        let NbtTag::Compound(root) = outcome.nbt else {
+            panic!("compound")
+        };
         assert_eq!(
             root.get("Name"),
             Some(&NbtTag::String("minecraft:old_apple".to_string()))
@@ -799,12 +808,16 @@ mod tests {
             )),
         );
         let outcome = convert_saved_items_to_modern_target(&source, &target).unwrap();
-        let NbtTag::Compound(root) = outcome.nbt else { panic!("compound") };
+        let NbtTag::Compound(root) = outcome.nbt else {
+            panic!("compound")
+        };
         assert_eq!(
             root.get("Name"),
             Some(&NbtTag::String("minecraft:item.old_door".to_string()))
         );
-        let Some(NbtTag::Compound(block)) = root.get("Block") else { panic!("Block") };
+        let Some(NbtTag::Compound(block)) = root.get("Block") else {
+            panic!("Block")
+        };
         assert_eq!(
             block.get("name"),
             Some(&NbtTag::String("minecraft:old_door".to_string()))
@@ -835,8 +848,12 @@ mod tests {
             NbtTag::Compound(root) => root,
             _ => unreachable!(),
         };
-        root.insert("id".to_string(), NbtTag::String("minecraft:apple".to_string()));
-        let check = check_saved_items_for_modern_target(&NbtTag::Compound(root), &target()).unwrap();
+        root.insert(
+            "id".to_string(),
+            NbtTag::String("minecraft:apple".to_string()),
+        );
+        let check =
+            check_saved_items_for_modern_target(&NbtTag::Compound(root), &target()).unwrap();
         assert_eq!(check.identity_conflicts, 1);
 
         let mut root = match item("minecraft:apple", NbtTag::Short(1), None) {
@@ -844,7 +861,8 @@ mod tests {
             _ => unreachable!(),
         };
         root.insert("Aux".to_string(), NbtTag::Short(2));
-        let check = check_saved_items_for_modern_target(&NbtTag::Compound(root), &target()).unwrap();
+        let check =
+            check_saved_items_for_modern_target(&NbtTag::Compound(root), &target()).unwrap();
         assert_eq!(check.metadata_conflicts, 1);
     }
 }

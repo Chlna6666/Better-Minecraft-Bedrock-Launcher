@@ -91,7 +91,10 @@ impl<'a> PlayerAbilities<'a> {
 
     /// Returns `permissionsLevel` when present.
     pub fn permissions_level(&self) -> Result<Option<i32>> {
-        integer_tag(self.nbt.get("permissionsLevel"), "abilities.permissionsLevel")
+        integer_tag(
+            self.nbt.get("permissionsLevel"),
+            "abilities.permissionsLevel",
+        )
     }
 
     /// Returns `playerPermissionsLevel` when present.

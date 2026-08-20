@@ -32,9 +32,12 @@ fn fixture_root() -> PathBuf {
 }
 
 fn require_historical_fixtures() -> bool {
-    env::var(REQUIRE_FIXTURES_ENV)
-        .ok()
-        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    env::var(REQUIRE_FIXTURES_ENV).ok().is_some_and(|value| {
+        matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -89,17 +92,17 @@ fn historical_world_matrix_opens_and_exposes_persisted_records() {
         };
         let world = BedrockWorld::open_auto_blocking(&path)
             .unwrap_or_else(|error| panic!("open historical world fixture {name}: {error}"));
-        let level = world
-            .read_level_dat_blocking()
-            .unwrap_or_else(|error| panic!("read level.dat for historical fixture {name}: {error}"));
+        let level = world.read_level_dat_blocking().unwrap_or_else(|error| {
+            panic!("read level.dat for historical fixture {name}: {error}")
+        });
         assert!(
             level.header.actual_payload_len != 0,
             "historical fixture {name} has an empty level.dat payload"
         );
 
-        let versions = world
-            .versions_blocking()
-            .unwrap_or_else(|error| panic!("scan version evidence for historical fixture {name}: {error}"));
+        let versions = world.versions_blocking().unwrap_or_else(|error| {
+            panic!("scan version evidence for historical fixture {name}: {error}")
+        });
         assert_eq!(
             versions.world_format,
             world.format(),
@@ -117,7 +120,9 @@ fn historical_world_matrix_opens_and_exposes_persisted_records() {
 
         let _chunk_positions = world
             .list_chunk_positions_blocking(WorldScanOptions::default())
-            .unwrap_or_else(|error| panic!("list chunk positions for historical fixture {name}: {error}"));
+            .unwrap_or_else(|error| {
+                panic!("list chunk positions for historical fixture {name}: {error}")
+            });
 
         if *name == "future-unknown" {
             assert!(

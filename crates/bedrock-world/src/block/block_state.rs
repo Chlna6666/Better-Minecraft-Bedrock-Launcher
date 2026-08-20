@@ -4,9 +4,10 @@ mod block_state_graph;
 mod block_state_upgrade;
 mod identity;
 mod nbt;
+mod properties;
 
-use crate::block::version::AuthoritativeBlockStateCatalog;
 use crate::block::BlockState;
+use crate::block::version::AuthoritativeBlockStateCatalog;
 use crate::error::{BedrockWorldError, Result};
 
 pub use block_state_graph::{BlockStateMigrationGraph, BlockStateMigrationStep};
@@ -15,6 +16,10 @@ pub use block_state_upgrade::{
     BlockStateValueRewrite,
 };
 pub use nbt::read_block_state_nbt;
+pub use properties::{
+    BlockFace, DoorBlockStates, HorizontalDirection, RedstoneBlockStates, SlabBlockStates,
+    StairBlockStates, StairCorner, TrapdoorBlockStates, VerticalHalf,
+};
 
 /// BlockState version writer used only when a caller explicitly selects another persisted version.
 pub trait BlockStateMigrator: Send + Sync {

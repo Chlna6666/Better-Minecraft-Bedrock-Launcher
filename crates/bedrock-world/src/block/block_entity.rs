@@ -135,7 +135,8 @@ pub fn rewrite_block_entity_chunk_blocking(
             BlockEntityRewriteStatus::Unchanged => {
                 if outcome.nbt != root {
                     return Err(BedrockWorldError::Validation(
-                        "BlockEntity rewriter returned modified NBT with Unchanged status".to_string(),
+                        "BlockEntity rewriter returned modified NBT with Unchanged status"
+                            .to_string(),
                     ));
                 }
                 encoded.extend_from_slice(&remaining[..consumed]);
@@ -148,7 +149,8 @@ pub fn rewrite_block_entity_chunk_blocking(
             BlockEntityRewriteStatus::Preserved => {
                 if outcome.nbt != root {
                     return Err(BedrockWorldError::Validation(
-                        "BlockEntity rewriter returned modified NBT with Preserved status".to_string(),
+                        "BlockEntity rewriter returned modified NBT with Preserved status"
+                            .to_string(),
                     ));
                 }
                 encoded.extend_from_slice(&remaining[..consumed]);
@@ -336,11 +338,17 @@ mod tests {
         let NbtTag::Compound(values) = output.nbt else {
             panic!("compound");
         };
-        assert_eq!(values.get("Text1"), Some(&NbtTag::String("one".to_string())));
+        assert_eq!(
+            values.get("Text1"),
+            Some(&NbtTag::String("one".to_string()))
+        );
         let Some(NbtTag::Compound(front)) = values.get("FrontText") else {
             panic!("front text");
         };
-        assert_eq!(front.get("Text"), Some(&NbtTag::String("one\ntwo".to_string())));
+        assert_eq!(
+            front.get("Text"),
+            Some(&NbtTag::String("one\ntwo".to_string()))
+        );
         assert!(matches!(values.get("BackText"), Some(NbtTag::Compound(_))));
     }
 
@@ -416,7 +424,9 @@ mod tests {
         };
         let key = ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode();
         let root = sign_with([("Text".to_string(), NbtTag::String("hello".to_string()))]);
-        storage.put(&key, &serialize_root_nbt(&root).unwrap()).unwrap();
+        storage
+            .put(&key, &serialize_root_nbt(&root).unwrap())
+            .unwrap();
 
         let first = rewrite_block_entity_sign_text_blocking(
             &storage,

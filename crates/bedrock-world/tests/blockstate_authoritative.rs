@@ -5,8 +5,10 @@ use bedrock_world::nbt::NbtTag;
 use std::collections::BTreeMap;
 
 const SCHEMA_0011: &str = include_str!("fixtures/blockstate-schema/0011_1.10.0_to_1.12.0.json");
-const SCHEMA_0121: &str = include_str!("fixtures/blockstate-schema/0121_1.18.10_to_1.18.20.27_beta.json");
-const SCHEMA_0131: &str = include_str!("fixtures/blockstate-schema/0131_1.18.20.27_beta_to_1.18.30.json");
+const SCHEMA_0121: &str =
+    include_str!("fixtures/blockstate-schema/0121_1.18.10_to_1.18.20.27_beta.json");
+const SCHEMA_0131: &str =
+    include_str!("fixtures/blockstate-schema/0131_1.18.20.27_beta_to_1.18.30.json");
 
 #[test]
 fn real_schema_applies_added_property_and_indexed_value_remap() {

@@ -23,8 +23,7 @@ pub(crate) const LEGACY_TERRAIN_BLOCK_LIGHT_OFFSET: usize =
     LEGACY_TERRAIN_SKY_LIGHT_OFFSET + LEGACY_TERRAIN_BLOCK_COUNT / 2;
 pub(crate) const LEGACY_TERRAIN_HEIGHTMAP_OFFSET: usize =
     LEGACY_TERRAIN_BLOCK_LIGHT_OFFSET + LEGACY_TERRAIN_BLOCK_COUNT / 2;
-pub(crate) const LEGACY_TERRAIN_BIOME_OFFSET: usize =
-    LEGACY_TERRAIN_HEIGHTMAP_OFFSET + 16 * 16;
+pub(crate) const LEGACY_TERRAIN_BIOME_OFFSET: usize = LEGACY_TERRAIN_HEIGHTMAP_OFFSET + 16 * 16;
 /// Exact byte length of the terrain core used by pre-LevelDB Pocket Edition `chunks.dat`.
 ///
 /// This form contains block IDs, metadata, sky light, block light and the 16x16 height map, but no
@@ -65,7 +64,10 @@ pub struct LegacyTerrain {
 impl LegacyTerrain {
     /// Parses historical terrain bytes without inventing fields absent from the source representation.
     pub fn parse(bytes: Bytes) -> Result<Self> {
-        if !matches!(bytes.len(), POCKET_TERRAIN_VALUE_LEN | LEGACY_TERRAIN_VALUE_LEN) {
+        if !matches!(
+            bytes.len(),
+            POCKET_TERRAIN_VALUE_LEN | LEGACY_TERRAIN_VALUE_LEN
+        ) {
             return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
                 "historical terrain value must be {POCKET_TERRAIN_VALUE_LEN} bytes (Pocket chunks.dat core) or {LEGACY_TERRAIN_VALUE_LEN} bytes (LevelDB LegacyTerrain), got {}",
                 bytes.len()

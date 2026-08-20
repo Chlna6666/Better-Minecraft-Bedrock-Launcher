@@ -99,14 +99,14 @@ impl SubChunk {
         match SubChunkVersion::detect(&bytes) {
             Some(SubChunkVersion::V0) => crate::chunk::subchunk_v0::read(y, bytes, mode),
             Some(SubChunkVersion::V1) => crate::chunk::subchunk_v1::read(y, bytes, mode),
-            Some(version @ (SubChunkVersion::V2
-            | SubChunkVersion::V3
-            | SubChunkVersion::V4
-            | SubChunkVersion::V5
-            | SubChunkVersion::V6
-            | SubChunkVersion::V7)) => {
-                crate::chunk::subchunk_v2_v7::read(version.byte(), y, bytes, mode)
-            }
+            Some(
+                version @ (SubChunkVersion::V2
+                | SubChunkVersion::V3
+                | SubChunkVersion::V4
+                | SubChunkVersion::V5
+                | SubChunkVersion::V6
+                | SubChunkVersion::V7),
+            ) => crate::chunk::subchunk_v2_v7::read(version.byte(), y, bytes, mode),
             Some(SubChunkVersion::V8) => crate::chunk::subchunk_v8::read(y, bytes, mode),
             Some(SubChunkVersion::V9) => crate::chunk::subchunk_v9::read(y, bytes, mode),
             Some(SubChunkVersion::Unknown(version)) => Ok(Self {
@@ -265,10 +265,45 @@ mod tests {
 
     #[test]
     fn v7_reads_and_writes_as_v7() {
-        let raw = LegacySubChunkBuilder::new(7).unwrap().build().unwrap();
+        let legacy = LegacySubChunkBuilder::zeroed(7, false)
+            .unwrap()
+            .build()
+            .unwrap();
+        let raw = legacy.raw().clone();
         let subchunk = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
         assert_eq!(subchunk.version(), Some(SubChunkVersion::V7));
         assert_eq!(subchunk.write().unwrap(), raw);
+    }
+
+    #[test]
+    fn legacy_subchunk_versions_roundtrip_without_implicit_upgrade() {
+        for version in [0_u8, 2, 3, 4, 5, 6, 7] {
+            let legacy = LegacySubChunkBuilder::zeroed(version, false)
+                .unwrap()
+                .build()
+                .unwrap();
+            let raw = legacy.raw().clone();
+            let subchunk = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
+            assert_eq!(
+                subchunk.version(),
+                Some(SubChunkVersion::from_byte(version))
+            );
+            assert_eq!(subchunk.write().unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn paletted_subchunk_versions_roundtrip_through_their_native_writers() {
+        for version in [1_u8, 8, 9] {
+            let source = paletted_subchunk(version, -2);
+            let encoded = source
+                .write_as_version(SubChunkVersion::from_byte(version))
+                .unwrap();
+            let parsed =
+                SubChunk::read(-2, encoded.clone(), SubChunkDecodeMode::FullIndices).unwrap();
+            assert_eq!(parsed.version(), Some(SubChunkVersion::from_byte(version)));
+            assert_eq!(parsed.write().unwrap(), encoded);
+        }
     }
 
     #[test]
@@ -293,14 +328,20 @@ mod tests {
         let parsed =
             SubChunk::read(-2, v8_again, SubChunkDecodeMode::FullIndices).expect("read V8 again");
         assert_eq!(
-            parsed.block_state_at(0, 0, 0).map(|state| state.name.as_str()),
+            parsed
+                .block_state_at(0, 0, 0)
+                .map(|state| state.name.as_str()),
             Some("minecraft:air")
         );
     }
 
     #[test]
     fn legacy_cross_version_write_refuses_missing_numeric_reverse_mapping() {
-        let raw = LegacySubChunkBuilder::new(7).unwrap().build().unwrap();
+        let legacy = LegacySubChunkBuilder::zeroed(7, false)
+            .unwrap()
+            .build()
+            .unwrap();
+        let raw = legacy.raw().clone();
         let subchunk = SubChunk::read(0, raw, SubChunkDecodeMode::FullIndices).unwrap();
         assert!(subchunk.write_as_version(SubChunkVersion::V2).is_err());
     }
@@ -322,5 +363,11 @@ mod tests {
                 .write_as_version(SubChunkVersion::Unknown(11))
                 .is_err()
         );
+
+        let generic =
+            crate::chunk::parse_subchunk_with_mode(0, raw.clone(), SubChunkDecodeMode::FullIndices)
+                .unwrap();
+        assert_eq!(generic.version(), Some(SubChunkVersion::Unknown(10)));
+        assert_eq!(generic.write().unwrap(), raw);
     }
 }

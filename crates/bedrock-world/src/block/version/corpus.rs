@@ -4,17 +4,14 @@
 //! manifest pins the exact PocketMine revision and validates that destructive migration never runs
 //! against a partial, duplicated, or accidentally mixed schema set.
 
-use super::{
-    AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
-};
+use super::{AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion};
 use crate::error::{BedrockWorldError, Result};
 use std::collections::BTreeSet;
 
 /// PocketMine `bedrock-block-upgrade-schema` package version pinned by this library revision.
 pub const PINNED_BLOCK_UPGRADE_SCHEMA_VERSION: &str = "5.2.0";
 /// Git commit backing [`PINNED_BLOCK_UPGRADE_SCHEMA_VERSION`].
-pub const PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT: &str =
-    "5d7889c9a1cdf9e3cd814d2a104ad69b75116ec7";
+pub const PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT: &str = "5d7889c9a1cdf9e3cd814d2a104ad69b75116ec7";
 /// Expected legacy numeric-ID map file in the pinned corpus.
 pub const PINNED_LEGACY_BLOCK_ID_MAP_FILE: &str = "block_legacy_id_map.json";
 /// 1.9 numeric ID/meta table, needed when a caller intentionally targets pre-1.12 BlockState data.
@@ -165,7 +162,10 @@ fn validate_pinned_sources(sources: &[BlockStateSchemaSource<'_>]) -> Result<()>
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let supplied = sources.iter().map(|source| source.name).collect::<BTreeSet<_>>();
+    let supplied = sources
+        .iter()
+        .map(|source| source.name)
+        .collect::<BTreeSet<_>>();
     if supplied.len() != sources.len() {
         return Err(BedrockWorldError::Validation(
             "pinned BlockState corpus contains duplicate filenames".to_string(),

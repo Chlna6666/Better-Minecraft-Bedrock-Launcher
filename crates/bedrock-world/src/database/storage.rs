@@ -634,7 +634,7 @@ pub mod backend {
                     format!("LevelDB path not found: {}", path.display()),
                 )));
             }
-            let options = bedrock_leveldb::Options {
+            let options = bedrock_leveldb::LevelDbOpenOptions {
                 read_only,
                 create_if_missing: false,
                 error_if_exists: false,
@@ -708,18 +708,20 @@ pub mod backend {
             visitor: &mut (dyn FnMut(&[u8]) -> Result<StorageVisitorControl> + Send),
         ) -> Result<StorageScanOutcome> {
             let mut visitor_error = None;
-            let result = self
-                .db
-                .for_each_key(to_leveldb_read_options(options), |key| match visitor(key) {
-                    Ok(StorageVisitorControl::Continue) => {
-                        Ok(bedrock_leveldb::VisitorControl::Continue)
-                    }
-                    Ok(StorageVisitorControl::Stop) => Ok(bedrock_leveldb::VisitorControl::Stop),
-                    Err(error) => {
-                        visitor_error = Some(error);
-                        Ok(bedrock_leveldb::VisitorControl::Stop)
-                    }
-                });
+            let result =
+                self.db
+                    .for_each_key(to_leveldb_read_options(options), |key| match visitor(key) {
+                        Ok(StorageVisitorControl::Continue) => {
+                            Ok(bedrock_leveldb::VisitorControl::Continue)
+                        }
+                        Ok(StorageVisitorControl::Stop) => {
+                            Ok(bedrock_leveldb::VisitorControl::Stop)
+                        }
+                        Err(error) => {
+                            visitor_error = Some(error);
+                            Ok(bedrock_leveldb::VisitorControl::Stop)
+                        }
+                    });
             finish_scan(result, visitor_error)
         }
 
@@ -730,20 +732,22 @@ pub mod backend {
             visitor: &mut (dyn FnMut(&[u8], &Bytes) -> Result<StorageVisitorControl> + Send),
         ) -> Result<StorageScanOutcome> {
             let mut visitor_error = None;
-            let result = self.db.for_each_prefix(
-                prefix,
-                to_leveldb_read_options(options),
-                |key, value| match visitor(key, value) {
-                    Ok(StorageVisitorControl::Continue) => {
-                        Ok(bedrock_leveldb::VisitorControl::Continue)
-                    }
-                    Ok(StorageVisitorControl::Stop) => Ok(bedrock_leveldb::VisitorControl::Stop),
-                    Err(error) => {
-                        visitor_error = Some(error);
-                        Ok(bedrock_leveldb::VisitorControl::Stop)
-                    }
-                },
-            );
+            let result =
+                self.db
+                    .for_each_prefix(prefix, to_leveldb_read_options(options), |key, value| {
+                        match visitor(key, value) {
+                            Ok(StorageVisitorControl::Continue) => {
+                                Ok(bedrock_leveldb::VisitorControl::Continue)
+                            }
+                            Ok(StorageVisitorControl::Stop) => {
+                                Ok(bedrock_leveldb::VisitorControl::Stop)
+                            }
+                            Err(error) => {
+                                visitor_error = Some(error);
+                                Ok(bedrock_leveldb::VisitorControl::Stop)
+                            }
+                        }
+                    });
             finish_scan(result, visitor_error)
         }
 
@@ -781,20 +785,22 @@ pub mod backend {
             visitor: &mut (dyn FnMut(&[u8]) -> Result<StorageVisitorControl> + Send),
         ) -> Result<StorageScanOutcome> {
             let mut visitor_error = None;
-            let result = self.db.for_each_prefix_key(
-                prefix,
-                to_leveldb_read_options(options),
-                |key| match visitor(key) {
-                    Ok(StorageVisitorControl::Continue) => {
-                        Ok(bedrock_leveldb::VisitorControl::Continue)
-                    }
-                    Ok(StorageVisitorControl::Stop) => Ok(bedrock_leveldb::VisitorControl::Stop),
-                    Err(error) => {
-                        visitor_error = Some(error);
-                        Ok(bedrock_leveldb::VisitorControl::Stop)
-                    }
-                },
-            );
+            let result =
+                self.db
+                    .for_each_prefix_key(prefix, to_leveldb_read_options(options), |key| {
+                        match visitor(key) {
+                            Ok(StorageVisitorControl::Continue) => {
+                                Ok(bedrock_leveldb::VisitorControl::Continue)
+                            }
+                            Ok(StorageVisitorControl::Stop) => {
+                                Ok(bedrock_leveldb::VisitorControl::Stop)
+                            }
+                            Err(error) => {
+                                visitor_error = Some(error);
+                                Ok(bedrock_leveldb::VisitorControl::Stop)
+                            }
+                        }
+                    });
             finish_scan(result, visitor_error)
         }
 
@@ -812,13 +818,11 @@ pub mod backend {
         }
 
         fn flush(&self) -> Result<()> {
-            self.db.flush_memtable().map_err(map_leveldb_error)
+            self.db.flush().map_err(map_leveldb_error)
         }
 
         fn compact(&self) -> Result<()> {
-            self.db
-                .compact_range_native(None, None)
-                .map_err(map_leveldb_error)
+            self.db.compact().map_err(map_leveldb_error)
         }
     }
 
@@ -1083,17 +1087,13 @@ mod tests {
 
         let mut entries = Vec::new();
         storage
-            .for_each_prefix(
-                b"abc",
-                StorageReadOptions::default(),
-                &mut |key, value| {
-                    entries.push(StorageEntry {
-                        key: Bytes::copy_from_slice(key),
-                        value: value.clone(),
-                    });
-                    Ok(StorageVisitorControl::Continue)
-                },
-            )
+            .for_each_prefix(b"abc", StorageReadOptions::default(), &mut |key, value| {
+                entries.push(StorageEntry {
+                    key: Bytes::copy_from_slice(key),
+                    value: value.clone(),
+                });
+                Ok(StorageVisitorControl::Continue)
+            })
             .unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].key, Bytes::from_static(b"abc1"));
@@ -1113,7 +1113,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&path).unwrap();
-        drop(bedrock_leveldb::Db::open(&path, bedrock_leveldb::Options::default()).unwrap());
+        drop(
+            bedrock_leveldb::Db::open(&path, bedrock_leveldb::LevelDbOpenOptions::default())
+                .unwrap(),
+        );
 
         let storage = backend::BedrockLevelDbStorage::open(&path).unwrap();
         storage.put(b"player_1", b"one").unwrap();

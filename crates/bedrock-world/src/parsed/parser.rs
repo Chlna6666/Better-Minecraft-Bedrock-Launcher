@@ -361,7 +361,7 @@ pub struct ParsedBiomeData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Parsed biome palette storage layer.
 pub struct ParsedBiomeStorage {
-    /// Vertical biome section index for 3D data, or `None` for 2D biome data.
+    /// First block Y covered by this 16-block 3D biome storage, or `None` for 2D biome data.
     pub y: Option<i32>,
     /// Palette values referenced by packed indices.
     pub palette: Vec<u32>,
@@ -1091,7 +1091,7 @@ fn parse_chunk_record_value(
                     ParsedChunkRecordValue::SubChunk(subchunk)
                 }
                 Err(error) => {
-                    report.warnings.push(format!(
+                    report.parse_errors.push(format!(
                         "subchunk {:?} kept raw: {error}",
                         chunk_key.subchunk_y
                     ));
@@ -1105,17 +1105,29 @@ fn parse_chunk_record_value(
         ChunkRecordTag::PendingTicks => parse_pending_ticks(value, report),
         ChunkRecordTag::Version | ChunkRecordTag::VersionOld | ChunkRecordTag::LegacyVersion => {
             value.first().copied().map_or_else(
-                || ParsedChunkRecordValue::Raw(value.clone()),
+                || {
+                    report
+                        .parse_errors
+                        .push(format!("{:?} version record is empty", chunk_key.tag));
+                    report.raw_entry_count += 1;
+                    ParsedChunkRecordValue::Raw(value.clone())
+                },
                 ParsedChunkRecordValue::Version,
             )
         }
         ChunkRecordTag::FinalizedState => read_i32(value).map_or_else(
-            || ParsedChunkRecordValue::Raw(value.clone()),
+            || {
+                report.parse_errors.push(format!(
+                    "FinalizedState record must contain a little-endian i32, got {} bytes",
+                    value.len()
+                ));
+                report.raw_entry_count += 1;
+                ParsedChunkRecordValue::Raw(value.clone())
+            },
             ParsedChunkRecordValue::FinalizedState,
         ),
-        ChunkRecordTag::Data3D => parse_biome_data(value, ChunkVersion::New, report),
-        ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => {
-            parse_biome_data(value, ChunkVersion::Old, report)
+        ChunkRecordTag::Data3D | ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => {
+            parse_biome_data(value, chunk_key.tag, report)
         }
         ChunkRecordTag::HardcodedSpawners => parse_hardcoded_spawn_areas(value, report),
         ChunkRecordTag::LegacyTerrain => parse_legacy_terrain(value, report),
@@ -1146,7 +1158,7 @@ fn parse_legacy_terrain(value: &Bytes, report: &mut WorldParseReport) -> ParsedC
         }
         Err(error) => {
             report
-                .warnings
+                .parse_errors
                 .push(format!("LegacyTerrain kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedChunkRecordValue::Raw(value.clone())
@@ -1222,11 +1234,17 @@ fn raw_chunk_value(value: &Bytes, options: WorldParseOptions) -> ParsedChunkReco
 }
 
 fn parse_map_value(id: &str, value: &Bytes, report: &mut WorldParseReport) -> ParsedDbValue {
+    let roots = match parse_consecutive_root_nbt(value) {
+        Ok(roots) => roots,
+        Err(error) => {
+            report
+                .parse_errors
+                .push(format!("map_{id} kept raw: {error}"));
+            report.raw_entry_count += 1;
+            return ParsedDbValue::Raw(value.clone());
+        }
+    };
     report.map_record_count += 1;
-    let roots = parse_consecutive_root_nbt(value).unwrap_or_else(|error| {
-        report.warnings.push(format!("map_{id} kept raw: {error}"));
-        Vec::new()
-    });
     let known_fields = map_known_fields(&roots);
     let pixels = map_pixels(&roots);
     ParsedDbValue::MapData(ParsedMapData {
@@ -1244,13 +1262,17 @@ fn parse_village_value(
     value: &Bytes,
     report: &mut WorldParseReport,
 ) -> ParsedDbValue {
+    let roots = match parse_consecutive_root_nbt(value) {
+        Ok(roots) => roots,
+        Err(error) => {
+            report
+                .parse_errors
+                .push(format!("{} kept raw: {error}", key.raw));
+            report.raw_entry_count += 1;
+            return ParsedDbValue::Raw(value.clone());
+        }
+    };
     report.village_record_count += 1;
-    let roots = parse_consecutive_root_nbt(value).unwrap_or_else(|error| {
-        report
-            .warnings
-            .push(format!("{} kept raw: {error}", key.raw));
-        Vec::new()
-    });
     ParsedDbValue::VillageData(ParsedVillageData {
         key: key.clone(),
         roots,
@@ -1272,7 +1294,9 @@ fn parse_global_value(name: &str, value: &Bytes, report: &mut WorldParseReport) 
             })
         }
         Err(error) => {
-            report.warnings.push(format!("{name} kept raw: {error}"));
+            report
+                .parse_errors
+                .push(format!("{name} kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedDbValue::Raw(value.clone())
         }
@@ -1489,7 +1513,7 @@ pub(crate) fn parse_actor_value(value: &Bytes, report: &mut WorldParseReport) ->
         }
         Err(error) => {
             report
-                .warnings
+                .parse_errors
                 .push(format!("actorprefix kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedDbValue::Raw(value.clone())
@@ -1499,12 +1523,14 @@ pub(crate) fn parse_actor_value(value: &Bytes, report: &mut WorldParseReport) ->
 
 fn parse_biome_data(
     value: &Bytes,
-    version: ChunkVersion,
+    tag: ChunkRecordTag,
     report: &mut WorldParseReport,
 ) -> ParsedChunkRecordValue {
-    let result = match version {
-        ChunkVersion::Old => parse_legacy_data2d(value),
-        ChunkVersion::New => parse_data3d(value),
+    let result = match tag {
+        ChunkRecordTag::Data3D => parse_data3d(value),
+        ChunkRecordTag::Data2D => parse_legacy_data2d(value),
+        ChunkRecordTag::Data2DLegacy => parse_data2d_legacy(value),
+        _ => unreachable!("biome parser called with a non-biome tag"),
     };
     match result {
         Ok(data) => {
@@ -1514,8 +1540,8 @@ fn parse_biome_data(
         }
         Err(error) => {
             report
-                .warnings
-                .push(format!("biome data kept raw: {error}"));
+                .parse_errors
+                .push(format!("{tag:?} biome data kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedChunkRecordValue::Raw(value.clone())
         }
@@ -1550,6 +1576,32 @@ pub(crate) fn parse_legacy_data2d(value: &[u8]) -> Result<ParsedBiomeData, Strin
     })
 }
 
+pub(crate) fn parse_data2d_legacy(value: &[u8]) -> Result<ParsedBiomeData, String> {
+    let legacy = crate::biome::Biome2dLegacy::parse(value).map_err(|error| error.to_string())?;
+    let indices = legacy
+        .biomes
+        .iter()
+        .map(|sample| u16::from(sample.biome_id))
+        .collect::<Vec<_>>();
+    let palette = (0..=255).collect::<Vec<_>>();
+    let mut counts = vec![0_u16; palette.len()];
+    for index in &indices {
+        if let Some(count) = counts.get_mut(usize::from(*index)) {
+            *count = count.saturating_add(1);
+        }
+    }
+    Ok(ParsedBiomeData {
+        version: ChunkVersion::Old,
+        height_map: legacy.height_map,
+        storages: vec![ParsedBiomeStorage {
+            y: None,
+            palette,
+            indices: Some(indices),
+            counts,
+        }],
+    })
+}
+
 pub(crate) fn parse_data3d(value: &[u8]) -> Result<ParsedBiomeData, String> {
     if value.len() < 512 {
         return Err(format!("Data3D is too short: {}", value.len()));
@@ -1557,15 +1609,19 @@ pub(crate) fn parse_data3d(value: &[u8]) -> Result<ParsedBiomeData, String> {
     let height_map = read_height_map(&value[..512])?;
     let mut offset = 512;
     let mut storages = Vec::new();
-    let mut y = -64;
     while offset < value.len() {
-        let (storage, consumed) = parse_subchunk_biomes(&value[offset..], y)?;
+        let (storage, consumed) = parse_subchunk_biomes(&value[offset..], 0)?;
         if consumed == 0 {
             return Err("Data3D biome parser did not advance".to_string());
         }
         offset += consumed;
-        y += 16;
         storages.push(storage);
+    }
+    let first_block_y = if storages.len() == 24 { -64 } else { 0 };
+    for (index, storage) in storages.iter_mut().enumerate() {
+        let index = i32::try_from(index)
+            .map_err(|_| "Data3D biome storage count exceeds i32".to_string())?;
+        storage.y = Some(first_block_y + index * 16);
     }
     Ok(ParsedBiomeData {
         version: ChunkVersion::New,
@@ -1789,7 +1845,7 @@ fn parse_hardcoded_spawn_areas(
         }
         Err(error) => {
             report
-                .warnings
+                .parse_errors
                 .push(format!("hardcoded spawn areas kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedChunkRecordValue::Raw(value.clone())
@@ -1848,7 +1904,7 @@ pub(crate) fn parse_block_entities(
         }
         Err(error) => {
             report
-                .warnings
+                .parse_errors
                 .push(format!("block entities kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedChunkRecordValue::Raw(value.clone())
@@ -1870,7 +1926,9 @@ fn parse_entities_chunk_record(
             ParsedChunkRecordValue::Entities(entities)
         }
         Err(error) => {
-            report.warnings.push(format!("entities kept raw: {error}"));
+            report
+                .parse_errors
+                .push(format!("entities kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedChunkRecordValue::Raw(value.clone())
         }
@@ -1902,7 +1960,7 @@ fn parse_pending_ticks(value: &Bytes, report: &mut WorldParseReport) -> ParsedCh
         Ok(tags) => ParsedChunkRecordValue::PendingTicks(tags),
         Err(error) => {
             report
-                .warnings
+                .parse_errors
                 .push(format!("pending ticks kept raw: {error}"));
             report.raw_entry_count += 1;
             ParsedChunkRecordValue::Raw(value.clone())
@@ -2311,7 +2369,7 @@ mod tests {
         );
 
         let storage = ParsedBiomeStorage {
-            y: Some(-64),
+            y: Some(0),
             palette: vec![1, 2],
             indices: Some(vec![0; 4096]),
             counts: vec![4096, 0],
@@ -2325,7 +2383,7 @@ mod tests {
         let inherited = Biome3d::new(
             vec![0; 256],
             vec![ParsedBiomeStorage {
-                y: Some(-64),
+                y: Some(0),
                 palette: vec![u32::MAX],
                 indices: None,
                 counts: vec![4096],
@@ -2379,7 +2437,7 @@ mod tests {
                 },
                 ChunkRecordTag::LegacyTerrain,
             ),
-            value: Bytes::from(vec![0; crate::LEGACY_TERRAIN_VALUE_LEN]),
+            value: Bytes::from(vec![0; crate::chunk::LEGACY_TERRAIN_VALUE_LEN]),
         }];
 
         let parsed = parse_chunk_records(
@@ -2400,7 +2458,7 @@ mod tests {
 
     #[test]
     fn chunk_record_parser_counts_legacy_subchunks() {
-        let mut value = vec![0; crate::LEGACY_SUBCHUNK_MIN_VALUE_LEN];
+        let mut value = vec![0; crate::chunk::LEGACY_SUBCHUNK_MIN_VALUE_LEN];
         value[0] = 2;
         let records = vec![ChunkRecord {
             key: crate::ChunkKey::subchunk(
@@ -2432,6 +2490,54 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn malformed_known_chunk_records_are_reported_as_parse_errors() {
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: crate::Dimension::Overworld,
+        };
+        let records = vec![
+            ChunkRecord {
+                key: crate::ChunkKey::subchunk(pos, 0),
+                value: Bytes::from_static(&[8]),
+            },
+            ChunkRecord {
+                key: crate::ChunkKey::new(pos, ChunkRecordTag::Version),
+                value: Bytes::new(),
+            },
+            ChunkRecord {
+                key: crate::ChunkKey::new(pos, ChunkRecordTag::FinalizedState),
+                value: Bytes::from_static(&[1, 2, 3]),
+            },
+            ChunkRecord {
+                key: crate::ChunkKey::new(pos, ChunkRecordTag::Data3D),
+                value: Bytes::from_static(&[0]),
+            },
+        ];
+
+        let parsed = parse_chunk_records(pos, records);
+        assert_eq!(parsed.report.parse_errors.len(), 4);
+        assert_eq!(parsed.report.raw_entry_count, 4);
+        assert!(
+            parsed
+                .records
+                .iter()
+                .all(|record| matches!(record.value, ParsedChunkRecordValue::Raw(_)))
+        );
+    }
+
+    #[test]
+    fn malformed_map_nbt_is_raw_instead_of_an_empty_typed_map() {
+        let mut report = WorldParseReport::default();
+        let parsed = parse_map_value("7", &Bytes::from_static(&[10, 0]), &mut report);
+
+        assert!(matches!(parsed, ParsedDbValue::Raw(_)));
+        assert_eq!(report.map_record_count, 0);
+        assert_eq!(report.raw_entry_count, 1);
+        assert_eq!(report.parse_errors.len(), 1);
     }
 
     #[test]

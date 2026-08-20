@@ -312,13 +312,8 @@ fn stage_secondary_storage(
                         "SubChunk {key:?} second-layer Y {absolute_y} cannot fit historical BlockExtraData full-Y u8 coordinate"
                     ))
                 })?;
-                builder.push_chunk_coordinates(
-                    local_x,
-                    absolute_y,
-                    local_z,
-                    numeric_id,
-                    metadata,
-                )?;
+                builder
+                    .push_chunk_coordinates(local_x, absolute_y, local_z, numeric_id, metadata)?;
                 report.block_extra_entries_written =
                     report.block_extra_entries_written.saturating_add(1);
             }
@@ -336,14 +331,14 @@ fn unique_numeric_match(
     report.palette_entries_resolved = report.palette_entries_resolved.saturating_add(1);
     match numeric.match_numeric(state) {
         LegacyNumericBlockMatch::Unique(value) => Ok(value),
-        LegacyNumericBlockMatch::Missing => Err(BedrockWorldError::UnsupportedChunkFormat(
-            format!(
+        LegacyNumericBlockMatch::Missing => {
+            Err(BedrockWorldError::UnsupportedChunkFormat(format!(
                 "BlockState {} {:?} from SubChunk {key:?} has no representation in the forward-verified historical numeric table ending at BlockState version {}",
                 state.name,
                 state.states,
                 numeric.output_version().raw()
-            ),
-        )),
+            )))
+        }
         LegacyNumericBlockMatch::Ambiguous {
             first,
             second,
@@ -524,7 +519,10 @@ mod tests {
         assert_eq!(report.rewritten, 1);
         assert_eq!(report.palette_entries_resolved, 1);
         assert_eq!(report.target_without_light_arrays, 1);
-        assert_eq!(storage.get(&key).unwrap().unwrap().first().copied(), Some(9));
+        assert_eq!(
+            storage.get(&key).unwrap().unwrap().first().copied(),
+            Some(9)
+        );
 
         storage.write_batch(&batch).unwrap();
         let target = storage.get(&key).unwrap().unwrap();
@@ -588,7 +586,9 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let key = ChunkKey::subchunk(pos, 0).encode();
-        storage.put(&key, &paletted_subchunk(true).write_v9().unwrap()).unwrap();
+        storage
+            .put(&key, &paletted_subchunk(true).write_v9().unwrap())
+            .unwrap();
 
         let (batch, report) = stage_paletted_subchunks_as_legacy_numeric(
             &storage,
@@ -602,10 +602,9 @@ mod tests {
         storage.write_batch(&batch).unwrap();
 
         let extra_key = ChunkKey::new(pos, ChunkRecordTag::BlockExtraData).encode();
-        let extra = crate::chunk::LegacyBlockExtraData::parse(
-            storage.get(&extra_key).unwrap().unwrap(),
-        )
-        .unwrap();
+        let extra =
+            crate::chunk::LegacyBlockExtraData::parse(storage.get(&extra_key).unwrap().unwrap())
+                .unwrap();
         let entry = extra.entries().next().unwrap();
         assert_eq!(entry.chunk_coordinates(), Some((1, 2, 3)));
         assert_eq!(entry.block_id, 6);
@@ -636,6 +635,9 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(storage.get(&key).unwrap().unwrap().first().copied(), Some(9));
+        assert_eq!(
+            storage.get(&key).unwrap().unwrap().first().copied(),
+            Some(9)
+        );
     }
 }

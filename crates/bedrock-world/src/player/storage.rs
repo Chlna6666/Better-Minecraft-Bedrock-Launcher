@@ -100,17 +100,14 @@ pub fn inspect_player_storage(
 ) -> Result<PlayerStorageOverview> {
     let level_dat_player = read_level_dat_player(level)?;
     let local_player = read_local_player_with_level(storage, level)?;
-    let local_player = classify_local_player_records(level_dat_player.as_ref(), local_player.as_ref());
+    let local_player =
+        classify_local_player_records(level_dat_player.as_ref(), local_player.as_ref());
 
     let mut player_keys = Vec::<Bytes>::new();
-    storage.for_each_prefix_key(
-        b"player_",
-        StorageReadOptions::default(),
-        &mut |key| {
-            player_keys.push(Bytes::copy_from_slice(key));
-            Ok(StorageVisitorControl::Continue)
-        },
-    )?;
+    storage.for_each_prefix_key(b"player_", StorageReadOptions::default(), &mut |key| {
+        player_keys.push(Bytes::copy_from_slice(key));
+        Ok(StorageVisitorControl::Continue)
+    })?;
     player_keys.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
     player_keys.dedup();
 

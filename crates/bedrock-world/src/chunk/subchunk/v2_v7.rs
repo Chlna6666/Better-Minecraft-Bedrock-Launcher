@@ -4,12 +4,7 @@ use crate::chunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
 
-pub(crate) fn read(
-    version: u8,
-    y: i8,
-    bytes: Bytes,
-    mode: SubChunkDecodeMode,
-) -> Result<SubChunk> {
+pub(crate) fn read(version: u8, y: i8, bytes: Bytes, mode: SubChunkDecodeMode) -> Result<SubChunk> {
     if !(2..=7).contains(&version) || bytes.first().copied() != Some(version) {
         return Err(BedrockWorldError::Validation(format!(
             "SubChunk V2-V7 reader received invalid version {version}"

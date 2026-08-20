@@ -89,11 +89,7 @@ impl WorldPlayerSavedItemCheckReport {
             .saturating_add(report.block_states_incompatible);
     }
 
-    fn record(
-        &mut self,
-        storage: PlayerSavedItemStorage,
-        report: LegacySavedItemCheckReport,
-    ) {
+    fn record(&mut self, storage: PlayerSavedItemStorage, report: LegacySavedItemCheckReport) {
         self.add_counts(&report);
         if !report.is_fully_proven() {
             self.unresolved_records
@@ -252,23 +248,19 @@ mod tests {
 
         let mut aggregate = WorldPlayerSavedItemCheckReport::default();
         storage
-            .for_each_prefix_ref(
-                b"player_",
-                StorageReadOptions::default(),
-                &mut |entry| {
-                    let nbt = parse_root_nbt(entry.value)?;
-                    let item_report = check_legacy_numeric_saved_items(&nbt, &table)?;
-                    if item_report.is_fully_proven() {
-                        aggregate.add_counts(&item_report);
-                    } else {
-                        aggregate.record(
-                            PlayerSavedItemStorage::PlayerKey(Bytes::copy_from_slice(entry.key)),
-                            item_report,
-                        );
-                    }
-                    Ok(StorageVisitorControl::Continue)
-                },
-            )
+            .for_each_prefix_ref(b"player_", StorageReadOptions::default(), &mut |entry| {
+                let nbt = parse_root_nbt(entry.value)?;
+                let item_report = check_legacy_numeric_saved_items(&nbt, &table)?;
+                if item_report.is_fully_proven() {
+                    aggregate.add_counts(&item_report);
+                } else {
+                    aggregate.record(
+                        PlayerSavedItemStorage::PlayerKey(Bytes::copy_from_slice(entry.key)),
+                        item_report,
+                    );
+                }
+                Ok(StorageVisitorControl::Continue)
+            })
             .unwrap();
 
         assert_eq!(aggregate.records_checked, 2);

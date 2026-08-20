@@ -78,23 +78,34 @@ where
     }
 
     pub(super) fn get_biome_data_blocking(&self, pos: ChunkPos) -> Result<Option<ParsedBiomeData>> {
-        for (tag, version) in [
-            (ChunkRecordTag::Data3D, ChunkVersion::New),
-            (ChunkRecordTag::Data2D, ChunkVersion::Old),
-            (ChunkRecordTag::Data2DLegacy, ChunkVersion::Old),
+        let mut parsed = None;
+        let mut parsed_tag = None;
+        for tag in [
+            ChunkRecordTag::Data3D,
+            ChunkRecordTag::Data2D,
+            ChunkRecordTag::Data2DLegacy,
         ] {
             let key = ChunkKey::new(pos, tag).encode();
             let Some(value) = self.storage().get(&key)? else {
                 continue;
             };
-            let biome_data = match version {
-                ChunkVersion::New => crate::parsed::parse_data3d(&value),
-                ChunkVersion::Old => crate::parsed::parse_legacy_data2d(&value),
+            if let Some(existing_tag) = parsed_tag {
+                return Err(BedrockWorldError::CorruptWorld(format!(
+                    "chunk ({}, {}, {:?}) contains mixed biome records {existing_tag:?} and {tag:?}",
+                    pos.x, pos.z, pos.dimension
+                )));
+            }
+            let biome_data = match tag {
+                ChunkRecordTag::Data3D => crate::parsed::parse_data3d(&value),
+                ChunkRecordTag::Data2D => crate::parsed::parse_legacy_data2d(&value),
+                ChunkRecordTag::Data2DLegacy => crate::parsed::parse_data2d_legacy(&value),
+                _ => unreachable!("biome record loop contains only biome tags"),
             }
             .map_err(|error| BedrockWorldError::CorruptWorld(format!("biome data: {error}")))?;
-            return Ok(Some(biome_data));
+            parsed = Some(biome_data);
+            parsed_tag = Some(tag);
         }
-        Ok(None)
+        Ok(parsed)
     }
 
     fn put_old_heightmap_blocking(&self, pos: ChunkPos, heights: &[i16]) -> Result<()> {
@@ -201,7 +212,10 @@ mod tests {
     use super::*;
     use crate::biome::data2d_to_data3d;
     use crate::chunk::LegacyBiomeSample;
-    use crate::{Dimension, MemoryStorage, OpenOptions, WorldStorage};
+    use crate::{
+        BedrockWorldOpenOptions, ChunkDataRequest, ChunkLoadOptions, Dimension, MemoryStorage,
+        WorldStorage,
+    };
     use std::sync::Arc;
 
     fn chunk() -> ChunkPos {
@@ -216,9 +230,9 @@ mod tests {
         BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions {
+            BedrockWorldOpenOptions {
                 read_only: false,
-                ..OpenOptions::default()
+                ..BedrockWorldOpenOptions::default()
             },
         )
     }
@@ -301,6 +315,56 @@ mod tests {
                 .expect("parse Data2DLegacy")
                 .height_map,
             vec![37; 256]
+        );
+    }
+
+    #[test]
+    fn data2d_legacy_read_uses_biome_ids_instead_of_rgb_bytes() {
+        let pos = chunk();
+        let storage = Arc::new(MemoryStorage::new());
+        let mut biomes = vec![
+            LegacyBiomeSample {
+                biome_id: 7,
+                red: 201,
+                green: 202,
+                blue: 203,
+            };
+            256
+        ];
+        biomes[17].biome_id = 42;
+        let original = Biome2dLegacy::new(vec![64; 256], biomes)
+            .expect("Data2DLegacy")
+            .encode()
+            .expect("encode Data2DLegacy");
+        storage
+            .put(
+                &ChunkKey::new(pos, ChunkRecordTag::Data2DLegacy).encode(),
+                &original,
+            )
+            .expect("put Data2DLegacy");
+        let world = writable_world(storage);
+
+        let parsed = world
+            .get_biome_data_blocking(pos)
+            .expect("read Data2DLegacy")
+            .expect("biome data");
+        assert_eq!(parsed.storages[0].biome_id_at(1, 0, 1), Some(42));
+
+        let chunk = world
+            .query_chunk_data_blocking(
+                pos,
+                ChunkLoadOptions::for_data_request(
+                    ChunkDataRequest::new().biome(crate::BiomeDataRequirement::All),
+                ),
+            )
+            .expect("render Data2DLegacy");
+        assert_eq!(
+            chunk
+                .biome_data
+                .values()
+                .next()
+                .and_then(|storage| storage.biome_id_at(1, 0, 1)),
+            Some(42)
         );
     }
 
@@ -394,6 +458,49 @@ mod tests {
             storage.get(&data3d_key.encode()).expect("get Data3D"),
             Some(Bytes::from(data3d))
         );
+    }
+
+    #[test]
+    fn biome_read_rejects_mixed_persisted_representations() {
+        let pos = chunk();
+        let storage = Arc::new(MemoryStorage::new());
+        let data2d = Biome2d::new(vec![64; 256], vec![11; 256])
+            .expect("Data2D")
+            .encode()
+            .expect("encode Data2D");
+        let data3d = data2d_to_data3d(
+            &Biome2d::new(vec![70; 256], vec![27; 256]).expect("Data2D"),
+            -4..=-4,
+        )
+        .expect("Data3D")
+        .encode()
+        .expect("encode Data3D");
+        storage
+            .put(
+                &ChunkKey::new(pos, ChunkRecordTag::Data2D).encode(),
+                &data2d,
+            )
+            .expect("put Data2D");
+        storage
+            .put(
+                &ChunkKey::new(pos, ChunkRecordTag::Data3D).encode(),
+                &data3d,
+            )
+            .expect("put Data3D");
+        let world = writable_world(storage);
+
+        let error = world
+            .get_biome_data_blocking(pos)
+            .expect_err("mixed biome records must be rejected");
+        assert!(matches!(error, BedrockWorldError::CorruptWorld(_)));
+
+        let error = world
+            .query_chunk_data_blocking(
+                pos,
+                ChunkLoadOptions::for_data_request(ChunkDataRequest::new().height_map()),
+            )
+            .expect_err("batched biome reads must reject mixed records");
+        assert!(matches!(error, BedrockWorldError::CorruptWorld(_)));
     }
 
     #[test]

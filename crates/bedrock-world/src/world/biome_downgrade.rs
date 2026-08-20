@@ -107,7 +107,7 @@ fn stage_biomes_to_data2d(
 mod tests {
     use super::*;
     use crate::biome::{Biome2d, data2d_to_data3d};
-    use crate::chunk::{Dimension, ChunkVersion};
+    use crate::chunk::{ChunkVersion, Dimension};
     use crate::database::MemoryStorage;
 
     #[test]
@@ -149,11 +149,8 @@ mod tests {
             z: 1,
             dimension: Dimension::Overworld,
         };
-        let mut source = data2d_to_data3d(
-            &Biome2d::new(vec![64; 256], vec![1; 256]).unwrap(),
-            -4..=-3,
-        )
-        .unwrap();
+        let mut source =
+            data2d_to_data3d(&Biome2d::new(vec![64; 256], vec![1; 256]).unwrap(), -4..=-3).unwrap();
         source.storages[1].palette = vec![2];
         source.storages[1].indices = Some(vec![0; 4096]);
         source.storages[1].counts = vec![4096];

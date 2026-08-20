@@ -95,10 +95,7 @@ impl PlayerKeyRecord {
 }
 
 /// Reads one exact raw `player_*` LevelDB key without UTF-8 conversion.
-pub fn read_player_key(
-    storage: &dyn WorldStorage,
-    key: &[u8],
-) -> Result<Option<PlayerKeyRecord>> {
+pub fn read_player_key(storage: &dyn WorldStorage, key: &[u8]) -> Result<Option<PlayerKeyRecord>> {
     validate_player_key(key)?;
     storage
         .get(key)?

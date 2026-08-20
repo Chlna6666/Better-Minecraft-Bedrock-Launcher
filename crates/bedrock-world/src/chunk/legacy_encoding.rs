@@ -8,9 +8,8 @@ use crate::chunk::legacy::{
     LEGACY_SUBCHUNK_BLOCK_COUNT, LEGACY_SUBCHUNK_MIN_VALUE_LEN,
     LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_BIOME_OFFSET,
     LEGACY_TERRAIN_BLOCK_DATA_OFFSET, LEGACY_TERRAIN_BLOCK_LIGHT_OFFSET,
-    LEGACY_TERRAIN_HEIGHTMAP_OFFSET, LEGACY_TERRAIN_SKY_LIGHT_OFFSET,
-    LEGACY_TERRAIN_VALUE_LEN, POCKET_TERRAIN_VALUE_LEN, LegacyBiomeSample, LegacySubChunk,
-    LegacyTerrain,
+    LEGACY_TERRAIN_HEIGHTMAP_OFFSET, LEGACY_TERRAIN_SKY_LIGHT_OFFSET, LEGACY_TERRAIN_VALUE_LEN,
+    LegacyBiomeSample, LegacySubChunk, LegacyTerrain, POCKET_TERRAIN_VALUE_LEN,
 };
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
@@ -288,11 +287,7 @@ impl LegacySubChunkBuilder {
     /// Fills the complete sky-light array with one nibble value.
     pub fn fill_sky_light(&mut self, value: u8) -> Result<()> {
         let range = subchunk_sky_light_range(&self.bytes)?;
-        fill_nibbles(
-            &mut self.bytes[range],
-            value,
-            "legacy subchunk sky light",
-        )
+        fill_nibbles(&mut self.bytes[range], value, "legacy subchunk sky light")
     }
 
     /// Sets one block-light nibble. Returns an error when this payload intentionally omits light arrays.
@@ -316,11 +311,7 @@ impl LegacySubChunkBuilder {
     /// Fills the complete block-light array with one nibble value.
     pub fn fill_block_light(&mut self, value: u8) -> Result<()> {
         let range = subchunk_block_light_range(&self.bytes)?;
-        fill_nibbles(
-            &mut self.bytes[range],
-            value,
-            "legacy subchunk block light",
-        )
+        fill_nibbles(&mut self.bytes[range], value, "legacy subchunk block light")
     }
 
     /// Finishes and revalidates the historical payload version and exact physical size.

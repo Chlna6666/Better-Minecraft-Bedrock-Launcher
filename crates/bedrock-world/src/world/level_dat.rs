@@ -9,7 +9,7 @@ use crate::chunk::{BedrockDbKey, ChunkRecordTag, SubChunkVersion};
 use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::version::{GameVersion, LevelVersion};
-use crate::world::{BedrockWorld, OpenOptions, WorldFormat, WorldStorageHandle};
+use crate::world::{BedrockWorld, BedrockWorldOpenOptions, WorldFormat, WorldStorageHandle};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -160,11 +160,11 @@ impl BedrockWorld<Arc<dyn WorldStorage>> {
             return Ok(Self::from_storage_with_format(
                 path,
                 storage,
-                OpenOptions::default(),
+                BedrockWorldOpenOptions::default(),
                 WorldFormat::PocketChunksDat,
             ));
         }
-        Self::open_blocking(path, OpenOptions::default())
+        Self::open_blocking(path, BedrockWorldOpenOptions::default())
     }
 
     #[cfg(feature = "async")]
@@ -208,9 +208,8 @@ where
         let mut unknown_chunk_tag_records = 0usize;
         let mut unknown_database_key_records = 0usize;
 
-        self.storage().for_each_entry(
-            StorageReadOptions::default(),
-            &mut |key, value| {
+        self.storage()
+            .for_each_entry(StorageReadOptions::default(), &mut |key, value| {
                 match BedrockDbKey::decode(key) {
                     BedrockDbKey::Chunk(chunk) => match chunk.tag {
                         ChunkRecordTag::Version
@@ -258,8 +257,7 @@ where
                                 actor_digest_version_records.saturating_add(1);
                         }
                         ChunkRecordTag::Unknown(_) => {
-                            unknown_chunk_tag_records =
-                                unknown_chunk_tag_records.saturating_add(1);
+                            unknown_chunk_tag_records = unknown_chunk_tag_records.saturating_add(1);
                         }
                         _ => {}
                     },
@@ -276,8 +274,7 @@ where
                     _ => {}
                 }
                 Ok(StorageVisitorControl::Continue)
-            },
-        )?;
+            })?;
 
         let level_chunk_versions = level_chunk_version_counts
             .into_iter()

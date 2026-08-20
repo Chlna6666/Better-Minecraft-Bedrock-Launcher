@@ -252,7 +252,8 @@ where
             .find_map(|edit| edit.state.version)
             .ok_or_else(|| {
                 BedrockWorldError::Validation(
-                    "typed block editing requires persisted BlockState version metadata".to_string(),
+                    "typed block editing requires persisted BlockState version metadata"
+                        .to_string(),
                 )
             })?;
 
@@ -268,9 +269,8 @@ where
                     edit.position.y
                 ))
             })?;
-            let local_y = u8::try_from(world_y.rem_euclid(16)).map_err(|_| {
-                BedrockWorldError::Validation("invalid local block y".to_string())
-            })?;
+            let local_y = u8::try_from(world_y.rem_euclid(16))
+                .map_err(|_| BedrockWorldError::Validation("invalid local block y".to_string()))?;
             let (local_x, _, local_z) = edit.position.in_chunk_offset();
             let subchunk = match updated_subchunks.entry(subchunk_y) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -347,19 +347,19 @@ fn validate_chunk_write_compatibility(chunk: ChunkPos, records: &[ChunkRecord]) 
     let capabilities = ChunkCapabilities::inspect(records);
     match capabilities.compatibility {
         CompatibilityLevel::Exact => Ok(()),
-        CompatibilityLevel::UnsupportedFuture => Err(BedrockWorldError::UnsupportedChunkFormat(
-            format!(
+        CompatibilityLevel::UnsupportedFuture => {
+            Err(BedrockWorldError::UnsupportedChunkFormat(format!(
                 "chunk {chunk:?} contains a future/unknown persisted representation; raw data is preserved and this V8/V9 editor refuses the write"
-            ),
-        )),
+            )))
+        }
         CompatibilityLevel::Corrupt => Err(BedrockWorldError::CorruptWorld(format!(
             "chunk {chunk:?} is not safe to rewrite"
         ))),
-        CompatibilityLevel::ReadCompatible => Err(BedrockWorldError::UnsupportedChunkFormat(
-            format!(
+        CompatibilityLevel::ReadCompatible => {
+            Err(BedrockWorldError::UnsupportedChunkFormat(format!(
                 "chunk {chunk:?} contains data that requires raw preservation; this V8/V9 editor cannot rewrite it"
-            ),
-        )),
+            )))
+        }
     }
 }
 
@@ -721,9 +721,7 @@ fn nbt_position_matches(root: &NbtTag, position: BlockPos) -> bool {
         Some(NbtTag::Short(value)) => Some(i32::from(*value)),
         _ => None,
     };
-    read("x") == Some(position.x)
-        && read("y") == Some(position.y)
-        && read("z") == Some(position.z)
+    read("x") == Some(position.x) && read("y") == Some(position.y) && read("z") == Some(position.z)
 }
 
 #[cfg(test)]

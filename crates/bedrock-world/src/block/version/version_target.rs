@@ -62,10 +62,12 @@ impl BlockStateVersionTarget {
         source_catalog: &AuthoritativeBlockStateCatalog,
         target_palette: &VanillaBlockStatePalette,
     ) -> Result<Self> {
-        if compare_release(target_palette.game_version(), &source_game_version) == Ordering::Greater {
+        if compare_release(target_palette.game_version(), &source_game_version) == Ordering::Greater
+        {
             return Err(BedrockWorldError::Validation(format!(
                 "BlockState target game version {} is newer than source {}",
-                target_palette.game_version(), source_game_version
+                target_palette.game_version(),
+                source_game_version
             )));
         }
 

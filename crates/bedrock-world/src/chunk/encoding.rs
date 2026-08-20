@@ -265,7 +265,8 @@ mod tests {
             None,
         );
         let encoded = encode_paletted_subchunk_from_palettes(9, -4, &[&palette]).unwrap();
-        let parsed = parse_subchunk_with_mode(-4, encoded, SubChunkDecodeMode::FullIndices).unwrap();
+        let parsed =
+            parse_subchunk_with_mode(-4, encoded, SubChunkDecodeMode::FullIndices).unwrap();
         let SubChunkFormat::Paletted { version, storages } = parsed.format else {
             panic!("expected paletted subchunk");
         };
@@ -275,11 +276,8 @@ mod tests {
 
     #[test]
     fn paletted_v1_uses_single_storage_layout() {
-        let palette = BlockPalette::with_unpacked_indices(
-            vec![state("minecraft:air")],
-            vec![0; 4096],
-            None,
-        );
+        let palette =
+            BlockPalette::with_unpacked_indices(vec![state("minecraft:air")], vec![0; 4096], None);
         let encoded = encode_paletted_subchunk_from_palettes(1, 0, &[&palette]).unwrap();
         assert_eq!(encoded[0], 1);
         assert_ne!(encoded.get(1).copied(), Some(1));

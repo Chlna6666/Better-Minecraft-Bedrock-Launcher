@@ -7,7 +7,7 @@ pub use super::storage::backend::BedrockLevelDbStorage;
 
 #[cfg(feature = "bedrock-leveldb")]
 pub(crate) fn create_bedrock_leveldb(path: impl AsRef<Path>) -> Result<()> {
-    let options = bedrock_leveldb::Options {
+    let options = bedrock_leveldb::LevelDbOpenOptions {
         read_only: false,
         create_if_missing: true,
         error_if_exists: true,
@@ -19,7 +19,7 @@ pub(crate) fn create_bedrock_leveldb(path: impl AsRef<Path>) -> Result<()> {
     let database = bedrock_leveldb::Db::open(path, options)
         .map_err(|error| BedrockWorldError::LevelDb(error.to_string()))?;
     database
-        .flush_memtable()
+        .flush()
         .map_err(|error| BedrockWorldError::LevelDb(error.to_string()))
 }
 

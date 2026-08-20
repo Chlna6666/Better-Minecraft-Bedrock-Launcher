@@ -1404,7 +1404,7 @@ const fn temper(mut value: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::{
-        ActorDigestKey, ActorUid, ChunkKey, MemoryStorage, OpenOptions, ParsedEntity, WorldStorage,
+        ActorDigestKey, ActorUid, BedrockWorldOpenOptions, ChunkKey, MemoryStorage, WorldStorage,
     };
     use indexmap::IndexMap;
     use std::sync::Arc;
@@ -1498,7 +1498,7 @@ mod tests {
         let world = BedrockWorld::from_storage(
             std::path::PathBuf::from("cancelled"),
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         );
         let cancel = CancelFlag::new();
         cancel.cancel();
@@ -1529,9 +1529,9 @@ mod tests {
         let world = BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions {
+            BedrockWorldOpenOptions {
                 read_only: false,
-                ..OpenOptions::default()
+                ..BedrockWorldOpenOptions::default()
             },
         );
         let first = ChunkPos {
@@ -1611,9 +1611,9 @@ mod tests {
         let world = BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions {
+            BedrockWorldOpenOptions {
                 read_only: false,
-                ..OpenOptions::default()
+                ..BedrockWorldOpenOptions::default()
             },
         );
         let pos = ChunkPos {
@@ -1687,9 +1687,9 @@ mod tests {
         let world = BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions {
+            BedrockWorldOpenOptions {
                 read_only: false,
-                ..OpenOptions::default()
+                ..BedrockWorldOpenOptions::default()
             },
         );
         let pos = ChunkPos {
@@ -1730,7 +1730,7 @@ mod tests {
         let world = BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         );
         let guard = WriteGuard::confirmed("memory", "test write");
         let error = write_chunk_record_nbt_blocking(
@@ -1754,9 +1754,9 @@ mod tests {
         let world = BedrockWorld::from_storage(
             "memory",
             storage.clone(),
-            OpenOptions {
+            BedrockWorldOpenOptions {
                 read_only: false,
-                ..OpenOptions::default()
+                ..BedrockWorldOpenOptions::default()
             },
         );
         let pos = ChunkPos {

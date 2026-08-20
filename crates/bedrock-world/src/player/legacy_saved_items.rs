@@ -125,7 +125,9 @@ mod tests {
             ]))]),
         )]));
         let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
-        let report = player.convert_saved_items_to_legacy_numeric(&table).unwrap();
+        let report = player
+            .convert_saved_items_to_legacy_numeric(&table)
+            .unwrap();
         assert_eq!(report.converted, 1);
         assert!(player.is_modified());
         let NbtTag::Compound(root) = &player.nbt else {

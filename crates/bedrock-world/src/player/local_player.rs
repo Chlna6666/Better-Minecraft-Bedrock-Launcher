@@ -102,7 +102,8 @@ pub fn move_level_dat_player_to_local_player(
         }
         LocalPlayerRecords::LevelDatPlayer => {
             let source = source.as_ref().expect("classified level.dat player exists");
-            let target = PlayerData::from_nbt_with_level(PlayerId::Local, source.nbt.clone(), &level)?;
+            let target =
+                PlayerData::from_nbt_with_level(PlayerId::Local, source.nbt.clone(), &level)?;
             write_local_player(storage, &target)?;
             report.source_found = true;
             report.target_created = true;
@@ -211,7 +212,11 @@ mod tests {
         assert!(forward.target_created);
         assert!(forward.source_removed);
         let level = read_level_dat_document(&world.join("level.dat")).expect("read level.dat");
-        assert!(read_level_dat_player(&level).expect("read embedded").is_none());
+        assert!(
+            read_level_dat_player(&level)
+                .expect("read embedded")
+                .is_none()
+        );
         assert_eq!(
             read_local_player_with_level(&storage, &level)
                 .expect("read local")
@@ -264,8 +269,8 @@ mod tests {
         let embedded = player_nbt(7, "Alex");
         write_level_with_player(&world, embedded.clone());
         let storage = MemoryStorage::new();
-        let local = PlayerData::from_nbt(PlayerId::Local, player_nbt(8, "Steve"))
-            .expect("build local");
+        let local =
+            PlayerData::from_nbt(PlayerId::Local, player_nbt(8, "Steve")).expect("build local");
         write_local_player(&storage, &local).expect("seed local");
 
         assert!(move_level_dat_player_to_local_player(&world, &storage).is_err());

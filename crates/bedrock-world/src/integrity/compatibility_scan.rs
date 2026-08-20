@@ -161,10 +161,10 @@ pub fn scan_world_compatibility_blocking(
                 } else {
                     Bytes::new()
                 };
-                chunk_records
-                    .entry(key.pos)
-                    .or_default()
-                    .push(ChunkRecord { key, value: retained });
+                chunk_records.entry(key.pos).or_default().push(ChunkRecord {
+                    key,
+                    value: retained,
+                });
             }
             BedrockDbKey::ActorDigest { pos } => {
                 digp_records = digp_records.saturating_add(1);
@@ -210,13 +210,10 @@ pub fn scan_world_compatibility_blocking(
             }
             BedrockDbKey::Unknown(_) => {
                 if let Ok(key) = ChunkKey::decode(raw_key) {
-                    chunk_records
-                        .entry(key.pos)
-                        .or_default()
-                        .push(ChunkRecord {
-                            key,
-                            value: Bytes::new(),
-                        });
+                    chunk_records.entry(key.pos).or_default().push(ChunkRecord {
+                        key,
+                        value: Bytes::new(),
+                    });
                 } else {
                     unknown_storage_keys = unknown_storage_keys.saturating_add(1);
                 }
@@ -276,10 +273,14 @@ pub fn scan_world_compatibility_blocking(
                 .count(),
         );
         for version in &capabilities.subchunk_versions {
-            *subchunk_versions.entry(version_label(*version)).or_default() += 1;
+            *subchunk_versions
+                .entry(version_label(*version))
+                .or_default() += 1;
         }
         if capabilities.has_unversioned_subchunk {
-            *subchunk_versions.entry("unversioned".to_string()).or_default() += 1;
+            *subchunk_versions
+                .entry("unversioned".to_string())
+                .or_default() += 1;
         }
         match capabilities.compatibility {
             CompatibilityLevel::Exact => exact_chunks = exact_chunks.saturating_add(1),
@@ -393,8 +394,14 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let mut batch = StorageBatch::new();
-        batch.put(ChunkKey::new(pos, ChunkRecordTag::Entity).encode(), Bytes::new());
-        batch.put(ChunkKey::subchunk(pos, 0).encode(), Bytes::from_static(&[10, 1, 0]));
+        batch.put(
+            ChunkKey::new(pos, ChunkRecordTag::Entity).encode(),
+            Bytes::new(),
+        );
+        batch.put(
+            ChunkKey::subchunk(pos, 0).encode(),
+            Bytes::from_static(&[10, 1, 0]),
+        );
         batch.put(
             Bytes::from_static(b"actorprefix\x00\x00\x00\x00\x00\x00\x00\x01"),
             Bytes::new(),
@@ -492,17 +499,26 @@ mod tests {
             .iter()
             .find(|entry| entry.pos == short_pos)
             .expect("short terrain chunk");
-        assert_eq!(short.legacy_terrain_payload_len, Some(POCKET_TERRAIN_VALUE_LEN));
+        assert_eq!(
+            short.legacy_terrain_payload_len,
+            Some(POCKET_TERRAIN_VALUE_LEN)
+        );
         assert!(short.capabilities.has_pocket_terrain_core);
         assert!(!short.capabilities.has_complete_legacy_terrain);
-        assert_eq!(short.capabilities.compatibility, CompatibilityLevel::ReadCompatible);
+        assert_eq!(
+            short.capabilities.compatibility,
+            CompatibilityLevel::ReadCompatible
+        );
 
         let full = report
             .chunks
             .iter()
             .find(|entry| entry.pos == full_pos)
             .expect("complete legacy terrain chunk");
-        assert_eq!(full.legacy_terrain_payload_len, Some(LEGACY_TERRAIN_VALUE_LEN));
+        assert_eq!(
+            full.legacy_terrain_payload_len,
+            Some(LEGACY_TERRAIN_VALUE_LEN)
+        );
         assert!(!full.capabilities.has_pocket_terrain_core);
         assert!(full.capabilities.has_complete_legacy_terrain);
         assert_eq!(full.capabilities.compatibility, CompatibilityLevel::Exact);

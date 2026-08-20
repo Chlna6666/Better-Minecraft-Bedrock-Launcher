@@ -82,7 +82,9 @@ fn integer(value: Option<&NbtTag>, field: &str) -> Result<Option<i32>> {
         NbtTag::Short(value) => Ok(Some(i32::from(*value))),
         NbtTag::Int(value) => Ok(Some(*value)),
         NbtTag::Long(value) => i32::try_from(*value).map(Some).map_err(|_| {
-            BedrockWorldError::CorruptWorld(format!("player {field} value {value} does not fit i32"))
+            BedrockWorldError::CorruptWorld(format!(
+                "player {field} value {value} does not fit i32"
+            ))
         }),
         other => Err(BedrockWorldError::CorruptWorld(format!(
             "player {field} has unexpected NBT type: {other:?}"

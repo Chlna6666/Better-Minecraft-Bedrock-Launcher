@@ -23,17 +23,21 @@ mod subchunk_v8;
 #[path = "chunk/subchunk/v9.rs"]
 mod subchunk_v9;
 
-/// Bedrock world, chunk and block coordinates and dimension identities.
-pub mod position;
 /// Bedrock LevelDB chunk and world-record keys.
 pub mod key;
-/// Block-state palettes and packed block-storage helpers.
-pub mod palette;
 /// Historical `LegacyTerrain` and fixed-array SubChunk representations.
 pub mod legacy;
+/// Block-state palettes and packed block-storage helpers.
+pub mod palette;
+/// Bedrock world, chunk and block coordinates and dimension identities.
+pub mod position;
 /// Minecraft Bedrock SubChunk version byte values.
 pub mod version;
 
+pub use crate::parsed::{
+    HardcodedSpawnAreaKind, ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,
+    ParsedHardcodedSpawnArea, parse_chunk_records, parse_chunk_records_with_options,
+};
 pub use height_map::*;
 pub use key::*;
 pub use legacy::*;
@@ -61,10 +65,6 @@ pub(crate) use subchunk_storage::{
 pub use subchunk_upgrade::SubChunkUpgradeWriteReport;
 pub(crate) use subchunk_upgrade::stage_paletted_subchunks_for_upgrade;
 pub use version::SubChunkVersion;
-pub use crate::parsed::{
-    HardcodedSpawnAreaKind, ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,
-    ParsedHardcodedSpawnArea, parse_chunk_records, parse_chunk_records_with_options,
-};
 
 /// Reads a SubChunk with full block indices after automatically detecting V0-V9.
 pub fn parse_subchunk(y: i8, bytes: bytes::Bytes) -> crate::error::Result<SubChunk> {

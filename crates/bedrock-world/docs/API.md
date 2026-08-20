@@ -16,7 +16,7 @@ fn open_world(path: &str) -> Result<()> {
 }
 ```
 
-需要控制只读、格式或扫描策略时使用 `OpenOptions`。
+需要控制只读、格式或扫描策略时使用 `BedrockWorldOpenOptions`。
 
 ## LevelDB 语义
 
@@ -45,6 +45,31 @@ let versions = world.versions_blocking()?;
 - 未知或未来 record。
 
 mixed-version 世界会保留这些证据，不被强制折叠成一个内部 schema。
+
+## 方块状态
+
+`BlockState` 保留方块 permutation 的完整 `states` 复合标签。完整支持的边界是无损、
+按 Mojang 原键访问，而不是只枚举当前版本里已知的少数属性：
+
+```rust
+for (name, value) in block_state.state_entries() {
+    println!("{name} = {value:?}");
+}
+
+let custom_direction = block_state.state_integer("direction")?;
+let future_state = block_state.state("minecraft:future_state");
+```
+
+因此未知、未来或附加包方块的方向、上下半部、连接、年龄等状态不会在解析时丢失。
+`state_boolean`、`state_integer` 和 `state_string` 会验证 NBT 类型；类型不符返回错误，
+不会静默使用默认值。
+
+常见原版方块另提供 Minecraft 语义化视图：`horizontal_direction()`、
+`facing_direction()`、`block_face()`、`vertical_half()`、`corner()`、
+`door_states()`、`trapdoor_states()`、`stair_states()`、`slab_states()` 和
+`redstone_states()`。这些视图同时返回方向、上下/开合/铰链/角形/信号等构成该
+permutation 的状态；缺失必需字段或数值越界会报错。调用方不应通过方块名称猜测
+朝向，也不应把门、活板门和楼梯的不同数字方向编码混用。
 
 ## Biome
 

@@ -284,10 +284,7 @@ mod tests {
         let attributes = player.attributes().unwrap();
         assert_eq!(attributes[0].name(), Some("minecraft:health"));
         assert_eq!(attributes[0].base().unwrap(), Some(20.0));
-        assert_eq!(
-            attributes[0].nbt().get("Unknown"),
-            Some(&NbtTag::Long(9))
-        );
+        assert_eq!(attributes[0].nbt().get("Unknown"), Some(&NbtTag::Long(9)));
     }
 
     #[test]
@@ -325,10 +322,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(attribute.current().unwrap(), Some(16.0));
-        assert_eq!(
-            attribute.nbt().get("Current"),
-            Some(&NbtTag::Float(16.0))
-        );
+        assert_eq!(attribute.nbt().get("Current"), Some(&NbtTag::Float(16.0)));
         assert_eq!(
             attribute.nbt().get("FutureAttributeField"),
             Some(&NbtTag::Long(7))

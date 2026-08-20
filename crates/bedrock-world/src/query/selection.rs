@@ -7,7 +7,7 @@ use crate::query::{
     ChunkRecordQuery, ParsedChunkRecordValue, RegionOverlayQueryOptions, SelectionStats,
     SlimeChunkBounds, VillageOverlayIndex, is_slime_chunk, query_chunk_records_many_blocking,
 };
-use crate::world::{BedrockWorld, OpenOptions, WorldStorageHandle};
+use crate::world::{BedrockWorld, BedrockWorldOpenOptions, WorldStorageHandle};
 use std::collections::BTreeSet;
 
 /// A validated, non-empty, exact set of chunks from one Bedrock dimension.
@@ -454,7 +454,8 @@ mod tests {
     #[test]
     fn exact_stats_do_not_fill_bounding_rectangle() {
         let storage = Arc::new(MemoryStorage::default()) as Arc<dyn WorldStorage>;
-        let world = BedrockWorld::from_storage("memory", storage, OpenOptions::default());
+        let world =
+            BedrockWorld::from_storage("memory", storage, BedrockWorldOpenOptions::default());
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)]).expect("exact selection");
         let stats = query_selection_stats_exact_blocking(

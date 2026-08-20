@@ -116,14 +116,19 @@ impl AuthoritativeBlockStateCatalog {
     /// Parses, validates, groups and orders an authoritative schema corpus.
     pub fn from_sources(sources: &[BlockStateSchemaSource<'_>]) -> Result<Self> {
         if sources.is_empty() {
-            return Err(validation("authoritative BlockState schema corpus is empty"));
+            return Err(validation(
+                "authoritative BlockState schema corpus is empty",
+            ));
         }
 
         let mut groups = BTreeMap::<BlockStateStorageVersion, Vec<Schema>>::new();
         for source in sources {
             let schema_id = parse_schema_id(source.name)?;
             let value: Value = serde_json::from_str(source.json).map_err(|error| {
-                validation(format!("invalid BlockState schema {}: {error}", source.name))
+                validation(format!(
+                    "invalid BlockState schema {}: {error}",
+                    source.name
+                ))
             })?;
             let root = object(&value, "schema root")?;
             let result_version = BlockStateStorageVersion::from_components(
@@ -156,7 +161,9 @@ impl AuthoritativeBlockStateCatalog {
         let output_version = ordered
             .last()
             .map(|group| group.result_version)
-            .ok_or_else(|| validation("authoritative BlockState schema corpus produced no groups"))?;
+            .ok_or_else(|| {
+                validation("authoritative BlockState schema corpus produced no groups")
+            })?;
         Ok(Self {
             groups: ordered,
             output_version,
@@ -186,11 +193,10 @@ impl AuthoritativeBlockStateCatalog {
     ///
     /// A state newer than the corpus is rejected so callers can preserve its original raw bytes.
     pub fn upgrade(&self, state: &BlockState) -> Result<BlockState> {
-        let source_version = BlockStateStorageVersion::from_raw(
-            state
-                .version
-                .ok_or_else(|| validation(format!("BlockState {} has no storage version", state.name)))?,
-        );
+        let source_version =
+            BlockStateStorageVersion::from_raw(state.version.ok_or_else(|| {
+                validation(format!("BlockState {} has no storage version", state.name))
+            })?);
         if source_version > self.output_version {
             return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
                 "BlockState {} uses future storage version {}; authoritative corpus ends at {}",
@@ -281,7 +287,9 @@ impl Schema {
 
         if let Some(added) = self.added_properties.get(old_name) {
             for (property, value) in added {
-                states.entry(property.clone()).or_insert_with(|| value.clone());
+                states
+                    .entry(property.clone())
+                    .or_insert_with(|| value.clone());
             }
         }
         if let Some(removed) = self.removed_properties.get(old_name) {
@@ -354,7 +362,10 @@ impl Schema {
             return Ok(old_value.clone());
         };
         let pairs = self.value_remap_index.get(index_name).ok_or_else(|| {
-            validation(format!("schema {} lost value-remap index {index_name}", self.id))
+            validation(format!(
+                "schema {} lost value-remap index {index_name}",
+                self.id
+            ))
         })?;
         Ok(pairs
             .iter()
@@ -366,10 +377,7 @@ impl Schema {
 impl FlattenRule {
     fn parse(value: &Value) -> Result<Self> {
         let root = object(value, "flatten rule")?;
-        let property_type = match root
-            .get("flattenedPropertyType")
-            .and_then(Value::as_str)
-        {
+        let property_type = match root.get("flattenedPropertyType").and_then(Value::as_str) {
             Some("byte") => FlattenPropertyType::Byte,
             Some("int") => FlattenPropertyType::Int,
             Some("string") | None => FlattenPropertyType::String,
@@ -474,7 +482,9 @@ fn parse_value_remap_index(value: Option<&Value>) -> Result<BTreeMap<String, Vec
     let mut output = BTreeMap::new();
     for (name, pairs) in root {
         let array = pairs.as_array().ok_or_else(|| {
-            validation(format!("remappedPropertyValuesIndex.{name} must be an array"))
+            validation(format!(
+                "remappedPropertyValuesIndex.{name} must be an array"
+            ))
         })?;
         let mut parsed = Vec::with_capacity(array.len());
         for pair in array {

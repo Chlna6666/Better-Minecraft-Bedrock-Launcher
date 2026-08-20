@@ -20,10 +20,10 @@ pub use storage::{
     StorageThreadingOptions, StorageVisitorControl, WorldStorage,
 };
 
+pub(crate) use crate::world::CancelFlag;
 #[cfg(feature = "bedrock-leveldb")]
 pub use bedrock_leveldb::BedrockLevelDbStorage;
 #[cfg(not(feature = "bedrock-leveldb"))]
 pub(crate) use bedrock_leveldb::BedrockLevelDbStorage;
 pub(crate) use bedrock_leveldb::create_bedrock_leveldb;
-pub(crate) use crate::world::CancelFlag;
 pub(crate) use pocket_chunks::PocketChunksDatStorage;

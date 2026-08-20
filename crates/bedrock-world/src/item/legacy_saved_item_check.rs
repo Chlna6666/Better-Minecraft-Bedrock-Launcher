@@ -258,14 +258,18 @@ fn check_item(
                     match root.get("Block") {
                         Some(block @ NbtTag::Compound(_)) => {
                             if let Some(blocks) = blocks {
-                                check_block_state(block, &item, legacy, table, blocks, path, report)?;
+                                check_block_state(
+                                    block, &item, legacy, table, blocks, path, report,
+                                )?;
                             } else {
                                 report.block_states_required =
                                     report.block_states_required.saturating_add(1);
                                 report.issues.push(LegacySavedItemIssue {
                                     path: path.to_string(),
                                     item,
-                                    kind: LegacySavedItemIssueKind::BlockStateRequired { item: legacy },
+                                    kind: LegacySavedItemIssueKind::BlockStateRequired {
+                                        item: legacy,
+                                    },
                                 });
                             }
                         }
@@ -596,8 +600,8 @@ mod tests {
         let (numeric, upgraded) = block_tables();
         let blocks = LegacySavedItemBlockStateTables::new(&numeric, &upgraded);
         let stack = item("minecraft:new_item", 3, Some("minecraft:new_block"));
-        let report = check_legacy_numeric_saved_items_with_blocks(&stack, &item_table, &blocks)
-            .unwrap();
+        let report =
+            check_legacy_numeric_saved_items_with_blocks(&stack, &item_table, &blocks).unwrap();
         assert_eq!(report.named_unique, 1);
         assert_eq!(report.block_states_proven, 1);
         assert_eq!(report.block_states_incompatible, 0);
@@ -618,8 +622,8 @@ mod tests {
         let (numeric, upgraded) = block_tables();
         let blocks = LegacySavedItemBlockStateTables::new(&numeric, &upgraded);
         let stack = item("minecraft:new_item", 3, Some("minecraft:other_new"));
-        let report = check_legacy_numeric_saved_items_with_blocks(&stack, &item_table, &blocks)
-            .unwrap();
+        let report =
+            check_legacy_numeric_saved_items_with_blocks(&stack, &item_table, &blocks).unwrap();
         assert_eq!(report.block_states_proven, 0);
         assert_eq!(report.block_states_incompatible, 1);
         assert!(matches!(
@@ -656,12 +660,8 @@ mod tests {
 
     #[test]
     fn unusual_compound_name_uses_bracket_path_not_dot_bracket_path() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:test":1}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:test":1}"#, "{}", &[]).unwrap();
         let root = NbtTag::Compound(IndexMap::from([(
             "custom.field".to_string(),
             item("minecraft:missing", 0, None),

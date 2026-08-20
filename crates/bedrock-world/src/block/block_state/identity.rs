@@ -66,7 +66,10 @@ mod tests {
         let old = state(Some(17_000_000));
         let current = state(Some(18_168_865));
         assert!(old.semantic_eq(&current));
-        assert_eq!(old.canonical_bytes().unwrap(), current.canonical_bytes().unwrap());
+        assert_eq!(
+            old.canonical_bytes().unwrap(),
+            current.canonical_bytes().unwrap()
+        );
     }
 
     #[test]

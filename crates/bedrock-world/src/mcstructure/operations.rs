@@ -1819,7 +1819,7 @@ fn nbt_i32_list(tag: &NbtTag) -> Result<Vec<i32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Dimension, MemoryStorage, OpenOptions};
+    use crate::{BedrockWorldOpenOptions, Dimension, MemoryStorage};
     use std::sync::Arc;
 
     #[test]
@@ -1851,9 +1851,9 @@ mod tests {
         let world = BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions {
+            BedrockWorldOpenOptions {
                 read_only: false,
-                ..OpenOptions::default()
+                ..BedrockWorldOpenOptions::default()
             },
         );
         let target_anchor = ChunkPos {

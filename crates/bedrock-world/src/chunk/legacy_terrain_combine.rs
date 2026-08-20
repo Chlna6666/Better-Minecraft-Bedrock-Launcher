@@ -2,8 +2,8 @@
 
 use crate::biome::Biome2dLegacy;
 use crate::chunk::{
-    BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, LegacySubChunk, LegacyTerrainBuilder, SubChunk,
-    SubChunkDecodeMode, SubChunkFormat,
+    BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, LegacySubChunk, LegacyTerrainBuilder,
+    SubChunk, SubChunkDecodeMode, SubChunkFormat,
 };
 use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
@@ -150,7 +150,10 @@ pub(crate) fn stage_legacy_terrain_combine(
         report.records = report.records.saturating_add(1);
         report.data2d_legacy_removed = report.data2d_legacy_removed.saturating_add(1);
         report.staged_bytes = report.staged_bytes.saturating_add(target.len());
-        batch.put(ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode(), target);
+        batch.put(
+            ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode(),
+            target,
+        );
         batch.delete(biome_key);
     }
 
@@ -178,18 +181,36 @@ fn copy_legacy_subchunk_into_terrain(
         for local_z in 0_u8..16 {
             for local_y in 0_u8..16 {
                 let target_y = base_y + local_y;
-                let block_id = source.block_id_at(local_x, local_y, local_z).ok_or_else(|| {
-                    BedrockWorldError::CorruptWorld("legacy SubChunk block id missing".to_string())
-                })?;
-                let block_data = source.block_data_at(local_x, local_y, local_z).ok_or_else(|| {
-                    BedrockWorldError::CorruptWorld("legacy SubChunk block data missing".to_string())
-                })?;
-                let sky_light = source.sky_light_at(local_x, local_y, local_z).ok_or_else(|| {
-                    BedrockWorldError::CorruptWorld("legacy SubChunk sky light missing".to_string())
-                })?;
-                let block_light = source.block_light_at(local_x, local_y, local_z).ok_or_else(|| {
-                    BedrockWorldError::CorruptWorld("legacy SubChunk block light missing".to_string())
-                })?;
+                let block_id = source
+                    .block_id_at(local_x, local_y, local_z)
+                    .ok_or_else(|| {
+                        BedrockWorldError::CorruptWorld(
+                            "legacy SubChunk block id missing".to_string(),
+                        )
+                    })?;
+                let block_data =
+                    source
+                        .block_data_at(local_x, local_y, local_z)
+                        .ok_or_else(|| {
+                            BedrockWorldError::CorruptWorld(
+                                "legacy SubChunk block data missing".to_string(),
+                            )
+                        })?;
+                let sky_light =
+                    source
+                        .sky_light_at(local_x, local_y, local_z)
+                        .ok_or_else(|| {
+                            BedrockWorldError::CorruptWorld(
+                                "legacy SubChunk sky light missing".to_string(),
+                            )
+                        })?;
+                let block_light = source
+                    .block_light_at(local_x, local_y, local_z)
+                    .ok_or_else(|| {
+                        BedrockWorldError::CorruptWorld(
+                            "legacy SubChunk block light missing".to_string(),
+                        )
+                    })?;
                 target.set_block(local_x, target_y, local_z, block_id, block_data)?;
                 target.set_sky_light(local_x, target_y, local_z, sky_light)?;
                 target.set_block_light(local_x, target_y, local_z, block_light)?;

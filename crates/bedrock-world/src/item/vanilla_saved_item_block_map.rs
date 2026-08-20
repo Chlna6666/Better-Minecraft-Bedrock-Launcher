@@ -42,11 +42,12 @@ impl VanillaSavedItemBlockMap {
         game_version: GameVersion,
         json: &str,
     ) -> Result<Self> {
-        let block_to_item: BTreeMap<String, String> = serde_json::from_str(json).map_err(|error| {
-            BedrockWorldError::Validation(format!(
-                "invalid Bedrock block_id_to_item_id_map.json for {game_version}: {error}"
-            ))
-        })?;
+        let block_to_item: BTreeMap<String, String> =
+            serde_json::from_str(json).map_err(|error| {
+                BedrockWorldError::Validation(format!(
+                    "invalid Bedrock block_id_to_item_id_map.json for {game_version}: {error}"
+                ))
+            })?;
         if block_to_item.is_empty() {
             return Err(BedrockWorldError::Validation(format!(
                 "Bedrock block/item map for {game_version} is empty"
@@ -140,7 +141,10 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(map.item_id_for_block("minecraft:bed"), Some("minecraft:item.bed"));
+        assert_eq!(
+            map.item_id_for_block("minecraft:bed"),
+            Some("minecraft:item.bed")
+        );
         assert_eq!(
             map.block_id_for_item("minecraft:item.bed"),
             VanillaSavedItemBlockMatch::Unique("minecraft:bed")

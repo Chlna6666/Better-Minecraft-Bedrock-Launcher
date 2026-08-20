@@ -568,7 +568,9 @@ fn read_item_id(root: &IndexMap<String, NbtTag>) -> Result<SourceItemId> {
         return match value {
             NbtTag::String(name) if !name.is_empty() => Ok(SourceItemId::Named(name.clone())),
             NbtTag::String(_) => Err(validation("saved item Name is empty")),
-            other => Err(validation(format!("saved item Name has invalid type: {other:?}"))),
+            other => Err(validation(format!(
+                "saved item Name has invalid type: {other:?}"
+            ))),
         };
     }
     let value = root
@@ -583,7 +585,9 @@ fn read_item_id(root: &IndexMap<String, NbtTag>) -> Result<SourceItemId> {
         NbtTag::Long(value) => i32::try_from(*value)
             .map(SourceItemId::Numeric)
             .map_err(|_| validation("saved item numeric id exceeds i32")),
-        other => Err(validation(format!("saved item id has invalid type: {other:?}"))),
+        other => Err(validation(format!(
+            "saved item id has invalid type: {other:?}"
+        ))),
     }
 }
 
@@ -598,7 +602,9 @@ fn read_item_meta(root: &IndexMap<String, NbtTag>) -> Result<i32> {
             NbtTag::Int(value) => Ok(*value),
             NbtTag::Long(value) => i32::try_from(*value)
                 .map_err(|_| validation(format!("saved item {key} exceeds i32"))),
-            other => Err(validation(format!("saved item {key} is not integer: {other:?}"))),
+            other => Err(validation(format!(
+                "saved item {key} is not integer: {other:?}"
+            ))),
         };
     }
     Ok(0)
@@ -634,12 +640,8 @@ mod tests {
 
     #[test]
     fn existing_int_numeric_item_is_normalized_to_exact_classic_short_tags() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:stone":1}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Int(1)),
             ("Damage".to_string(), NbtTag::Int(3)),
@@ -647,7 +649,9 @@ mod tests {
             ("FutureField".to_string(), NbtTag::Long(9)),
         ]));
         let outcome = convert_saved_items_to_classic(&source, &table).unwrap();
-        let NbtTag::Compound(root) = outcome.nbt else { panic!("compound") };
+        let NbtTag::Compound(root) = outcome.nbt else {
+            panic!("compound")
+        };
         assert_eq!(root.get("id"), Some(&NbtTag::Short(1)));
         assert_eq!(root.get("Damage"), Some(&NbtTag::Short(3)));
         assert_eq!(root.get("FutureField"), Some(&NbtTag::Long(9)));
@@ -666,24 +670,25 @@ mod tests {
         )
         .unwrap();
         let source = NbtTag::Compound(IndexMap::from([
-            ("Name".to_string(), NbtTag::String("minecraft:new".to_string())),
+            (
+                "Name".to_string(),
+                NbtTag::String("minecraft:new".to_string()),
+            ),
             ("Damage".to_string(), NbtTag::Short(2)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
         let outcome = convert_saved_items_to_classic(&source, &table).unwrap();
-        let NbtTag::Compound(root) = outcome.nbt else { panic!("compound") };
+        let NbtTag::Compound(root) = outcome.nbt else {
+            panic!("compound")
+        };
         assert_eq!(root.get("id"), Some(&NbtTag::Short(4)));
         assert!(!root.contains_key("Name"));
     }
 
     #[test]
     fn unknown_existing_numeric_id_is_not_blessed_as_classic_vanilla_data() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:stone":1}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Short(777)),
             ("Damage".to_string(), NbtTag::Short(0)),
@@ -696,12 +701,8 @@ mod tests {
 
     #[test]
     fn classic_air_id_zero_is_refused() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:air":0}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:air":0}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Short(0)),
             ("Count".to_string(), NbtTag::Byte(1)),

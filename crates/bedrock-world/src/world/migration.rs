@@ -4,11 +4,11 @@
 //! their domain modules (`chunk`, `biome`, `entity`, `item`, `level.dat`) so old-version support can be
 //! completed without creating another compatibility namespace.
 
+use super::subchunk_upgrade::BedrockWorldSubChunkUpgradeReport;
 use crate::block::{BlockUpgradeData, VanillaBlockStatePalette};
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
 use crate::world::{BedrockWorld, WorldStorageHandle};
-use super::subchunk_upgrade::BedrockWorldSubChunkUpgradeReport;
 
 /// One Minecraft Bedrock migration phase that is known but not yet wired into the whole-world entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

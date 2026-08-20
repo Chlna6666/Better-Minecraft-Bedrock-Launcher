@@ -16,11 +16,9 @@ use std::fs;
 use std::path::Path;
 
 /// Pinned upstream BedrockItemUpgradeSchema commit.
-pub const PINNED_ITEM_UPGRADE_SCHEMA_COMMIT: &str =
-    "e19685d2e7e76eb7446115c556df34e5d627d072";
+pub const PINNED_ITEM_UPGRADE_SCHEMA_COMMIT: &str = "e19685d2e7e76eb7446115c556df34e5d627d072";
 /// Git tree backing [`PINNED_ITEM_UPGRADE_SCHEMA_COMMIT`].
-pub const PINNED_ITEM_UPGRADE_SCHEMA_TREE: &str =
-    "33ea604960ce4182c4113dce948603638ce69cee";
+pub const PINNED_ITEM_UPGRADE_SCHEMA_TREE: &str = "33ea604960ce4182c4113dce948603638ce69cee";
 
 /// Complete ordered item ID/meta upgrade schema list at the pinned commit.
 pub const PINNED_ITEM_SCHEMA_FILES: &[&str] = &[
@@ -64,7 +62,11 @@ pub struct PinnedItemCorpusFileSpec {
     pub size: usize,
 }
 
-const fn file(path: &'static str, git_blob_sha1: &'static str, size: usize) -> PinnedItemCorpusFileSpec {
+const fn file(
+    path: &'static str,
+    git_blob_sha1: &'static str,
+    size: usize,
+) -> PinnedItemCorpusFileSpec {
     PinnedItemCorpusFileSpec {
         path,
         git_blob_sha1,
@@ -75,35 +77,151 @@ const fn file(path: &'static str, git_blob_sha1: &'static str, size: usize) -> P
 /// Exact file manifest for the pinned CC0 item migration corpus.
 pub const PINNED_ITEM_MIGRATION_CORPUS_FILES: &[PinnedItemCorpusFileSpec] = &[
     file("LICENSE", "0e259d42c996742e9e3cba14c677129b2c1b6311", 7048),
-    file("item_legacy_id_map.json", "f8bf5c2219543ac038d5a440a08a9fca528a5423", 28615),
-    file("1.12.0_item_id_to_block_id_map.json", "7a3ed6efd474c02d67022441b16863c2db1bf53d", 27382),
-    file("id_meta_upgrade_schema/0001_1.6_beta_to_1.6.0.json", "8fdd19e64a1b3b1be1cbdbd0568714776f92f4a5", 405),
-    file("id_meta_upgrade_schema/0011_1.11.4_to_1.12.0.json", "824bddcdf9c61e25752cf75be2f24ec9197b029d", 1333),
-    file("id_meta_upgrade_schema/0021_1.16.0_to_1.16.100.json", "ce78553351d8e3eff77a67a30836e6e8babe0f17", 7808),
-    file("id_meta_upgrade_schema/0031_1.16.100_to_1.16.200.json", "1bdda6e2dd930a8d6b521ac3971dbcf13ac550be", 95),
-    file("id_meta_upgrade_schema/0041_1.16.200_to_1.17.30.json", "84e9a4e9f522d6d0373ca5e65e1157021310cda7", 248),
-    file("id_meta_upgrade_schema/0051_1.17.40_to_1.18.0.json", "3b4ea9b84f7f8c07c0725acfefa51a16bf368441", 89),
-    file("id_meta_upgrade_schema/0061_1.18.0_to_1.18.10.json", "5221d9a2f3c17764e4a7c8d495c8791ef7d4a872", 359),
-    file("id_meta_upgrade_schema/0071_1.18.10_to_1.18.30.json", "3269f83ee5169e2eed4bf66c774edb8965377802", 756),
-    file("id_meta_upgrade_schema/0081_1.18.30_to_1.19.30.34_beta.json", "4c3537a0c6e45fa6e9804c49a153f5b9ff58bdf1", 1155),
-    file("id_meta_upgrade_schema/0091_1.19.60_to_1.19.70.26_beta.json", "b674687f6309fa933f24c7dc30939dd12beb5e38", 1313),
-    file("id_meta_upgrade_schema/0101_1.19.70_to_1.19.80.24_beta.json", "f79b82b3bdcfeaa2e1940350bfbc27eb2296ba86", 1149),
-    file("id_meta_upgrade_schema/0111_1.19.80_to_1.20.0.23_beta.json", "5668a17b8431ff51fb7e6ecd19d08862ba40cab8", 1346),
-    file("id_meta_upgrade_schema/0121_1.20.0.23_beta_to_1.20.10.24_beta.json", "2d7a6db559f59e6fe69c9cef05e5cc1fbed3fe94", 1634),
-    file("id_meta_upgrade_schema/0131_1.20.10.24_beta_to_1.20.20.23_beta.json", "eadfe8e865ad4908274120dd1f280aa3e3b8bafe", 1839),
-    file("id_meta_upgrade_schema/0141_1.20.20.23_beta_to_1.20.30.22_beta.json", "2c3a27dac8a1a1ff2ba6f4889abe27b039a5a215", 1748),
-    file("id_meta_upgrade_schema/0151_1.20.30.22_beta_to_1.20.50.23_beta.json", "30e368f5b59f3d716653121c2f2a74062a838086", 629),
-    file("id_meta_upgrade_schema/0161_1.20.50.23_beta_to_1.20.60.26_beta.json", "31f762c4d0fc4b5d00bcbdd1a4e35122f5ea1067", 2231),
-    file("id_meta_upgrade_schema/0171_1.20.60.26_beta_to_1.20.70.24_beta.json", "453199e25d9a4f4becda79197cb88c5a612e19c6", 1435),
-    file("id_meta_upgrade_schema/0181_1.20.70.24_beta_to_1.20.80.24_beta.json", "fb05350e23a589297d9dcc87eebbae8086e97235", 1412),
-    file("id_meta_upgrade_schema/0191_1.20.80.24_beta_to_1.21.0.25_beta.json", "9372668f99e1816637db4b07973502df0863ab6b", 1686),
-    file("id_meta_upgrade_schema/0201_1.21.0.25_beta_to_1.21.20.24_beta.json", "d160bb5dad4754e5c9b63f28ebdbe0046b0d05e3", 5783),
-    file("id_meta_upgrade_schema/0211_1.21.20.24_beta_to_1.21.30.24_beta.json", "2c81f42f452f6ad4077f65d824b6be2afed31eea", 2777),
-    file("id_meta_upgrade_schema/0221_1.21.30.24_beta_to_1.21.40.25.json", "4e1c0591b0f5b1519fab0ee9478e7184feb48fa8", 378),
-    file("id_meta_upgrade_schema/0231_1.21.40.25_to_1.21.50.29_beta.json", "18674d141cdb508b51513fd2885f56b6635a49e5", 301),
-    file("id_meta_upgrade_schema/0241_1.21.50.29_beta_to_1.21.100.23_beta.json", "1f770197f365def72ab6d36e2d5ad012d915cf7f", 351),
-    file("id_meta_upgrade_schema/0251_1.21.100.23_beta_to_1.21.110.26_beta.json", "e943e53405c3a0ccaa7c677728e8665a30af0b6a", 79),
-    file("id_meta_upgrade_schema/0261_1.26.10_to_1.26.20.json", "7b78d369f1ae0e3d485cae3437affa92baefb230", 430),
+    file(
+        "item_legacy_id_map.json",
+        "f8bf5c2219543ac038d5a440a08a9fca528a5423",
+        28615,
+    ),
+    file(
+        "1.12.0_item_id_to_block_id_map.json",
+        "7a3ed6efd474c02d67022441b16863c2db1bf53d",
+        27382,
+    ),
+    file(
+        "id_meta_upgrade_schema/0001_1.6_beta_to_1.6.0.json",
+        "8fdd19e64a1b3b1be1cbdbd0568714776f92f4a5",
+        405,
+    ),
+    file(
+        "id_meta_upgrade_schema/0011_1.11.4_to_1.12.0.json",
+        "824bddcdf9c61e25752cf75be2f24ec9197b029d",
+        1333,
+    ),
+    file(
+        "id_meta_upgrade_schema/0021_1.16.0_to_1.16.100.json",
+        "ce78553351d8e3eff77a67a30836e6e8babe0f17",
+        7808,
+    ),
+    file(
+        "id_meta_upgrade_schema/0031_1.16.100_to_1.16.200.json",
+        "1bdda6e2dd930a8d6b521ac3971dbcf13ac550be",
+        95,
+    ),
+    file(
+        "id_meta_upgrade_schema/0041_1.16.200_to_1.17.30.json",
+        "84e9a4e9f522d6d0373ca5e65e1157021310cda7",
+        248,
+    ),
+    file(
+        "id_meta_upgrade_schema/0051_1.17.40_to_1.18.0.json",
+        "3b4ea9b84f7f8c07c0725acfefa51a16bf368441",
+        89,
+    ),
+    file(
+        "id_meta_upgrade_schema/0061_1.18.0_to_1.18.10.json",
+        "5221d9a2f3c17764e4a7c8d495c8791ef7d4a872",
+        359,
+    ),
+    file(
+        "id_meta_upgrade_schema/0071_1.18.10_to_1.18.30.json",
+        "3269f83ee5169e2eed4bf66c774edb8965377802",
+        756,
+    ),
+    file(
+        "id_meta_upgrade_schema/0081_1.18.30_to_1.19.30.34_beta.json",
+        "4c3537a0c6e45fa6e9804c49a153f5b9ff58bdf1",
+        1155,
+    ),
+    file(
+        "id_meta_upgrade_schema/0091_1.19.60_to_1.19.70.26_beta.json",
+        "b674687f6309fa933f24c7dc30939dd12beb5e38",
+        1313,
+    ),
+    file(
+        "id_meta_upgrade_schema/0101_1.19.70_to_1.19.80.24_beta.json",
+        "f79b82b3bdcfeaa2e1940350bfbc27eb2296ba86",
+        1149,
+    ),
+    file(
+        "id_meta_upgrade_schema/0111_1.19.80_to_1.20.0.23_beta.json",
+        "5668a17b8431ff51fb7e6ecd19d08862ba40cab8",
+        1346,
+    ),
+    file(
+        "id_meta_upgrade_schema/0121_1.20.0.23_beta_to_1.20.10.24_beta.json",
+        "2d7a6db559f59e6fe69c9cef05e5cc1fbed3fe94",
+        1634,
+    ),
+    file(
+        "id_meta_upgrade_schema/0131_1.20.10.24_beta_to_1.20.20.23_beta.json",
+        "eadfe8e865ad4908274120dd1f280aa3e3b8bafe",
+        1839,
+    ),
+    file(
+        "id_meta_upgrade_schema/0141_1.20.20.23_beta_to_1.20.30.22_beta.json",
+        "2c3a27dac8a1a1ff2ba6f4889abe27b039a5a215",
+        1748,
+    ),
+    file(
+        "id_meta_upgrade_schema/0151_1.20.30.22_beta_to_1.20.50.23_beta.json",
+        "30e368f5b59f3d716653121c2f2a74062a838086",
+        629,
+    ),
+    file(
+        "id_meta_upgrade_schema/0161_1.20.50.23_beta_to_1.20.60.26_beta.json",
+        "31f762c4d0fc4b5d00bcbdd1a4e35122f5ea1067",
+        2231,
+    ),
+    file(
+        "id_meta_upgrade_schema/0171_1.20.60.26_beta_to_1.20.70.24_beta.json",
+        "453199e25d9a4f4becda79197cb88c5a612e19c6",
+        1435,
+    ),
+    file(
+        "id_meta_upgrade_schema/0181_1.20.70.24_beta_to_1.20.80.24_beta.json",
+        "fb05350e23a589297d9dcc87eebbae8086e97235",
+        1412,
+    ),
+    file(
+        "id_meta_upgrade_schema/0191_1.20.80.24_beta_to_1.21.0.25_beta.json",
+        "9372668f99e1816637db4b07973502df0863ab6b",
+        1686,
+    ),
+    file(
+        "id_meta_upgrade_schema/0201_1.21.0.25_beta_to_1.21.20.24_beta.json",
+        "d160bb5dad4754e5c9b63f28ebdbe0046b0d05e3",
+        5783,
+    ),
+    file(
+        "id_meta_upgrade_schema/0211_1.21.20.24_beta_to_1.21.30.24_beta.json",
+        "2c81f42f452f6ad4077f65d824b6be2afed31eea",
+        2777,
+    ),
+    file(
+        "id_meta_upgrade_schema/0221_1.21.30.24_beta_to_1.21.40.25.json",
+        "4e1c0591b0f5b1519fab0ee9478e7184feb48fa8",
+        378,
+    ),
+    file(
+        "id_meta_upgrade_schema/0231_1.21.40.25_to_1.21.50.29_beta.json",
+        "18674d141cdb508b51513fd2885f56b6635a49e5",
+        301,
+    ),
+    file(
+        "id_meta_upgrade_schema/0241_1.21.50.29_beta_to_1.21.100.23_beta.json",
+        "1f770197f365def72ab6d36e2d5ad012d915cf7f",
+        351,
+    ),
+    file(
+        "id_meta_upgrade_schema/0251_1.21.100.23_beta_to_1.21.110.26_beta.json",
+        "e943e53405c3a0ccaa7c677728e8665a30af0b6a",
+        79,
+    ),
+    file(
+        "id_meta_upgrade_schema/0261_1.26.10_to_1.26.20.json",
+        "7b78d369f1ae0e3d485cae3437affa92baefb230",
+        430,
+    ),
 ];
 
 /// Borrowed authoritative item ID/meta schema source.
@@ -184,9 +302,13 @@ impl AuthoritativeItemMigrationCatalog {
             if !ids.insert(id) {
                 return Err(validation(format!("duplicate item upgrade schema id {id}")));
             }
-            let document: ItemUpgradeSchemaDocument = serde_json::from_str(source.json).map_err(|error| {
-                validation(format!("invalid item upgrade schema {}: {error}", source.name))
-            })?;
+            let document: ItemUpgradeSchemaDocument =
+                serde_json::from_str(source.json).map_err(|error| {
+                    validation(format!(
+                        "invalid item upgrade schema {}: {error}",
+                        source.name
+                    ))
+                })?;
             let mut remapped_metas = BTreeMap::new();
             for (name, values) in document.remapped_metas {
                 let mut parsed = BTreeMap::new();
@@ -356,7 +478,12 @@ pub fn migrate_item_stack_nbt(
         return unresolved(nbt, false, policy, "item stack root is not a compound");
     };
     let Some(raw_id) = read_item_id(root)? else {
-        return unresolved(nbt, false, policy, "item stack has neither Name nor legacy id");
+        return unresolved(
+            nbt,
+            false,
+            policy,
+            "item stack has neither Name nor legacy id",
+        );
     };
     let (raw_name, source) = match raw_id {
         RawItemId::Name(name) => (name, ItemIdSource::Name),
@@ -413,7 +540,9 @@ pub fn migrate_item_stack_nbt(
                     nbt,
                     true,
                     policy,
-                    format!("legacy blockitem {raw_name}:{meta} has no authoritative block mapping"),
+                    format!(
+                        "legacy blockitem {raw_name}:{meta} has no authoritative block mapping"
+                    ),
                 );
             };
             state
@@ -552,9 +681,13 @@ pub fn load_pinned_item_migration_catalog_from_dir(
     let mut files = read_verified_corpus(root.as_ref())?;
     let legacy = take_utf8(&mut files, "item_legacy_id_map.json")?;
     let blocks = take_utf8(&mut files, "1.12.0_item_id_to_block_id_map.json")?;
-    let mut documents = Vec::<(&'static str, String)>::with_capacity(PINNED_ITEM_SCHEMA_FILES.len());
+    let mut documents =
+        Vec::<(&'static str, String)>::with_capacity(PINNED_ITEM_SCHEMA_FILES.len());
     for &name in PINNED_ITEM_SCHEMA_FILES {
-        documents.push((name, take_utf8(&mut files, &format!("id_meta_upgrade_schema/{name}"))?));
+        documents.push((
+            name,
+            take_utf8(&mut files, &format!("id_meta_upgrade_schema/{name}"))?,
+        ));
     }
     let sources = documents
         .iter()
@@ -574,10 +707,18 @@ fn validate_pinned_schema_sources(sources: &[ItemSchemaSource<'_>]) -> Result<()
             sources.len()
         )));
     }
-    let expected = PINNED_ITEM_SCHEMA_FILES.iter().copied().collect::<BTreeSet<_>>();
-    let actual = sources.iter().map(|source| source.name).collect::<BTreeSet<_>>();
+    let expected = PINNED_ITEM_SCHEMA_FILES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let actual = sources
+        .iter()
+        .map(|source| source.name)
+        .collect::<BTreeSet<_>>();
     if actual.len() != sources.len() {
-        return Err(validation("pinned item corpus contains duplicate filenames"));
+        return Err(validation(
+            "pinned item corpus contains duplicate filenames",
+        ));
     }
     if actual != expected {
         let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
@@ -614,11 +755,13 @@ fn read_verified_corpus(root: &Path) -> Result<BTreeMap<&'static str, Vec<u8>>> 
 }
 
 fn take_utf8(files: &mut BTreeMap<&'static str, Vec<u8>>, path: &str) -> Result<String> {
-    let bytes = files.remove(path).ok_or_else(|| {
-        validation(format!("verified item corpus lost required file {path}"))
-    })?;
+    let bytes = files
+        .remove(path)
+        .ok_or_else(|| validation(format!("verified item corpus lost required file {path}")))?;
     String::from_utf8(bytes).map_err(|error| {
-        validation(format!("pinned item corpus file {path} is not UTF-8: {error}"))
+        validation(format!(
+            "pinned item corpus file {path} is not UTF-8: {error}"
+        ))
     })
 }
 
@@ -626,7 +769,11 @@ fn schema_id(name: &str) -> Result<u32> {
     let prefix = name
         .split_once('_')
         .map(|(prefix, _)| prefix)
-        .ok_or_else(|| validation(format!("item schema filename has no numeric prefix: {name}")))?;
+        .ok_or_else(|| {
+            validation(format!(
+                "item schema filename has no numeric prefix: {name}"
+            ))
+        })?;
     prefix
         .parse::<u32>()
         .map_err(|error| validation(format!("invalid item schema id in {name}: {error}")))
@@ -651,7 +798,9 @@ fn read_item_id(root: &IndexMap<String, NbtTag>) -> Result<Option<RawItemId>> {
         return match value {
             NbtTag::String(name) if !name.is_empty() => Ok(Some(RawItemId::Name(name.clone()))),
             NbtTag::String(_) => Err(validation("item Name is empty")),
-            other => Err(validation(format!("item Name has invalid NBT type: {other:?}"))),
+            other => Err(validation(format!(
+                "item Name has invalid NBT type: {other:?}"
+            ))),
         };
     }
     let Some(value) = root.get("id") else {
@@ -667,7 +816,9 @@ fn read_item_id(root: &IndexMap<String, NbtTag>) -> Result<Option<RawItemId>> {
             .map(RawItemId::Numeric)
             .map(Some)
             .map_err(|_| validation("legacy item id exceeds i32")),
-        other => Err(validation(format!("legacy item id has invalid NBT type: {other:?}"))),
+        other => Err(validation(format!(
+            "legacy item id has invalid NBT type: {other:?}"
+        ))),
     }
 }
 
@@ -726,8 +877,9 @@ fn write_item_identity(
         changed = true;
     }
     if identity.meta != old_meta || root.contains_key("Aux") {
-        let meta = i16::try_from(identity.meta)
-            .map_err(|_| validation(format!("item metadata {} exceeds TAG_Short", identity.meta)))?;
+        let meta = i16::try_from(identity.meta).map_err(|_| {
+            validation(format!("item metadata {} exceeds TAG_Short", identity.meta))
+        })?;
         if root.get("Damage") != Some(&NbtTag::Short(meta)) {
             root.insert("Damage".to_string(), NbtTag::Short(meta));
             changed = true;
@@ -746,21 +898,29 @@ fn parse_block_state(tag: &NbtTag) -> Result<BlockState> {
     let name = match root.get("name") {
         Some(NbtTag::String(name)) if !name.is_empty() => name.clone(),
         Some(other) => {
-            return Err(validation(format!("item Block name has invalid type: {other:?}")));
+            return Err(validation(format!(
+                "item Block name has invalid type: {other:?}"
+            )));
         }
         None => return Err(validation("item Block payload has no name")),
     };
     let states = match root.get("states") {
-        Some(NbtTag::Compound(states)) => states.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        Some(NbtTag::Compound(states)) => {
+            states.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        }
         Some(other) => {
-            return Err(validation(format!("item Block states has invalid type: {other:?}")));
+            return Err(validation(format!(
+                "item Block states has invalid type: {other:?}"
+            )));
         }
         None => BTreeMap::new(),
     };
     let version = match root.get("version") {
         Some(NbtTag::Int(version)) => Some(*version),
         Some(other) => {
-            return Err(validation(format!("item Block version has invalid type: {other:?}")));
+            return Err(validation(format!(
+                "item Block version has invalid type: {other:?}"
+            )));
         }
         None => None,
     };
@@ -806,7 +966,9 @@ fn unresolved(
             status: ItemMigrationStatus::Preserved,
             block_item,
         }),
-        ItemMigrationPolicy::RefuseUnknown => Err(BedrockWorldError::UnsupportedChunkFormat(reason)),
+        ItemMigrationPolicy::RefuseUnknown => {
+            Err(BedrockWorldError::UnsupportedChunkFormat(reason))
+        }
     }
 }
 
@@ -904,11 +1066,9 @@ impl Sha1 {
             words[index] = u32::from_be_bytes(bytes.try_into().expect("SHA-1 word"));
         }
         for index in 16..80 {
-            words[index] = (words[index - 3]
-                ^ words[index - 8]
-                ^ words[index - 14]
-                ^ words[index - 16])
-                .rotate_left(1);
+            words[index] =
+                (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16])
+                    .rotate_left(1);
         }
         let mut a = self.state[0];
         let mut b = self.state[1];
@@ -985,7 +1145,10 @@ mod tests {
             ("Damage".to_string(), NbtTag::Short(1)),
             ("Count".to_string(), NbtTag::Byte(3)),
             ("Slot".to_string(), NbtTag::Byte(7)),
-            ("tag".to_string(), NbtTag::Compound(IndexMap::from([("custom".to_string(), NbtTag::Int(42))]))),
+            (
+                "tag".to_string(),
+                NbtTag::Compound(IndexMap::from([("custom".to_string(), NbtTag::Int(42))])),
+            ),
         ]));
         let outcome = migrate_item_stack_nbt(
             &source,
@@ -995,8 +1158,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.status, ItemMigrationStatus::Upgraded);
-        let NbtTag::Compound(root) = outcome.nbt else { panic!("compound") };
-        assert_eq!(root.get("Name"), Some(&NbtTag::String("minecraft:charcoal".to_string())));
+        let NbtTag::Compound(root) = outcome.nbt else {
+            panic!("compound")
+        };
+        assert_eq!(
+            root.get("Name"),
+            Some(&NbtTag::String("minecraft:charcoal".to_string()))
+        );
         assert_eq!(root.get("Damage"), Some(&NbtTag::Short(0)));
         assert_eq!(root.get("Count"), Some(&NbtTag::Byte(3)));
         assert_eq!(root.get("Slot"), Some(&NbtTag::Byte(7)));
@@ -1008,7 +1176,10 @@ mod tests {
     fn blockitem_is_preserved_without_block_context() {
         let catalog = catalog();
         let source = NbtTag::Compound(IndexMap::from([
-            ("Name".to_string(), NbtTag::String("minecraft:stone".to_string())),
+            (
+                "Name".to_string(),
+                NbtTag::String("minecraft:stone".to_string()),
+            ),
             ("Damage".to_string(), NbtTag::Short(0)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
@@ -1021,20 +1192,19 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.status, ItemMigrationStatus::Preserved);
         assert_eq!(outcome.nbt, source);
-        assert!(migrate_item_stack_nbt(
-            &source,
-            &catalog,
-            None,
-            ItemMigrationPolicy::RefuseUnknown,
-        )
-        .is_err());
+        assert!(
+            migrate_item_stack_nbt(&source, &catalog, None, ItemMigrationPolicy::RefuseUnknown,)
+                .is_err()
+        );
     }
 
     #[test]
     fn existing_blockitem_uses_shared_blockstate_migrator() {
         let catalog = AuthoritativeItemMigrationCatalog::from_sources("{}", "{}", &[]).unwrap();
         let mut graph = BlockStateMigrationGraph::new();
-        graph.add_step(BlockStateMigrationStep::identity(10, 20)).unwrap();
+        graph
+            .add_step(BlockStateMigrationStep::identity(10, 20))
+            .unwrap();
         let validator = |state: &BlockState| state.name == "minecraft:test";
         let context = BlockItemMigrationContext {
             legacy_resolver: None,
@@ -1043,15 +1213,24 @@ mod tests {
             target_palette_contains: &validator,
         };
         let source = NbtTag::Compound(IndexMap::from([
-            ("Name".to_string(), NbtTag::String("minecraft:test_item".to_string())),
+            (
+                "Name".to_string(),
+                NbtTag::String("minecraft:test_item".to_string()),
+            ),
             ("Damage".to_string(), NbtTag::Short(0)),
             ("Count".to_string(), NbtTag::Byte(1)),
-            ("Block".to_string(), NbtTag::Compound(IndexMap::from([
-                ("name".to_string(), NbtTag::String("minecraft:test".to_string())),
-                ("states".to_string(), NbtTag::Compound(IndexMap::new())),
-                ("version".to_string(), NbtTag::Int(10)),
-                ("future_extra".to_string(), NbtTag::Long(9)),
-            ]))),
+            (
+                "Block".to_string(),
+                NbtTag::Compound(IndexMap::from([
+                    (
+                        "name".to_string(),
+                        NbtTag::String("minecraft:test".to_string()),
+                    ),
+                    ("states".to_string(), NbtTag::Compound(IndexMap::new())),
+                    ("version".to_string(), NbtTag::Int(10)),
+                    ("future_extra".to_string(), NbtTag::Long(9)),
+                ])),
+            ),
         ]));
         let outcome = migrate_item_stack_nbt(
             &source,
@@ -1061,8 +1240,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.status, ItemMigrationStatus::Upgraded);
-        let NbtTag::Compound(item) = outcome.nbt else { panic!("item") };
-        let Some(NbtTag::Compound(block)) = item.get("Block") else { panic!("block") };
+        let NbtTag::Compound(item) = outcome.nbt else {
+            panic!("item")
+        };
+        let Some(NbtTag::Compound(block)) = item.get("Block") else {
+            panic!("block")
+        };
         assert_eq!(block.get("version"), Some(&NbtTag::Int(20)));
         assert_eq!(block.get("future_extra"), Some(&NbtTag::Long(9)));
     }
@@ -1091,8 +1274,14 @@ mod tests {
 
     #[test]
     fn git_blob_sha1_matches_known_vectors() {
-        assert_eq!(git_blob_sha1_hex(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
-        assert_eq!(git_blob_sha1_hex(b"abc"), "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f");
+        assert_eq!(
+            git_blob_sha1_hex(b""),
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        );
+        assert_eq!(
+            git_blob_sha1_hex(b"abc"),
+            "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f"
+        );
     }
 
     #[test]

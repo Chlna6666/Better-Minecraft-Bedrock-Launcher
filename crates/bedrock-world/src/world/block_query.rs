@@ -127,7 +127,8 @@ where
                 if let Some(subchunk) = subchunks.get(&(chunk_pos, subchunk_y)) {
                     if let Some(block_state) = subchunk.block_state_at(local_x, local_y, local_z) {
                         state = Some(block_state.clone());
-                    } else if let Some(id) = subchunk.legacy_block_id_at(local_x, local_y, local_z) {
+                    } else if let Some(id) = subchunk.legacy_block_id_at(local_x, local_y, local_z)
+                    {
                         state = Some(legacy_block_state(
                             id,
                             subchunk.legacy_block_data_at(local_x, local_y, local_z),
@@ -191,10 +192,12 @@ mod tests {
                 format: WorldFormatHint::LevelDb,
             },
         );
-        assert!(world
-            .get_block_states_at_blocking(Dimension::Overworld, [])
-            .unwrap()
-            .is_empty());
+        assert!(
+            world
+                .get_block_states_at_blocking(Dimension::Overworld, [])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -220,10 +223,7 @@ mod tests {
                 format: WorldFormatHint::LevelDb,
             },
         );
-        let input = [
-            BlockPos { x: 1, y: 5, z: 2 },
-            BlockPos { x: 3, y: 7, z: 4 },
-        ];
+        let input = [BlockPos { x: 1, y: 5, z: 2 }, BlockPos { x: 3, y: 7, z: 4 }];
         let results = world
             .get_block_states_at_blocking(Dimension::Overworld, input)
             .expect("query");

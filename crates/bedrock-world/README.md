@@ -1,5 +1,8 @@
 # bedrock-world
 
+See [`docs/COMPATIBILITY_MATRIX.md`](docs/COMPATIBILITY_MATRIX.md) for the verified Minecraft world,
+LegacyTerrain, SubChunk and Pocket `chunks.dat` support matrix.
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 `bedrock-world` is a multi-version Minecraft Bedrock world library built on top of
@@ -33,7 +36,7 @@ fn inspect() -> bedrock_world::Result<()> {
 ```
 
 With the `async` feature, `BedrockWorld::open_auto` and async wrappers are
-available. Use `BedrockWorld::open_blocking(path, OpenOptions)` when an explicit
+available. Use `BedrockWorld::open_blocking(path, BedrockWorldOpenOptions)` when an explicit
 format hint or writable LevelDB world is required.
 
 ## Supported persisted generations
@@ -177,13 +180,13 @@ data before commit.
 
 ## Writing
 
-`OpenOptions::default()` is read-only. Open a LevelDB world explicitly writable
+`BedrockWorldOpenOptions::default()` is read-only. Open a LevelDB world explicitly writable
 for edits:
 
 ```rust
 let world = bedrock_world::BedrockWorld::open_blocking(
     "path/to/minecraftWorld",
-    bedrock_world::OpenOptions {
+    bedrock_world::BedrockWorldOpenOptions {
         read_only: false,
         ..Default::default()
     },

@@ -243,8 +243,11 @@ pub fn audit_world_integrity_blocking(
                     ChunkRecordTag::SubChunkPrefix if options.validate_subchunks => {
                         report.subchunks = report.subchunks.saturating_add(1);
                         let y = chunk_key.subchunk_y.unwrap_or(0);
-                        match parse_subchunk_with_mode(y, value.clone(), SubChunkDecodeMode::CountsOnly)
-                        {
+                        match parse_subchunk_with_mode(
+                            y,
+                            value.clone(),
+                            SubChunkDecodeMode::CountsOnly,
+                        ) {
                             Ok(subchunk) => match subchunk.format {
                                 SubChunkFormat::Raw { version, .. } => report.push_issue(
                                     &options,
@@ -262,8 +265,13 @@ pub fn audit_world_integrity_blocking(
                                         for state in palette.states {
                                             report.block_states =
                                                 report.block_states.saturating_add(1);
-                                            match (options.target_block_state_version, state.version) {
-                                                (Some(target), Some(version)) if version < target => {
+                                            match (
+                                                options.target_block_state_version,
+                                                state.version,
+                                            ) {
+                                                (Some(target), Some(version))
+                                                    if version < target =>
+                                                {
                                                     report.legacy_block_states = report
                                                         .legacy_block_states
                                                         .saturating_add(1);
@@ -398,7 +406,9 @@ pub fn audit_world_integrity_blocking(
                             .get(actor_id)
                             .cloned()
                             .unwrap_or_else(|| "digp".to_string()),
-                        detail: format!("actor {actor_id} is referenced but actorprefix is missing"),
+                        detail: format!(
+                            "actor {actor_id} is referenced but actorprefix is missing"
+                        ),
                     },
                 );
             }
@@ -585,10 +595,8 @@ mod tests {
             .put(&ActorUid(7).storage_key(), &[10, 0, 0, 0])
             .expect("actor");
 
-        let temp = std::env::temp_dir().join(format!(
-            "bedrock-world-integrity-{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("bedrock-world-integrity-{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).expect("dir");
         let document = LevelDatDocument::new(

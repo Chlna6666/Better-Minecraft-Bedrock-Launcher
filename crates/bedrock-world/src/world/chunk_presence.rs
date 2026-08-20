@@ -95,9 +95,7 @@ where
             return Ok(Vec::new());
         }
 
-        let key_count = positions
-            .len()
-            .saturating_mul(CHUNK_PRESENCE_ANCHORS.len());
+        let key_count = positions.len().saturating_mul(CHUNK_PRESENCE_ANCHORS.len());
         let mut keys = StorageKeyBatchBuilder::with_capacity(
             key_count.saturating_mul(MAX_ENCODED_CHUNK_KEY_BYTES),
             key_count,
@@ -114,15 +112,16 @@ where
         let mut results = Vec::with_capacity(positions.len());
         for (position_index, &pos) in positions.iter().enumerate() {
             let base = position_index.saturating_mul(CHUNK_PRESENCE_ANCHORS.len());
-            let anchor = CHUNK_PRESENCE_ANCHORS
-                .iter()
-                .enumerate()
-                .find_map(|(anchor_index, tag)| {
-                    values
-                        .get(base.saturating_add(anchor_index))
-                        .and_then(Option::as_ref)
-                        .map(|_| *tag)
-                });
+            let anchor =
+                CHUNK_PRESENCE_ANCHORS
+                    .iter()
+                    .enumerate()
+                    .find_map(|(anchor_index, tag)| {
+                        values
+                            .get(base.saturating_add(anchor_index))
+                            .and_then(Option::as_ref)
+                            .map(|_| *tag)
+                    });
             results.push(ChunkPresence {
                 pos,
                 exists: anchor.is_some(),
@@ -203,7 +202,10 @@ mod tests {
         let modern = pos(2, -3);
         let legacy = pos(-5, 7);
         storage
-            .put(&ChunkKey::new(modern, ChunkRecordTag::Version).encode(), &[40])
+            .put(
+                &ChunkKey::new(modern, ChunkRecordTag::Version).encode(),
+                &[40],
+            )
             .expect("modern anchor");
         storage
             .put(
@@ -212,7 +214,10 @@ mod tests {
             )
             .expect("legacy anchor");
         let world = world(storage);
-        assert_eq!(world.chunks_exist_blocking([modern, legacy]).unwrap(), vec![true, true]);
+        assert_eq!(
+            world.chunks_exist_blocking([modern, legacy]).unwrap(),
+            vec![true, true]
+        );
     }
 
     #[test]
@@ -224,19 +229,23 @@ mod tests {
             .expect("subchunk");
         let world = world(storage);
         assert!(!world.chunk_exists_blocking(pos).unwrap());
-        assert!(world
-            .chunk_presence_blocking(pos, ChunkPresenceMode::AnyRecord)
-            .unwrap()
-            .exists);
+        assert!(
+            world
+                .chunk_presence_blocking(pos, ChunkPresenceMode::AnyRecord)
+                .unwrap()
+                .exists
+        );
     }
 
     #[test]
     fn missing_chunk_stays_missing() {
         let world = world(MemoryStorage::new());
         let pos = pos(9, 9);
-        assert!(!world
-            .chunk_presence_blocking(pos, ChunkPresenceMode::AnyRecord)
-            .unwrap()
-            .exists);
+        assert!(
+            !world
+                .chunk_presence_blocking(pos, ChunkPresenceMode::AnyRecord)
+                .unwrap()
+                .exists
+        );
     }
 }

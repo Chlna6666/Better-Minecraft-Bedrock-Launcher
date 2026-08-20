@@ -37,9 +37,7 @@ impl LegacyBlockExtraDataEntry {
                 "legacy block extra-data X/Z coordinates must be below 16, got ({local_x}, {local_z})"
             )));
         }
-        let raw_index = u32::from(local_y)
-            | (u32::from(local_z) << 8)
-            | (u32::from(local_x) << 12);
+        let raw_index = u32::from(local_y) | (u32::from(local_z) << 8) | (u32::from(local_x) << 12);
         Ok(Self {
             raw_index,
             block_id,
@@ -209,14 +207,10 @@ impl LegacyBlockExtraDataBuilder {
     /// Creates an empty payload preallocated for `entries` records.
     pub fn with_capacity(entries: usize) -> Result<Self> {
         let payload = entries.checked_mul(ENTRY_LEN).ok_or_else(|| {
-            BedrockWorldError::Validation(
-                "legacy block extra-data capacity overflowed".to_string(),
-            )
+            BedrockWorldError::Validation("legacy block extra-data capacity overflowed".to_string())
         })?;
         let capacity = HEADER_LEN.checked_add(payload).ok_or_else(|| {
-            BedrockWorldError::Validation(
-                "legacy block extra-data capacity overflowed".to_string(),
-            )
+            BedrockWorldError::Validation("legacy block extra-data capacity overflowed".to_string())
         })?;
         let mut bytes = Vec::with_capacity(capacity);
         bytes.extend_from_slice(&[0; HEADER_LEN]);
@@ -258,11 +252,7 @@ impl LegacyBlockExtraDataBuilder {
         block_data: u8,
     ) -> Result<()> {
         self.push(LegacyBlockExtraDataEntry::from_chunk_coordinates(
-            local_x,
-            local_y,
-            local_z,
-            block_id,
-            block_data,
+            local_x, local_y, local_z, block_id, block_data,
         )?)
     }
 

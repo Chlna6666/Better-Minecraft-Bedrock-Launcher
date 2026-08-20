@@ -16,10 +16,10 @@ mod version_target;
 
 pub use crate::parsed::ItemStack;
 pub use classic_saved_item::{
-    ClassicSavedItemCheckReport, ClassicSavedItemConversionOutcome, ClassicSavedItemConversionReport,
-    ClassicSavedItemIssue, ClassicSavedItemIssueKind, check_saved_items_for_classic,
-    check_saved_items_for_classic_with_blocks, convert_saved_items_to_classic,
-    convert_saved_items_to_classic_with_blocks,
+    ClassicSavedItemCheckReport, ClassicSavedItemConversionOutcome,
+    ClassicSavedItemConversionReport, ClassicSavedItemIssue, ClassicSavedItemIssueKind,
+    check_saved_items_for_classic, check_saved_items_for_classic_with_blocks,
+    convert_saved_items_to_classic, convert_saved_items_to_classic_with_blocks,
 };
 pub use format::SavedItemFormat;
 pub use format_evidence::{
@@ -52,9 +52,7 @@ pub use modern_saved_item::{
     convert_saved_items_to_modern_target,
 };
 pub use modern_target::{ModernSavedItemTarget, ModernSavedItemTargetMatch};
-pub use vanilla_saved_item_block_map::{
-    VanillaSavedItemBlockMap, VanillaSavedItemBlockMatch,
-};
+pub use vanilla_saved_item_block_map::{VanillaSavedItemBlockMap, VanillaSavedItemBlockMatch};
 pub use vanilla_saved_item_palette::{VanillaSavedItemEntry, VanillaSavedItemPalette};
 pub use version_target::{SavedItemVersionMatch, SavedItemVersionTable, SavedItemVersionTarget};
 
@@ -65,8 +63,7 @@ pub(crate) use saved_item::{
     ItemMigrationPolicy, ItemMigrationStatus, ItemNbtMigrationOutcome, ItemNbtMigrationReport,
     ItemSchemaSource, ItemStackMigrationOutcome, LegacyBlockItemResolver,
     PINNED_ITEM_MIGRATION_CORPUS_FILES, PINNED_ITEM_SCHEMA_FILES,
-    PINNED_ITEM_UPGRADE_SCHEMA_COMMIT, PINNED_ITEM_UPGRADE_SCHEMA_TREE,
-    PinnedItemCorpusFileSpec, load_pinned_item_migration_catalog,
-    load_pinned_item_migration_catalog_from_dir, migrate_item_stack_nbt,
-    migrate_item_stacks_in_nbt, verify_pinned_item_migration_corpus,
+    PINNED_ITEM_UPGRADE_SCHEMA_COMMIT, PINNED_ITEM_UPGRADE_SCHEMA_TREE, PinnedItemCorpusFileSpec,
+    load_pinned_item_migration_catalog, load_pinned_item_migration_catalog_from_dir,
+    migrate_item_stack_nbt, migrate_item_stacks_in_nbt, verify_pinned_item_migration_corpus,
 };

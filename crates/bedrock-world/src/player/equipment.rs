@@ -206,7 +206,10 @@ mod tests {
         )
         .unwrap();
         player
-            .set_inventory_item(PlayerInventorySlot::from_raw(100), item("minecraft:leather_boots"))
+            .set_inventory_item(
+                PlayerInventorySlot::from_raw(100),
+                item("minecraft:leather_boots"),
+            )
             .unwrap();
         assert!(matches!(player.armor().unwrap(), PlayerArmor::Both { .. }));
     }

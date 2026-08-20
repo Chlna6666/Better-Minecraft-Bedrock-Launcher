@@ -1,32 +1,79 @@
 # Benchmark Notes
 
-This file records the latest local v0.2.0 benchmark run. Re-run the commands
-below before comparing world-format changes because Criterion output depends on
-the host CPU, fixture shape, filesystem, and background load.
+This file defines the reproducible 0.7.0 benchmark contract. Re-run the
+commands below before comparing world-format changes because the result depends
+on the host CPU, fixture shape, filesystem, cache state, and background load.
 
 ## Commands
 
 ```powershell
 rustc --version
 cargo --version
-cargo bench --all-features --bench world_parse -- --noplot
-cargo bench --all-features --bench large_fixture
+cargo bench -p bedrock-world --all-features --bench world_parse -- --noplot
+cargo bench -p bedrock-world --all-features --bench large_fixture -- "C:\path\to\read-only-world"
 ```
 
-## Latest Results
+The large-fixture runner opens LevelDB read-only and hashes every file, relative
+path, and length with XXH3-128 before and after the run. A traversal failure,
+changed hash, or changed byte count fails the run.
+
+`logical_cold` means a new database handle per sample with the crate cache
+bypassed. `logical_warm` means one primed handle with the crate cache enabled.
+Neither condition clears the Windows filesystem cache, so these labels must not
+be described as physical cold-disk and warm-disk measurements.
+
+## Latest 0.7.0 fixture result
 
 Local run:
 
 ```text
-date: 2026-05-07
-host: Windows / PowerShell
-rustc: 1.93.1 (01f6ddf75 2026-02-11)
-cargo: 1.93.1 (083ac5135 2025-12-15)
+date: 2026-08-20
+host: Windows x86_64 / NTFS
+cpu: AMD Ryzen 7 7840H, 8 cores / 16 logical processors
+disk: Fanxiang S500PRO 1TB NVMe SSD
 features: --all-features
-criterion: sample_size=10, measurement_time=4s
-plotting: gnuplot not installed; Criterion used Plotters
-fixture: tests/fixtures/sample-bedrock-world
+fixture_hash: 342010d8883d5b5399120b1ecded04fc (XXH3-128)
+fixture_bytes: 1087899207
+compatibility_records: 1764971
+visible_leveldb_records: 1768601
+chunks: 111827
+parse_errors: 0
+corrupt_chunks: 617
+subchunk_versions: v8=125, v9=108402
 ```
+
+The compatibility record count covers records classified by the world-format
+scanner. The larger LevelDB count is the lower-layer visible-key scan and is
+reported separately rather than conflating the two definitions. Likewise,
+`parse_errors=0` does not erase the 617 chunks rejected by compatibility
+validation.
+
+### Read/decode query
+
+Seven samples queried exact surface blocks and surface biomes for 256 real
+chunks on one worker. Disk and CPU columns are averages reported by
+`ChunkLoadStats`; percentile and throughput use wall time.
+
+| Cache condition | p50 | p95 | Throughput | DB read avg | Decode avg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `logical_cold` | 865.359 ms | 871.119 ms | 295.83 chunks/s | 503.429 ms | 300.000 ms |
+| `logical_warm` | 662.490 ms | 692.064 ms | 386.42 chunks/s | 347.286 ms | 271.143 ms |
+
+Additional one-shot evidence:
+
+| Operation | Result |
+| --- | --- |
+| classify keys | 1,767,465 entries in 36,303 ms (48,686.13 entries/s) |
+| visible key scan | 1,768,601 entries in 32,691 ms (54,100.37 entries/s) |
+| player prefix scan | 110 records in 16,411 ms |
+| player list | 111 players in 358 ms |
+| fixed layer query | 256 chunks in 721 ms; DB 712 ms, decode 7 ms |
+
+## Historical synthetic Criterion result
+
+The following result is retained for trend context only; it used the repository
+sample fixture on 2026-05-07 and is not interchangeable with the 0.7.0 snapshot
+run above.
 
 Run named bench targets instead of passing `--noplot` to the whole package; the
 lib test harness does not accept Criterion's `--noplot` flag.

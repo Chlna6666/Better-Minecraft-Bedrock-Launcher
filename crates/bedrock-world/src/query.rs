@@ -6,6 +6,6 @@
 mod operations;
 pub mod selection;
 
+pub(crate) use crate::parsed::ParsedChunkRecordValue;
 pub use operations::*;
 pub use selection::*;
-pub(crate) use crate::parsed::ParsedChunkRecordValue;

@@ -556,7 +556,9 @@ fn read_item_id(root: &IndexMap<String, NbtTag>) -> Result<SourceItemId> {
         return match value {
             NbtTag::String(name) if !name.is_empty() => Ok(SourceItemId::Named(name.clone())),
             NbtTag::String(_) => Err(validation("saved item Name is empty")),
-            other => Err(validation(format!("saved item Name has invalid type: {other:?}"))),
+            other => Err(validation(format!(
+                "saved item Name has invalid type: {other:?}"
+            ))),
         };
     }
     let value = root
@@ -571,7 +573,9 @@ fn read_item_id(root: &IndexMap<String, NbtTag>) -> Result<SourceItemId> {
         NbtTag::Long(value) => i32::try_from(*value)
             .map(SourceItemId::Numeric)
             .map_err(|_| validation("saved item numeric id exceeds i32")),
-        other => Err(validation(format!("saved item id has invalid type: {other:?}"))),
+        other => Err(validation(format!(
+            "saved item id has invalid type: {other:?}"
+        ))),
     }
 }
 
@@ -586,7 +590,9 @@ fn read_item_meta(root: &IndexMap<String, NbtTag>) -> Result<i32> {
             NbtTag::Int(value) => Ok(*value),
             NbtTag::Long(value) => i32::try_from(*value)
                 .map_err(|_| validation(format!("saved item {key} exceeds i32"))),
-            other => Err(validation(format!("saved item {key} is not integer: {other:?}"))),
+            other => Err(validation(format!(
+                "saved item {key} is not integer: {other:?}"
+            ))),
         };
     }
     Ok(0)
@@ -621,7 +627,11 @@ mod tests {
     use crate::item::SavedItemUpgradeSource;
 
     fn item(id: NbtTag, damage: i16) -> NbtTag {
-        let key = if matches!(id, NbtTag::String(_)) { "Name" } else { "id" };
+        let key = if matches!(id, NbtTag::String(_)) {
+            "Name"
+        } else {
+            "id"
+        };
         NbtTag::Compound(IndexMap::from([
             (key.to_string(), id),
             ("Damage".to_string(), NbtTag::Short(damage)),
@@ -643,7 +653,9 @@ mod tests {
         .unwrap();
         let source = item(NbtTag::Short(421), 0);
         let outcome = convert_saved_items_to_medieval(&source, &table).unwrap();
-        let NbtTag::Compound(root) = outcome.nbt else { panic!("compound") };
+        let NbtTag::Compound(root) = outcome.nbt else {
+            panic!("compound")
+        };
         assert_eq!(
             root.get("Name"),
             Some(&NbtTag::String("minecraft:name_tag".to_string()))
@@ -672,7 +684,9 @@ mod tests {
         .unwrap();
         let source = item(NbtTag::String("minecraft:modern".to_string()), 3);
         let outcome = convert_saved_items_to_medieval(&source, &table).unwrap();
-        let NbtTag::Compound(root) = outcome.nbt else { panic!("compound") };
+        let NbtTag::Compound(root) = outcome.nbt else {
+            panic!("compound")
+        };
         assert_eq!(
             root.get("Name"),
             Some(&NbtTag::String("minecraft:medieval".to_string()))
@@ -682,12 +696,8 @@ mod tests {
 
     #[test]
     fn unproven_later_item_is_refused() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:old":1}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:old":1}"#, "{}", &[]).unwrap();
         let source = item(NbtTag::String("minecraft:future".to_string()), 0);
         let report = check_saved_items_for_medieval(&source, &table).unwrap();
         assert_eq!(report.missing, 1);
@@ -697,14 +707,13 @@ mod tests {
 
     #[test]
     fn target_damage_must_fit_short() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:old":1}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:old":1}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
-            ("Name".to_string(), NbtTag::String("minecraft:old".to_string())),
+            (
+                "Name".to_string(),
+                NbtTag::String("minecraft:old".to_string()),
+            ),
             ("Damage".to_string(), NbtTag::Int(40_000)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));

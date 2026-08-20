@@ -65,10 +65,8 @@ pub struct LegacyNumericBlockStateTableStats {
 impl LegacyNumericBlockStateTable {
     /// Parses an `id_meta_to_nbt` table together with a string-id -> numeric-id JSON map.
     pub fn parse(table: &[u8], legacy_id_map_json: &str) -> Result<Self> {
-        let legacy_ids: BTreeMap<String, i64> =
-            serde_json::from_str(legacy_id_map_json).map_err(|error| {
-                validation(format!("invalid legacy block id map JSON: {error}"))
-            })?;
+        let legacy_ids: BTreeMap<String, i64> = serde_json::from_str(legacy_id_map_json)
+            .map_err(|error| validation(format!("invalid legacy block id map JSON: {error}")))?;
         let mut offset = 0usize;
         let block_count = usize::try_from(read_var_u32(table, &mut offset)?)
             .map_err(|_| validation("legacy block table count overflowed usize"))?;
@@ -82,9 +80,12 @@ impl LegacyNumericBlockStateTable {
         for _ in 0..block_count {
             let name_len = usize::try_from(read_var_u32(table, &mut offset)?)
                 .map_err(|_| validation("legacy block identifier length overflowed usize"))?;
-            let name = std::str::from_utf8(take(table, &mut offset, name_len)?).map_err(|error| {
-                validation(format!("legacy block table contains invalid UTF-8 identifier: {error}"))
-            })?;
+            let name =
+                std::str::from_utf8(take(table, &mut offset, name_len)?).map_err(|error| {
+                    validation(format!(
+                        "legacy block table contains invalid UTF-8 identifier: {error}"
+                    ))
+                })?;
             let numeric_id = legacy_ids
                 .get(name)
                 .copied()
@@ -120,7 +121,11 @@ impl LegacyNumericBlockStateTable {
                     let slot = usize::try_from(numeric_id)
                         .ok()
                         .and_then(|id| id.checked_mul(16))
-                        .and_then(|base| usize::try_from(metadata).ok().and_then(|meta| base.checked_add(meta)))
+                        .and_then(|base| {
+                            usize::try_from(metadata)
+                                .ok()
+                                .and_then(|meta| base.checked_add(meta))
+                        })
                         .ok_or_else(|| validation("legacy numeric dense slot overflowed usize"))?;
                     let existing = dense_slots[slot];
                     if existing == u16::MAX {
@@ -271,7 +276,9 @@ fn record_numeric_match(
 
 fn block_state_from_nbt(root: NbtTag) -> Result<BlockState> {
     let NbtTag::Compound(mut root) = root else {
-        return Err(validation("legacy numeric block table root is not a compound"));
+        return Err(validation(
+            "legacy numeric block table root is not a compound",
+        ));
     };
     let name = match root.shift_remove("name") {
         Some(NbtTag::String(name)) if !name.is_empty() => name,
@@ -379,7 +386,10 @@ mod tests {
     fn parses_dense_id_meta_mapping() {
         let version = BlockStateStorageVersion::from_components(1, 12, 0, 1).raw();
         let root = NbtTag::Compound(IndexMap::from([
-            ("name".to_string(), NbtTag::String("minecraft:test".to_string())),
+            (
+                "name".to_string(),
+                NbtTag::String("minecraft:test".to_string()),
+            ),
             (
                 "states".to_string(),
                 NbtTag::Compound(IndexMap::from([("kind".to_string(), NbtTag::Int(3))])),

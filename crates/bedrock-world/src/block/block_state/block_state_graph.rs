@@ -82,7 +82,8 @@ impl BlockStateMigrationStep {
             }
             BlockStateUpgradeStatus::UnknownVersion if self.allow_identity => {
                 Err(BedrockWorldError::Validation(
-                    "identity migration requires an explicit source block-state version".to_string(),
+                    "identity migration requires an explicit source block-state version"
+                        .to_string(),
                 ))
             }
             BlockStateUpgradeStatus::Current => Ok(result.state),

@@ -109,7 +109,10 @@ pub(crate) fn stage_legacy_subchunks_for_upgrade(
     catalog: &AuthoritativeBlockStateCatalog,
     target_palette: &VanillaBlockStatePalette,
 ) -> Result<(StorageBatch, LegacySubChunkUpgradeWriteReport)> {
-    if !matches!(target, SubChunkVersion::V1 | SubChunkVersion::V8 | SubChunkVersion::V9) {
+    if !matches!(
+        target,
+        SubChunkVersion::V1 | SubChunkVersion::V8 | SubChunkVersion::V9
+    ) {
         return Err(BedrockWorldError::Validation(format!(
             "legacy numeric SubChunk upgrade requires a paletted V1/V8/V9 target, got {target:?}"
         )));
@@ -172,8 +175,7 @@ pub(crate) fn stage_legacy_subchunks_for_upgrade(
             )));
         };
         if legacy.has_light_arrays() {
-            report.source_light_array_records =
-                report.source_light_array_records.saturating_add(1);
+            report.source_light_array_records = report.source_light_array_records.saturating_add(1);
         }
 
         let primary = build_primary_storage(
@@ -290,8 +292,7 @@ fn index_block_extra_data(
             let (_, y, _) = entry.chunk_coordinates().ok_or_else(|| {
                 BedrockWorldError::UnsupportedChunkFormat(format!(
                     "BlockExtraData entry in chunk {:?} has unsupported high index bits: 0x{:08x}",
-                    key.pos,
-                    entry.raw_index
+                    key.pos, entry.raw_index
                 ))
             })?;
             let subchunk_y = i8::try_from(y / 16).map_err(|_| {
@@ -358,7 +359,11 @@ fn build_primary_storage(
         };
 
         indices[block_index] = palette_index;
-        increment_count(&mut counts, palette_index, "primary legacy SubChunk palette")?;
+        increment_count(
+            &mut counts,
+            palette_index,
+            "primary legacy SubChunk palette",
+        )?;
         report.blocks_resolved = report.blocks_resolved.saturating_add(1);
     }
 
@@ -406,8 +411,7 @@ fn build_extra_storage(
         let (local_x, absolute_y, local_z) = entry.chunk_coordinates().ok_or_else(|| {
             BedrockWorldError::UnsupportedChunkFormat(format!(
                 "BlockExtraData entry in chunk {:?} has unsupported high index bits: 0x{:08x}",
-                key.pos,
-                entry.raw_index
+                key.pos, entry.raw_index
             ))
         })?;
         let actual_subchunk_y = i8::try_from(absolute_y / 16).map_err(|_| {
@@ -457,7 +461,11 @@ fn build_extra_storage(
                     "BlockExtraData second-layer air count underflowed".to_string(),
                 )
             })?;
-            increment_count(&mut counts, palette_index, "BlockExtraData second-layer palette")?;
+            increment_count(
+                &mut counts,
+                palette_index,
+                "BlockExtraData second-layer palette",
+            )?;
         }
         report.blocks_resolved = report.blocks_resolved.saturating_add(1);
     }
@@ -489,14 +497,8 @@ fn resolve_numeric_target(
             report.numeric_cache_hits = report.numeric_cache_hits.saturating_add(1);
             return Ok(state.clone());
         }
-        let state = upgrade_numeric_state(
-            numeric_id,
-            metadata,
-            key,
-            numeric,
-            catalog,
-            target_palette,
-        )?;
+        let state =
+            upgrade_numeric_state(numeric_id, metadata, key, numeric, catalog, target_palette)?;
         cache.dense[slot] = Some(state.clone());
         report.unique_numeric_states = report.unique_numeric_states.saturating_add(1);
         return Ok(state);
@@ -507,14 +509,7 @@ fn resolve_numeric_target(
         report.numeric_cache_hits = report.numeric_cache_hits.saturating_add(1);
         return Ok(state.clone());
     }
-    let state = upgrade_numeric_state(
-        numeric_id,
-        metadata,
-        key,
-        numeric,
-        catalog,
-        target_palette,
-    )?;
+    let state = upgrade_numeric_state(numeric_id, metadata, key, numeric, catalog, target_palette)?;
     cache.wide.insert(wide_key, state.clone());
     report.unique_numeric_states = report.unique_numeric_states.saturating_add(1);
     Ok(state)
@@ -710,9 +705,7 @@ mod tests {
         };
         let key = ChunkKey::subchunk(pos, 0).encode();
         let mut builder = LegacySubChunkBuilder::zeroed(7, false).expect("V7 builder");
-        builder
-            .set_block(1, 2, 3, 1, 2)
-            .expect("set legacy block");
+        builder.set_block(1, 2, 3, 1, 2).expect("set legacy block");
         let source = builder.build().expect("V7").into_raw();
         storage.put(&key, &source).expect("seed V7");
 
@@ -763,10 +756,7 @@ mod tests {
             .set_block(1, 2, 3, 1, 2)
             .expect("set primary legacy block");
         storage
-            .put(
-                &subchunk_key,
-                &builder.build().expect("V7").into_raw(),
-            )
+            .put(&subchunk_key, &builder.build().expect("V7").into_raw())
             .expect("seed V7");
 
         let mut extra = LegacyBlockExtraDataBuilder::new();
@@ -794,17 +784,31 @@ mod tests {
         assert_eq!(report.block_extra_entries, 1);
         assert_eq!(report.block_extra_storage_layers, 1);
         assert_eq!(report.block_extra_data_records_removed, 1);
-        assert!(storage.get(&extra_key).expect("extra before commit").is_some());
+        assert!(
+            storage
+                .get(&extra_key)
+                .expect("extra before commit")
+                .is_some()
+        );
 
-        storage.write_batch(&batch).expect("commit legacy + extra upgrade");
-        assert!(storage.get(&extra_key).expect("extra after commit").is_none());
+        storage
+            .write_batch(&batch)
+            .expect("commit legacy + extra upgrade");
+        assert!(
+            storage
+                .get(&extra_key)
+                .expect("extra after commit")
+                .is_none()
+        );
         let value = storage
             .get(&subchunk_key)
             .expect("read upgraded SubChunk")
             .expect("upgraded SubChunk exists");
         let parsed = SubChunk::read(0, value, SubChunkDecodeMode::FullIndices).expect("parse V8");
         assert_eq!(
-            parsed.block_state_at(1, 2, 3).map(|state| state.name.as_str()),
+            parsed
+                .block_state_at(1, 2, 3)
+                .map(|state| state.name.as_str()),
             Some("minecraft:new_test")
         );
         assert_eq!(
@@ -835,9 +839,7 @@ mod tests {
             )
             .expect("seed V7");
         let mut extra = LegacyBlockExtraDataBuilder::new();
-        extra
-            .push_chunk_coordinates(1, 2, 3, 2, 20)
-            .expect("extra");
+        extra.push_chunk_coordinates(1, 2, 3, 2, 20).expect("extra");
         let extra_key = ChunkKey::new(pos, ChunkRecordTag::BlockExtraData).encode();
         storage
             .put(&extra_key, extra.build().expect("extra data").raw())

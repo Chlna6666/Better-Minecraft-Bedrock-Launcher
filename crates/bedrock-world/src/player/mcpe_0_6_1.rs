@@ -131,7 +131,10 @@ fn require_float_list(
         ));
         return;
     }
-    if values.iter().any(|value| !matches!(value, NbtTag::Float(_))) {
+    if values
+        .iter()
+        .any(|value| !matches!(value, NbtTag::Float(_)))
+    {
         report
             .issues
             .push(format!("{field} must contain only Float values"));
@@ -171,7 +174,15 @@ fn check_inventory(root: &IndexMap<String, NbtTag>, report: &mut Mcpe061PlayerCh
         require_item_field(item, index, "Inventory", "Slot", is_byte, "Byte", report);
         require_item_field(item, index, "Inventory", "id", is_short, "Short", report);
         require_item_field(item, index, "Inventory", "Count", is_byte, "Byte", report);
-        require_item_field(item, index, "Inventory", "Damage", is_short, "Short", report);
+        require_item_field(
+            item,
+            index,
+            "Inventory",
+            "Damage",
+            is_short,
+            "Short",
+            report,
+        );
         if item.contains_key("Name") || matches!(item.get("id"), Some(NbtTag::String(_))) {
             report.issues.push(format!(
                 "Inventory[{index}] still contains a named saved-item representation"
@@ -229,8 +240,13 @@ fn reject_newer_equipment(root: &IndexMap<String, NbtTag>, report: &mut Mcpe061P
         report
             .issues
             .push("Offhand contains items that MCPE 0.6.1 cannot represent".to_string());
-    } else if root.get("Offhand").is_some_and(|value| !matches!(value, NbtTag::List(_))) {
-        report.issues.push("Offhand must be a List when present".to_string());
+    } else if root
+        .get("Offhand")
+        .is_some_and(|value| !matches!(value, NbtTag::List(_)))
+    {
+        report
+            .issues
+            .push("Offhand must be a List when present".to_string());
     }
     if root.contains_key("OffHandItem") {
         report
@@ -294,11 +310,19 @@ mod tests {
             NbtTag::Compound(IndexMap::from([
                 (
                     "Pos".to_string(),
-                    NbtTag::List(vec![NbtTag::Float(1.0), NbtTag::Float(64.0), NbtTag::Float(2.0)]),
+                    NbtTag::List(vec![
+                        NbtTag::Float(1.0),
+                        NbtTag::Float(64.0),
+                        NbtTag::Float(2.0),
+                    ]),
                 ),
                 (
                     "Motion".to_string(),
-                    NbtTag::List(vec![NbtTag::Float(0.0), NbtTag::Float(0.0), NbtTag::Float(0.0)]),
+                    NbtTag::List(vec![
+                        NbtTag::Float(0.0),
+                        NbtTag::Float(0.0),
+                        NbtTag::Float(0.0),
+                    ]),
                 ),
                 (
                     "Rotation".to_string(),
@@ -344,12 +368,20 @@ mod tests {
         let NbtTag::Compound(item) = &mut inventory[0] else {
             panic!("item");
         };
-        item.insert("Name".to_string(), NbtTag::String("minecraft:stone".to_string()));
+        item.insert(
+            "Name".to_string(),
+            NbtTag::String("minecraft:stone".to_string()),
+        );
         root.insert("OffHandItem".to_string(), NbtTag::Compound(IndexMap::new()));
         let report = player.check_for_mcpe_0_6_1().unwrap();
         assert!(!report.is_compatible());
         assert!(report.issues.iter().any(|issue| issue.contains("named")));
-        assert!(report.issues.iter().any(|issue| issue.contains("OffHandItem")));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("OffHandItem"))
+        );
     }
 
     #[test]

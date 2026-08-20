@@ -40,14 +40,16 @@ pub fn data2d_to_data3d(source: &Biome2d, subchunk_y: RangeInclusive<i8>) -> Res
                 for _local_y in 0..16 {
                     indices.push(index);
                     let count = counts.get_mut(usize::from(index)).ok_or_else(|| {
-                        BedrockWorldError::Validation("biome palette count index missing".to_string())
+                        BedrockWorldError::Validation(
+                            "biome palette count index missing".to_string(),
+                        )
                     })?;
                     *count = count.saturating_add(1);
                 }
             }
         }
         storages.push(ParsedBiomeStorage {
-            y: Some(i32::from(section_y)),
+            y: Some(i32::from(section_y) * 16),
             palette,
             indices: Some(indices),
             counts,
@@ -78,12 +80,15 @@ pub fn data3d_to_data2d(source: &Biome3d) -> Result<Biome2d> {
             let mut selected = None::<u32>;
             for storage in &source.storages {
                 for local_y in 0..16_u8 {
-                    let biome = storage.biome_id_at(local_x, local_y, local_z).ok_or_else(|| {
-                        BedrockWorldError::Validation(
+                    let biome =
+                        storage
+                            .biome_id_at(local_x, local_y, local_z)
+                            .ok_or_else(|| {
+                                BedrockWorldError::Validation(
                             "Data3D biome storage has no full indices for reverse Data2D write"
                                 .to_string(),
                         )
-                    })?;
+                            })?;
                     match selected {
                         None => selected = Some(biome),
                         Some(expected) if expected == biome => {}
@@ -98,8 +103,8 @@ pub fn data3d_to_data2d(source: &Biome3d) -> Result<Biome2d> {
             let biome = selected.ok_or_else(|| {
                 BedrockWorldError::Validation("Data3D column has no biome value".to_string())
             })?;
-            biomes[usize::from(local_z) * 16 + usize::from(local_x)] =
-                u8::try_from(biome).map_err(|_| {
+            biomes[usize::from(local_z) * 16 + usize::from(local_x)] = u8::try_from(biome)
+                .map_err(|_| {
                     BedrockWorldError::UnsupportedChunkFormat(format!(
                         "Data3D biome id {biome} does not fit the Data2D u8 representation"
                     ))

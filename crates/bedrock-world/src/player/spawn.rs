@@ -80,11 +80,7 @@ fn read_integer_triplet(
     }
 }
 
-fn set_integer_triplet(
-    player: &mut PlayerData,
-    fields: [&str; 3],
-    values: [i32; 3],
-) -> Result<()> {
+fn set_integer_triplet(player: &mut PlayerData, fields: [&str; 3], values: [i32; 3]) -> Result<()> {
     {
         let root = player.root_mut()?;
         for (field, value) in fields.into_iter().zip(values) {

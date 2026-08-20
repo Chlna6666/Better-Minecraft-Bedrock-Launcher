@@ -209,22 +209,12 @@ pub fn parse_subchunk(y: i8, bytes: Bytes) -> Result<SubChunk> {
 pub fn parse_subchunk_with_mode(y: i8, bytes: Bytes, mode: SubChunkDecodeMode) -> Result<SubChunk> {
     let version = bytes.first().copied();
     let format = match version {
-        Some(0 | 2..=7) => LegacySubChunk::parse(bytes.clone()).map_or_else(
-            |_| SubChunkFormat::Raw { version, bytes },
-            SubChunkFormat::LegacySubChunk,
-        ),
-        Some(version @ 1) => parse_exact_palette_storages(&bytes, 1, 1, mode).map_or_else(
-            |_| SubChunkFormat::Raw {
-                version: Some(version),
-                bytes,
-            },
-            |storages| SubChunkFormat::Paletted { version, storages },
-        ),
-        Some(version @ 8..=u8::MAX) => parse_paletted_subchunk(version, &bytes, mode)
-            .unwrap_or_else(|_| SubChunkFormat::Raw {
-                version: Some(version),
-                bytes,
-            }),
+        Some(0 | 2..=7) => SubChunkFormat::LegacySubChunk(LegacySubChunk::parse(bytes.clone())?),
+        Some(version @ 1) => SubChunkFormat::Paletted {
+            version,
+            storages: parse_exact_palette_storages(&bytes, 1, 1, mode)?,
+        },
+        Some(version @ (8 | 9)) => parse_paletted_subchunk(version, &bytes, mode)?,
         _ => SubChunkFormat::Raw { version, bytes },
     };
     Ok(SubChunk { y, format })
@@ -241,14 +231,17 @@ fn parse_paletted_subchunk(
         ));
     };
     let offsets: &[usize] = if version == 9 { &[3, 2] } else { &[2] };
+    let mut layout_errors = Vec::with_capacity(offsets.len());
     for offset in offsets {
-        if let Ok(storages) = parse_exact_palette_storages(bytes, *offset, storage_count, mode) {
-            return Ok(SubChunkFormat::Paletted { version, storages });
+        match parse_exact_palette_storages(bytes, *offset, storage_count, mode) {
+            Ok(storages) => return Ok(SubChunkFormat::Paletted { version, storages }),
+            Err(error) => layout_errors.push(format!("offset {offset}: {error}")),
         }
     }
-    Err(BedrockWorldError::UnsupportedChunkFormat(
-        "unsupported paletted subchunk layout".to_string(),
-    ))
+    Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+        "unsupported V{version} paletted subchunk layout ({})",
+        layout_errors.join("; ")
+    )))
 }
 
 fn parse_exact_palette_storages(

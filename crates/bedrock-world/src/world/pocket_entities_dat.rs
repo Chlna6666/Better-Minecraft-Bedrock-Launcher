@@ -318,7 +318,10 @@ pub fn import_pocket_entities_dat_records_blocking(
     }
     for (pos, roots) in tile_entity_groups {
         let value = serialize_consecutive_roots(&roots)?;
-        records.push((ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode(), value));
+        records.push((
+            ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode(),
+            value,
+        ));
         report.block_entity_chunk_records = report.block_entity_chunk_records.saturating_add(1);
     }
 
@@ -585,10 +588,8 @@ mod tests {
         storage.put(key.as_ref(), b"existing").unwrap();
 
         let document = document();
-        let root = std::env::temp_dir().join(format!(
-            "bedrock-pocket-entities-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("bedrock-pocket-entities-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("entities.dat"), document.to_raw().unwrap()).unwrap();
@@ -598,7 +599,10 @@ mod tests {
             PocketEntitiesDatImportOptions::default(),
         );
         assert!(result.is_err());
-        assert_eq!(storage.get(key.as_ref()).unwrap().unwrap().as_ref(), b"existing");
+        assert_eq!(
+            storage.get(key.as_ref()).unwrap().unwrap().as_ref(),
+            b"existing"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

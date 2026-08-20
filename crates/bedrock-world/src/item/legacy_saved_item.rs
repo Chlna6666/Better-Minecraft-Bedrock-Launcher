@@ -256,7 +256,10 @@ impl LegacySavedItemIdTable {
 
     /// Converts one Classic numeric candidate to its exact 1.6.0 Medieval string-ID representation.
     #[must_use]
-    pub fn medieval_id_from_classic(&self, legacy: LegacySavedItemId) -> Option<MedievalSavedItemId> {
+    pub fn medieval_id_from_classic(
+        &self,
+        legacy: LegacySavedItemId,
+    ) -> Option<MedievalSavedItemId> {
         let name = self.legacy_item_name(legacy)?;
         let endpoint = self.medieval_endpoint.apply(name, legacy.meta);
         Some(MedievalSavedItemId {
@@ -297,7 +300,10 @@ impl LegacySavedItemIdTable {
     /// Finds an exact Classic numeric representation for one named saved item.
     #[must_use]
     pub fn match_numeric(&self, target: &NamedSavedItemId) -> LegacySavedItemMatch {
-        let target_already_present = self.remapped_source_metas.binary_search(&target.meta).is_ok();
+        let target_already_present = self
+            .remapped_source_metas
+            .binary_search(&target.meta)
+            .is_ok();
         let mut first = None::<LegacySavedItemId>;
 
         for (numeric_id, historical_name) in &self.legacy_ids {
@@ -342,7 +348,10 @@ impl LegacySavedItemIdTable {
     /// refuses later-introduced items for which the pinned corpus does not prove 1.6-era existence.
     #[must_use]
     pub fn match_medieval(&self, target: &NamedSavedItemId) -> MedievalSavedItemMatch {
-        let target_already_present = self.remapped_source_metas.binary_search(&target.meta).is_ok();
+        let target_already_present = self
+            .remapped_source_metas
+            .binary_search(&target.meta)
+            .is_ok();
         let mut first = None::<MedievalSavedItemId>;
 
         for historical_name in &self.legacy_names {
@@ -376,7 +385,10 @@ impl LegacySavedItemIdTable {
                 }
             }
         }
-        first.map_or(MedievalSavedItemMatch::Missing, MedievalSavedItemMatch::Unique)
+        first.map_or(
+            MedievalSavedItemMatch::Missing,
+            MedievalSavedItemMatch::Unique,
+        )
     }
 
     /// Returns the number of historical non-zero numeric IDs considered by Classic reverse lookup.
@@ -418,7 +430,11 @@ fn source_schema_id(name: &str) -> Result<u32> {
     let prefix = name
         .split_once('_')
         .map(|(prefix, _)| prefix)
-        .ok_or_else(|| validation(format!("item schema filename has no numeric prefix: {name}")))?;
+        .ok_or_else(|| {
+            validation(format!(
+                "item schema filename has no numeric prefix: {name}"
+            ))
+        })?;
     prefix
         .parse::<u32>()
         .map_err(|error| validation(format!("invalid item schema id in {name}: {error}")))
@@ -436,11 +452,12 @@ pub fn load_pinned_legacy_saved_item_id_table_from_dir(
         ))
     })?;
     // Read this file here as well so pinned-load failures surface before the reverse table is exposed.
-    let _item_to_block = fs::read_to_string(root.join(ITEM_TO_BLOCK_1_12_FILE)).map_err(|error| {
-        validation(format!(
-            "failed to read pinned {ITEM_TO_BLOCK_1_12_FILE}: {error}"
-        ))
-    })?;
+    let _item_to_block =
+        fs::read_to_string(root.join(ITEM_TO_BLOCK_1_12_FILE)).map_err(|error| {
+            validation(format!(
+                "failed to read pinned {ITEM_TO_BLOCK_1_12_FILE}: {error}"
+            ))
+        })?;
     let mut schema_json = Vec::with_capacity(PINNED_ITEM_SCHEMA_FILES.len());
     for name in PINNED_ITEM_SCHEMA_FILES {
         let path = root.join(ITEM_SCHEMA_DIR).join(name);

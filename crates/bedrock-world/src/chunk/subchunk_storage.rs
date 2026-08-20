@@ -196,10 +196,7 @@ fn reject_unknown_world_target(target: SubChunkVersion) -> Result<()> {
     Ok(())
 }
 
-fn subchunk_source_version(
-    key: &crate::chunk::ChunkKey,
-    value: &[u8],
-) -> Result<SubChunkVersion> {
+fn subchunk_source_version(key: &crate::chunk::ChunkKey, value: &[u8]) -> Result<SubChunkVersion> {
     SubChunkVersion::detect(value).ok_or_else(|| {
         BedrockWorldError::CorruptWorld(format!("SubChunk record {key:?} has an empty payload"))
     })
@@ -263,13 +260,9 @@ mod tests {
         for (index, pos) in positions.into_iter().enumerate() {
             let y = i8::try_from(index).expect("test y");
             let key = ChunkKey::subchunk(pos, y).encode();
-            let value = paletted(
-                8,
-                y,
-                block_state("minecraft:air", 0, 18_168_865),
-            )
-            .write_v8()
-            .expect("encode V8");
+            let value = paletted(8, y, block_state("minecraft:air", 0, 18_168_865))
+                .write_v8()
+                .expect("encode V8");
             storage.put(&key, &value).expect("seed V8");
         }
 
@@ -307,17 +300,14 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let key = ChunkKey::subchunk(pos, 0).encode();
-        let legacy = crate::chunk::LegacySubChunkBuilder::new(7)
+        let legacy = crate::chunk::LegacySubChunkBuilder::zeroed(7, false)
             .expect("builder")
             .build()
             .expect("legacy V7");
-        storage.put(&key, &legacy).expect("seed V7");
+        storage.put(&key, legacy.raw()).expect("seed V7");
 
         assert!(stage_subchunks_as_version(&storage, SubChunkVersion::V9).is_err());
-        let value = storage
-            .get(&key)
-            .expect("read V7")
-            .expect("record exists");
+        let value = storage.get(&key).expect("read V7").expect("record exists");
         assert_eq!(value.first().copied(), Some(7));
     }
 
@@ -340,12 +330,9 @@ mod tests {
             vec![target_state.clone()],
         )
         .unwrap();
-        let (batch, report) = stage_subchunks_for_exact_downgrade(
-            &storage,
-            SubChunkVersion::V8,
-            &palette,
-        )
-        .expect("stage exact downgrade");
+        let (batch, report) =
+            stage_subchunks_for_exact_downgrade(&storage, SubChunkVersion::V8, &palette)
+                .expect("stage exact downgrade");
         assert_eq!(report.block_states_rewritten, 1);
         assert_eq!(report.rewritten, 1);
         assert_eq!(
@@ -375,13 +362,9 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let key = ChunkKey::subchunk(pos, 0).encode();
-        let value = paletted(
-            9,
-            0,
-            block_state("minecraft:new_block", 0, 18_168_865),
-        )
-        .write_v9()
-        .expect("encode V9");
+        let value = paletted(9, 0, block_state("minecraft:new_block", 0, 18_168_865))
+            .write_v9()
+            .expect("encode V9");
         storage.put(&key, &value).expect("seed V9");
 
         let palette = VanillaBlockStatePalette::new(
@@ -390,8 +373,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            stage_subchunks_for_exact_downgrade(&storage, SubChunkVersion::V8, &palette)
-                .is_err()
+            stage_subchunks_for_exact_downgrade(&storage, SubChunkVersion::V8, &palette).is_err()
         );
         assert_eq!(
             storage

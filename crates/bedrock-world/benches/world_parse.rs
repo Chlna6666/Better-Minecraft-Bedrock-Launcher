@@ -1,6 +1,6 @@
 use bedrock_world::{
-    BedrockLevelDbStorage, BedrockWorld, ChunkPos, Dimension, NbtReader, NbtTag, NbtWriter,
-    OpenOptions,
+    BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, ChunkPos, Dimension, NbtReader,
+    NbtTag, NbtWriter,
     chunk::{SubChunkDecodeMode, parse_subchunk, parse_subchunk_with_mode},
     parse_level_dat_document, read_level_dat_document,
 };
@@ -84,7 +84,8 @@ fn bench_large_fixture(c: &mut Criterion) {
         );
         return;
     }
-    let storage = Arc::new(BedrockLevelDbStorage::open(world_path.join("db")).expect("open db"));
+    let storage =
+        Arc::new(BedrockLevelDbStorage::open_read_only(world_path.join("db")).expect("open db"));
 
     c.bench_function("bedrock_world/db/open_lazy", |b| {
         b.iter(|| {
@@ -99,7 +100,7 @@ fn bench_large_fixture(c: &mut Criterion) {
         z: 207,
         dimension: Dimension::Overworld,
     };
-    let world = BedrockWorld::from_storage(world_path, storage, OpenOptions::default());
+    let world = BedrockWorld::from_storage(world_path, storage, BedrockWorldOpenOptions::default());
     c.bench_function("bedrock_world/world/list_players", |b| {
         b.iter(|| black_box(world.list_players_blocking().expect("list players")));
     });

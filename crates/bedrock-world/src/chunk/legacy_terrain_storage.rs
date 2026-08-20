@@ -311,7 +311,10 @@ mod tests {
         };
         let source_key = ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode();
         storage
-            .put(&source_key, LegacyTerrainBuilder::zeroed().build().unwrap().raw())
+            .put(
+                &source_key,
+                LegacyTerrainBuilder::zeroed().build().unwrap().raw(),
+            )
             .unwrap();
         storage
             .put(&ChunkKey::subchunk(pos, 0).encode(), &[7, 0])
@@ -335,10 +338,18 @@ mod tests {
             .unwrap();
 
         let result = stage_legacy_terrain_split(&storage, SubChunkVersion::V7);
-        assert!(matches!(result, Err(BedrockWorldError::UnsupportedChunkFormat(_))));
+        assert!(matches!(
+            result,
+            Err(BedrockWorldError::UnsupportedChunkFormat(_))
+        ));
         assert!(storage.get(&source_key).unwrap().is_some());
         for y in 0..8 {
-            assert!(storage.get(&ChunkKey::subchunk(pos, y).encode()).unwrap().is_none());
+            assert!(
+                storage
+                    .get(&ChunkKey::subchunk(pos, y).encode())
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 }

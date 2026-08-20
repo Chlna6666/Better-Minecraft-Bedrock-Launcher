@@ -139,7 +139,10 @@ impl BedrockWorld {
             create_bedrock_leveldb(path.join("db"))?;
             let level_dat = build_level_dat(&options)?;
             write_level_dat_document(&path.join("level.dat"), &level_dat)?;
-            fs::write(path.join("levelname.txt"), format!("{}\n", options.level_name))?;
+            fs::write(
+                path.join("levelname.txt"),
+                format!("{}\n", options.level_name),
+            )?;
             Self::open_blocking(
                 path,
                 BedrockWorldOpenOptions {
@@ -181,12 +184,7 @@ fn validate_create_options(path: &Path, options: &BedrockWorldCreateOptions) -> 
             ))
         })?;
     }
-    if path.exists()
-        && fs::read_dir(path)?
-            .next()
-            .transpose()?
-            .is_some()
-    {
+    if path.exists() && fs::read_dir(path)?.next().transpose()?.is_some() {
         return Err(BedrockWorldError::Validation(format!(
             "refusing to create Bedrock world in non-empty directory: {}",
             path.display()
@@ -221,7 +219,10 @@ fn build_level_dat(options: &BedrockWorldCreateOptions) -> Result<LevelDatDocume
             "StorageVersion".to_string(),
             NbtTag::Int(options.storage_version),
         ),
-        ("GameType".to_string(), NbtTag::Int(options.game_mode.value())),
+        (
+            "GameType".to_string(),
+            NbtTag::Int(options.game_mode.value()),
+        ),
         (
             "Difficulty".to_string(),
             NbtTag::Int(options.difficulty.value()),

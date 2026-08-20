@@ -39,10 +39,7 @@ impl PlayerData {
     }
 }
 
-fn ensure_source_game_version(
-    player: &PlayerData,
-    target: &ModernSavedItemTarget,
-) -> Result<()> {
+fn ensure_source_game_version(player: &PlayerData, target: &ModernSavedItemTarget) -> Result<()> {
     let actual = player.game_version().ok_or_else(|| {
         BedrockWorldError::Validation(
             "Modern player saved-item conversion requires owning level.dat LastOpenedWithVersion evidence"

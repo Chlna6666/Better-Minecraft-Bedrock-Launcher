@@ -19,19 +19,19 @@
     clippy::wildcard_imports
 )]
 
+pub mod biome;
 pub mod block;
 pub mod chunk;
+pub mod entity;
 /// Crate-wide Bedrock world error types.
 pub mod error;
+/// Bedrock saved-item identities, stacks and historical item data.
+pub mod item;
 mod mcstructure;
 mod nbt_ref;
 /// Structured Bedrock record parsing and consecutive-record encoding APIs.
 pub mod parsed;
 pub mod player;
-pub mod biome;
-pub mod entity;
-/// Bedrock saved-item identities, stacks and historical item data.
-pub mod item;
 /// Minecraft Bedrock game and persisted data version information.
 pub mod version;
 

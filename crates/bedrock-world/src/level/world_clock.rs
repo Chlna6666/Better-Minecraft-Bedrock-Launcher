@@ -171,7 +171,10 @@ mod tests {
     #[test]
     fn set_world_clock_preserves_unrelated_level_metadata() {
         let mut root = IndexMap::new();
-        root.insert("LevelName".to_string(), NbtTag::String("KeepMe".to_string()));
+        root.insert(
+            "LevelName".to_string(),
+            NbtTag::String("KeepMe".to_string()),
+        );
         let mut document = LevelDatDocument::new(10, NbtTag::Compound(root));
         document
             .set_world_clock(BedrockWorldClock {
@@ -183,7 +186,10 @@ mod tests {
         let NbtTag::Compound(root) = document.root else {
             panic!("compound")
         };
-        assert_eq!(root.get("LevelName"), Some(&NbtTag::String("KeepMe".to_string())));
+        assert_eq!(
+            root.get("LevelName"),
+            Some(&NbtTag::String("KeepMe".to_string()))
+        );
         assert_eq!(root.get("Time"), Some(&NbtTag::Long(123)));
         assert_eq!(root.get("currentTick"), Some(&NbtTag::Long(456)));
     }

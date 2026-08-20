@@ -66,8 +66,11 @@ impl BlockStateUpgradeRule {
         let Some(version) = state.version else {
             return self.min_source_version.is_none() && self.max_source_version.is_none();
         };
-        self.min_source_version.is_none_or(|minimum| version >= minimum)
-            && self.max_source_version.is_none_or(|maximum| version <= maximum)
+        self.min_source_version
+            .is_none_or(|minimum| version >= minimum)
+            && self
+                .max_source_version
+                .is_none_or(|maximum| version <= maximum)
     }
 
     fn apply(&self, state: &mut BlockState) -> Result<bool> {
@@ -102,7 +105,9 @@ impl BlockStateUpgradeRule {
                 .get(&rewrite.state)
                 .is_some_and(|value| value == &rewrite.from)
             {
-                state.states.insert(rewrite.state.clone(), rewrite.to.clone());
+                state
+                    .states
+                    .insert(rewrite.state.clone(), rewrite.to.clone());
             }
         }
         for (name, value) in &self.set_states {

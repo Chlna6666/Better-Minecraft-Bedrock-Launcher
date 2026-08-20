@@ -2,9 +2,9 @@
 
 use crate::error::Result;
 use crate::item::{
-    ClassicSavedItemCheckReport, ClassicSavedItemConversionReport,
-    LegacySavedItemBlockStateTables, LegacySavedItemIdTable, MedievalSavedItemCheckReport,
-    MedievalSavedItemConversionReport, SavedItemFormatEvidence, check_saved_items_for_classic,
+    ClassicSavedItemCheckReport, ClassicSavedItemConversionReport, LegacySavedItemBlockStateTables,
+    LegacySavedItemIdTable, MedievalSavedItemCheckReport, MedievalSavedItemConversionReport,
+    SavedItemFormatEvidence, check_saved_items_for_classic,
     check_saved_items_for_classic_with_blocks, check_saved_items_for_medieval,
     check_saved_items_for_medieval_with_blocks, convert_saved_items_to_classic,
     convert_saved_items_to_classic_with_blocks, convert_saved_items_to_medieval,
@@ -152,12 +152,8 @@ mod tests {
 
     #[test]
     fn player_exact_classic_normalizes_existing_numeric_width() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:stone":1}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
         let item = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Int(1)),
             ("Damage".to_string(), NbtTag::Int(2)),
@@ -189,9 +185,15 @@ mod tests {
         let report = player.convert_saved_items_to_medieval(&table).unwrap();
         assert_eq!(report.check.items_seen, 1);
         assert!(player.is_modified());
-        let NbtTag::Compound(root) = &player.nbt else { panic!("player") };
-        let Some(NbtTag::List(items)) = root.get("Inventory") else { panic!("inventory") };
-        let NbtTag::Compound(item) = &items[0] else { panic!("item") };
+        let NbtTag::Compound(root) = &player.nbt else {
+            panic!("player")
+        };
+        let Some(NbtTag::List(items)) = root.get("Inventory") else {
+            panic!("inventory")
+        };
+        let NbtTag::Compound(item) = &items[0] else {
+            panic!("item")
+        };
         assert_eq!(
             item.get("Name"),
             Some(&NbtTag::String("minecraft:name_tag".to_string()))

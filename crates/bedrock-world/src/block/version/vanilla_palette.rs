@@ -181,7 +181,12 @@ mod tests {
         .unwrap();
         let order = palette
             .states()
-            .map(|state| (state.name.as_str(), state.states["facing_direction"].clone()))
+            .map(|state| {
+                (
+                    state.name.as_str(),
+                    state.states["facing_direction"].clone(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(order[0].0, "minecraft:first");
         assert_eq!(order[1].0, "minecraft:first");

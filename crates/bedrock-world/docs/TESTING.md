@@ -122,10 +122,10 @@ the source has no biome/RGB tail. Missing data is different from biome id zero.
 Typed write tests should cover persistence semantics rather than presentation
 refresh policy:
 
-- `OpenOptions::default()` remains read-only and high-level writes return
+- `BedrockWorldOpenOptions::default()` remains read-only and high-level writes return
   `BedrockWorldErrorKind::ReadOnly` before mutating storage.
 - Writable worlds are opened with
-  `OpenOptions { read_only: false, ..OpenOptions::default() }`.
+  `BedrockWorldOpenOptions { read_only: false, ..BedrockWorldOpenOptions::default() }`.
 - map/global/HSA/heightmap/biome/block-entity writes serialize, parse back, and
   read back with semantic equivalence.
 - actor writes update `digp -> actorprefix` records atomically.
@@ -166,16 +166,28 @@ regression cannot leave compression id `4` asymmetric again.
 Run the benchmark set with:
 
 ```powershell
-cargo bench --all-features --bench world_parse -- --noplot
-cargo bench --all-features --bench large_fixture
+cargo bench -p bedrock-world --all-features --bench world_parse -- --noplot
+cargo bench -p bedrock-world --all-features --bench large_fixture -- "C:\path\to\read-only-world"
 ```
 
 `benches/world_parse.rs` always runs a synthetic `level.dat` parse benchmark and
 adds LevelDB/chunk/SubChunk benchmarks when the optional large performance
 fixture exists.
 
-`benches/large_fixture.rs` is a one-shot harness for multi-million-entry scans.
-It prints elapsed time and throughput once instead of asking Criterion to repeat
-the scan many times.
+`benches/large_fixture.rs` is a read-only snapshot harness for multi-million-entry
+scans. The first argument is the world directory. It records the physical
+fixture hash and byte count, compatibility/world record counts, chunk count,
+SubChunk versions, corrupt chunks, parse errors, wall-time p50/p95, throughput,
+and the query layer's DB-read/decode timing. It hashes the fixture before and
+after the run and fails if it changed.
+
+The cache labels are deliberately precise:
+
+- `logical_cold`: new read-only DB handle and crate cache bypassed per sample.
+- `logical_warm`: a primed, reused read-only handle with crate cache enabled.
+
+They do not clear the Windows filesystem cache and therefore are not physical
+cold-disk/warm-disk measurements. CPU, disk, filesystem, fixture hash, feature
+set, and date belong in every published result.
 
 Latest local numbers are recorded in [`BENCHMARKS.md`](BENCHMARKS.md).

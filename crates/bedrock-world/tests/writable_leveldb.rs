@@ -18,8 +18,11 @@ fn writable_world_keeps_large_edit_in_wal_without_full_database_table() {
     let database_path = temporary_database_path();
     std::fs::create_dir_all(&database_path).expect("create temporary database directory");
     drop(
-        bedrock_leveldb::Db::open(&database_path, bedrock_leveldb::OpenOptions::default())
-            .expect("initialize LevelDB"),
+        bedrock_leveldb::Db::open(
+            &database_path,
+            bedrock_leveldb::LevelDbOpenOptions::default(),
+        )
+        .expect("initialize LevelDB"),
     );
 
     let edit = vec![0x5a; 5 * 1024 * 1024];

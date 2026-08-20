@@ -1,8 +1,9 @@
 #![cfg(feature = "bedrock-leveldb")]
 
 use bedrock_world::{
-    BedrockDbKey, BedrockLevelDbStorage, BedrockWorld, ChunkPos, ChunkRecordTag, NbtTag,
-    OpenOptions, StorageReadOptions, StorageVisitorControl, WorldStorage, read_level_dat_document,
+    BedrockDbKey, BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, ChunkPos,
+    ChunkRecordTag, NbtTag, StorageReadOptions, StorageVisitorControl, WorldStorage,
+    read_level_dat_document,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -51,7 +52,7 @@ fn parses_copied_bedrock_world_through_leveldb_backend() {
         "fixture db did not expose LevelChunkMetaDataDictionary"
     );
 
-    let world = BedrockWorld::from_storage(world_path, storage, OpenOptions::default());
+    let world = BedrockWorld::from_storage(world_path, storage, BedrockWorldOpenOptions::default());
     let first_chunk_pos = db_summary
         .first_data3d_pos
         .expect("fixture should contain a Data3D chunk");
@@ -118,7 +119,7 @@ fn print_level_dat_summary(
     }
 }
 
-fn print_parsed_chunk_summary(chunk: &bedrock_world::ParsedChunkData) {
+fn print_parsed_chunk_summary(chunk: &bedrock_world::chunk::ParsedChunkData) {
     println!("parsed.sample_chunk.pos={:?}", chunk.pos);
     println!("parsed.sample_chunk.records={}", chunk.report.entry_count);
     println!(

@@ -209,7 +209,10 @@ mod tests {
             &[1, 26, 40, 5]
         );
         assert_eq!(
-            version.minimum_compatible_client_version.unwrap().components(),
+            version
+                .minimum_compatible_client_version
+                .unwrap()
+                .components(),
             &[1, 21, 0, 0]
         );
         assert_eq!(version.inventory_version.as_deref(), Some("1.21.0"));

@@ -87,8 +87,10 @@ where
             .filter(|chunk| chunk.height_map.is_none())
             .map(|chunk| chunk.pos)
             .collect::<Vec<_>>();
-        let unresolved_presence = self
-            .chunk_presence_many_blocking(unresolved.iter().copied(), ChunkPresenceMode::AnyRecord)?;
+        let unresolved_presence = self.chunk_presence_many_blocking(
+            unresolved.iter().copied(),
+            ChunkPresenceMode::AnyRecord,
+        )?;
         let mut unresolved_presence = unresolved_presence.into_iter();
 
         let mut results = Vec::with_capacity(chunks.len());

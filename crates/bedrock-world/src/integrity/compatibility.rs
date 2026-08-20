@@ -223,7 +223,8 @@ impl ChunkCapabilities {
                 ChunkRecordTag::LegacyTerrain => capabilities.has_legacy_terrain = true,
                 ChunkRecordTag::Entity => {
                     capabilities.has_entity = true;
-                    capabilities.actor_storage = capabilities.actor_storage.merge(ActorStorage::Entity);
+                    capabilities.actor_storage =
+                        capabilities.actor_storage.merge(ActorStorage::Entity);
                 }
                 ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => {
                     capabilities.has_data2d = true;
@@ -256,7 +257,9 @@ impl ChunkCapabilities {
                 _ => {}
             }
         }
-        capabilities.subchunk_versions.sort_by_key(|version| version.byte());
+        capabilities
+            .subchunk_versions
+            .sort_by_key(|version| version.byte());
         capabilities.subchunk_versions.dedup();
         capabilities
     }
@@ -269,10 +272,8 @@ impl ChunkCapabilities {
             Some(POCKET_TERRAIN_VALUE_LEN) => {
                 self.has_legacy_terrain = true;
                 self.has_pocket_terrain_core = true;
-                self.compatibility = merge_compatibility(
-                    self.compatibility,
-                    CompatibilityLevel::ReadCompatible,
-                );
+                self.compatibility =
+                    merge_compatibility(self.compatibility, CompatibilityLevel::ReadCompatible);
             }
             Some(LEGACY_TERRAIN_VALUE_LEN) => {
                 self.has_legacy_terrain = true;
@@ -341,11 +342,8 @@ mod tests {
 
     #[test]
     fn pocket_terrain_core_is_read_compatible_not_complete_legacy_terrain() {
-        let mut capabilities = ChunkCapabilities::inspect(&[record(
-            ChunkRecordTag::LegacyTerrain,
-            None,
-            &[0],
-        )]);
+        let mut capabilities =
+            ChunkCapabilities::inspect(&[record(ChunkRecordTag::LegacyTerrain, None, &[0])]);
         capabilities.apply_legacy_terrain_payload_len(Some(POCKET_TERRAIN_VALUE_LEN));
 
         assert!(capabilities.has_legacy_terrain);
@@ -359,11 +357,8 @@ mod tests {
 
     #[test]
     fn complete_legacy_terrain_is_exact_same_representation_data() {
-        let mut capabilities = ChunkCapabilities::inspect(&[record(
-            ChunkRecordTag::LegacyTerrain,
-            None,
-            &[0],
-        )]);
+        let mut capabilities =
+            ChunkCapabilities::inspect(&[record(ChunkRecordTag::LegacyTerrain, None, &[0])]);
         capabilities.apply_legacy_terrain_payload_len(Some(LEGACY_TERRAIN_VALUE_LEN));
 
         assert!(capabilities.has_legacy_terrain);
@@ -374,11 +369,8 @@ mod tests {
 
     #[test]
     fn malformed_legacy_terrain_is_corrupt() {
-        let mut capabilities = ChunkCapabilities::inspect(&[record(
-            ChunkRecordTag::LegacyTerrain,
-            None,
-            &[0],
-        )]);
+        let mut capabilities =
+            ChunkCapabilities::inspect(&[record(ChunkRecordTag::LegacyTerrain, None, &[0])]);
         capabilities.apply_legacy_terrain_payload_len(Some(123));
 
         assert!(capabilities.has_legacy_terrain);

@@ -35,7 +35,8 @@ pub fn write_level_dat_player(document: &mut LevelDatDocument, player: &PlayerDa
         ));
     }
     let target = LevelVersion::detect(document)?;
-    if let (Some(source), Some(target)) = (player.game_version(), target.last_opened_with.as_ref()) {
+    if let (Some(source), Some(target)) = (player.game_version(), target.last_opened_with.as_ref())
+    {
         if source != target {
             return Err(BedrockWorldError::Validation(format!(
                 "player belongs to Bedrock {source}, target level.dat reports {target}; write the player for that target version explicitly before storing it"
@@ -67,10 +68,6 @@ pub fn remove_level_dat_player(document: &mut LevelDatDocument) -> Result<Option
     let Some(player) = root.shift_remove("Player") else {
         return Ok(None);
     };
-    PlayerData::from_nbt_with_level_version(
-        PlayerId::LegacyLevelDat,
-        player,
-        Some(level_version),
-    )
-    .map(Some)
+    PlayerData::from_nbt_with_level_version(PlayerId::LegacyLevelDat, player, Some(level_version))
+        .map(Some)
 }

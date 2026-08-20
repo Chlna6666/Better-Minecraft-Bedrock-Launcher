@@ -60,17 +60,16 @@ impl SavedItemVersionTable {
         for source in sources {
             let id = schema_id(source.name)?;
             if !ids.insert(id) {
-                return Err(validation(format!(
-                    "duplicate saved-item schema id {id}"
-                )));
+                return Err(validation(format!("duplicate saved-item schema id {id}")));
             }
             let result_version = schema_result_version(source.name)?;
-            let document: VersionRuleDocument = serde_json::from_str(source.json).map_err(|error| {
-                validation(format!(
-                    "invalid saved-item version source {}: {error}",
-                    source.name
-                ))
-            })?;
+            let document: VersionRuleDocument =
+                serde_json::from_str(source.json).map_err(|error| {
+                    validation(format!(
+                        "invalid saved-item version source {}: {error}",
+                        source.name
+                    ))
+                })?;
             let mut remapped_metas = BTreeMap::new();
             for (name, values) in document.remapped_metas {
                 let mut parsed = BTreeMap::new();
@@ -99,10 +98,7 @@ impl SavedItemVersionTable {
             {
                 return Err(validation(format!(
                     "saved-item schema {} endpoint {} is newer than later schema {} endpoint {}",
-                    window[0].id,
-                    window[0].result_version,
-                    window[1].id,
-                    window[1].result_version
+                    window[0].id, window[0].result_version, window[1].id, window[1].result_version
                 )));
             }
         }
@@ -170,7 +166,8 @@ impl SavedItemVersionTable {
             .iter()
             .filter(|rule| {
                 compare_release(&rule.result_version, target_game_version) == Ordering::Greater
-                    && compare_release(&rule.result_version, source_game_version) != Ordering::Greater
+                    && compare_release(&rule.result_version, source_game_version)
+                        != Ordering::Greater
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -342,7 +339,11 @@ fn schema_id(name: &str) -> Result<u32> {
     let prefix = name
         .split_once('_')
         .map(|(prefix, _)| prefix)
-        .ok_or_else(|| validation(format!("saved-item schema filename has no numeric prefix: {name}")))?;
+        .ok_or_else(|| {
+            validation(format!(
+                "saved-item schema filename has no numeric prefix: {name}"
+            ))
+        })?;
     prefix
         .parse::<u32>()
         .map_err(|error| validation(format!("invalid saved-item schema id in {name}: {error}")))
@@ -355,7 +356,11 @@ fn schema_result_version(name: &str) -> Result<GameVersion> {
     let target = without_json
         .rsplit_once("_to_")
         .map(|(_, target)| target)
-        .ok_or_else(|| validation(format!("saved-item schema filename has no _to_ endpoint: {name}")))?;
+        .ok_or_else(|| {
+            validation(format!(
+                "saved-item schema filename has no _to_ endpoint: {name}"
+            ))
+        })?;
     let target = target.strip_suffix("_beta").unwrap_or(target);
     let components = target
         .split('.')
@@ -460,10 +465,7 @@ mod tests {
         .unwrap();
         let target_palette = palette(&[1, 12, 0], &["minecraft:later_item"]);
         let target = table
-            .older_target(
-                &GameVersion::new(vec![1, 12, 0]).unwrap(),
-                &target_palette,
-            )
+            .older_target(&GameVersion::new(vec![1, 12, 0]).unwrap(), &target_palette)
             .unwrap();
         assert_eq!(
             target.match_item(&NamedSavedItemId {
@@ -496,10 +498,7 @@ mod tests {
         .unwrap();
         let target_palette = palette(&[1, 9, 0], &["minecraft:old"]);
         let target = table
-            .older_target(
-                &GameVersion::new(vec![1, 12, 0]).unwrap(),
-                &target_palette,
-            )
+            .older_target(&GameVersion::new(vec![1, 12, 0]).unwrap(), &target_palette)
             .unwrap();
         assert_eq!(
             target.match_item(&NamedSavedItemId {
@@ -525,10 +524,7 @@ mod tests {
         .unwrap();
         let target_palette = palette(&[1, 9, 0], &["minecraft:first", "minecraft:second"]);
         let target = table
-            .older_target(
-                &GameVersion::new(vec![1, 12, 0]).unwrap(),
-                &target_palette,
-            )
+            .older_target(&GameVersion::new(vec![1, 12, 0]).unwrap(), &target_palette)
             .unwrap();
         assert!(matches!(
             target.match_item(&NamedSavedItemId {

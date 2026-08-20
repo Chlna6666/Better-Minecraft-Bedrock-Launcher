@@ -83,11 +83,7 @@ impl PlayerData {
     ///
     /// The supplied compound is retained as-is except that its `Slot` field is set to the requested
     /// Bedrock slot byte. No item-id or metadata version rewrite is performed.
-    pub fn set_inventory_item(
-        &mut self,
-        slot: PlayerInventorySlot,
-        item: NbtTag,
-    ) -> Result<()> {
+    pub fn set_inventory_item(&mut self, slot: PlayerInventorySlot, item: NbtTag) -> Result<()> {
         set_item(self, "Inventory", slot, item)
     }
 
@@ -110,11 +106,7 @@ impl PlayerData {
     }
 
     /// Inserts or replaces one `EnderChestInventory` item.
-    pub fn set_ender_chest_item(
-        &mut self,
-        slot: PlayerInventorySlot,
-        item: NbtTag,
-    ) -> Result<()> {
+    pub fn set_ender_chest_item(&mut self, slot: PlayerInventorySlot, item: NbtTag) -> Result<()> {
         if !(0..=26).contains(&slot.raw()) {
             return Err(BedrockWorldError::Validation(format!(
                 "EnderChestInventory Slot must be 0..=26, got {}",
@@ -254,11 +246,7 @@ fn set_item(
     Ok(())
 }
 
-fn remove_item(
-    player: &mut PlayerData,
-    field: &str,
-    slot: PlayerInventorySlot,
-) -> Result<bool> {
+fn remove_item(player: &mut PlayerData, field: &str, slot: PlayerInventorySlot) -> Result<bool> {
     let removed = {
         let root = player.root_mut()?;
         let Some(value) = root.get_mut(field) else {

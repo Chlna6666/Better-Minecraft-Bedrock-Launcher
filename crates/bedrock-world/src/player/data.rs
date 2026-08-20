@@ -439,10 +439,7 @@ mod tests {
             "PlayerLevel".to_string(),
             NbtTag::Int(4),
         )]));
-        let level_root = NbtTag::Compound(IndexMap::from([(
-            "Player".to_string(),
-            player_nbt,
-        )]));
+        let level_root = NbtTag::Compound(IndexMap::from([("Player".to_string(), player_nbt)]));
         let raw = Bytes::from(serialize_root_nbt(&level_root).unwrap());
         let player = PlayerData::from_raw(PlayerId::LegacyLevelDat, raw.clone()).unwrap();
         assert_eq!(player.nbt, level_root);
@@ -457,15 +454,14 @@ mod tests {
         )]));
         let level_root = NbtTag::Compound(IndexMap::from([
             ("Player".to_string(), player_nbt.clone()),
-            ("LevelName".to_string(), NbtTag::String("legacy".to_string())),
+            (
+                "LevelName".to_string(),
+                NbtTag::String("legacy".to_string()),
+            ),
         ]));
         let level = LevelDatDocument::new(10, level_root.clone());
-        let player = PlayerData::from_nbt_with_level(
-            PlayerId::LegacyLevelDat,
-            level_root,
-            &level,
-        )
-        .unwrap();
+        let player =
+            PlayerData::from_nbt_with_level(PlayerId::LegacyLevelDat, level_root, &level).unwrap();
         assert_eq!(player.nbt, player_nbt);
         assert_eq!(player.id, PlayerId::LegacyLevelDat);
 
@@ -476,12 +472,9 @@ mod tests {
                 NbtTag::Int(99),
             )])),
         )]));
-        let not_unwrapped = PlayerData::from_nbt_with_level(
-            PlayerId::LegacyLevelDat,
-            unrelated.clone(),
-            &level,
-        )
-        .unwrap();
+        let not_unwrapped =
+            PlayerData::from_nbt_with_level(PlayerId::LegacyLevelDat, unrelated.clone(), &level)
+                .unwrap();
         assert_eq!(not_unwrapped.nbt, unrelated);
     }
 }

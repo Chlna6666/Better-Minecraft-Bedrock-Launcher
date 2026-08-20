@@ -25,32 +25,20 @@ mod pocket_entities_dat;
 mod pocket_world_storage;
 mod subchunk_numeric;
 mod subchunk_upgrade;
-mod world_clock;
 pub(crate) mod surface;
+mod world_clock;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use bedrock_world::*;
+pub use biome_downgrade::BiomeData2dDowngradeReport;
+pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use block_entities::ChunkBlockEntities;
 pub use block_query::BlockStateQueryResult;
 pub use chunk_presence::{ChunkPresence, ChunkPresenceMode};
-pub use height_map::{ChunkHeightMap, ChunkHeightMapStatus};
-/// Minecraft Bedrock world-open options.
-///
-/// This explicit name is the canonical public API and avoids collision with
-/// storage/backend-specific `OpenOptions` types.
-pub use bedrock_world::OpenOptions as BedrockWorldOpenOptions;
-/// Compatibility name retained for existing internal and downstream callers.
-///
-/// New code should use [`BedrockWorldOpenOptions`]. This alias is hidden from
-/// generated API documentation so the explicit world-domain name remains the
-/// authoritative public surface.
-#[doc(hidden)]
-pub type OpenOptions = BedrockWorldOpenOptions;
-pub use biome_downgrade::BiomeData2dDowngradeReport;
-pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use create::{
     BedrockDifficulty, BedrockGameMode, BedrockWorldCreateOptions, BedrockWorldSpawn,
 };
+pub use height_map::{ChunkHeightMap, ChunkHeightMapStatus};
 pub use level_dat::{LevelChunkVersionCount, SubChunkVersionCount, WorldVersions};
 pub use migration::{
     BedrockWorldDowngradeOptions, BedrockWorldDowngradeReport, BedrockWorldMigrationGap,

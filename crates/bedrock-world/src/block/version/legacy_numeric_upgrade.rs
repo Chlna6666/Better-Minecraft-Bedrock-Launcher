@@ -42,10 +42,8 @@ impl LegacyNumericBlockUpgradeTable {
         numeric: &LegacyNumericBlockStateTable,
         catalog: &AuthoritativeBlockStateCatalog,
     ) -> Result<Self> {
-        let mut by_name = BTreeMap::<
-            String,
-            Vec<(BTreeMap<String, NbtTag>, LegacyNumericBlockMatch)>,
-        >::new();
+        let mut by_name =
+            BTreeMap::<String, Vec<(BTreeMap<String, NbtTag>, LegacyNumericBlockMatch)>>::new();
         let mut stats = LegacyNumericBlockUpgradeTableStats::default();
 
         for numeric_id in 0_u32..=u32::from(u8::MAX) {
@@ -100,10 +98,7 @@ impl LegacyNumericBlockUpgradeTable {
 }
 
 fn insert_candidate(
-    by_name: &mut BTreeMap<
-        String,
-        Vec<(BTreeMap<String, NbtTag>, LegacyNumericBlockMatch)>,
-    >,
+    by_name: &mut BTreeMap<String, Vec<(BTreeMap<String, NbtTag>, LegacyNumericBlockMatch)>>,
     upgraded: BlockState,
     candidate: LegacyNumericBlock,
     stats: &mut LegacyNumericBlockUpgradeTableStats,
@@ -123,8 +118,7 @@ fn insert_candidate(
                     second: candidate,
                     matches: 2,
                 };
-                stats.ambiguous_target_states =
-                    stats.ambiguous_target_states.saturating_add(1);
+                stats.ambiguous_target_states = stats.ambiguous_target_states.saturating_add(1);
             }
             LegacyNumericBlockMatch::Unique(_) => {}
             LegacyNumericBlockMatch::Ambiguous { matches, .. } => {
@@ -133,10 +127,7 @@ fn insert_candidate(
         }
         return;
     }
-    permutations.push((
-        upgraded.states,
-        LegacyNumericBlockMatch::Unique(candidate),
-    ));
+    permutations.push((upgraded.states, LegacyNumericBlockMatch::Unique(candidate)));
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ fn inspect() -> bedrock_world::Result<()> {
 
 开启 `async` feature 后可使用 `BedrockWorld::open_auto` 和对应 async wrapper。
 只有需要显式格式提示或可写 LevelDB 时，才使用
-`BedrockWorld::open_blocking(path, OpenOptions)`。
+`BedrockWorld::open_blocking(path, BedrockWorldOpenOptions)`。
 
 ## 支持的真实存储代际
 
@@ -171,12 +171,12 @@ block entity、player、chunk record 与 `.mcstructure` 导入/导出/放置。�
 
 ## 写入规则
 
-`OpenOptions::default()` 为只读。需要编辑 LevelDB 世界时必须显式以 writable 方式打开：
+`BedrockWorldOpenOptions::default()` 为只读。需要编辑 LevelDB 世界时必须显式以 writable 方式打开：
 
 ```rust
 let world = bedrock_world::BedrockWorld::open_blocking(
     "path/to/minecraftWorld",
-    bedrock_world::OpenOptions {
+    bedrock_world::BedrockWorldOpenOptions {
         read_only: false,
         ..Default::default()
     },

@@ -37,15 +37,13 @@ impl VanillaSavedItemPalette {
     ///
     /// Unknown per-entry fields are intentionally ignored so the reader remains usable across real
     /// BedrockData generations that add registry metadata unrelated to saved-world item identity.
-    pub fn from_required_item_list_json(
-        game_version: GameVersion,
-        json: &str,
-    ) -> Result<Self> {
-        let source: BTreeMap<String, RequiredItemEntry> = serde_json::from_str(json).map_err(|error| {
-            BedrockWorldError::Validation(format!(
-                "invalid Bedrock required_item_list.json for {game_version}: {error}"
-            ))
-        })?;
+    pub fn from_required_item_list_json(game_version: GameVersion, json: &str) -> Result<Self> {
+        let source: BTreeMap<String, RequiredItemEntry> =
+            serde_json::from_str(json).map_err(|error| {
+                BedrockWorldError::Validation(format!(
+                    "invalid Bedrock required_item_list.json for {game_version}: {error}"
+                ))
+            })?;
         if source.is_empty() {
             return Err(BedrockWorldError::Validation(format!(
                 "Bedrock required item list for {game_version} is empty"

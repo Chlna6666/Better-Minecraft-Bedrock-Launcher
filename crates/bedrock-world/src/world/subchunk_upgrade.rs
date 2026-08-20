@@ -163,10 +163,7 @@ fn validate_target_data(
     Ok(())
 }
 
-fn commit_subchunk_upgrade<S>(
-    world: &BedrockWorld<S>,
-    batches: [&StorageBatch; 2],
-) -> Result<()>
+fn commit_subchunk_upgrade<S>(world: &BedrockWorld<S>, batches: [&StorageBatch; 2]) -> Result<()>
 where
     S: WorldStorageHandle,
 {

@@ -55,10 +55,7 @@ impl PlayerData {
     }
 }
 
-fn read_numeric_list3(
-    root: &IndexMap<String, NbtTag>,
-    field: &str,
-) -> Result<Option<[f64; 3]>> {
+fn read_numeric_list3(root: &IndexMap<String, NbtTag>, field: &str) -> Result<Option<[f64; 3]>> {
     let Some(value) = root.get(field) else {
         return Ok(None);
     };
@@ -80,10 +77,7 @@ fn read_numeric_list3(
     ]))
 }
 
-fn read_numeric_list2(
-    root: &IndexMap<String, NbtTag>,
-    field: &str,
-) -> Result<Option<[f64; 2]>> {
+fn read_numeric_list2(root: &IndexMap<String, NbtTag>, field: &str) -> Result<Option<[f64; 2]>> {
     let Some(value) = root.get(field) else {
         return Ok(None);
     };
@@ -202,9 +196,7 @@ fn existing_numeric_list_type(
         )));
     }
     let first = NumericListType::of(&values[0]).ok_or_else(|| {
-        BedrockWorldError::CorruptWorld(format!(
-            "player {field}[0] is not a numeric NBT value"
-        ))
+        BedrockWorldError::CorruptWorld(format!("player {field}[0] is not a numeric NBT value"))
     })?;
     for (index, tag) in values.iter().enumerate().skip(1) {
         if NumericListType::of(tag) != Some(first) {
@@ -250,9 +242,7 @@ fn numeric_tag(
             .and_then(|value| i32::try_from(value).ok())
             .map(NbtTag::Int)
             .ok_or_else(error),
-        NumericListType::Long => exact_integer(value)
-            .map(NbtTag::Long)
-            .ok_or_else(error),
+        NumericListType::Long => exact_integer(value).map(NbtTag::Long).ok_or_else(error),
         NumericListType::Float => {
             if value < -(f32::MAX as f64) || value > f32::MAX as f64 {
                 Err(error())
@@ -326,12 +316,21 @@ mod tests {
     }
 
     #[test]
-    fn malformed_mixed_numeric_position_is_not_rewritten_as_float() {
+    fn malformed_mixed_numeric_position_is_not_rewritten() {
         let nbt = NbtTag::Compound(IndexMap::from([(
             "Pos".to_string(),
-            NbtTag::List(vec![NbtTag::Int(1), NbtTag::Double(64.0), NbtTag::Int(-2)]),
+            NbtTag::List(vec![NbtTag::Int(1), NbtTag::Int(64), NbtTag::Int(-2)]),
         )]));
         let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        player.edit_nbt(|nbt| {
+            let NbtTag::Compound(root) = nbt else {
+                panic!("player root must remain a compound")
+            };
+            root.insert(
+                "Pos".to_string(),
+                NbtTag::List(vec![NbtTag::Int(1), NbtTag::Double(64.0), NbtTag::Int(-2)]),
+            );
+        });
         assert!(player.set_position([2.0, 70.0, 3.0]).is_err());
     }
 

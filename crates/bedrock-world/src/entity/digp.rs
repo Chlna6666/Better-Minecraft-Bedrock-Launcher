@@ -164,7 +164,8 @@ pub fn write_entity_from_digp(
         let uid = ActorUid(i64::from_le_bytes(uid_bytes));
         let actor = storage.get(&uid.storage_key())?.ok_or_else(|| {
             BedrockWorldError::CorruptWorld(format!(
-                "digp references missing actorprefix {:?}", uid_bytes
+                "digp references missing actorprefix {:?}",
+                uid_bytes
             ))
         })?;
         let roots = parse_consecutive_root_nbt(actor.as_ref())?;

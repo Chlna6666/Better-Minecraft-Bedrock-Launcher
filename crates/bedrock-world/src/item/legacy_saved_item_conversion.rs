@@ -334,17 +334,16 @@ mod tests {
 
     #[test]
     fn existing_numeric_item_is_retained_exactly() {
-        let table = LegacySavedItemIdTable::from_sources(
-            r#"{"minecraft:old":1}"#,
-            "{}",
-            &[],
-        )
-        .unwrap();
+        let table =
+            LegacySavedItemIdTable::from_sources(r#"{"minecraft:old":1}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Int(1)),
             ("Count".to_string(), NbtTag::Byte(1)),
             ("Damage".to_string(), NbtTag::Int(3)),
-            ("FutureField".to_string(), NbtTag::String("keep".to_string())),
+            (
+                "FutureField".to_string(),
+                NbtTag::String("keep".to_string()),
+            ),
         ]));
         let outcome = convert_saved_items_to_legacy_numeric(&source, &table).unwrap();
         assert_eq!(outcome.nbt, source);

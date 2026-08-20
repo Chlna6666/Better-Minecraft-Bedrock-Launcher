@@ -159,9 +159,8 @@ fn parse_chunks_dat(
         }
 
         let sector_count = usize::from(entry[0]);
-        let sector_offset = usize::from(entry[1])
-            | (usize::from(entry[2]) << 8)
-            | (usize::from(entry[3]) << 16);
+        let sector_offset =
+            usize::from(entry[1]) | (usize::from(entry[2]) << 8) | (usize::from(entry[3]) << 16);
         if sector_count == 0 || sector_offset == 0 {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "chunks.dat entry {index} has invalid sector offset/count ({sector_offset}, {sector_count})"
@@ -218,7 +217,10 @@ fn chunk_payload(
                 .try_into()
                 .expect("four-byte prefix already checked"),
         ) as usize;
-        if matches!(declared_len, POCKET_TERRAIN_VALUE_LEN | LEGACY_TERRAIN_VALUE_LEN) {
+        if matches!(
+            declared_len,
+            POCKET_TERRAIN_VALUE_LEN | LEGACY_TERRAIN_VALUE_LEN
+        ) {
             let end = 4usize
                 .checked_add(declared_len)
                 .ok_or_else(|| "declared terrain length overflows sector range".to_string())?;
@@ -304,5 +306,61 @@ mod tests {
         let terrain = LegacyTerrain::parse(Bytes::copy_from_slice(payload)).unwrap();
         assert!(!terrain.has_biome_samples());
         assert!(terrain.biomes().is_empty());
+    }
+
+    #[test]
+    fn location_table_maps_multiple_chunks_from_limited_world_origin() {
+        let mut bytes = vec![0_u8; 43 * SECTOR_BYTES];
+        bytes[0..4].copy_from_slice(&[21, 1, 0, 0]);
+        let second_entry = (32 + 1) * 4;
+        bytes[second_entry..second_entry + 4].copy_from_slice(&[21, 22, 0, 0]);
+        bytes[SECTOR_BYTES..SECTOR_BYTES + POCKET_TERRAIN_VALUE_LEN].fill(0x11);
+        let second_offset = 22 * SECTOR_BYTES;
+        bytes[second_offset..second_offset + POCKET_TERRAIN_VALUE_LEN].fill(0x22);
+
+        let values = parse_chunks_dat(&bytes, 10, -5).unwrap();
+
+        let first = ChunkKey::new(
+            ChunkPos {
+                x: 10,
+                z: -5,
+                dimension: Dimension::Overworld,
+            },
+            ChunkRecordTag::LegacyTerrain,
+        )
+        .encode();
+        let second = ChunkKey::new(
+            ChunkPos {
+                x: 11,
+                z: -4,
+                dimension: Dimension::Overworld,
+            },
+            ChunkRecordTag::LegacyTerrain,
+        )
+        .encode();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[&first.to_vec()][0], 0x11);
+        assert_eq!(values[&second.to_vec()][0], 0x22);
+    }
+
+    #[test]
+    fn location_table_rejects_sector_range_outside_file() {
+        let mut bytes = vec![0_u8; LOCATION_TABLE_LEN];
+        bytes[0..4].copy_from_slice(&[21, 99, 0, 0]);
+        assert!(parse_chunks_dat(&bytes, 0, 0).is_err());
+    }
+
+    #[test]
+    fn location_table_rejects_zero_sector_count() {
+        let mut bytes = vec![0_u8; LOCATION_TABLE_LEN];
+        bytes[0..4].copy_from_slice(&[0, 1, 0, 0]);
+        assert!(parse_chunks_dat(&bytes, 0, 0).is_err());
+    }
+
+    #[test]
+    fn declared_terrain_length_must_fit_allocated_sectors() {
+        let mut sector = vec![0_u8; SECTOR_BYTES];
+        sector[..4].copy_from_slice(&(POCKET_TERRAIN_VALUE_LEN as u32).to_le_bytes());
+        assert!(chunk_payload(&sector, 0, 1).is_err());
     }
 }
