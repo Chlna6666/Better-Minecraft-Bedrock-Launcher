@@ -170,6 +170,39 @@ Rayon pool 或额外全局 executor：
 涉及 Rust、Cargo、模块、async、并发、测试、lint 或 API 设计时，优先使用
 `rust-design-conventions` skill，并按其场景路由只读取必要参考文件。
 
+### Dev 阶段 API、命名与验证债务
+
+当前项目处于 dev 阶段，公开 API 以单一的新接口为准。删除或重命名接口时，默认直接
+迁移全部仓库内调用方；除非用户明确要求兼容已发布版本，否则不得保留旧名称的 type
+alias、兼容 re-export、deprecated wrapper、隐藏转发函数或双入口。公开 re-export 只能
+保留一条权威路径，不能让旧名和新名同时可用。
+
+公开类型、函数、文件和模块名称必须表达“操作的 Minecraft 对象是什么”，不能只使用
+`Options`、`Manager`、`Service`、`Data` 等缺少对象的泛化软件命名。例如世界打开参数
+使用 `BedrockWorldOpenOptions`；玩家、区块、SubChunk、实体、Biome、世界版本等上层
+接口优先采用 Minecraft Bedrock 术语。底层存储驱动可使用其真实技术对象名称，例如
+`LevelDbOpenOptions`、WAL、manifest、table 和 batch，但不得把 Minecraft 世界语义下沉
+到 `bedrock-leveldb`。
+
+API 删除、重命名或职责移动完成前，必须使用 `rg` 检查并同步更新以下位置，不能只让
+library target 通过：
+
+- `src/` 中的实现、公开文档注释和 re-export；
+- `tests/`、`benches/`、examples、README、迁移文档及开发文档；
+- feature-gated 代码和测试。`#[cfg(feature = "...")]` 必须与对应 `Cargo.toml` 中的真实
+  feature 名完全一致，不得用不存在的 feature 隐藏编译失败；
+- 受影响 crate 的 `cargo test --all-features --no-run` 与
+  `cargo bench --all-features --no-run`。必要时还要验证 no-default-features 路径。
+
+测试和 benchmark 是正式调用方，不是可延后维护的样例。发现失效 API、错误 re-export、
+被错误 feature 隐藏的测试或无法编译的 bench 时，先恢复验证基线，再进行行为修复或文件
+拆分。纯机械模块拆分应与行为变化分阶段完成，避免同一 diff 同时改变公开 API、存储语义
+和文件布局。
+
+针对真实 Minecraft 世界的兼容性测试和 benchmark 必须读取只读快照，不得直接写入原始
+世界目录；结果需记录 fixture 路径标识或 hash、记录数、区块数、解析错误数和缓存条件，
+避免不可复现的性能结论。
+
 - 保持 Rust 2024、现有 workspace lints（`unsafe_code = "warn"`，Clippy `all`/
   `pedantic` = `warn`）和平台条件；不要无理由升级依赖或修改 feature matrix。
 - 优先借用，避免为了通过 borrow checker 添加 clone；参数和变量使用完整、有领域意义的
