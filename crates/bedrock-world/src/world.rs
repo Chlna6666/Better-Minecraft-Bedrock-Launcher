@@ -4,6 +4,7 @@ mod bedrock_world;
 mod biome;
 mod biome_downgrade;
 mod biome_upgrade;
+mod block_entities;
 mod block_query;
 mod chunk_data;
 mod chunk_presence;
@@ -29,6 +30,7 @@ pub(crate) mod surface;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use bedrock_world::*;
+pub use block_entities::ChunkBlockEntities;
 pub use block_query::BlockStateQueryResult;
 pub use chunk_presence::{ChunkPresence, ChunkPresenceMode};
 pub use height_map::{ChunkHeightMap, ChunkHeightMapStatus};
