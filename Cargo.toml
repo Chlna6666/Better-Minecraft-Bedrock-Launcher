@@ -40,7 +40,7 @@ lucide-gpui = { path = "crates/lucide-gpui" }
 image = { version = "0.25.9", default-features = false, features = ["png", "tga", "jpeg", "webp"] }
 mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main" }
 bedrock-world = { path = "crates/bedrock-world" }
-bedrock-block-model = { git = "https://github.com/BE-Community-Dev/bedrock-block-model.git", branch = "main" }
+bedrock-block-model = { path = "crates/bedrock-block-model" }
 
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 cidr = "0.3.1"
@@ -119,6 +119,7 @@ gpui-windows-vulkan = ["gpui/nova-gfx-vulkan"]
 [workspace]
 resolver = "3"
 members = [
+    "crates/bedrock-block-model",
     "crates/bedrock-leveldb",
     "crates/bedrock-world",
     "crates/bedrock-render",

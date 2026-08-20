@@ -1,0 +1,2 @@
+# Pinned migration fixtures are verified by exact Git blob identity.
+crates/bedrock-world/tests/fixtures/blockstate-schema/*.json -text

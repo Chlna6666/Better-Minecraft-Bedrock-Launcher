@@ -1,0 +1,9 @@
+/target/
+/exports/
+/out/
+/resource_packs/
+*.obj
+*.mtl
+*.log
+.env
+.env.*

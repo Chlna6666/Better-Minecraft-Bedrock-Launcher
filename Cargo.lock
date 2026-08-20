@@ -744,11 +744,12 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bedrock-block-model"
 version = "0.1.0"
-source = "git+https://github.com/BE-Community-Dev/bedrock-block-model.git?branch=main#9f8c4436bbc26617551a5003cc2762b997e76fff"
 dependencies = [
+ "bedrock-world",
  "image",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "walkdir",
 ]
@@ -760,6 +761,7 @@ dependencies = [
  "bytes",
  "criterion",
  "flate2",
+ "fs2",
  "log",
  "memmap2 0.9.9",
  "rayon",
@@ -767,12 +769,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "xxhash-rust",
 ]
 
 [[package]]
 name = "bedrock-render"
 version = "0.7.0"
 dependencies = [
+ "bedrock-leveldb",
  "bedrock-world",
  "bytes",
  "criterion",
@@ -3510,6 +3514,16 @@ checksum = "8835f84f38484cc86f110a805655697908257fb9a7af005234060891557198e9"
 dependencies = [
  "nonempty",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

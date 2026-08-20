@@ -92,6 +92,22 @@ Core modules may use filesystem, process, network, parsing, and platform APIs
 as needed. UI modules should call into core modules rather than duplicating
 domain logic.
 
+### Minecraft Bedrock Data Crates
+
+| Path | Responsibility |
+| --- | --- |
+| `crates/bedrock-leveldb` | Mojang LevelDB storage driver, validation, recovery, locking, flush, and compaction. It must not contain Minecraft world-domain decoding. |
+| `crates/bedrock-world` | Minecraft Bedrock world, chunk, block state, biome, player, entity, item, structure, and compatibility APIs built on `bedrock-leveldb`. |
+| `crates/bedrock-block-model` | Locally vendored resource-pack block-model resolver. It consumes `bedrock-world::BlockState` directly so model selection includes direction, open/closed, upper/lower, waterlogged, connection, and other Bedrock block states. |
+| `crates/bedrock-render` | Rendering and editing pipelines over the current `bedrock-world` API. |
+
+These crates are developed together and use their current APIs directly. During
+development, do not add compatibility aliases for removed APIs or keep parallel
+old/new call paths. `bedrock-block-model` is a workspace path dependency; map
+rendering must not download executable model logic or silently fall back to a
+remote implementation at runtime. Its imported upstream revision and update
+rules are recorded in `crates/bedrock-block-model/UPSTREAM.md`.
+
 ### IO, Tasks, And Services
 
 | Path | Responsibility |

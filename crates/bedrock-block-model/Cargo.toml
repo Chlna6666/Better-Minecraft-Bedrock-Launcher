@@ -1,0 +1,45 @@
+[package]
+name = "bedrock-block-model"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Resource-pack block model resolver for Minecraft Bedrock"
+repository = "https://github.com/BE-Community-Dev/bedrock-block-model"
+homepage = "https://github.com/BE-Community-Dev/bedrock-block-model"
+documentation = "https://docs.rs/bedrock-block-model"
+readme = "README.md"
+keywords = ["minecraft", "bedrock", "model", "resource-pack", "mcbe"]
+categories = ["parser-implementations", "game-development", "rendering"]
+publish = false
+include = [
+    "Cargo.toml",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "src/**/*.rs",
+    "src/bin/**/*.rs",
+    "tests/**/*.rs",
+]
+
+[lib]
+name = "bedrock_block_model"
+path = "src/bedrock_block_model.rs"
+
+[dependencies]
+bedrock-world = { path = "../bedrock-world", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
+thiserror = "2.0.17"
+walkdir = "2.5.0"
+image = { version = "0.25.9", default-features = false, features = ["png", "tga"] }
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
