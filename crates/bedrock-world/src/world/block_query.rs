@@ -6,8 +6,8 @@
 
 use super::{BedrockWorld, WorldStorageHandle};
 use crate::chunk::{
-    BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LegacyTerrain,
-    SubChunkDecodeMode, parse_subchunk_with_mode,
+    BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LEGACY_TERRAIN_VALUE_LEN,
+    LegacyTerrain, SubChunkDecodeMode, parse_subchunk_with_mode,
 };
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
@@ -43,18 +43,16 @@ where
             return Ok(Vec::new());
         }
 
-        let mut subchunk_keys = BTreeMap::<(ChunkPos, i8), usize>::new();
-        let mut legacy_keys = BTreeMap::<ChunkPos, usize>::new();
+        let mut subchunk_keys = BTreeMap::<(ChunkPos, i8), ()>::new();
+        let mut legacy_keys = BTreeMap::<ChunkPos, ()>::new();
         for &block_pos in &positions {
             let chunk_pos = block_pos.to_chunk_pos(dimension);
             let subchunk_y_i32 = block_pos.y.div_euclid(16);
             if let Ok(subchunk_y) = i8::try_from(subchunk_y_i32) {
-                let next = subchunk_keys.len();
-                subchunk_keys.entry((chunk_pos, subchunk_y)).or_insert(next);
+                subchunk_keys.insert((chunk_pos, subchunk_y), ());
             }
             if (0..=127).contains(&block_pos.y) {
-                let next = legacy_keys.len();
-                legacy_keys.entry(chunk_pos).or_insert(next);
+                legacy_keys.insert(chunk_pos, ());
             }
         }
 
@@ -173,7 +171,7 @@ mod tests {
     use crate::world::{BedrockWorldOpenOptions, WorldFormatHint};
 
     #[test]
-    fn empty_batch_is_allocation_bounded_and_empty() {
+    fn empty_batch_is_empty() {
         let world = BedrockWorld::from_typed_storage(
             "memory-world",
             MemoryStorage::new(),
@@ -196,9 +194,7 @@ mod tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        // A zero-filled legacy terrain payload is valid enough for exact old-block lookup and maps
-        // to legacy block id/data zero across the column.
-        let payload = vec![0_u8; 32_768 + 16_384 + 16_384 + 256];
+        let payload = vec![0_u8; LEGACY_TERRAIN_VALUE_LEN];
         storage
             .put(
                 &ChunkKey::new(chunk_pos, ChunkRecordTag::LegacyTerrain).encode(),
@@ -223,6 +219,9 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].pos, input[0]);
         assert_eq!(results[1].pos, input[1]);
-        assert_eq!(results[0].state.as_ref().map(|state| state.name.as_str()), Some("legacy:0"));
+        assert_eq!(
+            results[0].state.as_ref().map(|state| state.name.as_str()),
+            Some("legacy:0")
+        );
     }
 }
