@@ -1,11 +1,10 @@
 use super::model::{CopiedChunkData, CopiedChunkSnapshot};
 use bedrock_block_model::{
-    BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, BlockStateValue, GeometryBone,
-    GeometryCube, ModelCuboid, ModelPlane, ModelShape, ModelWarning,
-    block_export_material_name_for_block, block_export_material_name_for_face,
-    block_export_material_name_for_plane, block_face_for_normal, canonical_block_name_for_state,
-    detail_material_block_name_for_state, model_family_has_detail_shape,
-    model_shape_for_block_state,
+    BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, GeometryBone, GeometryCube,
+    ModelCuboid, ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
+    block_export_material_name_for_face, block_export_material_name_for_plane,
+    block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,
+    model_family_has_detail_shape, model_shape_for_block_state,
 };
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
@@ -773,8 +772,11 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
-        .map_err(|error| error.to_string())?;
+    let world = BedrockWorld::open_blocking(
+        world_path,
+        bedrock_world::BedrockWorldOpenOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
     let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
     let chunk_total = positions.len();
@@ -823,8 +825,11 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
-        .map_err(|error| error.to_string())?;
+    let world = BedrockWorld::open_blocking(
+        world_path,
+        bedrock_world::BedrockWorldOpenOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
     let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
     let chunk_total = positions.len();
@@ -3039,26 +3044,7 @@ fn preview_3d_resolved_detail_shape_for_block(
 }
 
 fn preview_3d_block_state_query(state: &BlockState) -> BlockStateQuery {
-    let mut query = BlockStateQuery::new(state.name.clone());
-    for (key, value) in &state.states {
-        if let Some(value) = preview_3d_block_state_value(value) {
-            query = query.with_state(key.clone(), value);
-        }
-    }
-    let canonical_name = canonical_block_name_for_state(&query);
-    query.name = canonical_name;
-    query
-}
-
-fn preview_3d_block_state_value(value: &NbtTag) -> Option<BlockStateValue> {
-    match value {
-        NbtTag::Byte(value) => Some(BlockStateValue::Int(i64::from(*value))),
-        NbtTag::Short(value) => Some(BlockStateValue::Int(i64::from(*value))),
-        NbtTag::Int(value) => Some(BlockStateValue::Int(i64::from(*value))),
-        NbtTag::Long(value) => Some(BlockStateValue::Int(*value)),
-        NbtTag::String(value) => Some(BlockStateValue::String(value.clone())),
-        _ => None,
-    }
+    BlockStateQuery::from_world_state(state)
 }
 
 fn preview_3d_shape_from_block_geometry(geometry: &BlockGeometry) -> Option<Preview3dDetailShape> {

@@ -1461,7 +1461,7 @@ fn apply_history_entry(
         completed: 0,
         total,
     });
-    let mut options = bedrock_world::OpenOptions::default();
+    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
     options.read_only = false;
     let world = BedrockWorld::open_blocking(world_path, options)
         .map_err(|error| format!("打开世界失败: {error}"))?;
@@ -1694,7 +1694,7 @@ fn collect_chunk_raw_keys(
 }
 
 fn open_world_readonly(world_path: &Path) -> Result<BedrockWorld, String> {
-    let mut options = bedrock_world::OpenOptions::default();
+    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
     options.read_only = true;
     BedrockWorld::open_blocking(world_path, options)
         .map_err(|error| format!("打开世界失败: {error}"))

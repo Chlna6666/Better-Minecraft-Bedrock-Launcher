@@ -3261,7 +3261,7 @@ impl MapViewerWindowView {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let editor = MapWorldEditor::from_world(world);
@@ -4233,8 +4233,11 @@ fn build_chunk_image_export_blocking(
         completed: 0,
         total: chunk_count,
     });
-    let world = BedrockWorld::open_blocking(&world_path, bedrock_world::OpenOptions::default())
-        .map_err(|error| error.to_string())?;
+    let world = BedrockWorld::open_blocking(
+        &world_path,
+        bedrock_world::BedrockWorldOpenOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
     let editor = MapWorldEditor::from_world(world);
     let copied_chunk =
         copy_chunks_blocking(&editor, source_anchor, chunks, cancel, |copy_progress| {

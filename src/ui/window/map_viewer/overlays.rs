@@ -369,7 +369,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     VillageOverlayIndex::build_blocking_with_control(&world, &cancel)

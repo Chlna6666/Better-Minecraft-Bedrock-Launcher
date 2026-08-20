@@ -4679,9 +4679,9 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
     let world = BedrockWorld::from_storage(
         "memory",
         storage.clone(),
-        bedrock_world::OpenOptions {
+        bedrock_world::BedrockWorldOpenOptions {
             read_only: false,
-            ..bedrock_world::OpenOptions::default()
+            ..bedrock_world::BedrockWorldOpenOptions::default()
         },
     );
     let guard = WriteGuard::confirmed("memory", "paste 672 chunk test");
@@ -4783,9 +4783,9 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
     let world = BedrockWorld::from_storage(
         "memory",
         storage,
-        bedrock_world::OpenOptions {
+        bedrock_world::BedrockWorldOpenOptions {
             read_only: false,
-            ..bedrock_world::OpenOptions::default()
+            ..bedrock_world::BedrockWorldOpenOptions::default()
         },
     );
     let guard = WriteGuard::confirmed("memory", "rotated paste test");
@@ -4895,9 +4895,11 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
     );
     let world_path = std::env::temp_dir().join(unique);
     let database_path = world_path.join("db");
-    let database =
-        bedrock_leveldb::Db::open(&database_path, bedrock_leveldb::OpenOptions::default())
-            .expect("initialize temporary world db");
+    let database = bedrock_leveldb::Db::open(
+        &database_path,
+        bedrock_leveldb::LevelDbOpenOptions::default(),
+    )
+    .expect("initialize temporary world db");
     drop(database);
     let source = ChunkPos {
         x: 0,
@@ -4924,10 +4926,10 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
     {
         let world = BedrockWorld::open_blocking(
             &world_path,
-            bedrock_world::OpenOptions {
+            bedrock_world::BedrockWorldOpenOptions {
                 read_only: false,
                 format: bedrock_world::WorldFormatHint::LevelDb,
-                ..bedrock_world::OpenOptions::default()
+                ..bedrock_world::BedrockWorldOpenOptions::default()
             },
         )
         .expect("open temporary writable world");
@@ -4945,9 +4947,11 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
         .expect("paste into temporary world");
     }
     {
-        let reopened =
-            BedrockWorld::open_blocking(&world_path, bedrock_world::OpenOptions::default())
-                .expect("reopen temporary world");
+        let reopened = BedrockWorld::open_blocking(
+            &world_path,
+            bedrock_world::BedrockWorldOpenOptions::default(),
+        )
+        .expect("reopen temporary world");
         let target_chunk = reopened
             .get_chunk_blocking(target)
             .expect("read persisted target chunk");
@@ -4964,7 +4968,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
     let source_world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let source_editor = MapWorldEditor::open_with_options(
         &source_world_path,
-        bedrock_world::OpenOptions {
+        bedrock_world::BedrockWorldOpenOptions {
             read_only: true,
             format: bedrock_world::WorldFormatHint::LevelDb,
         },
@@ -5003,7 +5007,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
     let world_path = std::env::temp_dir().join(unique);
     let database = bedrock_leveldb::Db::open(
         world_path.join("db"),
-        bedrock_leveldb::OpenOptions::default(),
+        bedrock_leveldb::LevelDbOpenOptions::default(),
     )
     .expect("initialize temporary target db");
     drop(database);
@@ -5020,7 +5024,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
     {
         let target_world = BedrockWorld::open_blocking(
             &world_path,
-            bedrock_world::OpenOptions {
+            bedrock_world::BedrockWorldOpenOptions {
                 read_only: false,
                 format: bedrock_world::WorldFormatHint::LevelDb,
             },
@@ -5053,7 +5057,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
     {
         let reopened = BedrockWorld::open_blocking(
             &world_path,
-            bedrock_world::OpenOptions {
+            bedrock_world::BedrockWorldOpenOptions {
                 read_only: true,
                 format: bedrock_world::WorldFormatHint::LevelDb,
             },

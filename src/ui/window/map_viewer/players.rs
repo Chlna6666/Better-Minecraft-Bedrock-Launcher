@@ -272,7 +272,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let ids = world
@@ -453,7 +453,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let data = world
@@ -622,7 +622,7 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let mut options = bedrock_world::OpenOptions::default();
+                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
                         .map_err(|error| error.to_string())?;
@@ -716,7 +716,7 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let mut options = bedrock_world::OpenOptions::default();
+                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
                         .map_err(|error| error.to_string())?;

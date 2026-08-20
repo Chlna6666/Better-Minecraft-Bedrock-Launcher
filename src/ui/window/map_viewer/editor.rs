@@ -74,7 +74,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let editor = MapWorldEditor::open_with_options(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     load_edit_detail_blocking(&editor, target_for_task)
@@ -425,7 +425,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let tip = query_block_tip_blocking(&world, block, dimension)
@@ -476,7 +476,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let detail = query_chunk_detail_blocking(&world, chunk)
@@ -529,7 +529,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
                         &world_path,
-                        bedrock_world::OpenOptions::default(),
+                        bedrock_world::BedrockWorldOpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let stats = query_selection_stats_blocking(&world, bounds, options)
@@ -620,7 +620,7 @@ impl MapViewerWindowView {
                 let cancel_for_task = cancel_for_background;
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                    let mut options = bedrock_world::OpenOptions::default();
+                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
                         .map_err(|error| error.to_string())?;
@@ -913,7 +913,7 @@ impl MapViewerWindowView {
                             tracing::debug!("quick write progress receiver dropped");
                         }
                     };
-                    let mut options = bedrock_world::OpenOptions::default();
+                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
                         .map_err(|error| error.to_string())?;

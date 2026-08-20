@@ -57,8 +57,11 @@ pub(super) fn export_selection_mcstructure_blocking(
         total,
     });
 
-    let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
-        .map_err(|error| error.to_string())?;
+    let world = BedrockWorld::open_blocking(
+        world_path,
+        bedrock_world::BedrockWorldOpenOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
     check_mcstructure_export_cancelled(cancel)?;
     let min_x = bounds.min_chunk_x.saturating_mul(16);
     let min_z = bounds.min_chunk_z.saturating_mul(16);
