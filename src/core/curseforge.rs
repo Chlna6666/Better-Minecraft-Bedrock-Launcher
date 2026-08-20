@@ -1,9 +1,10 @@
+mod cache;
 pub mod queries;
 
 use crate::config::config::read_config;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use url::Url;
 
@@ -36,7 +37,92 @@ impl CurseForgeClient {
         })
     }
 
-    async fn get<T: for<'de> Deserialize<'de>>(&self, url: Url) -> Result<T, String> {
+    async fn get<T>(&self, url: Url) -> Result<T, String>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        let cache_key = url.as_str().to_string();
+        let policy = cache::policy_for(&url);
+        if let Some(body) = cache::load(&cache_key, policy.fresh_for).await {
+            match serde_json::from_slice(&body) {
+                Ok(value) => return Ok(value),
+                Err(_) => cache::invalidate(&cache_key).await,
+            }
+        }
+
+        if let Some(body) = cache::load(&cache_key, policy.stale_for).await {
+            match serde_json::from_slice(&body) {
+                Ok(value) => {
+                    self.refresh_in_background::<T>(url, cache_key, policy.fresh_for);
+                    return Ok(value);
+                }
+                Err(_) => cache::invalidate(&cache_key).await,
+            }
+        }
+
+        let _request_guard = cache::request_guard(&cache_key).await;
+        if let Some(body) = cache::load(&cache_key, policy.fresh_for).await {
+            return serde_json::from_slice(&body).map_err(|error| error.to_string());
+        }
+
+        match self.fetch(url).await {
+            Ok(body) => {
+                let parsed =
+                    serde_json::from_slice::<T>(&body).map_err(|error| error.to_string())?;
+                let body = Arc::<[u8]>::from(body);
+                if let Err(error) = cache::store(&cache_key, body).await {
+                    tracing::debug!("store CurseForge response cache failed: {error}");
+                }
+                Ok(parsed)
+            }
+            Err(error) if error.retryable => {
+                if let Some(body) = cache::load(&cache_key, policy.stale_for).await
+                    && let Ok(value) = serde_json::from_slice(&body)
+                {
+                    tracing::warn!(
+                        url = %cache_key,
+                        "using stale CurseForge cache after request failure: {}",
+                        error.message
+                    );
+                    return Ok(value);
+                }
+                Err(error.message)
+            }
+            Err(error) => Err(error.message),
+        }
+    }
+
+    fn refresh_in_background<T>(&self, url: Url, cache_key: String, fresh_for: Duration)
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        let client = self.clone();
+        let refresh = async move {
+            let _request_guard = cache::request_guard(&cache_key).await;
+            if cache::load(&cache_key, fresh_for).await.is_some() {
+                return;
+            }
+
+            match client.fetch(url).await {
+                Ok(body) if serde_json::from_slice::<T>(&body).is_ok() => {
+                    if let Err(error) = cache::store(&cache_key, Arc::<[u8]>::from(body)).await {
+                        tracing::debug!("store refreshed CurseForge cache failed: {error}");
+                    }
+                }
+                Ok(_) => tracing::debug!("ignore invalid refreshed CurseForge response"),
+                Err(error) => tracing::debug!(
+                    url = %cache_key,
+                    "background CurseForge refresh failed: {}",
+                    error.message
+                ),
+            }
+        };
+        if let Err(error) = crate::tasks::runtime::spawn_io(refresh) {
+            tracing::debug!("schedule CurseForge cache refresh failed: {error}");
+        }
+    }
+
+    async fn fetch(&self, url: Url) -> Result<Vec<u8>, FetchError> {
         let mut last_error = None;
 
         for attempt in 0..CURSEFORGE_API_MAX_ATTEMPTS {
@@ -44,9 +130,10 @@ impl CurseForgeClient {
                 Ok(response) => {
                     if response.status().is_success() {
                         return response
-                            .json::<T>()
+                            .bytes()
                             .await
-                            .map_err(|error| error.to_string());
+                            .map(|bytes| bytes.to_vec())
+                            .map_err(|error| FetchError::retryable(error.to_string()));
                     }
 
                     let status = response.status();
@@ -57,7 +144,10 @@ impl CurseForgeClient {
                         continue;
                     }
 
-                    return Err(format!("API Error: Status {}", status));
+                    return Err(FetchError {
+                        message: format!("API Error: Status {status}"),
+                        retryable: should_retry_status(status),
+                    });
                 }
                 Err(error) => {
                     let error_message = error.to_string();
@@ -68,12 +158,14 @@ impl CurseForgeClient {
                         continue;
                     }
 
-                    return Err(error_message);
+                    return Err(FetchError::retryable(error_message));
                 }
             }
         }
 
-        Err(last_error.unwrap_or_else(|| "API request failed".to_string()))
+        Err(FetchError::retryable(
+            last_error.unwrap_or_else(|| "API request failed".to_string()),
+        ))
     }
 
     pub async fn get_categories(&self) -> Result<Vec<Category>, String> {
@@ -206,6 +298,35 @@ impl CurseForgeClient {
             .map_err(|e| e.to_string())?;
         let response = self.get::<GetStringResponse>(url).await?;
         Ok(response.data)
+    }
+}
+
+pub fn prewarm() -> Result<(), String> {
+    let client = CurseForgeClient::new()?;
+    crate::tasks::runtime::spawn_io(async move {
+        let (categories, versions) =
+            tokio::join!(client.get_categories(), client.get_minecraft_versions());
+        if let Err(error) = categories {
+            tracing::debug!("CurseForge category prewarm failed: {error}");
+        }
+        if let Err(error) = versions {
+            tracing::debug!("CurseForge version prewarm failed: {error}");
+        }
+    })?;
+    Ok(())
+}
+
+struct FetchError {
+    message: String,
+    retryable: bool,
+}
+
+impl FetchError {
+    fn retryable(message: String) -> Self {
+        Self {
+            message,
+            retryable: true,
+        }
     }
 }
 

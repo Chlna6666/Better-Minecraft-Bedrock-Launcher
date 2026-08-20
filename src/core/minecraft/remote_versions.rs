@@ -16,9 +16,11 @@ use tokio::time::sleep;
 use tracing::debug;
 
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60 * 12);
+const CACHE_STALE_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const CACHE_FILE_NAME: &str = "appx_api_cache.json";
 const CACHE_BACKUP_COUNT: usize = 3;
-const CACHE_SCHEMA_VERSION: u32 = 2;
+// Version 4 invalidates data fetched from retired or incorrect version-list endpoints.
+const CACHE_SCHEMA_VERSION: u32 = 4;
 const REMOTE_VERSIONS_MAX_ATTEMPTS: usize = 3;
 const REMOTE_VERSIONS_RETRY_DELAY_MS: u64 = 250;
 
@@ -495,7 +497,20 @@ pub async fn load_or_fetch_versions(force_refresh: bool) -> Result<Vec<RemoteMin
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("remote versions load failed")))
+    let last_error = last_error.unwrap_or_else(|| anyhow::anyhow!("remote versions load failed"));
+    if let Some(cache) = read_cache() {
+        let age = Duration::from_millis(unix_now_ms().saturating_sub(cache.ts_unix_ms));
+        if age <= CACHE_STALE_TTL && !cache.versions.is_empty() {
+            tracing::warn!(
+                cause = %last_error.root_cause(),
+                cache_age_seconds = age.as_secs(),
+                "remote versions refresh unavailable; using stale cache"
+            );
+            return Ok(cache.versions);
+        }
+    }
+
+    Err(last_error)
 }
 
 #[cfg(test)]
@@ -536,5 +551,37 @@ mod tests {
             version.md5.as_deref(),
             Some("f0d6cb8024ba725d60a0520f13ccac49")
         );
+    }
+
+    #[test]
+    fn parses_accelerated_mirror_dynamic_source_key() {
+        let body = r#"{
+            "CreationTime": "2026-05-23T17:23:35.989802600+00:00",
+            "From_api.chlna6666.com": {
+                "26.21": {
+                    "BuildType": "GDK",
+                    "ID": "1.26.2101",
+                    "Type": "Release",
+                    "Variations": [{
+                        "Arch": "x64",
+                        "ArchivalStatus": 3,
+                        "MD5": "",
+                        "MetaData": ["https://assets.example/Minecraft.msixvc"],
+                        "OSbuild": "18362"
+                    }]
+                }
+            }
+        }"#;
+
+        let (_creation_time, versions) =
+            parse_api_body_streaming(body).expect("accelerated mirror schema should parse");
+        let version = versions.first().expect("mirror version should be present");
+
+        assert_eq!(version.version, "26.21");
+        assert_eq!(
+            version.package_id,
+            "https://assets.example/Minecraft.msixvc"
+        );
+        assert!(version.is_gdk);
     }
 }
