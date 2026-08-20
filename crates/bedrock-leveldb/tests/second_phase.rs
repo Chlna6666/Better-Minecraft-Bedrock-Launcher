@@ -1,4 +1,6 @@
-use bedrock_leveldb::{Db, NativeCacheOptions, OpenOptions, ReadOptions, Result, WriteOptions};
+use bedrock_leveldb::{
+    Db, LevelDbOpenOptions, NativeCacheOptions, ReadOptions, Result, WriteOptions,
+};
 use bytes::Bytes;
 
 #[test]
@@ -6,14 +8,14 @@ fn duplicate_batch_keys_share_payload_without_losing_input_order() -> Result<()>
     let dir = tempfile::tempdir()?;
     let db = Db::open(
         dir.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             cache: NativeCacheOptions {
                 data_capacity: 1024 * 1024,
                 index_capacity: 1024 * 1024,
                 file_capacity: 8,
                 shards: 4,
             },
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )?;
     db.put(

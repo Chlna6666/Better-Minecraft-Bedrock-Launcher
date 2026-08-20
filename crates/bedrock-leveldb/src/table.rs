@@ -500,22 +500,43 @@ pub(crate) fn write_native_table(
         path.display(),
         entries.len()
     );
-    if entries.is_empty() {
-        return Err(LevelDbError::invalid_argument(
-            "native table writer requires at least one entry".to_string(),
-        ));
-    }
+    write_native_entries(
+        path,
+        entries
+            .iter()
+            .map(|(key, value)| (key.as_slice(), Some(value.as_ref()))),
+        sequence,
+        compression,
+    )
+}
 
-    let smallest_internal_key = internal_key(
-        entries.first_key_value().expect("entries is not empty").0,
-        sequence,
-        crate::coding::VALUE_TYPE_VALUE,
+pub(crate) fn write_native_memtable(
+    path: &Path,
+    entries: &BTreeMap<Vec<u8>, Option<Bytes>>,
+    sequence: u64,
+    compression: CompressionPolicy,
+) -> Result<WrittenNativeTable> {
+    log::trace!(
+        "writing native LevelDB memtable {} with {} entries",
+        path.display(),
+        entries.len()
     );
-    let largest_internal_key = internal_key(
-        entries.last_key_value().expect("entries is not empty").0,
+    write_native_entries(
+        path,
+        entries
+            .iter()
+            .map(|(key, value)| (key.as_slice(), value.as_deref())),
         sequence,
-        crate::coding::VALUE_TYPE_VALUE,
-    );
+        compression,
+    )
+}
+
+fn write_native_entries<'a>(
+    path: &Path,
+    entries: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+    sequence: u64,
+    compression: CompressionPolicy,
+) -> Result<WrittenNativeTable> {
 
     let tmp_path = path.with_extension("ldbtmp");
     let file = File::create(&tmp_path)
@@ -526,9 +547,20 @@ pub(crate) fn write_native_table(
     let mut index_entries = Vec::new();
     let mut block = NativeBlockBuilder::new();
     let mut block_largest_key = Vec::new();
+    let mut smallest_internal_key = None;
+    let mut largest_internal_key = None;
 
     for (key, value) in entries {
-        let internal_key = internal_key(key, sequence, crate::coding::VALUE_TYPE_VALUE);
+        let value_type = value.map_or(
+            crate::coding::VALUE_TYPE_DELETION,
+            |_| crate::coding::VALUE_TYPE_VALUE,
+        );
+        let value = value.unwrap_or_default();
+        let internal_key = internal_key(key, sequence, value_type);
+        if smallest_internal_key.is_none() {
+            smallest_internal_key = Some(internal_key.clone());
+        }
+        largest_internal_key = Some(internal_key.clone());
         if !block.is_empty()
             && block.estimated_size_after(&internal_key, value) > NATIVE_DATA_BLOCK_TARGET
         {
@@ -551,6 +583,14 @@ pub(crate) fn write_native_table(
         block.add(&internal_key, value)?;
         block_largest_key = internal_key;
     }
+
+    let (Some(smallest_internal_key), Some(largest_internal_key)) =
+        (smallest_internal_key, largest_internal_key)
+    else {
+        return Err(LevelDbError::invalid_argument(
+            "native table writer requires at least one entry".to_string(),
+        ));
+    };
 
     if !block.is_empty() {
         let encoded = block.finish()?;
@@ -1077,24 +1117,120 @@ where
     for_each_custom_table_prefix_key_bytes(path, &bytes, prefix, paranoid_checks, visitor)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TableLookup {
+    Missing,
+    Deleted,
+    Value(Bytes),
+}
+
+pub(crate) fn read_table_lookups(
+    path: &Path,
+    paranoid_checks: bool,
+) -> Result<BTreeMap<Vec<u8>, TableLookup>> {
+    let mut entries = BTreeMap::new();
+    for_each_table_lookup(path, paranoid_checks, None, |key, value| {
+        let lookup = value.map_or(TableLookup::Deleted, |value| {
+            TableLookup::Value(value.clone())
+        });
+        entries.insert(key.to_vec(), lookup);
+        Ok(VisitorControl::Continue)
+    })?;
+    Ok(entries)
+}
+
+pub(crate) fn read_table_max_sequence(path: &Path, paranoid_checks: bool) -> Result<u64> {
+    if read_custom_table_bytes(path, None)?.is_some() {
+        return Ok(0);
+    }
+
+    let file = open_table_file(path, None)?;
+    let index_entries = read_native_index_entries(&file, path, paranoid_checks, None)?;
+    let mut max_sequence = 0_u64;
+    for entry in index_entries.iter() {
+        let mut handle_input = entry.value.as_ref();
+        let data_handle = read_block_handle(&mut handle_input)?;
+        let data_block =
+            read_native_block_from_file(&file, path, data_handle, paranoid_checks, None)?;
+        decode_native_block_entry_ranges(data_block.as_ref(), |internal_key, _| {
+            if let Some(sequence) = internal_key_sequence(internal_key) {
+                max_sequence = max_sequence.max(sequence);
+            }
+            Ok(VisitorControl::Continue)
+        })?;
+    }
+    Ok(max_sequence)
+}
+
+pub(crate) fn for_each_table_lookup<F>(
+    path: &Path,
+    paranoid_checks: bool,
+    cache: Option<&NativeBlockCache>,
+    mut visitor: F,
+) -> Result<ScanOutcome>
+where
+    F: FnMut(&[u8], Option<&Bytes>) -> Result<VisitorControl>,
+{
+    let Some(bytes) = read_custom_table_bytes(path, cache)? else {
+        return for_each_native_table_lookup_seeked(path, paranoid_checks, cache, visitor);
+    };
+    let custom_payload = custom_table_payload(path, &bytes, paranoid_checks)?;
+    let payload = Bytes::from(decompress_payload(
+        custom_payload.compression_tag,
+        custom_payload.encoded,
+    )?);
+    let mut input = payload.as_ref();
+    let count = usize::try_from(get_varint32(&mut input)?)
+        .map_err(|_| LevelDbError::corruption("entry count overflow".to_string()))?;
+    let mut outcome = ScanOutcome::empty();
+    for _ in 0..count {
+        let key = get_length_prefixed_slice(&mut input)?;
+        let value_slice = get_length_prefixed_slice(&mut input)?;
+        let value = bytes_slice_from_payload(&payload, value_slice)?;
+        outcome.record(value.len());
+        if visitor(key, Some(&value))? == VisitorControl::Stop {
+            outcome.stopped = true;
+            return Ok(mark_table_scanned(outcome));
+        }
+    }
+    if !input.is_empty() {
+        return Err(LevelDbError::corruption(
+            "table contains trailing bytes".to_string(),
+        ));
+    }
+    Ok(mark_table_scanned(outcome))
+}
+
 pub(crate) fn get_table_entry(
     path: &Path,
     key: &[u8],
     paranoid_checks: bool,
     cache: Option<&NativeBlockCache>,
 ) -> Result<Option<Bytes>> {
-    get_table_entry_impl(path, key, paranoid_checks, cache)
-        .map_err(|error| with_table_path(error, path))
+    Ok(match get_table_lookup(path, key, paranoid_checks, cache)? {
+        TableLookup::Value(value) => Some(value),
+        TableLookup::Missing | TableLookup::Deleted => None,
+    })
 }
 
-fn get_table_entry_impl(
+pub(crate) fn get_table_lookup(
     path: &Path,
     key: &[u8],
     paranoid_checks: bool,
     cache: Option<&NativeBlockCache>,
-) -> Result<Option<Bytes>> {
+) -> Result<TableLookup> {
+    get_table_lookup_impl(path, key, paranoid_checks, cache)
+        .map_err(|error| with_table_path(error, path))
+}
+
+fn get_table_lookup_impl(
+    path: &Path,
+    key: &[u8],
+    paranoid_checks: bool,
+    cache: Option<&NativeBlockCache>,
+) -> Result<TableLookup> {
     let Some(bytes) = read_custom_table_bytes(path, cache)? else {
-        return get_native_table_entry_seeked(path, key, paranoid_checks, cache);
+        return get_native_table_lookup_seeked(path, key, paranoid_checks, cache);
     };
 
     let mut found = None;
@@ -1105,7 +1241,7 @@ fn get_table_entry_impl(
         }
         Ok(VisitorControl::Continue)
     })?;
-    Ok(found)
+    Ok(found.map_or(TableLookup::Missing, TableLookup::Value))
 }
 
 pub(crate) fn get_table_entries(
@@ -1114,26 +1250,41 @@ pub(crate) fn get_table_entries(
     paranoid_checks: bool,
     cache: Option<&NativeBlockCache>,
 ) -> Result<Vec<Option<Bytes>>> {
-    get_table_entries_impl(path, keys, paranoid_checks, cache)
-        .map_err(|error| with_table_path(error, path))
+    Ok(get_table_lookups(path, keys, paranoid_checks, cache)?
+        .into_iter()
+        .map(|lookup| match lookup {
+            TableLookup::Value(value) => Some(value),
+            TableLookup::Missing | TableLookup::Deleted => None,
+        })
+        .collect())
 }
 
-fn get_table_entries_impl(
+pub(crate) fn get_table_lookups(
     path: &Path,
     keys: &[Bytes],
     paranoid_checks: bool,
     cache: Option<&NativeBlockCache>,
-) -> Result<Vec<Option<Bytes>>> {
+) -> Result<Vec<TableLookup>> {
+    get_table_lookups_impl(path, keys, paranoid_checks, cache)
+        .map_err(|error| with_table_path(error, path))
+}
+
+fn get_table_lookups_impl(
+    path: &Path,
+    keys: &[Bytes],
+    paranoid_checks: bool,
+    cache: Option<&NativeBlockCache>,
+) -> Result<Vec<TableLookup>> {
     if keys.is_empty() {
         return Ok(Vec::new());
     }
     let Some(bytes) = read_custom_table_bytes(path, cache)? else {
-        return get_native_table_entries_seeked(path, keys, paranoid_checks, cache);
+        return get_native_table_lookups_seeked(path, keys, paranoid_checks, cache);
     };
 
     let order = sorted_key_indices(keys);
     let mut cursor = 0usize;
-    let mut results = vec![None; keys.len()];
+    let mut results = vec![TableLookup::Missing; keys.len()];
     for_each_custom_table_entry_bytes(path, &bytes, paranoid_checks, |entry_key, value| {
         advance_key_cursor_before(keys, &order, &mut cursor, entry_key);
         if cursor >= order.len() {
@@ -1142,7 +1293,7 @@ fn get_table_entries_impl(
         if keys[order[cursor]].as_ref() == entry_key {
             let end = duplicate_key_group_end(keys, &order, cursor);
             for input_index in &order[cursor..end] {
-                results[*input_index] = Some(value.clone());
+                results[*input_index] = TableLookup::Value(value.clone());
             }
             cursor = end;
             if cursor >= order.len() {
@@ -1642,12 +1793,12 @@ where
     Ok(mark_table_scanned(outcome))
 }
 
-fn get_native_table_entry_seeked(
+fn get_native_table_lookup_seeked(
     path: &Path,
     key: &[u8],
     paranoid_checks: bool,
     cache: Option<&NativeBlockCache>,
-) -> Result<Option<Bytes>> {
+) -> Result<TableLookup> {
     let file = open_table_file(path, cache)?;
     let index_entries = read_native_index_entries(&file, path, paranoid_checks, cache)?;
     for entry in index_entries.iter() {
@@ -1661,7 +1812,7 @@ fn get_native_table_entry_seeked(
         let data_handle = read_block_handle(&mut handle_input)?;
         let data_block =
             read_native_block_from_file(&file, path, data_handle, paranoid_checks, cache)?;
-        let mut found = None;
+        let mut found = TableLookup::Missing;
         decode_native_block_entry_ranges(data_block.as_ref(), |internal_key, value_range| {
             let Some((user_key, is_value)) = split_internal_key(internal_key) else {
                 return Ok(VisitorControl::Continue);
@@ -1669,9 +1820,11 @@ fn get_native_table_entry_seeked(
             match user_key.cmp(key) {
                 std::cmp::Ordering::Less => Ok(VisitorControl::Continue),
                 std::cmp::Ordering::Equal => {
-                    if is_value {
-                        found = Some(data_block.slice(value_range));
-                    }
+                    found = if is_value {
+                        TableLookup::Value(data_block.slice(value_range))
+                    } else {
+                        TableLookup::Deleted
+                    };
                     Ok(VisitorControl::Stop)
                 }
                 std::cmp::Ordering::Greater => Ok(VisitorControl::Stop),
@@ -1679,20 +1832,57 @@ fn get_native_table_entry_seeked(
         })?;
         return Ok(found);
     }
-    Ok(None)
+    Ok(TableLookup::Missing)
 }
 
-fn get_native_table_entries_seeked(
+fn for_each_native_table_lookup_seeked<F>(
+    path: &Path,
+    paranoid_checks: bool,
+    cache: Option<&NativeBlockCache>,
+    mut visitor: F,
+) -> Result<ScanOutcome>
+where
+    F: FnMut(&[u8], Option<&Bytes>) -> Result<VisitorControl>,
+{
+    let file = open_table_file(path, cache)?;
+    let index_entries = read_native_index_entries(&file, path, paranoid_checks, cache)?;
+    let mut outcome = ScanOutcome::empty();
+    let mut previous_user_key = Vec::new();
+    for entry in index_entries.iter() {
+        let mut handle_input = entry.value.as_ref();
+        let data_handle = read_block_handle(&mut handle_input)?;
+        let data_block =
+            read_native_block_from_file(&file, path, data_handle, paranoid_checks, cache)?;
+        for (internal_key, value) in decode_native_block_entries_bytes(&data_block)? {
+            let Some((user_key, is_value)) = split_internal_key(&internal_key) else {
+                continue;
+            };
+            if !is_next_user_key(&mut previous_user_key, user_key) {
+                continue;
+            }
+            if is_value {
+                outcome.record(value.len());
+            }
+            if visitor(user_key, is_value.then_some(&value))? == VisitorControl::Stop {
+                outcome.stopped = true;
+                return Ok(mark_table_scanned(outcome));
+            }
+        }
+    }
+    Ok(mark_table_scanned(outcome))
+}
+
+fn get_native_table_lookups_seeked(
     path: &Path,
     keys: &[Bytes],
     paranoid_checks: bool,
     cache: Option<&NativeBlockCache>,
-) -> Result<Vec<Option<Bytes>>> {
+) -> Result<Vec<TableLookup>> {
     let file = open_table_file(path, cache)?;
     let index_entries = read_native_index_entries(&file, path, paranoid_checks, cache)?;
     let order = sorted_key_indices(keys);
     let mut cursor = 0usize;
-    let mut results = vec![None; keys.len()];
+    let mut results = vec![TableLookup::Missing; keys.len()];
 
     for entry in index_entries.iter() {
         if cursor >= order.len() {
@@ -1718,11 +1908,13 @@ fn get_native_table_entries_seeked(
             }
             if keys[order[cursor]].as_ref() == user_key {
                 let end = duplicate_key_group_end(keys, &order, cursor);
-                if is_value {
-                    let value = data_block.slice(value_range);
-                    for input_index in &order[cursor..end] {
-                        results[*input_index] = Some(value.clone());
-                    }
+                let lookup = if is_value {
+                    TableLookup::Value(data_block.slice(value_range))
+                } else {
+                    TableLookup::Deleted
+                };
+                for input_index in &order[cursor..end] {
+                    results[*input_index] = lookup.clone();
                 }
                 cursor = end;
                 if cursor >= order.len() {
@@ -2214,6 +2406,12 @@ fn split_internal_key(internal_key: &[u8]) -> Option<(&[u8], bool)> {
         crate::coding::VALUE_TYPE_DELETION => Some((user_key, false)),
         _ => None,
     }
+}
+
+fn internal_key_sequence(internal_key: &[u8]) -> Option<u64> {
+    let trailer = internal_key.get(internal_key.len().checked_sub(8)?..)?;
+    let tag = u64::from_le_bytes(trailer.try_into().ok()?);
+    Some(tag >> 8)
 }
 
 fn internal_key(user_key: &[u8], sequence: u64, value_type: u8) -> Vec<u8> {

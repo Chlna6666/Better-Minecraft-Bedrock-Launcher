@@ -50,6 +50,7 @@ pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec
     file.read_to_end(&mut bytes)?;
     let mut records = Vec::new();
     let mut scratch = Vec::new();
+    let mut assembling = false;
     let mut pos = 0;
 
     while pos + HEADER_SIZE <= bytes.len() {
@@ -71,7 +72,20 @@ pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec
         pos += HEADER_SIZE;
 
         if record_type == ZERO_TYPE && length == 0 {
-            break;
+            pos += BLOCK_SIZE - block_offset - HEADER_SIZE;
+            continue;
+        }
+        let payload_capacity = BLOCK_SIZE - block_offset - HEADER_SIZE;
+        if length > payload_capacity {
+            if paranoid_checks {
+                return Err(LevelDbError::corruption(
+                    "log record crosses a physical block boundary".to_string(),
+                ));
+            }
+            pos += BLOCK_SIZE - (pos % BLOCK_SIZE);
+            scratch.clear();
+            assembling = false;
+            continue;
         }
         if pos + length > bytes.len() {
             if paranoid_checks {
@@ -97,15 +111,49 @@ pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec
         }
 
         match record_type {
-            FULL_TYPE => records.push(payload.to_vec()),
+            FULL_TYPE => {
+                if assembling && paranoid_checks {
+                    return Err(LevelDbError::corruption(
+                        "full log record interrupts a fragmented record".to_string(),
+                    ));
+                }
+                scratch.clear();
+                assembling = false;
+                records.push(payload.to_vec());
+            }
             FIRST_TYPE => {
+                if assembling && paranoid_checks {
+                    return Err(LevelDbError::corruption(
+                        "first log fragment interrupts a fragmented record".to_string(),
+                    ));
+                }
                 scratch.clear();
                 scratch.extend_from_slice(payload);
+                assembling = true;
             }
-            MIDDLE_TYPE => scratch.extend_from_slice(payload),
+            MIDDLE_TYPE => {
+                if !assembling {
+                    if paranoid_checks {
+                        return Err(LevelDbError::corruption(
+                            "middle log fragment has no first fragment".to_string(),
+                        ));
+                    }
+                    continue;
+                }
+                scratch.extend_from_slice(payload);
+            }
             LAST_TYPE => {
+                if !assembling {
+                    if paranoid_checks {
+                        return Err(LevelDbError::corruption(
+                            "last log fragment has no first fragment".to_string(),
+                        ));
+                    }
+                    continue;
+                }
                 scratch.extend_from_slice(payload);
                 records.push(std::mem::take(&mut scratch));
+                assembling = false;
             }
             other if paranoid_checks => {
                 return Err(LevelDbError::corruption(format!(
@@ -114,6 +162,17 @@ pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec
             }
             _ => {}
         }
+    }
+
+    if assembling && paranoid_checks {
+        return Err(LevelDbError::corruption(
+            "fragmented log record is missing its last fragment".to_string(),
+        ));
+    }
+    if paranoid_checks && pos < bytes.len() && bytes[pos..].iter().any(|byte| *byte != 0) {
+        return Err(LevelDbError::corruption(
+            "log has a truncated physical record header".to_string(),
+        ));
     }
 
     Ok(records)
@@ -164,5 +223,81 @@ mod tests {
         assert_eq!(records[0], b"small");
         assert_eq!(records[1], vec![9; BLOCK_SIZE * 2]);
         std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn orphan_middle_fragment_is_rejected() {
+        let path = temporary_log_path("orphan-middle");
+        {
+            let mut file = File::create(&path).expect("create");
+            write_physical_record(&mut file, MIDDLE_TYPE, b"orphan").expect("write");
+        }
+
+        let error = read_records(&mut File::open(&path).expect("open"), true)
+            .expect_err("orphan middle fragment must fail");
+
+        assert_eq!(error.kind(), crate::error::ErrorKind::Corruption);
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn unterminated_fragmented_record_is_rejected() {
+        let path = temporary_log_path("unterminated");
+        {
+            let mut file = File::create(&path).expect("create");
+            write_physical_record(&mut file, FIRST_TYPE, b"partial").expect("write");
+        }
+
+        let error = read_records(&mut File::open(&path).expect("open"), true)
+            .expect_err("unterminated fragmented record must fail");
+
+        assert_eq!(error.kind(), crate::error::ErrorKind::Corruption);
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn zero_header_at_block_end_does_not_skip_next_block() {
+        let path = temporary_log_path("zero-header-at-block-end");
+        {
+            let mut file = File::create(&path).expect("create");
+            write_physical_record(
+                &mut file,
+                FULL_TYPE,
+                &vec![1; BLOCK_SIZE - (2 * HEADER_SIZE)],
+            )
+            .expect("write first record");
+            file.write_all(&[0; HEADER_SIZE])
+                .expect("write zero header");
+            write_physical_record(&mut file, FULL_TYPE, b"next-block").expect("write next block");
+        }
+
+        let records = read_records(&mut File::open(&path).expect("open"), true)
+            .expect("read records across zero header");
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1], b"next-block");
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn nonzero_truncated_header_is_rejected() {
+        let path = temporary_log_path("truncated-header");
+        std::fs::write(&path, [1, 2, 3]).expect("write truncated header");
+
+        let error = read_records(&mut File::open(&path).expect("open"), true)
+            .expect_err("nonzero truncated header must fail");
+
+        assert_eq!(error.kind(), crate::error::ErrorKind::Corruption);
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    fn temporary_log_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "bedrock-leveldb-{name}-{}.log",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ))
     }
 }

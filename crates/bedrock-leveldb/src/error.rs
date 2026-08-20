@@ -31,6 +31,8 @@ pub enum ErrorKind {
     NotFound,
     /// An internal synchronization primitive was poisoned.
     LockPoisoned,
+    /// Another process holds the database writer lock.
+    DatabaseLocked,
     /// The optional async wrapper failed to join a blocking task.
     Join,
 }
@@ -86,7 +88,7 @@ pub enum LevelDbError {
     /// A mutating operation was requested on a read-only database.
     #[error("database is read-only")]
     ReadOnly,
-    /// `OpenOptions::error_if_exists` rejected an existing database.
+    /// `LevelDbOpenOptions::error_if_exists` rejected an existing database.
     #[error("database already exists: {}", path.display())]
     AlreadyExists {
         /// Existing database directory.
@@ -103,6 +105,12 @@ pub enum LevelDbError {
     LockPoisoned {
         /// Locking operation that observed poisoning.
         operation: &'static str,
+    },
+    /// Another process or database handle holds the writer lock.
+    #[error("database writer lock is already held: {}", path.display())]
+    DatabaseLocked {
+        /// LevelDB `LOCK` file that could not be acquired.
+        path: PathBuf,
     },
     /// A blocking task failed to join in the optional async wrapper.
     #[error("async runtime error: {message}")]
@@ -127,6 +135,7 @@ impl LevelDbError {
             Self::AlreadyExists { .. } => ErrorKind::AlreadyExists,
             Self::NotFound { .. } => ErrorKind::NotFound,
             Self::LockPoisoned { .. } => ErrorKind::LockPoisoned,
+            Self::DatabaseLocked { .. } => ErrorKind::DatabaseLocked,
             Self::Join { .. } => ErrorKind::Join,
         }
     }
@@ -136,7 +145,9 @@ impl LevelDbError {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Self::Io { path, .. } | Self::Corruption { path, .. } => path.as_deref(),
-            Self::AlreadyExists { path } | Self::NotFound { path } => Some(path),
+            Self::AlreadyExists { path }
+            | Self::NotFound { path }
+            | Self::DatabaseLocked { path } => Some(path),
             Self::InvalidArgument { .. }
             | Self::Unsupported { .. }
             | Self::Compression { .. }
@@ -215,6 +226,10 @@ impl LevelDbError {
 
     pub(crate) const fn lock_poisoned(operation: &'static str) -> Self {
         Self::LockPoisoned { operation }
+    }
+
+    pub(crate) fn database_locked(path: impl Into<PathBuf>) -> Self {
+        Self::DatabaseLocked { path: path.into() }
     }
 
     #[cfg(feature = "async")]

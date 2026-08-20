@@ -90,9 +90,7 @@ impl WriteBatch {
                 .saturating_add(key.len())
                 .saturating_add(5)
                 .saturating_add(value.len()),
-            WriteOp::Delete { key } => total
-                .saturating_add(1 + 5)
-                .saturating_add(key.len()),
+            WriteOp::Delete { key } => total.saturating_add(1 + 5).saturating_add(key.len()),
         })
     }
 
@@ -185,6 +183,14 @@ impl WriteBatch {
             .map_err(|_| LevelDbError::corruption("batch count overflow".to_string()))?;
 
         let mut input = &bytes[12..];
+        // Every operation requires at least a one-byte tag and a one-byte
+        // length prefix, even when its key is empty. Reject impossible counts
+        // before reserving attacker-controlled capacity.
+        if expected_count > input.len() / 2 {
+            return Err(LevelDbError::corruption(format!(
+                "batch record count {expected_count} exceeds payload capacity"
+            )));
+        }
         let mut ops = Vec::with_capacity(expected_count);
         while !input.is_empty() {
             let Some((&tag, rest)) = input.split_first() else {
@@ -265,5 +271,15 @@ mod tests {
         batch.delete(Bytes::from_static(b"b"));
         let encoded = batch.encode().expect("encode");
         assert!(batch.encoded_len_hint() >= encoded.len());
+    }
+
+    #[test]
+    fn decode_rejects_impossible_count_before_allocation() {
+        let mut bytes = vec![0_u8; 12];
+        bytes[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let error = WriteBatch::decode(&bytes).expect_err("impossible count must fail");
+
+        assert_eq!(error.kind(), crate::error::ErrorKind::Corruption);
     }
 }

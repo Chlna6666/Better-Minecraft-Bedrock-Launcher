@@ -1,10 +1,6 @@
-#[cfg(feature = "zlib")]
 use bedrock_leveldb::{
-    ChunkCoordinates, ChunkKey, ChunkRecordTag, Dimension, LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN,
-    LEGACY_TERRAIN_VALUE_LEN, SubChunkIndex,
-};
-use bedrock_leveldb::{
-    Db, OpenOptions, ReadOptions, ReadStrategy, ScanMode, ValueRef, VisitorControl,
+    Db, LevelDbOpenOptions, ReadOptions, ReadStrategy, ScanMode, ValueRef, VisitorControl,
+    WriteBatch, WriteOptions,
 };
 use bytes::Bytes;
 use std::cmp::Ordering;
@@ -97,6 +93,113 @@ fn native_table_point_prefix_and_deletion_records_are_read() {
 }
 
 #[test]
+fn newer_table_tombstone_hides_value_from_older_table() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let old_table = write_native_table(
+        temp.path(),
+        3,
+        &[NativeEntry::value(b"removed", 4, b"old-value")],
+    )
+    .expect("write old table");
+    let new_table = write_native_table(temp.path(), 4, &[NativeEntry::delete(b"removed", 5)])
+        .expect("write tombstone table");
+    write_native_manifest(temp.path(), &[old_table, new_table], 2).expect("write manifest");
+
+    let db = open_native_read_only(temp.path());
+
+    assert_eq!(db.get(b"removed").expect("point get"), None);
+    assert_eq!(
+        db.get_many_owned(vec![Bytes::from_static(b"removed")], ReadOptions::default(),)
+            .expect("batch get"),
+        vec![None]
+    );
+    let mut scanned = Vec::new();
+    db.for_each_entry(ReadOptions::default(), |key, value| {
+        scanned.push((Bytes::copy_from_slice(key), value.clone()));
+        Ok(VisitorControl::Continue)
+    })
+    .expect("scan entries");
+    assert!(scanned.iter().all(|(key, _)| key.as_ref() != b"removed"));
+    assert_eq!(db.snapshot().expect("snapshot").get(b"removed"), None);
+}
+
+#[test]
+fn recovery_replays_previous_log_and_continues_manifest_sequence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_native_manifest_with_recovery_metadata(temp.path(), &[], 7, 6, 4)
+        .expect("write manifest");
+    let mut previous_batch = WriteBatch::new();
+    previous_batch.set_sequence(5);
+    previous_batch.put(b"from-prev".as_slice(), b"previous".as_slice());
+    let mut current_batch = WriteBatch::new();
+    current_batch.set_sequence(6);
+    current_batch.put(b"from-current".as_slice(), b"current".as_slice());
+    write_batch_log(temp.path(), 6, &previous_batch).expect("write previous WAL");
+    write_batch_log(temp.path(), 7, &current_batch).expect("write current WAL");
+
+    let db = Db::open(temp.path(), LevelDbOpenOptions::default()).expect("open recovered database");
+
+    assert_eq!(
+        db.get(b"from-prev").expect("read previous WAL"),
+        Some(Bytes::from_static(b"previous"))
+    );
+    assert_eq!(
+        db.get(b"from-current").expect("read current WAL"),
+        Some(Bytes::from_static(b"current"))
+    );
+    assert_eq!(db.snapshot().expect("snapshot").sequence(), 6);
+    db.put(
+        b"after-recovery".as_slice(),
+        b"next".as_slice(),
+        WriteOptions::default(),
+    )
+    .expect("write after recovery");
+    assert_eq!(db.snapshot().expect("snapshot after write").sequence(), 7);
+}
+
+#[test]
+fn repair_applies_table_files_in_file_number_order() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let newer = write_native_table(
+        temp.path(),
+        11,
+        &[
+            NativeEntry::value(b"shared", 11, b"newer"),
+            NativeEntry::delete(b"removed", 12),
+        ],
+    )
+    .expect("write newer table");
+    let older = write_native_table(
+        temp.path(),
+        3,
+        &[
+            NativeEntry::value(b"shared", 3, b"older"),
+            NativeEntry::value(b"removed", 4, b"must-stay-deleted"),
+        ],
+    )
+    .expect("write older table");
+    write_native_manifest_with_recovery_metadata(temp.path(), &[older, newer], 13, 0, 12)
+        .expect("write active manifest");
+
+    Db::repair(temp.path(), LevelDbOpenOptions::default()).expect("repair database");
+    let db = Db::open(temp.path(), LevelDbOpenOptions::default()).expect("open repaired database");
+
+    assert_eq!(
+        db.get(b"shared").expect("read repaired value"),
+        Some(Bytes::from_static(b"newer"))
+    );
+    assert_eq!(db.get(b"removed").expect("read repaired tombstone"), None);
+    assert_eq!(db.snapshot().expect("repair snapshot").sequence(), 12);
+    db.put(
+        b"after-repair".as_slice(),
+        b"next".as_slice(),
+        WriteOptions::default(),
+    )
+    .expect("write after repair");
+    assert_eq!(db.snapshot().expect("post-repair snapshot").sequence(), 13);
+}
+
+#[test]
 fn native_uncompressed_prefix_ref_returns_borrowed_values() {
     let temp = tempfile::tempdir().expect("tempdir");
     let entries = vec![
@@ -158,42 +261,21 @@ fn native_manifest_ranges_skip_unrelated_newer_corrupt_tables() {
 
 #[cfg(feature = "zlib")]
 #[test]
-fn native_compressed_tables_get_many_reads_legacy_records_in_order() {
+fn native_compressed_tables_get_many_preserves_requested_order() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let legacy_terrain_key = Bytes::from(
-        ChunkKey::new(
-            ChunkCoordinates::new(0, 0),
-            Dimension::Overworld,
-            ChunkRecordTag::LegacyTerrain,
-        )
-        .encode(),
-    );
-    let legacy_subchunk_key = Bytes::from(
-        ChunkKey::new_subchunk(
-            ChunkCoordinates::new(0, 0),
-            Dimension::Overworld,
-            SubChunkIndex::from_raw(0),
-        )
-        .encode(),
-    );
-    let modern_subchunk_key = Bytes::from(
-        ChunkKey::new_subchunk(
-            ChunkCoordinates::new(1, 0),
-            Dimension::Overworld,
-            SubChunkIndex::from_raw(0),
-        )
-        .encode(),
-    );
-    let terrain = vec![7_u8; LEGACY_TERRAIN_VALUE_LEN];
-    let mut legacy_subchunk = vec![0_u8; LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN];
-    legacy_subchunk[0] = 2;
-    legacy_subchunk[1 + 1_125] = 99;
-    let modern_subchunk = b"\x08\x00modern-paletted-native".to_vec();
+    let large_key = Bytes::from_static(b"large-value");
+    let medium_key = Bytes::from_static(b"medium-value");
+    let small_key = Bytes::from_static(b"small-value");
+    let large_value = vec![7_u8; 83_200];
+    let mut medium_value = vec![0_u8; 10_241];
+    medium_value[0] = 2;
+    medium_value[1 + 1_125] = 99;
+    let small_value = b"small-native".to_vec();
 
     let zlib_meta = write_native_table_compressed_data(
         temp.path(),
         3,
-        &[NativeEntry::value(&legacy_terrain_key, 7, &terrain)],
+        &[NativeEntry::value(&large_key, 7, &large_value)],
         COMPRESSION_ZLIB,
     )
     .expect("write zlib table");
@@ -201,8 +283,8 @@ fn native_compressed_tables_get_many_reads_legacy_records_in_order() {
         temp.path(),
         4,
         &[
-            NativeEntry::value(&legacy_subchunk_key, 7, &legacy_subchunk),
-            NativeEntry::value(&modern_subchunk_key, 7, &modern_subchunk),
+            NativeEntry::value(&medium_key, 7, &medium_value),
+            NativeEntry::value(&small_key, 7, &small_value),
         ],
         COMPRESSION_DEFLATE,
     )
@@ -214,20 +296,20 @@ fn native_compressed_tables_get_many_reads_legacy_records_in_order() {
         .get_many_owned(
             vec![
                 Bytes::from_static(b"missing"),
-                legacy_terrain_key.clone(),
-                legacy_subchunk_key,
-                modern_subchunk_key,
-                legacy_terrain_key,
+                large_key.clone(),
+                medium_key,
+                small_key,
+                large_key,
             ],
             ReadOptions::default(),
         )
         .expect("get many");
 
     assert!(values[0].is_none());
-    assert_eq!(values[1], Some(Bytes::from(terrain.clone())));
-    assert_eq!(values[2], Some(Bytes::from(legacy_subchunk)));
-    assert_eq!(values[3], Some(Bytes::from(modern_subchunk)));
-    assert_eq!(values[4], Some(Bytes::from(terrain)));
+    assert_eq!(values[1], Some(Bytes::from(large_value.clone())));
+    assert_eq!(values[2], Some(Bytes::from(medium_value)));
+    assert_eq!(values[3], Some(Bytes::from(small_value)));
+    assert_eq!(values[4], Some(Bytes::from(large_value)));
 }
 
 impl NativeEntry {
@@ -263,10 +345,10 @@ impl NativeEntry {
 fn open_native_read_only(path: &Path) -> Db {
     Db::open(
         path,
-        OpenOptions {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: false,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("open native")
@@ -398,6 +480,16 @@ fn write_native_manifest(
     tables: &[TableMeta],
     log_number: u64,
 ) -> std::io::Result<()> {
+    write_native_manifest_with_recovery_metadata(root, tables, log_number, 0, 1000)
+}
+
+fn write_native_manifest_with_recovery_metadata(
+    root: &Path,
+    tables: &[TableMeta],
+    log_number: u64,
+    prev_log_number: u64,
+    last_sequence: u64,
+) -> std::io::Result<()> {
     let mut edit = Vec::new();
     put_varint32(1, &mut edit);
     put_length_prefixed_slice(b"leveldb.BytewiseComparator", &mut edit);
@@ -406,7 +498,11 @@ fn write_native_manifest(
     put_varint32(3, &mut edit);
     put_varint64(100, &mut edit);
     put_varint32(4, &mut edit);
-    put_varint64(1000, &mut edit);
+    put_varint64(last_sequence, &mut edit);
+    if prev_log_number != 0 {
+        put_varint32(9, &mut edit);
+        put_varint64(prev_log_number, &mut edit);
+    }
     for table in tables {
         put_varint32(7, &mut edit);
         put_varint32(0, &mut edit);
@@ -421,6 +517,14 @@ fn write_native_manifest(
     write_log_record(&mut manifest, &edit)?;
     std::fs::write(root.join("CURRENT"), format!("{manifest_name}\n"))?;
     Ok(())
+}
+
+fn write_batch_log(root: &Path, number: u64, batch: &WriteBatch) -> std::io::Result<()> {
+    let mut log = std::fs::File::create(root.join(format!("{number:06}.log")))?;
+    let encoded = batch
+        .encode()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    write_log_record(&mut log, &encoded)
 }
 
 fn block(entries: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {

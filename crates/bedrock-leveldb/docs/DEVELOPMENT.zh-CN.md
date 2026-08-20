@@ -89,7 +89,7 @@ database open/read/write/recovery 行为放集成测试。
 - WAL replay 能处理 fragmented record 和 tombstone。
 - varint 解码拒绝 overflow 和 truncation。
 - native flush/reopen 保留 key、value、sequence number 和 deletion。
-- `OpenOptions::write_buffer_size = 0` 会让写入保留在 WAL overlay 中，直到
+- `LevelDbOpenOptions::write_buffer_size = 0` 会让写入保留在 WAL overlay 中，直到
   显式 flush 或其他原生 recovery/compaction 路径消费这些写入。
 - native table point read 与 prefix scan 尊重 manifest range 和 deletion record。
 - 顺序 scan 与 table-parallel scan 看到的 entry 一致。

@@ -1,4 +1,4 @@
-use bedrock_leveldb::{Db, OpenOptions, ReadOptions, VisitorControl};
+use bedrock_leveldb::{Db, LevelDbOpenOptions, ReadOptions, VisitorControl};
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -21,9 +21,12 @@ fn fixture_root() -> PathBuf {
 }
 
 fn require_historical_fixtures() -> bool {
-    env::var(REQUIRE_FIXTURES_ENV)
-        .ok()
-        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    env::var(REQUIRE_FIXTURES_ENV).ok().is_some_and(|value| {
+        matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -48,11 +51,11 @@ fn open_fixture_if_present(name: &str) -> Option<Db> {
     Some(
         Db::open(
             &path,
-            OpenOptions {
+            LevelDbOpenOptions {
                 read_only: true,
                 create_if_missing: false,
                 error_if_exists: false,
-                ..OpenOptions::default()
+                ..LevelDbOpenOptions::default()
             },
         )
         .unwrap_or_else(|error| panic!("open historical fixture {name}: {error}")),

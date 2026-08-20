@@ -1,6 +1,6 @@
 #![cfg(feature = "zlib")]
 
-use bedrock_leveldb::{CompressionPolicy, Db, Options, WriteOptions};
+use bedrock_leveldb::{CompressionPolicy, Db, LevelDbOpenOptions, WriteOptions};
 use bytes::Bytes;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +17,7 @@ fn temp_db_path() -> std::path::PathBuf {
 #[test]
 fn default_raw_deflate_native_table_reopens() {
     let path = temp_db_path();
-    let options = Options::default();
+    let options = LevelDbOpenOptions::default();
     assert_eq!(options.compression_policy, CompressionPolicy::RawDeflate);
 
     let db = Db::open(&path, options).expect("open writable db");
@@ -28,15 +28,15 @@ fn default_raw_deflate_native_table_reopens() {
         WriteOptions { sync: true },
     )
     .expect("write value");
-    db.flush_memtable().expect("flush native table");
+    db.flush().expect("flush native table");
     drop(db);
 
     let reopened = Db::open(
         &path,
-        Options {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: false,
-            ..Options::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("reopen raw-deflate db");

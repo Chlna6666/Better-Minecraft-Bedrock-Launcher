@@ -21,11 +21,11 @@ Maintainers and contributors should also read the
 
 ```rust
 use bedrock_leveldb::{
-    Db, OpenOptions, ReadOptions, ScanMode, ScanPipelineOptions, VisitorControl, WriteOptions,
+    Db, LevelDbOpenOptions, ReadOptions, ScanMode, ScanPipelineOptions, VisitorControl, WriteOptions,
 };
 
 fn main() -> bedrock_leveldb::Result<()> {
-    let db = Db::open("path/to/world/db", OpenOptions::default())?;
+    let db = Db::open("path/to/world/db", LevelDbOpenOptions::default())?;
 
     if let Some(value) = db.get(b"player_1")? {
         println!("player_1 has {} raw bytes", value.len());
@@ -57,7 +57,7 @@ fn main() -> bedrock_leveldb::Result<()> {
 }
 ```
 
-For read-only analysis of real Bedrock worlds, set `OpenOptions::read_only =
+For read-only analysis of real Bedrock worlds, set `LevelDbOpenOptions::read_only =
 true` and `create_if_missing = false`. Read-only handles never initialize,
 repair, flush, or write to the database directory.
 
@@ -84,7 +84,7 @@ repair, flush, or write to the database directory.
 
 ## API Notes
 
-- `Db::open(path, OpenOptions)` loads `CURRENT`, manifest metadata, and the WAL
+- `Db::open(path, LevelDbOpenOptions)` loads `CURRENT`, manifest metadata, and the WAL
   overlay. It does not eagerly materialize every native table value.
 - `Db::get(key)` is the compatibility owned/shared read path. `Db::get_ref`
   and `Db::get_with_ref` return `ValueRef`, which can represent borrowed,
@@ -111,11 +111,9 @@ repair, flush, or write to the database directory.
 - `Db::collect_keys_owned`, `Db::collect_prefix_keys_owned`, and
   `Db::collect_prefix_owned` return owned data without forcing callers to write
   visitor glue for common indexing paths.
-- `Db::write_batch_native`, `Db::flush_memtable`,
-  `Db::compact_range_native`, and `Db::recover_native` are the explicit v0.2
-  native write/recovery entry points. `Db::write`, `Db::flush`,
-  `Db::compact_range`, and `Db::repair` delegate to the same native paths.
-- `OpenOptions::write_buffer_size` controls automatic native table flushes.
+- `Db::write`, `Db::flush`, `Db::compact`, and `Db::repair` are the canonical
+  write, flush, full-database compaction, and repair entry points.
+- `LevelDbOpenOptions::write_buffer_size` controls automatic native table flushes.
   The default is 4 MiB. Set it to `0` to keep writes in the WAL overlay until
   `Db::flush`, compaction, or recovery explicitly consumes them.
 - `ReadOptions::cache_policy` defaults to `Bypass`, so normal reads do not
@@ -167,7 +165,7 @@ Async callers should share the database handle instead of reopening it for each
 request:
 
 ```rust
-let db = std::sync::Arc::new(Db::open("path/to/world/db", OpenOptions::default())?);
+let db = std::sync::Arc::new(Db::open("path/to/world/db", LevelDbOpenOptions::default())?);
 let keys = db
     .clone()
     .collect_prefix_keys_owned_async(
@@ -184,11 +182,11 @@ crate also provides storage-level helpers for documented record families:
 
 ```rust
 use bedrock_leveldb::{
-    BedrockKey, ChunkRecordTag, Db, LegacyTerrain, OpenOptions,
+    BedrockKey, ChunkRecordTag, Db, LegacyTerrain, LevelDbOpenOptions,
 };
 
 # fn example() -> bedrock_leveldb::Result<()> {
-let db = Db::open("path/to/world/db", OpenOptions::default())?;
+let db = Db::open("path/to/world/db", LevelDbOpenOptions::default())?;
 
 db.for_each_entry(Default::default(), |key, value| {
     if let BedrockKey::Chunk(chunk_key) = BedrockKey::parse(key) {
@@ -240,14 +238,14 @@ All fallible APIs return `bedrock_leveldb::Result<T>`, an alias for
 `ErrorKind` and using `path()` instead of parsing display strings:
 
 ```rust
-use bedrock_leveldb::{Db, ErrorKind, OpenOptions};
+use bedrock_leveldb::{Db, ErrorKind, LevelDbOpenOptions};
 
 let err = Db::open(
     "missing-db",
-    OpenOptions {
+    LevelDbOpenOptions {
         read_only: true,
         create_if_missing: false,
-        ..OpenOptions::default()
+        ..LevelDbOpenOptions::default()
     },
 )
 .expect_err("missing database should fail");

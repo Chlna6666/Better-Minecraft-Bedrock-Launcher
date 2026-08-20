@@ -1,8 +1,6 @@
 use bedrock_leveldb::{
-    ChecksumMode, ChunkCoordinates, ChunkKey, ChunkRecordTag, CompressionPolicy, Db, Dimension,
-    ErrorKind, LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_VALUE_LEN, LevelDbError,
-    OpenOptions, ReadOptions, ScanCancelFlag, ScanMode, SubChunkIndex, VisitorControl,
-    WriteOptions,
+    ChecksumMode, CompressionPolicy, Db, ErrorKind, LevelDbError, LevelDbOpenOptions, ReadOptions,
+    ScanCancelFlag, ScanMode, VisitorControl, WriteOptions,
 };
 use bytes::Bytes;
 use std::sync::{Mutex, OnceLock};
@@ -71,10 +69,10 @@ fn read_only_missing_database_does_not_create_directory() {
 
     let result = Db::open(
         &missing,
-        OpenOptions {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: true,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     );
 
@@ -90,9 +88,9 @@ fn read_only_handle_rejects_mutating_operations() {
     {
         let db = Db::open(
             temp.path(),
-            OpenOptions {
+            LevelDbOpenOptions {
                 compression_policy: CompressionPolicy::None,
-                ..OpenOptions::default()
+                ..LevelDbOpenOptions::default()
             },
         )
         .expect("open writable");
@@ -103,11 +101,11 @@ fn read_only_handle_rejects_mutating_operations() {
 
     let db = Db::open(
         temp.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: false,
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("open read-only");
@@ -120,62 +118,45 @@ fn read_only_handle_rejects_mutating_operations() {
 }
 
 #[test]
-fn get_many_owned_reads_render_record_keys_in_order() {
+fn get_many_owned_preserves_requested_key_order() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let legacy_key = Bytes::from(
-        ChunkKey::new(
-            ChunkCoordinates::new(0, 0),
-            Dimension::Overworld,
-            ChunkRecordTag::LegacyTerrain,
-        )
-        .encode(),
-    );
-    let legacy_subchunk_key = Bytes::from(
-        ChunkKey::new_subchunk(
-            ChunkCoordinates::new(0, 0),
-            Dimension::Overworld,
-            SubChunkIndex::from_raw(0),
-        )
-        .encode(),
-    );
-    let modern_subchunk_key = Bytes::from(
-        ChunkKey::new_subchunk(
-            ChunkCoordinates::new(1, 0),
-            Dimension::Overworld,
-            SubChunkIndex::from_raw(0),
-        )
-        .encode(),
-    );
+    let large_key = Bytes::from_static(b"large-value");
+    let medium_key = Bytes::from_static(b"medium-value");
+    let small_key = Bytes::from_static(b"small-value");
     let other_key = Bytes::from_static(b"~local_player");
-    let terrain = Bytes::from(vec![7_u8; LEGACY_TERRAIN_VALUE_LEN]);
-    let mut legacy_subchunk_bytes = vec![0_u8; LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN];
-    legacy_subchunk_bytes[0] = 2;
-    legacy_subchunk_bytes[1 + 1_125] = 99;
-    let legacy_subchunk = Bytes::from(legacy_subchunk_bytes);
-    let modern_subchunk = Bytes::from_static(b"\x08\x00modern-paletted-fixture");
+    let large_value = Bytes::from(vec![7_u8; 83_200]);
+    let mut medium_bytes = vec![0_u8; 10_241];
+    medium_bytes[0] = 2;
+    medium_bytes[1 + 1_125] = 99;
+    let medium_value = Bytes::from(medium_bytes);
+    let small_value = Bytes::from_static(b"small-fixture");
     {
         let db = Db::open(
             temp.path(),
-            OpenOptions {
+            LevelDbOpenOptions {
                 compression_policy: CompressionPolicy::None,
-                ..OpenOptions::default()
+                ..LevelDbOpenOptions::default()
             },
         )
         .expect("open writable");
-        db.put(legacy_key.clone(), terrain.clone(), WriteOptions::default())
-            .expect("put legacy terrain");
         db.put(
-            legacy_subchunk_key.clone(),
-            legacy_subchunk.clone(),
+            large_key.clone(),
+            large_value.clone(),
             WriteOptions::default(),
         )
-        .expect("put legacy subchunk");
+        .expect("put large value");
         db.put(
-            modern_subchunk_key.clone(),
-            modern_subchunk.clone(),
+            medium_key.clone(),
+            medium_value.clone(),
             WriteOptions::default(),
         )
-        .expect("put modern subchunk");
+        .expect("put medium value");
+        db.put(
+            small_key.clone(),
+            small_value.clone(),
+            WriteOptions::default(),
+        )
+        .expect("put small value");
         db.put(
             other_key.clone(),
             b"player".as_slice(),
@@ -187,11 +168,11 @@ fn get_many_owned_reads_render_record_keys_in_order() {
 
     let db = Db::open(
         temp.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: false,
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("open read-only");
@@ -199,22 +180,22 @@ fn get_many_owned_reads_render_record_keys_in_order() {
         .get_many_owned(
             vec![
                 Bytes::from_static(b"missing"),
-                legacy_key.clone(),
-                legacy_subchunk_key,
-                modern_subchunk_key,
+                large_key.clone(),
+                medium_key,
+                small_key,
                 other_key.clone(),
-                legacy_key,
+                large_key,
             ],
             ReadOptions::default(),
         )
         .expect("get many");
 
     assert!(values[0].is_none());
-    assert_eq!(values[1], Some(terrain.clone()));
-    assert_eq!(values[2], Some(legacy_subchunk));
-    assert_eq!(values[3], Some(modern_subchunk));
+    assert_eq!(values[1], Some(large_value.clone()));
+    assert_eq!(values[2], Some(medium_value));
+    assert_eq!(values[3], Some(small_value));
     assert_eq!(values[4], Some(Bytes::from_static(b"player")));
-    assert_eq!(values[5], Some(terrain));
+    assert_eq!(values[5], Some(large_value));
 }
 
 #[test]
@@ -224,10 +205,10 @@ fn repair_rejects_read_only_options() {
 
     let result = Db::repair(
         &missing,
-        OpenOptions {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: true,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     );
 
@@ -238,9 +219,9 @@ fn repair_rejects_read_only_options() {
 #[test]
 fn delete_tombstone_survives_reopen() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let options = OpenOptions {
+    let options = LevelDbOpenOptions {
         compression_policy: CompressionPolicy::None,
-        ..OpenOptions::default()
+        ..LevelDbOpenOptions::default()
     };
 
     {
@@ -258,10 +239,10 @@ fn delete_tombstone_survives_reopen() {
 #[test]
 fn flushed_native_table_reopens_and_scans() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let options = OpenOptions {
+    let options = LevelDbOpenOptions {
         compression_policy: CompressionPolicy::None,
         write_buffer_size: 1,
-        ..OpenOptions::default()
+        ..LevelDbOpenOptions::default()
     };
 
     {
@@ -312,10 +293,10 @@ fn flushed_native_table_reopens_and_scans() {
 #[test]
 fn checksum_verification_detects_native_table_corruption() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let options = OpenOptions {
+    let options = LevelDbOpenOptions {
         compression_policy: CompressionPolicy::None,
         write_buffer_size: 1,
-        ..OpenOptions::default()
+        ..LevelDbOpenOptions::default()
     };
 
     {
@@ -354,7 +335,7 @@ fn checksum_verification_detects_native_table_corruption() {
 #[test]
 fn scan_cancellation_returns_cancelled_error() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let db = Db::open(temp.path(), OpenOptions::default()).expect("open");
+    let db = Db::open(temp.path(), LevelDbOpenOptions::default()).expect("open");
     db.put(b"k".as_slice(), b"v".as_slice(), WriteOptions::default())
         .expect("put");
 
@@ -380,10 +361,10 @@ fn missing_manifest_error_carries_path_context() {
 
     let result = Db::open(
         temp.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: false,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     );
 
@@ -393,10 +374,11 @@ fn missing_manifest_error_carries_path_context() {
 }
 
 #[test]
-fn repair_warns_when_discarding_unreadable_files_and_library_does_not_init_logger() {
+fn repair_ignores_unreferenced_files_and_library_does_not_init_logger() {
     let temp = tempfile::tempdir().expect("tempdir");
     let pre_logger_path = temp.path().join("pre_logger_open");
-    let _db = Db::open(&pre_logger_path, OpenOptions::default()).expect("open before logger");
+    let _db =
+        Db::open(&pre_logger_path, LevelDbOpenOptions::default()).expect("open before logger");
     assert!(install_test_logger());
     clear_logs();
 
@@ -404,30 +386,26 @@ fn repair_warns_when_discarding_unreadable_files_and_library_does_not_init_logge
     std::fs::write(&corrupt_table, b"not a leveldb table").expect("write corrupt table");
     let report = Db::repair(
         temp.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("repair");
 
-    assert_eq!(report.dropped_files, 1);
-    assert!(captured_logs().iter().any(|event| {
-        event.level == log::Level::Warn
-            && event
-                .message
-                .contains("dropping unreadable table during repair")
-            && event.message.contains("000123.ldb")
-    }));
+    assert_eq!(report.dropped_files, 0);
+    assert!(!captured_logs()
+        .iter()
+        .any(|event| event.message.contains("000123.ldb")));
 }
 
 #[test]
 fn parallel_scan_matches_sequential_scan_in_integration_path() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let options = OpenOptions {
+    let options = LevelDbOpenOptions {
         compression_policy: CompressionPolicy::None,
         write_buffer_size: 1,
-        ..OpenOptions::default()
+        ..LevelDbOpenOptions::default()
     };
     let db = Db::open(temp.path(), options).expect("open");
     for index in 0..64 {
@@ -470,10 +448,10 @@ fn zlib_native_writes_require_zlib_feature() {
     let temp = tempfile::tempdir().expect("tempdir");
     let db = Db::open(
         temp.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             compression_policy: CompressionPolicy::Zlib,
             write_buffer_size: 1,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("open");
@@ -488,10 +466,10 @@ fn snappy_native_writes_require_snappy_feature() {
     let temp = tempfile::tempdir().expect("tempdir");
     let db = Db::open(
         temp.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             compression_policy: CompressionPolicy::Snappy,
             write_buffer_size: 1,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("open");

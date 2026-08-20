@@ -45,6 +45,7 @@ bench = []
 bytes = "1.10.1"
 flate2 = { version = "1.1.5", default-features = false, features = ["rust_backend"], optional = true }
 log = "0.4"
+fs2 = "0.4.3"
 memmap2 = { version = "0.9.9", optional = true }
 rayon = "1.11.0"
 snap = { version = "1.1.1", optional = true }
@@ -54,9 +55,14 @@ tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.10"
+xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
 
 [[bench]]
 name = "db"
+harness = false
+
+[[bench]]
+name = "fixture_snapshot"
 harness = false
 
 [lints.rust]

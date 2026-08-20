@@ -15,6 +15,7 @@ const MANIFEST_MAGIC: &[u8; 9] = b"BWLDBMAN1";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TableFileMeta {
     pub(crate) number: u64,
+    pub(crate) level: u32,
     pub(crate) file_size: u64,
     pub(crate) smallest_key: Option<Vec<u8>>,
     pub(crate) largest_key: Option<Vec<u8>>,
@@ -27,6 +28,7 @@ impl TableFileMeta {
     pub(crate) const fn without_range(number: u64) -> Self {
         Self {
             number,
+            level: 0,
             file_size: 0,
             smallest_key: None,
             largest_key: None,
@@ -38,12 +40,14 @@ impl TableFileMeta {
     #[must_use]
     pub(crate) fn native(
         number: u64,
+        level: u32,
         file_size: u64,
         smallest_internal_key: Vec<u8>,
         largest_internal_key: Vec<u8>,
     ) -> Self {
         Self {
             number,
+            level,
             file_size,
             smallest_key: internal_user_key(&smallest_internal_key).map(<[u8]>::to_vec),
             largest_key: internal_user_key(&largest_internal_key).map(<[u8]>::to_vec),
@@ -72,6 +76,8 @@ impl TableFileMeta {
 pub(crate) struct Manifest {
     pub(crate) next_file_number: u64,
     pub(crate) log_number: u64,
+    pub(crate) prev_log_number: u64,
+    pub(crate) last_sequence: u64,
     pub(crate) table_numbers: Vec<u64>,
     pub(crate) table_files: Vec<TableFileMeta>,
 }
@@ -81,6 +87,8 @@ impl Default for Manifest {
         Self {
             next_file_number: 2,
             log_number: 1,
+            prev_log_number: 0,
+            last_sequence: 0,
             table_numbers: Vec::new(),
             table_files: Vec::new(),
         }
@@ -174,6 +182,8 @@ impl Manifest {
         Ok(Self {
             next_file_number,
             log_number,
+            prev_log_number: 0,
+            last_sequence: 0,
             table_numbers,
             table_files,
         })
@@ -217,7 +227,11 @@ impl Manifest {
         put_varint32(3, &mut edit);
         put_varint64(self.next_file_number, &mut edit);
         put_varint32(4, &mut edit);
-        put_varint64(self.next_file_number.saturating_add(1024), &mut edit);
+        put_varint64(self.last_sequence, &mut edit);
+        if self.prev_log_number != 0 {
+            put_varint32(9, &mut edit);
+            put_varint64(self.prev_log_number, &mut edit);
+        }
         let table_numbers = self
             .table_files
             .iter()
@@ -237,7 +251,7 @@ impl Manifest {
         }
         for table in &self.table_files {
             put_varint32(7, &mut edit);
-            put_varint32(0, &mut edit);
+            put_varint32(table.level, &mut edit);
             put_varint64(table.number, &mut edit);
             put_varint64(table.file_size, &mut edit);
             put_length_prefixed_slice(
@@ -272,8 +286,11 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
             3 => {
                 manifest.next_file_number = get_varint64(&mut input)?;
             }
-            4 | 9 => {
-                let _ = get_varint64(&mut input)?;
+            4 => {
+                manifest.last_sequence = get_varint64(&mut input)?;
+            }
+            9 => {
+                manifest.prev_log_number = get_varint64(&mut input)?;
             }
             5 => {
                 let _level = get_varint32(&mut input)?;
@@ -290,7 +307,7 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
                     .retain(|table| table.number != file_number);
             }
             7 => {
-                let _level = get_varint32(&mut input)?;
+                let level = get_varint32(&mut input)?;
                 let file_number = get_varint64(&mut input)?;
                 let file_size = get_varint64(&mut input)?;
                 let smallest = get_length_prefixed_slice(&mut input)?;
@@ -298,6 +315,7 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
                 manifest.table_numbers.push(file_number);
                 manifest.table_files.push(TableFileMeta {
                     number: file_number,
+                    level,
                     file_size,
                     smallest_key: internal_user_key(smallest).map(<[u8]>::to_vec),
                     largest_key: internal_user_key(largest).map(<[u8]>::to_vec),
@@ -334,6 +352,32 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
 fn internal_user_key(internal_key: &[u8]) -> Option<&[u8]> {
     let user_key_len = internal_key.len().checked_sub(8)?;
     internal_key.get(..user_key_len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_version_edit_preserves_recovery_metadata() {
+        let mut edit = Vec::new();
+        put_varint32(2, &mut edit);
+        put_varint64(7, &mut edit);
+        put_varint32(3, &mut edit);
+        put_varint64(11, &mut edit);
+        put_varint32(4, &mut edit);
+        put_varint64(42, &mut edit);
+        put_varint32(9, &mut edit);
+        put_varint64(6, &mut edit);
+        let mut manifest = Manifest::default();
+
+        parse_native_version_edit(&edit, &mut manifest).expect("parse version edit");
+
+        assert_eq!(manifest.log_number, 7);
+        assert_eq!(manifest.prev_log_number, 6);
+        assert_eq!(manifest.last_sequence, 42);
+        assert_eq!(manifest.next_file_number, 11);
+    }
 }
 
 fn read_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64> {

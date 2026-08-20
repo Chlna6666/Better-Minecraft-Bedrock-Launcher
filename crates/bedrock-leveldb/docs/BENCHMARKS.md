@@ -1,8 +1,7 @@
 # Benchmark Notes
 
-This file records the latest local v0.2.0 benchmark run. Re-run the commands
-below before comparing storage changes because Criterion output depends on the
-host CPU, thermal state, filesystem, and background load.
+This file defines the reproducible 0.7.0 benchmark contract. Synthetic Criterion
+microbenchmarks and real read-only fixture scans are reported separately.
 
 ## Commands
 
@@ -10,9 +9,44 @@ host CPU, thermal state, filesystem, and background load.
 rustc --version
 cargo --version
 cargo bench --all-features --bench db -- --noplot
+cargo bench --all-features --bench fixture_snapshot -- "C:\path\to\read-only-world"
 ```
 
-## Latest Results
+## Read-only fixture contract
+
+`fixture_snapshot` opens Mojang LevelDB with `read_only=true` and
+`create_if_missing=false`, hashes the fixture before and after measurement, and fails if it changed.
+Published results record fixture hash/bytes, records, cache condition, samples, p50/p95,
+records/s, MiB/s, CPU, disk, OS and filesystem. Chunk count and parse errors are
+`not_applicable` at this storage-only layer; `bedrock-world` reports those Minecraft semantics.
+
+- `logical_cold`: new DB handle per sample with the crate cache bypassed.
+- `logical_warm`: one reused DB handle with the crate cache enabled and a priming scan.
+
+These labels do not claim that Windows system or device caches were cleared.
+
+## Latest 0.7.0 fixture result
+
+```text
+date: 2026-08-20
+host: Windows x86_64 / AMD Ryzen 7 7840H / 8 cores, 16 threads
+disk: C: / NTFS / Fanxiang S500PRO 1TB / NVMe SSD
+fixture_hash: 342010d8883d5b5399120b1ecded04fc (XXH3-128)
+fixture_bytes: 1087899207
+records: 1768601
+samples: 7 per cache condition
+```
+
+| Cache condition | p50 | p95 | Records/s | MiB/s |
+| --- | ---: | ---: | ---: | ---: |
+| `logical_cold` | 34,145.503 ms | 36,138.335 ms | 51,796.02 | 79.59 |
+| `logical_warm` | 38,655.041 ms | 39,254.873 ms | 45,753.44 | 70.30 |
+
+The cache-enabled full scan was slower on this fixture. This is a measured result, not an assumed
+benefit: the 1.09 GB physical snapshot expands to 2.85 GB of visited key/value bytes, so cache
+bookkeeping and churn can outweigh reuse for a sequential whole-database scan.
+
+## Historical synthetic results
 
 Local run:
 

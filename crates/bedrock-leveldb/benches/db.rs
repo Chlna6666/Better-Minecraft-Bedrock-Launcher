@@ -1,8 +1,8 @@
 #![allow(clippy::too_many_lines)]
 
 use bedrock_leveldb::{
-    CachePolicy, CompressionPolicy, Db, OpenOptions, ReadOptions, ReadStrategy, ScanMode,
-    VisitorControl, WriteBatch, WriteOptions,
+    CachePolicy, CompressionPolicy, Db, LevelDbOpenOptions, NativeCacheOptions, ReadOptions,
+    ReadStrategy, ScanMode, VisitorControl, WriteBatch, WriteOptions,
 };
 use bytes::Bytes;
 use criterion::{
@@ -27,10 +27,10 @@ fn open_temp_db(write_buffer_size: usize) -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = Db::open(
         dir.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
             write_buffer_size,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("open db");
@@ -292,9 +292,9 @@ fn bench_recover(c: &mut Criterion) {
             |dir| {
                 let db = Db::open(
                     black_box(dir.path()),
-                    OpenOptions {
+                    LevelDbOpenOptions {
                         compression_policy: CompressionPolicy::None,
-                        ..OpenOptions::default()
+                        ..LevelDbOpenOptions::default()
                     },
                 )
                 .expect("recover");
@@ -344,11 +344,16 @@ fn seed_native_db(entries: usize, value_size: usize, tables: usize) -> (tempfile
     write_native_manifest(dir.path(), &metas, 2).expect("native manifest");
     let db = Db::open(
         dir.path(),
-        OpenOptions {
+        LevelDbOpenOptions {
             read_only: true,
             create_if_missing: false,
-            cache_size: 0,
-            ..OpenOptions::default()
+            cache: NativeCacheOptions {
+                data_capacity: 0,
+                index_capacity: 0,
+                file_capacity: 0,
+                shards: 1,
+            },
+            ..LevelDbOpenOptions::default()
         },
     )
     .expect("open native");

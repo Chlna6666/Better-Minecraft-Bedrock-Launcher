@@ -16,11 +16,11 @@ version edit。旧的 `BWLDB...` 文件仅作为迁移和向后兼容读取保�
 
 ```rust
 use bedrock_leveldb::{
-    Db, OpenOptions, ReadOptions, ScanMode, ScanPipelineOptions, VisitorControl, WriteOptions,
+    Db, LevelDbOpenOptions, ReadOptions, ScanMode, ScanPipelineOptions, VisitorControl, WriteOptions,
 };
 
 fn main() -> bedrock_leveldb::Result<()> {
-    let db = Db::open("path/to/world/db", OpenOptions::default())?;
+    let db = Db::open("path/to/world/db", LevelDbOpenOptions::default())?;
 
     if let Some(value) = db.get(b"player_1")? {
         println!("player_1 has {} raw bytes", value.len());
@@ -52,7 +52,7 @@ fn main() -> bedrock_leveldb::Result<()> {
 }
 ```
 
-分析真实 Bedrock 世界时，建议设置 `OpenOptions::read_only = true` 且
+分析真实 Bedrock 世界时，建议设置 `LevelDbOpenOptions::read_only = true` 且
 `create_if_missing = false`。只读句柄不会初始化、repair、flush 或写入数据库目录。
 
 ## 支持范围
@@ -78,7 +78,7 @@ fn main() -> bedrock_leveldb::Result<()> {
 
 ## API 说明
 
-- `Db::open(path, OpenOptions)` 加载 `CURRENT`、manifest 元数据和 WAL overlay，
+- `Db::open(path, LevelDbOpenOptions)` 加载 `CURRENT`、manifest 元数据和 WAL overlay，
   不会急切物化所有 native table value。
 - `Db::get(key)` 使用默认读取选项；`Db::get_with(key, ReadOptions)` 可覆盖
   checksum 和 cache 策略。
@@ -94,11 +94,9 @@ fn main() -> bedrock_leveldb::Result<()> {
 - `Db::collect_keys_owned`、`Db::collect_prefix_keys_owned` 和
   `Db::collect_prefix_owned` 为常见索引路径直接返回 owned 数据，调用方不必手写
   visitor glue。
-- `Db::write_batch_native`、`Db::flush_memtable`、
-  `Db::compact_range_native` 和 `Db::recover_native` 是 v0.2 显式原生
-  写入/恢复入口。`Db::write`、`Db::flush`、`Db::compact_range` 和
-  `Db::repair` 委托到同一套原生路径。
-- `OpenOptions::write_buffer_size` 控制自动原生 table flush。默认值为 4 MiB；
+- `Db::write`、`Db::flush`、`Db::compact` 和 `Db::repair` 分别是写入、
+  flush、全数据库压缩和修复的唯一权威入口。
+- `LevelDbOpenOptions::write_buffer_size` 控制自动原生 table flush。默认值为 4 MiB；
   设置为 `0` 时会关闭自动 flush，使写入保留在 WAL overlay 中，直到
   `Db::flush`、compaction 或 recovery 显式消费这些写入。
 - `ReadOptions::pipeline` 控制本地 Rayon scan 调度。`queue_depth`、
@@ -143,7 +141,7 @@ db.for_each_prefix_key(b"chunk-prefix", ReadOptions::default(), |key| {
 异步调用方应复用同一个数据库句柄，而不是每个请求重新 open：
 
 ```rust
-let db = std::sync::Arc::new(Db::open("path/to/world/db", OpenOptions::default())?);
+let db = std::sync::Arc::new(Db::open("path/to/world/db", LevelDbOpenOptions::default())?);
 let keys = db
     .clone()
     .collect_prefix_keys_owned_async(
@@ -160,11 +158,11 @@ let keys = db
 
 ```rust
 use bedrock_leveldb::{
-    BedrockKey, ChunkRecordTag, Db, LegacyTerrain, OpenOptions,
+    BedrockKey, ChunkRecordTag, Db, LegacyTerrain, LevelDbOpenOptions,
 };
 
 # fn example() -> bedrock_leveldb::Result<()> {
-let db = Db::open("path/to/world/db", OpenOptions::default())?;
+let db = Db::open("path/to/world/db", LevelDbOpenOptions::default())?;
 
 db.for_each_entry(Default::default(), |key, value| {
     if let BedrockKey::Chunk(chunk_key) = BedrockKey::parse(key) {
@@ -213,14 +211,14 @@ key-only prefix scan。使用 `tracing` 的应用可以通过 `tracing_log::LogT
 `ErrorKind` 并使用 `path()`，不要解析 display 字符串：
 
 ```rust
-use bedrock_leveldb::{Db, ErrorKind, OpenOptions};
+use bedrock_leveldb::{Db, ErrorKind, LevelDbOpenOptions};
 
 let result = Db::open(
     "missing-db",
-    OpenOptions {
+    LevelDbOpenOptions {
         read_only: true,
         create_if_missing: false,
-        ..OpenOptions::default()
+        ..LevelDbOpenOptions::default()
     },
 );
 

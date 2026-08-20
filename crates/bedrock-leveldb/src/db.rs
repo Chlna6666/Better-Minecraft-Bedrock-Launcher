@@ -1,18 +1,20 @@
 use crate::batch::{WriteBatch, WriteOp};
+use crate::compaction;
+use crate::db_lock::DatabaseLock;
 use crate::error::{ErrorKind, LevelDbError, Result};
 use crate::manifest::Manifest;
+use crate::obsolete;
 use crate::options::{
-    CachePolicy, ChecksumMode, CompressionPolicy, OpenOptions, ReadOptions, ReadStrategy, ScanMode,
-    ScanOutcome, VisitorControl, WriteOptions,
+    CachePolicy, ChecksumMode, CompressionPolicy, LevelDbOpenOptions, ReadOptions, ReadStrategy,
+    ScanMode, ScanOutcome, VisitorControl, WriteOptions,
 };
 use crate::table;
 use crate::wal;
 use bytes::Bytes;
 use rayon::ThreadPoolBuilder;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
-use std::ops::Bound::{Included, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex, OnceLock, RwLock,
@@ -215,9 +217,10 @@ pub struct EntryRef<'a> {
 /// Open database handle.
 pub struct Db {
     root: PathBuf,
-    options: OpenOptions,
+    options: LevelDbOpenOptions,
     inner: RwLock<DbInner>,
     block_cache: table::NativeBlockCache,
+    _database_lock: Option<DatabaseLock>,
 }
 
 #[derive(Debug)]
@@ -231,7 +234,7 @@ struct DbInner {
 type Overlay = BTreeMap<Vec<u8>, Option<Bytes>>;
 type LoadedState = (Manifest, Overlay, u64, usize);
 
-// ReadOptions and OpenOptions are intentionally passed by value at the public
+// ReadOptions and LevelDbOpenOptions are intentionally passed by value at the public
 // boundary so callers can use struct-update syntax without storing temporaries.
 #[allow(clippy::needless_pass_by_value)]
 impl Db {
@@ -242,7 +245,7 @@ impl Db {
     /// Returns an error when the directory is missing and creation is disabled,
     /// when `read_only` would require initialization, when existing metadata is
     /// corrupt, or when filesystem I/O fails.
-    pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
+    pub fn open(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<Self> {
         let cache_options = options.cache.normalized();
         let root = path.as_ref().to_path_buf();
         log::debug!(
@@ -274,6 +277,9 @@ impl Db {
             return Err(LevelDbError::not_found(root.clone()));
         }
 
+        let database_lock = (!options.read_only)
+            .then(|| DatabaseLock::acquire(&root))
+            .transpose()?;
         let (manifest, overlay, last_sequence, approximate_bytes) =
             load_existing_or_initialize(&root, &options)?;
         log::debug!(
@@ -283,7 +289,7 @@ impl Db {
             overlay.len(),
             last_sequence
         );
-        Ok(Self {
+        let db = Self {
             root,
             options,
             inner: RwLock::new(DbInner {
@@ -298,7 +304,12 @@ impl Db {
                 cache_options.file_capacity,
                 cache_options.shards,
             ),
-        })
+            _database_lock: database_lock,
+        };
+        if !db.options.read_only {
+            db.reclaim_obsolete_files(&db.read_inner()?.manifest)?;
+        }
+        Ok(db)
     }
 
     /// Returns a point-in-time snapshot of cache activity and occupancy.
@@ -329,7 +340,7 @@ impl Db {
     ///
     /// Returns the same errors as [`Db::open`] plus a join error if the blocking
     /// task fails to complete.
-    pub async fn open_async(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
+    pub async fn open_async(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         tokio::task::spawn_blocking(move || Self::open(path, options))
             .await
@@ -437,13 +448,17 @@ impl Db {
             if !table_path.exists() {
                 continue;
             }
-            if let Some(value) = table::get_table_entry(
+            match table::get_table_lookup(
                 &table_path,
                 key,
                 read_checksums(&self.options, &options),
                 read_cache(&options, &self.block_cache),
             )? {
-                return Ok(Some(ValueRef::from_shared(value, options.read_strategy)));
+                table::TableLookup::Value(value) => {
+                    return Ok(Some(ValueRef::from_shared(value, options.read_strategy)));
+                }
+                table::TableLookup::Deleted => return Ok(None),
+                table::TableLookup::Missing => {}
             }
         }
         Ok(None)
@@ -470,10 +485,12 @@ impl Db {
         }
         let inner = self.read_inner()?;
         let mut results = vec![None; keys.len()];
+        let mut resolved = vec![false; keys.len()];
         let mut unresolved = Vec::with_capacity(keys.len());
         for (index, key) in keys.iter().enumerate() {
             if let Some(value) = inner.overlay.get(key.as_ref()) {
                 results[index].clone_from(value);
+                resolved[index] = true;
             } else {
                 unresolved.push(index);
             }
@@ -508,19 +525,24 @@ impl Db {
                 .map(|index| keys[*index].clone())
                 .collect::<Vec<_>>();
             table_probes = table_probes.saturating_add(1);
-            let table_results = table::get_table_entries(
+            let table_results = table::get_table_lookups(
                 &table_path,
                 &table_keys,
                 read_checksums(&self.options, &options),
                 read_cache(&options, &self.block_cache),
             )?;
-            for (input_index, value) in table_indices.into_iter().zip(table_results) {
-                if let Some(value) = value {
-                    results[input_index] = Some(value);
-                    table_hits = table_hits.saturating_add(1);
+            for (input_index, lookup) in table_indices.into_iter().zip(table_results) {
+                match lookup {
+                    table::TableLookup::Value(value) => {
+                        results[input_index] = Some(value);
+                        resolved[input_index] = true;
+                        table_hits = table_hits.saturating_add(1);
+                    }
+                    table::TableLookup::Deleted => resolved[input_index] = true,
+                    table::TableLookup::Missing => {}
                 }
             }
-            unresolved.retain(|index| results[*index].is_none());
+            unresolved.retain(|index| !resolved[*index]);
         }
         log::debug!(
             "batch exact get complete (keys={}, hits={}, table_probes={}, elapsed_ms={})",
@@ -586,7 +608,7 @@ impl Db {
     /// Appends a batch to the native `LevelDB` WAL overlay.
     ///
     /// The method flushes to a native table when the write buffer reaches
-    /// [`OpenOptions::write_buffer_size`]. Set that option to `0` to disable
+    /// [`LevelDbOpenOptions::write_buffer_size`]. Set that option to `0` to disable
     /// automatic flushes and keep writes WAL-backed until an explicit flush.
     ///
     /// # Errors
@@ -625,20 +647,6 @@ impl Db {
             self.flush_locked(&mut inner)?;
         }
         Ok(())
-    }
-
-    /// Appends a batch through the native `LevelDB` write path.
-    ///
-    /// This is the explicit v0.2 name for [`Db::write`]. It writes a standard
-    /// `LevelDB` WAL batch and any automatic flush writes native `.ldb` tables
-    /// plus a native manifest version edit. Automatic flushes are skipped when
-    /// [`OpenOptions::write_buffer_size`] is `0`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::write`].
-    pub fn write_batch_native(&self, batch: WriteBatch, options: WriteOptions) -> Result<()> {
-        self.write(batch, options)
     }
 
     /// Visits visible keys without cloning values.
@@ -1020,46 +1028,19 @@ impl Db {
         self.flush_locked(&mut inner)
     }
 
-    /// Flushes the current memtable/overlay into a native `LevelDB` table.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::flush`].
-    pub fn flush_memtable(&self) -> Result<()> {
-        self.flush()
-    }
-
-    /// Flushes a range into a new native `LevelDB` table.
+    /// Rewrites the complete visible database into a compact native `LevelDB` table.
     ///
     /// # Errors
     ///
     /// Returns [`LevelDbError::ReadOnly`] for read-only handles or an I/O,
-    /// compression, or decoding error when the range cannot be materialized.
-    pub fn compact_range(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<()> {
+    /// compression, or decoding error when the visible state cannot be materialized.
+    pub fn compact(&self) -> Result<()> {
         if self.options.read_only {
             return Err(LevelDbError::ReadOnly);
         }
         let mut inner = self.write_inner()?;
-        // The current storage layout has no levels. A range-only rewrite would
-        // leave overlapping older tables alive and would not reclaim tombstones.
-        // Rewriting the complete visible state is therefore the only correct
-        // compaction boundary. Keep the range arguments for API compatibility.
-        let _requested_range = match (start, end) {
-            (Some(start), Some(end)) => (Included(start.to_vec()), Included(end.to_vec())),
-            (Some(start), None) => (Included(start.to_vec()), Unbounded),
-            (None, Some(end)) => (Unbounded, Included(end.to_vec())),
-            (None, None) => (Unbounded, Unbounded),
-        };
-        self.rewrite_visible_state_locked(&mut inner, true)
-    }
-
-    /// Flushes a range into a new native `LevelDB` table.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::compact_range`].
-    pub fn compact_range_native(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<()> {
-        self.compact_range(start, end)
+        self.flush_locked(&mut inner)?;
+        self.compact_levels_locked(&mut inner, true)
     }
 
     /// Rebuilds a native manifest/table from readable tables and logs.
@@ -1069,7 +1050,7 @@ impl Db {
     /// Returns [`LevelDbError::ReadOnly`] when `options.read_only` is set,
     /// [`LevelDbError::NotFound`] when the directory is missing and creation is
     /// disabled, or an I/O/compression error while writing repaired files.
-    pub fn repair(path: impl AsRef<Path>, options: OpenOptions) -> Result<RepairReport> {
+    pub fn repair(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<RepairReport> {
         if options.read_only {
             return Err(LevelDbError::ReadOnly);
         }
@@ -1083,24 +1064,46 @@ impl Db {
                 return Err(LevelDbError::not_found(root.to_path_buf()));
             }
         }
+        let _database_lock = DatabaseLock::acquire(root)?;
 
         let mut report = RepairReport::default();
         let mut values = BTreeMap::new();
-        let mut table_numbers = Vec::new();
+        let source_manifest = match Manifest::load(root) {
+            Ok(manifest) => manifest,
+            Err(error) if error.kind() == ErrorKind::NotFound && options.create_if_missing => {
+                Manifest::default()
+            }
+            Err(error) => return Err(error),
+        };
+        let mut last_sequence = source_manifest.last_sequence;
+        let source_file_numbers = sorted_database_paths(root)?
+            .iter()
+            .filter_map(|path| parse_file_number(path))
+            .collect::<Vec<_>>();
+        let paths = repair_source_paths(root, &source_manifest);
 
-        for entry in fs::read_dir(root)
-            .map_err(|error| LevelDbError::io_at("read repair directory", root, error))?
+        for path in paths
+            .iter()
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ldb"))
         {
-            let entry = entry
-                .map_err(|error| LevelDbError::io_at("read repair directory entry", root, error))?;
-            let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("ldb") {
-                match table::read_table(&path, false) {
-                    Ok(table_values) => {
-                        values.extend(table_values);
-                        if let Some(number) = parse_file_number(&path) {
-                            table_numbers.push(number);
+                match table::read_table_lookups(path, false).and_then(|table_values| {
+                    table::read_table_max_sequence(path, false)
+                        .map(|max_sequence| (table_values, max_sequence))
+                }) {
+                    Ok((table_values, table_max_sequence)) => {
+                        for (key, lookup) in table_values {
+                            match lookup {
+                                table::TableLookup::Value(value) => {
+                                    values.insert(key, value);
+                                }
+                                table::TableLookup::Deleted => {
+                                    values.remove(&key);
+                                }
+                                table::TableLookup::Missing => {}
+                            }
                         }
+                        last_sequence = last_sequence.max(table_max_sequence);
                         report.recovered_tables += 1;
                     }
                     Err(error) => {
@@ -1112,31 +1115,72 @@ impl Db {
                         report.dropped_files += 1;
                     }
                 }
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("log") {
-                match File::open(&path) {
-                    Ok(mut file) => {
-                        let mut approximate_bytes = approximate_entries_size(&values);
-                        for record in wal::read_records(&mut file, false)? {
-                            if let Ok(batch) = WriteBatch::decode(&record) {
-                                approximate_bytes =
-                                    apply_batch_to_values(&mut values, &batch, approximate_bytes);
-                                report.recovered_log_records += 1;
+            }
+        }
+        for path in paths
+            .iter()
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
+        {
+            match File::open(path) {
+                Ok(mut file) => {
+                    let mut approximate_bytes = approximate_entries_size(&values);
+                    match wal::read_records(&mut file, false) {
+                        Ok(records) => {
+                            for record in records {
+                                match WriteBatch::decode(&record) {
+                                    Ok(batch) => {
+                                        let batch_len =
+                                            u64::try_from(batch.len()).unwrap_or(u64::MAX);
+                                        let batch_last_sequence = batch
+                                            .sequence()
+                                            .saturating_add(batch_len.saturating_sub(1));
+                                        last_sequence = last_sequence.max(batch_last_sequence);
+                                        approximate_bytes = apply_batch_to_values(
+                                            &mut values,
+                                            &batch,
+                                            approximate_bytes,
+                                        );
+                                        report.recovered_log_records += 1;
+                                    }
+                                    Err(error) => {
+                                        log::warn!(
+                                            "dropping malformed write batch during repair: {} ({})",
+                                            path.display(),
+                                            error
+                                        );
+                                        report.dropped_files += 1;
+                                    }
+                                }
                             }
                         }
+                        Err(error) => {
+                            log::warn!(
+                                "dropping unreadable WAL during repair: {} ({})",
+                                path.display(),
+                                error
+                            );
+                            report.dropped_files += 1;
+                        }
                     }
-                    Err(error) => {
-                        log::warn!(
-                            "dropping unreadable WAL during repair: {} ({})",
-                            path.display(),
-                            error
-                        );
-                        report.dropped_files += 1;
-                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        "dropping unreadable WAL during repair: {} ({})",
+                        path.display(),
+                        error
+                    );
+                    report.dropped_files += 1;
                 }
             }
         }
 
-        write_recovered_native_state(root, &values, table_numbers, options.compression_policy)?;
+        write_recovered_native_state(
+            root,
+            &values,
+            source_file_numbers,
+            last_sequence,
+            options.compression_policy,
+        )?;
         log::debug!(
             "repaired database at {} (tables={}, log_records={}, dropped_files={})",
             root.display(),
@@ -1145,15 +1189,6 @@ impl Db {
             report.dropped_files
         );
         Ok(report)
-    }
-
-    /// Rebuilds a native manifest/table from readable tables and logs.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::repair`].
-    pub fn recover_native(path: impl AsRef<Path>, options: OpenOptions) -> Result<RepairReport> {
-        Self::repair(path, options)
     }
 
     /// Returns metadata and overlay-only stats without table scans.
@@ -1204,104 +1239,120 @@ impl Db {
         if inner.overlay.is_empty() {
             return Ok(());
         }
-        self.rewrite_visible_state_locked(inner, false)
+        self.flush_memtable_locked(inner)
     }
 
-    fn rewrite_visible_state_locked(
-        &self,
-        inner: &mut DbInner,
-        force_compaction: bool,
-    ) -> Result<()> {
-        if !force_compaction && inner.overlay.is_empty() {
-            return Ok(());
-        }
-
-        let values = self.collect_visible_entries_locked(inner, &ReadOptions::default())?;
-        let old_table_numbers = inner.manifest.table_numbers.clone();
-        let old_log_number = inner.manifest.log_number;
+    fn flush_memtable_locked(&self, inner: &mut DbInner) -> Result<()> {
         let mut next_manifest = inner.manifest.clone();
-
         let table_number = allocate_file_number(&mut next_manifest);
         let table_path = self.root.join(Manifest::table_name(table_number));
-        log::debug!(
-            "rewriting visible state into native table {} (entries={}, force_compaction={})",
-            table_path.display(),
-            values.len(),
-            force_compaction
+        let written = table::write_native_memtable(
+            &table_path,
+            &inner.overlay,
+            inner.last_sequence,
+            self.options.compression_policy,
+        )?;
+        let table_meta = crate::manifest::TableFileMeta::native(
+            table_number,
+            0,
+            written.file_size,
+            written.smallest_internal_key,
+            written.largest_internal_key,
         );
-
-        let next_table = if values.is_empty() {
-            None
-        } else {
-            let written = table::write_native_table(
-                &table_path,
-                &values,
-                inner.last_sequence,
-                self.options.compression_policy,
-            )?;
-            Some(crate::manifest::TableFileMeta::native(
-                table_number,
-                written.file_size,
-                written.smallest_internal_key,
-                written.largest_internal_key,
-            ))
-        };
 
         let new_log_number = allocate_file_number(&mut next_manifest);
         let new_log = self.root.join(Manifest::log_name(new_log_number));
-        let new_log_file = File::create(&new_log)
-            .map_err(|error| LevelDbError::io_at("create WAL", &new_log, error))?;
-        new_log_file
-            .sync_all()
-            .map_err(|error| LevelDbError::io_at("sync WAL", &new_log, error))?;
-
+        create_empty_wal(&new_log)?;
         next_manifest.log_number = new_log_number;
-        next_manifest.table_numbers = next_table
-            .as_ref()
-            .map_or_else(Vec::new, |table| vec![table.number]);
-        next_manifest.table_files = next_table.into_iter().collect();
-
-        // Commit metadata before deleting any file referenced by the previous
-        // manifest. A crash before this point leaves the old state readable; a
-        // crash after this point leaves only harmless obsolete files.
+        next_manifest.prev_log_number = 0;
+        next_manifest.last_sequence = inner.last_sequence;
+        next_manifest.table_numbers.push(table_number);
+        next_manifest.table_files.push(table_meta);
         next_manifest.store(&self.root)?;
+
         inner.manifest = next_manifest;
         inner.overlay.clear();
         inner.approximate_bytes = 0;
+        self.reclaim_obsolete_files(&inner.manifest)?;
+        self.compact_levels_locked(inner, false)
+    }
 
-        let obsolete_paths = old_table_numbers
+    fn compact_levels_locked(&self, inner: &mut DbInner, force: bool) -> Result<()> {
+        while let Some(plan) = compaction::plan(&inner.manifest, force) {
+            self.compact_level_once_locked(inner, &plan)?;
+        }
+        Ok(())
+    }
+
+    fn compact_level_once_locked(
+        &self,
+        inner: &mut DbInner,
+        plan: &compaction::CompactionPlan,
+    ) -> Result<()> {
+        let partitions = compaction::merge(&self.root, plan, self.options.paranoid_checks)?;
+        let input_numbers = plan.input_numbers();
+        let input_paths = plan
+            .inputs
             .iter()
-            .map(|number| self.root.join(Manifest::table_name(*number)))
+            .map(|table| self.root.join(Manifest::table_name(table.number)))
             .collect::<Vec<_>>();
-        self.block_cache.invalidate_paths(&obsolete_paths);
-        for old_path in obsolete_paths {
-            if old_path != table_path && old_path.exists() {
-                if let Err(error) = fs::remove_file(&old_path) {
-                    log::warn!(
-                        "failed to remove obsolete table {} after manifest commit: {}",
-                        old_path.display(),
-                        error
-                    );
-                }
-            }
-        }
+        let mut next_manifest = inner.manifest.clone();
+        next_manifest
+            .table_numbers
+            .retain(|number| !input_numbers.contains(number));
+        next_manifest
+            .table_files
+            .retain(|table| !input_numbers.contains(&table.number));
+        let outputs = self.write_compaction_outputs(
+            &mut next_manifest,
+            partitions,
+            plan.output_level,
+            inner.last_sequence,
+        )?;
+        next_manifest
+            .table_numbers
+            .extend(outputs.iter().map(|table| table.number));
+        next_manifest.table_files.extend(outputs);
+        next_manifest.table_numbers.sort_unstable();
+        next_manifest.table_files.sort_by_key(|table| table.number);
+        next_manifest.store(&self.root)?;
+        inner.manifest = next_manifest;
+        self.block_cache.invalidate_paths(&input_paths);
+        self.reclaim_obsolete_files(&inner.manifest)
+    }
 
-        let old_log = self.root.join(Manifest::log_name(old_log_number));
-        if old_log != new_log && old_log.exists() {
-            if let Err(error) = fs::remove_file(&old_log) {
-                log::warn!(
-                    "failed to remove obsolete WAL {} after manifest commit: {}",
-                    old_log.display(),
-                    error
-                );
-            }
+    fn write_compaction_outputs(
+        &self,
+        manifest: &mut Manifest,
+        partitions: Vec<BTreeMap<Vec<u8>, Option<Bytes>>>,
+        level: u32,
+        sequence: u64,
+    ) -> Result<Vec<crate::manifest::TableFileMeta>> {
+        let mut outputs = Vec::with_capacity(partitions.len());
+        for entries in partitions {
+            let number = allocate_file_number(manifest);
+            let path = self.root.join(Manifest::table_name(number));
+            let written = table::write_native_memtable(
+                &path,
+                &entries,
+                sequence,
+                self.options.compression_policy,
+            )?;
+            outputs.push(crate::manifest::TableFileMeta::native(
+                number,
+                level,
+                written.file_size,
+                written.smallest_internal_key,
+                written.largest_internal_key,
+            ));
         }
-        log::debug!(
-            "visible state rewrite committed (entries={}, tables={}, wal={})",
-            values.len(),
-            inner.manifest.table_numbers.len(),
-            new_log.display()
-        );
+        Ok(outputs)
+    }
+
+    fn reclaim_obsolete_files(&self, manifest: &Manifest) -> Result<()> {
+        let paths = obsolete::files(&self.root, manifest)?;
+        self.block_cache.invalidate_paths(&paths);
+        obsolete::remove_with_retry(&paths);
         Ok(())
     }
 
@@ -1315,27 +1366,33 @@ impl Db {
         F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
     {
         let hidden_keys = &inner.overlay;
+        let mut seen_keys = hidden_keys.keys().cloned().collect::<HashSet<_>>();
         let verify_checksums = read_checksums(&self.options, options);
         let mut outcome = ScanOutcome::empty();
         outcome.worker_threads = 1;
-        match options.scan_mode {
+        // Tables must be reconciled newest-to-oldest so a tombstone prevents
+        // an older value from becoming visible. Parallel table callbacks
+        // cannot preserve that ordering without a merge phase.
+        match ScanMode::Sequential {
             ScanMode::Sequential => {
                 let table_count = inner.manifest.table_numbers.len();
-                for (table_index, table_number) in inner.manifest.table_numbers.iter().enumerate() {
+                for (table_index, table_number) in
+                    inner.manifest.table_numbers.iter().rev().enumerate()
+                {
                     check_scan_cancelled(options)?;
                     let table_path = self.root.join(Manifest::table_name(*table_number));
                     if !table_path.exists() {
                         continue;
                     }
-                    let table_outcome = table::for_each_table_entry(
+                    let table_outcome = table::for_each_table_lookup(
                         &table_path,
                         verify_checksums,
                         read_cache(options, &self.block_cache),
                         |key, value| {
-                            if !hidden_keys.contains_key(key) {
-                                return visitor(key, value);
+                            if !seen_keys.insert(key.to_vec()) {
+                                return Ok(VisitorControl::Continue);
                             }
-                            Ok(VisitorControl::Continue)
+                            value.map_or(Ok(VisitorControl::Continue), |value| visitor(key, value))
                         },
                     )?;
                     outcome.merge(table_outcome);
@@ -1398,27 +1455,31 @@ impl Db {
         F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
     {
         let hidden_keys = &inner.overlay;
+        let mut seen_keys = hidden_keys
+            .range(prefix.to_vec()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .map(|(key, _)| key.clone())
+            .collect::<HashSet<_>>();
         let verify_checksums = read_checksums(&self.options, options);
         let mut outcome = ScanOutcome::empty();
         outcome.worker_threads = 1;
-        match options.scan_mode {
+        match ScanMode::Sequential {
             ScanMode::Sequential => {
-                for table_number in &inner.manifest.table_numbers {
+                for table_number in inner.manifest.table_numbers.iter().rev() {
                     check_scan_cancelled(options)?;
                     let table_path = self.root.join(Manifest::table_name(*table_number));
                     if !table_path.exists() {
                         continue;
                     }
-                    let table_outcome = table::for_each_table_prefix(
+                    let table_outcome = table::for_each_table_lookup(
                         &table_path,
-                        prefix,
                         verify_checksums,
                         read_cache(options, &self.block_cache),
                         |key, value| {
-                            if !hidden_keys.contains_key(key) {
-                                return visitor(key, value);
+                            if !key.starts_with(prefix) || !seen_keys.insert(key.to_vec()) {
+                                return Ok(VisitorControl::Continue);
                             }
-                            Ok(VisitorControl::Continue)
+                            value.map_or(Ok(VisitorControl::Continue), |value| visitor(key, value))
                         },
                     )?;
                     outcome.merge(table_outcome);
@@ -1474,47 +1535,27 @@ impl Db {
     where
         F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
     {
-        let hidden_keys = &inner.overlay;
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        for table_number in &inner.manifest.table_numbers {
-            check_scan_cancelled(options)?;
-            let table_path = self.root.join(Manifest::table_name(*table_number));
-            if !table_path.exists() {
-                continue;
-            }
-            let table_outcome =
-                table::for_each_table_entry_ref(&table_path, verify_checksums, |key, value| {
-                    if !hidden_keys.contains_key(key) {
-                        return visitor(EntryRef {
-                            key: KeyRef::new(key),
-                            value,
-                        });
-                    }
-                    Ok(VisitorControl::Continue)
-                })?;
-            outcome.merge(table_outcome);
-            emit_scan_progress(options, outcome);
-            if outcome.stopped {
-                return Ok(outcome);
-            }
+        if inner.overlay.is_empty() && inner.manifest.table_numbers.len() == 1 {
+            let path = self
+                .root
+                .join(Manifest::table_name(inner.manifest.table_numbers[0]));
+            return table::for_each_table_entry_ref(
+                &path,
+                read_checksums(&self.options, options),
+                |key, value| {
+                    visitor(EntryRef {
+                        key: KeyRef::new(key),
+                        value,
+                    })
+                },
+            );
         }
-        for (key, value) in &inner.overlay {
-            check_scan_cancelled(options)?;
-            if let Some(value) = value {
-                outcome.record(value.len());
-                if visitor(EntryRef {
-                    key: KeyRef::new(key),
-                    value: ValueRef::Shared(value.clone()),
-                })? == VisitorControl::Stop
-                {
-                    outcome.stopped = true;
-                    return Ok(outcome);
-                }
-            }
-        }
-        Ok(outcome)
+        self.for_each_entry_locked(inner, options, &mut |key, value| {
+            visitor(EntryRef {
+                key: KeyRef::new(key),
+                value: ValueRef::Shared(value.clone()),
+            })
+        })
     }
 
     fn for_each_prefix_ref_locked<F>(
@@ -1527,55 +1568,28 @@ impl Db {
     where
         F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
     {
-        let hidden_keys = &inner.overlay;
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        for table_number in &inner.manifest.table_numbers {
-            check_scan_cancelled(options)?;
-            let table_path = self.root.join(Manifest::table_name(*table_number));
-            if !table_path.exists() {
-                continue;
-            }
-            let table_outcome = table::for_each_table_prefix_ref(
-                &table_path,
+        if inner.overlay.is_empty() && inner.manifest.table_numbers.len() == 1 {
+            let path = self
+                .root
+                .join(Manifest::table_name(inner.manifest.table_numbers[0]));
+            return table::for_each_table_prefix_ref(
+                &path,
                 prefix,
-                verify_checksums,
+                read_checksums(&self.options, options),
                 |key, value| {
-                    if !hidden_keys.contains_key(key) {
-                        return visitor(EntryRef {
-                            key: KeyRef::new(key),
-                            value,
-                        });
-                    }
-                    Ok(VisitorControl::Continue)
+                    visitor(EntryRef {
+                        key: KeyRef::new(key),
+                        value,
+                    })
                 },
-            )?;
-            outcome.merge(table_outcome);
-            emit_scan_progress(options, outcome);
-            if outcome.stopped {
-                return Ok(outcome);
-            }
+            );
         }
-        for (key, value) in inner
-            .overlay
-            .range(prefix.to_vec()..)
-            .take_while(|(key, _)| key.starts_with(prefix))
-        {
-            check_scan_cancelled(options)?;
-            if let Some(value) = value {
-                outcome.record(value.len());
-                if visitor(EntryRef {
-                    key: KeyRef::new(key),
-                    value: ValueRef::Shared(value.clone()),
-                })? == VisitorControl::Stop
-                {
-                    outcome.stopped = true;
-                    return Ok(outcome);
-                }
-            }
-        }
-        Ok(outcome)
+        self.for_each_prefix_locked(inner, prefix, options, &mut |key, value| {
+            visitor(EntryRef {
+                key: KeyRef::new(key),
+                value: ValueRef::Shared(value.clone()),
+            })
+        })
     }
 
     fn for_each_prefix_key_locked<F>(
@@ -1588,88 +1602,12 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        let hidden_keys = &inner.overlay;
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        log::debug!(
-            "starting prefix key scan (prefix_len={}, tables={}, scan_mode={:?})",
-            prefix.len(),
-            inner.manifest.table_numbers.len(),
-            options.scan_mode
-        );
-        match options.scan_mode {
-            ScanMode::Sequential => {
-                let table_count = inner.manifest.table_numbers.len();
-                for (table_index, table_number) in inner.manifest.table_numbers.iter().enumerate() {
-                    check_scan_cancelled(options)?;
-                    let table_path = self.root.join(Manifest::table_name(*table_number));
-                    if !table_path.exists() {
-                        continue;
-                    }
-                    let table_outcome = table::for_each_table_prefix_key(
-                        &table_path,
-                        prefix,
-                        verify_checksums,
-                        read_cache(options, &self.block_cache),
-                        |key| {
-                            if !hidden_keys.contains_key(key) {
-                                return visitor(key);
-                            }
-                            Ok(VisitorControl::Continue)
-                        },
-                    )?;
-                    outcome.merge(table_outcome);
-                    emit_scan_progress(options, outcome);
-                    log::trace!(
-                        "prefix key scan progress (prefix_len={}, table_index={}, tables={}, visited={}, tables_scanned={}, bytes_read={}, stopped={})",
-                        prefix.len(),
-                        table_index.saturating_add(1),
-                        table_count,
-                        outcome.visited,
-                        outcome.tables_scanned,
-                        outcome.bytes_read,
-                        outcome.stopped
-                    );
-                    if outcome.stopped {
-                        return Ok(outcome);
-                    }
-                }
-            }
-            ScanMode::ParallelTables => {
-                let table_paths = table_paths(&self.root, &inner.manifest);
-                let table_outcome = for_each_table_prefix_key_paths_parallel(
-                    table_paths,
-                    prefix.to_vec(),
-                    verify_checksums,
-                    read_cache(options, &self.block_cache),
-                    options
-                        .threading
-                        .resolve_checked(inner.manifest.table_numbers.len())?,
-                    hidden_keys,
-                    visitor,
-                    options,
-                )?;
-                outcome.merge(table_outcome);
-                if outcome.stopped {
-                    return Ok(outcome);
-                }
-            }
-        }
-        for (key, value) in inner
-            .overlay
-            .range(prefix.to_vec()..)
-            .take_while(|(key, _)| key.starts_with(prefix))
-        {
-            check_scan_cancelled(options)?;
-            if let Some(value) = value {
-                outcome.record(value.len());
-                if visitor(key)? == VisitorControl::Stop {
-                    outcome.stopped = true;
-                    return Ok(outcome);
-                }
-            }
-        }
+        let mut visible_keys = 0_usize;
+        let mut outcome = self.for_each_prefix_locked(inner, prefix, options, &mut |key, _| {
+            visible_keys = visible_keys.saturating_add(1);
+            visitor(key)
+        })?;
+        outcome.visited = visible_keys;
         Ok(outcome)
     }
 
@@ -1682,65 +1620,12 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        let hidden_keys = &inner.overlay;
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        match options.scan_mode {
-            ScanMode::Sequential => {
-                for table_number in &inner.manifest.table_numbers {
-                    check_scan_cancelled(options)?;
-                    let table_path = self.root.join(Manifest::table_name(*table_number));
-                    if !table_path.exists() {
-                        continue;
-                    }
-                    let table_outcome = table::for_each_table_key(
-                        &table_path,
-                        verify_checksums,
-                        read_cache(options, &self.block_cache),
-                        |key| {
-                            if !hidden_keys.contains_key(key) {
-                                return visitor(key);
-                            }
-                            Ok(VisitorControl::Continue)
-                        },
-                    )?;
-                    outcome.merge(table_outcome);
-                    emit_scan_progress(options, outcome);
-                    if outcome.stopped {
-                        return Ok(outcome);
-                    }
-                }
-            }
-            ScanMode::ParallelTables => {
-                let table_paths = table_paths(&self.root, &inner.manifest);
-                let table_outcome = for_each_table_key_paths_parallel(
-                    table_paths,
-                    verify_checksums,
-                    read_cache(options, &self.block_cache),
-                    options
-                        .threading
-                        .resolve_checked(inner.manifest.table_numbers.len())?,
-                    hidden_keys,
-                    visitor,
-                    options,
-                )?;
-                outcome.merge(table_outcome);
-                if outcome.stopped {
-                    return Ok(outcome);
-                }
-            }
-        }
-        for (key, value) in &inner.overlay {
-            check_scan_cancelled(options)?;
-            if let Some(value) = value {
-                outcome.record(value.len());
-                if visitor(key)? == VisitorControl::Stop {
-                    outcome.stopped = true;
-                    return Ok(outcome);
-                }
-            }
-        }
+        let mut visible_keys = 0_usize;
+        let mut outcome = self.for_each_entry_locked(inner, options, &mut |key, _| {
+            visible_keys = visible_keys.saturating_add(1);
+            visitor(key)
+        })?;
+        outcome.visited = visible_keys;
         Ok(outcome)
     }
 
@@ -1756,73 +1641,11 @@ impl Db {
         I: Fn() -> T + Send + Sync,
         F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
     {
-        let hidden_keys = &inner.overlay;
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut partitions = Vec::new();
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        match options.scan_mode {
-            ScanMode::Sequential => {
-                let mut partition = init();
-                for table_number in &inner.manifest.table_numbers {
-                    check_scan_cancelled(options)?;
-                    let table_path = self.root.join(Manifest::table_name(*table_number));
-                    if !table_path.exists() {
-                        continue;
-                    }
-                    let table_outcome = table::for_each_table_key(
-                        &table_path,
-                        verify_checksums,
-                        read_cache(options, &self.block_cache),
-                        |key| {
-                            if hidden_keys.contains_key(key) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            visitor(&mut partition, key)
-                        },
-                    )?;
-                    outcome.merge(table_outcome);
-                    if outcome.stopped {
-                        partitions.push(partition);
-                        return Ok((outcome, partitions));
-                    }
-                }
-                partitions.push(partition);
-            }
-            ScanMode::ParallelTables => {
-                let table_paths = table_paths(&self.root, &inner.manifest);
-                let (table_outcome, mut table_partitions) = for_each_table_key_paths_partitioned(
-                    table_paths,
-                    verify_checksums,
-                    read_cache(options, &self.block_cache),
-                    options
-                        .threading
-                        .resolve_checked(inner.manifest.table_numbers.len())?,
-                    hidden_keys,
-                    init,
-                    visitor,
-                    options,
-                )?;
-                outcome.merge(table_outcome);
-                partitions.append(&mut table_partitions);
-                if outcome.stopped {
-                    return Ok((outcome, partitions));
-                }
-            }
-        }
-        let mut overlay_partition = init();
-        for (key, value) in &inner.overlay {
-            check_scan_cancelled(options)?;
-            if let Some(value) = value {
-                outcome.record(value.len());
-                if visitor(&mut overlay_partition, key)? == VisitorControl::Stop {
-                    outcome.stopped = true;
-                    break;
-                }
-            }
-        }
-        partitions.push(overlay_partition);
-        Ok((outcome, partitions))
+        let mut partition = init();
+        let outcome = self.for_each_entry_locked(inner, options, &mut |key, _| {
+            visitor(&mut partition, key)
+        })?;
+        Ok((outcome, vec![partition]))
     }
 
     fn scan_entries_partitioned_locked<T, I, F>(
@@ -1837,73 +1660,11 @@ impl Db {
         I: Fn() -> T + Send + Sync,
         F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
     {
-        let hidden_keys = &inner.overlay;
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut partitions = Vec::new();
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        match options.scan_mode {
-            ScanMode::Sequential => {
-                let mut partition = init();
-                for table_number in &inner.manifest.table_numbers {
-                    check_scan_cancelled(options)?;
-                    let table_path = self.root.join(Manifest::table_name(*table_number));
-                    if !table_path.exists() {
-                        continue;
-                    }
-                    let table_outcome = table::for_each_table_entry(
-                        &table_path,
-                        verify_checksums,
-                        read_cache(options, &self.block_cache),
-                        |key, value| {
-                            if hidden_keys.contains_key(key) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            visitor(&mut partition, key, value)
-                        },
-                    )?;
-                    outcome.merge(table_outcome);
-                    if outcome.stopped {
-                        partitions.push(partition);
-                        return Ok((outcome, partitions));
-                    }
-                }
-                partitions.push(partition);
-            }
-            ScanMode::ParallelTables => {
-                let table_paths = table_paths(&self.root, &inner.manifest);
-                let (table_outcome, mut table_partitions) = for_each_table_paths_partitioned(
-                    table_paths,
-                    verify_checksums,
-                    read_cache(options, &self.block_cache),
-                    options
-                        .threading
-                        .resolve_checked(inner.manifest.table_numbers.len())?,
-                    hidden_keys,
-                    init,
-                    visitor,
-                    options,
-                )?;
-                outcome.merge(table_outcome);
-                partitions.append(&mut table_partitions);
-                if outcome.stopped {
-                    return Ok((outcome, partitions));
-                }
-            }
-        }
-        let mut overlay_partition = init();
-        for (key, value) in &inner.overlay {
-            check_scan_cancelled(options)?;
-            if let Some(value) = value {
-                outcome.record(value.len());
-                if visitor(&mut overlay_partition, key, value)? == VisitorControl::Stop {
-                    outcome.stopped = true;
-                    break;
-                }
-            }
-        }
-        partitions.push(overlay_partition);
-        Ok((outcome, partitions))
+        let mut partition = init();
+        let outcome = self.for_each_entry_locked(inner, options, &mut |key, value| {
+            visitor(&mut partition, key, value)
+        })?;
+        Ok((outcome, vec![partition]))
     }
 
     fn collect_visible_entries(&self, options: &ReadOptions) -> Result<BTreeMap<Vec<u8>, Bytes>> {
@@ -1991,20 +1752,31 @@ impl Iterator for PrefixIterator {
     }
 }
 
-fn load_existing_or_initialize(root: &Path, options: &OpenOptions) -> Result<LoadedState> {
+fn load_existing_or_initialize(root: &Path, options: &LevelDbOpenOptions) -> Result<LoadedState> {
     match Manifest::load(root) {
         Ok(manifest) => {
             let mut overlay = BTreeMap::new();
-            let mut last_sequence = 0_u64;
+            let mut last_sequence = manifest.last_sequence;
             let mut approximate_bytes = 0usize;
-            let log_path = root.join(Manifest::log_name(manifest.log_number));
             log::trace!(
-                "loaded manifest from {} (tables={}, log_number={})",
+                "loaded manifest from {} (tables={}, log_number={}, prev_log_number={}, last_sequence={})",
                 root.display(),
                 manifest.table_numbers.len(),
-                manifest.log_number
+                manifest.log_number,
+                manifest.prev_log_number,
+                manifest.last_sequence
             );
-            if log_path.exists() {
+            let mut log_numbers = [manifest.prev_log_number, manifest.log_number]
+                .into_iter()
+                .filter(|number| *number != 0)
+                .collect::<Vec<_>>();
+            log_numbers.sort_unstable();
+            log_numbers.dedup();
+            for log_number in log_numbers {
+                let log_path = root.join(Manifest::log_name(log_number));
+                if !log_path.exists() {
+                    continue;
+                }
                 log::trace!("replaying WAL {}", log_path.display());
                 let mut file = File::open(&log_path)
                     .map_err(|error| LevelDbError::io_at("open WAL", &log_path, error))?;
@@ -2024,13 +1796,16 @@ fn load_existing_or_initialize(root: &Path, options: &OpenOptions) -> Result<Loa
                             format!("write batch length overflow in {}", log_path.display()),
                         )
                     })?;
-                    let batch_last_sequence =
-                        batch.sequence().checked_add(batch_len).ok_or_else(|| {
+                    let batch_last_sequence = if batch_len == 0 {
+                        batch.sequence()
+                    } else {
+                        batch.sequence().checked_add(batch_len - 1).ok_or_else(|| {
                             LevelDbError::corruption_at(
                                 &log_path,
                                 format!("write batch sequence overflow in {}", log_path.display()),
                             )
-                        })?;
+                        })?
+                    };
                     last_sequence = last_sequence.max(batch_last_sequence);
                     approximate_bytes = apply_batch(&mut overlay, &batch, approximate_bytes);
                 }
@@ -2082,32 +1857,37 @@ fn append_batch_to_log(
     Ok(())
 }
 
+fn create_empty_wal(path: &Path) -> Result<()> {
+    let file = File::create(path).map_err(|error| LevelDbError::io_at("create WAL", path, error))?;
+    file.sync_all()
+        .map_err(|error| LevelDbError::io_at("sync WAL", path, error))
+}
+
 fn write_recovered_native_state(
     root: &Path,
     values: &BTreeMap<Vec<u8>, Bytes>,
-    mut table_numbers: Vec<u64>,
+    mut source_file_numbers: Vec<u64>,
+    last_sequence: u64,
     compression: CompressionPolicy,
 ) -> Result<()> {
-    table_numbers.sort_unstable();
-    table_numbers.dedup();
-    let next_file_number = table_numbers
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(1)
-        .saturating_add(2);
-    let repaired_table = next_file_number.saturating_sub(1);
+    source_file_numbers.sort_unstable();
+    source_file_numbers.dedup();
+    let highest_existing_file = source_file_numbers.iter().copied().max().unwrap_or(1);
+    let repaired_table = highest_existing_file.saturating_add(1);
+    let repaired_log = highest_existing_file.saturating_add(2);
+    let next_file_number = highest_existing_file.saturating_add(3);
     let table_files = if values.is_empty() {
         Vec::new()
     } else {
         let written = table::write_native_table(
             &root.join(Manifest::table_name(repaired_table)),
             values,
-            next_file_number,
+            last_sequence,
             compression,
         )?;
         vec![crate::manifest::TableFileMeta::native(
             repaired_table,
+            0,
             written.file_size,
             written.smallest_internal_key,
             written.largest_internal_key,
@@ -2120,7 +1900,9 @@ fn write_recovered_native_state(
     };
     let manifest = Manifest {
         next_file_number,
-        log_number: next_file_number,
+        log_number: repaired_log,
+        prev_log_number: 0,
+        last_sequence,
         table_numbers,
         table_files,
     };
@@ -2211,7 +1993,7 @@ fn approximate_entries_size(values: &BTreeMap<Vec<u8>, Bytes>) -> usize {
         .sum()
 }
 
-fn read_checksums(open: &OpenOptions, read: &ReadOptions) -> bool {
+fn read_checksums(open: &LevelDbOpenOptions, read: &ReadOptions) -> bool {
     match read.checksum {
         ChecksumMode::Inherit => open.paranoid_checks,
         ChecksumMode::Verify => true,
@@ -2348,6 +2130,45 @@ fn allocate_file_number(manifest: &mut Manifest) -> u64 {
 
 fn parse_file_number(path: &Path) -> Option<u64> {
     path.file_stem()?.to_str()?.parse().ok()
+}
+
+fn sorted_database_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = fs::read_dir(root)
+        .map_err(|error| LevelDbError::io_at("read repair directory", root, error))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| LevelDbError::io_at("read repair directory entry", root, error))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    paths.sort_by(|left, right| {
+        parse_file_number(left)
+            .cmp(&parse_file_number(right))
+            .then_with(|| left.cmp(right))
+    });
+    Ok(paths)
+}
+
+fn repair_source_paths(root: &Path, manifest: &Manifest) -> Vec<PathBuf> {
+    let mut paths = manifest
+        .table_numbers
+        .iter()
+        .map(|number| root.join(Manifest::table_name(*number)))
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    let mut log_numbers = [manifest.prev_log_number, manifest.log_number]
+        .into_iter()
+        .filter(|number| *number != 0)
+        .collect::<Vec<_>>();
+    log_numbers.sort_unstable();
+    log_numbers.dedup();
+    paths.extend(
+        log_numbers
+            .into_iter()
+            .map(|number| root.join(Manifest::log_name(number)))
+            .filter(|path| path.exists()),
+    );
+    paths
 }
 
 fn table_paths(root: &Path, manifest: &Manifest) -> Vec<PathBuf> {
@@ -3078,9 +2899,9 @@ mod tests {
     #[test]
     fn db_recovers_wal_after_reopen() {
         let path = temp_dir("wal");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         {
             let db = Db::open(&path, options.clone()).expect("open");
@@ -3102,10 +2923,10 @@ mod tests {
     #[test]
     fn zero_write_buffer_keeps_writes_in_wal_until_explicit_flush() {
         let path = temp_dir("wal-no-auto-flush");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
             write_buffer_size: 0,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         {
             let db = Db::open(&path, options.clone()).expect("open");
@@ -3133,10 +2954,10 @@ mod tests {
     #[test]
     fn compaction_reclaims_old_tables_and_tombstones() {
         let path = temp_dir("compaction-reclaims");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
             write_buffer_size: 0,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         let db = Db::open(&path, options.clone()).expect("open");
         db.put(b"a".as_slice(), b"one".as_slice(), WriteOptions::default())
@@ -3159,7 +2980,7 @@ mod tests {
         )
         .expect("put c");
 
-        db.compact_range_native(None, None).expect("compact");
+        db.compact().expect("compact");
 
         assert_eq!(
             db.get(b"a").expect("get a"),
@@ -3186,9 +3007,9 @@ mod tests {
     #[test]
     fn db_flushes_and_scans_prefix() {
         let path = temp_dir("scan");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         let db = Db::open(&path, options).expect("open");
         db.put(
@@ -3227,9 +3048,9 @@ mod tests {
     #[test]
     fn db_scans_prefix_keys_without_values() {
         let path = temp_dir("scan-prefix-keys");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         let db = Db::open(&path, options).expect("open");
         db.put(
@@ -3274,7 +3095,7 @@ mod tests {
     #[test]
     fn owned_collectors_return_keys_and_values() {
         let path = temp_dir("owned-collectors");
-        let db = Db::open(&path, OpenOptions::default()).expect("open");
+        let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
         db.put(
             b"chunk_a".as_slice(),
             b"one".as_slice(),
@@ -3323,9 +3144,9 @@ mod tests {
         let path = temp_dir("entry-ref-api");
         let db = Db::open(
             &path,
-            OpenOptions {
+            LevelDbOpenOptions {
                 compression_policy: CompressionPolicy::None,
-                ..OpenOptions::default()
+                ..LevelDbOpenOptions::default()
             },
         )
         .expect("open");
@@ -3391,9 +3212,9 @@ mod tests {
         let path = temp_dir("borrowed-uncompressed");
         let db = Db::open(
             &path,
-            OpenOptions {
+            LevelDbOpenOptions {
                 compression_policy: CompressionPolicy::None,
-                ..OpenOptions::default()
+                ..LevelDbOpenOptions::default()
             },
         )
         .expect("open");
@@ -3444,9 +3265,9 @@ mod tests {
         let path = temp_dir("borrowed-compressed");
         let db = Db::open(
             &path,
-            OpenOptions {
+            LevelDbOpenOptions {
                 compression_policy: CompressionPolicy::Zlib,
-                ..OpenOptions::default()
+                ..LevelDbOpenOptions::default()
             },
         )
         .expect("open");
@@ -3491,9 +3312,9 @@ mod tests {
         let db = Arc::new(
             Db::open(
                 &path,
-                OpenOptions {
+                LevelDbOpenOptions {
                     compression_policy: CompressionPolicy::None,
-                    ..OpenOptions::default()
+                    ..LevelDbOpenOptions::default()
                 },
             )
             .expect("open"),
@@ -3534,9 +3355,9 @@ mod tests {
     #[test]
     fn async_owned_reads_collect_prefix_keys() {
         let path = temp_dir("async-prefix-keys");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         let db = Arc::new(Db::open(&path, options).expect("open"));
         db.put(
@@ -3580,7 +3401,7 @@ mod tests {
     #[test]
     fn db_key_scan_can_stop_without_error() {
         let path = temp_dir("key-scan-stop");
-        let db = Db::open(&path, OpenOptions::default()).expect("open");
+        let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
         db.put(b"a".as_slice(), b"one".as_slice(), WriteOptions::default())
             .expect("put a");
         db.put(b"b".as_slice(), b"two".as_slice(), WriteOptions::default())
@@ -3601,7 +3422,7 @@ mod tests {
     #[test]
     fn db_scan_cancel_returns_typed_error() {
         let path = temp_dir("scan-cancel");
-        let db = Db::open(&path, OpenOptions::default()).expect("open");
+        let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
         db.put(b"a".as_slice(), b"one".as_slice(), WriteOptions::default())
             .expect("put");
         let cancel = ScanCancelFlag::new();
@@ -3623,9 +3444,9 @@ mod tests {
     #[test]
     fn parallel_scan_matches_sequential_scan() {
         let path = temp_dir("parallel-scan");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         let db = Db::open(&path, options).expect("open");
         let mut batch = WriteBatch::new();
@@ -3665,9 +3486,9 @@ mod tests {
     #[test]
     fn partitioned_key_scan_reduces_locally() {
         let path = temp_dir("partitioned-key-scan");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         let db = Db::open(&path, options).expect("open");
         let mut batch = WriteBatch::new();
@@ -3702,9 +3523,9 @@ mod tests {
     #[test]
     fn partitioned_entry_scan_reduces_values_locally() {
         let path = temp_dir("partitioned-entry-scan");
-        let options = OpenOptions {
+        let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
-            ..OpenOptions::default()
+            ..LevelDbOpenOptions::default()
         };
         let db = Db::open(&path, options).expect("open");
         let mut batch = WriteBatch::new();
@@ -3738,7 +3559,7 @@ mod tests {
     #[test]
     fn snapshot_preserves_old_view() {
         let path = temp_dir("snapshot");
-        let db = Db::open(&path, OpenOptions::default()).expect("open");
+        let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
         db.put(b"k".as_slice(), b"old".as_slice(), WriteOptions::default())
             .expect("put old");
         let snapshot = db.snapshot().expect("snapshot");

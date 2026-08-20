@@ -62,10 +62,10 @@ impl Default for NativeCacheOptions {
     }
 }
 
-/// Options used when opening a database directory.
+/// Options used when opening a Mojang LevelDB database directory.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
-pub struct OpenOptions {
+pub struct LevelDbOpenOptions {
     /// Open without performing writes, initialization, repair, or flushes.
     pub read_only: bool,
     /// Create the database directory and initial native manifest when missing.
@@ -85,7 +85,7 @@ pub struct OpenOptions {
     pub write_buffer_size: usize,
 }
 
-impl Default for OpenOptions {
+impl Default for LevelDbOpenOptions {
     fn default() -> Self {
         Self {
             read_only: false,
@@ -191,7 +191,7 @@ pub const MAX_LEVELDB_THREADS: usize = 512;
 /// Checksum behavior for a read operation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ChecksumMode {
-    /// Follow `OpenOptions::paranoid_checks`.
+    /// Follow `LevelDbOpenOptions::paranoid_checks`.
     #[default]
     Inherit,
     /// Verify checksums for this read.
@@ -511,6 +511,9 @@ mod tests {
     #[test]
     fn bedrock_raw_deflate_is_the_default_write_compression() {
         assert_eq!(CompressionPolicy::default(), CompressionPolicy::RawDeflate);
-        assert_eq!(OpenOptions::default().compression_policy, CompressionPolicy::RawDeflate);
+        assert_eq!(
+            LevelDbOpenOptions::default().compression_policy,
+            CompressionPolicy::RawDeflate
+        );
     }
 }
