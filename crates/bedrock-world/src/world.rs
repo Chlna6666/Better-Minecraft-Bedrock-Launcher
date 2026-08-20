@@ -5,6 +5,7 @@ mod biome;
 mod biome_downgrade;
 mod biome_upgrade;
 mod block_query;
+mod chunk_data;
 mod chunk_presence;
 mod create;
 /// Filesystem discovery for Minecraft Bedrock world folders.
