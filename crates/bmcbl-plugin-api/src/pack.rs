@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-pub const API_VERSION: &str = "0.5";
+pub const API_VERSION: &str = "0.6";
 pub const PLUGIN_MANIFEST_FILE: &str = "plugin.toml";
 pub const PLUGIN_WASM_FILE: &str = "plugin.wasm";
 pub const PLUGIN_PACKAGE_EXTENSION: &str = "bmcblx";
@@ -91,6 +91,8 @@ struct BmcblPluginMetadata {
     #[serde(default)]
     config_schema: Option<String>,
     #[serde(default)]
+    sidecar_dir: Option<String>,
+    #[serde(default)]
     permissions: BmcblPluginPermissions,
     #[serde(default)]
     limits: BmcblPluginLimits,
@@ -149,6 +151,7 @@ pub fn pack_plugin(options: PackOptions) -> Result<PackResult> {
     validate_optional_package_path(metadata.lang_dir.as_deref(), true)?;
     validate_optional_package_path(metadata.config_default.as_deref(), false)?;
     validate_optional_package_path(metadata.config_schema.as_deref(), false)?;
+    validate_optional_package_path(metadata.sidecar_dir.as_deref(), true)?;
     validate_url_allowlist(
         "permissions.network.allow",
         &metadata.permissions.network.allow,
@@ -275,6 +278,7 @@ fn generate_plugin_manifest(
         optional_manifest_path("lang_dir", metadata.lang_dir.as_deref()),
         optional_manifest_path("config_default", metadata.config_default.as_deref()),
         optional_manifest_path("config_schema", metadata.config_schema.as_deref()),
+        optional_manifest_path("sidecar_dir", metadata.sidecar_dir.as_deref()),
         format!(
             "package_hash = {}",
             toml_string(&format!("sha256:{wasm_hash}"))
@@ -531,6 +535,13 @@ fn write_package(
         &mut zip,
         manifest_text,
         "lang_dir",
+        &mut written_files,
+    )?;
+    write_optional_directory_from_manifest(
+        plugin_dir,
+        &mut zip,
+        manifest_text,
+        "sidecar_dir",
         &mut written_files,
     )?;
 
@@ -1332,6 +1343,7 @@ mod tests {
                         lang_dir: Some("lang".to_string()),
                         config_default: Some("config/default.toml".to_string()),
                         config_schema: Some("config/schema.toml".to_string()),
+                        sidecar_dir: None,
                         permissions: BmcblPluginPermissions {
                             network: BmcblPluginAllowList {
                                 allow: vec![

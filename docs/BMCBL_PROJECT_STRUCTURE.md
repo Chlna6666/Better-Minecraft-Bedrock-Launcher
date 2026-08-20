@@ -100,7 +100,6 @@ domain logic.
 | `src/downloads` | Download manager, single and multi-file downloads, integrity, MD5, and Windows Update client support. |
 | `src/archive` | Archive extraction APIs and ZIP handling. |
 | `src/tasks` | Process-wide `AppRuntime` facade, background task manager, and task snapshot/event model. |
-| `src/music` | Music library, cover loading/cache, playback service, and music data types. |
 | `src/plugins` | Plugin manifest, runtime, watcher, UI DSL, events, state, and plugin windows. |
 | `src/utils` | Cross-cutting utilities such as logging, file operations, diagnostics, system info, network helpers, registry support, updater, and single-instance support. |
 
@@ -131,7 +130,7 @@ Top-level structure:
 
 | Path | Responsibility |
 | --- | --- |
-| `src/ui/main_window.rs` and `src/ui/main_window/` | Main window root, chrome, background, page registry, page loading, route effects, music panel, and update UI flow. |
+| `src/ui/main_window.rs` and `src/ui/main_window/` | Main window root, chrome, background, page registry, page loading, route effects, and update UI flow. |
 | `src/ui/window.rs` and `src/ui/window/` | Standalone windows such as map viewer, skin preview, import, level.dat, debug, plugin, and shared window chrome. |
 | `src/ui/views` | Main route pages: home, download, manage, plugin, settings, tasks, and tools. |
 | `src/ui/components` | Reusable UI components with no page dependency. |
@@ -191,7 +190,7 @@ The GPUI render path is documented in
 
 ```text
 src/ui
-  -> src/core / src/downloads / src/tasks / src/http / src/music / src/plugins
+  -> src/core / src/downloads / src/tasks / src/http / src/plugins
   -> crates/gpui-hooks / crates/lucide-gpui
   -> crates/egpui
   -> crates/gpui
@@ -225,7 +224,7 @@ Forbidden directions:
 | New reusable visual primitive | `src/ui/components`. |
 | New page-only panel or widget | The relevant page directory. |
 | Cross-page UI state | `src/ui/state`. |
-| Domain state or durable workflow | `src/core`, `src/downloads`, `src/tasks`, `src/music`, or `src/plugins`. |
+| Domain state or durable workflow | `src/core`, `src/downloads`, `src/tasks`, or `src/plugins`. |
 | HTTP transport behavior | `src/http`. |
 | New app startup global or window policy | `src/app.rs` if truly application-wide. |
 | Generic framework rendering or input capability | `crates/gpui`, with no BMCBL references. |

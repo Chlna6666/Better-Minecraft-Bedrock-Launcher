@@ -28,7 +28,6 @@ BMCBL product behavior
   src/downloads
   src/http
   src/tasks
-  src/music
   src/plugins
 
 Reusable workspace support
@@ -108,10 +107,9 @@ BMCBL product defaults belong outside the framework:
   sponsors, version parsing, and UI preference persistence.
 - `src/downloads`, `src/archive`, `src/http`, `src/tasks`: durable background
   workflows, transport, extraction, task snapshots, integrity, and progress.
-- `src/music`: music library, cover loading, playback service, and UI-facing
-  music state integration.
 - `src/plugins`: plugin manifest, watcher, runtime, events, UI DSL, and plugin
-  windows.
+  windows. Optional native sidecars carry feature-specific native dependencies;
+  BMCBL only validates and invokes executables declared inside a plugin package.
 
 Render methods and generic UI components should coordinate UI state only.
 Network IO, durable cache storage, image decoding, archive extraction, download
@@ -177,8 +175,7 @@ entities when results arrive.
 
 Page-owned UI state lives near the page. Cross-page UI state can live under
 `src/ui/state`. Business state that outlives a page or participates in durable
-workflows belongs under `src/core`, `src/downloads`, `src/tasks`, `src/music`,
-or `src/plugins`.
+workflows belongs under `src/core`, `src/downloads`, `src/tasks`, or `src/plugins`.
 
 ## Renderer Boundary
 

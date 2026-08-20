@@ -25,8 +25,8 @@ The GPUI rendering pipeline is documented in
 
 `src/ui` does not own durable business workflows. Network IO, persistent
 caches, archive extraction, download engines, decoding pipelines, Minecraft
-domain logic, music playback internals, and plugin runtime internals belong in
-non-UI modules.
+domain logic, and plugin runtime internals belong in non-UI modules. Music
+playback belongs to the separately packaged music plugin and native sidecar.
 
 ## Background State Bridge
 
@@ -51,7 +51,7 @@ src/ui/views and src/ui/window
   -> src/ui/components
   -> src/ui/theme
   -> src/ui/state
-  -> src/core / src/downloads / src/tasks / src/http / src/music / src/plugins
+  -> src/core / src/downloads / src/tasks / src/http / src/plugins
   -> gpui
 
 src/ui/components
@@ -136,7 +136,7 @@ Move or keep code outside UI when it primarily does:
 | --- | --- |
 | `src/ui/mod.rs` | UI module assembly. |
 | `src/ui/main_window.rs` | Main window view entry point. |
-| `src/ui/main_window/` | Main-window internals: background, chrome, controls, page registry, loading, route effects, music player, update flow. |
+| `src/ui/main_window/` | Main-window internals: background, chrome, controls, page registry, loading, route effects, and update flow. |
 | `src/ui/window.rs` | Standalone window module assembly. |
 | `src/ui/window/` | Standalone window implementations and window-specific modules. |
 | `src/ui/views/` | Route page modules. |
@@ -159,7 +159,6 @@ Move or keep code outside UI when it primarily does:
 | `main_window/chrome.rs` | Main window top chrome and navigation shell. |
 | `main_window/chrome_view.rs` | Chrome view entity and state-to-render bridge. |
 | `main_window/controls.rs` | Page control wiring and subscriptions. |
-| `main_window/music_player.rs` | Embedded music player UI. |
 | `main_window/page_loading.rs` | Lazy page data loading. |
 | `main_window/page_registry.rs` | Page entity creation, retention, release, and route cache. |
 | `main_window/route_effects.rs` | Route-change side effects. |
@@ -208,7 +207,6 @@ Components must stay generic. Page-only components should live near the page.
 | `state/launch_prereq.rs` | Launch prerequisite overlay state. |
 | `state/launcher.rs` | Launcher-facing UI state. |
 | `state/local_versions.rs` | Local version UI snapshot state. |
-| `state/music.rs`, `state/music_loader.rs`, `state/music_types.rs` | UI-facing music state and loading bridge. |
 | `state/navigation.rs` | Navigation animation and active route state. |
 | `state/quit.rs` | Quit transition state. |
 | `state/theme.rs` | Theme mode, accent color, and transition state. |

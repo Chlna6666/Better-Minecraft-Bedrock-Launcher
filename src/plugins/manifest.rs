@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Entry};
 use tracing::warn;
 
-pub const CURRENT_API_VERSION: &str = "0.5";
+pub const CURRENT_API_VERSION: &str = "0.6";
 pub const PLUGIN_MANIFEST_FILE: &str = "plugin.toml";
 pub const DEFAULT_ENTRY: &str = "plugin.wasm";
 pub const PLUGIN_PACKAGE_EXTENSION: &str = "bmcblx";
@@ -38,7 +38,7 @@ pub enum PluginCapability {
     TaskProgress,
     ConfigRead,
     ConfigWrite,
-    MusicDecoder,
+    SidecarExec,
 }
 
 impl PluginCapability {
@@ -58,7 +58,7 @@ impl PluginCapability {
             "task.progress" => Some(Self::TaskProgress),
             "config.read" => Some(Self::ConfigRead),
             "config.write" => Some(Self::ConfigWrite),
-            "music.decoder" => Some(Self::MusicDecoder),
+            "sidecar.exec" => Some(Self::SidecarExec),
             _ => None,
         }
     }
@@ -79,7 +79,7 @@ impl PluginCapability {
             Self::TaskProgress => "task.progress",
             Self::ConfigRead => "config.read",
             Self::ConfigWrite => "config.write",
-            Self::MusicDecoder => "music.decoder",
+            Self::SidecarExec => "sidecar.exec",
         }
     }
 }
@@ -129,6 +129,8 @@ struct RawPluginManifest {
     config_default: Option<String>,
     #[serde(default)]
     config_schema: Option<String>,
+    #[serde(default)]
+    sidecar_dir: Option<String>,
     #[serde(default)]
     package_hash: Option<String>,
     #[serde(default)]
@@ -209,6 +211,7 @@ pub struct PluginManifest {
     pub lang_dir: Option<String>,
     pub config_default: Option<String>,
     pub config_schema: Option<String>,
+    pub sidecar_dir: Option<String>,
     pub package_hash: Option<String>,
     pub network_allowlist: Vec<String>,
     pub permissions: PluginPermissions,
@@ -277,6 +280,7 @@ impl PluginManifest {
         validate_optional_package_path(raw.lang_dir.as_deref(), true)?;
         validate_optional_package_path(raw.config_default.as_deref(), false)?;
         validate_optional_package_path(raw.config_schema.as_deref(), false)?;
+        validate_optional_package_path(raw.sidecar_dir.as_deref(), true)?;
         let permissions = plugin_permissions_from_raw(raw.permissions)?;
         let limits = plugin_limits_from_raw(raw.limits);
 
@@ -326,6 +330,7 @@ impl PluginManifest {
             lang_dir: raw.lang_dir,
             config_default: raw.config_default,
             config_schema: raw.config_schema,
+            sidecar_dir: raw.sidecar_dir,
             package_hash: raw.package_hash,
             network_allowlist: permissions.network_allow.clone(),
             permissions,
@@ -381,6 +386,19 @@ impl PluginManifest {
 
     pub fn user_config_path(&self) -> PathBuf {
         self.root_dir.join(PLUGIN_USER_CONFIG_FILE)
+    }
+
+    pub fn sidecar_path(&self, name: &str) -> Result<PathBuf> {
+        self.require_capability(PluginCapability::SidecarExec)?;
+        let directory = self
+            .sidecar_dir
+            .as_deref()
+            .ok_or_else(|| anyhow!("plugin {} has no sidecar_dir", self.id))?;
+        let file_name = validate_package_path(name, false)?;
+        if file_name.components().count() != 1 {
+            bail!("sidecar name must be a file name");
+        }
+        Ok(self.root_dir.join(directory).join(file_name))
     }
 
     pub fn has_capability(&self, capability: &PluginCapability) -> bool {

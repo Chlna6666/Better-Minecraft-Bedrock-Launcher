@@ -46,7 +46,6 @@ logic implemented as ordinary Rust modules rather than WebView commands.
 | `src/core` | Non-UI domain and platform integrations. |
 | `src/downloads`, `src/archive`, `src/tasks` | Download, extraction, integrity, runtime, and task snapshot workflows. |
 | `src/http` | HTTP client and proxy support. |
-| `src/music` | Music library, cover handling, playback service, and music state. |
 | `src/plugins` | Plugin manifest, runtime, events, watcher, UI DSL, and plugin windows. |
 | `crates/*` | Local reusable workspace crates. |
 | `crates/gpui` | Independently maintained GPUI GUI core. |
@@ -67,7 +66,8 @@ logic implemented as ordinary Rust modules rather than WebView commands.
 - `src/assets` owns embedded asset helpers, while `assets` contains build-time
   input files.
 - `src/core`, `src/downloads`, `src/archive`, `src/http`, `src/tasks`,
-  `src/music`, and `src/plugins` own non-UI implementation details.
+  and `src/plugins` own non-UI implementation details. Music playback is supplied
+  by the separately packaged `bmcbl-music` plugin and its native sidecar.
 
 ## Asset Embedding Policy
 

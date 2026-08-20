@@ -38,8 +38,7 @@ UI 使用仓库内维护的 GPUI 与 nova-gfx 渲染路径；业务逻辑应保�
 | `src/core` | Minecraft、CurseForge、EasyTier、在线、注入、版本和平台领域逻辑 | 页面实体和具体 UI 组件 |
 | `src/downloads`、`src/archive`、`src/tasks` | 下载、解压、完整性、运行时、任务状态和后台工作流 | render 内的调度和实时后台锁读取 |
 | `src/http` | HTTP 请求封装和代理 | 页面专用网络实现 |
-| `src/music` | 音乐库、封面、播放服务和音乐状态 | 页面内的播放器后端 |
-| `src/plugins` | 插件 manifest、运行时、事件、watcher、UI DSL 和插件窗口 | GPUI 框架对 BMCBL 业务的依赖 |
+| `src/plugins` | 插件 manifest、运行时、事件、watcher、UI DSL、插件窗口与受限 sidecar 桥接 | GPUI 框架对 BMCBL 业务的依赖 |
 | `src/i18n`、`src/assets`、`src/utils` | 本地化实现、嵌入资源辅助和通用工具 | 具体页面编排或跨层业务聚合 |
 | `crates/gpui` | 通用 GPUI 框架、窗口、输入、布局、渲染和并发原语 | BMCBL routes、assets、默认背景、下载服务和窗口策略 |
 
@@ -84,7 +83,6 @@ src/
 ├── archive/               归档/解压
 ├── tasks/                 后台任务管理、运行时和任务快照/事件
 ├── http/                  HTTP 与代理
-├── music/                 音乐服务、状态和类型
 ├── plugins/               插件运行时和窗口/事件桥
 ├── i18n/                  本地化实现
 ├── assets/                应用侧 AssetSource 和生成资源辅助
@@ -101,7 +99,7 @@ src/
 `src/ui/README.md` 是 UI 细分结构的优先事实源。顶层职责如下：
 
 - `main_window/`：主窗口 background、chrome、controls、page registry、loading、
-  route effects、music player 和 update flow；它是组合/协调层。
+  route effects 和 update flow；它是组合/协调层。
 - `views/`：`home`、`download`、`manage`、`settings`、`tasks`、`tools` 和
   `plugin` 路由页面；页面专用状态和 widget 靠近对应页面。
 - `window/`：独立工具窗口，包括 debug、import、level.dat、map viewer、plugin
@@ -109,7 +107,7 @@ src/
 - `components/`：无页面依赖的可复用视觉组件，如 button、input、modal、tabs、
   markdown/html renderer、split pane、virtual list、toast 等。
 - `state/`：跨页面 UI 状态，包括 navigation、launcher、i18n、theme、update、
-  diagnostics、agreement、local versions、music 和 quit；持久业务状态不放这里。
+  diagnostics、agreement、local versions 和 quit；持久业务状态不放这里。
 - `theme/`、`overlays/`、`runtime/`、`hooks.rs`/`hooks/`、`navigation.rs`、
   `animation.rs`、`update_check.rs`：主题、覆盖层、根视图装配、hooks、路由和动画/
   更新辅助。
