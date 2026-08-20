@@ -114,6 +114,9 @@ impl WriteBatch {
     /// chunk/subchunk record may be updated several times before commit: compacting avoids redundant
     /// WAL and memtable traffic without changing the visible result of the batch.
     ///
+    /// The operation vector is compacted in place so large transactions retain and reuse their
+    /// existing allocation instead of creating a second operation vector of equal capacity.
+    ///
     /// Returns the number of removed operations.
     pub fn compact_last_write_wins(&mut self) -> usize {
         if self.ops.len() < 2 {
@@ -121,14 +124,9 @@ impl WriteBatch {
         }
         let original_len = self.ops.len();
         let mut seen = HashSet::<Bytes>::with_capacity(self.ops.len());
-        let mut retained = Vec::with_capacity(self.ops.len());
-        for op in self.ops.drain(..).rev() {
-            if seen.insert(op.key().clone()) {
-                retained.push(op);
-            }
-        }
-        retained.reverse();
-        self.ops = retained;
+        self.ops.reverse();
+        self.ops.retain(|op| seen.insert(op.key().clone()));
+        self.ops.reverse();
         original_len.saturating_sub(self.ops.len())
     }
 
@@ -248,7 +246,9 @@ mod tests {
         batch.delete(Bytes::from_static(b"chunk"));
         batch.put(Bytes::from_static(b"chunk"), Bytes::from_static(b"new"));
 
+        let capacity = batch.ops.capacity();
         assert_eq!(batch.compact_last_write_wins(), 2);
+        assert!(batch.ops.capacity() >= capacity);
         assert_eq!(
             batch.ops(),
             &[
