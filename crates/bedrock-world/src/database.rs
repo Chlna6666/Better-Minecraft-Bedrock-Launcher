@@ -6,11 +6,13 @@
 //! later LevelDB representation.
 
 mod bedrock_leveldb;
+mod key_batch;
 mod pocket_chunks;
 mod storage;
 
 pub use crate::chunk::key::{BedrockDbKey, BedrockDbKeyKind, GlobalRecordKind};
 pub use crate::parsed::ParsedGlobalData;
+pub use key_batch::{StorageKeyBatch, StorageKeyBatchBuilder};
 pub use storage::{
     MemoryStorage, PartitionedWorldStorage, StorageBatch, StorageCachePolicy, StorageCancelFlag,
     StorageEntry, StorageEntryRef, StorageOp, StoragePipelineOptions, StorageProgressSink,
