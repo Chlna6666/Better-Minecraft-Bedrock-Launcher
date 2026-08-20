@@ -1,17 +1,11 @@
 use crate::error::{LevelDbError, Result};
 use crate::manifest::Manifest;
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const REMOVE_ATTEMPTS: usize = 3;
 
 pub(crate) fn files(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>> {
-    let live_tables = manifest.table_numbers.iter().copied().collect::<HashSet<_>>();
-    let live_logs = [manifest.log_number, manifest.prev_log_number]
-        .into_iter()
-        .filter(|number| *number != 0)
-        .collect::<HashSet<_>>();
     let mut obsolete = Vec::new();
     for entry in fs::read_dir(root)
         .map_err(|error| LevelDbError::io_at("scan obsolete database files", root, error))?
@@ -23,8 +17,15 @@ pub(crate) fn files(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>> {
             continue;
         };
         match path.extension().and_then(|extension| extension.to_str()) {
-            Some("ldb") if !live_tables.contains(&number) => obsolete.push(path),
-            Some("log") if !live_logs.contains(&number) => obsolete.push(path),
+            Some("ldb") if manifest.table_numbers.binary_search(&number).is_err() => {
+                obsolete.push(path);
+            }
+            Some("log")
+                if number != manifest.log_number
+                    && (manifest.prev_log_number == 0 || number != manifest.prev_log_number) =>
+            {
+                obsolete.push(path);
+            }
             _ => {}
         }
     }
