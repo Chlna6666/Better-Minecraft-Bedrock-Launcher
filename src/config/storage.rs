@@ -1,9 +1,10 @@
 use super::config::{
-    CURRENT_CONFIG_VERSION, Config, FONT_SOURCE_DEFAULT, FONT_SOURCE_LOCAL, FONT_SOURCE_SYSTEM,
-    clamp_background_blur, clamp_music_volume, default_error_report_sentry_dsn,
-    default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
-    get_default_config, normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
-    normalize_renderer_backend, normalize_theme_mode,
+    CURRENT_CONFIG_VERSION, Config, DEFAULT_APPX_API, FONT_SOURCE_DEFAULT, FONT_SOURCE_LOCAL,
+    FONT_SOURCE_SYSTEM, INCORRECT_MIRROR_APPX_API, LEGACY_DEFAULT_APPX_API, clamp_background_blur,
+    default_error_report_sentry_dsn, default_glass_effect_enabled, default_gpu_adapter_name,
+    default_online_player_name, get_default_config, normalize_font_source,
+    normalize_gpu_adapter_name, normalize_language_code, normalize_renderer_backend,
+    normalize_theme_mode,
 };
 use crate::{http::proxy, utils::file_ops};
 use once_cell::sync::Lazy;
@@ -216,7 +217,7 @@ fn load_config_from_disk() -> io::Result<Config> {
     let has_glass_effect_enabled = content.contains("glass_effect_enabled");
     let has_theme_mode = content.contains("theme_mode");
     let has_font_source = content.contains("font_source");
-    let has_music_section = content.contains("[music]");
+    let has_obsolete_music_section = has_obsolete_music_section(&content);
     let has_online_section = content.contains("[online]");
     let has_online_player_name = content.contains("player_name");
     let has_log_management = content.contains("[launcher.log_management]");
@@ -264,10 +265,14 @@ fn load_config_from_disk() -> io::Result<Config> {
         config.agreement_accepted = false;
         migrated = true;
     } else if config.config_version < CURRENT_CONFIG_VERSION {
-        // Future migrations can be keyed off config.config_version.
+        // Schema-specific values are normalized below before the migrated config is persisted.
         config.config_version = CURRENT_CONFIG_VERSION;
         migrated = true;
     }
+    if has_obsolete_music_section {
+        migrated = true;
+    }
+    migrated |= normalize_appx_api(&mut config);
 
     let normalized_lang = normalize_language_code(&config.launcher.language);
     if normalized_lang != config.launcher.language {
@@ -338,7 +343,6 @@ fn load_config_from_disk() -> io::Result<Config> {
     if !has_font_source {
         migrated = true;
     }
-    migrated |= normalize_music_settings(&mut config, has_music_section);
     if !has_online_section {
         migrated = true;
     }
@@ -385,6 +389,10 @@ fn load_config_from_disk() -> io::Result<Config> {
 
     debug!("Read and updated config: {:?}", config);
     Ok(config)
+}
+
+pub(super) fn has_obsolete_music_section(content: &str) -> bool {
+    content.lines().any(|line| line.trim() == "[music]")
 }
 
 fn persist_config_to_disk(config: &Config) -> io::Result<()> {
@@ -438,19 +446,17 @@ pub(super) fn normalize_update_check_settings(
     migrated
 }
 
-pub(super) fn normalize_music_settings(config: &mut Config, has_music_section: bool) -> bool {
-    let mut migrated = false;
-    let normalized_music_volume = clamp_music_volume(config.music.volume);
-    if !config.music.volume.is_finite()
-        || (config.music.volume - normalized_music_volume).abs() > f32::EPSILON
-    {
-        config.music.volume = normalized_music_volume;
-        migrated = true;
+pub(super) fn normalize_appx_api(config: &mut Config) -> bool {
+    let configured = config.launcher.custom_appx_api.trim();
+    let uses_retired_default = [LEGACY_DEFAULT_APPX_API, INCORRECT_MIRROR_APPX_API]
+        .iter()
+        .any(|retired| configured.eq_ignore_ascii_case(retired));
+    if !configured.is_empty() && !uses_retired_default {
+        return false;
     }
-    if !has_music_section {
-        migrated = true;
-    }
-    migrated
+
+    config.launcher.custom_appx_api = DEFAULT_APPX_API.to_string();
+    true
 }
 
 pub(super) fn normalize_log_management(config: &mut Config, has_log_management: bool) -> bool {

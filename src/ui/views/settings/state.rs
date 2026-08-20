@@ -78,7 +78,6 @@ pub struct SettingsPageState {
     pub error_report_sentry_auto: bool,
     pub update_channel_nightly: bool,
     pub auto_check_updates: bool,
-    pub music_auto_play_on_startup: bool,
     pub log_retention_days: u32,
     pub log_active_file_size_mb: u32,
     pub log_max_archive_files: u32,
@@ -195,7 +194,6 @@ impl Default for SettingsPageState {
             error_report_sentry_auto: false,
             update_channel_nightly: false,
             auto_check_updates: false,
-            music_auto_play_on_startup: false,
             log_retention_days: 7,
             log_active_file_size_mb: 16,
             log_max_archive_files: 64,
@@ -310,7 +308,6 @@ impl SettingsPageState {
             crate::config::config::UpdateChannel::Nightly
         );
         self.auto_check_updates = config.launcher.auto_check_updates;
-        self.music_auto_play_on_startup = config.music.auto_play_on_startup;
         let log_management = config.launcher.log_management.normalized();
         self.log_retention_days = log_management.retention_days;
         self.log_active_file_size_mb = log_management.active_file_size_mb;
@@ -578,10 +575,6 @@ mod tests {
         );
         assert_eq!(state.modify_appx_manifest, config.game.modify_appx_manifest);
         assert_eq!(state.auto_check_updates, config.launcher.auto_check_updates);
-        assert_eq!(
-            state.music_auto_play_on_startup,
-            config.music.auto_play_on_startup
-        );
         assert_eq!(state.theme_color.as_ref(), config.custom_style.theme_color);
         assert_eq!(
             state.background_option.as_ref(),
@@ -591,16 +584,5 @@ mod tests {
             state.launcher_display_mode,
             LauncherDisplayMode::KeepVisible
         );
-    }
-
-    #[test]
-    fn apply_config_syncs_music_auto_play_setting() {
-        let mut config = crate::config::config::get_default_config();
-        config.music.auto_play_on_startup = false;
-        let mut state = SettingsPageState::default();
-
-        state.apply_config(&config);
-
-        assert!(!state.music_auto_play_on_startup);
     }
 }

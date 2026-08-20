@@ -5,7 +5,6 @@ use crate::ui::components::input::InputState;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolsTab {
     Online,
-    NcmConverter,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -64,9 +63,6 @@ pub struct MinecraftTerminationDialogState {
 
 pub struct ToolsPageState {
     pub tab: ToolsTab,
-    pub ncm_conversion_running: bool,
-    pub ncm_conversion_status: SharedString,
-    pub ncm_conversion_error: Option<SharedString>,
     pub nat_checking: bool,
     pub nat_udp_type: Option<i32>,
     pub nat_tcp_type: Option<i32>,
@@ -114,9 +110,6 @@ impl Default for ToolsPageState {
     fn default() -> Self {
         Self {
             tab: ToolsTab::Online,
-            ncm_conversion_running: false,
-            ncm_conversion_status: SharedString::from("选择一个 NCM 文件并导出为普通音乐格式。"),
-            ncm_conversion_error: None,
             nat_checking: false,
             nat_udp_type: None,
             nat_tcp_type: None,

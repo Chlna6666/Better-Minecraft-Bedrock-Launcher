@@ -1,7 +1,5 @@
-use super::config::MusicPlaybackMode;
 use super::config::{
-    clamp_music_volume, merge_json_values, normalize_gpu_adapter_name, normalize_renderer_backend,
-    normalize_theme_mode,
+    merge_json_values, normalize_gpu_adapter_name, normalize_renderer_backend, normalize_theme_mode,
 };
 use serde_json::json;
 
@@ -59,10 +57,7 @@ fn missing_glass_effect_enabled_defaults_to_true() {
         config.launcher.error_report_sentry_dsn,
         super::config::default_error_report_sentry_dsn()
     );
-    assert!(config.music.auto_play_on_startup);
     assert_eq!(config.launcher.log_management.retention_days, 7);
-    assert_eq!(config.music.volume, super::defaults::default_music_volume());
-    assert_eq!(config.music.playback_mode, MusicPlaybackMode::Repeat);
     assert_eq!(config.online.player_name.len(), 6);
     assert!(
         config
@@ -97,32 +92,37 @@ fn default_proton_gdk_source_supports_game_login() {
 }
 
 #[test]
-fn music_volume_clamps_invalid_values() {
-    assert_eq!(clamp_music_volume(-1.0), 0.0);
-    assert_eq!(clamp_music_volume(2.0), 1.0);
-    assert_eq!(
-        clamp_music_volume(f32::NAN),
-        super::defaults::default_music_volume()
-    );
-}
-
-#[test]
-fn music_settings_migration_clamps_invalid_volume() {
-    let mut config = super::config::get_default_config();
-    config.music.volume = 8.0;
-
-    let migrated = super::storage::normalize_music_settings(&mut config, true);
-
-    assert!(migrated);
-    assert_eq!(config.music.volume, 1.0);
-}
-
-#[test]
 fn missing_log_management_uses_seven_day_retention() {
     let config: super::config::LogManagementConfig =
         toml::from_str("").expect("log management defaults should deserialize");
 
     assert_eq!(config.retention_days, 7);
+}
+
+#[test]
+fn obsolete_music_section_triggers_config_cleanup() {
+    assert!(super::storage::has_obsolete_music_section(
+        "config_version = 1\n\n  [music]  \nvolume = 0.5\n"
+    ));
+    assert!(!super::storage::has_obsolete_music_section(
+        "# [music]\n[plugin.music]\nenabled = true\n"
+    ));
+}
+
+#[test]
+fn config_roundtrip_drops_obsolete_music_settings() {
+    let mut content = toml::to_string(&super::config::get_default_config())
+        .expect("default config should serialize");
+    content.push_str(
+        "\n[music]\nauto_play_on_startup = true\nvolume = 0.5\nmuted = false\nplayback_mode = \"repeat\"\nlast_track_path = \"old.mp3\"\n",
+    );
+
+    let config: super::config::Config =
+        toml::from_str(&content).expect("legacy music settings should be ignored while loading");
+    let rewritten = toml::to_string(&config).expect("migrated config should serialize");
+
+    assert!(!rewritten.contains("[music]"));
+    assert!(!rewritten.contains("last_track_path"));
 }
 
 #[test]
@@ -142,24 +142,6 @@ fn log_management_migration_clamps_unsafe_values() {
     assert_eq!(config.launcher.log_management.max_archive_files, 1);
     assert_eq!(config.launcher.log_management.max_total_size_mb, 16);
     assert_eq!(config.launcher.log_management.compression_level, 9);
-}
-
-#[test]
-fn music_playback_mode_serializes_as_lowercase_toml() {
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct Wrapper {
-        playback_mode: MusicPlaybackMode,
-    }
-
-    let encoded = toml::to_string(&Wrapper {
-        playback_mode: MusicPlaybackMode::Shuffle,
-    })
-    .expect("mode should serialize");
-    assert!(encoded.contains("playback_mode = \"shuffle\""));
-
-    let decoded: Wrapper =
-        toml::from_str("playback_mode = \"repeat\"").expect("mode should deserialize");
-    assert_eq!(decoded.playback_mode, MusicPlaybackMode::Repeat);
 }
 
 #[test]
@@ -310,6 +292,42 @@ fn legacy_check_on_start_migrates_to_auto_check_updates() {
     assert!(migrated);
     assert!(!config.launcher.auto_check_updates);
     assert!(!config.launcher.check_on_start);
+}
+
+#[test]
+fn legacy_default_appx_api_migrates_to_accelerated_mirror() {
+    let mut config = super::config::get_default_config();
+    config.launcher.custom_appx_api = super::config::LEGACY_DEFAULT_APPX_API.to_string();
+
+    assert!(super::storage::normalize_appx_api(&mut config));
+    assert_eq!(
+        config.launcher.custom_appx_api,
+        super::config::DEFAULT_APPX_API
+    );
+}
+
+#[test]
+fn incorrect_mirror_appx_api_migrates_to_mcappx_endpoint() {
+    let mut config = super::config::get_default_config();
+    config.launcher.custom_appx_api = super::config::INCORRECT_MIRROR_APPX_API.to_string();
+
+    assert!(super::storage::normalize_appx_api(&mut config));
+    assert_eq!(
+        config.launcher.custom_appx_api,
+        super::config::DEFAULT_APPX_API
+    );
+}
+
+#[test]
+fn custom_appx_api_is_preserved_during_migration() {
+    let mut config = super::config::get_default_config();
+    config.launcher.custom_appx_api = "https://example.invalid/versions.json".to_string();
+
+    assert!(!super::storage::normalize_appx_api(&mut config));
+    assert_eq!(
+        config.launcher.custom_appx_api,
+        "https://example.invalid/versions.json"
+    );
 }
 
 #[test]

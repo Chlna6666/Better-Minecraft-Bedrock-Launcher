@@ -1,7 +1,5 @@
 use super::TopbarRenderState;
 use crate::core::bedrock_auth::{AuthPhase, AuthSnapshot, XboxProfile};
-#[cfg(target_os = "windows")]
-use crate::ui::animation::{SpringValue, apple_spring};
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::bedrock_auth::BedrockAuthState;
@@ -15,65 +13,17 @@ use std::time::{Duration, Instant};
 
 pub(crate) struct AppChromeState {
     pub(crate) titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState,
-    #[cfg(target_os = "windows")]
-    music_inline: SpringValue,
-    #[cfg(target_os = "windows")]
-    music_inline_target_expanded: bool,
 }
 
 impl Default for AppChromeState {
     fn default() -> Self {
         Self {
             titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState::default(),
-            #[cfg(target_os = "windows")]
-            music_inline: SpringValue::new(0.0).with_spring(apple_spring(0.28, 1.0)),
-            #[cfg(target_os = "windows")]
-            music_inline_target_expanded: false,
         }
     }
 }
 
 impl Global for AppChromeState {}
-
-#[cfg(target_os = "windows")]
-impl AppChromeState {
-    pub(crate) fn set_music_inline_expanded(&mut self, expanded: bool, now: Instant) {
-        if self.music_inline_target_expanded == expanded {
-            return;
-        }
-
-        self.music_inline_target_expanded = expanded;
-        // 胶囊外框属于布局几何，必须使用临界阻尼避免越过目标后再次回摆。
-        // “Q 感”由内部内容的错峰进入承担，而不是让 36→220px 的外框发生反向运动。
-        let spring = if expanded {
-            apple_spring(0.28, 1.0)
-        } else {
-            apple_spring(0.24, 1.0)
-        };
-        self.music_inline
-            .retarget_with_spring(if expanded { 1.0 } else { 0.0 }, spring, now);
-    }
-
-    pub(crate) fn music_inline_factor(&self, now: Instant) -> f32 {
-        let value = self.music_inline.value(now);
-        // 端点吸附用来消除亚像素尾差，不再允许 overshoot/undershoot 进入布局。
-        if self.music_inline_target_expanded && value >= 0.998 {
-            1.0
-        } else if !self.music_inline_target_expanded && value <= 0.002 {
-            0.0
-        } else {
-            value.clamp(0.0, 1.0)
-        }
-    }
-
-    pub(crate) fn music_inline_animating(&self, now: Instant) -> bool {
-        self.music_inline.is_animating(now)
-    }
-
-    pub(crate) fn music_inline_target_expanded(&self) -> bool {
-        self.music_inline_target_expanded
-    }
-}
 
 #[derive(Clone)]
 struct NavItem {
@@ -1072,32 +1022,6 @@ pub(super) fn render_app_chrome(
         || state.auth_snapshot.phase == AuthPhase::WaitingForUser
         || state.auth_snapshot.phase == AuthPhase::Error;
 
-    #[cfg(target_os = "windows")]
-    let music_render = {
-        let placement = crate::ui::main_window::music_player::bottom_left_placement(size(
-            state.window_width,
-            state.window_height,
-        ));
-        let render = crate::ui::main_window::music_player::render_music_player(
-            state.music_snapshot,
-            state.music_expanded_factor,
-            state.music_progress_ratio,
-            state.music_volume_ratio,
-            state.music_drag_target,
-            state.music_inline_factor,
-            state.window_width,
-            placement.popup_top,
-            placement.popup_right,
-            colors.accent,
-            colors.text_primary,
-            colors.border,
-            colors.surface.opacity(0.94),
-            colors.surface.opacity(0.98),
-            colors.text_primary.opacity(0.09),
-        );
-        (placement, render)
-    };
-
     let mut root =
         div()
             .absolute()
@@ -1112,27 +1036,7 @@ pub(super) fn render_app_chrome(
                 px(60.)
             });
 
-    #[cfg(target_os = "windows")]
-    {
-        root = root.children(music_render.1.backdrop);
-    }
-
     root = root.child(topbar);
-
-    #[cfg(target_os = "windows")]
-    {
-        root = root
-            .child(
-                div()
-                    .absolute()
-                    .left(music_render.0.inline_left)
-                    .bottom(music_render.0.inline_bottom)
-                    .occlude()
-                    .window_control_area(WindowControlArea::Client)
-                    .child(music_render.1.inline),
-            )
-            .children(music_render.1.overlay);
-    }
 
     root.when(dialog_open, |element| {
         element.child(auth_panel(

@@ -55,17 +55,6 @@ pub(super) fn render_launcher_tab(
         .child(setting_toggle_row(
             colors,
             section.clone(),
-            i18n.t("LauncherSettings.music_auto_play"),
-            i18n.t("LauncherSettings.music_auto_play_desc"),
-            state.music_auto_play_on_startup,
-            "settings-launcher-music-auto-play",
-            |settings| {
-                settings.music_auto_play_on_startup = !settings.music_auto_play_on_startup;
-            },
-        ))
-        .child(setting_toggle_row(
-            colors,
-            section.clone(),
             i18n.t("LauncherSettings.error_report_sentry"),
             i18n.t("LauncherSettings.error_report_sentry_desc"),
             state.error_report_sentry_enabled,

@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use crate::ui::views::tools::online::actions;
 
-mod ncm;
 pub(crate) mod online;
 mod sidebar;
 pub mod state;
@@ -17,9 +16,6 @@ pub mod state;
 #[derive(PartialEq)]
 struct ToolsRenderSignature {
     tab: ToolsTab,
-    ncm_conversion_running: bool,
-    ncm_conversion_status: SharedString,
-    ncm_conversion_error: Option<SharedString>,
     nat_checking: bool,
     nat_udp_type: Option<i32>,
     nat_tcp_type: Option<i32>,
@@ -61,9 +57,6 @@ impl ToolsRenderSignature {
     fn from_state(state: &ToolsPageState) -> Self {
         Self {
             tab: state.tab,
-            ncm_conversion_running: state.ncm_conversion_running,
-            ncm_conversion_status: state.ncm_conversion_status.clone(),
-            ncm_conversion_error: state.ncm_conversion_error.clone(),
             nat_checking: state.nat_checking,
             nat_udp_type: state.nat_udp_type,
             nat_tcp_type: state.nat_tcp_type,
@@ -172,7 +165,6 @@ pub fn render_tools_page(
         ToolsTab::Online => {
             online::render_online_panel(&colors, state, window_width).into_any_element()
         }
-        ToolsTab::NcmConverter => ncm::render_ncm_converter(&colors, state).into_any_element(),
     };
 
     crate::ui::components::page_shell::page_frame(crate::ui::components::page_shell::split_page(
@@ -190,6 +182,5 @@ pub fn render_tools_overlay(
         ToolsTab::Online => {
             online::render_online_overlay(colors, window_width, window_height, state)
         }
-        ToolsTab::NcmConverter => None,
     }
 }

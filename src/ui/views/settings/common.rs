@@ -22,7 +22,6 @@ pub(super) struct SettingsSnapshot {
     pub(super) error_report_sentry_auto: bool,
     pub(super) update_channel_nightly: bool,
     pub(super) auto_check_updates: bool,
-    pub(super) music_auto_play_on_startup: bool,
     pub(super) download_multi_thread: bool,
     pub(super) download_auto_thread_count: bool,
     pub(super) download_max_threads: u32,
@@ -57,7 +56,6 @@ pub(super) fn snapshot_from_state(state: &SettingsPageState) -> SettingsSnapshot
         error_report_sentry_auto: state.error_report_sentry_auto,
         update_channel_nightly: state.update_channel_nightly,
         auto_check_updates: state.auto_check_updates,
-        music_auto_play_on_startup: state.music_auto_play_on_startup,
         download_multi_thread: state.download_multi_thread,
         download_auto_thread_count: state.download_auto_thread_count,
         download_max_threads: state.download_max_threads.clamp(1, 256),
@@ -127,7 +125,6 @@ pub(super) fn spawn_persist_settings_with_success(
                     crate::config::config::UpdateChannel::Stable
                 };
                 cfg.launcher.auto_check_updates = snapshot.auto_check_updates;
-                cfg.music.auto_play_on_startup = snapshot.music_auto_play_on_startup;
                 cfg.launcher.download.multi_thread = snapshot.download_multi_thread;
                 cfg.launcher.download.auto_thread_count = snapshot.download_auto_thread_count;
                 cfg.launcher.download.max_threads = snapshot.download_max_threads.clamp(1, 256);

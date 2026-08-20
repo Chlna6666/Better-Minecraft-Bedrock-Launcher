@@ -2,19 +2,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
 
+use super::defaults::{
+    default_appx_api, default_config_version, default_error_report_sentry_enabled,
+    default_log_active_size_mb, default_log_archive_files, default_log_compression_level,
+    default_log_retention_days, default_log_total_size_mb, default_proton_gdk_source,
+    default_renderer_backend, default_true, default_update_check_interval_minutes,
+};
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,
     default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
     default_theme_mode, get_default_config,
 };
-use super::defaults::{
-    default_config_version, default_error_report_sentry_enabled, default_log_active_size_mb,
-    default_log_archive_files, default_log_compression_level, default_log_retention_days,
-    default_log_total_size_mb, default_music_volume, default_proton_gdk_source,
-    default_renderer_backend, default_true, default_update_check_interval_minutes,
-};
 
-pub(super) const CURRENT_CONFIG_VERSION: u32 = 1;
+pub(super) const CURRENT_CONFIG_VERSION: u32 = 3;
+pub(super) const LEGACY_DEFAULT_APPX_API: &str = "https://data.mcappx.com/v2/bedrock.json";
+pub(super) const INCORRECT_MIRROR_APPX_API: &str =
+    "https://api.chlna6666.com/api/v1/bedrock/versions";
+pub const DEFAULT_APPX_API: &str = "https://api.chlna6666.com/api/v1/bedrock/mcappx";
 pub const DEFAULT_ERROR_REPORT_SENTRY_DSN: &str = "https://a6851001eec5b056a734b518f20d4175@o4511448309891072.ingest.de.sentry.io/4511448317493328";
 pub const MAX_BACKGROUND_BLUR: f32 = 10.0;
 pub const FONT_SOURCE_DEFAULT: &str = "default";
@@ -22,7 +26,6 @@ pub const FONT_SOURCE_LOCAL: &str = "local";
 pub const FONT_SOURCE_SYSTEM: &str = "system";
 pub const THEME_MODE_LIGHT: &str = "light";
 pub const THEME_MODE_DARK: &str = "dark";
-pub const DEFAULT_MUSIC_VOLUME: f32 = 0.5;
 pub const MIN_LOG_RETENTION_DAYS: u32 = 1;
 pub const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
 pub const MIN_LOG_ACTIVE_SIZE_MB: u32 = 1;
@@ -33,14 +36,6 @@ pub const MIN_LOG_TOTAL_SIZE_MB: u32 = 16;
 pub const MAX_LOG_TOTAL_SIZE_MB: u32 = 8_192;
 pub const MIN_LOG_COMPRESSION_LEVEL: i32 = 1;
 pub const MAX_LOG_COMPRESSION_LEVEL: i32 = 9;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MusicPlaybackMode {
-    Shuffle,
-    #[default]
-    Repeat,
-}
 
 pub fn get_config_file_path() -> std::path::PathBuf {
     super::storage::get_config_file_path()
@@ -124,14 +119,6 @@ pub fn normalize_theme_mode(mode: &str) -> String {
     match mode.trim().to_ascii_lowercase().as_str() {
         THEME_MODE_DARK => THEME_MODE_DARK.to_string(),
         _ => THEME_MODE_LIGHT.to_string(),
-    }
-}
-
-pub fn clamp_music_volume(value: f32) -> f32 {
-    if value.is_finite() {
-        value.clamp(0.0, 1.0)
-    } else {
-        default_music_volume()
     }
 }
 
@@ -273,21 +260,6 @@ pub struct DownloadConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
-pub struct MusicConfig {
-    #[serde(default = "default_true")]
-    pub auto_play_on_startup: bool,
-    #[serde(default = "default_music_volume")]
-    pub volume: f32,
-    #[serde(default)]
-    pub muted: bool,
-    #[serde(default)]
-    pub playback_mode: MusicPlaybackMode,
-    #[serde(default)]
-    pub last_track_path: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(default)]
 pub struct OnlineConfig {
     pub bootstrap_peers: String,
     pub player_name: String,
@@ -302,18 +274,6 @@ impl Default for OnlineConfig {
             player_name: default_online_player_name(),
             game_ports: "7551".to_string(),
             disable_p2p: false,
-        }
-    }
-}
-
-impl Default for MusicConfig {
-    fn default() -> Self {
-        Self {
-            auto_play_on_startup: true,
-            volume: default_music_volume(),
-            muted: false,
-            playback_mode: MusicPlaybackMode::Repeat,
-            last_track_path: String::new(),
         }
     }
 }
@@ -337,6 +297,7 @@ pub struct Launcher {
     pub error_report_sentry_dsn: String,
     #[serde(default)]
     pub error_report_sentry_auto: bool,
+    #[serde(default = "default_appx_api")]
     pub custom_appx_api: String,
     pub download: DownloadConfig,
     #[serde(default)]
@@ -364,8 +325,6 @@ pub struct Config {
     pub custom_style: CustomStyle,
     pub launcher: Launcher,
     pub game: GameConfig,
-    #[serde(default)]
-    pub music: MusicConfig,
     #[serde(default)]
     pub online: OnlineConfig,
     pub agreement_accepted: bool,

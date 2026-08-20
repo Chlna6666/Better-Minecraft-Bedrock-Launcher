@@ -1,7 +1,7 @@
 use super::config::{
-    CURRENT_CONFIG_VERSION, Config, CustomStyle, DEFAULT_ERROR_REPORT_SENTRY_DSN,
-    DEFAULT_MUSIC_VOLUME, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, Launcher, MusicConfig,
-    OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
+    CURRENT_CONFIG_VERSION, Config, CustomStyle, DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN,
+    DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, Launcher, OnlineConfig, ProxyConfig,
+    ProxyType, UpdateChannel,
 };
 
 pub(super) fn default_true() -> bool {
@@ -22,6 +22,10 @@ pub fn default_glass_effect_enabled() -> bool {
 
 pub(super) fn default_config_version() -> u32 {
     CURRENT_CONFIG_VERSION
+}
+
+pub(super) fn default_appx_api() -> String {
+    DEFAULT_APPX_API.to_string()
 }
 
 pub(super) fn default_renderer_backend() -> String {
@@ -72,10 +76,6 @@ pub fn default_theme_mode() -> String {
     super::config::THEME_MODE_LIGHT.to_string()
 }
 
-pub fn default_music_volume() -> f32 {
-    DEFAULT_MUSIC_VOLUME
-}
-
 pub fn default_online_player_name() -> String {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     suffix[..6].to_string()
@@ -108,7 +108,7 @@ pub fn get_default_config() -> Config {
             error_report_sentry_enabled: true,
             error_report_sentry_dsn: default_error_report_sentry_dsn(),
             error_report_sentry_auto: false,
-            custom_appx_api: "https://data.mcappx.com/v2/bedrock.json".to_string(),
+            custom_appx_api: default_appx_api(),
             download: DownloadConfig {
                 multi_thread: false,
                 max_threads: 8,
@@ -137,7 +137,6 @@ pub fn get_default_config() -> Config {
             modify_appx_manifest: true,
             uwp_minimize_fix: true,
         },
-        music: MusicConfig::default(),
         online: OnlineConfig::default(),
         agreement_accepted: false,
     }

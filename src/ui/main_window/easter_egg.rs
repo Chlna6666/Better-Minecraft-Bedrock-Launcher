@@ -64,8 +64,6 @@ pub(super) struct EasterEggState {
     matcher: SecretMatcher,
     phase: EasterEggPhase,
     timeline_task: Option<Task<()>>,
-    #[cfg(target_os = "windows")]
-    music_pause: Option<crate::ui::state::music::TemporaryMusicPause>,
 }
 
 impl Default for EasterEggState {
@@ -74,8 +72,6 @@ impl Default for EasterEggState {
             matcher: SecretMatcher::default(),
             phase: EasterEggPhase::Idle,
             timeline_task: None,
-            #[cfg(target_os = "windows")]
-            music_pause: None,
         }
     }
 }
@@ -150,19 +146,6 @@ impl MainWindowView {
         self.easter_egg.timeline_task.take();
         self.easter_egg.phase = EasterEggPhase::Countdown { started_at };
 
-        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        cx.update_global(
-            |sound_effect: &mut crate::ui::state::sound_effect::SoundEffectState, cx| {
-                sound_effect.play_c4_sequence(cx);
-            },
-        );
-        #[cfg(target_os = "windows")]
-        {
-            self.easter_egg.music_pause = Some(cx.update_global(
-                |music: &mut crate::ui::state::music::MusicState, cx| music.pause_temporarily(cx),
-            ));
-        }
-
         let window_handle = window.window_handle();
         self.easter_egg.timeline_task = Some(cx.spawn(async move |view, cx| {
             Timer::after(COUNTDOWN_DURATION).await;
@@ -207,7 +190,6 @@ impl MainWindowView {
         }
         self.easter_egg.timeline_task.take();
         self.easter_egg.phase = EasterEggPhase::Idle;
-        self.stop_easter_egg_audio(cx);
         cx.notify();
     }
 
@@ -223,23 +205,7 @@ impl MainWindowView {
             }
         }
         self.easter_egg.phase = EasterEggPhase::Idle;
-        self.stop_easter_egg_audio(cx);
         cx.notify();
-    }
-
-    fn stop_easter_egg_audio(&mut self, cx: &mut Context<Self>) {
-        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        cx.update_global(
-            |sound_effect: &mut crate::ui::state::sound_effect::SoundEffectState, cx| {
-                sound_effect.stop(cx);
-            },
-        );
-        #[cfg(target_os = "windows")]
-        if let Some(token) = self.easter_egg.music_pause.take() {
-            cx.update_global(|music: &mut crate::ui::state::music::MusicState, cx| {
-                music.resume_after_temporary_pause(token, cx);
-            });
-        }
     }
 
     pub(super) fn compose_easter_egg(
