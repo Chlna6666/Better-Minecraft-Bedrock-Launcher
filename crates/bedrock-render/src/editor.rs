@@ -26,7 +26,7 @@ pub use bedrock_world::{
         query_region_overlays_blocking_with_control, query_selection_stats_blocking,
         query_slime_chunk_windows,
     },
-    world::{BedrockWorld, CancelFlag, OpenOptions, WorldScanOptions},
+    world::{BedrockWorld, BedrockWorldOpenOptions, CancelFlag, WorldScanOptions},
 };
 
 /// Describes the render-side state that should be refreshed after a world edit.
@@ -163,9 +163,9 @@ impl MapWorldEditor {
     ///
     /// Returns world-format detection, storage, or `LevelDB` open errors.
     pub fn open_writable(world_path: impl AsRef<Path>) -> Result<Self> {
-        let options = OpenOptions {
+        let options = BedrockWorldOpenOptions {
             read_only: false,
-            ..OpenOptions::default()
+            ..BedrockWorldOpenOptions::default()
         };
         Self::open_with_options(world_path, options)
     }
@@ -179,7 +179,10 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns world-format detection, storage, or `LevelDB` open errors.
-    pub fn open_with_options(world_path: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
+    pub fn open_with_options(
+        world_path: impl AsRef<Path>,
+        options: BedrockWorldOpenOptions,
+    ) -> Result<Self> {
         let world = BedrockWorld::open_blocking(world_path, options)?;
         Ok(Self { world })
     }

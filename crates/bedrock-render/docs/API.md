@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 let world = bedrock_world::BedrockWorld::open_blocking(
     "path/to/minecraftWorld",
-    bedrock_world::OpenOptions::default(),
+    bedrock_world::BedrockWorldOpenOptions::default(),
 )?;
 let renderer = bedrock_render::MapRenderer::new(
     Arc::new(world),

@@ -4,7 +4,8 @@ use bedrock_render::{
 };
 use bedrock_world::{
     BedrockWorld, ChunkData, ChunkLoadOptions, ChunkPos, Dimension, ExactSurfaceBiomeLoad,
-    ExactSurfaceSubchunkPolicy, NbtTag, OpenOptions, SubChunkFormat, WorldThreadingOptions,
+    BedrockWorldOpenOptions, ExactSurfaceSubchunkPolicy, NbtTag, SubChunkFormat,
+    WorldThreadingOptions,
     read_level_dat_document,
 };
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
     let world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let world = Arc::new(BedrockWorld::open_blocking(
         &world_path,
-        OpenOptions::default(),
+        BedrockWorldOpenOptions::default(),
     )?);
     let (spawn_chunk_x, spawn_chunk_z) = spawn_chunk(&world_path).unwrap_or((0, 0));
 
@@ -84,7 +85,8 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
 fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
 -> Result<(), Box<dyn std::error::Error>> {
     let world_path = PathBuf::from("tests/fixtures/bedrock-world");
-    let world = BedrockWorld::open_blocking(&world_path, OpenOptions::default())?;
+    let world =
+        BedrockWorld::open_blocking(&world_path, BedrockWorldOpenOptions::default())?;
 
     for (block_x, block_z) in [(340_i32, 36_i32), (360_i32, 67_i32)] {
         let chunk_pos = ChunkPos {
@@ -147,7 +149,7 @@ fn real_world_cobblestone_slab_aliases_render_consistently()
     let world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let world = Arc::new(BedrockWorld::open_blocking(
         &world_path,
-        OpenOptions::default(),
+        BedrockWorldOpenOptions::default(),
     )?);
 
     for (block_x, block_z, expected_name) in [

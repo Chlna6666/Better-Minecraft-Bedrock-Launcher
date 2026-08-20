@@ -6,7 +6,7 @@ use bedrock_render::{
     SurfaceRenderOptions, TerrainLightingOptions, TerrainLightingPreset, TileCoord,
 };
 use bedrock_world::{
-    BedrockWorld, ChunkBounds, ChunkPos, Dimension, OpenOptions, WorldScanOptions,
+    BedrockWorld, BedrockWorldOpenOptions, ChunkBounds, ChunkPos, Dimension, WorldScanOptions,
     WorldThreadingOptions,
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -85,7 +85,10 @@ fn main() -> bedrock_render::Result<()> {
     );
 
     let world = Arc::new(
-        BedrockWorld::open_blocking(config.world_path.clone(), OpenOptions::default())
+        BedrockWorld::open_blocking(
+            config.world_path.clone(),
+            BedrockWorldOpenOptions::default(),
+        )
             .map_err(bedrock_render::BedrockRenderError::World)?,
     );
     let renderer = MapRenderer::new(Arc::clone(&world), palette);

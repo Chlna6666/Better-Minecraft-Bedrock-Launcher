@@ -86,7 +86,7 @@ use bedrock_render::{
 
 let world = bedrock_world::BedrockWorld::open_blocking(
     "path/to/minecraftWorld",
-    bedrock_world::OpenOptions::default(),
+    bedrock_world::BedrockWorldOpenOptions::default(),
 )?;
 let renderer = MapRenderer::new(Arc::new(world), RenderPalette::default());
 let region = ChunkRegion::new(dimension, -32, -32, 31, 31);

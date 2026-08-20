@@ -9,7 +9,7 @@ use bedrock_render::{
 use bedrock_render::{
     ImageFormat, MapRenderer, RenderJob, RenderMode, RenderOptions, RenderPalette, TileCoord,
 };
-use bedrock_world::{BedrockLevelDbStorage, BedrockWorld, Dimension, OpenOptions};
+use bedrock_world::{BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, Dimension};
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "webp")]
@@ -36,7 +36,7 @@ fn renders_fixture_biome_tile_as_rgba() {
     let world = Arc::new(BedrockWorld::from_storage(
         world_path,
         storage,
-        OpenOptions::default(),
+        BedrockWorldOpenOptions::default(),
     ));
     let renderer = MapRenderer::new(world, RenderPalette::default());
     let tile = renderer
@@ -74,7 +74,7 @@ fn streaming_session_emits_rendered_then_cached_events() {
     let world = Arc::new(BedrockWorld::from_storage(
         world_path,
         storage,
-        OpenOptions::default(),
+        BedrockWorldOpenOptions::default(),
     ));
     let renderer = MapRenderer::new(world, RenderPalette::default());
     let cache_root = unique_cache_root();
@@ -190,7 +190,7 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
     let world = Arc::new(BedrockWorld::from_storage(
         world_path,
         storage,
-        OpenOptions::default(),
+        BedrockWorldOpenOptions::default(),
     ));
     let renderer = MapRenderer::new(Arc::clone(&world), RenderPalette::default());
     let cache_root = unique_cache_root();

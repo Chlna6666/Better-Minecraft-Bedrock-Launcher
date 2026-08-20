@@ -6,7 +6,8 @@ use bedrock_render::{
     editor::{MapEditInvalidation, MapWorldEditor},
 };
 use bedrock_world::{
-    BedrockLevelDbStorage, BedrockWorld, ChunkPos, Dimension, GlobalRecordKind, OpenOptions,
+    BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, ChunkPos, Dimension,
+    GlobalRecordKind,
     SlimeChunkBounds, WorldScanOptions,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -35,7 +36,7 @@ fn renderer() -> Option<MapRenderer<BedrockLevelDbStorage>> {
     let world = Arc::new(BedrockWorld::from_typed_storage(
         world_path,
         storage,
-        OpenOptions::default(),
+        BedrockWorldOpenOptions::default(),
     ));
     Some(MapRenderer::new(world, RenderPalette::default()))
 }
@@ -49,7 +50,7 @@ fn dynamic_renderer() -> Option<MapRenderer> {
     let world = Arc::new(BedrockWorld::from_storage(
         world_path,
         storage,
-        OpenOptions::default(),
+        BedrockWorldOpenOptions::default(),
     ));
     Some(MapRenderer::new(world, RenderPalette::default()))
 }
@@ -194,7 +195,9 @@ fn emit_v02_editor_reports() {
     if !world_path.join("db").join("CURRENT").exists() {
         return;
     }
-    let Ok(editor) = MapWorldEditor::open_with_options(&world_path, OpenOptions::default()) else {
+    let Ok(editor) =
+        MapWorldEditor::open_with_options(&world_path, BedrockWorldOpenOptions::default())
+    else {
         return;
     };
     emit_v02_overlay_report(&editor);

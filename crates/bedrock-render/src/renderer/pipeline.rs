@@ -41,10 +41,10 @@ use super::gpu::{GpuProcessResult, GpuRenderContext};
 use crate::error::{BedrockRenderError, Result};
 use crate::palette::{RenderPalette, RgbaColor};
 use bedrock_world::{
-    BedrockLevelDbStorage, BedrockWorld, BiomeDataRequirement, BlockPos, BlockState,
-    CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkData, ChunkDataRequest, ChunkLoadOptions,
-    ChunkLoadPriority, ChunkLoadStats, ChunkPos, Dimension, ExactSurfaceSubchunkPolicy,
-    LegacyBiomeSample, NbtTag, OpenOptions as WorldOpenOptions, PartitionedWorldStorage,
+    BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, BiomeDataRequirement, BlockPos,
+    BlockState, CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkData, ChunkDataRequest,
+    ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats, ChunkPos, Dimension,
+    ExactSurfaceSubchunkPolicy, LegacyBiomeSample, NbtTag, PartitionedWorldStorage,
     StorageCachePolicy, StoragePipelineOptions, StorageReadOptions, StorageScanMode,
     StorageThreadingOptions, StorageVisitorControl, SubChunk, SubChunkDecodeMode,
     TerrainColumnBiome, TerrainColumnOverlay, TerrainColumnSample, TerrainColumnSamples,
@@ -2016,7 +2016,7 @@ impl LevelDbRenderSource {
         let world = Arc::new(BedrockWorld::from_typed_storage(
             world_path.clone(),
             storage,
-            WorldOpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         Ok(Self {
             world_path,
@@ -12794,9 +12794,9 @@ fn emit_progress(options: &RenderOptions, completed_tiles: usize, total_tiles: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bedrock_leveldb::{Db, OpenOptions as LevelDbOpenOptions};
+    use bedrock_leveldb::{Db, LevelDbOpenOptions};
     use bedrock_world::{
-        ChunkKey, ChunkRecordTag, MemoryStorage, NbtTag, OpenOptions, WorldStorage,
+        BedrockWorldOpenOptions, ChunkKey, ChunkRecordTag, MemoryStorage, NbtTag, WorldStorage,
         block_storage_index,
     };
     use indexmap::IndexMap;
@@ -12984,10 +12984,13 @@ mod tests {
         let world_path = temp_world_dir("leveldb-render-source-full-index");
         let db_path = world_path.join("db");
         let db = Db::open(&db_path, LevelDbOpenOptions::default()).expect("open db");
-        let key = bedrock_leveldb::ChunkKey::new(
-            bedrock_leveldb::ChunkCoordinates::new(0, 0),
-            bedrock_leveldb::Dimension::Overworld,
-            bedrock_leveldb::ChunkRecordTag::Data2D,
+        let key = ChunkKey::new(
+            ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            ChunkRecordTag::Data2D,
         )
         .encode();
         db.put(key, vec![1], Default::default())
@@ -13103,7 +13106,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let session = MapRenderSession::new(
             MapRenderer::new(world, RenderPalette::default()),
@@ -13945,7 +13948,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let layout = ChunkTileLayout::default();
@@ -14016,7 +14019,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let job = RenderJob {
@@ -14062,7 +14065,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
@@ -14130,7 +14133,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
@@ -14191,7 +14194,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default();
@@ -14254,7 +14257,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default();
@@ -14328,7 +14331,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
@@ -14388,7 +14391,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default();
@@ -14451,7 +14454,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(90, 90, 90, 255))
@@ -14509,7 +14512,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default()
@@ -14636,7 +14639,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(90, 90, 90, 255))
@@ -14694,7 +14697,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default()
@@ -14777,7 +14780,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:sand", RgbaColor::new(220, 210, 120, 255))
@@ -14817,7 +14820,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let cancel = RenderCancelFlag::new();
@@ -15928,7 +15931,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:x_axis", RgbaColor::new(10, 0, 0, 255))
@@ -15985,7 +15988,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(
             world,
@@ -16060,7 +16063,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette =
             RenderPalette::default().with_block_color(block_name, RgbaColor::new(11, 77, 199, 255));
@@ -16152,7 +16155,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, palette);
         let layout = RenderLayout {
@@ -16296,7 +16299,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:x_axis", RgbaColor::new(10, 0, 0, 255))
@@ -16367,7 +16370,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -16447,7 +16450,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:dirt", RgbaColor::new(130, 90, 55, 255))
@@ -16528,7 +16531,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:grass_block", RgbaColor::new(20, 180, 20, 255))
@@ -16626,7 +16629,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color(
@@ -16697,7 +16700,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -16771,7 +16774,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color(
@@ -16823,7 +16826,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         for mode in [RenderMode::HeightMap, RenderMode::CaveSlice { y: 32 }] {
@@ -16880,7 +16883,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let options = RenderOptions {
@@ -16972,7 +16975,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default();
         assert!(!palette.has_block_color("minecraft:unmapped_roof_block"));
@@ -17035,7 +17038,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let bake = renderer
@@ -17068,7 +17071,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
@@ -17111,7 +17114,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let tile = renderer
@@ -17155,7 +17158,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let expected = RenderPalette::default().biome_color(4).to_array();
         let renderer = MapRenderer::new(world, RenderPalette::default());
@@ -17210,7 +17213,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17269,7 +17272,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let data = world
             .query_chunk_data_blocking(
@@ -17337,7 +17340,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default();
         let expected_desert = palette
@@ -17418,7 +17421,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17483,7 +17486,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17660,7 +17663,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17888,7 +17891,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let tile = renderer
@@ -17960,7 +17963,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let tile = renderer
@@ -18028,7 +18031,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let mut palette = RenderPalette::default();
         palette
@@ -18115,7 +18118,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let mut palette = RenderPalette::default();
         palette
@@ -18212,7 +18215,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:movingBlock", RgbaColor::new(1, 1, 1, 255))
@@ -18274,7 +18277,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let bake = renderer
@@ -18336,7 +18339,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
@@ -18385,7 +18388,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
@@ -19132,7 +19135,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage_with_format(
             "memory",
             storage,
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
@@ -19212,7 +19215,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let config = MapRenderSessionConfig {
@@ -19341,7 +19344,7 @@ mod tests {
         let world = Arc::new(BedrockWorld::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            OpenOptions::default(),
+            BedrockWorldOpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let stale = RENDERER_CACHE_VERSION.saturating_sub(1);
@@ -19734,14 +19737,14 @@ mod tests {
     }
 
     fn test_legacy_terrain_bytes(block_id: u8, height: u8) -> Vec<u8> {
-        let mut bytes = vec![0_u8; bedrock_world::LEGACY_TERRAIN_VALUE_LEN];
+        let mut bytes = vec![0_u8; bedrock_world::chunk::LEGACY_TERRAIN_VALUE_LEN];
         for local_z in 0..16_u8 {
             for local_x in 0..16_u8 {
                 for local_y in 0..=height.min(127) {
                     bytes[legacy_yzx_block_index(local_x, local_y, local_z)] = block_id;
                 }
-                let height_offset = bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT
-                    + (bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
+                let height_offset = bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT
+                    + (bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
                     + legacy_column_index(local_x, local_z);
                 bytes[height_offset] = height;
                 write_legacy_biome_sample(&mut bytes, local_x, local_z, 1, 0x007f_b238);
@@ -19751,15 +19754,15 @@ mod tests {
     }
 
     fn test_legacy_grass_over_stone_bytes(height: u8, biome_color: u32) -> Vec<u8> {
-        let mut bytes = vec![0_u8; bedrock_world::LEGACY_TERRAIN_VALUE_LEN];
+        let mut bytes = vec![0_u8; bedrock_world::chunk::LEGACY_TERRAIN_VALUE_LEN];
         for local_z in 0..16_u8 {
             for local_x in 0..16_u8 {
                 for local_y in 0..height.min(127) {
                     bytes[legacy_yzx_block_index(local_x, local_y, local_z)] = 1;
                 }
                 bytes[legacy_yzx_block_index(local_x, height.min(127), local_z)] = 2;
-                let height_offset = bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT
-                    + (bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
+                let height_offset = bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT
+                    + (bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
                     + legacy_column_index(local_x, local_z);
                 bytes[height_offset] = height;
                 write_legacy_biome_sample(&mut bytes, local_x, local_z, 1, biome_color);
@@ -19769,7 +19772,7 @@ mod tests {
     }
 
     fn test_asymmetric_legacy_terrain_bytes() -> Vec<u8> {
-        let mut bytes = vec![0_u8; bedrock_world::LEGACY_TERRAIN_VALUE_LEN];
+        let mut bytes = vec![0_u8; bedrock_world::chunk::LEGACY_TERRAIN_VALUE_LEN];
         for local_z in 0..16_u8 {
             for local_x in 0..16_u8 {
                 let (block_id, height) = match (local_x >= 8, local_z >= 8) {
@@ -19781,8 +19784,8 @@ mod tests {
                 for local_y in 0..=height {
                     bytes[legacy_yzx_block_index(local_x, local_y, local_z)] = block_id;
                 }
-                let height_offset = bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT
-                    + (bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
+                let height_offset = bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT
+                    + (bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
                     + legacy_column_index(local_x, local_z);
                 bytes[height_offset] = height;
             }
@@ -19791,7 +19794,7 @@ mod tests {
     }
 
     fn test_asymmetric_legacy_subchunk_bytes() -> Vec<u8> {
-        let mut bytes = vec![0_u8; bedrock_world::LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN];
+        let mut bytes = vec![0_u8; bedrock_world::chunk::LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN];
         bytes[0] = 2;
         for local_z in 0..16_u8 {
             for local_x in 0..16_u8 {
@@ -19808,7 +19811,7 @@ mod tests {
     }
 
     fn test_legacy_sand_data_terrain_bytes() -> Vec<u8> {
-        let mut bytes = vec![0_u8; bedrock_world::LEGACY_TERRAIN_VALUE_LEN];
+        let mut bytes = vec![0_u8; bedrock_world::chunk::LEGACY_TERRAIN_VALUE_LEN];
         let height = 20_u8;
         for local_z in 0..16_u8 {
             for local_x in 0..16_u8 {
@@ -19818,13 +19821,13 @@ mod tests {
                     bytes[index] = 12;
                     write_nibble(
                         &mut bytes,
-                        bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT,
+                        bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT,
                         index,
                         data,
                     );
                 }
-                let height_offset = bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT
-                    + (bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
+                let height_offset = bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT
+                    + (bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
                     + legacy_column_index(local_x, local_z);
                 bytes[height_offset] = height;
                 write_legacy_biome_sample(&mut bytes, local_x, local_z, 1, 0x007f_b238);
@@ -19834,7 +19837,7 @@ mod tests {
     }
 
     fn test_legacy_sand_data_subchunk_bytes() -> Vec<u8> {
-        let mut bytes = vec![0_u8; bedrock_world::LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN];
+        let mut bytes = vec![0_u8; bedrock_world::chunk::LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN];
         bytes[0] = 2;
         let data_offset = 1 + 16 * 16 * 16;
         for local_z in 0..16_u8 {
@@ -19876,8 +19879,8 @@ mod tests {
         biome_id: u8,
         color: u32,
     ) {
-        let offset = bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT
-            + (bedrock_world::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
+        let offset = bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT
+            + (bedrock_world::chunk::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
             + 16 * 16
             + legacy_column_index(local_x, local_z) * 4;
         bytes[offset] = biome_id;
