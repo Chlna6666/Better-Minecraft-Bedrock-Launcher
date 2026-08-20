@@ -2,7 +2,7 @@
 //!
 //! Minecraft Bedrock persists the visible day/night clock in `Time`, the game-tick counter in
 //! `currentTick`, and the daylight-cycle gamerule in `dodaylightcycle`. This module keeps those
-//! fields behind a typed public API so servers and tools do not duplicate raw NBT field handling.
+//! fields behind a typed public API so callers do not duplicate raw NBT field handling.
 
 use super::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
 use crate::error::{BedrockWorldError, Result};
@@ -31,7 +31,7 @@ impl Default for BedrockWorldClock {
 }
 
 impl BedrockWorldClock {
-    /// Advances one authoritative game tick.
+    /// Advances one authoritative world tick.
     ///
     /// `currentTick` always advances. `Time` advances only while daylight cycling is enabled,
     /// matching the persisted Bedrock gamerule semantics.
@@ -89,7 +89,7 @@ impl LevelDatDocument {
         root.insert("currentTick".to_string(), NbtTag::Long(clock.current_tick));
         root.insert(
             "dodaylightcycle".to_string(),
-            NbtTag::Byte(i8::from(clock.daylight_cycle)),
+            NbtTag::Byte(if clock.daylight_cycle { 1 } else { 0 }),
         );
         Ok(())
     }
