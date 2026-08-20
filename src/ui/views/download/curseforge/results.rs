@@ -722,7 +722,8 @@ pub(crate) fn render_curseforge_results_list_placeholder_aligned(
         .py(px(12.))
         .flex()
         .flex_col()
-        .children((0..skeleton_count).map(|row| {
-            curseforge_results_skeleton_row(colors, row).into_any_element()
-        }))
+        .children(
+            (0..skeleton_count)
+                .map(|row| curseforge_results_skeleton_row(colors, row).into_any_element()),
+        )
 }

@@ -30,13 +30,7 @@ fn visible_count(viewport_height: Pixels, pitch: f32, min: usize, max: usize) ->
     ((height / pitch).ceil() as usize).clamp(min, max)
 }
 
-fn static_block(
-    width: Pixels,
-    height: Pixels,
-    radius: Pixels,
-    color: Hsla,
-    alpha: f32,
-) -> Div {
+fn static_block(width: Pixels, height: Pixels, radius: Pixels, color: Hsla, alpha: f32) -> Div {
     div()
         .w(width)
         .h(height)
@@ -53,7 +47,11 @@ fn game_shimmer_block(
     accent: bool,
     phase: f32,
 ) -> AnyElement {
-    let base_color = if accent { colors.accent } else { colors.text_secondary };
+    let base_color = if accent {
+        colors.accent
+    } else {
+        colors.text_secondary
+    };
     let start = -0.42f32;
     let end = 1.10f32;
     let band = div()
@@ -126,7 +124,10 @@ fn mod_pulse_block(
         .w(width)
         .h(height)
         .rounded(radius)
-        .bg(Hsla { a: min_alpha, ..color })
+        .bg(Hsla {
+            a: min_alpha,
+            ..color
+        })
         .with_animation(
             id,
             Animation::new(MOD_PULSE_DURATION)
@@ -169,17 +170,15 @@ fn render_game_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
                                 .items_center()
                                 .min_w(px(0.0))
                                 .flex_1()
-                                .child(
-                                    div().w(px(64.0)).child(game_shimmer_block(
-                                        id("icon"),
-                                        px(42.0),
-                                        px(42.0),
-                                        px(crate::ui::theme::tokens::radius::SM),
-                                        colors,
-                                        false,
-                                        0.00,
-                                    )),
-                                )
+                                .child(div().w(px(64.0)).child(game_shimmer_block(
+                                    id("icon"),
+                                    px(42.0),
+                                    px(42.0),
+                                    px(crate::ui::theme::tokens::radius::SM),
+                                    colors,
+                                    false,
+                                    0.00,
+                                )))
                                 .child(
                                     div()
                                         .flex_1()
@@ -521,15 +520,10 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
         )
         // 分页加载态不绘制任何占位控件/动画，只保留正式 footer 的高度，
         // 避免数据完成后 footer 出现导致列表区域整体跳动。
-        .child(
-            div()
-                .flex_none()
-                .h(px(56.0))
-                .bg(Hsla {
-                    a: 0.30,
-                    ..colors.surface
-                }),
-        );
+        .child(div().flex_none().h(px(56.0)).bg(Hsla {
+            a: 0.30,
+            ..colors.surface
+        }));
 
     div()
         .size_full()
@@ -764,7 +758,9 @@ impl RenderOnce for DownloadLoadingPlaceholder {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         match cx.global::<DownloadPageState>().tab {
             DownloadTab::Game => render_game_loading(&self.colors, self.viewport_height),
-            DownloadTab::ResourcePack => render_resource_loading(&self.colors, self.viewport_height),
+            DownloadTab::ResourcePack => {
+                render_resource_loading(&self.colors, self.viewport_height)
+            }
             DownloadTab::Mod => render_mod_loading(&self.colors, self.viewport_height),
         }
     }
