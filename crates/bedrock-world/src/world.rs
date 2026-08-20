@@ -4,6 +4,7 @@ mod bedrock_world;
 mod biome;
 mod biome_downgrade;
 mod biome_upgrade;
+mod block_query;
 mod chunk_presence;
 mod create;
 /// Filesystem discovery for Minecraft Bedrock world folders.
@@ -26,6 +27,7 @@ pub(crate) mod surface;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use bedrock_world::*;
+pub use block_query::BlockStateQueryResult;
 pub use chunk_presence::{ChunkPresence, ChunkPresenceMode};
 /// Minecraft Bedrock world-open options.
 ///
