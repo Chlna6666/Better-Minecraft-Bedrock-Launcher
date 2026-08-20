@@ -316,8 +316,7 @@ where
     })
 }
 
-#[cfg(test)]
-fn merge(
+pub(crate) fn merge(
     root: &Path,
     plan: &CompactionPlan,
     paranoid_checks: bool,
