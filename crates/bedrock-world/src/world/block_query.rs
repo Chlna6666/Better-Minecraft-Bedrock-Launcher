@@ -9,10 +9,12 @@ use crate::chunk::{
     BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LegacyTerrain,
     SubChunkDecodeMode, parse_subchunk_with_mode,
 };
+use crate::database::StorageKeyBatchBuilder;
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
-use bytes::Bytes;
 use std::collections::{BTreeMap, HashMap};
+
+const MAX_ENCODED_CHUNK_KEY_BYTES: usize = 14;
 
 /// One exact block-state query result.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +34,8 @@ where
     /// Reads many exact block states in one dimension while preserving input order.
     ///
     /// Modern V0-V9 SubChunks are decoded with full indices only once per unique SubChunk. Old
-    /// LevelDB `LegacyTerrain` chunks are resolved through one exact fallback record per chunk.
+    /// LevelDB `LegacyTerrain` chunks are resolved through one exact fallback record per chunk. All
+    /// small exact storage keys share one contiguous backing allocation for the duration of the read.
     pub fn get_block_states_at_blocking(
         &self,
         dimension: Dimension,
@@ -56,20 +59,27 @@ where
             }
         }
 
-        let mut keys = Vec::<Bytes>::with_capacity(subchunk_keys.len() + legacy_keys.len());
+        let key_count = subchunk_keys.len().saturating_add(legacy_keys.len());
+        let mut keys = StorageKeyBatchBuilder::with_capacity(
+            key_count.saturating_mul(MAX_ENCODED_CHUNK_KEY_BYTES),
+            key_count,
+        );
         let mut subchunk_order = Vec::with_capacity(subchunk_keys.len());
         for &(chunk_pos, subchunk_y) in subchunk_keys.keys() {
             subchunk_order.push((chunk_pos, subchunk_y));
-            keys.push(ChunkKey::subchunk(chunk_pos, subchunk_y).encode());
+            let encoded = ChunkKey::subchunk(chunk_pos, subchunk_y).encode_inline();
+            keys.push(encoded.as_bytes());
         }
         let legacy_base = keys.len();
         let mut legacy_order = Vec::with_capacity(legacy_keys.len());
         for &chunk_pos in legacy_keys.keys() {
             legacy_order.push(chunk_pos);
-            keys.push(ChunkKey::new(chunk_pos, ChunkRecordTag::LegacyTerrain).encode());
+            let encoded = ChunkKey::new(chunk_pos, ChunkRecordTag::LegacyTerrain).encode_inline();
+            keys.push(encoded.as_bytes());
         }
+        let keys = keys.finish();
 
-        let values = self.storage().get_many(&keys)?;
+        let values = self.storage().get_many(keys.keys())?;
         if values.len() != keys.len() {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "batch block-state read returned {} values for {} exact keys",
