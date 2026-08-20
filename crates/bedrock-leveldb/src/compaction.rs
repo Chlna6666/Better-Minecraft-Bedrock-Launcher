@@ -337,8 +337,8 @@ fn recycle_key(priority: usize, key: Vec<u8>, streams: &[Option<StreamHandle>]) 
 
 fn compare_pending_inputs(left: &PendingInput, right: &PendingInput) -> Ordering {
     match (
-        left.table.smallest_key.as_deref(),
-        right.table.smallest_key.as_deref(),
+        left.table.smallest_user_key(),
+        right.table.smallest_user_key(),
     ) {
         (None, None) => left.priority.cmp(&right.priority),
         (None, Some(_)) => Ordering::Less,
@@ -354,8 +354,7 @@ fn should_activate(input: &PendingInput, current_key: Option<&[u8]>) -> bool {
         None => true,
         Some(current_key) => input
             .table
-            .smallest_key
-            .as_deref()
+            .smallest_user_key()
             .is_none_or(|smallest_key| smallest_key <= current_key),
     }
 }
@@ -435,20 +434,20 @@ fn level_size_limit(level: u32) -> u64 {
 fn table_range(tables: &[TableFileMeta]) -> Option<(Vec<u8>, Vec<u8>)> {
     if tables
         .iter()
-        .any(|table| table.smallest_key.is_none() || table.largest_key.is_none())
+        .any(|table| table.smallest_user_key().is_none() || table.largest_user_key().is_none())
     {
         return None;
     }
     let smallest = tables
         .iter()
-        .filter_map(|table| table.smallest_key.as_ref())
+        .filter_map(TableFileMeta::smallest_user_key)
         .min()?
-        .clone();
+        .to_vec();
     let largest = tables
         .iter()
-        .filter_map(|table| table.largest_key.as_ref())
+        .filter_map(TableFileMeta::largest_user_key)
         .max()?
-        .clone();
+        .to_vec();
     Some((smallest, largest))
 }
 
@@ -456,8 +455,12 @@ fn overlaps(table: &TableFileMeta, range: Option<&(Vec<u8>, Vec<u8>)>) -> bool {
     let Some((smallest, largest)) = range else {
         return true;
     };
-    table.largest_key.as_ref().is_none_or(|key| key >= smallest)
-        && table.smallest_key.as_ref().is_none_or(|key| key <= largest)
+    table
+        .largest_user_key()
+        .is_none_or(|key| key >= smallest.as_slice())
+        && table
+            .smallest_user_key()
+            .is_none_or(|key| key <= largest.as_slice())
 }
 
 #[cfg(test)]
