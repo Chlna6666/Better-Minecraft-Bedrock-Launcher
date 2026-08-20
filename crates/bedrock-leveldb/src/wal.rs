@@ -45,120 +45,157 @@ pub(crate) fn append_record(file: &mut File, payload: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec<Vec<u8>>> {
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let mut records = Vec::new();
+/// Streams logical WAL records through `visitor` while retaining only one
+/// physical 32 KiB block plus one fragmented-record scratch buffer.
+pub(crate) fn for_each_record<F>(
+    file: &mut File,
+    paranoid_checks: bool,
+    mut visitor: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
+    let mut block = vec![0_u8; BLOCK_SIZE];
     let mut scratch = Vec::new();
     let mut assembling = false;
-    let mut pos = 0;
 
-    while pos + HEADER_SIZE <= bytes.len() {
-        let block_offset = pos % BLOCK_SIZE;
-        if BLOCK_SIZE - block_offset < HEADER_SIZE {
-            pos += BLOCK_SIZE - block_offset;
-            continue;
-        }
-
-        let checksum = u32::from_le_bytes(bytes[pos..pos + 4].try_into().map_err(|_| {
-            LevelDbError::corruption("log checksum header is truncated".to_string())
-        })?);
-        let length = usize::from(u16::from_le_bytes(
-            bytes[pos + 4..pos + 6].try_into().map_err(|_| {
-                LevelDbError::corruption("log length header is truncated".to_string())
-            })?,
-        ));
-        let record_type = bytes[pos + 6];
-        pos += HEADER_SIZE;
-
-        if record_type == ZERO_TYPE && length == 0 {
-            pos += BLOCK_SIZE - block_offset - HEADER_SIZE;
-            continue;
-        }
-        let payload_capacity = BLOCK_SIZE - block_offset - HEADER_SIZE;
-        if length > payload_capacity {
-            if paranoid_checks {
-                return Err(LevelDbError::corruption(
-                    "log record crosses a physical block boundary".to_string(),
-                ));
+    loop {
+        let mut filled = 0_usize;
+        while filled < BLOCK_SIZE {
+            let read = file.read(&mut block[filled..])?;
+            if read == 0 {
+                break;
             }
-            pos += BLOCK_SIZE - (pos % BLOCK_SIZE);
-            scratch.clear();
-            assembling = false;
-            continue;
+            filled = filled.saturating_add(read);
         }
-        if pos + length > bytes.len() {
-            if paranoid_checks {
-                return Err(LevelDbError::corruption(
-                    "log record payload is truncated".to_string(),
-                ));
-            }
+        if filled == 0 {
             break;
         }
-        let payload = &bytes[pos..pos + length];
-        pos += length;
 
-        if paranoid_checks {
-            let record_type_bytes = [record_type];
-            let actual = masked_crc32c(&[&record_type_bytes, payload]);
-            if checksum != actual {
-                return Err(LevelDbError::corruption(
-                    "log record checksum mismatch".to_string(),
-                ));
+        let mut pos = 0_usize;
+        while pos + HEADER_SIZE <= filled {
+            let header_start = pos;
+            let checksum = u32::from_le_bytes(
+                block[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| LevelDbError::corruption("log checksum header is truncated"))?,
+            );
+            let length = usize::from(u16::from_le_bytes(
+                block[pos + 4..pos + 6]
+                    .try_into()
+                    .map_err(|_| LevelDbError::corruption("log length header is truncated"))?,
+            ));
+            let record_type = block[pos + 6];
+            pos += HEADER_SIZE;
+
+            if record_type == ZERO_TYPE && length == 0 {
+                // A zero header marks block padding. Ignore the remaining zero
+                // padding but reject non-zero garbage in paranoid mode.
+                if paranoid_checks && block[pos..filled].iter().any(|byte| *byte != 0) {
+                    return Err(LevelDbError::corruption(
+                        "log block padding contains non-zero bytes".to_string(),
+                    ));
+                }
+                pos = filled;
+                break;
+            }
+
+            let payload_capacity = BLOCK_SIZE - header_start - HEADER_SIZE;
+            if length > payload_capacity {
+                if paranoid_checks {
+                    return Err(LevelDbError::corruption(
+                        "log record crosses a physical block boundary".to_string(),
+                    ));
+                }
+                scratch.clear();
+                assembling = false;
+                pos = filled;
+                break;
+            }
+            if pos.saturating_add(length) > filled {
+                if paranoid_checks {
+                    return Err(LevelDbError::corruption(
+                        "log record payload is truncated".to_string(),
+                    ));
+                }
+                return Ok(());
+            }
+
+            let payload = &block[pos..pos + length];
+            pos += length;
+
+            if paranoid_checks {
+                let record_type_bytes = [record_type];
+                let actual = masked_crc32c(&[&record_type_bytes, payload]);
+                if checksum != actual {
+                    return Err(LevelDbError::corruption(
+                        "log record checksum mismatch".to_string(),
+                    ));
+                }
+            }
+
+            match record_type {
+                FULL_TYPE => {
+                    if assembling && paranoid_checks {
+                        return Err(LevelDbError::corruption(
+                            "full log record interrupts a fragmented record".to_string(),
+                        ));
+                    }
+                    scratch.clear();
+                    assembling = false;
+                    visitor(payload)?;
+                }
+                FIRST_TYPE => {
+                    if assembling && paranoid_checks {
+                        return Err(LevelDbError::corruption(
+                            "first log fragment interrupts a fragmented record".to_string(),
+                        ));
+                    }
+                    scratch.clear();
+                    scratch.extend_from_slice(payload);
+                    assembling = true;
+                }
+                MIDDLE_TYPE => {
+                    if !assembling {
+                        if paranoid_checks {
+                            return Err(LevelDbError::corruption(
+                                "middle log fragment has no first fragment".to_string(),
+                            ));
+                        }
+                        continue;
+                    }
+                    scratch.extend_from_slice(payload);
+                }
+                LAST_TYPE => {
+                    if !assembling {
+                        if paranoid_checks {
+                            return Err(LevelDbError::corruption(
+                                "last log fragment has no first fragment".to_string(),
+                            ));
+                        }
+                        continue;
+                    }
+                    scratch.extend_from_slice(payload);
+                    visitor(&scratch)?;
+                    scratch.clear();
+                    assembling = false;
+                }
+                other if paranoid_checks => {
+                    return Err(LevelDbError::corruption(format!(
+                        "unknown log record type {other}"
+                    )));
+                }
+                _ => {}
             }
         }
 
-        match record_type {
-            FULL_TYPE => {
-                if assembling && paranoid_checks {
-                    return Err(LevelDbError::corruption(
-                        "full log record interrupts a fragmented record".to_string(),
-                    ));
-                }
-                scratch.clear();
-                assembling = false;
-                records.push(payload.to_vec());
-            }
-            FIRST_TYPE => {
-                if assembling && paranoid_checks {
-                    return Err(LevelDbError::corruption(
-                        "first log fragment interrupts a fragmented record".to_string(),
-                    ));
-                }
-                scratch.clear();
-                scratch.extend_from_slice(payload);
-                assembling = true;
-            }
-            MIDDLE_TYPE => {
-                if !assembling {
-                    if paranoid_checks {
-                        return Err(LevelDbError::corruption(
-                            "middle log fragment has no first fragment".to_string(),
-                        ));
-                    }
-                    continue;
-                }
-                scratch.extend_from_slice(payload);
-            }
-            LAST_TYPE => {
-                if !assembling {
-                    if paranoid_checks {
-                        return Err(LevelDbError::corruption(
-                            "last log fragment has no first fragment".to_string(),
-                        ));
-                    }
-                    continue;
-                }
-                scratch.extend_from_slice(payload);
-                records.push(std::mem::take(&mut scratch));
-                assembling = false;
-            }
-            other if paranoid_checks => {
-                return Err(LevelDbError::corruption(format!(
-                    "unknown log record type {other}"
-                )));
-            }
-            _ => {}
+        if paranoid_checks && pos < filled && block[pos..filled].iter().any(|byte| *byte != 0) {
+            return Err(LevelDbError::corruption(
+                "log has a truncated physical record header".to_string(),
+            ));
+        }
+        if filled < BLOCK_SIZE {
+            break;
         }
     }
 
@@ -167,12 +204,15 @@ pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec
             "fragmented log record is missing its last fragment".to_string(),
         ));
     }
-    if paranoid_checks && pos < bytes.len() && bytes[pos..].iter().any(|byte| *byte != 0) {
-        return Err(LevelDbError::corruption(
-            "log has a truncated physical record header".to_string(),
-        ));
-    }
+    Ok(())
+}
 
+pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec<Vec<u8>>> {
+    let mut records = Vec::new();
+    for_each_record(file, paranoid_checks, |record| {
+        records.push(record.to_vec());
+        Ok(())
+    })?;
     Ok(records)
 }
 
@@ -218,6 +258,26 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0], b"small");
         assert_eq!(records[1], vec![9; BLOCK_SIZE * 2]);
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn streaming_reader_reuses_fragment_scratch() {
+        let path = temporary_log_path("streaming");
+        {
+            let mut file = File::create(&path).expect("create");
+            append_record(&mut file, &vec![3; BLOCK_SIZE * 2]).expect("large");
+            append_record(&mut file, b"tail").expect("tail");
+        }
+
+        let mut lengths = Vec::new();
+        for_each_record(&mut File::open(&path).expect("open"), true, |record| {
+            lengths.push(record.len());
+            Ok(())
+        })
+        .expect("stream records");
+
+        assert_eq!(lengths, vec![BLOCK_SIZE * 2, 4]);
         std::fs::remove_file(path).expect("cleanup");
     }
 
