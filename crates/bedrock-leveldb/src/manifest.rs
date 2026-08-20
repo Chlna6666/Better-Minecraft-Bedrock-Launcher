@@ -17,8 +17,6 @@ pub(crate) struct TableFileMeta {
     pub(crate) number: u64,
     pub(crate) level: u32,
     pub(crate) file_size: u64,
-    pub(crate) smallest_key: Option<Vec<u8>>,
-    pub(crate) largest_key: Option<Vec<u8>>,
     pub(crate) smallest_internal_key: Option<Vec<u8>>,
     pub(crate) largest_internal_key: Option<Vec<u8>>,
 }
@@ -30,8 +28,6 @@ impl TableFileMeta {
             number,
             level: 0,
             file_size: 0,
-            smallest_key: None,
-            largest_key: None,
             smallest_internal_key: None,
             largest_internal_key: None,
         }
@@ -49,22 +45,34 @@ impl TableFileMeta {
             number,
             level,
             file_size,
-            smallest_key: internal_user_key(&smallest_internal_key).map(<[u8]>::to_vec),
-            largest_key: internal_user_key(&largest_internal_key).map(<[u8]>::to_vec),
             smallest_internal_key: Some(smallest_internal_key),
             largest_internal_key: Some(largest_internal_key),
         }
     }
 
     #[must_use]
+    pub(crate) fn smallest_user_key(&self) -> Option<&[u8]> {
+        self.smallest_internal_key
+            .as_deref()
+            .and_then(internal_user_key)
+    }
+
+    #[must_use]
+    pub(crate) fn largest_user_key(&self) -> Option<&[u8]> {
+        self.largest_internal_key
+            .as_deref()
+            .and_then(internal_user_key)
+    }
+
+    #[must_use]
     pub(crate) fn may_contain_user_key(&self, key: &[u8]) -> bool {
-        if let Some(smallest_key) = &self.smallest_key {
-            if key < smallest_key.as_slice() {
+        if let Some(smallest_key) = self.smallest_user_key() {
+            if key < smallest_key {
                 return false;
             }
         }
-        if let Some(largest_key) = &self.largest_key {
-            if key > largest_key.as_slice() {
+        if let Some(largest_key) = self.largest_user_key() {
+            if key > largest_key {
                 return false;
             }
         }
@@ -317,8 +325,6 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
                     number: file_number,
                     level,
                     file_size,
-                    smallest_key: internal_user_key(smallest).map(<[u8]>::to_vec),
-                    largest_key: internal_user_key(largest).map(<[u8]>::to_vec),
                     smallest_internal_key: Some(smallest.to_vec()),
                     largest_internal_key: Some(largest.to_vec()),
                 });
@@ -377,6 +383,20 @@ mod tests {
         assert_eq!(manifest.prev_log_number, 6);
         assert_eq!(manifest.last_sequence, 42);
         assert_eq!(manifest.next_file_number, 11);
+    }
+
+    #[test]
+    fn native_table_user_ranges_borrow_internal_keys() {
+        let mut smallest = b"alpha".to_vec();
+        smallest.extend_from_slice(&1_u64.to_le_bytes());
+        let mut largest = b"omega".to_vec();
+        largest.extend_from_slice(&2_u64.to_le_bytes());
+        let table = TableFileMeta::native(7, 1, 123, smallest, largest);
+
+        assert_eq!(table.smallest_user_key(), Some(b"alpha".as_slice()));
+        assert_eq!(table.largest_user_key(), Some(b"omega".as_slice()));
+        assert!(table.may_contain_user_key(b"middle"));
+        assert!(!table.may_contain_user_key(b"zzz"));
     }
 }
 
