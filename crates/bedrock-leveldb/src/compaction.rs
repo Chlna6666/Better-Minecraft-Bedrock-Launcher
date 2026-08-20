@@ -14,7 +14,8 @@ const LEVEL_ZERO_FILE_TRIGGER: usize = 4;
 const MAX_LEVEL_ZERO_INPUTS_PER_PASS: usize = 8;
 const MAX_COMPACTION_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const TARGET_OUTPUT_FILE_BYTES: usize = 2 * 1024 * 1024;
-const STREAM_QUEUE_DEPTH: usize = 8;
+const STREAM_QUEUE_DEPTH: usize = 4;
+const COMPACTION_STREAM_STACK_BYTES: usize = 1024 * 1024;
 
 pub(crate) struct CompactionPlan {
     pub(crate) inputs: Vec<TableFileMeta>,
@@ -182,37 +183,44 @@ pub(crate) fn merge(
     let mut pending = VecDeque::from(pending);
 
     thread::scope(|scope| -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
-        let spawn_stream = |path: std::path::PathBuf| {
+        let spawn_stream = |path: std::path::PathBuf, table_number: u64| -> Result<StreamHandle> {
             let (sender, receiver) = sync_channel(STREAM_QUEUE_DEPTH);
             let (recycle, recycled_keys) = sync_channel::<Vec<u8>>(STREAM_QUEUE_DEPTH);
-            scope.spawn(move || {
-                let result = table::for_each_table_lookup(
-                    &path,
-                    paranoid_checks,
-                    None,
-                    |key, value| {
-                        let mut owned_key = recycled_keys
-                            .try_recv()
-                            .unwrap_or_else(|_| Vec::with_capacity(key.len()));
-                        owned_key.clear();
-                        owned_key.extend_from_slice(key);
-                        let message = StreamMessage::Entry(StreamEntry {
-                            key: owned_key,
-                            value: value.cloned(),
-                        });
-                        if sender.send(message).is_err() {
-                            return Ok(VisitorControl::Stop);
-                        }
-                        Ok(VisitorControl::Continue)
-                    },
-                );
-                let final_message = match result {
-                    Ok(_) => StreamMessage::Done,
-                    Err(error) => StreamMessage::Error(error),
-                };
-                let _ = sender.send(final_message);
-            });
-            StreamHandle { receiver, recycle }
+            let error_path = path.clone();
+            thread::Builder::new()
+                .name(format!("bedrock-leveldb-compact-{table_number}"))
+                .stack_size(COMPACTION_STREAM_STACK_BYTES)
+                .spawn_scoped(scope, move || {
+                    let result = table::for_each_table_lookup(
+                        &path,
+                        paranoid_checks,
+                        None,
+                        |key, value| {
+                            let mut owned_key = recycled_keys
+                                .try_recv()
+                                .unwrap_or_else(|_| Vec::with_capacity(key.len()));
+                            owned_key.clear();
+                            owned_key.extend_from_slice(key);
+                            let message = StreamMessage::Entry(StreamEntry {
+                                key: owned_key,
+                                value: value.cloned(),
+                            });
+                            if sender.send(message).is_err() {
+                                return Ok(VisitorControl::Stop);
+                            }
+                            Ok(VisitorControl::Continue)
+                        },
+                    );
+                    let final_message = match result {
+                        Ok(_) => StreamMessage::Done,
+                        Err(error) => StreamMessage::Error(error),
+                    };
+                    let _ = sender.send(final_message);
+                })
+                .map_err(|error| {
+                    LevelDbError::io_at("spawn compaction stream", &error_path, error)
+                })?;
+            Ok(StreamHandle { receiver, recycle })
         };
 
         let mut streams = std::iter::repeat_with(|| None)
@@ -241,7 +249,7 @@ pub(crate) fn merge(
                     .pop_front()
                     .expect("front was checked before compaction stream activation");
                 let path = root.join(Manifest::table_name(next.table.number));
-                streams[next.priority] = Some(spawn_stream(path));
+                streams[next.priority] = Some(spawn_stream(path, next.table.number)?);
                 advance_stream(next.priority, &mut streams, &mut heap)?;
             }
 
