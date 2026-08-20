@@ -6,12 +6,13 @@ use bytes::Bytes;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
 
 pub(crate) const MAX_LEVEL: u32 = 6;
 const LEVEL_ZERO_FILE_TRIGGER: usize = 4;
 const MAX_LEVEL_ZERO_INPUTS_PER_PASS: usize = 8;
+const MAX_COMPACTION_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const TARGET_OUTPUT_FILE_BYTES: usize = 2 * 1024 * 1024;
 const STREAM_QUEUE_DEPTH: usize = 8;
 
@@ -43,6 +44,12 @@ enum StreamMessage {
     Entry(StreamEntry),
     Done,
     Error(LevelDbError),
+}
+
+#[derive(Debug)]
+struct StreamHandle {
+    receiver: Receiver<StreamMessage>,
+    recycle: SyncSender<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -88,8 +95,7 @@ pub(crate) fn plan(manifest: &Manifest, force: bool) -> Option<CompactionPlan> {
             .cloned()
             .collect::<Vec<_>>();
         level_zero.sort_by_key(|table| table.number);
-        level_zero.truncate(MAX_LEVEL_ZERO_INPUTS_PER_PASS);
-        level_zero
+        take_bounded_level_zero_inputs(level_zero)
     } else {
         // Leveled tables are compacted one source range at a time. Besides
         // bounding the k-way merge fan-in, this avoids force compaction turning
@@ -118,13 +124,44 @@ pub(crate) fn plan(manifest: &Manifest, force: bool) -> Option<CompactionPlan> {
     })
 }
 
+fn take_bounded_level_zero_inputs(level_zero: Vec<TableFileMeta>) -> Vec<TableFileMeta> {
+    let mut selected = Vec::with_capacity(MAX_LEVEL_ZERO_INPUTS_PER_PASS.min(level_zero.len()));
+    let mut selected_bytes = 0_u64;
+
+    for table in level_zero {
+        if selected.len() >= MAX_LEVEL_ZERO_INPUTS_PER_PASS {
+            break;
+        }
+        let table_bytes = compaction_budget_bytes(&table);
+        if !selected.is_empty()
+            && selected_bytes.saturating_add(table_bytes) > MAX_COMPACTION_SOURCE_BYTES
+        {
+            break;
+        }
+        selected_bytes = selected_bytes.saturating_add(table_bytes);
+        selected.push(table);
+    }
+
+    selected
+}
+
+fn compaction_budget_bytes(table: &TableFileMeta) -> u64 {
+    if table.file_size == 0 {
+        TARGET_OUTPUT_FILE_BYTES as u64
+    } else {
+        table.file_size
+    }
+}
+
 /// Merges compaction inputs with a bounded streaming k-way merge.
 ///
 /// Table scans feed small bounded queues and are activated lazily from manifest
 /// key ranges. The heap therefore retains only one current entry per active
 /// input instead of materializing every input table into a temporary map before
 /// merging. Output partitions keep the existing `Db` write contract and are
-/// capped by [`TARGET_OUTPUT_FILE_BYTES`].
+/// capped by [`TARGET_OUTPUT_FILE_BYTES`]. Duplicate input-key buffers are
+/// recycled back to active producers so repeated versions do not continuously
+/// churn the allocator.
 pub(crate) fn merge(
     root: &Path,
     plan: &CompactionPlan,
@@ -147,14 +184,20 @@ pub(crate) fn merge(
     thread::scope(|scope| -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
         let spawn_stream = |path: std::path::PathBuf| {
             let (sender, receiver) = sync_channel(STREAM_QUEUE_DEPTH);
+            let (recycle, recycled_keys) = sync_channel::<Vec<u8>>(STREAM_QUEUE_DEPTH);
             scope.spawn(move || {
                 let result = table::for_each_table_lookup(
                     &path,
                     paranoid_checks,
                     None,
                     |key, value| {
+                        let mut owned_key = recycled_keys
+                            .try_recv()
+                            .unwrap_or_else(|_| Vec::with_capacity(key.len()));
+                        owned_key.clear();
+                        owned_key.extend_from_slice(key);
                         let message = StreamMessage::Entry(StreamEntry {
-                            key: key.to_vec(),
+                            key: owned_key,
                             value: value.cloned(),
                         });
                         if sender.send(message).is_err() {
@@ -169,12 +212,12 @@ pub(crate) fn merge(
                 };
                 let _ = sender.send(final_message);
             });
-            receiver
+            StreamHandle { receiver, recycle }
         };
 
-        let mut receivers = std::iter::repeat_with(|| None)
+        let mut streams = std::iter::repeat_with(|| None)
             .take(input_count)
-            .collect::<Vec<Option<Receiver<StreamMessage>>>>();
+            .collect::<Vec<Option<StreamHandle>>>();
         let mut heap = BinaryHeap::<HeapEntry>::new();
         let mut outputs = Vec::<BTreeMap<Vec<u8>, Option<Bytes>>>::new();
         let mut current = BTreeMap::<Vec<u8>, Option<Bytes>>::new();
@@ -198,8 +241,8 @@ pub(crate) fn merge(
                     .pop_front()
                     .expect("front was checked before compaction stream activation");
                 let path = root.join(Manifest::table_name(next.table.number));
-                receivers[next.priority] = Some(spawn_stream(path));
-                advance_stream(next.priority, &mut receivers, &mut heap)?;
+                streams[next.priority] = Some(spawn_stream(path));
+                advance_stream(next.priority, &mut streams, &mut heap)?;
             }
 
             let Some(first) = heap.pop() else {
@@ -211,30 +254,36 @@ pub(crate) fn merge(
                 continue;
             };
 
-            let key = first.key;
+            let mut winner_key = first.key;
             let mut winner_priority = first.priority;
             let mut winner_value = first.value;
-            advance_stream(first.priority, &mut receivers, &mut heap)?;
+            advance_stream(first.priority, &mut streams, &mut heap)?;
 
             while heap
                 .peek()
-                .is_some_and(|entry| entry.key.as_slice() == key.as_slice())
+                .is_some_and(|entry| entry.key.as_slice() == winner_key.as_slice())
             {
                 let same_key = heap
                     .pop()
                     .expect("heap entry was checked before equal-key pop");
-                if same_key.priority >= winner_priority {
-                    winner_priority = same_key.priority;
+                let same_priority = same_key.priority;
+                if same_priority >= winner_priority {
+                    recycle_key(winner_priority, winner_key, &streams);
+                    winner_key = same_key.key;
+                    winner_priority = same_priority;
                     winner_value = same_key.value;
+                } else {
+                    recycle_key(same_priority, same_key.key, &streams);
                 }
-                advance_stream(same_key.priority, &mut receivers, &mut heap)?;
+                advance_stream(same_priority, &mut streams, &mut heap)?;
             }
 
             if plan.output_level == MAX_LEVEL && winner_value.is_none() {
+                recycle_key(winner_priority, winner_key, &streams);
                 continue;
             }
 
-            let entry_bytes = key
+            let entry_bytes = winner_key
                 .len()
                 .saturating_add(winner_value.as_ref().map_or(0, Bytes::len))
                 .saturating_add(24);
@@ -245,7 +294,7 @@ pub(crate) fn merge(
                 current_bytes = 0;
             }
             current_bytes = current_bytes.saturating_add(entry_bytes);
-            current.insert(key, winner_value);
+            current.insert(winner_key, winner_value);
         }
 
         if !current.is_empty() {
@@ -253,6 +302,12 @@ pub(crate) fn merge(
         }
         Ok(outputs)
     })
+}
+
+fn recycle_key(priority: usize, key: Vec<u8>, streams: &[Option<StreamHandle>]) {
+    if let Some(stream) = streams.get(priority).and_then(Option::as_ref) {
+        let _ = stream.recycle.try_send(key);
+    }
 }
 
 fn compare_pending_inputs(left: &PendingInput, right: &PendingInput) -> Ordering {
@@ -282,10 +337,10 @@ fn should_activate(input: &PendingInput, current_key: Option<&[u8]>) -> bool {
 
 fn advance_stream(
     priority: usize,
-    receivers: &mut [Option<Receiver<StreamMessage>>],
+    streams: &mut [Option<StreamHandle>],
     heap: &mut BinaryHeap<HeapEntry>,
 ) -> Result<()> {
-    let message = receivers
+    let message = streams
         .get(priority)
         .and_then(Option::as_ref)
         .ok_or_else(|| {
@@ -293,6 +348,7 @@ fn advance_stream(
                 "compaction stream {priority} is not active while advancing"
             ))
         })?
+        .receiver
         .recv()
         .map_err(|_| {
             LevelDbError::corruption(format!(
@@ -309,10 +365,10 @@ fn advance_stream(
             });
         }
         StreamMessage::Done => {
-            receivers[priority] = None;
+            streams[priority] = None;
         }
         StreamMessage::Error(error) => {
-            receivers[priority] = None;
+            streams[priority] = None;
             return Err(error);
         }
     }
@@ -470,7 +526,11 @@ mod tests {
             output_level: MAX_LEVEL,
         };
         let partitions = merge(dir.path(), &plan, true).expect("terminal streaming merge");
-        assert!(partitions.iter().all(|partition| !partition.contains_key(b"gone".as_slice())));
+        assert!(
+            partitions
+                .iter()
+                .all(|partition| !partition.contains_key(b"gone".as_slice()))
+        );
     }
 
     #[test]
@@ -490,5 +550,51 @@ mod tests {
             .filter(|table| table.level == 0)
             .count();
         assert_eq!(level_zero_inputs, MAX_LEVEL_ZERO_INPUTS_PER_PASS);
+    }
+
+    #[test]
+    fn level_zero_plan_bounds_source_bytes() {
+        let mut manifest = Manifest::default();
+        for number in 2..8 {
+            let mut table = TableFileMeta::without_range(number);
+            table.level = 0;
+            table.file_size = 6 * 1024 * 1024;
+            manifest.table_numbers.push(number);
+            manifest.table_files.push(table);
+        }
+
+        let plan = plan(&manifest, true).expect("byte-bounded level-zero plan");
+        let level_zero_inputs = plan
+            .inputs
+            .iter()
+            .filter(|table| table.level == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(level_zero_inputs.len(), 2);
+        assert!(
+            level_zero_inputs
+                .iter()
+                .map(|table| table.file_size)
+                .sum::<u64>()
+                <= MAX_COMPACTION_SOURCE_BYTES
+        );
+    }
+
+    #[test]
+    fn level_zero_plan_keeps_one_oversized_source() {
+        let mut manifest = Manifest::default();
+        let mut oversized = TableFileMeta::without_range(2);
+        oversized.level = 0;
+        oversized.file_size = MAX_COMPACTION_SOURCE_BYTES.saturating_mul(2);
+        manifest.table_numbers.push(oversized.number);
+        manifest.table_files.push(oversized);
+
+        let plan = plan(&manifest, true).expect("oversized level-zero plan");
+        assert_eq!(
+            plan.inputs
+                .iter()
+                .filter(|table| table.level == 0)
+                .count(),
+            1
+        );
     }
 }
