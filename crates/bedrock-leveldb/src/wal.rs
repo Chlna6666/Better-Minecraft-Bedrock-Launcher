@@ -1,4 +1,4 @@
-use crate::coding::{crc32c, mask_crc, unmask_crc};
+use crate::coding::masked_crc32c;
 use crate::error::{LevelDbError, Result};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -99,11 +99,9 @@ pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec
         pos += length;
 
         if paranoid_checks {
-            let mut crc_input = Vec::with_capacity(1 + payload.len());
-            crc_input.push(record_type);
-            crc_input.extend_from_slice(payload);
-            let actual = crc32c(&crc_input);
-            if unmask_crc(checksum) != actual {
+            let record_type_bytes = [record_type];
+            let actual = masked_crc32c(&[&record_type_bytes, payload]);
+            if checksum != actual {
                 return Err(LevelDbError::corruption(
                     "log record checksum mismatch".to_string(),
                 ));
@@ -181,14 +179,12 @@ pub(crate) fn read_records(file: &mut File, paranoid_checks: bool) -> Result<Vec
 fn write_physical_record(file: &mut File, record_type: u8, payload: &[u8]) -> Result<()> {
     let length = u16::try_from(payload.len())
         .map_err(|_| LevelDbError::invalid_argument("log fragment is too large".to_string()))?;
-    let mut crc_input = Vec::with_capacity(1 + payload.len());
-    crc_input.push(record_type);
-    crc_input.extend_from_slice(payload);
-    let checksum = mask_crc(crc32c(&crc_input));
+    let record_type_bytes = [record_type];
+    let checksum = masked_crc32c(&[&record_type_bytes, payload]);
 
     file.write_all(&checksum.to_le_bytes())?;
     file.write_all(&length.to_le_bytes())?;
-    file.write_all(&[record_type])?;
+    file.write_all(&record_type_bytes)?;
     file.write_all(payload)?;
     Ok(())
 }
