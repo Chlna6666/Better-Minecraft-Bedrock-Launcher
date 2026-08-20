@@ -103,9 +103,6 @@ pub fn create_initial_directories() {
         cache_subdir("data"),
         cache_subdir("api"),
     ];
-    #[cfg(target_os = "windows")]
-    dirs.push(bmcbl_subdir("music"));
-
     #[cfg(target_os = "linux")]
     let dirs = {
         dirs.extend([state_dir(), runners_dir(), prefixes_dir()]);
