@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::core::minecraft::mod_loaders::InstalledModLoader;
@@ -84,6 +85,32 @@ pub(crate) fn sort_launch_versions(versions: &mut [LaunchVersionEntry]) {
     });
 }
 
+fn normalized_path_components(path: &str) -> Vec<String> {
+    Path::new(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect()
+}
+
+pub(crate) fn version_folder_matches(left: &str, right: &str) -> bool {
+    let left = normalized_path_components(left);
+    let right = normalized_path_components(right);
+
+    #[cfg(target_os = "windows")]
+    {
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right.iter())
+                .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        left == right
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +144,31 @@ mod tests {
         let mut versions = vec![version("old", "1.20.0", 0), version("new", "1.21.0", 0)];
         sort_launch_versions(&mut versions);
         assert_eq!(versions[0].folder.as_ref(), "new");
+    }
+
+    #[test]
+    fn folder_identity_normalizes_redundant_path_syntax() {
+        assert!(version_folder_matches(
+            "versions/./stable/",
+            "versions/stable"
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn folder_identity_uses_windows_path_semantics() {
+        assert!(version_folder_matches(
+            r"C:\\Games\\BMCBL\\ZH-Test",
+            "c:/games/bmcbl/zh-test/",
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn folder_identity_preserves_case_on_unix() {
+        assert!(!version_folder_matches(
+            "versions/Stable",
+            "versions/stable"
+        ));
     }
 }

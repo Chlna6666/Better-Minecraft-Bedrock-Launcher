@@ -6,6 +6,7 @@ use crate::core::minecraft::import::{
     ImportCheckResult, PackagePreview, PreviewIconData, PreviewImageFormat, WorldPackReference,
 };
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
+use crate::core::version::launch_versions::version_folder_matches;
 use crate::launch::ImportLaunchContext;
 use crate::ui::animation::request_animation_frame_if;
 use crate::ui::components::dropdown::{self, Dropdown, DropdownOption};
@@ -25,6 +26,7 @@ use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::window::import::ImportWindowTarget;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui::{InteractiveElement, ParentElement, Styled};
@@ -42,9 +44,17 @@ enum StatusKind {
     Success,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportPresentation {
+    Window,
+    Overlay,
+}
+
 pub struct ImportWindowView {
     window_id: Option<u64>,
+    presentation: ImportPresentation,
     import_context: ImportLaunchContext,
+    target: ImportWindowTarget,
     preview: Option<PackagePreview>,
     selected_folder: Option<SharedString>,
     status: Option<(StatusKind, SharedString)>,
@@ -62,6 +72,8 @@ pub struct ImportWindowView {
 impl ImportWindowView {
     pub fn new(
         import_context: ImportLaunchContext,
+        target: ImportWindowTarget,
+        presentation: ImportPresentation,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -91,9 +103,11 @@ impl ImportWindowView {
 
         let mut this = Self {
             window_id: None,
+            presentation,
             import_context,
+            selected_folder: target.version_folder.clone(),
+            target,
             preview: None,
-            selected_folder: None,
             status: None,
             conflict: None,
             show_conflict_dialog: false,
@@ -113,7 +127,17 @@ impl ImportWindowView {
     fn sync_selected_folder(&mut self, cx: &mut Context<Self>) {
         let snapshot = read_local_versions_snapshot(cx);
         if snapshot.versions.is_empty() {
-            self.selected_folder = None;
+            return;
+        }
+
+        if self.target.lock_version {
+            if let Some(target) = self.target.version_folder.as_ref()
+                && let Some(version) = snapshot.versions.iter().find(|version| {
+                    version_folder_matches(version.folder.as_ref(), target.as_ref())
+                })
+            {
+                self.selected_folder = Some(SharedString::from(version.folder.clone()));
+            }
             return;
         }
 
@@ -121,7 +145,7 @@ impl ImportWindowView {
             snapshot
                 .versions
                 .iter()
-                .any(|version| version.folder.as_ref() == selected.as_ref())
+                .any(|version| version_folder_matches(version.folder.as_ref(), selected.as_ref()))
         });
         if !exists {
             self.selected_folder =
@@ -218,6 +242,7 @@ impl ImportWindowView {
         let build_type = version_build_type(selected_version);
         let edition = version_edition(selected_version);
         let enable_isolation = version_enable_isolation(selected_version);
+        let user_id = self.target_user_id(&selected_folder);
         let launch_version = launch_version_descriptor(selected_version);
         let file_path = self.import_context.file_path.display().to_string();
         let file_path_for_log = file_path.clone();
@@ -237,7 +262,7 @@ impl ImportWindowView {
             edition: edition.clone(),
             version_name: selected_folder.to_string(),
             enable_isolation,
-            user_id: None,
+            user_id: user_id.clone(),
             file_path: file_path.clone(),
             allow_shared_fallback,
         };
@@ -283,7 +308,7 @@ impl ImportWindowView {
                 edition,
                 version_name: selected_folder.to_string(),
                 enable_isolation,
-                user_id: None,
+                user_id,
                 file_paths: vec![file_path],
                 overwrite,
                 allow_shared_fallback,
@@ -323,6 +348,11 @@ impl ImportWindowView {
         self.launch_after_import = false;
         match result {
             Ok(result) => {
+                if result.imported_count > 0
+                    && let Some(version_folder) = self.selected_folder.clone()
+                {
+                    crate::ui::state::import::publish_import_completion(version_folder, cx);
+                }
                 debug!(
                     "Import window finish success: imported={}, failed={}, launch_after_import={}",
                     result.imported_count, result.failed_count, should_launch_after_import
@@ -340,7 +370,7 @@ impl ImportWindowView {
                     cx.global::<I18n>().t("Import.importSuccessLaunching")
                 } else if result.failed_count == 0 {
                     SharedString::from(format!(
-                        "{}，5 秒后自动关闭窗口",
+                        "{}，5 秒后自动关闭",
                         cx.global::<I18n>().t("Import.importSuccess")
                     ))
                 } else {
@@ -374,6 +404,10 @@ impl ImportWindowView {
     }
 
     fn schedule_window_close_after(&self, delay: Duration, cx: &mut Context<Self>) {
+        if self.presentation == ImportPresentation::Overlay {
+            self.schedule_overlay_close_after(delay, cx);
+            return;
+        }
         let Some(target_window_id) = self.window_id else {
             warn!("Import window close skipped: missing window id");
             return;
@@ -422,6 +456,32 @@ impl ImportWindowView {
         .detach();
     }
 
+    fn schedule_overlay_close_after(&self, delay: Duration, cx: &mut Context<Self>) {
+        cx.spawn(async move |handle, cx| {
+            cx.background_executor().timer(delay).await;
+            let should_close = handle
+                .read_with(cx, |this, _cx| {
+                    this.status
+                        .as_ref()
+                        .is_some_and(|(kind, _)| *kind == StatusKind::Success)
+                })
+                .unwrap_or(false);
+            if should_close {
+                cx.update(crate::ui::state::import::dismiss_import_overlay)?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.presentation == ImportPresentation::Overlay {
+            crate::ui::state::import::dismiss_import_overlay(cx);
+        } else {
+            window.remove_window();
+        }
+    }
+
     pub fn attach_window_id(&mut self, window_id: u64, cx: &mut Context<Self>) {
         self.window_id = Some(window_id);
         cx.notify();
@@ -446,8 +506,20 @@ impl ImportWindowView {
     }
 
     fn set_selected_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
+        if self.target.lock_version {
+            return;
+        }
         self.selected_folder = Some(folder);
         cx.notify();
+    }
+
+    fn target_user_id(&self, selected_folder: &SharedString) -> Option<String> {
+        self.target
+            .version_folder
+            .as_ref()
+            .is_some_and(|target| version_folder_matches(target.as_ref(), selected_folder.as_ref()))
+            .then(|| self.target.user_id.as_ref().map(ToString::to_string))
+            .flatten()
     }
 
     fn start_titlebar_drag(
@@ -480,9 +552,16 @@ impl Render for ImportWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         sync_launcher_state(now, cx);
-        let window_width_px = window.bounds().size.width / px(1.0);
+        let window_width_px = if self.presentation == ImportPresentation::Overlay {
+            ((window.bounds().size.width / px(1.0)) - 32.0).min(900.0)
+        } else {
+            window.bounds().size.width / px(1.0)
+        };
         let use_two_column_layout = window_width_px >= IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX;
         let colors = self.theme_colors(cx);
+        let is_overlay = self.presentation == ImportPresentation::Overlay;
+        let content_padding = if is_overlay { 16.0 } else { 20.0 };
+        let column_gap = if is_overlay { 16.0 } else { 24.0 };
         let sidebar_dropdown_width = px((window_width_px - 40.0).clamp(240.0, 520.0));
         let versions = read_local_versions_snapshot(cx);
         let launcher_snapshot = read_launcher_snapshot(now, cx);
@@ -508,8 +587,12 @@ impl Render for ImportWindowView {
         let mut root = div()
             .relative()
             .size_full()
-            .bg(colors.bg)
-            .child(background_layer(&colors))
+            .bg(if is_overlay {
+                colors.settings_panel_bg
+            } else {
+                colors.bg
+            })
+            .when(!is_overlay, |this| this.child(background_layer(&colors)))
             .child(
                 div()
                     .relative()
@@ -524,8 +607,8 @@ impl Render for ImportWindowView {
                             .flex_1()
                             .min_h(px(0.))
                             .overflow_y_scrollbar()
-                            .px(px(20.))
-                            .py(px(18.))
+                            .px(px(content_padding))
+                            .py(px(if is_overlay { 14.0 } else { 18.0 }))
                             .flex()
                             .min_h(px(0.))
                             .justify_center()
@@ -541,7 +624,7 @@ impl Render for ImportWindowView {
                                                 .flex()
                                                 .items_start()
                                                 .min_h(px(0.))
-                                                .gap(px(24.))
+                                                .gap(px(column_gap))
                                                 .child(
                                                     div()
                                                         .flex_1()
@@ -554,7 +637,11 @@ impl Render for ImportWindowView {
                                                 )
                                                 .child(
                                                     div()
-                                                        .w(px(332.))
+                                                        .w(px(if is_overlay {
+                                                            316.0
+                                                        } else {
+                                                            332.0
+                                                        }))
                                                         .flex_none()
                                                         .flex()
                                                         .flex_col()
@@ -564,7 +651,11 @@ impl Render for ImportWindowView {
                                                             &colors,
                                                             cx,
                                                             &versions,
-                                                            px(296.),
+                                                            px(if is_overlay {
+                                                                280.0
+                                                            } else {
+                                                                296.0
+                                                            }),
                                                         ))
                                                         .when_some(
                                                             render_status_box(self, &colors),
@@ -627,7 +718,7 @@ impl Render for ImportWindowView {
             }
         }
 
-        if launcher_snapshot.show_modal {
+        if self.presentation == ImportPresentation::Window && launcher_snapshot.show_modal {
             root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
                 &launcher_snapshot,
                 window,
@@ -638,7 +729,7 @@ impl Render for ImportWindowView {
         #[cfg(target_os = "windows")]
         {
             let launch_prereq_state = cx.global::<LaunchPrereqState>();
-            if launch_prereq_state.visible {
+            if self.presentation == ImportPresentation::Window && launch_prereq_state.visible {
                 root = root.child(
                     crate::ui::overlays::launch_prereq::render_launch_prereq_overlay(
                         launch_prereq_state,
@@ -651,10 +742,14 @@ impl Render for ImportWindowView {
 
         let toast_state = cx.global::<toast::ToastState>();
         let window_id = window.window_handle().window_id();
-        if toast::has_visible_toasts(window_id, now, toast_state) {
+        if self.presentation == ImportPresentation::Window
+            && toast::has_visible_toasts(window_id, now, toast_state)
+        {
             root = root.child(toast::render_overlay(window, cx, &colors, now, toast_state));
         }
-        if toast::has_visible_breadcrumb(window_id, now, toast_state) {
+        if self.presentation == ImportPresentation::Window
+            && toast::has_visible_breadcrumb(window_id, now, toast_state)
+        {
             root = root.child(toast::render_breadcrumb_overlay(
                 window,
                 cx,
@@ -665,7 +760,9 @@ impl Render for ImportWindowView {
         }
 
         let dropdown_state = cx.global::<dropdown::DropdownOverlayState>();
-        if dropdown::has_visible_overlay(now, dropdown_state) {
+        if self.presentation == ImportPresentation::Window
+            && dropdown::has_visible_overlay(now, dropdown_state)
+        {
             root = root.child(dropdown::render_overlay(window, now, dropdown_state));
         }
 
@@ -680,15 +777,20 @@ fn render_window_header(
     window: &mut Window,
     cx: &mut Context<ImportWindowView>,
 ) -> AnyElement {
-    let window_width = window.bounds().size.width / px(1.0);
+    let is_overlay = view.presentation == ImportPresentation::Overlay;
+    let window_width = if is_overlay {
+        900.0
+    } else {
+        window.bounds().size.width / px(1.0)
+    };
     let compact_controls = window_width <= IMPORT_WINDOW_COMPACT_WIDTH_PX;
     let hide_file_path = window_width <= IMPORT_WINDOW_NARROW_WIDTH_PX;
     let controls_width = if compact_controls { px(56.) } else { px(68.) };
 
     let drag_surface = div()
         .w_full()
-        .h(px(46.))
-        .px(px(12.))
+        .h(px(if is_overlay { 56.0 } else { 46.0 }))
+        .px(px(if is_overlay { 16.0 } else { 12.0 }))
         .flex()
         .items_center()
         .justify_between()
@@ -701,7 +803,7 @@ fn render_window_header(
             a: 0.12,
             ..colors.border
         })
-        .when(!cfg!(windows), |this| {
+        .when(!is_overlay && !cfg!(windows), |this| {
             this.on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event, window, cx| {
@@ -716,7 +818,7 @@ fn render_window_header(
                 cx.listener(|this, _event, _window, cx| this.finish_titlebar_drag(cx)),
             )
         })
-        .when(cfg!(windows), |this| {
+        .when(!is_overlay && cfg!(windows), |this| {
             this.window_control_area(WindowControlArea::Drag)
         })
         .child(
@@ -769,14 +871,37 @@ fn render_window_header(
                         }),
                 ),
         )
-        .child(render_window_controls(
-            colors,
-            window,
-            compact_controls,
-            controls_width,
-        ));
+        .child(if is_overlay {
+            render_overlay_controls(colors, controls_width, cx)
+        } else {
+            render_window_controls(colors, window, compact_controls, controls_width)
+        });
 
     drag_surface.into_any_element()
+}
+
+fn render_overlay_controls(
+    colors: &ThemeColors,
+    width: Pixels,
+    cx: &mut Context<ImportWindowView>,
+) -> Div {
+    div()
+        .flex_none()
+        .w(width)
+        .flex()
+        .justify_end()
+        .items_center()
+        .child(
+            titlebar_button(colors, lucide_icons::icon_x(), true, false)
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.request_close(window, cx);
+                    }),
+                ),
+        )
 }
 
 fn background_layer(colors: &ThemeColors) -> Div {
@@ -1517,12 +1642,10 @@ fn render_versions_card(
     }
 
     let selected_index = selected_version_index(this, versions);
-    let selected_version = versions
-        .versions
-        .get(selected_index)
-        .or_else(|| versions.versions.first());
+    let selected_version = selected_index.and_then(|index| versions.versions.get(index));
     let dropdown_label = selected_version
-        .map(version_dropdown_label)
+        .map(version_primary_label)
+        .or_else(|| this.target.instance_name.clone())
         .unwrap_or_else(|| i18n.t("Import.noVersions"));
     let dropdown_options = versions
         .versions
@@ -1539,7 +1662,14 @@ fn render_versions_card(
         .collect::<Vec<_>>();
     let selected_meta = selected_version
         .map(version_detail_label)
+        .or_else(|| this.target.game_version.clone())
         .unwrap_or_else(|| i18n.t("Import.noVersions"));
+    let target_locked = this.target.lock_version;
+    let trigger_meta = if target_locked {
+        SharedString::from(format!("{selected_meta} · 已锁定为当前管理实例"))
+    } else {
+        selected_meta.clone()
+    };
 
     card = card
         .child(Dropdown::with_trigger(
@@ -1549,9 +1679,9 @@ fn render_versions_card(
             px(58.),
             dropdown_label,
             dropdown_options,
-            selected_index,
-            true,
-            |colors, _width, _trigger_height, enabled, open_k, label| {
+            selected_index.unwrap_or(0),
+            !target_locked,
+            move |colors, _width, _trigger_height, enabled, open_k, label| {
                 let chevron = svg()
                     .path(lucide_icons::icon_chevron_down())
                     .w(px(18.))
@@ -1604,7 +1734,7 @@ fn render_versions_card(
                                         div()
                                             .text_size(px(11.))
                                             .text_color(colors.text_secondary)
-                                            .child(SharedString::from("选择导入目标版本")),
+                                            .child(trigger_meta.clone()),
                                     ),
                             ),
                     )
@@ -2093,25 +2223,28 @@ fn info_summary_row(
 fn selected_version_index(
     view: &ImportWindowView,
     versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
-) -> usize {
-    view.selected_folder
-        .as_ref()
-        .and_then(|selected_folder| {
-            versions
-                .versions
-                .iter()
-                .position(|version| version.folder.as_ref() == selected_folder.as_ref())
+) -> Option<usize> {
+    view.selected_folder.as_ref().and_then(|selected_folder| {
+        versions.versions.iter().position(|version| {
+            version_folder_matches(version.folder.as_ref(), selected_folder.as_ref())
         })
-        .unwrap_or(0)
+    })
 }
 
 fn selected_launch_version<'a>(
     view: &ImportWindowView,
     versions: &'a crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
 ) -> Option<&'a crate::core::version::launch_versions::LaunchVersionEntry> {
+    if view.target.lock_version {
+        let selected_folder = view.selected_folder.as_ref()?;
+        return versions.versions.iter().find(|version| {
+            version_folder_matches(version.folder.as_ref(), selected_folder.as_ref())
+        });
+    }
+
     versions
         .versions
-        .get(selected_version_index(view, versions))
+        .get(selected_version_index(view, versions)?)
         .or_else(|| versions.versions.first())
 }
 
@@ -2165,7 +2298,10 @@ fn version_type_summary_label(
 fn version_dropdown_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> SharedString {
-    crate::ui::hooks::use_local_versions::launch_version_dropdown_label(version)
+    let name = version_primary_label(version);
+    let game_version = version_detail_label(version);
+    let edition = crate::ui::hooks::use_local_versions::launch_version_display_type(version);
+    SharedString::from(format!("{name} · {game_version} ({edition})"))
 }
 
 fn version_primary_label(
@@ -2223,10 +2359,11 @@ fn render_footer(
     cx: &mut Context<ImportWindowView>,
 ) -> AnyElement {
     let disabled = this.is_importing || disabled_by_context;
+    let is_overlay = this.presentation == ImportPresentation::Overlay;
     div()
         .w_full()
-        .px(px(20.))
-        .py(px(14.))
+        .px(px(if is_overlay { 16.0 } else { 20.0 }))
+        .py(px(if is_overlay { 12.0 } else { 14.0 }))
         .bg(Hsla {
             a: 0.94,
             ..colors.settings_panel_bg
@@ -2238,11 +2375,11 @@ fn render_footer(
         })
         .flex()
         .items_center()
-        .justify_center()
+        .justify_end()
         .gap(px(12.))
         .child(
             secondary_button(colors, import_label, disabled)
-                .w(px(180.))
+                .w(px(if is_overlay { 156.0 } else { 180.0 }))
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
@@ -2252,7 +2389,7 @@ fn render_footer(
         )
         .child(
             primary_button(colors, import_and_launch_label, disabled)
-                .w(px(220.))
+                .w(px(if is_overlay { 188.0 } else { 220.0 }))
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {

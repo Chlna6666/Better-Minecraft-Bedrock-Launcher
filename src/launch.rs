@@ -130,7 +130,7 @@ fn parse_launch_mode_from_cli(cli: Cli) -> LaunchMode {
     }
 
     let import_candidate = cli.import_file.or(cli.shell_open_target);
-    if let Some(file_path) = import_candidate.filter(|path| is_import_asset_file(path)) {
+    if let Some(file_path) = import_candidate.filter(|path| is_import_file(path)) {
         return LaunchMode::Import(ImportLaunchContext { file_path });
     }
 
@@ -146,14 +146,14 @@ where
     Cli::try_parse_from(args).map(parse_launch_mode_from_cli)
 }
 
-fn is_import_asset_file(path: &Path) -> bool {
+fn is_import_file(path: &Path) -> bool {
     let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
         return false;
     };
 
     matches!(
         extension.to_ascii_lowercase().as_str(),
-        "mcpack" | "mcworld" | "mcaddon" | "mctemplate"
+        "mcpack" | "mcworld" | "mcaddon" | "mctemplate" | "zip" | "appx" | "msixvc"
     )
 }
 
@@ -174,6 +174,18 @@ mod tests {
         let file_path = PathBuf::from("pack.mcpack");
         let launch_mode = parse_launch_mode_from(["BMCBL", "--import-file", "pack.mcpack"])
             .expect("parse launch args");
+
+        assert_eq!(
+            launch_mode,
+            LaunchMode::Import(ImportLaunchContext { file_path })
+        );
+    }
+
+    #[test]
+    fn parse_launch_mode_returns_import_for_local_game_package() {
+        let file_path = PathBuf::from("Minecraft.appx");
+        let launch_mode =
+            parse_launch_mode_from(["BMCBL", "Minecraft.appx"]).expect("parse launch args");
 
         assert_eq!(
             launch_mode,

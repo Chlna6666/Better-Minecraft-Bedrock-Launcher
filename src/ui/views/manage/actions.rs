@@ -196,46 +196,6 @@ impl ManagePageView {
         cx.notify();
     }
 
-    pub(super) fn import_version_package(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.defer(cx, move |_window, cx| {
-            cx.spawn(async move |cx| {
-                let selected = cx
-                    .background_spawn_blocking(|| {
-                        pick_file_path_with_filter("Packages", &["appx", "zip", "msixvc"])
-                    })
-                    .await;
-
-                let Some(path) = selected else {
-                    return Ok::<(), anyhow::Error>(());
-                };
-
-                let task_id = if path.to_ascii_lowercase().ends_with(".msixvc") {
-                    let folder_name = std::path::Path::new(&path)
-                        .file_stem()
-                        .and_then(|value| value.to_str())
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or("ImportedGDK");
-                    start_unpack_gdk_task(&path, folder_name)
-                } else {
-                    import_appx(path.clone(), None).await
-                };
-
-                cx.update(|cx| match task_id {
-                    Ok(task_id) => {
-                        toast::push(cx, SharedString::from("安装任务已开始"));
-                        watch_import_task(task_id, cx);
-                    }
-                    Err(error) => {
-                        toast::error(cx, SharedString::from(error));
-                    }
-                })?;
-
-                Ok::<(), anyhow::Error>(())
-            })
-            .detach();
-        });
-    }
-
     pub(super) fn open_selected_version_folder(&mut self, cx: &mut Context<Self>) {
         let path = cx
             .global::<ManagePageState>()

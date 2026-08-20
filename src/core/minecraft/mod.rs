@@ -10,6 +10,7 @@ pub mod import;
 pub mod install;
 pub mod key_patcher;
 pub mod launcher;
+pub mod local_package;
 pub mod map;
 pub mod map_info_cache;
 pub(crate) mod mod_loaders;

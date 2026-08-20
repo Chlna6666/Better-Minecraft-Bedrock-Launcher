@@ -455,11 +455,20 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             row = row
                 .child(loader_filter)
                 .child(channel_filter)
-                .child(icon_btn(
-                    "download-import",
-                    lucide_icons::icon_upload(),
-                    false,
-                ))
+                .child(
+                    IconButton::new("download-import", lucide_icons::icon_upload())
+                        .icon_color(colors.text_secondary)
+                        .w(px(32.))
+                        .h(px(32.))
+                        .rounded(px(crate::ui::theme::tokens::radius::MD))
+                        .bg(Hsla {
+                            a: 0.06,
+                            ..colors.text_secondary
+                        })
+                        .on_click(|_, window, cx| {
+                            super::version_import::pick_and_import_local_version(window, cx);
+                        }),
+                )
                 .child(refresh);
         }
         DownloadTab::ResourcePack => {

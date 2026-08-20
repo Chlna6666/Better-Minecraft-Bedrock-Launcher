@@ -252,7 +252,11 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
                 }
             }
         } else if let LaunchMode::Import(ref import_context) = bootstrap.launch_mode {
-            open_import_window(import_context.clone(), cx);
+            crate::ui::window::import::open_import_path(
+                import_context.file_path.clone(),
+                crate::ui::window::import::ImportWindowTarget::default(),
+                cx,
+            );
         }
 
         register_app_lifecycle(cx);
@@ -324,6 +328,8 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::navigation::NavState>();
     cx.default_global::<crate::ui::views::download::state::DownloadPageState>();
     cx.default_global::<crate::ui::state::local_versions::LocalVersionsState>();
+    cx.default_global::<crate::ui::state::import::ImportCompletionState>();
+    cx.default_global::<crate::ui::state::import::ImportOverlayState>();
     cx.default_global::<crate::ui::state::launcher::LauncherState>();
     #[cfg(target_os = "linux")]
     cx.default_global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
@@ -341,10 +347,7 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::update::UpdateState>();
     cx.default_global::<crate::ui::state::agreement::AgreementState>();
     cx.default_global::<crate::ui::state::diagnostics::DiagnosticsState>();
-    #[cfg(target_os = "windows")]
-    cx.default_global::<crate::ui::state::music::MusicState>();
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    cx.default_global::<crate::ui::state::sound_effect::SoundEffectState>();
     cx.default_global::<crate::ui::state::bedrock_auth::BedrockAuthState>();
     cx.default_global::<crate::ui::main_window::AppChromeState>();
     cx.default_global::<crate::ui::components::toast::ToastState>();
@@ -530,6 +533,10 @@ fn schedule_post_startup_warmups(cx: &mut App) {
             Err(error) => warn!("post-startup HTTP client warmup task failed: {error}"),
         }
 
+        if let Err(error) = crate::core::curseforge::prewarm() {
+            debug!("post-startup CurseForge prewarm was not scheduled: {error}");
+        }
+
         Ok::<(), anyhow::Error>(())
     })
     .detach();
@@ -560,43 +567,6 @@ fn open_debug_window(cx: &mut App) {
                 "调试窗口打开失败",
                 "open_debug_window",
                 format!("Failed to open debug window: {error:#?}"),
-            );
-        }
-    }
-}
-
-fn open_import_window(import_context: crate::launch::ImportLaunchContext, cx: &mut App) {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    let window_options = import_window_options(cx);
-    let import_view = Rc::new(RefCell::new(None));
-    let import_view_in_closure = Rc::clone(&import_view);
-    let import_window = cx.open_window(window_options, move |window, cx| {
-        window.set_title("资源导入");
-
-        let view = cx
-            .new(|cx| crate::ui::window::import::ImportWindowView::new(import_context, window, cx));
-        *import_view_in_closure.borrow_mut() = Some(view.downgrade());
-        cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))
-    });
-
-    match import_window {
-        Ok(handle) => {
-            if let Some(import_view) = import_view.borrow().clone() {
-                let window_id = handle.window_id().as_u64();
-                let _ = import_view.update(cx, |view, cx| {
-                    view.attach_window_id(window_id, cx);
-                });
-            }
-        }
-        Err(error) => {
-            eprintln!("Failed to open import window: {error:?}");
-            crate::result::show_application_error_in_app(
-                cx,
-                "导入窗口打开失败",
-                "open_import_window",
-                format!("Failed to open import window: {error:#?}"),
             );
         }
     }
@@ -649,28 +619,6 @@ fn debug_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
             ..Default::default()
         });
         options.window_background = WindowBackgroundAppearance::Opaque;
-    }
-
-    options
-}
-
-fn import_window_options(cx: &mut App) -> WindowOptions {
-    let mut options = WindowOptions::default();
-    let fixed_size = size(px(980.), px(720.));
-    options.window_bounds = Some(WindowBounds::centered(fixed_size, cx));
-    options.window_min_size = Some(fixed_size);
-    options.is_resizable = false;
-    options.is_minimizable = true;
-    options.is_movable = true;
-
-    #[cfg(windows)]
-    {
-        options.titlebar = Some(TitlebarOptions {
-            title: Some(SharedString::from("资源导入")),
-            appears_transparent: true,
-            ..Default::default()
-        });
-        options.window_background = WindowBackgroundAppearance::Transparent;
     }
 
     options

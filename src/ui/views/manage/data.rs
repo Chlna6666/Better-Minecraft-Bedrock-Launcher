@@ -1,6 +1,7 @@
 use anyhow::Context as _;
 use gpui::SharedString;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -480,50 +481,84 @@ fn validate_skin_pack_redirect_target(asset: &ManageAssetEntry) -> Result<(), St
 
 pub async fn import_mod_files(version_folder: &str, paths: &[String]) -> Result<(), String> {
     let mods_dir = version_mods_dir(version_folder);
-    fs::create_dir_all(&mods_dir)
-        .await
-        .map_err(|error| format!("创建 mods 目录失败: {error}"))?;
+    let mut pending = Vec::with_capacity(paths.len());
+    let mut folder_names = HashSet::with_capacity(paths.len());
 
     for path in paths {
         let source_path = PathBuf::from(path);
-        if !source_path.exists() {
-            return Err(format!("文件不存在: {path}"));
+        let source_metadata = fs::metadata(&source_path)
+            .await
+            .map_err(|error| format!("无法读取 Mod 文件“{path}”: {error}"))?;
+        if !source_metadata.is_file() {
+            return Err(format!("所选路径不是文件: {path}"));
         }
 
         let file_name = source_path
             .file_name()
             .and_then(|value| value.to_str())
-            .ok_or_else(|| format!("无效文件名: {path}"))?;
+            .ok_or_else(|| format!("无效文件名: {path}"))?
+            .to_string();
         let folder_name = source_path
             .file_stem()
             .and_then(|value| value.to_str())
-            .unwrap_or("UnknownMod");
-        let target_dir = mods_dir.join(folder_name);
-        fs::create_dir_all(&target_dir)
-            .await
-            .map_err(|error| format!("创建目标目录失败: {error}"))?;
-
-        let target_file = target_dir.join(file_name);
-        fs::copy(&source_path, &target_file)
-            .await
-            .map_err(|error| format!("复制 Mod 文件失败: {error}"))?;
-
-        if target_dir.join(".manifest.json").exists() {
-            continue;
+            .ok_or_else(|| format!("无法识别 Mod 名称: {path}"))?
+            .to_string();
+        if !folder_names.insert(folder_name.to_lowercase()) {
+            return Err(format!("选择的文件中包含重复 Mod: {folder_name}"));
         }
 
+        let target_dir = mods_dir.join(&folder_name);
+        match fs::metadata(&target_dir).await {
+            Ok(_) => {
+                return Err(format!(
+                    "Mod“{folder_name}”已存在，请先在 Mod 列表中删除后再导入，避免覆盖现有配置"
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("检查 Mod 目标目录失败: {error}")),
+        }
+        pending.push((source_path, file_name, folder_name, target_dir));
+    }
+
+    fs::create_dir_all(&mods_dir)
+        .await
+        .map_err(|error| format!("创建 mods 目录失败: {error}"))?;
+
+    for (source_path, file_name, folder_name, target_dir) in pending {
         let manifest = ModManifest {
-            name: folder_name.to_string(),
-            entry: file_name.to_string(),
+            name: folder_name,
+            entry: file_name.clone(),
             mod_type: "preload-native".to_string(),
             inject_delay_ms: Some(0),
             extra: serde_json::Map::new(),
         };
         let manifest_text = serde_json::to_string_pretty(&manifest)
             .map_err(|error| format!("Manifest 序列化失败: {error}"))?;
-        fs::write(target_dir.join("manifest.json"), manifest_text)
+
+        fs::create_dir_all(&target_dir)
             .await
-            .map_err(|error| format!("写入 Manifest 失败: {error}"))?;
+            .map_err(|error| format!("创建目标目录失败: {error}"))?;
+
+        let target_file = target_dir.join(&file_name);
+        if let Err(error) = fs::copy(&source_path, &target_file).await {
+            let cleanup_error = fs::remove_dir_all(&target_dir).await.err();
+            return Err(match cleanup_error {
+                Some(cleanup_error) => {
+                    format!("复制 Mod 文件失败: {error}；清理未完成目录也失败: {cleanup_error}")
+                }
+                None => format!("复制 Mod 文件失败: {error}"),
+            });
+        }
+
+        if let Err(error) = fs::write(target_dir.join("manifest.json"), manifest_text).await {
+            let cleanup_error = fs::remove_dir_all(&target_dir).await.err();
+            return Err(match cleanup_error {
+                Some(cleanup_error) => {
+                    format!("写入 Manifest 失败: {error}；清理失败: {cleanup_error}")
+                }
+                None => format!("写入 Manifest 失败: {error}"),
+            });
+        }
     }
 
     Ok(())

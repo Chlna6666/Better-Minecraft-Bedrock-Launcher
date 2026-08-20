@@ -17,6 +17,7 @@ mod mod_install;
 mod mods;
 pub mod state;
 mod toolbar;
+mod version_import;
 
 pub(crate) fn is_entity_released_error(error: &anyhow::Error) -> bool {
     error

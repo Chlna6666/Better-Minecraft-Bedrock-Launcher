@@ -126,6 +126,30 @@ pub fn pick_file_paths_with_filter(filter_name: &str, extensions: &[&str]) -> Ve
         .collect()
 }
 
+/// Open a parent-owned native multi-file picker, suppressing repeated dialog requests.
+pub fn pick_file_paths_with_filter_for_window(
+    window: &Window,
+    filter_name: &str,
+    extensions: &[&str],
+) -> Vec<String> {
+    let Some(_dialog_guard) = try_open_native_file_dialog() else {
+        return Vec::new();
+    };
+    window.activate_window();
+
+    let mut dialog = rfd::FileDialog::new().set_parent(window);
+    if !extensions.is_empty() {
+        dialog = dialog.add_filter(filter_name, extensions);
+    }
+
+    dialog
+        .pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
 pub fn pick_save_path_with_filter(
     filter_name: &str,
     extensions: &[&str],

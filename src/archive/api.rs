@@ -158,6 +158,7 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
                 "completed",
                 Some(format!("已导入到 {}", extract_to.display())),
             );
+            crate::core::version::catalog_events::notify_local_versions_changed();
         }
         Ok(CoreResult::Cancelled) => {
             remove_dir_all_if_exists(&extract_to, "取消导入时删除解压目录失败");
@@ -304,6 +305,7 @@ async fn run_extract_zip_appx_task(
                 "completed",
                 Some(format!("已安装到 {}", extract_to.display())),
             );
+            crate::core::version::catalog_events::notify_local_versions_changed();
         }
         Ok(CoreResult::Cancelled) => {
             remove_dir_all_if_exists(&extract_to, "取消安装时删除解压目录失败");

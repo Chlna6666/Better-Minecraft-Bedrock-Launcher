@@ -86,6 +86,7 @@ fn run_unpack_gdk_task(
                 "completed",
                 Some(format!("已安装到 {}", version_dir.display())),
             );
+            crate::core::version::catalog_events::notify_local_versions_changed();
         }
         Err(error) if error == "cancelled" || is_cancelled(&task_id) => {
             if let Err(cleanup_error) = std::fs::remove_dir_all(&version_dir) {

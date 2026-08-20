@@ -77,6 +77,26 @@ impl ManagePageView {
             cx.observe_global::<I18n>(|_, cx| {
                 cx.notify();
             }),
+            cx.observe_global::<ImportCompletionState>(|this, cx| {
+                let imported_folder = cx.global::<ImportCompletionState>().version_folder.clone();
+                let is_selected = imported_folder.is_some_and(|folder| {
+                    cx.global::<ManagePageState>()
+                        .selected_folder
+                        .as_ref()
+                        .is_some_and(|selected| selected == &folder)
+                });
+                if is_selected {
+                    cx.update_global(|state: &mut ManagePageState, _cx| {
+                        state.selected_asset_keys.clear();
+                        state.assets_loaded = false;
+                        state.assets_loading = false;
+                        state.assets_error = None;
+                    });
+                    this.last_assets_signature = None;
+                    this.reset_asset_list_view();
+                    cx.notify();
+                }
+            }),
             cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
                 cx.notify();
             }),
@@ -246,6 +266,11 @@ impl ManagePageView {
             .flex()
             .flex_col()
             .gap(px(8.))
+            .on_drop(cx.listener(
+                |this, paths: &ExternalPaths, _window, cx| {
+                    this.import_dropped_versions(paths.paths(), cx);
+                },
+            ))
             .child(state.search_input.as_ref().map_or_else(
                 || div().h(px(32.)).w_full().into_any_element(),
                 |input| {
@@ -707,6 +732,9 @@ impl ManagePageView {
             .opacity(version_opacity)
             .relative()
             .top(px(version_slide_offset))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.import_dropped_assets(paths.paths(), window, cx);
+            }))
             .child(
                 div()
                     .px(px(18.))
