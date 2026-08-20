@@ -5,7 +5,6 @@ use crate::coding::{
 use crate::error::{LevelDbError, Result};
 use crate::wal;
 use bytes::Bytes;
-use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
@@ -202,12 +201,11 @@ impl Manifest {
         log::trace!("reading native LevelDB manifest {}", path.display());
         let mut file =
             File::open(path).map_err(|error| LevelDbError::io_at("open manifest", path, error))?;
-        let records = wal::read_records(&mut file, true)?;
         let mut manifest = Self::default();
-
-        for record in records {
-            parse_native_version_edit(&record, &mut manifest)?;
-        }
+        wal::for_each_record(&mut file, true, |record| {
+            parse_native_version_edit(record, &mut manifest)
+        })?;
+        normalize_table_metadata(&mut manifest);
 
         if manifest.log_number == 0 {
             manifest.log_number = manifest.next_file_number.saturating_sub(1).max(1);
@@ -228,6 +226,12 @@ impl Manifest {
     }
 
     fn write_native_file(&self, path: &Path) -> Result<()> {
+        debug_assert!(
+            self.table_files
+                .windows(2)
+                .all(|tables| tables[0].number <= tables[1].number),
+            "table metadata must remain sorted by file number"
+        );
         let mut edit = Vec::new();
         put_varint32(1, &mut edit);
         put_length_prefixed_slice(b"leveldb.BytewiseComparator", &mut edit)?;
@@ -241,16 +245,11 @@ impl Manifest {
             put_varint32(9, &mut edit);
             put_varint64(self.prev_log_number, &mut edit);
         }
-        let table_numbers = self
-            .table_files
-            .iter()
-            .map(|table| table.number)
-            .collect::<BTreeSet<_>>();
-        for table_number in self
-            .table_numbers
-            .iter()
-            .filter(|table_number| !table_numbers.contains(table_number))
-        {
+        for table_number in self.table_numbers.iter().filter(|table_number| {
+            self.table_files
+                .binary_search_by_key(table_number, |table| table.number)
+                .is_err()
+        }) {
             put_varint32(7, &mut edit);
             put_varint32(0, &mut edit);
             put_varint64(*table_number, &mut edit);
@@ -337,15 +336,19 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
             }
         }
     }
+    Ok(())
+}
+
+fn normalize_table_metadata(manifest: &mut Manifest) {
     manifest.table_numbers.sort_unstable();
     manifest.table_numbers.dedup();
     manifest.table_files.sort_by_key(|table| table.number);
     manifest.table_files.dedup_by_key(|table| table.number);
     for table_number in &manifest.table_numbers {
-        if !manifest
+        if manifest
             .table_files
-            .iter()
-            .any(|table| table.number == *table_number)
+            .binary_search_by_key(table_number, |table| table.number)
+            .is_err()
         {
             manifest
                 .table_files
@@ -353,7 +356,6 @@ fn parse_native_version_edit(mut input: &[u8], manifest: &mut Manifest) -> Resul
         }
     }
     manifest.table_files.sort_by_key(|table| table.number);
-    Ok(())
 }
 
 fn internal_user_key(internal_key: &[u8]) -> Option<&[u8]> {
@@ -416,6 +418,28 @@ mod tests {
         assert_eq!(
             table.largest_internal_key.as_ref().map(Bytes::as_ptr),
             cloned.largest_internal_key.as_ref().map(Bytes::as_ptr)
+        );
+    }
+
+    #[test]
+    fn normalization_runs_once_after_streamed_version_edits() {
+        let mut manifest = Manifest::default();
+        manifest.table_numbers.extend([9, 3, 9, 5]);
+        manifest.table_files.extend([
+            TableFileMeta::without_range(9),
+            TableFileMeta::without_range(3),
+        ]);
+
+        normalize_table_metadata(&mut manifest);
+
+        assert_eq!(manifest.table_numbers, vec![3, 5, 9]);
+        assert_eq!(
+            manifest
+                .table_files
+                .iter()
+                .map(|table| table.number)
+                .collect::<Vec<_>>(),
+            vec![3, 5, 9]
         );
     }
 }
