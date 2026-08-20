@@ -1,6 +1,7 @@
 //! Minecraft Bedrock chunk records and SubChunk payloads.
 
 mod encoding;
+mod height_map;
 mod legacy_encoding;
 mod legacy_extra;
 mod legacy_subchunk_downgrade;
@@ -33,6 +34,7 @@ pub mod legacy;
 /// Minecraft Bedrock SubChunk version byte values.
 pub mod version;
 
+pub use height_map::*;
 pub use key::*;
 pub use legacy::*;
 pub use legacy_encoding::{LegacySubChunkBuilder, LegacyTerrainBuilder};
