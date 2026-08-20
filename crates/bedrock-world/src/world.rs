@@ -10,6 +10,7 @@ mod chunk_presence;
 mod create;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
+mod height_map;
 mod legacy_terrain;
 mod level_dat;
 mod migration;
@@ -30,6 +31,7 @@ pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, 
 pub use bedrock_world::*;
 pub use block_query::BlockStateQueryResult;
 pub use chunk_presence::{ChunkPresence, ChunkPresenceMode};
+pub use height_map::{ChunkHeightMap, ChunkHeightMapStatus};
 /// Minecraft Bedrock world-open options.
 ///
 /// This explicit name is the canonical public API and avoids collision with
