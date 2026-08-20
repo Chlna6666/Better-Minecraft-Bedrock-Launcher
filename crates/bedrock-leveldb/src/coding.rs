@@ -3,6 +3,9 @@ use crate::error::{LevelDbError, Result};
 pub(crate) const VALUE_TYPE_DELETION: u8 = 0;
 pub(crate) const VALUE_TYPE_VALUE: u8 = 1;
 
+const CRC32C_POLYNOMIAL: u32 = 0x82f6_3b78;
+const CRC32C_TABLE: [u32; 256] = build_crc32c_table();
+
 pub(crate) fn put_varint32(mut value: u32, out: &mut Vec<u8>) {
     while value >= 0x80 {
         let byte = u8::try_from(value & 0x7f).expect("masked varint32 byte fits in u8");
@@ -94,15 +97,30 @@ pub(crate) fn masked_crc32c(chunks: &[&[u8]]) -> u32 {
     mask_crc(finalize_crc32c(crc))
 }
 
+#[inline]
 fn update_crc32c(mut crc: u32, bytes: &[u8]) -> u32 {
     for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = 0_u32.wrapping_sub(crc & 1);
-            crc = (crc >> 1) ^ (0x82f6_3b78 & mask);
-        }
+        let index = usize::from((crc as u8) ^ byte);
+        crc = (crc >> 8) ^ CRC32C_TABLE[index];
     }
     crc
+}
+
+const fn build_crc32c_table() -> [u32; 256] {
+    let mut table = [0_u32; 256];
+    let mut index = 0_usize;
+    while index < table.len() {
+        let mut crc = index as u32;
+        let mut bit = 0_u8;
+        while bit < 8 {
+            let mask = 0_u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (CRC32C_POLYNOMIAL & mask);
+            bit += 1;
+        }
+        table[index] = crc;
+        index += 1;
+    }
+    table
 }
 
 const fn finalize_crc32c(crc: u32) -> u32 {
@@ -159,6 +177,20 @@ mod tests {
 
         let mut truncated = [0x80].as_slice();
         assert!(get_varint64(&mut truncated).is_err());
+    }
+
+    #[test]
+    fn crc32c_matches_castagnoli_check_value() {
+        assert_eq!(crc32c(b"123456789"), 0xe306_9283);
+    }
+
+    #[test]
+    fn chunked_crc_matches_contiguous_crc() {
+        let chunks: &[&[u8]] = &[b"123", b"456", b"789"];
+        assert_eq!(
+            unmask_crc(masked_crc32c(chunks)),
+            crc32c(b"123456789")
+        );
     }
 
     #[test]
