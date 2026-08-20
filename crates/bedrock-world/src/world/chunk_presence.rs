@@ -6,7 +6,7 @@
 
 use super::{BedrockWorld, WorldStorageHandle};
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::database::{StorageReadOptions, StorageVisitorControl};
+use crate::database::{StorageKeyBatchBuilder, StorageReadOptions, StorageVisitorControl};
 use crate::error::Result;
 
 const CHUNK_PRESENCE_ANCHORS: [ChunkRecordTag; 8] = [
@@ -19,6 +19,7 @@ const CHUNK_PRESENCE_ANCHORS: [ChunkRecordTag; 8] = [
     ChunkRecordTag::LegacyTerrain,
     ChunkRecordTag::FinalizedState,
 ];
+const MAX_ENCODED_CHUNK_KEY_BYTES: usize = 14;
 
 /// How aggressively a persisted chunk-presence query verifies unresolved positions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -81,9 +82,9 @@ where
 
     /// Checks persisted presence for many chunk positions while preserving input order.
     ///
-    /// Canonical checks are issued as one exact storage batch. This avoids the old pattern of one
-    /// prefix scan per chunk and does not decode Data3D/SubChunk payloads merely to establish that a
-    /// column exists.
+    /// Canonical checks are issued as one exact storage batch. Every encoded Bedrock key is copied
+    /// into one contiguous shared backing buffer, avoiding one tiny heap allocation per 9-14 byte
+    /// key while preserving the backend's table-grouped `get_many` path.
     pub fn chunk_presence_many_blocking(
         &self,
         positions: impl IntoIterator<Item = ChunkPos>,
@@ -94,13 +95,21 @@ where
             return Ok(Vec::new());
         }
 
-        let mut keys = Vec::with_capacity(positions.len().saturating_mul(CHUNK_PRESENCE_ANCHORS.len()));
+        let key_count = positions
+            .len()
+            .saturating_mul(CHUNK_PRESENCE_ANCHORS.len());
+        let mut keys = StorageKeyBatchBuilder::with_capacity(
+            key_count.saturating_mul(MAX_ENCODED_CHUNK_KEY_BYTES),
+            key_count,
+        );
         for &pos in &positions {
             for tag in CHUNK_PRESENCE_ANCHORS {
-                keys.push(ChunkKey::new(pos, tag).encode());
+                let encoded = ChunkKey::new(pos, tag).encode_inline();
+                keys.push(encoded.as_bytes());
             }
         }
-        let values = self.storage().get_many(&keys)?;
+        let keys = keys.finish();
+        let values = self.storage().get_many(keys.keys())?;
 
         let mut results = Vec::with_capacity(positions.len());
         for (position_index, &pos) in positions.iter().enumerate() {
