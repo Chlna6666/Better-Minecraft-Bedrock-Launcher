@@ -154,20 +154,25 @@ fn compaction_budget_bytes(table: &TableFileMeta) -> u64 {
     }
 }
 
-/// Merges compaction inputs with a bounded streaming k-way merge.
+/// Merges compaction inputs with a bounded streaming k-way merge and emits each
+/// output partition as soon as it reaches the target size.
 ///
 /// Table scans feed small bounded queues and are activated lazily from manifest
 /// key ranges. The heap therefore retains only one current entry per active
 /// input instead of materializing every input table into a temporary map before
-/// merging. Output partitions keep the existing `Db` write contract and are
-/// capped by [`TARGET_OUTPUT_FILE_BYTES`]. Duplicate input-key buffers are
-/// recycled back to active producers so repeated versions do not continuously
-/// churn the allocator.
-pub(crate) fn merge(
+/// merging. The caller can persist and drop each emitted partition immediately,
+/// bounding live output memory to one partition instead of the complete
+/// compaction result. Duplicate input-key buffers are recycled back to active
+/// producers so repeated versions do not continuously churn the allocator.
+pub(crate) fn merge_into<F>(
     root: &Path,
     plan: &CompactionPlan,
     paranoid_checks: bool,
-) -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
+    mut emit_partition: F,
+) -> Result<()>
+where
+    F: FnMut(BTreeMap<Vec<u8>, Option<Bytes>>) -> Result<()>,
+{
     let mut priority_order = plan.inputs.clone();
     // Preserve the previous last-write-wins ordering: output-level tables are
     // older than the source level, while larger L0 file numbers are newer.
@@ -182,7 +187,7 @@ pub(crate) fn merge(
     let input_count = pending.len();
     let mut pending = VecDeque::from(pending);
 
-    thread::scope(|scope| -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
+    thread::scope(|scope| -> Result<()> {
         let spawn_stream = |path: std::path::PathBuf, table_number: u64| -> Result<StreamHandle> {
             let (sender, receiver) = sync_channel(STREAM_QUEUE_DEPTH);
             let (recycle, recycled_keys) = sync_channel::<Vec<u8>>(STREAM_QUEUE_DEPTH);
@@ -227,7 +232,6 @@ pub(crate) fn merge(
             .take(input_count)
             .collect::<Vec<Option<StreamHandle>>>();
         let mut heap = BinaryHeap::<HeapEntry>::new();
-        let mut outputs = Vec::<BTreeMap<Vec<u8>, Option<Bytes>>>::new();
         let mut current = BTreeMap::<Vec<u8>, Option<Bytes>>::new();
         let mut current_bytes = 0_usize;
 
@@ -298,7 +302,7 @@ pub(crate) fn merge(
             if !current.is_empty()
                 && current_bytes.saturating_add(entry_bytes) > TARGET_OUTPUT_FILE_BYTES
             {
-                outputs.push(std::mem::take(&mut current));
+                emit_partition(std::mem::take(&mut current))?;
                 current_bytes = 0;
             }
             current_bytes = current_bytes.saturating_add(entry_bytes);
@@ -306,10 +310,24 @@ pub(crate) fn merge(
         }
 
         if !current.is_empty() {
-            outputs.push(current);
+            emit_partition(current)?;
         }
-        Ok(outputs)
+        Ok(())
     })
+}
+
+#[cfg(test)]
+fn merge(
+    root: &Path,
+    plan: &CompactionPlan,
+    paranoid_checks: bool,
+) -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
+    let mut outputs = Vec::new();
+    merge_into(root, plan, paranoid_checks, |partition| {
+        outputs.push(partition);
+        Ok(())
+    })?;
+    Ok(outputs)
 }
 
 fn recycle_key(priority: usize, key: Vec<u8>, streams: &[Option<StreamHandle>]) {
@@ -539,6 +557,30 @@ mod tests {
                 .iter()
                 .all(|partition| !partition.contains_key(b"gone".as_slice()))
         );
+    }
+
+    #[test]
+    fn streaming_merge_emits_partitions_incrementally() {
+        let dir = tempdir().expect("tempdir");
+        let mut entries = BTreeMap::new();
+        for index in 0..96_u32 {
+            let key = format!("chunk:{index:04}").into_bytes();
+            entries.insert(key, Some(Bytes::from(vec![index as u8; 32 * 1024])));
+        }
+        let table = write_table(dir.path(), 40, 0, entries);
+        let plan = CompactionPlan {
+            inputs: vec![table],
+            output_level: 1,
+        };
+
+        let mut partitions = 0_usize;
+        merge_into(dir.path(), &plan, true, |partition| {
+            partitions = partitions.saturating_add(1);
+            assert!(!partition.is_empty());
+            Ok(())
+        })
+        .expect("incremental streaming merge");
+        assert!(partitions >= 2);
     }
 
     #[test]
