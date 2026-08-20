@@ -128,7 +128,7 @@ mod tests {
         builder.push(b"abcd");
         builder.push(b"efgh");
         let batch = builder.finish();
-        let first_end = unsafe { batch.keys()[0].as_ptr().add(batch.keys()[0].len()) };
-        assert_eq!(first_end, batch.keys()[1].as_ptr());
+        let first_end = batch.keys()[0].as_ptr() as usize + batch.keys()[0].len();
+        assert_eq!(first_end, batch.keys()[1].as_ptr() as usize);
     }
 }
