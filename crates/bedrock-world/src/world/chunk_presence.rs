@@ -8,7 +8,6 @@ use super::{BedrockWorld, WorldStorageHandle};
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
 use crate::database::{StorageReadOptions, StorageVisitorControl};
 use crate::error::Result;
-use bytes::Bytes;
 
 const CHUNK_PRESENCE_ANCHORS: [ChunkRecordTag; 8] = [
     ChunkRecordTag::Version,
@@ -73,7 +72,7 @@ where
         }))
     }
 
-    /// Checks whether one persisted chunk position exists.
+    /// Checks whether one persisted chunk position exists through canonical anchor records.
     pub fn chunk_exists_blocking(&self, pos: ChunkPos) -> Result<bool> {
         Ok(self
             .chunk_presence_blocking(pos, ChunkPresenceMode::CanonicalRecords)?
@@ -164,12 +163,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunk::Dimension;
     use crate::database::{MemoryStorage, WorldStorage};
     use crate::world::{BedrockWorldOpenOptions, WorldFormat, WorldFormatHint};
     use std::path::PathBuf;
 
+    fn pos(x: i32, z: i32) -> ChunkPos {
+        ChunkPos {
+            x,
+            z,
+            dimension: Dimension::Overworld,
+        }
+    }
+
     fn world(storage: MemoryStorage) -> BedrockWorld<MemoryStorage> {
-        BedrockWorld::from_storage_with_format(
+        BedrockWorld::from_typed_storage_with_format(
             PathBuf::from("memory-world"),
             storage,
             BedrockWorldOpenOptions {
@@ -183,8 +191,8 @@ mod tests {
     #[test]
     fn canonical_presence_recognizes_modern_and_legacy_anchors() {
         let storage = MemoryStorage::new();
-        let modern = ChunkPos::new(2, -3, crate::chunk::Dimension::Overworld);
-        let legacy = ChunkPos::new(-5, 7, crate::chunk::Dimension::Overworld);
+        let modern = pos(2, -3);
+        let legacy = pos(-5, 7);
         storage
             .put(&ChunkKey::new(modern, ChunkRecordTag::Version).encode(), &[40])
             .expect("modern anchor");
@@ -201,7 +209,7 @@ mod tests {
     #[test]
     fn any_record_finds_sparse_subchunk_only_column() {
         let storage = MemoryStorage::new();
-        let pos = ChunkPos::new(1, 1, crate::chunk::Dimension::Overworld);
+        let pos = pos(1, 1);
         storage
             .put(&ChunkKey::subchunk(pos, 4).encode(), &[9, 0])
             .expect("subchunk");
@@ -216,7 +224,7 @@ mod tests {
     #[test]
     fn missing_chunk_stays_missing() {
         let world = world(MemoryStorage::new());
-        let pos = ChunkPos::new(9, 9, crate::chunk::Dimension::Overworld);
+        let pos = pos(9, 9);
         assert!(!world
             .chunk_presence_blocking(pos, ChunkPresenceMode::AnyRecord)
             .unwrap()
