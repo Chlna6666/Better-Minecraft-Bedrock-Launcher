@@ -69,8 +69,9 @@ pub use pocket_entities_dat::{
     write_pocket_entities_dat_atomic,
 };
 pub use subchunk_upgrade::BedrockWorldSubChunkUpgradeReport;
-// 2D map consumers use these compact exact surface types. 3D rendering and editing
-// continue to use the `ChunkData`/`SubChunk`/`BlockState` APIs exported above.
+// Compact exact 2D map contract. It intentionally does not replace the
+// ChunkData/SubChunk/BlockState APIs used by 3D rendering, editing, or server
+// authoritative world state.
 pub use surface_map::{
     SurfaceMapBatchStats, SurfaceMapChunk, SurfaceMapColumn, SurfaceMapMaterial,
     SurfaceMapQueryOptions,
