@@ -81,6 +81,15 @@ mod zlib {
         zlib_header: bool,
         output: &mut Vec<u8>,
     ) -> Result<()> {
+        output.clear();
+        decompress_append(payload, zlib_header, output)
+    }
+
+    pub(super) fn decompress_append(
+        payload: &[u8],
+        zlib_header: bool,
+        output: &mut Vec<u8>,
+    ) -> Result<()> {
         CODEC_SCRATCH.with(|scratch| {
             let mut scratch = scratch.borrow_mut();
             let CodecScratch {
@@ -93,7 +102,7 @@ mod zlib {
             } else {
                 raw_decompressor
             };
-            decompress_with_state(decompressor, payload, zlib_header, output)
+            decompress_append_with_state(decompressor, payload, zlib_header, output)
         })
     }
 
@@ -163,12 +172,21 @@ mod zlib {
         zlib_header: bool,
         output: &mut Vec<u8>,
     ) -> Result<()> {
-        let initial_capacity = payload
+        output.clear();
+        decompress_append_with_state(decompressor, payload, zlib_header, output)
+    }
+
+    fn decompress_append_with_state(
+        decompressor: &mut Decompress,
+        payload: &[u8],
+        zlib_header: bool,
+        output: &mut Vec<u8>,
+    ) -> Result<()> {
+        let initial_additional = payload
             .len()
             .saturating_mul(3)
             .max(MIN_OUTPUT_CAPACITY);
-        output.clear();
-        ensure_capacity(output, initial_capacity);
+        ensure_additional_capacity(output, initial_additional);
         decompressor.reset(zlib_header);
         let mut input_offset = 0_usize;
 
@@ -208,10 +226,13 @@ mod zlib {
 
     fn ensure_capacity(buffer: &mut Vec<u8>, required: usize) {
         if buffer.capacity() < required {
-            // `reserve` is relative to the current length, not current capacity. Callers clear the
-            // buffer before this helper, but using `len` here also keeps the helper correct if that
-            // invariant changes later.
             buffer.reserve(required.saturating_sub(buffer.len()));
+        }
+    }
+
+    fn ensure_additional_capacity(buffer: &mut Vec<u8>, additional: usize) {
+        if buffer.capacity().saturating_sub(buffer.len()) < additional {
+            buffer.reserve(additional);
         }
     }
 
@@ -273,15 +294,24 @@ pub(crate) fn with_decompressed<T>(
 /// preferred primitive when a scan or worker needs the decoded bytes beyond the
 /// immediate TLS callback.
 pub(crate) fn decompress_into(tag: u8, payload: &[u8], output: &mut Vec<u8>) -> Result<()> {
+    output.clear();
+    decompress_append(tag, payload, output)
+}
+
+/// Appends one decoded table block to caller-owned reusable storage.
+///
+/// Unlike [`decompress_into`], this preserves existing bytes in `output`. Parallel
+/// block-range scans use it to build one run-level decoded arena instead of keeping
+/// one heap allocation per LevelDB data block.
+pub(crate) fn decompress_append(tag: u8, payload: &[u8], output: &mut Vec<u8>) -> Result<()> {
     match tag {
         COMPRESSION_NONE => {
-            output.clear();
             output.extend_from_slice(payload);
             Ok(())
         }
-        COMPRESSION_SNAPPY => decompress_snappy_into(payload, output),
-        COMPRESSION_ZLIB => zlib_decompress_into(payload, true, output),
-        COMPRESSION_BEDROCK_ZLIB => zlib_decompress_into(payload, false, output),
+        COMPRESSION_SNAPPY => decompress_snappy_append(payload, output),
+        COMPRESSION_ZLIB => zlib_decompress_append(payload, true, output),
+        COMPRESSION_BEDROCK_ZLIB => zlib_decompress_append(payload, false, output),
         other => Err(LevelDbError::compression(
             "table",
             format!("unknown table compression tag {other}"),
@@ -338,12 +368,12 @@ fn with_zlib_decompressed<T>(
 }
 
 #[cfg(feature = "zlib")]
-fn zlib_decompress_into(payload: &[u8], zlib_header: bool, output: &mut Vec<u8>) -> Result<()> {
-    zlib::decompress_into(payload, zlib_header, output)
+fn zlib_decompress_append(payload: &[u8], zlib_header: bool, output: &mut Vec<u8>) -> Result<()> {
+    zlib::decompress_append(payload, zlib_header, output)
 }
 
 #[cfg(not(feature = "zlib"))]
-fn zlib_decompress_into(
+fn zlib_decompress_append(
     _payload: &[u8],
     _zlib_header: bool,
     _output: &mut Vec<u8>,
@@ -385,15 +415,14 @@ fn decompress_snappy(_payload: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[cfg(feature = "snappy")]
-fn decompress_snappy_into(payload: &[u8], output: &mut Vec<u8>) -> Result<()> {
+fn decompress_snappy_append(payload: &[u8], output: &mut Vec<u8>) -> Result<()> {
     let decoded = decompress_snappy(payload)?;
-    output.clear();
     output.extend_from_slice(&decoded);
     Ok(())
 }
 
 #[cfg(not(feature = "snappy"))]
-fn decompress_snappy_into(_payload: &[u8], _output: &mut Vec<u8>) -> Result<()> {
+fn decompress_snappy_append(_payload: &[u8], _output: &mut Vec<u8>) -> Result<()> {
     Err(LevelDbError::unsupported(
         "snappy",
         "snappy feature is disabled",
@@ -423,6 +452,31 @@ mod tests {
                 assert!(output.capacity() >= first_capacity);
             }
         }
+    }
+
+    #[cfg(feature = "zlib")]
+    #[test]
+    fn append_raw_deflate_preserves_existing_arena_bytes() {
+        let first = vec![0x41_u8; 4096];
+        let second = vec![0x42_u8; 8192];
+        let first_encoded = with_compressed(CompressionPolicy::RawDeflate, &first, |encoded| {
+            Ok(encoded.to_vec())
+        })
+        .expect("compress first");
+        let second_encoded = with_compressed(CompressionPolicy::RawDeflate, &second, |encoded| {
+            Ok(encoded.to_vec())
+        })
+        .expect("compress second");
+
+        let mut arena = b"prefix".to_vec();
+        decompress_append(COMPRESSION_BEDROCK_ZLIB, &first_encoded, &mut arena)
+            .expect("append first");
+        decompress_append(COMPRESSION_BEDROCK_ZLIB, &second_encoded, &mut arena)
+            .expect("append second");
+
+        assert_eq!(&arena[..6], b"prefix");
+        assert_eq!(&arena[6..6 + first.len()], first.as_slice());
+        assert_eq!(&arena[6 + first.len()..], second.as_slice());
     }
 
     #[cfg(feature = "zlib")]
