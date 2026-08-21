@@ -247,7 +247,7 @@ impl Manifest {
         }
         for table_number in self.table_numbers.iter().filter(|table_number| {
             self.table_files
-                .binary_search_by_key(table_number, |table| table.number)
+                .binary_search_by_key(*table_number, |table| table.number)
                 .is_err()
         }) {
             put_varint32(7, &mut edit);
