@@ -1,10 +1,17 @@
-//! Public exact-selection planning and chunk loading for render consumers.
+//! Public exact-selection planning and data loading for render consumers.
+//!
+//! 2D surface rendering and 3D chunk rendering intentionally use separate data
+//! contracts. Surface consumers receive compact `SurfaceMapChunk` values, while
+//! 3D/mesh consumers continue to receive full `ChunkData`.
 
 use crate::Result;
 use bedrock_world::{
     chunk::ChunkPos,
     query::{ExactChunkSelection, SlimeChunkBounds},
-    world::{BedrockWorld, ChunkData, ChunkLoadOptions, WorldStorageHandle},
+    world::{
+        BedrockWorld, ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk,
+        SurfaceMapQueryOptions, WorldStorageHandle,
+    },
 };
 
 /// A render-oriented plan derived from an exact non-rectangular chunk selection.
@@ -74,7 +81,10 @@ impl ExactChunkRenderPlan {
     }
 }
 
-/// Chunk data loaded for an exact render selection.
+/// Full chunk data loaded for an exact render selection.
+///
+/// This is the 3D/mesh-oriented contract and deliberately retains the existing
+/// `ChunkData` path.
 #[derive(Clone, Debug)]
 pub struct ExactChunkRenderData {
     /// The exact plan used to perform the load.
@@ -83,7 +93,19 @@ pub struct ExactChunkRenderData {
     pub chunks: Vec<ChunkData>,
 }
 
-/// Loads exactly the selected chunks, preserving holes and disconnected components.
+/// Compact 2D surface data loaded for an exact render selection.
+#[derive(Clone, Debug)]
+pub struct ExactSurfaceRenderData {
+    /// The exact plan used to perform the load.
+    pub plan: ExactChunkRenderPlan,
+    /// Compact exact 16x16 surface planes for the requested positions.
+    pub chunks: Vec<SurfaceMapChunk>,
+    /// Storage/decode diagnostics for the surface batch.
+    pub stats: SurfaceMapBatchStats,
+}
+
+/// Loads exactly the selected chunks for 3D/mesh consumers, preserving holes and
+/// disconnected components.
 ///
 /// This uses the canonical explicit-position world query and never expands the
 /// selection to its bounding rectangle.
@@ -105,6 +127,37 @@ where
         options,
     )?;
     Ok(ExactChunkRenderData { plan, chunks })
+}
+
+/// Loads exactly the selected chunks as compact 2D surface planes.
+///
+/// Unlike [`load_exact_chunk_render_data_blocking`], this route does not expose
+/// general `ChunkData`, full 3D indices, or block entities. The world-layer
+/// surface contract is exact; rendering colors remain the responsibility of
+/// `bedrock-render`.
+///
+/// # Errors
+///
+/// Returns storage, decode, cancellation, or surface-projection errors from
+/// `bedrock-world`.
+pub fn load_exact_surface_render_data_blocking<S>(
+    world: &BedrockWorld<S>,
+    selection: ExactChunkSelection,
+    options: SurfaceMapQueryOptions,
+) -> Result<ExactSurfaceRenderData>
+where
+    S: WorldStorageHandle,
+{
+    let plan = ExactChunkRenderPlan::new(selection);
+    let (chunks, stats) = world.query_surface_map_many_blocking(
+        plan.positions().iter().copied(),
+        options,
+    )?;
+    Ok(ExactSurfaceRenderData {
+        plan,
+        chunks,
+        stats,
+    })
 }
 
 #[cfg(test)]
