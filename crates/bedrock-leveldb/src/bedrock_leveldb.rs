@@ -42,7 +42,7 @@ mod table_cursor;
 mod table_scan_legacy {
     include!("table_scan.rs");
 
-    pub(crate) fn scan_pool_for_block_planner(
+    pub(crate) fn scan_pool_for_v3(
         workers: usize,
     ) -> crate::error::Result<std::sync::Arc<rayon::ThreadPool>> {
         scan_pool(workers)
