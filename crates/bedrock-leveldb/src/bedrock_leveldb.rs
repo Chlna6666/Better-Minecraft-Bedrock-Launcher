@@ -39,17 +39,8 @@ mod obsolete;
 mod options;
 mod table;
 mod table_cursor;
-mod table_scan_legacy {
-    include!("table_scan.rs");
-
-    pub(crate) fn scan_pool_for_v3(
-        workers: usize,
-    ) -> crate::error::Result<std::sync::Arc<rayon::ThreadPool>> {
-        scan_pool(workers)
-    }
-}
-#[path = "table_scan_v5.rs"]
 mod table_scan;
+mod table_scan_legacy;
 mod version;
 mod wal;
 
