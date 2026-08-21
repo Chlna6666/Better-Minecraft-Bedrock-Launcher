@@ -222,7 +222,7 @@ pub fn parse_subchunk_with_mode(y: i8, bytes: Bytes, mode: SubChunkDecodeMode) -
 
 fn parse_paletted_subchunk(
     version: u8,
-    bytes: &[u8],
+    bytes: &Bytes,
     mode: SubChunkDecodeMode,
 ) -> Result<SubChunkFormat> {
     let Some(storage_count) = bytes.get(1).copied() else {
@@ -245,7 +245,7 @@ fn parse_paletted_subchunk(
 }
 
 fn parse_exact_palette_storages(
-    bytes: &[u8],
+    bytes: &Bytes,
     offset: usize,
     storage_count: u8,
     mode: SubChunkDecodeMode,
@@ -261,7 +261,7 @@ fn parse_exact_palette_storages(
 }
 
 fn parse_palette_storages(
-    bytes: &[u8],
+    bytes: &Bytes,
     mut offset: usize,
     storage_count: u8,
     mode: SubChunkDecodeMode,
@@ -286,12 +286,18 @@ fn parse_palette_storages(
         let words_byte_len = word_count.checked_mul(4).ok_or_else(|| {
             BedrockWorldError::UnsupportedChunkFormat("palette word count overflowed".to_string())
         })?;
-        let words_bytes = bytes.get(offset..offset + words_byte_len).ok_or_else(|| {
+        let words_start = offset;
+        let words_end = offset.checked_add(words_byte_len).ok_or_else(|| {
+            BedrockWorldError::UnsupportedChunkFormat(
+                "palette word byte range overflowed".to_string(),
+            )
+        })?;
+        let words_bytes = bytes.get(words_start..words_end).ok_or_else(|| {
             BedrockWorldError::UnsupportedChunkFormat(
                 "palette block indices are truncated".to_string(),
             )
         })?;
-        offset += words_byte_len;
+        offset = words_end;
 
         let palette_len = if bits_per_block == 0 {
             1
@@ -355,7 +361,9 @@ fn parse_palette_storages(
             SubChunkDecodeMode::SurfaceColumns | SubChunkDecodeMode::PackedIndices => (
                 None,
                 Some(PackedPaletteIndices {
-                    bytes: Bytes::copy_from_slice(words_bytes),
+                    // Share the original SubChunk payload. `Bytes::slice` is an O(1) range view and
+                    // keeps the source allocation alive without copying packed palette words.
+                    bytes: bytes.slice(words_start..words_end),
                     bits_per_block,
                     palette_len,
                 }),
