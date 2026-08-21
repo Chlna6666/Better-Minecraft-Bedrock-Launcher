@@ -274,7 +274,7 @@ fn compact_surface_chunk(chunk: &super::ChunkData) -> Result<SurfaceMapChunk> {
             let surface_material = intern_material(&mut materials, &sample.surface_block_state)?;
             let relief_material = intern_material(&mut materials, &sample.relief_block_state)?;
             let (overlay_y, overlay_material) = sample.overlay.as_ref().map_or(
-                Ok((NO_HEIGHT, NO_MATERIAL)),
+                Ok::<(i16, u16), BedrockWorldError>((NO_HEIGHT, NO_MATERIAL)),
                 |overlay| {
                     Ok((
                         overlay.y,
@@ -284,7 +284,12 @@ fn compact_surface_chunk(chunk: &super::ChunkData) -> Result<SurfaceMapChunk> {
             )?;
             let (water_depth, water_material, underwater_y, underwater_material) =
                 sample.water.as_ref().map_or(
-                    Ok((0, NO_MATERIAL, NO_HEIGHT, NO_MATERIAL)),
+                    Ok::<(u8, u16, i16, u16), BedrockWorldError>((
+                        0,
+                        NO_MATERIAL,
+                        NO_HEIGHT,
+                        NO_MATERIAL,
+                    )),
                     |water| {
                         Ok((
                             water.depth,
