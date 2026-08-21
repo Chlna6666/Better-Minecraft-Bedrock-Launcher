@@ -33,7 +33,7 @@ pub enum ErrorKind {
     LockPoisoned,
     /// Another process holds the database writer lock.
     DatabaseLocked,
-    /// The optional async wrapper failed to join a blocking task.
+    /// A worker pool or blocking task failed to initialize or join.
     Join,
 }
 
@@ -112,10 +112,10 @@ pub enum LevelDbError {
         /// LevelDB `LOCK` file that could not be acquired.
         path: PathBuf,
     },
-    /// A blocking task failed to join in the optional async wrapper.
-    #[error("async runtime error: {message}")]
+    /// A worker pool or blocking task failed to initialize or join.
+    #[error("worker/runtime error: {message}")]
     Join {
-        /// Human-readable join failure.
+        /// Human-readable join or worker-pool failure.
         message: String,
     },
 }
@@ -236,7 +236,6 @@ impl LevelDbError {
         Self::DatabaseLocked { path: path.into() }
     }
 
-    #[cfg(feature = "async")]
     pub(crate) fn join(message: impl Into<String>) -> Self {
         Self::Join {
             message: message.into(),
