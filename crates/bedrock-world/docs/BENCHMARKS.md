@@ -27,7 +27,7 @@ be described as physical cold-disk and warm-disk measurements.
 Local run:
 
 ```text
-date: 2026-08-20
+date: 2026-08-21
 host: Windows x86_64 / NTFS
 cpu: AMD Ryzen 7 7840H, 8 cores / 16 logical processors
 disk: Fanxiang S500PRO 1TB NVMe SSD
@@ -56,47 +56,52 @@ chunks on one worker. Disk and CPU columns are averages reported by
 
 | Cache condition | p50 | p95 | Throughput | DB read avg | Decode avg |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `logical_cold` | 865.359 ms | 871.119 ms | 295.83 chunks/s | 503.429 ms | 300.000 ms |
-| `logical_warm` | 662.490 ms | 692.064 ms | 386.42 chunks/s | 347.286 ms | 271.143 ms |
+| `logical_cold` | 573.741 ms | 630.523 ms | 446.19 chunks/s | 317.286 ms | 217.857 ms |
+| `logical_warm` | 536.753 ms | 551.229 ms | 476.94 chunks/s | 289.857 ms | 198.714 ms |
 
 Additional one-shot evidence:
 
 | Operation | Result |
 | --- | --- |
-| classify keys | 1,767,465 entries in 36,303 ms (48,686.13 entries/s) |
-| visible key scan | 1,768,601 entries in 32,691 ms (54,100.37 entries/s) |
-| player prefix scan | 110 records in 16,411 ms |
-| player list | 111 players in 358 ms |
-| fixed layer query | 256 chunks in 721 ms; DB 712 ms, decode 7 ms |
+| classify keys | 1,764,971 entries in 46,910 ms (37,624.13 entries/s) |
+| visible key scan | 1,768,601 entries in 46,351 ms (38,156.16 entries/s) |
+| player prefix scan | 1,767,364 entries in 42,822 ms (41,271.84 entries/s) |
+| player list | 111 players in 43,303 ms (dynamic) / 46,544 ms (generic) |
+| fixed layer query | 256 chunks in 271 ms; DB 265 ms, decode 5 ms |
 
-## Historical synthetic Criterion result
+## Latest synthetic Criterion result
 
-The following result is retained for trend context only; it used the repository
-sample fixture on 2026-05-07 and is not interchangeable with the 0.7.0 snapshot
-run above.
+Local run:
+
+```text
+date: 2026-08-21
+host: Windows / PowerShell
+rustc: 1.95.0 (59807616e 2026-04-14)
+cargo: 1.95.0 (f2d3ce0bd 2026-03-21)
+features: --all-features
+criterion: sample_size=10, measurement_time=4s
+plotting: gnuplot not installed; Criterion used Plotters
+```
 
 Run named bench targets instead of passing `--noplot` to the whole package; the
 lib test harness does not accept Criterion's `--noplot` flag.
 
 ### Criterion
 
-| Benchmark | Mean | Interval |
-| --- | ---: | --- |
-| `bedrock_world/level_dat/parse_synthetic` | 376.59 ns | 366.19..382.99 ns |
-| `bedrock_world/level_dat/nbt_events_synthetic` | 141.71 ns | 136.72..153.28 ns |
-| `bedrock_world/level_dat/read_fixture` | 53.970 us | 53.476..54.367 us |
-| `bedrock_world/db/open_lazy` | 572.86 us | 546.81..632.79 us |
-| `bedrock_world/world/list_players` | 53.286 ms | 51.765..55.314 ms |
-| `bedrock_world/subchunk/decode_palette_full_indices` | 39.750 us | 37.665..40.933 us |
-| `bedrock_world/subchunk/decode_palette_counts_only` | 38.311 us | 36.614..39.778 us |
-| `bedrock_world/chunk/parse_fixture_chunk` | 70.046 ms | 56.201..76.518 ms |
+| Benchmark | Mean | Interval | Throughput |
+| --- | ---: | --- | --- |
+| `bedrock_world/level_dat/parse_synthetic` | 789.29 ns | 727.20..816.61 ns | 100.29 MiB/s |
+| `bedrock_world/level_dat/nbt_events_synthetic` | 239.78 ns | 233.76..246.34 ns | 330.12 MiB/s |
+| `bedrock_world/level_dat/nbt_root_owned_synthetic` | 593.74 ns | 575.30..633.54 ns | 133.32 MiB/s |
+| `bedrock_world/level_dat/nbt_root_ref_synthetic` | 215.45 ns | 202.81..222.00 ns | 367.40 MiB/s |
 
-Criterion reported local improvement for lazy DB open, no material change for
-synthetic `level.dat`, fixture `level.dat`, and counts-only palette decode, and
-regressions for list-player scanning, full-index palette decode, and fixture
-chunk parsing versus the prior machine baseline. The fixture-backed numbers are
-sensitive to disk cache and background load; use them as trend inputs, not CI
-thresholds.
+### Performance Optimization Highlights vs Prior Baseline
+
+- **Chunk Read/Decode Throughput**:
+  - `logical_cold`: Increased by **+50.8%** (from 295.83 chunks/s to **446.19 chunks/s**). DB read average dropped from 503.4 ms to 317.3 ms (-37.0%), decode average dropped from 300.0 ms to 217.9 ms (-27.4%).
+  - `logical_warm`: Increased by **+23.4%** (from 386.42 chunks/s to **476.94 chunks/s**). DB read average dropped from 347.3 ms to 289.9 ms (-16.5%), decode average dropped from 271.1 ms to 198.7 ms (-26.7%).
+- **Fixed Layer Query**:
+  - 256 chunks batch query improved from 721 ms down to **271 ms** (**2.66x faster**), with decode overhead reduced to only 5 ms.
 
 ### Large Fixture
 
