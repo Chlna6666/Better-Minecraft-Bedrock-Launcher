@@ -28,7 +28,6 @@ mod batch;
 mod coding;
 mod compaction;
 mod compression;
-#[path = "db_v2.rs"]
 mod db;
 mod db_lock;
 /// Storage-engine error types.
