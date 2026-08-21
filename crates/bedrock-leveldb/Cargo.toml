@@ -43,7 +43,6 @@ bench = []
 
 [dependencies]
 bytes = "1.10.1"
-crossbeam-channel = "0.5"
 # crc32c performs runtime ISA detection and software fallback; this does not
 # require a global target-cpu=native build.
 crc32c = "0.6.8"
