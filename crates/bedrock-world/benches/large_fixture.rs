@@ -194,6 +194,88 @@ fn main() {
         );
     }
 
+    for (mode, threading, scan_mode) in scan_modes() {
+        let started = Instant::now();
+        let prefix_scan = storage
+            .for_each_prefix_ref(
+                b"actorprefix",
+                scan_options(threading, scan_mode),
+                &mut |_entry| Ok(StorageVisitorControl::Continue),
+            )
+            .expect("actor prefix scan");
+        let elapsed = started.elapsed();
+        println!(
+            "large_fixture.prefix_ref_scan.actorprefix.{mode} elapsed_ms={} entries={} entries_per_sec={:.2} worker_threads={} tables_scanned={} prefix_scans=1",
+            elapsed.as_millis(),
+            prefix_scan.visited,
+            prefix_scan.visited as f64 / elapsed.as_secs_f64(),
+            prefix_scan.worker_threads,
+            prefix_scan.tables_scanned
+        );
+    }
+
+    for (mode, threading, scan_mode) in scan_modes() {
+        let started = Instant::now();
+        let prefix_scan = storage
+            .for_each_prefix_ref(
+                b"digp",
+                scan_options(threading, scan_mode),
+                &mut |_entry| Ok(StorageVisitorControl::Continue),
+            )
+            .expect("digp prefix scan");
+        let elapsed = started.elapsed();
+        println!(
+            "large_fixture.prefix_ref_scan.digp.{mode} elapsed_ms={} entries={} entries_per_sec={:.2} worker_threads={} tables_scanned={} prefix_scans=1",
+            elapsed.as_millis(),
+            prefix_scan.visited,
+            prefix_scan.visited as f64 / elapsed.as_secs_f64(),
+            prefix_scan.worker_threads,
+            prefix_scan.tables_scanned
+        );
+    }
+
+    for (mode, threading) in [
+        ("single", WorldThreadingOptions::Single),
+        ("parallel_auto", WorldThreadingOptions::Auto),
+    ] {
+        let started = Instant::now();
+        let (entities, report) = dynamic_world
+            .scan_entities_blocking(WorldScanOptions {
+                threading,
+                ..WorldScanOptions::default()
+            })
+            .expect("scan entities");
+        let elapsed = started.elapsed();
+        println!(
+            "large_fixture.entities.scan.{mode} elapsed_ms={} entities={} parse_errors={} entries_per_sec={:.2}",
+            elapsed.as_millis(),
+            entities.len(),
+            report.parse_errors.len(),
+            entities.len() as f64 / elapsed.as_secs_f64()
+        );
+    }
+
+    for (mode, threading) in [
+        ("single", WorldThreadingOptions::Single),
+        ("parallel_auto", WorldThreadingOptions::Auto),
+    ] {
+        let started = Instant::now();
+        let (block_entities, report) = dynamic_world
+            .scan_block_entities_blocking(WorldScanOptions {
+                threading,
+                ..WorldScanOptions::default()
+            })
+            .expect("scan block entities");
+        let elapsed = started.elapsed();
+        println!(
+            "large_fixture.block_entities.scan.{mode} elapsed_ms={} block_entities={} parse_errors={} entries_per_sec={:.2}",
+            elapsed.as_millis(),
+            block_entities.len(),
+            report.parse_errors.len(),
+            block_entities.len() as f64 / elapsed.as_secs_f64()
+        );
+    }
+
     let start = Instant::now();
     let players = dynamic_world.list_players_blocking().expect("list players");
     println!(

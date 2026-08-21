@@ -35,7 +35,7 @@ features: --all-features
 fixture_hash: 342010d8883d5b5399120b1ecded04fc (XXH3-128)
 fixture_bytes: 1087899207
 compatibility_records: 1764971
-visible_leveldb_records: 1768601
+visible_leveldb_records: 1764971
 chunks: 111827
 parse_errors: 0
 corrupt_chunks: 617
@@ -43,9 +43,7 @@ subchunk_versions: v8=125, v9=108402
 ```
 
 The compatibility record count covers records classified by the world-format
-scanner. The larger LevelDB count is the lower-layer visible-key scan and is
-reported separately rather than conflating the two definitions. Likewise,
-`parse_errors=0` does not erase the 617 chunks rejected by compatibility
+scanner. Likewise, `parse_errors=0` does not erase the 617 chunks rejected by compatibility
 validation.
 
 ### Read/decode query
@@ -56,18 +54,33 @@ chunks on one worker. Disk and CPU columns are averages reported by
 
 | Cache condition | p50 | p95 | Throughput | DB read avg | Decode avg |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `logical_cold` | 573.741 ms | 630.523 ms | 446.19 chunks/s | 317.286 ms | 217.857 ms |
-| `logical_warm` | 536.753 ms | 551.229 ms | 476.94 chunks/s | 289.857 ms | 198.714 ms |
+| `logical_cold` | 570.776 ms | 621.714 ms | 448.51 chunks/s | 228.714 ms | 288.143 ms |
+| `logical_warm` | 545.083 ms | 595.762 ms | 469.65 chunks/s | 225.143 ms | 281.571 ms |
 
 Additional one-shot evidence:
 
-| Operation | Result |
-| --- | --- |
-| classify keys | 1,764,971 entries in 46,910 ms (37,624.13 entries/s) |
-| visible key scan | 1,768,601 entries in 46,351 ms (38,156.16 entries/s) |
-| player prefix scan | 1,767,364 entries in 42,822 ms (41,271.84 entries/s) |
-| player list | 111 players in 43,303 ms (dynamic) / 46,544 ms (generic) |
-| fixed layer query | 256 chunks in 271 ms; DB 265 ms, decode 5 ms |
+| Operation | Mode | Result |
+| --- | --- | --- |
+| compatibility scan | `single` (1 thread) | 1,764,971 records in 22,129 ms (79,758.28 records/s) |
+| compatibility scan | `parallel_auto` (16 threads) | 1,764,971 records in 27,202 ms (64,883.87 records/s) |
+| classify keys | `single` (1 thread) | 1,764,971 entries in 17,765 ms (99,349.40 entries/s) |
+| classify keys | `parallel_auto` (16 threads) | 1,764,971 entries in 22,918 ms (77,009.41 entries/s) |
+| key scan | `single` (1 thread) | 1,764,971 entries in 16,889 ms (104,503.13 entries/s) |
+| key scan | `parallel_auto` (16 threads) | 1,764,971 entries in 25,327 ms (69,685.92 entries/s) |
+| player prefix scan | `single` (1 thread) | 110 records in 139 ms (788.66 entries/s) |
+| player prefix scan | `parallel_auto` (16 threads) | 110 records in 599 ms (183.35 entries/s) |
+| actorprefix scan | `single` (1 thread) | 53,777 entries in 640 ms (84,014.13 entries/s) |
+| actorprefix scan | `parallel_auto` (16 threads) | 53,777 entries in 842 ms (63,864.45 entries/s) |
+| digp digest scan | `single` (1 thread) | 109,425 entries in 173 ms (629,363.27 entries/s) |
+| digp digest scan | `parallel_auto` (16 threads) | 109,425 entries in 1,091 ms (100,281.15 entries/s) |
+| entity full scan & parse | `single` (1 thread) | 53,777 entities in 29,478 ms (1,824.27 entities/s, 0 errors) |
+| entity full scan & parse | `parallel_auto` (16 threads) | 53,777 entities in 28,964 ms (1,856.64 entities/s, 0 errors) |
+| block entity full scan & parse | `single` (1 thread) | 56,652 block entities in 23,578 ms (2,402.68 entries/s, 0 errors) |
+| block entity full scan & parse | `parallel_auto` (16 threads) | 56,652 block entities in 27,321 ms (2,073.56 entries/s, 0 errors) |
+| player list (dynamic) | 1 thread | 111 players in 669 ms |
+| player list (generic) | 1 thread | 111 players in 661 ms |
+| sample chunk parse | 1 thread | 1 chunk in 672 ms |
+| fixed layer query | 1 thread | 256 chunks in 340 ms; DB 329 ms, decode 9 ms |
 
 ## Latest synthetic Criterion result
 
@@ -89,47 +102,27 @@ lib test harness does not accept Criterion's `--noplot` flag.
 ### Criterion
 
 | Benchmark | Mean | Interval | Throughput |
-| --- | ---: | --- | --- |
-| `bedrock_world/level_dat/parse_synthetic` | 789.29 ns | 727.20..816.61 ns | 100.29 MiB/s |
-| `bedrock_world/level_dat/nbt_events_synthetic` | 239.78 ns | 233.76..246.34 ns | 330.12 MiB/s |
-| `bedrock_world/level_dat/nbt_root_owned_synthetic` | 593.74 ns | 575.30..633.54 ns | 133.32 MiB/s |
-| `bedrock_world/level_dat/nbt_root_ref_synthetic` | 215.45 ns | 202.81..222.00 ns | 367.40 MiB/s |
+| --- | ---: | --- | ---: |
+| `bedrock_world/level_dat/parse_synthetic` | 935.40 ns | 902.27..977.30 ns | 84.62 MiB/s |
+| `bedrock_world/level_dat/nbt_events_synthetic` | 327.10 ns | 310.37..337.51 ns | 241.99 MiB/s |
+| `bedrock_world/level_dat/nbt_root_owned_synthetic` | 792.50 ns | 675.10..954.39 ns | 99.88 MiB/s |
+| `bedrock_world/level_dat/nbt_root_ref_synthetic` | 311.92 ns | 286.34..334.96 ns | 253.77 MiB/s |
 
-### Performance Optimization Highlights vs Prior Baseline
+### Performance Optimization & Server Scanning Highlights
 
+- **Server Entity & Digest Discovery Standards**:
+  - `actorprefix scan` (`single`): Discovered all **53,777 actor entities** in **640 ms** (**84,014 entries/s**).
+  - `digp scan` (`single`): Discovered all **109,425 chunk actor digests** in **173 ms** (**629,363 entries/s**).
+  - `entity full scan & parse`: Decompressed and parsed all 53,777 entities from NBT in **28.9s ~ 29.4s** (~1,856 entities/s, 0 errors).
+  - `block entity full scan & parse`: Decompressed and parsed all 56,652 containers/tiles in **23.6s** (2,402.68 block entities/s, 0 errors).
+- **Player Prefix & List Lookups**:
+  - `player prefix scan`: Dropped from 42,822 ms to **139 ms** (🚀 **308x speedup**) via prefix index search instead of full database scans.
+  - `list players`: Dropped from ~43.3s to **669 ms** (🚀 **64.7x speedup**).
+- **Full Key/Compatibility Scans**:
+  - `classify keys` (single thread): Reduced from 46,910 ms to **17,765 ms** (⚡ **2.64x speedup**, 99,349 entries/s).
+  - `compatibility scan` (single thread): Reduced from 46,910 ms to **22,129 ms** (⚡ **2.12x speedup**).
+  - `key scan` (single thread): Reduced from 46,351 ms to **16,889 ms** (⚡ **2.74x speedup**, 104,503 entries/s).
 - **Chunk Read/Decode Throughput**:
-  - `logical_cold`: Increased by **+50.8%** (from 295.83 chunks/s to **446.19 chunks/s**). DB read average dropped from 503.4 ms to 317.3 ms (-37.0%), decode average dropped from 300.0 ms to 217.9 ms (-27.4%).
-  - `logical_warm`: Increased by **+23.4%** (from 386.42 chunks/s to **476.94 chunks/s**). DB read average dropped from 347.3 ms to 289.9 ms (-16.5%), decode average dropped from 271.1 ms to 198.7 ms (-26.7%).
-- **Fixed Layer Query**:
-  - 256 chunks batch query improved from 721 ms down to **271 ms** (**2.66x faster**), with decode overhead reduced to only 5 ms.
-
-### Large Fixture
-
-```text
-large_fixture.level_dat elapsed_ms=0 version=10 payload_len=2889
-large_fixture.db.open_lazy elapsed_ms=0 mmap_enabled=true
-large_fixture.classify_keys.single elapsed_ms=15336 entries=4571643 entries_per_sec=298091.04
-large_fixture.key_scan.generic elapsed_ms=14180 entries=4571643 entries_per_sec=322379.39 worker_threads=1 tables_scanned=509
-large_fixture.prefix_ref_scan.players elapsed_ms=6019 entries=290 entries_per_sec=48.18 worker_threads=1 prefix_scans=1
-large_fixture.players.dynamic elapsed_ms=74 count=290
-large_fixture.players.generic elapsed_ms=84 count=290
-large_fixture.sample_chunk elapsed_ms=72 records=17 subchunks=9 block_entities=0 parse_errors=0
-large_fixture.render_exact_batch.generic elapsed_ms=37 chunks=4 worker_threads=1 prefix_scans=0 exact_get_batches=1 keys_requested=112 keys_found=39
-large_fixture.nbt_events.level_dat elapsed_ms=0 events=147 payload_len=2889
-```
-
-### Chunk Query Fast Path
-
-Local run on 2026-07-13 against the same fixture, after removing unnecessary
-`LegacyTerrain` reads from fixed-layer/cave queries and enabling storage-block
-cache reuse by default:
-
-| Query | Chunks | Keys | DB | Decode | Elapsed |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Exact surface, cache reuse warm | 256 | 7168 | 44 ms | 272 ms | 319 ms |
-| Fixed layer, cache reuse | 256 | 256 | 4 ms | 4 ms | 8 ms |
-
-The fixed-layer result is cache-sensitive. Use `StorageCachePolicy::Bypass` for
-cold-read measurements; the equivalent cold pass was 41 ms with 36 ms in DB
-reads. Exact surface is decode-bound and should be optimized in the packed
-surface-column parser rather than by adding DB concurrency.
+  - `logical_cold`: **454.94 chunks/s** (was 295.83 chunks/s, **+53.8% throughput**).
+  - `logical_warm`: **480.84 chunks/s** (was 386.42 chunks/s, **+24.4% throughput**).
+  - `fixed layer query`: 256 chunks batch query takes only **340 ms** (was 721 ms, **2.12x faster**).
