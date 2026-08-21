@@ -1,0 +1,338 @@
+//! Compact business-level 2D surface-map queries.
+//!
+//! This API intentionally does not expose `SubChunk`, full 3D block indices, block entities or
+//! general `ChunkData`. The output is a fixed 16x16 column plane plus a per-chunk deduplicated
+//! material table. This keeps the 2D renderer independent from the authoritative block-query API
+//! while preserving block-state properties that can affect palette color rules.
+
+use super::{
+    BedrockWorld, BiomeDataRequirement, ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority,
+    ChunkLoadStats, ExactSurfaceSubchunkPolicy, TerrainColumnBiome, WorldPipelineOptions,
+    WorldStorageHandle, WorldThreadingOptions,
+};
+use crate::chunk::{BlockState, ChunkPos, SubChunkDecodeMode};
+use crate::error::{BedrockWorldError, Result};
+use crate::nbt::NbtTag;
+use crate::storage::StorageCachePolicy;
+use std::collections::BTreeMap;
+
+const SURFACE_COLUMN_COUNT: usize = 16 * 16;
+const NO_MATERIAL: u16 = u16::MAX;
+
+/// Compact material referenced by one or more 2D map columns.
+///
+/// `version` from the general `BlockState` representation is intentionally omitted because it does
+/// not affect 2D palette selection. State properties are retained because render palettes may define
+/// state-specific color overrides.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceMapMaterial {
+    /// Canonical Bedrock block identifier.
+    pub name: String,
+    /// State properties needed for exact state-sensitive palette selection.
+    pub states: BTreeMap<String, NbtTag>,
+}
+
+impl SurfaceMapMaterial {
+    fn from_state(state: &BlockState) -> Self {
+        Self {
+            name: state.name.clone(),
+            states: state.states.clone(),
+        }
+    }
+
+    fn matches_state(&self, state: &BlockState) -> bool {
+        self.name == state.name && self.states == state.states
+    }
+}
+
+/// One compact 2D terrain column in local `z * 16 + x` order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceMapColumn {
+    /// Y coordinate of the visible surface block.
+    pub surface_y: i16,
+    /// Material id of the visible surface block.
+    pub surface_material: u16,
+    /// Y coordinate of the relief/support block.
+    pub relief_y: i16,
+    /// Material id of the relief/support block.
+    pub relief_material: u16,
+    /// Optional thin-overlay Y coordinate.
+    pub overlay_y: Option<i16>,
+    /// Material id of a thin overlay, or `u16::MAX` when absent.
+    pub overlay_material: u16,
+    /// Water depth above the underwater support block.
+    pub water_depth: u8,
+    /// Material id of visible water, or `u16::MAX` when absent.
+    pub water_material: u16,
+    /// Y coordinate of the underwater support block when known.
+    pub underwater_y: Option<i16>,
+    /// Material id of the underwater support block, or `u16::MAX` when absent.
+    pub underwater_material: u16,
+    /// Biome context used by the 2D palette.
+    pub biome: Option<TerrainColumnBiome>,
+}
+
+impl SurfaceMapColumn {
+    /// Returns the optional overlay material id.
+    #[must_use]
+    pub const fn overlay_material(self) -> Option<u16> {
+        if self.overlay_material == NO_MATERIAL {
+            None
+        } else {
+            Some(self.overlay_material)
+        }
+    }
+
+    /// Returns the optional visible-water material id.
+    #[must_use]
+    pub const fn water_material(self) -> Option<u16> {
+        if self.water_material == NO_MATERIAL {
+            None
+        } else {
+            Some(self.water_material)
+        }
+    }
+
+    /// Returns the optional underwater-support material id.
+    #[must_use]
+    pub const fn underwater_material(self) -> Option<u16> {
+        if self.underwater_material == NO_MATERIAL {
+            None
+        } else {
+            Some(self.underwater_material)
+        }
+    }
+}
+
+/// Compact 16x16 surface plane for one chunk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceMapChunk {
+    /// Chunk position represented by this plane.
+    pub pos: ChunkPos,
+    /// Whether enough persisted records existed to treat the chunk as loaded.
+    pub is_loaded: bool,
+    /// Deduplicated render materials referenced by the 256 columns.
+    pub materials: Vec<SurfaceMapMaterial>,
+    /// Columns in `z * 16 + x` order. Missing columns stay `None`.
+    columns: Box<[Option<SurfaceMapColumn>; SURFACE_COLUMN_COUNT]>,
+}
+
+impl SurfaceMapChunk {
+    /// Returns one local 2D map column.
+    #[must_use]
+    pub fn column(&self, local_x: u8, local_z: u8) -> Option<&SurfaceMapColumn> {
+        if local_x >= 16 || local_z >= 16 {
+            return None;
+        }
+        self.columns[usize::from(local_z) * 16 + usize::from(local_x)].as_ref()
+    }
+
+    /// Returns the fixed 256-column plane in `z * 16 + x` order.
+    #[must_use]
+    pub fn columns(&self) -> &[Option<SurfaceMapColumn>; SURFACE_COLUMN_COUNT] {
+        &self.columns
+    }
+
+    /// Resolves a compact material id.
+    #[must_use]
+    pub fn material(&self, id: u16) -> Option<&SurfaceMapMaterial> {
+        self.materials.get(usize::from(id))
+    }
+}
+
+/// Controls a compact 2D surface-map batch query.
+#[derive(Debug, Clone)]
+pub struct SurfaceMapQueryOptions {
+    /// Exact surface SubChunk loading policy.
+    pub subchunks: ExactSurfaceSubchunkPolicy,
+    /// Threading policy for independent chunks.
+    pub threading: WorldThreadingOptions,
+    /// Bounded chunk/decode pipeline settings.
+    pub pipeline: WorldPipelineOptions,
+    /// Chunk ordering policy.
+    pub priority: ChunkLoadPriority,
+    /// Backend cache policy for exact storage reads.
+    pub storage_cache_policy: StorageCachePolicy,
+}
+
+impl Default for SurfaceMapQueryOptions {
+    fn default() -> Self {
+        Self {
+            // Exact is the default. HintThenVerify remains opt-in until its boundary-proof path can
+            // prove that no persisted higher/lower SubChunk can change the rendered column.
+            subchunks: ExactSurfaceSubchunkPolicy::Full,
+            threading: WorldThreadingOptions::Auto,
+            pipeline: WorldPipelineOptions::default(),
+            priority: ChunkLoadPriority::RowMajor,
+            storage_cache_policy: StorageCachePolicy::Use,
+        }
+    }
+}
+
+/// Diagnostics returned by a compact 2D surface-map batch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SurfaceMapBatchStats {
+    /// Underlying exact storage/decode statistics.
+    pub load: ChunkLoadStats,
+    /// Number of compact chunks returned.
+    pub chunks: usize,
+    /// Number of populated surface columns returned.
+    pub columns: usize,
+    /// Number of unique per-chunk materials retained after compaction.
+    pub materials: usize,
+}
+
+impl<S> BedrockWorld<S>
+where
+    S: WorldStorageHandle,
+{
+    /// Loads compact exact 2D map data for explicit chunk positions.
+    ///
+    /// The storage request contains only surface SubChunks and top-column biome data. It explicitly
+    /// selects [`SubChunkDecodeMode::SurfaceColumns`], does not request block entities, and never
+    /// materializes full 4096-entry 3D index arrays. The returned public contract contains only the
+    /// 2D plane and its deduplicated material table.
+    pub fn query_surface_map_many_blocking(
+        &self,
+        positions: impl IntoIterator<Item = ChunkPos>,
+        options: SurfaceMapQueryOptions,
+    ) -> Result<(Vec<SurfaceMapChunk>, SurfaceMapBatchStats)> {
+        let mut load_options = ChunkLoadOptions::for_data_request(
+            ChunkDataRequest::new()
+                .surface_columns(options.subchunks)
+                .biome(BiomeDataRequirement::SurfaceColumns),
+        );
+        load_options.subchunk_decode = SubChunkDecodeMode::SurfaceColumns;
+        load_options.threading = options.threading;
+        load_options.pipeline = options.pipeline;
+        load_options.priority = options.priority;
+        load_options.storage_cache_policy = options.storage_cache_policy;
+
+        let (chunks, load) = self.query_chunk_data_with_stats_blocking(positions, load_options)?;
+        let mut compact = Vec::with_capacity(chunks.len());
+        let mut column_count = 0usize;
+        let mut material_count = 0usize;
+        for chunk in chunks {
+            let mapped = compact_surface_chunk(&chunk)?;
+            column_count = column_count.saturating_add(
+                mapped.columns.iter().filter(|column| column.is_some()).count(),
+            );
+            material_count = material_count.saturating_add(mapped.materials.len());
+            compact.push(mapped);
+        }
+        let stats = SurfaceMapBatchStats {
+            load,
+            chunks: compact.len(),
+            columns: column_count,
+            materials: material_count,
+        };
+        Ok((compact, stats))
+    }
+}
+
+fn compact_surface_chunk(chunk: &super::ChunkData) -> Result<SurfaceMapChunk> {
+    let mut materials = Vec::<SurfaceMapMaterial>::with_capacity(32);
+    let mut columns = Box::new(std::array::from_fn(|_| None));
+    let Some(samples) = chunk.column_samples.as_ref() else {
+        return Ok(SurfaceMapChunk {
+            pos: chunk.pos,
+            is_loaded: chunk.is_loaded,
+            materials,
+            columns,
+        });
+    };
+
+    for local_z in 0..16_u8 {
+        for local_x in 0..16_u8 {
+            let Some(sample) = samples.get(local_x, local_z) else {
+                continue;
+            };
+            let surface_material = intern_material(&mut materials, &sample.surface_block_state)?;
+            let relief_material = intern_material(&mut materials, &sample.relief_block_state)?;
+            let (overlay_y, overlay_material) = sample.overlay.as_ref().map_or(
+                Ok((None, NO_MATERIAL)),
+                |overlay| {
+                    Ok((
+                        Some(overlay.y),
+                        intern_material(&mut materials, &overlay.block_state)?,
+                    ))
+                },
+            )?;
+            let (water_depth, water_material, underwater_y, underwater_material) =
+                sample.water.as_ref().map_or(
+                    Ok((0, NO_MATERIAL, None, NO_MATERIAL)),
+                    |water| {
+                        Ok((
+                            water.depth,
+                            intern_material(&mut materials, &water.block_state)?,
+                            water.underwater_y,
+                            water
+                                .underwater_block_state
+                                .as_ref()
+                                .map(|state| intern_material(&mut materials, state))
+                                .transpose()?
+                                .unwrap_or(NO_MATERIAL),
+                        ))
+                    },
+                )?;
+            columns[usize::from(local_z) * 16 + usize::from(local_x)] = Some(SurfaceMapColumn {
+                surface_y: sample.surface_y,
+                surface_material,
+                relief_y: sample.relief_y,
+                relief_material,
+                overlay_y,
+                overlay_material,
+                water_depth,
+                water_material,
+                underwater_y,
+                underwater_material,
+                biome: sample.biome,
+            });
+        }
+    }
+
+    Ok(SurfaceMapChunk {
+        pos: chunk.pos,
+        is_loaded: chunk.is_loaded,
+        materials,
+        columns,
+    })
+}
+
+fn intern_material(materials: &mut Vec<SurfaceMapMaterial>, state: &BlockState) -> Result<u16> {
+    if let Some(index) = materials.iter().position(|material| material.matches_state(state)) {
+        return u16::try_from(index).map_err(|_| {
+            BedrockWorldError::Validation("surface material table exceeds u16".to_string())
+        });
+    }
+    let index = u16::try_from(materials.len()).map_err(|_| {
+        BedrockWorldError::Validation("surface material table exceeds u16".to_string())
+    })?;
+    materials.push(SurfaceMapMaterial::from_state(state));
+    Ok(index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_material_ids_use_sentinel_only_for_optional_materials() {
+        let column = SurfaceMapColumn {
+            surface_y: 64,
+            surface_material: 0,
+            relief_y: 63,
+            relief_material: 1,
+            overlay_y: None,
+            overlay_material: NO_MATERIAL,
+            water_depth: 0,
+            water_material: NO_MATERIAL,
+            underwater_y: None,
+            underwater_material: NO_MATERIAL,
+            biome: None,
+        };
+        assert_eq!(column.overlay_material(), None);
+        assert_eq!(column.water_material(), None);
+        assert_eq!(column.underwater_material(), None);
+    }
+}
