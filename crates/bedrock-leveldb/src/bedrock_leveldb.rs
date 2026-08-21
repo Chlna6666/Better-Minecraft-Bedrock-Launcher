@@ -38,6 +38,7 @@ mod native_table_writer;
 mod obsolete;
 mod options;
 mod table;
+mod table_cursor;
 mod version;
 mod wal;
 
