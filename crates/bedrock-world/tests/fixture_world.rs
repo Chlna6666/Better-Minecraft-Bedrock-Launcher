@@ -233,6 +233,7 @@ fn nbt_preview(value: &NbtTag) -> String {
         NbtTag::Float(value) => value.to_string(),
         NbtTag::Double(value) => value.to_string(),
         NbtTag::String(value) => value.clone(),
+        NbtTag::ByteString(values) => format!("ByteString(len={})", values.len()),
         NbtTag::List(values) => format!("List(len={})", values.len()),
         NbtTag::Compound(values) => format!("Compound(len={})", values.len()),
         NbtTag::ByteArray(values) => format!("ByteArray(len={})", values.len()),
