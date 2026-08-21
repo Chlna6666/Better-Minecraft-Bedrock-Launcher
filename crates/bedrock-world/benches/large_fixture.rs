@@ -73,16 +73,40 @@ fn main() {
         BedrockWorldOpenOptions::default(),
     );
 
+    let compatibility_started = Instant::now();
+    let compatibility_single = scan_world_compatibility_blocking(
+        &storage,
+        WorldFormat::LevelDb,
+        scan_options(StorageThreadingOptions::Single, StorageScanMode::Sequential),
+    )
+    .expect("compatibility single scan");
+    let compatibility_single_elapsed = compatibility_started.elapsed();
+    println!(
+        "large_fixture.compatibility.single elapsed_ms={} records={} chunks={} corrupt_chunks={} subchunk_versions={:?}",
+        compatibility_single_elapsed.as_millis(),
+        compatibility_single.records_scanned,
+        compatibility_single.chunks_scanned,
+        compatibility_single.corrupt_chunks,
+        compatibility_single.subchunk_versions
+    );
+
+    let compatibility_started = Instant::now();
     let compatibility = scan_world_compatibility_blocking(
         &storage,
         WorldFormat::LevelDb,
-        StorageReadOptions {
-            threading: StorageThreadingOptions::Single,
-            scan_mode: StorageScanMode::Sequential,
-            ..StorageReadOptions::default()
-        },
+        scan_options(StorageThreadingOptions::Auto, StorageScanMode::ParallelTables),
     )
-    .expect("compatibility scan");
+    .expect("compatibility parallel scan");
+    let compatibility_parallel_elapsed = compatibility_started.elapsed();
+    assert_eq!(compatibility, compatibility_single, "parallel compatibility differs");
+    println!(
+        "large_fixture.compatibility.parallel_auto elapsed_ms={} records={} chunks={} speedup_vs_single={:.3}",
+        compatibility_parallel_elapsed.as_millis(),
+        compatibility.records_scanned,
+        compatibility.chunks_scanned,
+        compatibility_single_elapsed.as_secs_f64() / compatibility_parallel_elapsed.as_secs_f64()
+    );
+
     let parse_errors = dynamic_world
         .parse_world_blocking(WorldParseOptions::summary())
         .expect("parse world summary")
@@ -90,7 +114,7 @@ fn main() {
         .parse_errors
         .len();
     println!(
-        "large_fixture.compatibility records={} chunks={} parse_errors={} corrupt_chunks={} subchunk_versions={:?}",
+        "large_fixture.compatibility.summary records={} chunks={} parse_errors={} corrupt_chunks={} subchunk_versions={:?}",
         compatibility.records_scanned,
         compatibility.chunks_scanned,
         parse_errors,
@@ -98,64 +122,77 @@ fn main() {
         compatibility.subchunk_versions
     );
 
-    let options = WorldScanOptions {
-        threading: WorldThreadingOptions::Single,
-        ..WorldScanOptions::default()
-    };
-    let start = Instant::now();
-    let key_kinds = dynamic_world
-        .classify_keys_blocking(options)
-        .expect("classify keys");
-    let elapsed = start.elapsed();
-    let total_entries = key_kinds.values().copied().sum::<usize>();
+    let single_classify_started = Instant::now();
+    let single_key_kinds = dynamic_world
+        .classify_keys_blocking(WorldScanOptions {
+            threading: WorldThreadingOptions::Single,
+            ..WorldScanOptions::default()
+        })
+        .expect("classify keys single");
+    let single_classify_elapsed = single_classify_started.elapsed();
+    let total_entries = single_key_kinds.values().copied().sum::<usize>();
     println!(
         "large_fixture.classify_keys.single elapsed_ms={} entries={} entries_per_sec={:.2}",
-        elapsed.as_millis(),
+        single_classify_elapsed.as_millis(),
         total_entries,
-        u32::try_from(total_entries).map_or(f64::INFINITY, f64::from) / elapsed.as_secs_f64()
+        total_entries as f64 / single_classify_elapsed.as_secs_f64()
     );
 
-    let start = Instant::now();
-    let key_scan = storage
-        .for_each_key(
-            StorageReadOptions {
-                threading: StorageThreadingOptions::Single,
-                scan_mode: StorageScanMode::Sequential,
-                ..StorageReadOptions::default()
-            },
-            &mut |_key| Ok(StorageVisitorControl::Continue),
-        )
-        .expect("key scan");
+    let parallel_classify_started = Instant::now();
+    let parallel_key_kinds = dynamic_world
+        .classify_keys_blocking(WorldScanOptions {
+            threading: WorldThreadingOptions::Auto,
+            ..WorldScanOptions::default()
+        })
+        .expect("classify keys parallel");
+    let parallel_classify_elapsed = parallel_classify_started.elapsed();
+    assert_eq!(parallel_key_kinds, single_key_kinds, "parallel key classification differs");
     println!(
-        "large_fixture.key_scan.generic elapsed_ms={} entries={} entries_per_sec={:.2} worker_threads={} tables_scanned={}",
-        start.elapsed().as_millis(),
-        key_scan.visited,
-        u32::try_from(key_scan.visited).map_or(f64::INFINITY, f64::from)
-            / start.elapsed().as_secs_f64(),
-        key_scan.worker_threads,
-        key_scan.tables_scanned
+        "large_fixture.classify_keys.parallel_auto elapsed_ms={} entries={} entries_per_sec={:.2} speedup_vs_single={:.3}",
+        parallel_classify_elapsed.as_millis(),
+        total_entries,
+        total_entries as f64 / parallel_classify_elapsed.as_secs_f64(),
+        single_classify_elapsed.as_secs_f64() / parallel_classify_elapsed.as_secs_f64()
     );
 
-    let start = Instant::now();
-    let prefix_scan = storage
-        .for_each_prefix_ref(
-            b"player_",
-            StorageReadOptions {
-                threading: StorageThreadingOptions::Single,
-                scan_mode: StorageScanMode::Sequential,
-                ..StorageReadOptions::default()
-            },
-            &mut |_entry| Ok(StorageVisitorControl::Continue),
-        )
-        .expect("prefix ref scan");
-    println!(
-        "large_fixture.prefix_ref_scan.players elapsed_ms={} entries={} entries_per_sec={:.2} worker_threads={} prefix_scans=1",
-        start.elapsed().as_millis(),
-        prefix_scan.visited,
-        u32::try_from(prefix_scan.visited).map_or(f64::INFINITY, f64::from)
-            / start.elapsed().as_secs_f64(),
-        prefix_scan.worker_threads
-    );
+    for (mode, threading, scan_mode) in scan_modes() {
+        let started = Instant::now();
+        let key_scan = storage
+            .for_each_key(
+                scan_options(threading, scan_mode),
+                &mut |_key| Ok(StorageVisitorControl::Continue),
+            )
+            .expect("key scan");
+        let elapsed = started.elapsed();
+        println!(
+            "large_fixture.key_scan.{mode} elapsed_ms={} entries={} entries_per_sec={:.2} worker_threads={} tables_scanned={}",
+            elapsed.as_millis(),
+            key_scan.visited,
+            key_scan.visited as f64 / elapsed.as_secs_f64(),
+            key_scan.worker_threads,
+            key_scan.tables_scanned
+        );
+    }
+
+    for (mode, threading, scan_mode) in scan_modes() {
+        let started = Instant::now();
+        let prefix_scan = storage
+            .for_each_prefix_ref(
+                b"player_",
+                scan_options(threading, scan_mode),
+                &mut |_entry| Ok(StorageVisitorControl::Continue),
+            )
+            .expect("prefix ref scan");
+        let elapsed = started.elapsed();
+        println!(
+            "large_fixture.prefix_ref_scan.players.{mode} elapsed_ms={} entries={} entries_per_sec={:.2} worker_threads={} tables_scanned={} prefix_scans=1",
+            elapsed.as_millis(),
+            prefix_scan.visited,
+            prefix_scan.visited as f64 / elapsed.as_secs_f64(),
+            prefix_scan.worker_threads,
+            prefix_scan.tables_scanned
+        );
+    }
 
     let start = Instant::now();
     let players = dynamic_world.list_players_blocking().expect("list players");
@@ -185,9 +222,7 @@ fn main() {
             dimension: Dimension::Overworld,
         });
     let start = Instant::now();
-    let chunk = dynamic_world
-        .parse_chunk_blocking(pos)
-        .expect("parse chunk");
+    let chunk = dynamic_world.parse_chunk_blocking(pos).expect("parse chunk");
     println!(
         "large_fixture.sample_chunk elapsed_ms={} records={} subchunks={} block_entities={} parse_errors={}",
         start.elapsed().as_millis(),
@@ -268,6 +303,32 @@ fn main() {
         fixture_hash(&world_path).expect("fixture hash after benchmark");
     assert_eq!(fixture_hash_after, fixture_hash_before, "fixture changed");
     assert_eq!(fixture_bytes_after, fixture_bytes, "fixture size changed");
+}
+
+fn scan_modes() -> [(&'static str, StorageThreadingOptions, StorageScanMode); 2] {
+    [
+        (
+            "single",
+            StorageThreadingOptions::Single,
+            StorageScanMode::Sequential,
+        ),
+        (
+            "parallel_auto",
+            StorageThreadingOptions::Auto,
+            StorageScanMode::ParallelTables,
+        ),
+    ]
+}
+
+fn scan_options(
+    threading: StorageThreadingOptions,
+    scan_mode: StorageScanMode,
+) -> StorageReadOptions {
+    StorageReadOptions {
+        threading,
+        scan_mode,
+        ..StorageReadOptions::default()
+    }
 }
 
 fn measure_render_cache_condition(
