@@ -2,26 +2,37 @@ use crate::batch::{WriteBatch, WriteOp};
 use crate::compaction;
 use crate::db_lock::DatabaseLock;
 use crate::error::{ErrorKind, LevelDbError, Result};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, TableFileMeta};
+use crate::native_table_writer::{NativeTableWriter, WrittenNativeTable};
 use crate::obsolete;
 use crate::options::{
     CachePolicy, ChecksumMode, CompressionPolicy, LevelDbOpenOptions, ReadOptions, ReadStrategy,
     ScanMode, ScanOutcome, VisitorControl, WriteOptions,
 };
 use crate::table;
+use crate::version::{ImmutableMemTable, MemTableEntries, ReadVersion};
 use crate::wal;
 use bytes::Bytes;
-use rayon::ThreadPoolBuilder;
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, File};
+use std::collections::{BTreeMap, HashSet};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex, OnceLock, RwLock,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
+    Arc, Condvar, Mutex, RwLock, Weak,
+    atomic::{AtomicU64, Ordering},
+    mpsc::{self, Receiver, SyncSender},
 };
+use std::thread::{self, JoinHandle};
 use std::time::Instant;
+
+const BACKGROUND_QUEUE_DEPTH: usize = 4;
+const BACKGROUND_STACK_BYTES: usize = 2 * 1024 * 1024;
+const AUTO_FLUSH_HARD_MULTIPLIER: usize = 2;
+
+thread_local! {
+    static WAL_ENCODE_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(16 * 1024));
+}
 
 /// Fast or full database statistics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +43,7 @@ pub struct DbStats {
     pub tables: usize,
     /// Active log file number.
     pub log_number: u64,
-    /// Approximate visible bytes or overlay bytes, depending on the stats path.
+    /// Approximate visible bytes or memtable bytes, depending on the stats path.
     pub approximate_bytes: usize,
 }
 
@@ -43,13 +54,13 @@ pub struct DbCacheStats {
     pub data_hits: u64,
     /// Decoded data-block cache misses.
     pub data_misses: u64,
-    /// Decoded data-block evictions.
+    /// Decoded data-block cache evictions.
     pub data_evictions: u64,
     /// Table-index cache hits.
     pub index_hits: u64,
     /// Table-index cache misses.
     pub index_misses: u64,
-    /// Table-index evictions.
+    /// Table-index cache evictions.
     pub index_evictions: u64,
     /// Open-file cache hits.
     pub file_hits: u64,
@@ -92,7 +103,7 @@ impl Snapshot {
         self.sequence
     }
 
-    /// Returns a copy-on-write handle to the value for `key`, if visible.
+    /// Returns a shared value handle for `key`, if visible.
     #[must_use]
     pub fn get(&self, key: &[u8]) -> Option<Bytes> {
         self.values.get(key).cloned()
@@ -122,20 +133,20 @@ impl IntoIterator for &Snapshot {
     }
 }
 
-/// Borrowed or shared key view returned by zero-copy-oriented APIs.
+/// Borrowed raw key view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyRef<'a> {
     bytes: &'a [u8],
 }
 
 impl<'a> KeyRef<'a> {
-    /// Creates a key view from raw bytes.
+    /// Creates a key view.
     #[must_use]
     pub const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes }
     }
 
-    /// Returns the raw key bytes.
+    /// Returns the raw bytes.
     #[must_use]
     pub const fn as_bytes(self) -> &'a [u8] {
         self.bytes
@@ -153,8 +164,7 @@ impl AsRef<[u8]> for KeyRef<'_> {
 pub enum ValueRef<'a> {
     /// Borrowed directly from a caller-owned or mapped buffer.
     Borrowed(&'a [u8]),
-    /// Shared immutable bytes. This is used for overlay values and decoded
-    /// compressed blocks.
+    /// Shared immutable bytes.
     Shared(Bytes),
     /// Explicitly materialized owned bytes.
     Owned(Bytes),
@@ -170,7 +180,7 @@ impl ValueRef<'_> {
         }
     }
 
-    /// Returns the value length in bytes.
+    /// Returns the value length.
     #[must_use]
     pub fn len(&self) -> usize {
         self.as_bytes().len()
@@ -205,7 +215,7 @@ impl AsRef<[u8]> for ValueRef<'_> {
     }
 }
 
-/// Raw key/value entry view used by visitor-based scans.
+/// Raw key/value entry view used by visitor-compatible scan APIs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryRef<'a> {
     /// Raw key bytes.
@@ -214,108 +224,165 @@ pub struct EntryRef<'a> {
     pub value: ValueRef<'a>,
 }
 
-/// Open database handle.
-pub struct Db {
+struct SharedDb {
     root: PathBuf,
     options: LevelDbOpenOptions,
     inner: RwLock<DbInner>,
-    block_cache: table::NativeBlockCache,
+    block_cache: Arc<table::NativeBlockCache>,
+    next_file_number: AtomicU64,
+    manifest_io: Mutex<()>,
+}
+
+struct DbInner {
+    active: MemTableEntries,
+    active_bytes: usize,
+    immutable: Option<Arc<ImmutableMemTable>>,
+    manifest: Manifest,
+    version: Arc<ReadVersion>,
+    last_sequence: u64,
+}
+
+struct ReadState {
+    active: Arc<MemTableEntries>,
+    immutable: Option<Arc<ImmutableMemTable>>,
+    version: Arc<ReadVersion>,
+    sequence: u64,
+}
+
+/// Open database handle.
+pub struct Db {
+    shared: Arc<SharedDb>,
+    background: Option<Background>,
+    write_serial: Mutex<()>,
     _database_lock: Option<DatabaseLock>,
 }
 
-#[derive(Debug)]
-struct DbInner {
-    overlay: BTreeMap<Vec<u8>, Option<Bytes>>,
-    manifest: Manifest,
-    last_sequence: u64,
-    approximate_bytes: usize,
+struct Background {
+    sender: SyncSender<BackgroundCommand>,
+    status: Arc<(Mutex<BackgroundStatus>, Condvar)>,
+    worker: Option<JoinHandle<()>>,
 }
 
-type Overlay = BTreeMap<Vec<u8>, Option<Bytes>>;
-type LoadedState = (Manifest, Overlay, u64, usize);
+#[derive(Default)]
+struct BackgroundStatus {
+    pending_flushes: usize,
+    fatal_error: Option<String>,
+}
 
-// ReadOptions and LevelDbOpenOptions are intentionally passed by value at the public
-// boundary so callers can use struct-update syntax without storing temporaries.
+enum BackgroundCommand {
+    Flush(Arc<ImmutableMemTable>),
+    Compact {
+        force: bool,
+        done: mpsc::Sender<Result<()>>,
+    },
+    Shutdown,
+}
+
+struct PendingCompactionOutputs {
+    paths: Vec<PathBuf>,
+    tables: Vec<TableFileMeta>,
+    committed: bool,
+}
+
+impl PendingCompactionOutputs {
+    fn new() -> Self {
+        Self {
+            paths: Vec::new(),
+            tables: Vec::new(),
+            committed: false,
+        }
+    }
+
+    fn push(&mut self, path: PathBuf, table: TableFileMeta) {
+        self.paths.push(path);
+        self.tables.push(table);
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingCompactionOutputs {
+    fn drop(&mut self) {
+        if !self.committed {
+            obsolete::remove_with_retry(&self.paths);
+        }
+    }
+}
+
+type LoadedState = (Manifest, MemTableEntries, u64, usize);
+
 #[allow(clippy::needless_pass_by_value)]
 impl Db {
-    /// Opens a Bedrock/native `LevelDB` directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the directory is missing and creation is disabled,
-    /// when `read_only` would require initialization, when existing metadata is
-    /// corrupt, or when filesystem I/O fails.
+    /// Opens a Bedrock/native LevelDB directory.
     pub fn open(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<Self> {
         let cache_options = options.cache.normalized();
         let root = path.as_ref().to_path_buf();
-        log::debug!(
-            "opening database at {} (read_only={}, create_if_missing={})",
-            root.display(),
-            options.read_only,
-            options.create_if_missing
-        );
-        if root.exists() {
-            if options.error_if_exists {
-                let mut entries = fs::read_dir(&root).map_err(|error| {
-                    LevelDbError::io_at("read database directory", &root, error)
-                })?;
-                if entries
-                    .next()
-                    .transpose()
-                    .map_err(|error| LevelDbError::io_at("read database directory", &root, error))?
-                    .is_some()
-                {
-                    return Err(LevelDbError::already_exists(root.clone()));
-                }
-            }
-        } else if options.read_only {
-            return Err(LevelDbError::not_found(root.clone()));
-        } else if options.create_if_missing {
-            fs::create_dir_all(&root)
-                .map_err(|error| LevelDbError::io_at("create database directory", &root, error))?;
-        } else {
-            return Err(LevelDbError::not_found(root.clone()));
-        }
-
+        prepare_database_directory(&root, &options)?;
         let database_lock = (!options.read_only)
             .then(|| DatabaseLock::acquire(&root))
             .transpose()?;
-        let (manifest, overlay, last_sequence, approximate_bytes) =
+
+        let (mut manifest, mut active, mut last_sequence, mut active_bytes) =
             load_existing_or_initialize(&root, &options)?;
-        log::debug!(
-            "opened database at {} (tables={}, overlay_entries={}, last_sequence={})",
-            root.display(),
-            manifest.table_numbers.len(),
-            overlay.len(),
-            last_sequence
-        );
-        let db = Self {
+        normalize_next_file_number(&root, &mut manifest)?;
+        if !options.read_only && manifest.prev_log_number != 0 {
+            recover_pending_logs(
+                &root,
+                &options,
+                &mut manifest,
+                &mut active,
+                &mut last_sequence,
+                &mut active_bytes,
+            )?;
+        }
+
+        if !options.read_only {
+            let paths = obsolete::files(&root, &manifest)?;
+            obsolete::remove_with_retry(&paths);
+        }
+
+        let version = Arc::new(ReadVersion::from_manifest(&manifest));
+        let next_file_number = manifest.next_file_number;
+        let block_cache = Arc::new(table::NativeBlockCache::new(
+            cache_options.data_capacity,
+            cache_options.index_capacity,
+            cache_options.file_capacity,
+            cache_options.shards,
+        ));
+        let shared = Arc::new(SharedDb {
             root,
             options,
             inner: RwLock::new(DbInner {
-                overlay,
+                active,
+                active_bytes,
+                immutable: None,
                 manifest,
+                version,
                 last_sequence,
-                approximate_bytes,
             }),
-            block_cache: table::NativeBlockCache::new(
-                cache_options.data_capacity,
-                cache_options.index_capacity,
-                cache_options.file_capacity,
-                cache_options.shards,
-            ),
-            _database_lock: database_lock,
+            block_cache,
+            next_file_number: AtomicU64::new(next_file_number),
+            manifest_io: Mutex::new(()),
+        });
+        let background = if shared.options.read_only {
+            None
+        } else {
+            Some(Background::spawn(&shared)?)
         };
-        if !db.options.read_only {
-            db.reclaim_obsolete_files(&db.read_inner()?.manifest)?;
-        }
-        Ok(db)
+        Ok(Self {
+            shared,
+            background,
+            write_serial: Mutex::new(()),
+            _database_lock: database_lock,
+        })
     }
 
-    /// Returns a point-in-time snapshot of cache activity and occupancy.
+    /// Returns a point-in-time cache statistics snapshot.
     #[must_use]
     pub fn cache_stats(&self) -> DbCacheStats {
-        let stats = self.block_cache.stats();
+        let stats = self.shared.block_cache.stats();
         DbCacheStats {
             data_hits: stats.data_hits,
             data_misses: stats.data_misses,
@@ -335,11 +402,6 @@ impl Db {
 
     #[cfg(feature = "async")]
     /// Opens a database on a blocking Tokio task.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::open`] plus a join error if the blocking
-    /// task fails to complete.
     pub async fn open_async(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         tokio::task::spawn_blocking(move || Self::open(path, options))
@@ -348,12 +410,7 @@ impl Db {
     }
 
     #[cfg(feature = "async")]
-    /// Reads a key on a blocking Tokio task using an owned [`Arc<Db>`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::get`] plus a join error if the blocking
-    /// task fails to complete.
+    /// Reads a key on a blocking Tokio task.
     pub async fn get_async(self: Arc<Self>, key: Bytes) -> Result<Option<Bytes>> {
         tokio::task::spawn_blocking(move || self.get(&key))
             .await
@@ -361,12 +418,7 @@ impl Db {
     }
 
     #[cfg(feature = "async")]
-    /// Reads a key on a blocking Tokio task using explicit [`ReadOptions`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::get_with`] plus a join error if the
-    /// blocking task fails to complete.
+    /// Reads a key with explicit options on a blocking Tokio task.
     pub async fn get_with_async(
         self: Arc<Self>,
         key: Bytes,
@@ -377,82 +429,67 @@ impl Db {
             .map_err(|error| LevelDbError::join(error.to_string()))?
     }
 
-    /// Reads a key using default [`ReadOptions`], materializing it as shared
-    /// [`Bytes`] for compatibility.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metadata, table blocks, compression, or filesystem
-    /// reads fail.
+    /// Reads one key using default options.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         self.get_owned(key)
     }
 
-    /// Reads a key using default [`ReadOptions`] and returns a borrowed-first
-    /// value view.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metadata, table blocks, compression, or filesystem
-    /// reads fail.
+    /// Reads one key as a borrowed-first value view.
     pub fn get_ref(&self, key: &[u8]) -> Result<Option<ValueRef<'static>>> {
         self.get_with_ref(key, ReadOptions::default())
     }
 
-    /// Reads a key and explicitly materializes it as [`Bytes`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metadata, table blocks, compression, or filesystem
-    /// reads fail.
+    /// Reads one key as shared owned bytes.
     pub fn get_owned(&self, key: &[u8]) -> Result<Option<Bytes>> {
         Ok(self
             .get_with_ref(key, ReadOptions::default())?
             .map(ValueRef::into_bytes))
     }
 
-    /// Reads a key using explicit [`ReadOptions`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metadata, table blocks, compression, checksum
-    /// verification, or filesystem reads fail.
+    /// Reads one key with explicit options.
     pub fn get_with(&self, key: &[u8], options: ReadOptions) -> Result<Option<Bytes>> {
         Ok(self.get_with_ref(key, options)?.map(ValueRef::into_bytes))
     }
 
-    /// Reads a key using explicit [`ReadOptions`] and returns a borrowed-first
-    /// value view. The current safe default uses shared buffers for decoded
-    /// table blocks; future `mmap` paths can return [`ValueRef::Borrowed`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metadata, table blocks, compression, checksum
-    /// verification, or filesystem reads fail.
+    /// Reads one key while holding the metadata lock only long enough to
+    /// inspect memtables and pin the immutable read version.
     pub fn get_with_ref(
         &self,
         key: &[u8],
         options: ReadOptions,
     ) -> Result<Option<ValueRef<'static>>> {
-        let inner = self.read_inner()?;
-        if let Some(value) = inner.overlay.get(key) {
-            return Ok(value
-                .clone()
-                .map(|value| ValueRef::from_shared(value, options.read_strategy)));
-        }
-        for table in manifest_tables(&inner.manifest).iter().rev() {
-            if !table.may_contain_user_key(key) {
+        let version = {
+            let inner = read_lock(&self.shared.inner, "acquiring database read lock")?;
+            if let Some(value) = inner.active.get(key) {
+                return Ok(value
+                    .clone()
+                    .map(|value| ValueRef::from_shared(value, options.read_strategy)));
+            }
+            if let Some(immutable) = &inner.immutable
+                && let Some(value) = immutable.get(key)
+            {
+                return Ok(value
+                    .map(|value| ValueRef::from_shared(value, options.read_strategy)));
+            }
+            Arc::clone(&inner.version)
+        };
+
+        for table_meta in version.tables().iter().rev() {
+            if !table_meta.may_contain_user_key(key) {
                 continue;
             }
-            let table_path = self.root.join(Manifest::table_name(table.number));
-            if !table_path.exists() {
+            let path = self
+                .shared
+                .root
+                .join(Manifest::table_name(table_meta.number));
+            if !path.exists() {
                 continue;
             }
             match table::get_table_lookup(
-                &table_path,
+                &path,
                 key,
-                read_checksums(&self.options, &options),
-                read_cache(&options, &self.block_cache),
+                read_checksums(&self.shared.options, &options),
+                read_cache(&options, &self.shared.block_cache),
             )? {
                 table::TableLookup::Value(value) => {
                     return Ok(Some(ValueRef::from_shared(value, options.read_strategy)));
@@ -464,15 +501,7 @@ impl Db {
         Ok(None)
     }
 
-    /// Reads many keys using explicit [`ReadOptions`], preserving input order.
-    ///
-    /// This batches keys by table file so native table indexes and data blocks
-    /// are reused across a render chunk read instead of reopened for each key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metadata, table blocks, compression, checksum
-    /// verification, or filesystem reads fail.
+    /// Reads many exact keys while preserving input order.
     pub fn get_many_owned(
         &self,
         keys: impl IntoIterator<Item = Bytes>,
@@ -483,18 +512,33 @@ impl Db {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        let inner = self.read_inner()?;
-        let mut results = vec![None; keys.len()];
-        let mut resolved = vec![false; keys.len()];
-        let mut unresolved = Vec::with_capacity(keys.len());
-        for (index, key) in keys.iter().enumerate() {
-            if let Some(value) = inner.overlay.get(key.as_ref()) {
-                results[index].clone_from(value);
-                resolved[index] = true;
-            } else {
-                unresolved.push(index);
+
+        let (version, mut results, mut resolved, mut unresolved) = {
+            let inner = read_lock(&self.shared.inner, "acquiring database batch-read lock")?;
+            let mut results = vec![None; keys.len()];
+            let mut resolved = vec![false; keys.len()];
+            let mut unresolved = Vec::with_capacity(keys.len());
+            for (index, key) in keys.iter().enumerate() {
+                if let Some(value) = inner.active.get(key.as_ref()) {
+                    results[index].clone_from(value);
+                    resolved[index] = true;
+                } else if let Some(immutable) = &inner.immutable
+                    && let Some(value) = immutable.get(key.as_ref())
+                {
+                    results[index] = value;
+                    resolved[index] = true;
+                } else {
+                    unresolved.push(index);
+                }
             }
-        }
+            (
+                Arc::clone(&inner.version),
+                results,
+                resolved,
+                unresolved,
+            )
+        };
+
         unresolved.sort_unstable_by(|left, right| {
             keys[*left]
                 .as_ref()
@@ -502,22 +546,24 @@ impl Db {
                 .then_with(|| left.cmp(right))
         });
 
-        let mut table_probes = 0usize;
-        let mut table_hits = 0usize;
-        for table in manifest_tables(&inner.manifest).iter().rev() {
+        let mut table_probes = 0_usize;
+        for table_meta in version.tables().iter().rev() {
             if unresolved.is_empty() {
                 break;
             }
             let table_indices = unresolved
                 .iter()
                 .copied()
-                .filter(|index| table.may_contain_user_key(keys[*index].as_ref()))
+                .filter(|index| table_meta.may_contain_user_key(keys[*index].as_ref()))
                 .collect::<Vec<_>>();
             if table_indices.is_empty() {
                 continue;
             }
-            let table_path = self.root.join(Manifest::table_name(table.number));
-            if !table_path.exists() {
+            let path = self
+                .shared
+                .root
+                .join(Manifest::table_name(table_meta.number));
+            if !path.exists() {
                 continue;
             }
             let table_keys = table_indices
@@ -525,18 +571,17 @@ impl Db {
                 .map(|index| keys[*index].clone())
                 .collect::<Vec<_>>();
             table_probes = table_probes.saturating_add(1);
-            let table_results = table::get_table_lookups(
-                &table_path,
+            let lookups = table::get_table_lookups(
+                &path,
                 &table_keys,
-                read_checksums(&self.options, &options),
-                read_cache(&options, &self.block_cache),
+                read_checksums(&self.shared.options, &options),
+                read_cache(&options, &self.shared.block_cache),
             )?;
-            for (input_index, lookup) in table_indices.into_iter().zip(table_results) {
+            for (input_index, lookup) in table_indices.into_iter().zip(lookups) {
                 match lookup {
                     table::TableLookup::Value(value) => {
                         results[input_index] = Some(value);
                         resolved[input_index] = true;
-                        table_hits = table_hits.saturating_add(1);
                     }
                     table::TableLookup::Deleted => resolved[input_index] = true,
                     table::TableLookup::Missing => {}
@@ -551,21 +596,11 @@ impl Db {
             table_probes,
             started.elapsed().as_millis()
         );
-        log::trace!(
-            "batch exact get detail (keys={}, table_hits={}, unresolved={})",
-            keys.len(),
-            table_hits,
-            unresolved.len()
-        );
         Ok(results)
     }
 
     #[cfg(feature = "async")]
-    /// Reads many keys on a blocking Tokio task, preserving input order.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::get_many_owned`] plus a join error.
+    /// Reads many exact keys on a blocking Tokio task.
     pub async fn get_many_owned_async(
         self: Arc<Self>,
         keys: Vec<Bytes>,
@@ -576,12 +611,7 @@ impl Db {
             .map_err(|error| LevelDbError::join(error.to_string()))?
     }
 
-    /// Appends a single put operation to the WAL overlay.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database is read-only, the key is empty, the
-    /// batch cannot be encoded, the log cannot be written, or a flush fails.
+    /// Appends one put operation to the WAL-backed active memtable.
     pub fn put(
         &self,
         key: impl Into<Bytes>,
@@ -593,130 +623,87 @@ impl Db {
         self.write(batch, options)
     }
 
-    /// Appends a single delete operation to the WAL overlay.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database is read-only, the key is empty, the
-    /// batch cannot be encoded, the log cannot be written, or a flush fails.
+    /// Appends one delete operation to the WAL-backed active memtable.
     pub fn delete(&self, key: impl Into<Bytes>, options: WriteOptions) -> Result<()> {
         let mut batch = WriteBatch::new();
         batch.delete(key.into());
         self.write(batch, options)
     }
 
-    /// Appends a batch to the native `LevelDB` WAL overlay.
-    ///
-    /// The method flushes to a native table when the write buffer reaches
-    /// [`LevelDbOpenOptions::write_buffer_size`]. Set that option to `0` to disable
-    /// automatic flushes and keep writes WAL-backed until an explicit flush.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database is read-only, a key is empty, sequence
-    /// numbers overflow, the batch cannot be encoded, the log cannot be written,
-    /// or a flush fails.
+    /// Appends a batch without holding the metadata lock during WAL I/O.
     pub fn write(&self, mut batch: WriteBatch, options: WriteOptions) -> Result<()> {
-        if self.options.read_only {
+        if self.shared.options.read_only {
             return Err(LevelDbError::ReadOnly);
         }
         if batch.is_empty() {
             return Ok(());
         }
         validate_batch(&batch)?;
+        let _writer = mutex_lock(&self.write_serial, "serializing database writers")?;
+        self.background()?.ensure_healthy()?;
 
-        let mut inner = self.write_inner()?;
-        let first_sequence = inner.last_sequence.checked_add(1).ok_or_else(|| {
-            LevelDbError::invalid_argument("write sequence number overflowed".to_string())
-        })?;
-        let batch_len = u64::try_from(batch.len()).map_err(|_| {
-            LevelDbError::invalid_argument("write batch length overflowed".to_string())
-        })?;
-        let last_sequence = inner.last_sequence.checked_add(batch_len).ok_or_else(|| {
-            LevelDbError::invalid_argument("write sequence number overflowed".to_string())
-        })?;
+        let (first_sequence, last_sequence, log_number) = {
+            let inner = read_lock(&self.shared.inner, "reading write sequence")?;
+            let first_sequence = inner.last_sequence.checked_add(1).ok_or_else(|| {
+                LevelDbError::invalid_argument("write sequence number overflowed".to_string())
+            })?;
+            let batch_len = u64::try_from(batch.len()).map_err(|_| {
+                LevelDbError::invalid_argument("write batch length overflowed".to_string())
+            })?;
+            let last_sequence = inner.last_sequence.checked_add(batch_len).ok_or_else(|| {
+                LevelDbError::invalid_argument("write sequence number overflowed".to_string())
+            })?;
+            (first_sequence, last_sequence, inner.manifest.log_number)
+        };
         batch.set_sequence(first_sequence);
-        append_batch_to_log(&self.root, inner.manifest.log_number, &batch, options)?;
-        let approximate_bytes = inner.approximate_bytes;
-        inner.approximate_bytes = apply_batch(&mut inner.overlay, &batch, approximate_bytes);
-        inner.last_sequence = last_sequence;
+        append_batch_to_log(&self.shared.root, log_number, &batch, options)?;
 
-        if self.options.write_buffer_size != 0
-            && inner.approximate_bytes >= self.options.write_buffer_size
-        {
-            self.flush_locked(&mut inner)?;
+        let (should_rotate, hard_backpressure) = {
+            let mut inner = write_lock(&self.shared.inner, "publishing database write")?;
+            let active_bytes = inner.active_bytes;
+            inner.active_bytes = apply_batch(&mut inner.active, &batch, active_bytes);
+            inner.last_sequence = last_sequence;
+            let limit = self.shared.options.write_buffer_size;
+            let should_rotate = limit != 0 && inner.active_bytes >= limit;
+            let hard_limit = limit.saturating_mul(AUTO_FLUSH_HARD_MULTIPLIER);
+            let hard_backpressure = should_rotate
+                && inner.immutable.is_some()
+                && inner.active_bytes >= hard_limit.max(limit);
+            (should_rotate, hard_backpressure)
+        };
+
+        if should_rotate {
+            if hard_backpressure {
+                self.background()?.wait_for_flushes()?;
+            }
+            self.rotate_active_memtable(false)?;
         }
         Ok(())
     }
 
-    /// Visits visible keys without cloning values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Visits visible keys. This compatibility surface no longer keeps the DB
+    /// metadata lock during table I/O; the table scan implementation will be
+    /// replaced by the batch cursor in the next storage-scan stage.
     pub fn for_each_key<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        let started = Instant::now();
-        let inner = self.read_inner()?;
-        log::debug!(
-            "starting key scan (tables={}, scan_mode={:?}, threading={:?})",
-            inner.manifest.table_numbers.len(),
-            options.scan_mode,
-            options.threading
-        );
-        let result = self.for_each_key_locked(&inner, &options, &mut visitor);
-        log_scan_result("key scan", started, &result);
-        result
+        self.for_each_entry(options, |key, _value| visitor(key))
     }
 
-    /// Visits visible key/value entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Visits visible key/value entries using a pinned read state.
     pub fn for_each_entry<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
     where
         F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
     {
-        let started = Instant::now();
-        let inner = self.read_inner()?;
-        log::debug!(
-            "starting entry scan (tables={}, scan_mode={:?}, threading={:?})",
-            inner.manifest.table_numbers.len(),
-            options.scan_mode,
-            options.threading
-        );
-        let result = self.for_each_entry_locked(&inner, &options, &mut visitor);
-        log_scan_result("entry scan", started, &result);
-        result
+        self.scan_visible(None, &options, &mut visitor)
     }
 
-    /// Visits visible entries as borrowed-first [`EntryRef`] values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Visits visible entries as borrowed-first entry views.
     pub fn for_each_entry_ref<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
     where
         F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
     {
-        if options.read_strategy == ReadStrategy::Borrowed
-            && options.scan_mode == ScanMode::Sequential
-        {
-            let started = Instant::now();
-            let inner = self.read_inner()?;
-            let result = self.for_each_entry_ref_locked(&inner, &options, &mut visitor);
-            log_scan_result("entry ref scan", started, &result);
-            return result;
-        }
         let strategy = options.read_strategy;
         self.for_each_entry(options, |key, value| {
             visitor(EntryRef {
@@ -726,13 +713,7 @@ impl Db {
         })
     }
 
-    /// Visits visible key/value entries whose key starts with `prefix`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Visits visible key/value entries beginning with `prefix`.
     pub fn for_each_prefix<F>(
         &self,
         prefix: &[u8],
@@ -742,27 +723,10 @@ impl Db {
     where
         F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
     {
-        let started = Instant::now();
-        let inner = self.read_inner()?;
-        log::debug!(
-            "starting prefix entry scan (prefix_len={}, tables={}, scan_mode={:?}, threading={:?})",
-            prefix.len(),
-            inner.manifest.table_numbers.len(),
-            options.scan_mode,
-            options.threading
-        );
-        let result = self.for_each_prefix_locked(&inner, prefix, &options, &mut visitor);
-        log_scan_result("prefix entry scan", started, &result);
-        result
+        self.scan_visible(Some(prefix), &options, &mut visitor)
     }
 
-    /// Visits visible prefix entries as borrowed-first [`EntryRef`] values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Visits visible prefix entries as borrowed-first entry views.
     pub fn for_each_prefix_ref<F>(
         &self,
         prefix: &[u8],
@@ -772,15 +736,6 @@ impl Db {
     where
         F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
     {
-        if options.read_strategy == ReadStrategy::Borrowed
-            && options.scan_mode == ScanMode::Sequential
-        {
-            let started = Instant::now();
-            let inner = self.read_inner()?;
-            let result = self.for_each_prefix_ref_locked(&inner, prefix, &options, &mut visitor);
-            log_scan_result("prefix entry ref scan", started, &result);
-            return result;
-        }
         let strategy = options.read_strategy;
         self.for_each_prefix(prefix, options, |key, value| {
             visitor(EntryRef {
@@ -790,14 +745,7 @@ impl Db {
         })
     }
 
-    /// Visits visible keys whose key starts with `prefix` without materializing
-    /// table values for the visitor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Visits visible keys beginning with `prefix`.
     pub fn for_each_prefix_key<F>(
         &self,
         prefix: &[u8],
@@ -807,18 +755,10 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        let started = Instant::now();
-        let inner = self.read_inner()?;
-        let result = self.for_each_prefix_key_locked(&inner, prefix, &options, &mut visitor);
-        log_scan_result("prefix key scan", started, &result);
-        result
+        self.for_each_prefix(prefix, options, |key, _value| visitor(key))
     }
 
-    /// Collects visible keys without materializing table values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the key scan fails or is cancelled.
+    /// Collects visible keys.
     pub fn collect_keys_owned(&self, options: ReadOptions) -> Result<Vec<Bytes>> {
         let mut keys = Vec::new();
         self.for_each_key(options, |key| {
@@ -828,12 +768,7 @@ impl Db {
         Ok(keys)
     }
 
-    /// Collects visible keys whose key starts with `prefix` without
-    /// materializing table values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the key scan fails or is cancelled.
+    /// Collects visible prefix keys.
     pub fn collect_prefix_keys_owned(
         &self,
         prefix: &[u8],
@@ -847,11 +782,7 @@ impl Db {
         Ok(keys)
     }
 
-    /// Collects visible key/value entries whose key starts with `prefix`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the scan fails or is cancelled.
+    /// Collects visible prefix entries.
     pub fn collect_prefix_owned(
         &self,
         prefix: &[u8],
@@ -867,10 +798,6 @@ impl Db {
 
     #[cfg(feature = "async")]
     /// Collects visible keys on a blocking Tokio task.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::collect_keys_owned`] plus a join error.
     pub async fn collect_keys_owned_async(
         self: Arc<Self>,
         options: ReadOptions,
@@ -882,11 +809,6 @@ impl Db {
 
     #[cfg(feature = "async")]
     /// Collects visible prefix keys on a blocking Tokio task.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::collect_prefix_keys_owned`] plus a join
-    /// error.
     pub async fn collect_prefix_keys_owned_async(
         self: Arc<Self>,
         prefix: Bytes,
@@ -899,11 +821,6 @@ impl Db {
 
     #[cfg(feature = "async")]
     /// Collects visible prefix entries on a blocking Tokio task.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::collect_prefix_owned`] plus a join
-    /// error.
     pub async fn collect_prefix_owned_async(
         self: Arc<Self>,
         prefix: Bytes,
@@ -915,12 +832,7 @@ impl Db {
     }
 
     #[cfg(feature = "async")]
-    /// Collects visible keys with `prefix` on a blocking Tokio task.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Db::for_each_prefix_key`] plus a join error
-    /// if the blocking task fails to complete.
+    /// Compatibility alias for prefix-key collection.
     pub async fn prefix_keys_async(
         self: Arc<Self>,
         prefix: Bytes,
@@ -929,13 +841,9 @@ impl Db {
         self.collect_prefix_keys_owned_async(prefix, options).await
     }
 
-    /// Visits keys with per-worker local state for table-parallel reductions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Runs a key reduction. The current implementation preserves exact
+    /// visibility semantics with one reduction partition; table-parallel cursor
+    /// reduction is intentionally kept out of the metadata-lock path.
     pub fn scan_keys_partitioned<T, I, F>(
         &self,
         options: ReadOptions,
@@ -947,17 +855,12 @@ impl Db {
         I: Fn() -> T + Send + Sync,
         F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
     {
-        let inner = self.read_inner()?;
-        self.scan_keys_partitioned_locked(&inner, &options, &init, &visitor)
+        let mut partition = init();
+        let outcome = self.for_each_key(options, |key| visitor(&mut partition, key))?;
+        Ok((outcome, vec![partition]))
     }
 
-    /// Visits entries with per-worker local state for table-parallel reductions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when scan cancellation is requested, an underlying table
-    /// cannot be read, checksum or compression validation fails, thread options
-    /// are invalid, or the visitor returns an error.
+    /// Runs an entry reduction with one visibility-correct partition.
     pub fn scan_entries_partitioned<T, I, F>(
         &self,
         options: ReadOptions,
@@ -969,29 +872,20 @@ impl Db {
         I: Fn() -> T + Send + Sync,
         F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
     {
-        let inner = self.read_inner()?;
-        self.scan_entries_partitioned_locked(&inner, &options, &init, &visitor)
+        let mut partition = init();
+        let outcome = self.for_each_entry(options, |key, value| {
+            visitor(&mut partition, key, value)
+        })?;
+        Ok((outcome, vec![partition]))
     }
 
     /// Materializes all visible entries into an iterator.
-    ///
-    /// Prefer visitor scans for large worlds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any underlying table cannot be read or decoded.
     pub fn iterator(&self, options: ReadOptions) -> Result<RawIterator> {
         let entries = self.collect_visible_entries(&options)?;
         Ok(RawIterator::new(&entries, &[]))
     }
 
-    /// Materializes visible entries with `prefix` into an iterator.
-    ///
-    /// Prefer [`Db::for_each_prefix`] for large worlds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any underlying table cannot be read or decoded.
+    /// Materializes visible prefix entries into an iterator.
     pub fn prefix_iterator(&self, prefix: &[u8], options: ReadOptions) -> Result<PrefixIterator> {
         let entries = self.collect_visible_prefix(prefix, &options)?;
         Ok(PrefixIterator {
@@ -999,63 +893,51 @@ impl Db {
         })
     }
 
-    /// Materializes the current visible view.
-    ///
-    /// Prefer visitor scans for large worlds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any underlying table cannot be read or decoded.
+    /// Materializes a point-in-time visible snapshot.
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let inner = self.read_inner()?;
-        Ok(Snapshot {
-            sequence: inner.last_sequence,
-            values: Arc::new(self.collect_visible_entries_locked(&inner, &ReadOptions::default())?),
-        })
+        let state = self.read_state_snapshot()?;
+        let sequence = state.sequence;
+        let values = Arc::new(collect_visible_from_state(
+            &self.shared,
+            &state,
+            &ReadOptions::default(),
+            None,
+        )?);
+        Ok(Snapshot { sequence, values })
     }
 
-    /// Flushes the WAL overlay into a native `LevelDB` table.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LevelDbError::ReadOnly`] for read-only handles or an I/O,
-    /// compression, or decoding error when the flush fails.
+    /// Flushes the active memtable through the persistent background worker and
+    /// waits until all immutable memtables queued before this call are durable.
     pub fn flush(&self) -> Result<()> {
-        if self.options.read_only {
+        if self.shared.options.read_only {
             return Err(LevelDbError::ReadOnly);
         }
-        let mut inner = self.write_inner()?;
-        self.flush_locked(&mut inner)
+        let _writer = mutex_lock(&self.write_serial, "serializing explicit flush")?;
+        self.background()?.ensure_healthy()?;
+        self.rotate_active_memtable(true)?;
+        self.background()?.wait_for_flushes()
     }
 
-    /// Rewrites the complete visible database into a compact native `LevelDB` table.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LevelDbError::ReadOnly`] for read-only handles or an I/O,
-    /// compression, or decoding error when the visible state cannot be materialized.
+    /// Flushes outstanding writes and forces leveled compaction in the
+    /// persistent background worker. Foreground reads remain lock-free with
+    /// respect to SST I/O while explicit compaction runs.
     pub fn compact(&self) -> Result<()> {
-        if self.options.read_only {
+        if self.shared.options.read_only {
             return Err(LevelDbError::ReadOnly);
         }
-        let mut inner = self.write_inner()?;
-        self.flush_locked(&mut inner)?;
-        self.compact_levels_locked(&mut inner, true)
+        let _writer = mutex_lock(&self.write_serial, "serializing explicit compaction")?;
+        self.background()?.ensure_healthy()?;
+        self.rotate_active_memtable(true)?;
+        self.background()?.wait_for_flushes()?;
+        self.background()?.compact(true)
     }
 
     /// Rebuilds a native manifest/table from readable tables and logs.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LevelDbError::ReadOnly`] when `options.read_only` is set,
-    /// [`LevelDbError::NotFound`] when the directory is missing and creation is
-    /// disabled, or an I/O/compression error while writing repaired files.
     pub fn repair(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<RepairReport> {
         if options.read_only {
             return Err(LevelDbError::ReadOnly);
         }
         let root = path.as_ref();
-        log::debug!("repairing database at {}", root.display());
         if !root.exists() {
             if options.create_if_missing {
                 fs::create_dir_all(root)
@@ -1065,456 +947,205 @@ impl Db {
             }
         }
         let _database_lock = DatabaseLock::acquire(root)?;
-
-        let mut report = RepairReport::default();
-        let mut values = BTreeMap::new();
-        let source_manifest = match Manifest::load(root) {
-            Ok(manifest) => manifest,
-            Err(error) if error.kind() == ErrorKind::NotFound && options.create_if_missing => {
-                Manifest::default()
-            }
-            Err(error) => return Err(error),
-        };
-        let mut last_sequence = source_manifest.last_sequence;
-        let source_file_numbers = sorted_database_paths(root)?
-            .iter()
-            .filter_map(|path| parse_file_number(path))
-            .collect::<Vec<_>>();
-        let paths = repair_source_paths(root, &source_manifest);
-
-        for path in paths
-            .iter()
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ldb"))
-        {
-            if path.extension().and_then(|ext| ext.to_str()) == Some("ldb") {
-                match table::read_table_lookups(path, false).and_then(|table_values| {
-                    table::read_table_max_sequence(path, false)
-                        .map(|max_sequence| (table_values, max_sequence))
-                }) {
-                    Ok((table_values, table_max_sequence)) => {
-                        for (key, lookup) in table_values {
-                            match lookup {
-                                table::TableLookup::Value(value) => {
-                                    values.insert(key, value);
-                                }
-                                table::TableLookup::Deleted => {
-                                    values.remove(&key);
-                                }
-                                table::TableLookup::Missing => {}
-                            }
-                        }
-                        last_sequence = last_sequence.max(table_max_sequence);
-                        report.recovered_tables += 1;
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            "dropping unreadable table during repair: {} ({})",
-                            path.display(),
-                            error
-                        );
-                        report.dropped_files += 1;
-                    }
-                }
-            }
-        }
-        for path in paths
-            .iter()
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
-        {
-            match File::open(path) {
-                Ok(mut file) => {
-                    let mut approximate_bytes = approximate_entries_size(&values);
-                    match wal::read_records(&mut file, false) {
-                        Ok(records) => {
-                            for record in records {
-                                match WriteBatch::decode(&record) {
-                                    Ok(batch) => {
-                                        let batch_len =
-                                            u64::try_from(batch.len()).unwrap_or(u64::MAX);
-                                        let batch_last_sequence = batch
-                                            .sequence()
-                                            .saturating_add(batch_len.saturating_sub(1));
-                                        last_sequence = last_sequence.max(batch_last_sequence);
-                                        approximate_bytes = apply_batch_to_values(
-                                            &mut values,
-                                            &batch,
-                                            approximate_bytes,
-                                        );
-                                        report.recovered_log_records += 1;
-                                    }
-                                    Err(error) => {
-                                        log::warn!(
-                                            "dropping malformed write batch during repair: {} ({})",
-                                            path.display(),
-                                            error
-                                        );
-                                        report.dropped_files += 1;
-                                    }
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            log::warn!(
-                                "dropping unreadable WAL during repair: {} ({})",
-                                path.display(),
-                                error
-                            );
-                            report.dropped_files += 1;
-                        }
-                    }
-                }
-                Err(error) => {
-                    log::warn!(
-                        "dropping unreadable WAL during repair: {} ({})",
-                        path.display(),
-                        error
-                    );
-                    report.dropped_files += 1;
-                }
-            }
-        }
-
-        write_recovered_native_state(
-            root,
-            &values,
-            source_file_numbers,
-            last_sequence,
-            options.compression_policy,
-        )?;
-        log::debug!(
-            "repaired database at {} (tables={}, log_records={}, dropped_files={})",
-            root.display(),
-            report.recovered_tables,
-            report.recovered_log_records,
-            report.dropped_files
-        );
-        Ok(report)
+        repair_database(root, &options)
     }
 
-    /// Returns metadata and overlay-only stats without table scans.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LevelDbError::LockPoisoned`] if the database lock is poisoned.
+    /// Returns metadata/memtable statistics without table scans.
     pub fn stats_fast(&self) -> Result<DbStats> {
-        let inner = self.read_inner()?;
-        Ok(DbStats {
-            entries: inner
-                .overlay
+        let inner = read_lock(&self.shared.inner, "reading fast database stats")?;
+        let immutable_entries = inner.immutable.as_ref().map_or(0, |immutable| {
+            immutable
+                .entries()
                 .values()
                 .filter(|value| value.is_some())
-                .count(),
-            tables: inner.manifest.table_numbers.len(),
+                .count()
+        });
+        let immutable_bytes = inner
+            .immutable
+            .as_ref()
+            .map_or(0, |immutable| immutable.approximate_bytes());
+        Ok(DbStats {
+            entries: inner
+                .active
+                .values()
+                .filter(|value| value.is_some())
+                .count()
+                .saturating_add(immutable_entries),
+            tables: inner.version.tables().len(),
             log_number: inner.manifest.log_number,
-            approximate_bytes: inner.approximate_bytes,
+            approximate_bytes: inner.active_bytes.saturating_add(immutable_bytes),
         })
     }
 
-    /// Materializes visible entries to compute full stats.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any underlying table cannot be read or decoded.
+    /// Materializes visible entries to compute full statistics.
     pub fn stats_full(&self) -> Result<DbStats> {
-        let inner = self.read_inner()?;
-        let entries = self.collect_visible_entries_locked(&inner, &ReadOptions::default())?;
+        let entries = self.collect_visible_entries(&ReadOptions::default())?;
+        let inner = read_lock(&self.shared.inner, "reading full database stats metadata")?;
         Ok(DbStats {
             entries: entries.len(),
-            tables: inner.manifest.table_numbers.len(),
+            tables: inner.version.tables().len(),
             log_number: inner.manifest.log_number,
             approximate_bytes: approximate_entries_size(&entries),
         })
     }
 
     /// Alias for [`Db::stats_full`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any underlying table cannot be read or decoded.
     pub fn stats(&self) -> Result<DbStats> {
         self.stats_full()
     }
 
-    fn flush_locked(&self, inner: &mut DbInner) -> Result<()> {
-        if inner.overlay.is_empty() {
+    fn background(&self) -> Result<&Background> {
+        self.background.as_ref().ok_or(LevelDbError::ReadOnly)
+    }
+
+    fn rotate_active_memtable(&self, force: bool) -> Result<()> {
+        let background = self.background()?;
+        if !force && self.shared.options.write_buffer_size == 0 {
             return Ok(());
         }
-        self.flush_memtable_locked(inner)
-    }
-
-    fn flush_memtable_locked(&self, inner: &mut DbInner) -> Result<()> {
-        let mut next_manifest = inner.manifest.clone();
-        let table_number = allocate_file_number(&mut next_manifest);
-        let table_path = self.root.join(Manifest::table_name(table_number));
-        let written = table::write_native_memtable(
-            &table_path,
-            &inner.overlay,
-            inner.last_sequence,
-            self.options.compression_policy,
-        )?;
-        let table_meta = crate::manifest::TableFileMeta::native(
-            table_number,
-            0,
-            written.file_size,
-            written.smallest_internal_key,
-            written.largest_internal_key,
-        );
-
-        let new_log_number = allocate_file_number(&mut next_manifest);
-        let new_log = self.root.join(Manifest::log_name(new_log_number));
-        create_empty_wal(&new_log)?;
-        next_manifest.log_number = new_log_number;
-        next_manifest.prev_log_number = 0;
-        next_manifest.last_sequence = inner.last_sequence;
-        next_manifest.table_numbers.push(table_number);
-        next_manifest.table_files.push(table_meta);
-        next_manifest.store(&self.root)?;
-
-        inner.manifest = next_manifest;
-        inner.overlay.clear();
-        inner.approximate_bytes = 0;
-        self.reclaim_obsolete_files(&inner.manifest)?;
-        self.compact_levels_locked(inner, false)
-    }
-
-    fn compact_levels_locked(&self, inner: &mut DbInner, force: bool) -> Result<()> {
-        while let Some(plan) = compaction::plan(&inner.manifest, force) {
-            self.compact_level_once_locked(inner, &plan)?;
-        }
-        Ok(())
-    }
-
-    fn compact_level_once_locked(
-        &self,
-        inner: &mut DbInner,
-        plan: &compaction::CompactionPlan,
-    ) -> Result<()> {
-        let partitions = compaction::merge(&self.root, plan, self.options.paranoid_checks)?;
-        let input_numbers = plan.input_numbers();
-        let input_paths = plan
-            .inputs
-            .iter()
-            .map(|table| self.root.join(Manifest::table_name(table.number)))
-            .collect::<Vec<_>>();
-        let mut next_manifest = inner.manifest.clone();
-        next_manifest
-            .table_numbers
-            .retain(|number| !input_numbers.contains(number));
-        next_manifest
-            .table_files
-            .retain(|table| !input_numbers.contains(&table.number));
-        let outputs = self.write_compaction_outputs(
-            &mut next_manifest,
-            partitions,
-            plan.output_level,
-            inner.last_sequence,
-        )?;
-        next_manifest
-            .table_numbers
-            .extend(outputs.iter().map(|table| table.number));
-        next_manifest.table_files.extend(outputs);
-        next_manifest.table_numbers.sort_unstable();
-        next_manifest.table_files.sort_by_key(|table| table.number);
-        next_manifest.store(&self.root)?;
-        inner.manifest = next_manifest;
-        self.block_cache.invalidate_paths(&input_paths);
-        self.reclaim_obsolete_files(&inner.manifest)
-    }
-
-    fn write_compaction_outputs(
-        &self,
-        manifest: &mut Manifest,
-        partitions: Vec<BTreeMap<Vec<u8>, Option<Bytes>>>,
-        level: u32,
-        sequence: u64,
-    ) -> Result<Vec<crate::manifest::TableFileMeta>> {
-        let mut outputs = Vec::with_capacity(partitions.len());
-        for entries in partitions {
-            let number = allocate_file_number(manifest);
-            let path = self.root.join(Manifest::table_name(number));
-            let written = table::write_native_memtable(
-                &path,
-                &entries,
-                sequence,
-                self.options.compression_policy,
-            )?;
-            outputs.push(crate::manifest::TableFileMeta::native(
-                number,
-                level,
-                written.file_size,
-                written.smallest_internal_key,
-                written.largest_internal_key,
-            ));
-        }
-        Ok(outputs)
-    }
-
-    fn reclaim_obsolete_files(&self, manifest: &Manifest) -> Result<()> {
-        let paths = obsolete::files(&self.root, manifest)?;
-        self.block_cache.invalidate_paths(&paths);
-        obsolete::remove_with_retry(&paths);
-        Ok(())
-    }
-
-    fn for_each_entry_locked<F>(
-        &self,
-        inner: &DbInner,
-        options: &ReadOptions,
-        visitor: &mut F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
-    {
-        let hidden_keys = &inner.overlay;
-        let mut seen_keys = hidden_keys.keys().cloned().collect::<HashSet<_>>();
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        // Tables must be reconciled newest-to-oldest so a tombstone prevents
-        // an older value from becoming visible. Parallel table callbacks
-        // cannot preserve that ordering without a merge phase.
-        match ScanMode::Sequential {
-            ScanMode::Sequential => {
-                let table_count = inner.manifest.table_numbers.len();
-                for (table_index, table_number) in
-                    inner.manifest.table_numbers.iter().rev().enumerate()
-                {
-                    check_scan_cancelled(options)?;
-                    let table_path = self.root.join(Manifest::table_name(*table_number));
-                    if !table_path.exists() {
-                        continue;
-                    }
-                    let table_outcome = table::for_each_table_lookup(
-                        &table_path,
-                        verify_checksums,
-                        read_cache(options, &self.block_cache),
-                        |key, value| {
-                            if !seen_keys.insert(key.to_vec()) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            value.map_or(Ok(VisitorControl::Continue), |value| visitor(key, value))
-                        },
-                    )?;
-                    outcome.merge(table_outcome);
-                    emit_scan_progress(options, outcome);
-                    log::trace!(
-                        "entry scan progress (table_index={}, tables={}, visited={}, tables_scanned={}, bytes_read={}, stopped={})",
-                        table_index.saturating_add(1),
-                        table_count,
-                        outcome.visited,
-                        outcome.tables_scanned,
-                        outcome.bytes_read,
-                        outcome.stopped
-                    );
-                    if outcome.stopped {
-                        return Ok(outcome);
-                    }
-                }
-            }
-            ScanMode::ParallelTables => {
-                let table_paths = table_paths(&self.root, &inner.manifest);
-                let table_outcome = for_each_table_paths_parallel(
-                    table_paths,
-                    None,
-                    verify_checksums,
-                    read_cache(options, &self.block_cache),
-                    options
-                        .threading
-                        .resolve_checked(inner.manifest.table_numbers.len())?,
-                    hidden_keys,
-                    visitor,
-                    options,
-                )?;
-                outcome.merge(table_outcome);
-                if outcome.stopped {
-                    return Ok(outcome);
-                }
-            }
-        }
-        for (key, value) in &inner.overlay {
-            check_scan_cancelled(options)?;
-            if let Some(value) = value {
-                outcome.record(value.len());
-                if visitor(key, value)? == VisitorControl::Stop {
-                    outcome.stopped = true;
-                    return Ok(outcome);
-                }
-            }
-        }
-        Ok(outcome)
-    }
-
-    fn for_each_prefix_locked<F>(
-        &self,
-        inner: &DbInner,
-        prefix: &[u8],
-        options: &ReadOptions,
-        visitor: &mut F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
-    {
-        let hidden_keys = &inner.overlay;
-        let mut seen_keys = hidden_keys
-            .range(prefix.to_vec()..)
-            .take_while(|(key, _)| key.starts_with(prefix))
-            .map(|(key, _)| key.clone())
-            .collect::<HashSet<_>>();
-        let verify_checksums = read_checksums(&self.options, options);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = 1;
-        match ScanMode::Sequential {
-            ScanMode::Sequential => {
-                for table_number in inner.manifest.table_numbers.iter().rev() {
-                    check_scan_cancelled(options)?;
-                    let table_path = self.root.join(Manifest::table_name(*table_number));
-                    if !table_path.exists() {
-                        continue;
-                    }
-                    let table_outcome = table::for_each_table_lookup(
-                        &table_path,
-                        verify_checksums,
-                        read_cache(options, &self.block_cache),
-                        |key, value| {
-                            if !key.starts_with(prefix) || !seen_keys.insert(key.to_vec()) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            value.map_or(Ok(VisitorControl::Continue), |value| visitor(key, value))
-                        },
-                    )?;
-                    outcome.merge(table_outcome);
-                    emit_scan_progress(options, outcome);
-                    if outcome.stopped {
-                        return Ok(outcome);
-                    }
-                }
-            }
-            ScanMode::ParallelTables => {
-                let table_paths = table_paths(&self.root, &inner.manifest);
-                let table_outcome = for_each_table_paths_parallel(
-                    table_paths,
-                    Some(prefix.to_vec()),
-                    verify_checksums,
-                    read_cache(options, &self.block_cache),
-                    options
-                        .threading
-                        .resolve_checked(inner.manifest.table_numbers.len())?,
-                    hidden_keys,
-                    visitor,
-                    options,
-                )?;
-                outcome.merge(table_outcome);
-                if outcome.stopped {
-                    return Ok(outcome);
-                }
-            }
-        }
-        for (key, value) in inner
-            .overlay
-            .range(prefix.to_vec()..)
-            .take_while(|(key, _)| key.starts_with(prefix))
         {
+            let inner = read_lock(&self.shared.inner, "checking memtable rotation")?;
+            if inner.active.is_empty() || inner.immutable.is_some() {
+                return Ok(());
+            }
+            if !force
+                && inner.active_bytes < self.shared.options.write_buffer_size
+            {
+                return Ok(());
+            }
+        }
+
+        let new_log_number = allocate_file_number(&self.shared)?;
+        let new_log_path = self
+            .shared
+            .root
+            .join(Manifest::log_name(new_log_number));
+        create_empty_wal(&new_log_path)?;
+
+        let _manifest_guard = mutex_lock(&self.shared.manifest_io, "serializing manifest update")?;
+        let next_manifest = {
+            let inner = read_lock(&self.shared.inner, "staging memtable rotation")?;
+            if inner.active.is_empty() || inner.immutable.is_some() {
+                let _ = fs::remove_file(&new_log_path);
+                return Ok(());
+            }
+            let mut manifest = inner.manifest.clone();
+            manifest.prev_log_number = manifest.log_number;
+            manifest.log_number = new_log_number;
+            manifest.last_sequence = inner.last_sequence;
+            manifest.next_file_number = self.shared.next_file_number.load(Ordering::Relaxed);
+            manifest
+        };
+        next_manifest.store(&self.shared.root)?;
+
+        let immutable = {
+            let mut inner = write_lock(&self.shared.inner, "publishing immutable memtable")?;
+            let old_log_number = inner.manifest.log_number;
+            let entries = std::mem::take(&mut inner.active);
+            let bytes = std::mem::replace(&mut inner.active_bytes, 0);
+            let immutable = Arc::new(ImmutableMemTable::new(
+                entries,
+                inner.last_sequence,
+                old_log_number,
+                bytes,
+            ));
+            inner.immutable = Some(Arc::clone(&immutable));
+            inner.manifest = next_manifest;
+            immutable
+        };
+        background.enqueue_flush(immutable)
+    }
+
+    fn read_state_snapshot(&self) -> Result<ReadState> {
+        let inner = read_lock(&self.shared.inner, "snapshotting database read state")?;
+        Ok(ReadState {
+            active: Arc::new(inner.active.clone()),
+            immutable: inner.immutable.as_ref().map(Arc::clone),
+            version: Arc::clone(&inner.version),
+            sequence: inner.last_sequence,
+        })
+    }
+
+    fn scan_visible<F>(
+        &self,
+        prefix: Option<&[u8]>,
+        options: &ReadOptions,
+        visitor: &mut F,
+    ) -> Result<ScanOutcome>
+    where
+        F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
+    {
+        let started = Instant::now();
+        let state = self.read_state_snapshot()?;
+        let mut seen = HashSet::<Vec<u8>>::with_capacity(
+            state
+                .active
+                .len()
+                .saturating_add(state.immutable.as_ref().map_or(0, |table| table.entries().len())),
+        );
+        seen.extend(state.active.keys().cloned());
+        if let Some(immutable) = &state.immutable {
+            seen.extend(immutable.entries().keys().cloned());
+        }
+
+        let verify_checksums = read_checksums(&self.shared.options, options);
+        let mut outcome = ScanOutcome::empty();
+        outcome.worker_threads = 1;
+        for table_meta in state.version.tables().iter().rev() {
             check_scan_cancelled(options)?;
+            let path = self
+                .shared
+                .root
+                .join(Manifest::table_name(table_meta.number));
+            if !path.exists() {
+                continue;
+            }
+            let table_outcome = table::for_each_table_lookup(
+                &path,
+                verify_checksums,
+                read_cache(options, &self.shared.block_cache),
+                |key, value| {
+                    if prefix.is_some_and(|prefix| !key.starts_with(prefix))
+                        || !seen.insert(key.to_vec())
+                    {
+                        return Ok(VisitorControl::Continue);
+                    }
+                    if let Some(value) = value {
+                        if visitor(key, value)? == VisitorControl::Stop {
+                            return Ok(VisitorControl::Stop);
+                        }
+                    }
+                    Ok(VisitorControl::Continue)
+                },
+            )?;
+            outcome.merge(table_outcome);
+            if outcome.stopped {
+                return Ok(outcome);
+            }
+        }
+
+        if let Some(immutable) = &state.immutable {
+            for (key, value) in immutable.entries() {
+                check_scan_cancelled(options)?;
+                if state.active.contains_key(key)
+                    || prefix.is_some_and(|prefix| !key.starts_with(prefix))
+                {
+                    continue;
+                }
+                if let Some(value) = value {
+                    outcome.record(value.len());
+                    if visitor(key, value)? == VisitorControl::Stop {
+                        outcome.stopped = true;
+                        return Ok(outcome);
+                    }
+                }
+            }
+        }
+        for (key, value) in state.active.iter() {
+            check_scan_cancelled(options)?;
+            if prefix.is_some_and(|prefix| !key.starts_with(prefix)) {
+                continue;
+            }
             if let Some(value) = value {
                 outcome.record(value.len());
                 if visitor(key, value)? == VisitorControl::Stop {
@@ -1523,153 +1154,22 @@ impl Db {
                 }
             }
         }
+        log::debug!(
+            "pinned scan complete (visited={}, tables={}, elapsed_ms={})",
+            outcome.visited,
+            outcome.tables_scanned,
+            started.elapsed().as_millis()
+        );
         Ok(outcome)
-    }
-
-    fn for_each_entry_ref_locked<F>(
-        &self,
-        inner: &DbInner,
-        options: &ReadOptions,
-        visitor: &mut F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
-    {
-        if inner.overlay.is_empty() && inner.manifest.table_numbers.len() == 1 {
-            let path = self
-                .root
-                .join(Manifest::table_name(inner.manifest.table_numbers[0]));
-            return table::for_each_table_entry_ref(
-                &path,
-                read_checksums(&self.options, options),
-                |key, value| {
-                    visitor(EntryRef {
-                        key: KeyRef::new(key),
-                        value,
-                    })
-                },
-            );
-        }
-        self.for_each_entry_locked(inner, options, &mut |key, value| {
-            visitor(EntryRef {
-                key: KeyRef::new(key),
-                value: ValueRef::Shared(value.clone()),
-            })
-        })
-    }
-
-    fn for_each_prefix_ref_locked<F>(
-        &self,
-        inner: &DbInner,
-        prefix: &[u8],
-        options: &ReadOptions,
-        visitor: &mut F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
-    {
-        if inner.overlay.is_empty() && inner.manifest.table_numbers.len() == 1 {
-            let path = self
-                .root
-                .join(Manifest::table_name(inner.manifest.table_numbers[0]));
-            return table::for_each_table_prefix_ref(
-                &path,
-                prefix,
-                read_checksums(&self.options, options),
-                |key, value| {
-                    visitor(EntryRef {
-                        key: KeyRef::new(key),
-                        value,
-                    })
-                },
-            );
-        }
-        self.for_each_prefix_locked(inner, prefix, options, &mut |key, value| {
-            visitor(EntryRef {
-                key: KeyRef::new(key),
-                value: ValueRef::Shared(value.clone()),
-            })
-        })
-    }
-
-    fn for_each_prefix_key_locked<F>(
-        &self,
-        inner: &DbInner,
-        prefix: &[u8],
-        options: &ReadOptions,
-        visitor: &mut F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
-    {
-        let mut visible_keys = 0_usize;
-        let mut outcome = self.for_each_prefix_locked(inner, prefix, options, &mut |key, _| {
-            visible_keys = visible_keys.saturating_add(1);
-            visitor(key)
-        })?;
-        outcome.visited = visible_keys;
-        Ok(outcome)
-    }
-
-    fn for_each_key_locked<F>(
-        &self,
-        inner: &DbInner,
-        options: &ReadOptions,
-        visitor: &mut F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
-    {
-        let mut visible_keys = 0_usize;
-        let mut outcome = self.for_each_entry_locked(inner, options, &mut |key, _| {
-            visible_keys = visible_keys.saturating_add(1);
-            visitor(key)
-        })?;
-        outcome.visited = visible_keys;
-        Ok(outcome)
-    }
-
-    fn scan_keys_partitioned_locked<T, I, F>(
-        &self,
-        inner: &DbInner,
-        options: &ReadOptions,
-        init: &I,
-        visitor: &F,
-    ) -> Result<(ScanOutcome, Vec<T>)>
-    where
-        T: Send,
-        I: Fn() -> T + Send + Sync,
-        F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
-    {
-        let mut partition = init();
-        let outcome = self.for_each_entry_locked(inner, options, &mut |key, _| {
-            visitor(&mut partition, key)
-        })?;
-        Ok((outcome, vec![partition]))
-    }
-
-    fn scan_entries_partitioned_locked<T, I, F>(
-        &self,
-        inner: &DbInner,
-        options: &ReadOptions,
-        init: &I,
-        visitor: &F,
-    ) -> Result<(ScanOutcome, Vec<T>)>
-    where
-        T: Send,
-        I: Fn() -> T + Send + Sync,
-        F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
-    {
-        let mut partition = init();
-        let outcome = self.for_each_entry_locked(inner, options, &mut |key, value| {
-            visitor(&mut partition, key, value)
-        })?;
-        Ok((outcome, vec![partition]))
     }
 
     fn collect_visible_entries(&self, options: &ReadOptions) -> Result<BTreeMap<Vec<u8>, Bytes>> {
-        let inner = self.read_inner()?;
-        self.collect_visible_entries_locked(&inner, options)
+        let mut entries = BTreeMap::new();
+        self.for_each_entry(options.clone(), |key, value| {
+            entries.insert(key.to_vec(), value.clone());
+            Ok(VisitorControl::Continue)
+        })?;
+        Ok(entries)
     }
 
     fn collect_visible_prefix(
@@ -1677,39 +1177,457 @@ impl Db {
         prefix: &[u8],
         options: &ReadOptions,
     ) -> Result<BTreeMap<Vec<u8>, Bytes>> {
-        let inner = self.read_inner()?;
         let mut entries = BTreeMap::new();
-        self.for_each_prefix_locked(&inner, prefix, options, &mut |key, value| {
+        self.for_each_prefix(prefix, options.clone(), |key, value| {
             entries.insert(key.to_vec(), value.clone());
             Ok(VisitorControl::Continue)
         })?;
         Ok(entries)
     }
+}
 
-    fn collect_visible_entries_locked(
-        &self,
-        inner: &DbInner,
-        options: &ReadOptions,
-    ) -> Result<BTreeMap<Vec<u8>, Bytes>> {
-        let mut entries = BTreeMap::new();
-        self.for_each_entry_locked(inner, options, &mut |key, value| {
-            entries.insert(key.to_vec(), value.clone());
-            Ok(VisitorControl::Continue)
-        })?;
-        Ok(entries)
+impl Drop for Db {
+    fn drop(&mut self) {
+        if let Some(background) = self.background.as_mut() {
+            background.shutdown();
+        }
+    }
+}
+
+impl Background {
+    fn spawn(shared: &Arc<SharedDb>) -> Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(BACKGROUND_QUEUE_DEPTH);
+        let status = Arc::new((Mutex::new(BackgroundStatus::default()), Condvar::new()));
+        let worker_status = Arc::clone(&status);
+        let weak = Arc::downgrade(shared);
+        let worker = thread::Builder::new()
+            .name("bedrock-leveldb-background".to_string())
+            .stack_size(BACKGROUND_STACK_BYTES)
+            .spawn(move || background_worker(weak, receiver, worker_status))
+            .map_err(|error| {
+                LevelDbError::io("spawn background maintenance worker", None, error)
+            })?;
+        Ok(Self {
+            sender,
+            status,
+            worker: Some(worker),
+        })
     }
 
-    fn read_inner(&self) -> Result<std::sync::RwLockReadGuard<'_, DbInner>> {
-        self.inner
-            .read()
-            .map_err(|_| LevelDbError::lock_poisoned("acquiring database read lock"))
+    fn ensure_healthy(&self) -> Result<()> {
+        let (lock, _) = self.status.as_ref();
+        let status = mutex_lock(lock, "reading background maintenance status")?;
+        if let Some(error) = &status.fatal_error {
+            return Err(LevelDbError::corruption(format!(
+                "background flush failed: {error}"
+            )));
+        }
+        Ok(())
     }
 
-    fn write_inner(&self) -> Result<std::sync::RwLockWriteGuard<'_, DbInner>> {
-        self.inner
-            .write()
-            .map_err(|_| LevelDbError::lock_poisoned("acquiring database write lock"))
+    fn enqueue_flush(&self, immutable: Arc<ImmutableMemTable>) -> Result<()> {
+        self.ensure_healthy()?;
+        let (lock, cv) = self.status.as_ref();
+        {
+            let mut status = mutex_lock(lock, "queuing background flush")?;
+            status.pending_flushes = status.pending_flushes.saturating_add(1);
+        }
+        if self.sender.send(BackgroundCommand::Flush(immutable)).is_err() {
+            let mut status = mutex_lock(lock, "rolling back background flush queue")?;
+            status.pending_flushes = status.pending_flushes.saturating_sub(1);
+            cv.notify_all();
+            return Err(LevelDbError::corruption(
+                "background maintenance worker is unavailable".to_string(),
+            ));
+        }
+        Ok(())
     }
+
+    fn wait_for_flushes(&self) -> Result<()> {
+        let (lock, cv) = self.status.as_ref();
+        let mut status = mutex_lock(lock, "waiting for background flush")?;
+        while status.pending_flushes != 0 {
+            status = cv
+                .wait(status)
+                .map_err(|_| LevelDbError::lock_poisoned("waiting for background flush"))?;
+        }
+        if let Some(error) = &status.fatal_error {
+            return Err(LevelDbError::corruption(format!(
+                "background flush failed: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn compact(&self, force: bool) -> Result<()> {
+        self.ensure_healthy()?;
+        let (done_sender, done_receiver) = mpsc::channel();
+        self.sender
+            .send(BackgroundCommand::Compact {
+                force,
+                done: done_sender,
+            })
+            .map_err(|_| {
+                LevelDbError::corruption("background maintenance worker is unavailable".to_string())
+            })?;
+        done_receiver.recv().map_err(|_| {
+            LevelDbError::corruption("background compaction result channel closed".to_string())
+        })?
+    }
+
+    fn shutdown(&mut self) {
+        let _ = self.sender.send(BackgroundCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn background_worker(
+    shared: Weak<SharedDb>,
+    receiver: Receiver<BackgroundCommand>,
+    status: Arc<(Mutex<BackgroundStatus>, Condvar)>,
+) {
+    while let Ok(command) = receiver.recv() {
+        match command {
+            BackgroundCommand::Flush(immutable) => {
+                let result = shared
+                    .upgrade()
+                    .ok_or_else(|| {
+                        LevelDbError::corruption("database closed during background flush")
+                    })
+                    .and_then(|shared| flush_immutable_memtable(&shared, &immutable));
+                let (lock, cv) = status.as_ref();
+                match lock.lock() {
+                    Ok(mut state) => {
+                        state.pending_flushes = state.pending_flushes.saturating_sub(1);
+                        if let Err(error) = &result {
+                            state.fatal_error = Some(error.to_string());
+                        }
+                        cv.notify_all();
+                    }
+                    Err(poisoned) => {
+                        let mut state = poisoned.into_inner();
+                        state.pending_flushes = state.pending_flushes.saturating_sub(1);
+                        if let Err(error) = &result {
+                            state.fatal_error = Some(error.to_string());
+                        }
+                        cv.notify_all();
+                    }
+                }
+                if result.is_ok()
+                    && let Some(shared) = shared.upgrade()
+                    && let Err(error) = compact_levels(&shared, false)
+                {
+                    log::warn!("automatic LevelDB compaction failed: {error}");
+                }
+            }
+            BackgroundCommand::Compact { force, done } => {
+                let result = shared
+                    .upgrade()
+                    .ok_or_else(|| {
+                        LevelDbError::corruption("database closed during background compaction")
+                    })
+                    .and_then(|shared| compact_levels(&shared, force));
+                let _ = done.send(result);
+            }
+            BackgroundCommand::Shutdown => break,
+        }
+    }
+}
+
+fn flush_immutable_memtable(
+    shared: &Arc<SharedDb>,
+    immutable: &Arc<ImmutableMemTable>,
+) -> Result<()> {
+    if immutable.is_empty() {
+        return install_empty_immutable(shared, immutable);
+    }
+    let table_number = allocate_file_number(shared)?;
+    let table_path = shared.root.join(Manifest::table_name(table_number));
+    let mut writer = NativeTableWriter::create(
+        &table_path,
+        immutable.last_sequence(),
+        shared.options.compression_policy,
+    )?;
+    for (key, value) in immutable.entries() {
+        writer.push(key, value.as_deref())?;
+    }
+    let written = writer.finish()?;
+    let table_meta = written_table_meta(table_number, 0, written);
+
+    let _manifest_guard = mutex_lock(&shared.manifest_io, "installing flushed memtable")?;
+    let next_manifest = {
+        let inner = read_lock(&shared.inner, "staging flushed memtable")?;
+        let Some(current) = &inner.immutable else {
+            obsolete::remove_with_retry(std::slice::from_ref(&table_path));
+            return Err(LevelDbError::corruption(
+                "immutable memtable disappeared before flush installation".to_string(),
+            ));
+        };
+        if !Arc::ptr_eq(current, immutable) {
+            obsolete::remove_with_retry(std::slice::from_ref(&table_path));
+            return Err(LevelDbError::corruption(
+                "immutable memtable generation changed during flush".to_string(),
+            ));
+        }
+        let mut manifest = inner.manifest.clone();
+        manifest.prev_log_number = 0;
+        manifest.last_sequence = inner.last_sequence;
+        manifest.next_file_number = shared.next_file_number.load(Ordering::Relaxed);
+        manifest.table_numbers.push(table_number);
+        manifest.table_numbers.sort_unstable();
+        manifest.table_numbers.dedup();
+        manifest.table_files.push(table_meta.clone());
+        manifest.table_files.sort_by_key(|table| table.number);
+        manifest.table_files.dedup_by_key(|table| table.number);
+        manifest
+    };
+    if let Err(error) = next_manifest.store(&shared.root) {
+        obsolete::remove_with_retry(std::slice::from_ref(&table_path));
+        return Err(error);
+    }
+    let old_log_number = immutable.log_number();
+    {
+        let mut inner = write_lock(&shared.inner, "publishing flushed memtable")?;
+        inner.manifest = next_manifest;
+        inner.version = Arc::new(ReadVersion::from_manifest(&inner.manifest));
+        inner.immutable = None;
+    }
+    let old_log = shared.root.join(Manifest::log_name(old_log_number));
+    obsolete::remove_with_retry(std::slice::from_ref(&old_log));
+    Ok(())
+}
+
+fn install_empty_immutable(
+    shared: &Arc<SharedDb>,
+    immutable: &Arc<ImmutableMemTable>,
+) -> Result<()> {
+    let _manifest_guard = mutex_lock(&shared.manifest_io, "installing empty immutable memtable")?;
+    let next_manifest = {
+        let inner = read_lock(&shared.inner, "staging empty immutable memtable")?;
+        let mut manifest = inner.manifest.clone();
+        manifest.prev_log_number = 0;
+        manifest.last_sequence = inner.last_sequence;
+        manifest.next_file_number = shared.next_file_number.load(Ordering::Relaxed);
+        manifest
+    };
+    next_manifest.store(&shared.root)?;
+    {
+        let mut inner = write_lock(&shared.inner, "publishing empty immutable memtable")?;
+        if inner
+            .immutable
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, immutable))
+        {
+            inner.manifest = next_manifest;
+            inner.immutable = None;
+        }
+    }
+    let old_log = shared.root.join(Manifest::log_name(immutable.log_number()));
+    obsolete::remove_with_retry(std::slice::from_ref(&old_log));
+    Ok(())
+}
+
+fn compact_levels(shared: &Arc<SharedDb>, force: bool) -> Result<()> {
+    loop {
+        let (plan, version_pin) = {
+            let inner = read_lock(&shared.inner, "planning background compaction")?;
+            let Some(plan) = compaction::plan(&inner.manifest, force) else {
+                return Ok(());
+            };
+            (plan, Arc::clone(&inner.version))
+        };
+        compact_level(shared, &plan, &version_pin)?;
+    }
+}
+
+fn compact_level(
+    shared: &Arc<SharedDb>,
+    plan: &compaction::CompactionPlan,
+    _version_pin: &Arc<ReadVersion>,
+) -> Result<()> {
+    let mut outputs = write_compaction_outputs(shared, plan)?;
+    let input_numbers = plan.input_numbers();
+    let input_paths = plan
+        .inputs
+        .iter()
+        .map(|table| shared.root.join(Manifest::table_name(table.number)))
+        .collect::<Vec<_>>();
+
+    let _manifest_guard = mutex_lock(&shared.manifest_io, "installing background compaction")?;
+    let next_manifest = {
+        let inner = read_lock(&shared.inner, "staging background compaction")?;
+        if !input_numbers
+            .iter()
+            .all(|number| inner.manifest.table_numbers.binary_search(number).is_ok())
+        {
+            return Err(LevelDbError::corruption(
+                "compaction inputs changed before installation".to_string(),
+            ));
+        }
+        let mut manifest = inner.manifest.clone();
+        manifest
+            .table_numbers
+            .retain(|number| !input_numbers.contains(number));
+        manifest
+            .table_files
+            .retain(|table| !input_numbers.contains(&table.number));
+        manifest
+            .table_numbers
+            .extend(outputs.tables.iter().map(|table| table.number));
+        manifest.table_files.extend(outputs.tables.iter().cloned());
+        manifest.table_numbers.sort_unstable();
+        manifest.table_numbers.dedup();
+        manifest.table_files.sort_by_key(|table| table.number);
+        manifest.table_files.dedup_by_key(|table| table.number);
+        manifest.next_file_number = shared.next_file_number.load(Ordering::Relaxed);
+        manifest.last_sequence = inner.last_sequence;
+        manifest
+    };
+    next_manifest.store(&shared.root)?;
+    outputs.commit();
+
+    shared.block_cache.invalidate_paths(&input_paths);
+    {
+        let mut inner = write_lock(&shared.inner, "publishing background compaction")?;
+        let old_version = Arc::clone(&inner.version);
+        old_version.retire_paths(&input_paths);
+        inner.manifest = next_manifest;
+        inner.version = Arc::new(ReadVersion::from_manifest(&inner.manifest));
+    }
+    Ok(())
+}
+
+fn write_compaction_outputs(
+    shared: &Arc<SharedDb>,
+    plan: &compaction::CompactionPlan,
+) -> Result<PendingCompactionOutputs> {
+    let sequence = {
+        let inner = read_lock(&shared.inner, "reading compaction sequence")?;
+        inner.last_sequence
+    };
+    let mut outputs = PendingCompactionOutputs::new();
+    let mut current: Option<(u64, PathBuf, NativeTableWriter)> = None;
+
+    let merge_result = compaction::merge_into(
+        &shared.root,
+        plan,
+        shared.options.paranoid_checks,
+        |key, value| {
+            let should_finish = current.as_ref().is_some_and(|(_, _, writer)| {
+                !writer.is_empty()
+                    && writer.estimated_size() >= compaction::TARGET_OUTPUT_FILE_BYTES
+            });
+            if should_finish {
+                finish_compaction_writer(&mut current, plan.output_level, &mut outputs)?;
+            }
+            if current.is_none() {
+                let number = allocate_file_number(shared)?;
+                let path = shared.root.join(Manifest::table_name(number));
+                let writer = NativeTableWriter::create(
+                    &path,
+                    sequence,
+                    shared.options.compression_policy,
+                )?;
+                current = Some((number, path, writer));
+            }
+            let (_, _, writer) = current
+                .as_mut()
+                .expect("compaction writer is initialized before append");
+            writer.push(key, value.map(Bytes::as_ref))
+        },
+    );
+    if let Err(error) = merge_result {
+        return Err(error);
+    }
+    finish_compaction_writer(&mut current, plan.output_level, &mut outputs)?;
+    Ok(outputs)
+}
+
+fn finish_compaction_writer(
+    current: &mut Option<(u64, PathBuf, NativeTableWriter)>,
+    level: u32,
+    outputs: &mut PendingCompactionOutputs,
+) -> Result<()> {
+    let Some((number, path, writer)) = current.take() else {
+        return Ok(());
+    };
+    let written = writer.finish()?;
+    outputs.push(path, written_table_meta(number, level, written));
+    Ok(())
+}
+
+fn written_table_meta(number: u64, level: u32, written: WrittenNativeTable) -> TableFileMeta {
+    TableFileMeta::native(
+        number,
+        level,
+        written.file_size,
+        written.smallest_internal_key,
+        written.largest_internal_key,
+    )
+}
+
+fn collect_visible_from_state(
+    shared: &SharedDb,
+    state: &ReadState,
+    options: &ReadOptions,
+    prefix: Option<&[u8]>,
+) -> Result<BTreeMap<Vec<u8>, Bytes>> {
+    let mut values = BTreeMap::new();
+    let mut seen = HashSet::new();
+    seen.extend(state.active.keys().cloned());
+    if let Some(immutable) = &state.immutable {
+        seen.extend(immutable.entries().keys().cloned());
+    }
+    for table_meta in state.version.tables().iter().rev() {
+        let path = shared.root.join(Manifest::table_name(table_meta.number));
+        if !path.exists() {
+            continue;
+        }
+        table::for_each_table_lookup(
+            &path,
+            read_checksums(&shared.options, options),
+            read_cache(options, &shared.block_cache),
+            |key, value| {
+                if prefix.is_some_and(|prefix| !key.starts_with(prefix))
+                    || !seen.insert(key.to_vec())
+                {
+                    return Ok(VisitorControl::Continue);
+                }
+                if let Some(value) = value {
+                    values.insert(key.to_vec(), value.clone());
+                }
+                Ok(VisitorControl::Continue)
+            },
+        )?;
+    }
+    if let Some(immutable) = &state.immutable {
+        for (key, value) in immutable.entries() {
+            if state.active.contains_key(key)
+                || prefix.is_some_and(|prefix| !key.starts_with(prefix))
+            {
+                continue;
+            }
+            if let Some(value) = value {
+                values.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    for (key, value) in state.active.iter() {
+        if prefix.is_some_and(|prefix| !key.starts_with(prefix)) {
+            continue;
+        }
+        match value {
+            Some(value) => {
+                values.insert(key.clone(), value.clone());
+            }
+            None => {
+                values.remove(key);
+            }
+        }
+    }
+    Ok(values)
 }
 
 /// Materialized iterator over raw key/value pairs.
@@ -1752,20 +1670,37 @@ impl Iterator for PrefixIterator {
     }
 }
 
+fn prepare_database_directory(root: &Path, options: &LevelDbOpenOptions) -> Result<()> {
+    if root.exists() {
+        if options.error_if_exists {
+            let mut entries = fs::read_dir(root)
+                .map_err(|error| LevelDbError::io_at("read database directory", root, error))?;
+            if entries
+                .next()
+                .transpose()
+                .map_err(|error| LevelDbError::io_at("read database directory", root, error))?
+                .is_some()
+            {
+                return Err(LevelDbError::already_exists(root.to_path_buf()));
+            }
+        }
+    } else if options.read_only {
+        return Err(LevelDbError::not_found(root.to_path_buf()));
+    } else if options.create_if_missing {
+        fs::create_dir_all(root)
+            .map_err(|error| LevelDbError::io_at("create database directory", root, error))?;
+    } else {
+        return Err(LevelDbError::not_found(root.to_path_buf()));
+    }
+    Ok(())
+}
+
 fn load_existing_or_initialize(root: &Path, options: &LevelDbOpenOptions) -> Result<LoadedState> {
     match Manifest::load(root) {
         Ok(manifest) => {
-            let mut overlay = BTreeMap::new();
+            let mut active = BTreeMap::new();
             let mut last_sequence = manifest.last_sequence;
-            let mut approximate_bytes = 0usize;
-            log::trace!(
-                "loaded manifest from {} (tables={}, log_number={}, prev_log_number={}, last_sequence={})",
-                root.display(),
-                manifest.table_numbers.len(),
-                manifest.log_number,
-                manifest.prev_log_number,
-                manifest.last_sequence
-            );
+            let mut active_bytes = 0_usize;
             let mut log_numbers = [manifest.prev_log_number, manifest.log_number]
                 .into_iter()
                 .filter(|number| *number != 0)
@@ -1773,63 +1708,130 @@ fn load_existing_or_initialize(root: &Path, options: &LevelDbOpenOptions) -> Res
             log_numbers.sort_unstable();
             log_numbers.dedup();
             for log_number in log_numbers {
-                let log_path = root.join(Manifest::log_name(log_number));
-                if !log_path.exists() {
+                let path = root.join(Manifest::log_name(log_number));
+                if !path.exists() {
                     continue;
                 }
-                log::trace!("replaying WAL {}", log_path.display());
-                let mut file = File::open(&log_path)
-                    .map_err(|error| LevelDbError::io_at("open WAL", &log_path, error))?;
-                for record in wal::read_records(&mut file, options.paranoid_checks)? {
-                    let batch = WriteBatch::decode(&record).map_err(|error| {
+                let mut file = File::open(&path)
+                    .map_err(|error| LevelDbError::io_at("open WAL", &path, error))?;
+                wal::for_each_record(&mut file, options.paranoid_checks, |record| {
+                    let batch = WriteBatch::decode(record).map_err(|error| {
                         LevelDbError::corruption_at(
-                            &log_path,
-                            format!(
-                                "failed to decode write batch from {}: {error}",
-                                log_path.display()
-                            ),
+                            &path,
+                            format!("failed to decode write batch: {error}"),
                         )
                     })?;
                     let batch_len = u64::try_from(batch.len()).map_err(|_| {
-                        LevelDbError::corruption_at(
-                            &log_path,
-                            format!("write batch length overflow in {}", log_path.display()),
-                        )
+                        LevelDbError::corruption_at(&path, "write batch length overflow")
                     })?;
                     let batch_last_sequence = if batch_len == 0 {
                         batch.sequence()
                     } else {
                         batch.sequence().checked_add(batch_len - 1).ok_or_else(|| {
-                            LevelDbError::corruption_at(
-                                &log_path,
-                                format!("write batch sequence overflow in {}", log_path.display()),
-                            )
+                            LevelDbError::corruption_at(&path, "write batch sequence overflow")
                         })?
                     };
                     last_sequence = last_sequence.max(batch_last_sequence);
-                    approximate_bytes = apply_batch(&mut overlay, &batch, approximate_bytes);
-                }
+                    active_bytes = apply_batch(&mut active, &batch, active_bytes);
+                    Ok(())
+                })?;
             }
-            Ok((manifest, overlay, last_sequence, approximate_bytes))
+            Ok((manifest, active, last_sequence, active_bytes))
         }
         Err(error)
             if error.kind() == ErrorKind::NotFound
                 && options.create_if_missing
                 && !options.read_only =>
         {
-            log::debug!(
-                "initializing new native LevelDB database at {}",
-                root.display()
-            );
             let manifest = Manifest::default();
             manifest.store(root)?;
-            let log_path = root.join(Manifest::log_name(manifest.log_number));
-            File::create(&log_path)
-                .map_err(|error| LevelDbError::io_at("create WAL", &log_path, error))?;
+            create_empty_wal(&root.join(Manifest::log_name(manifest.log_number)))?;
             Ok((manifest, BTreeMap::new(), 0, 0))
         }
         Err(error) => Err(error),
     }
+}
+
+fn normalize_next_file_number(root: &Path, manifest: &mut Manifest) -> Result<()> {
+    let highest = fs::read_dir(root)
+        .map_err(|error| LevelDbError::io_at("scan database file numbers", root, error))?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| parse_file_number(&entry.path()))
+        .max()
+        .unwrap_or(0);
+    manifest.next_file_number = manifest
+        .next_file_number
+        .max(highest.saturating_add(1))
+        .max(2);
+    Ok(())
+}
+
+fn recover_pending_logs(
+    root: &Path,
+    options: &LevelDbOpenOptions,
+    manifest: &mut Manifest,
+    active: &mut MemTableEntries,
+    last_sequence: &mut u64,
+    active_bytes: &mut usize,
+) -> Result<()> {
+    let old_logs = [manifest.prev_log_number, manifest.log_number]
+        .into_iter()
+        .filter(|number| *number != 0)
+        .map(|number| root.join(Manifest::log_name(number)))
+        .collect::<Vec<_>>();
+    let table_number = if active.is_empty() {
+        None
+    } else {
+        let number = take_manifest_file_number(manifest)?;
+        let path = root.join(Manifest::table_name(number));
+        let mut writer = NativeTableWriter::create(&path, *last_sequence, options.compression_policy)?;
+        for (key, value) in active.iter() {
+            writer.push(key, value.as_deref())?;
+        }
+        let written = writer.finish()?;
+        let meta = written_table_meta(number, 0, written);
+        manifest.table_numbers.push(number);
+        manifest.table_files.push(meta);
+        Some(number)
+    };
+    let new_log_number = take_manifest_file_number(manifest)?;
+    create_empty_wal(&root.join(Manifest::log_name(new_log_number)))?;
+    manifest.log_number = new_log_number;
+    manifest.prev_log_number = 0;
+    manifest.last_sequence = *last_sequence;
+    manifest.table_numbers.sort_unstable();
+    manifest.table_numbers.dedup();
+    manifest.table_files.sort_by_key(|table| table.number);
+    manifest.table_files.dedup_by_key(|table| table.number);
+    if let Err(error) = manifest.store(root) {
+        if let Some(number) = table_number {
+            obsolete::remove_with_retry(std::slice::from_ref(
+                &root.join(Manifest::table_name(number)),
+            ));
+        }
+        return Err(error);
+    }
+    obsolete::remove_with_retry(&old_logs);
+    active.clear();
+    *active_bytes = 0;
+    Ok(())
+}
+
+fn take_manifest_file_number(manifest: &mut Manifest) -> Result<u64> {
+    let number = manifest.next_file_number;
+    manifest.next_file_number = manifest.next_file_number.checked_add(1).ok_or_else(|| {
+        LevelDbError::invalid_argument("database file number overflowed".to_string())
+    })?;
+    Ok(number)
+}
+
+fn allocate_file_number(shared: &SharedDb) -> Result<u64> {
+    shared
+        .next_file_number
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |number| {
+            number.checked_add(1)
+        })
+        .map_err(|_| LevelDbError::invalid_argument("database file number overflowed".to_string()))
 }
 
 fn append_batch_to_log(
@@ -1838,21 +1840,20 @@ fn append_batch_to_log(
     batch: &WriteBatch,
     options: WriteOptions,
 ) -> Result<()> {
-    let log_path = root.join(Manifest::log_name(log_number));
-    let mut file = std::fs::OpenOptions::new()
+    let path = root.join(Manifest::log_name(log_number));
+    let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)
-        .map_err(|error| LevelDbError::io_at("open WAL for append", &log_path, error))?;
-    log::trace!(
-        "appending write batch with {} operations to WAL {}",
-        batch.len(),
-        log_path.display()
-    );
-    wal::append_record(&mut file, &batch.encode()?)?;
+        .open(&path)
+        .map_err(|error| LevelDbError::io_at("open WAL for append", &path, error))?;
+    WAL_ENCODE_SCRATCH.with(|scratch| -> Result<()> {
+        let mut scratch = scratch.borrow_mut();
+        batch.encode_into(&mut scratch)?;
+        wal::append_record(&mut file, &scratch)
+    })?;
     if options.sync {
         file.sync_data()
-            .map_err(|error| LevelDbError::io_at("sync WAL", &log_path, error))?;
+            .map_err(|error| LevelDbError::io_at("sync WAL", &path, error))?;
     }
     Ok(())
 }
@@ -1863,58 +1864,8 @@ fn create_empty_wal(path: &Path) -> Result<()> {
         .map_err(|error| LevelDbError::io_at("sync WAL", path, error))
 }
 
-fn write_recovered_native_state(
-    root: &Path,
-    values: &BTreeMap<Vec<u8>, Bytes>,
-    mut source_file_numbers: Vec<u64>,
-    last_sequence: u64,
-    compression: CompressionPolicy,
-) -> Result<()> {
-    source_file_numbers.sort_unstable();
-    source_file_numbers.dedup();
-    let highest_existing_file = source_file_numbers.iter().copied().max().unwrap_or(1);
-    let repaired_table = highest_existing_file.saturating_add(1);
-    let repaired_log = highest_existing_file.saturating_add(2);
-    let next_file_number = highest_existing_file.saturating_add(3);
-    let table_files = if values.is_empty() {
-        Vec::new()
-    } else {
-        let written = table::write_native_table(
-            &root.join(Manifest::table_name(repaired_table)),
-            values,
-            last_sequence,
-            compression,
-        )?;
-        vec![crate::manifest::TableFileMeta::native(
-            repaired_table,
-            0,
-            written.file_size,
-            written.smallest_internal_key,
-            written.largest_internal_key,
-        )]
-    };
-    let table_numbers = if table_files.is_empty() {
-        Vec::new()
-    } else {
-        vec![repaired_table]
-    };
-    let manifest = Manifest {
-        next_file_number,
-        log_number: repaired_log,
-        prev_log_number: 0,
-        last_sequence,
-        table_numbers,
-        table_files,
-    };
-    manifest.store(root)?;
-    let repaired_log = root.join(Manifest::log_name(manifest.log_number));
-    File::create(&repaired_log)
-        .map_err(|error| LevelDbError::io_at("create repaired WAL", &repaired_log, error))?;
-    Ok(())
-}
-
 fn apply_batch(
-    overlay: &mut BTreeMap<Vec<u8>, Option<Bytes>>,
+    active: &mut MemTableEntries,
     batch: &WriteBatch,
     mut approximate_bytes: usize,
 ) -> usize {
@@ -1923,49 +1874,22 @@ fn apply_batch(
             WriteOp::Put { key, value } => {
                 let key_size = key.len();
                 let value_size = value.len();
-                if let Some(old_value) = overlay.insert(key.to_vec(), Some(value.clone())) {
-                    let old_value_size = old_value.as_ref().map_or(0, Bytes::len);
-                    approximate_bytes =
-                        approximate_bytes.saturating_sub(key_size.saturating_add(old_value_size));
+                if let Some(old_value) = active.insert(key.to_vec(), Some(value.clone())) {
+                    approximate_bytes = approximate_bytes.saturating_sub(
+                        key_size.saturating_add(old_value.as_ref().map_or(0, Bytes::len)),
+                    );
                 }
                 approximate_bytes =
                     approximate_bytes.saturating_add(key_size.saturating_add(value_size));
             }
             WriteOp::Delete { key } => {
-                if let Some(old_value) = overlay.insert(key.to_vec(), None) {
-                    let old_value_size = old_value.as_ref().map_or(0, Bytes::len);
-                    approximate_bytes =
-                        approximate_bytes.saturating_sub(key.len().saturating_add(old_value_size));
+                if let Some(old_value) = active.insert(key.to_vec(), None) {
+                    approximate_bytes = approximate_bytes.saturating_sub(
+                        key.len()
+                            .saturating_add(old_value.as_ref().map_or(0, Bytes::len)),
+                    );
                 }
                 approximate_bytes = approximate_bytes.saturating_add(key.len());
-            }
-        }
-    }
-    approximate_bytes
-}
-
-fn apply_batch_to_values(
-    values: &mut BTreeMap<Vec<u8>, Bytes>,
-    batch: &WriteBatch,
-    mut approximate_bytes: usize,
-) -> usize {
-    for op in batch.ops() {
-        match op {
-            WriteOp::Put { key, value } => {
-                let key_size = key.len();
-                let value_size = value.len();
-                if let Some(old_value) = values.insert(key.to_vec(), value.clone()) {
-                    approximate_bytes =
-                        approximate_bytes.saturating_sub(key_size.saturating_add(old_value.len()));
-                }
-                approximate_bytes =
-                    approximate_bytes.saturating_add(key_size.saturating_add(value_size));
-            }
-            WriteOp::Delete { key } => {
-                if let Some(old_value) = values.remove(key.as_ref()) {
-                    approximate_bytes =
-                        approximate_bytes.saturating_sub(key.len().saturating_add(old_value.len()));
-                }
             }
         }
     }
@@ -1986,11 +1910,15 @@ fn validate_batch(batch: &WriteBatch) -> Result<()> {
     Ok(())
 }
 
-fn approximate_entries_size(values: &BTreeMap<Vec<u8>, Bytes>) -> usize {
-    values
-        .iter()
-        .map(|(key, value)| key.len().saturating_add(value.len()))
-        .sum()
+fn check_scan_cancelled(options: &ReadOptions) -> Result<()> {
+    if options
+        .cancel
+        .as_ref()
+        .is_some_and(crate::options::ScanCancelFlag::is_cancelled)
+    {
+        return Err(LevelDbError::Cancelled);
+    }
+    Ok(())
 }
 
 fn read_checksums(open: &LevelDbOpenOptions, read: &ReadOptions) -> bool {
@@ -2011,884 +1939,188 @@ fn read_cache<'a>(
     }
 }
 
-fn check_scan_cancelled(options: &ReadOptions) -> Result<()> {
-    if options
-        .cancel
-        .as_ref()
-        .is_some_and(crate::options::ScanCancelFlag::is_cancelled)
-    {
-        return Err(LevelDbError::Cancelled);
-    }
-    Ok(())
-}
-
-fn emit_scan_progress(options: &ReadOptions, outcome: ScanOutcome) {
-    if let Some(progress) = &options.progress {
-        progress.emit(crate::options::ScanProgress {
-            visited: outcome.visited,
-            bytes_read: outcome.bytes_read,
-        });
-    }
-}
-
-fn log_scan_result(operation: &str, started: Instant, result: &Result<ScanOutcome>) {
-    match result {
-        Ok(outcome) => log::debug!(
-            "{operation} complete (visited={}, bytes_read={}, tables_scanned={}, worker_threads={}, queue_wait_ms={}, cancel_checks={}, stopped={}, elapsed_ms={})",
-            outcome.visited,
-            outcome.bytes_read,
-            outcome.tables_scanned,
-            outcome.worker_threads,
-            outcome.queue_wait_ms,
-            outcome.cancel_checks,
-            outcome.stopped,
-            started.elapsed().as_millis()
-        ),
-        Err(error) => log::warn!(
-            "{operation} failed (elapsed_ms={}, error={})",
-            started.elapsed().as_millis(),
-            error
-        ),
-    }
-}
-
-fn should_emit_scan_progress(options: &ReadOptions, visited: usize) -> bool {
-    visited.is_multiple_of(options.pipeline.resolve_progress_interval())
-}
-
-fn scan_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>> {
-    static SCAN_POOLS: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
-
-    let worker_count = worker_count.max(1);
-    let pools = SCAN_POOLS.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(pool) = pools
-        .lock()
-        .ok()
-        .and_then(|pools| pools.get(&worker_count).cloned())
-    {
-        return Ok(pool);
-    }
-
-    let pool = Arc::new(
-        ThreadPoolBuilder::new()
-            // `ThreadPool::scope` runs the receiver/coordinator on one pool
-            // thread, so reserve one additional thread for worker progress.
-            .num_threads(worker_count.saturating_add(1))
-            .thread_name(|index| format!("bedrock-leveldb-scan-{index}"))
-            .build()
-            .map_err(|error| {
-                LevelDbError::invalid_argument(format!("failed to build scan worker pool: {error}"))
-            })?,
-    );
-    let mut pools = pools
-        .lock()
-        .map_err(|_| LevelDbError::lock_poisoned("caching scan worker pool"))?;
-    if pools.len() >= 4 {
-        return Ok(pool);
-    }
-    Ok(Arc::clone(
-        pools
-            .entry(worker_count)
-            .or_insert_with(|| Arc::clone(&pool)),
-    ))
-}
-
-fn send_with_wait<T>(
-    sender: &mpsc::SyncSender<T>,
-    message: T,
-    queue_wait_ms: &std::sync::atomic::AtomicU64,
-) -> bool {
-    let started = Instant::now();
-    let result = sender.send(message);
-    let waited = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    queue_wait_ms.fetch_add(waited, Ordering::Relaxed);
-    result.is_ok()
-}
-
-fn parallel_queue_depth(options: &ReadOptions, workers: usize, tables: usize) -> usize {
-    options.pipeline.resolve_queue_depth(workers, tables)
-}
-
-fn merge_parallel_worker_metadata(outcome: &mut ScanOutcome, worker: ScanOutcome) {
-    outcome.bytes_read = outcome.bytes_read.saturating_add(worker.bytes_read);
-    merge_parallel_worker_control(outcome, worker);
-}
-
-fn merge_parallel_worker_control(outcome: &mut ScanOutcome, worker: ScanOutcome) {
-    outcome.tables_scanned = outcome.tables_scanned.saturating_add(worker.tables_scanned);
-    outcome.worker_threads = outcome.worker_threads.max(worker.worker_threads);
-    outcome.queue_wait_ms = outcome.queue_wait_ms.saturating_add(worker.queue_wait_ms);
-    outcome.cancel_checks = outcome.cancel_checks.saturating_add(worker.cancel_checks);
-    outcome.stopped |= worker.stopped;
-}
-
-fn allocate_file_number(manifest: &mut Manifest) -> u64 {
-    let number = manifest.next_file_number;
-    manifest.next_file_number = manifest.next_file_number.saturating_add(1);
-    number
+fn approximate_entries_size(values: &BTreeMap<Vec<u8>, Bytes>) -> usize {
+    values
+        .iter()
+        .map(|(key, value)| key.len().saturating_add(value.len()))
+        .sum()
 }
 
 fn parse_file_number(path: &Path) -> Option<u64> {
     path.file_stem()?.to_str()?.parse().ok()
 }
 
+fn repair_database(root: &Path, options: &LevelDbOpenOptions) -> Result<RepairReport> {
+    let mut report = RepairReport::default();
+    let source_manifest = match Manifest::load(root) {
+        Ok(manifest) => manifest,
+        Err(error) if error.kind() == ErrorKind::NotFound && options.create_if_missing => {
+            Manifest::default()
+        }
+        Err(error) => return Err(error),
+    };
+    let mut values = BTreeMap::new();
+    let mut last_sequence = source_manifest.last_sequence;
+    let paths = sorted_database_paths(root)?;
+
+    for path in paths
+        .iter()
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("ldb"))
+    {
+        match table::read_table_lookups(path, false).and_then(|entries| {
+            table::read_table_max_sequence(path, false).map(|sequence| (entries, sequence))
+        }) {
+            Ok((entries, sequence)) => {
+                for (key, lookup) in entries {
+                    match lookup {
+                        table::TableLookup::Value(value) => {
+                            values.insert(key, value);
+                        }
+                        table::TableLookup::Deleted => {
+                            values.remove(&key);
+                        }
+                        table::TableLookup::Missing => {}
+                    }
+                }
+                last_sequence = last_sequence.max(sequence);
+                report.recovered_tables = report.recovered_tables.saturating_add(1);
+            }
+            Err(error) => {
+                log::warn!("dropping unreadable table during repair: {} ({error})", path.display());
+                report.dropped_files = report.dropped_files.saturating_add(1);
+            }
+        }
+    }
+
+    for path in paths
+        .iter()
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("log"))
+    {
+        match File::open(path) {
+            Ok(mut file) => {
+                let result = wal::for_each_record(&mut file, false, |record| {
+                    let batch = WriteBatch::decode(record)?;
+                    let batch_len = u64::try_from(batch.len()).unwrap_or(u64::MAX);
+                    last_sequence = last_sequence.max(
+                        batch
+                            .sequence()
+                            .saturating_add(batch_len.saturating_sub(1)),
+                    );
+                    apply_batch_to_values(&mut values, &batch);
+                    report.recovered_log_records = report.recovered_log_records.saturating_add(1);
+                    Ok(())
+                });
+                if let Err(error) = result {
+                    log::warn!("dropping unreadable WAL during repair: {} ({error})", path.display());
+                    report.dropped_files = report.dropped_files.saturating_add(1);
+                }
+            }
+            Err(error) => {
+                log::warn!("dropping unreadable WAL during repair: {} ({error})", path.display());
+                report.dropped_files = report.dropped_files.saturating_add(1);
+            }
+        }
+    }
+
+    write_recovered_state(root, &values, last_sequence, options.compression_policy)?;
+    Ok(report)
+}
+
+fn write_recovered_state(
+    root: &Path,
+    values: &BTreeMap<Vec<u8>, Bytes>,
+    last_sequence: u64,
+    compression: CompressionPolicy,
+) -> Result<()> {
+    let highest = sorted_database_paths(root)?
+        .iter()
+        .filter_map(|path| parse_file_number(path))
+        .max()
+        .unwrap_or(1);
+    let table_number = highest.saturating_add(1);
+    let log_number = highest.saturating_add(2);
+    let mut table_files = Vec::new();
+    if !values.is_empty() {
+        let path = root.join(Manifest::table_name(table_number));
+        let mut writer = NativeTableWriter::create(&path, last_sequence, compression)?;
+        for (key, value) in values {
+            writer.push(key, Some(value))?;
+        }
+        let written = writer.finish()?;
+        table_files.push(written_table_meta(table_number, 0, written));
+    }
+    create_empty_wal(&root.join(Manifest::log_name(log_number)))?;
+    let table_numbers = table_files.iter().map(|table| table.number).collect();
+    let manifest = Manifest {
+        next_file_number: log_number.saturating_add(1),
+        log_number,
+        prev_log_number: 0,
+        last_sequence,
+        table_numbers,
+        table_files,
+    };
+    manifest.store(root)
+}
+
+fn apply_batch_to_values(values: &mut BTreeMap<Vec<u8>, Bytes>, batch: &WriteBatch) {
+    for op in batch.ops() {
+        match op {
+            WriteOp::Put { key, value } => {
+                values.insert(key.to_vec(), value.clone());
+            }
+            WriteOp::Delete { key } => {
+                values.remove(key.as_ref());
+            }
+        }
+    }
+}
+
 fn sorted_database_paths(root: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = fs::read_dir(root)
-        .map_err(|error| LevelDbError::io_at("read repair directory", root, error))?
+        .map_err(|error| LevelDbError::io_at("read database directory", root, error))?
         .map(|entry| {
             entry
                 .map(|entry| entry.path())
-                .map_err(|error| LevelDbError::io_at("read repair directory entry", root, error))
+                .map_err(|error| LevelDbError::io_at("read database entry", root, error))
         })
         .collect::<Result<Vec<_>>>()?;
-    paths.sort_by(|left, right| {
-        parse_file_number(left)
-            .cmp(&parse_file_number(right))
-            .then_with(|| left.cmp(right))
-    });
+    paths.sort_by_key(|path| parse_file_number(path));
     Ok(paths)
 }
 
-fn repair_source_paths(root: &Path, manifest: &Manifest) -> Vec<PathBuf> {
-    let mut paths = manifest
-        .table_numbers
-        .iter()
-        .map(|number| root.join(Manifest::table_name(*number)))
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
-    let mut log_numbers = [manifest.prev_log_number, manifest.log_number]
-        .into_iter()
-        .filter(|number| *number != 0)
-        .collect::<Vec<_>>();
-    log_numbers.sort_unstable();
-    log_numbers.dedup();
-    paths.extend(
-        log_numbers
-            .into_iter()
-            .map(|number| root.join(Manifest::log_name(number)))
-            .filter(|path| path.exists()),
-    );
-    paths
+fn read_lock<'a, T>(
+    lock: &'a RwLock<T>,
+    operation: &'static str,
+) -> Result<std::sync::RwLockReadGuard<'a, T>> {
+    lock.read()
+        .map_err(|_| LevelDbError::lock_poisoned(operation))
 }
 
-fn table_paths(root: &Path, manifest: &Manifest) -> Vec<PathBuf> {
-    manifest
-        .table_numbers
-        .iter()
-        .map(|number| root.join(Manifest::table_name(*number)))
-        .filter(|path| path.exists())
-        .collect()
+fn write_lock<'a, T>(
+    lock: &'a RwLock<T>,
+    operation: &'static str,
+) -> Result<std::sync::RwLockWriteGuard<'a, T>> {
+    lock.write()
+        .map_err(|_| LevelDbError::lock_poisoned(operation))
 }
 
-fn manifest_tables(manifest: &Manifest) -> Vec<crate::manifest::TableFileMeta> {
-    if manifest.table_files.is_empty() {
-        return manifest
-            .table_numbers
-            .iter()
-            .copied()
-            .map(crate::manifest::TableFileMeta::without_range)
-            .collect();
-    }
-    manifest.table_files.clone()
-}
-
-fn partition_paths_by_size(table_paths: Vec<PathBuf>, worker_count: usize) -> Vec<Vec<PathBuf>> {
-    let worker_count = worker_count.max(1);
-    let mut paths = table_paths
-        .into_iter()
-        .map(|path| {
-            let size = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
-            (path, size)
-        })
-        .collect::<Vec<_>>();
-    paths.sort_by_key(|(_, size)| Reverse(*size));
-    let mut worker_loads = vec![0_u64; worker_count];
-    let mut worker_paths = vec![Vec::new(); worker_count];
-    for (path, size) in paths {
-        let Some((worker_index, load)) = worker_loads
-            .iter_mut()
-            .enumerate()
-            .min_by_key(|(_, load)| **load)
-        else {
-            continue;
-        };
-        *load = load.saturating_add(size);
-        worker_paths[worker_index].push(path);
-    }
-    worker_paths
-}
-
-// The parallel helpers keep their call sites explicit because each parameter is
-// a separate scan policy; grouping them did not make the ownership easier.
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-#[allow(clippy::too_many_lines)]
-fn for_each_table_paths_parallel<F>(
-    table_paths: Vec<PathBuf>,
-    prefix: Option<Vec<u8>>,
-    verify_checksums: bool,
-    cache: Option<&table::NativeBlockCache>,
-    threads: usize,
-    hidden_keys: &BTreeMap<Vec<u8>, Option<Bytes>>,
-    visitor: &mut F,
-    options: &ReadOptions,
-) -> Result<ScanOutcome>
-where
-    F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
-{
-    enum TableMessage {
-        Entries(Vec<(Vec<u8>, Bytes)>),
-        Error(LevelDbError),
-        Outcome(ScanOutcome),
-    }
-
-    if table_paths.is_empty() {
-        return Ok(ScanOutcome::empty());
-    }
-    let worker_count = threads.max(1).min(table_paths.len());
-    let queue_depth = parallel_queue_depth(options, worker_count, table_paths.len());
-    let worker_paths = partition_paths_by_size(table_paths, worker_count);
-
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let queue_wait_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (sender, receiver) = mpsc::sync_channel::<TableMessage>(queue_depth);
-    let pool = scan_pool(worker_count)?;
-
-    pool.scope(|scope| {
-        for paths in worker_paths {
-            let sender = sender.clone();
-            let prefix = prefix.clone();
-            let cancelled = cancelled.clone();
-            let queue_wait_ms = Arc::clone(&queue_wait_ms);
-            scope.spawn(move |_| {
-                let mut batch = Vec::with_capacity(256);
-                for path in paths {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let mut queue_entry = |key: &[u8], value: &Bytes| {
-                        if hidden_keys.contains_key(key) {
-                            return Ok(VisitorControl::Continue);
-                        }
-                        batch.push((key.to_vec(), value.clone()));
-                        if batch.len() == 256 {
-                            let entries = std::mem::replace(&mut batch, Vec::with_capacity(256));
-                            if !send_with_wait(
-                                &sender,
-                                TableMessage::Entries(entries),
-                                &queue_wait_ms,
-                            ) {
-                                cancelled.store(true, Ordering::Relaxed);
-                                return Ok(VisitorControl::Stop);
-                            }
-                        }
-                        Ok(VisitorControl::Continue)
-                    };
-                    let scan_result = if let Some(prefix) = &prefix {
-                        table::for_each_table_prefix(
-                            &path,
-                            prefix,
-                            verify_checksums,
-                            cache,
-                            &mut queue_entry,
-                        )
-                    } else {
-                        table::for_each_table_entry(
-                            &path,
-                            verify_checksums,
-                            cache,
-                            &mut queue_entry,
-                        )
-                    };
-                    if !batch.is_empty() {
-                        let entries = std::mem::replace(&mut batch, Vec::with_capacity(256));
-                        if !send_with_wait(&sender, TableMessage::Entries(entries), &queue_wait_ms)
-                        {
-                            cancelled.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                    match scan_result {
-                        Ok(outcome) => {
-                            if !send_with_wait(
-                                &sender,
-                                TableMessage::Outcome(outcome),
-                                &queue_wait_ms,
-                            ) {
-                                cancelled.store(true, Ordering::Relaxed);
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            if !send_with_wait(&sender, TableMessage::Error(error), &queue_wait_ms)
-                            {
-                                cancelled.store(true, Ordering::Relaxed);
-                                return;
-                            }
-                            cancelled.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                }
-            });
-        }
-        drop(sender);
-
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = worker_count;
-        for message in receiver {
-            outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
-            match message {
-                TableMessage::Entries(entries) => {
-                    for (key, value) in entries {
-                        check_scan_cancelled(options)?;
-                        outcome.record(value.len());
-                        match visitor(&key, &value)? {
-                            VisitorControl::Continue => {}
-                            VisitorControl::Stop => {
-                                outcome.stopped = true;
-                                cancelled.store(true, Ordering::Relaxed);
-                                outcome.queue_wait_ms = outcome.queue_wait_ms.saturating_add(
-                                    u128::from(queue_wait_ms.load(Ordering::Relaxed)),
-                                );
-                                return Ok(outcome);
-                            }
-                        }
-                        if should_emit_scan_progress(options, outcome.visited) {
-                            emit_scan_progress(options, outcome);
-                        }
-                    }
-                }
-                TableMessage::Outcome(worker_outcome) => {
-                    // Entry bytes are counted when the consumer invokes the
-                    // visitor, so only merge worker control-plane metadata.
-                    merge_parallel_worker_control(&mut outcome, worker_outcome);
-                }
-                TableMessage::Error(error) => {
-                    cancelled.store(true, Ordering::Relaxed);
-                    return Err(error);
-                }
-            }
-        }
-        outcome.queue_wait_ms = outcome
-            .queue_wait_ms
-            .saturating_add(u128::from(queue_wait_ms.load(Ordering::Relaxed)));
-        Ok(outcome)
-    })
-}
-
-#[allow(clippy::too_many_lines)]
-fn for_each_table_key_paths_parallel<F>(
-    table_paths: Vec<PathBuf>,
-    verify_checksums: bool,
-    cache: Option<&table::NativeBlockCache>,
-    threads: usize,
-    hidden_keys: &BTreeMap<Vec<u8>, Option<Bytes>>,
-    visitor: &mut F,
-    options: &ReadOptions,
-) -> Result<ScanOutcome>
-where
-    F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
-{
-    enum TableMessage {
-        Keys(Vec<Vec<u8>>),
-        Error(LevelDbError),
-        Outcome(ScanOutcome),
-    }
-
-    if table_paths.is_empty() {
-        return Ok(ScanOutcome::empty());
-    }
-    let worker_count = threads.max(1).min(table_paths.len());
-    let queue_depth = parallel_queue_depth(options, worker_count, table_paths.len());
-    let worker_paths = partition_paths_by_size(table_paths, worker_count);
-
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let queue_wait_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (sender, receiver) = mpsc::sync_channel::<TableMessage>(queue_depth);
-    let pool = scan_pool(worker_count)?;
-
-    pool.scope(|scope| {
-        for paths in worker_paths {
-            let sender = sender.clone();
-            let cancelled = cancelled.clone();
-            let queue_wait_ms = Arc::clone(&queue_wait_ms);
-            scope.spawn(move |_| {
-                let mut batch = Vec::with_capacity(256);
-                for path in paths {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let scan_result =
-                        table::for_each_table_key(&path, verify_checksums, cache, |key| {
-                            if hidden_keys.contains_key(key) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            batch.push(key.to_vec());
-                            if batch.len() == 256
-                                && !send_with_wait(
-                                    &sender,
-                                    TableMessage::Keys(std::mem::replace(
-                                        &mut batch,
-                                        Vec::with_capacity(256),
-                                    )),
-                                    &queue_wait_ms,
-                                )
-                            {
-                                cancelled.store(true, Ordering::Relaxed);
-                                return Ok(VisitorControl::Stop);
-                            }
-                            Ok(VisitorControl::Continue)
-                        });
-                    if !batch.is_empty()
-                        && !send_with_wait(
-                            &sender,
-                            TableMessage::Keys(std::mem::replace(
-                                &mut batch,
-                                Vec::with_capacity(256),
-                            )),
-                            &queue_wait_ms,
-                        )
-                    {
-                        cancelled.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    match scan_result {
-                        Ok(outcome) => {
-                            if !send_with_wait(
-                                &sender,
-                                TableMessage::Outcome(outcome),
-                                &queue_wait_ms,
-                            ) {
-                                cancelled.store(true, Ordering::Relaxed);
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            let _ =
-                                send_with_wait(&sender, TableMessage::Error(error), &queue_wait_ms);
-                            cancelled.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                }
-            });
-        }
-        drop(sender);
-
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = worker_count;
-        for message in receiver {
-            outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
-            match message {
-                TableMessage::Keys(keys) => {
-                    for key in keys {
-                        check_scan_cancelled(options)?;
-                        outcome.record(0);
-                        if visitor(&key)? == VisitorControl::Stop {
-                            outcome.stopped = true;
-                            cancelled.store(true, Ordering::Relaxed);
-                            outcome.queue_wait_ms = outcome
-                                .queue_wait_ms
-                                .saturating_add(u128::from(queue_wait_ms.load(Ordering::Relaxed)));
-                            return Ok(outcome);
-                        }
-                        if should_emit_scan_progress(options, outcome.visited) {
-                            emit_scan_progress(options, outcome);
-                        }
-                    }
-                }
-                TableMessage::Outcome(worker_outcome) => {
-                    merge_parallel_worker_metadata(&mut outcome, worker_outcome);
-                }
-                TableMessage::Error(error) => {
-                    cancelled.store(true, Ordering::Relaxed);
-                    return Err(error);
-                }
-            }
-        }
-        outcome.queue_wait_ms = outcome
-            .queue_wait_ms
-            .saturating_add(u128::from(queue_wait_ms.load(Ordering::Relaxed)));
-        Ok(outcome)
-    })
-}
-
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn for_each_table_prefix_key_paths_parallel<F>(
-    table_paths: Vec<PathBuf>,
-    prefix: Vec<u8>,
-    verify_checksums: bool,
-    cache: Option<&table::NativeBlockCache>,
-    threads: usize,
-    hidden_keys: &BTreeMap<Vec<u8>, Option<Bytes>>,
-    visitor: &mut F,
-    options: &ReadOptions,
-) -> Result<ScanOutcome>
-where
-    F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
-{
-    enum TableMessage {
-        Keys(Vec<Vec<u8>>),
-        Error(LevelDbError),
-        Outcome(ScanOutcome),
-    }
-
-    if table_paths.is_empty() {
-        return Ok(ScanOutcome::empty());
-    }
-    let worker_count = threads.max(1).min(table_paths.len());
-    let queue_depth = parallel_queue_depth(options, worker_count, table_paths.len());
-    let worker_paths = partition_paths_by_size(table_paths, worker_count);
-
-    log::debug!(
-        "starting parallel prefix key scan (workers={}, prefix_len={})",
-        worker_count,
-        prefix.len()
-    );
-
-    let prefix = Arc::new(prefix);
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let queue_wait_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (sender, receiver) = mpsc::sync_channel::<TableMessage>(queue_depth);
-    let pool = scan_pool(worker_count)?;
-
-    pool.scope(|scope| {
-        for (worker_index, paths) in worker_paths.into_iter().enumerate() {
-            let sender = sender.clone();
-            let prefix = prefix.clone();
-            let cancelled = cancelled.clone();
-            let queue_wait_ms = Arc::clone(&queue_wait_ms);
-            scope.spawn(move |_| {
-                let mut batch = Vec::with_capacity(256);
-                log::trace!(
-                    "prefix key scan worker {} started with {} table(s)",
-                    worker_index,
-                    paths.len()
-                );
-                for path in paths {
-                    if cancelled.load(Ordering::Relaxed) {
-                        log::trace!("prefix key scan worker {worker_index} cancelled");
-                        return;
-                    }
-                    let scan_result = table::for_each_table_prefix_key(
-                        &path,
-                        &prefix,
-                        verify_checksums,
-                        cache,
-                        |key| {
-                            if hidden_keys.contains_key(key) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            batch.push(key.to_vec());
-                            if batch.len() == 256
-                                && !send_with_wait(
-                                    &sender,
-                                    TableMessage::Keys(std::mem::replace(
-                                        &mut batch,
-                                        Vec::with_capacity(256),
-                                    )),
-                                    &queue_wait_ms,
-                                )
-                            {
-                                cancelled.store(true, Ordering::Relaxed);
-                                return Ok(VisitorControl::Stop);
-                            }
-                            Ok(VisitorControl::Continue)
-                        },
-                    );
-                    if !batch.is_empty()
-                        && !send_with_wait(
-                            &sender,
-                            TableMessage::Keys(std::mem::replace(
-                                &mut batch,
-                                Vec::with_capacity(256),
-                            )),
-                            &queue_wait_ms,
-                        )
-                    {
-                        cancelled.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    match scan_result {
-                        Ok(outcome) => {
-                            if !send_with_wait(
-                                &sender,
-                                TableMessage::Outcome(outcome),
-                                &queue_wait_ms,
-                            ) {
-                                cancelled.store(true, Ordering::Relaxed);
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            let _ =
-                                send_with_wait(&sender, TableMessage::Error(error), &queue_wait_ms);
-                            cancelled.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                }
-                log::trace!("prefix key scan worker {worker_index} finished");
-            });
-        }
-        drop(sender);
-
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = worker_count;
-        for message in receiver {
-            outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
-            match message {
-                TableMessage::Keys(keys) => {
-                    for key in keys {
-                        check_scan_cancelled(options)?;
-                        outcome.record(0);
-                        if visitor(&key)? == VisitorControl::Stop {
-                            outcome.stopped = true;
-                            cancelled.store(true, Ordering::Relaxed);
-                            outcome.queue_wait_ms = outcome
-                                .queue_wait_ms
-                                .saturating_add(u128::from(queue_wait_ms.load(Ordering::Relaxed)));
-                            return Ok(outcome);
-                        }
-                        if should_emit_scan_progress(options, outcome.visited) {
-                            emit_scan_progress(options, outcome);
-                        }
-                    }
-                }
-                TableMessage::Outcome(worker_outcome) => {
-                    merge_parallel_worker_metadata(&mut outcome, worker_outcome);
-                }
-                TableMessage::Error(error) => {
-                    cancelled.store(true, Ordering::Relaxed);
-                    return Err(error);
-                }
-            }
-        }
-        outcome.queue_wait_ms = outcome
-            .queue_wait_ms
-            .saturating_add(u128::from(queue_wait_ms.load(Ordering::Relaxed)));
-        Ok(outcome)
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn for_each_table_key_paths_partitioned<T, I, F>(
-    table_paths: Vec<PathBuf>,
-    verify_checksums: bool,
-    cache: Option<&table::NativeBlockCache>,
-    threads: usize,
-    hidden_keys: &BTreeMap<Vec<u8>, Option<Bytes>>,
-    init: &I,
-    visitor: &F,
-    options: &ReadOptions,
-) -> Result<(ScanOutcome, Vec<T>)>
-where
-    T: Send,
-    I: Fn() -> T + Send + Sync,
-    F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
-{
-    enum TableMessage<T> {
-        Partition(T, ScanOutcome),
-        Error(LevelDbError),
-    }
-
-    if table_paths.is_empty() {
-        return Ok((ScanOutcome::empty(), Vec::new()));
-    }
-    let worker_count = threads.max(1).min(table_paths.len());
-    let queue_depth = parallel_queue_depth(options, worker_count, table_paths.len());
-    let worker_paths = partition_paths_by_size(table_paths, worker_count);
-
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let queue_wait_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (sender, receiver) = mpsc::sync_channel::<TableMessage<T>>(queue_depth);
-    let pool = scan_pool(worker_count)?;
-    pool.scope(|scope| {
-        for paths in worker_paths {
-            let sender = sender.clone();
-            let cancelled = cancelled.clone();
-            let queue_wait_ms = Arc::clone(&queue_wait_ms);
-            scope.spawn(move |_| {
-                let mut partition = init();
-                let mut outcome = ScanOutcome::empty();
-                for path in paths {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let scan_result =
-                        table::for_each_table_key(&path, verify_checksums, cache, |key| {
-                            if hidden_keys.contains_key(key) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            visitor(&mut partition, key)
-                        });
-                    match scan_result {
-                        Ok(table_outcome) => {
-                            outcome.merge(table_outcome);
-                            if outcome.stopped {
-                                cancelled.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            let _ =
-                                send_with_wait(&sender, TableMessage::Error(error), &queue_wait_ms);
-                            cancelled.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                }
-                let _ = send_with_wait(
-                    &sender,
-                    TableMessage::Partition(partition, outcome),
-                    &queue_wait_ms,
-                );
-            });
-        }
-        drop(sender);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = worker_count;
-        let mut partitions = Vec::new();
-        for message in receiver {
-            outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
-            check_scan_cancelled(options)?;
-            match message {
-                TableMessage::Partition(partition, partition_outcome) => {
-                    outcome.merge(partition_outcome);
-                    partitions.push(partition);
-                    if outcome.stopped {
-                        cancelled.store(true, Ordering::Relaxed);
-                    }
-                }
-                TableMessage::Error(error) => {
-                    cancelled.store(true, Ordering::Relaxed);
-                    return Err(error);
-                }
-            }
-        }
-        outcome.queue_wait_ms = outcome
-            .queue_wait_ms
-            .saturating_add(u128::from(queue_wait_ms.load(Ordering::Relaxed)));
-        Ok((outcome, partitions))
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn for_each_table_paths_partitioned<T, I, F>(
-    table_paths: Vec<PathBuf>,
-    verify_checksums: bool,
-    cache: Option<&table::NativeBlockCache>,
-    threads: usize,
-    hidden_keys: &BTreeMap<Vec<u8>, Option<Bytes>>,
-    init: &I,
-    visitor: &F,
-    options: &ReadOptions,
-) -> Result<(ScanOutcome, Vec<T>)>
-where
-    T: Send,
-    I: Fn() -> T + Send + Sync,
-    F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
-{
-    enum TableMessage<T> {
-        Partition(T, ScanOutcome),
-        Error(LevelDbError),
-    }
-
-    if table_paths.is_empty() {
-        return Ok((ScanOutcome::empty(), Vec::new()));
-    }
-    let worker_count = threads.max(1).min(table_paths.len());
-    let queue_depth = parallel_queue_depth(options, worker_count, table_paths.len());
-    let worker_paths = partition_paths_by_size(table_paths, worker_count);
-
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let queue_wait_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (sender, receiver) = mpsc::sync_channel::<TableMessage<T>>(queue_depth);
-    let pool = scan_pool(worker_count)?;
-    pool.scope(|scope| {
-        for paths in worker_paths {
-            let sender = sender.clone();
-            let cancelled = cancelled.clone();
-            let queue_wait_ms = Arc::clone(&queue_wait_ms);
-            scope.spawn(move |_| {
-                let mut partition = init();
-                let mut outcome = ScanOutcome::empty();
-                for path in paths {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let scan_result = table::for_each_table_entry(
-                        &path,
-                        verify_checksums,
-                        cache,
-                        |key, value| {
-                            if hidden_keys.contains_key(key) {
-                                return Ok(VisitorControl::Continue);
-                            }
-                            visitor(&mut partition, key, value)
-                        },
-                    );
-                    match scan_result {
-                        Ok(table_outcome) => {
-                            outcome.merge(table_outcome);
-                            if outcome.stopped {
-                                cancelled.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            let _ =
-                                send_with_wait(&sender, TableMessage::Error(error), &queue_wait_ms);
-                            cancelled.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                }
-                let _ = send_with_wait(
-                    &sender,
-                    TableMessage::Partition(partition, outcome),
-                    &queue_wait_ms,
-                );
-            });
-        }
-        drop(sender);
-        let mut outcome = ScanOutcome::empty();
-        outcome.worker_threads = worker_count;
-        let mut partitions = Vec::new();
-        for message in receiver {
-            outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
-            check_scan_cancelled(options)?;
-            match message {
-                TableMessage::Partition(partition, partition_outcome) => {
-                    outcome.merge(partition_outcome);
-                    partitions.push(partition);
-                    if outcome.stopped {
-                        cancelled.store(true, Ordering::Relaxed);
-                    }
-                }
-                TableMessage::Error(error) => {
-                    cancelled.store(true, Ordering::Relaxed);
-                    return Err(error);
-                }
-            }
-        }
-        outcome.queue_wait_ms = outcome
-            .queue_wait_ms
-            .saturating_add(u128::from(queue_wait_ms.load(Ordering::Relaxed)));
-        Ok((outcome, partitions))
-    })
+fn mutex_lock<'a, T>(
+    lock: &'a Mutex<T>,
+    operation: &'static str,
+) -> Result<std::sync::MutexGuard<'a, T>> {
+    lock.lock()
+        .map_err(|_| LevelDbError::lock_poisoned(operation))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::{CompressionPolicy, ScanCancelFlag};
-    use std::sync::Arc;
+    use crate::options::ScanCancelFlag;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "bedrock-leveldb-{name}-{}",
+            "bedrock-leveldb-v2-{name}-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
@@ -2897,32 +2129,66 @@ mod tests {
     }
 
     #[test]
-    fn db_recovers_wal_after_reopen() {
-        let path = temp_dir("wal");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            ..LevelDbOpenOptions::default()
-        };
-        {
-            let db = Db::open(&path, options.clone()).expect("open");
+    fn active_and_immutable_are_visible_during_background_flush() {
+        let path = temp_dir("immutable-visible");
+        let db = Db::open(
+            &path,
+            LevelDbOpenOptions {
+                compression_policy: CompressionPolicy::None,
+                write_buffer_size: 32,
+                ..LevelDbOpenOptions::default()
+            },
+        )
+        .expect("open");
+        db.put(
+            Bytes::from_static(b"old"),
+            Bytes::from_static(b"value-old-value-old"),
+            WriteOptions::default(),
+        )
+        .expect("put old");
+        db.put(
+            Bytes::from_static(b"new"),
+            Bytes::from_static(b"value-new"),
+            WriteOptions::default(),
+        )
+        .expect("put new");
+        assert_eq!(db.get(b"old").expect("get old"), Some(Bytes::from_static(b"value-old-value-old")));
+        assert_eq!(db.get(b"new").expect("get new"), Some(Bytes::from_static(b"value-new")));
+        db.flush().expect("flush");
+        drop(db);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn read_version_survives_compaction_install() {
+        let path = temp_dir("version-pin");
+        let db = Db::open(
+            &path,
+            LevelDbOpenOptions {
+                compression_policy: CompressionPolicy::None,
+                write_buffer_size: 0,
+                ..LevelDbOpenOptions::default()
+            },
+        )
+        .expect("open");
+        for round in 0..6_u8 {
             db.put(
-                b"player_1".as_slice(),
-                b"one".as_slice(),
+                Bytes::from_static(b"key"),
+                Bytes::from(vec![round; 128]),
                 WriteOptions::default(),
             )
             .expect("put");
+            db.flush().expect("flush");
         }
-        let db = Db::open(&path, options).expect("reopen");
-        assert_eq!(
-            db.get(b"player_1").expect("get"),
-            Some(Bytes::from_static(b"one"))
-        );
-        std::fs::remove_dir_all(path).expect("cleanup");
+        db.compact().expect("compact");
+        assert_eq!(db.get(b"key").expect("get").expect("value")[0], 5);
+        drop(db);
+        fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
-    fn zero_write_buffer_keeps_writes_in_wal_until_explicit_flush() {
-        let path = temp_dir("wal-no-auto-flush");
+    fn wal_reopens_without_flushing_active_memtable() {
+        let path = temp_dir("wal-reopen");
         let options = LevelDbOpenOptions {
             compression_policy: CompressionPolicy::None,
             write_buffer_size: 0,
@@ -2930,643 +2196,34 @@ mod tests {
         };
         {
             let db = Db::open(&path, options.clone()).expect("open");
-            let value = Bytes::from(vec![1_u8; 4096]);
-            for index in 0..8 {
-                db.put(
-                    Bytes::from(format!("chunk:{index}")),
-                    value.clone(),
-                    WriteOptions::default(),
-                )
+            db.put(b"key".as_slice(), b"value".as_slice(), WriteOptions::default())
                 .expect("put");
-            }
-            assert_eq!(db.stats_fast().expect("stats").tables, 0);
         }
-
         let db = Db::open(&path, options).expect("reopen");
-        assert_eq!(db.stats_fast().expect("stats").tables, 0);
-        assert_eq!(
-            db.get(b"chunk:7").expect("get"),
-            Some(Bytes::from(vec![1_u8; 4096]))
-        );
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn compaction_reclaims_old_tables_and_tombstones() {
-        let path = temp_dir("compaction-reclaims");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            write_buffer_size: 0,
-            ..LevelDbOpenOptions::default()
-        };
-        let db = Db::open(&path, options.clone()).expect("open");
-        db.put(b"a".as_slice(), b"one".as_slice(), WriteOptions::default())
-            .expect("put a");
-        db.put(b"b".as_slice(), b"two".as_slice(), WriteOptions::default())
-            .expect("put b");
-        db.flush().expect("first flush");
-        db.put(
-            b"a".as_slice(),
-            b"updated".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("update a");
-        db.delete(b"b".as_slice(), WriteOptions::default())
-            .expect("delete b");
-        db.put(
-            b"c".as_slice(),
-            b"three".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put c");
-
-        db.compact().expect("compact");
-
-        assert_eq!(
-            db.get(b"a").expect("get a"),
-            Some(Bytes::from_static(b"updated"))
-        );
-        assert_eq!(db.get(b"b").expect("get b"), None);
-        assert_eq!(
-            db.get(b"c").expect("get c"),
-            Some(Bytes::from_static(b"three"))
-        );
-        assert_eq!(db.stats_fast().expect("stats").tables, 1);
+        assert_eq!(db.get(b"key").expect("get"), Some(Bytes::from_static(b"value")));
         drop(db);
-
-        let reopened = Db::open(&path, options).expect("reopen");
-        assert_eq!(reopened.get(b"b").expect("get deleted after reopen"), None);
-        assert_eq!(
-            reopened.get(b"c").expect("get c after reopen"),
-            Some(Bytes::from_static(b"three"))
-        );
-        drop(reopened);
-        std::fs::remove_dir_all(path).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]
-    fn db_flushes_and_scans_prefix() {
-        let path = temp_dir("scan");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            ..LevelDbOpenOptions::default()
-        };
-        let db = Db::open(&path, options).expect("open");
-        db.put(
-            b"abc1".as_slice(),
-            b"one".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put");
-        db.put(
-            b"abc2".as_slice(),
-            b"two".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put");
-        db.put(
-            b"abd".as_slice(),
-            b"three".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put");
-        db.flush().expect("flush");
-
-        let mut values = Vec::new();
-        db.for_each_prefix(b"abc", ReadOptions::default(), |key, value| {
-            values.push((Bytes::copy_from_slice(key), value.clone()));
-            Ok(VisitorControl::Continue)
-        })
-        .expect("scan");
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[1].1, Bytes::from_static(b"two"));
-        let stats = db.stats().expect("stats");
-        assert!(stats.approximate_bytes >= 18);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn db_scans_prefix_keys_without_values() {
-        let path = temp_dir("scan-prefix-keys");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            ..LevelDbOpenOptions::default()
-        };
-        let db = Db::open(&path, options).expect("open");
-        db.put(
-            b"chunk_a".as_slice(),
-            b"one".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put a");
-        db.put(
-            b"chunk_b".as_slice(),
-            b"two".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put b");
-        db.put(
-            b"other".as_slice(),
-            b"three".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put other");
-        db.flush().expect("flush");
-
-        let mut keys = Vec::new();
-        let outcome = db
-            .for_each_prefix_key(b"chunk_", ReadOptions::default(), |key| {
-                keys.push(Bytes::copy_from_slice(key));
-                Ok(VisitorControl::Continue)
-            })
-            .expect("prefix key scan");
-
-        assert_eq!(
-            keys,
-            vec![
-                Bytes::from_static(b"chunk_a"),
-                Bytes::from_static(b"chunk_b")
-            ]
-        );
-        assert_eq!(outcome.visited, 2);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn owned_collectors_return_keys_and_values() {
-        let path = temp_dir("owned-collectors");
-        let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
-        db.put(
-            b"chunk_a".as_slice(),
-            b"one".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put a");
-        db.put(
-            b"chunk_b".as_slice(),
-            b"two".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put b");
-        db.put(
-            b"other".as_slice(),
-            b"three".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put other");
-
-        let keys = db
-            .collect_prefix_keys_owned(b"chunk_", ReadOptions::default())
-            .expect("collect keys");
-        let entries = db
-            .collect_prefix_owned(b"chunk_", ReadOptions::default())
-            .expect("collect entries");
-
-        assert_eq!(
-            keys,
-            vec![
-                Bytes::from_static(b"chunk_a"),
-                Bytes::from_static(b"chunk_b")
-            ]
-        );
-        assert_eq!(
-            entries,
-            vec![
-                (Bytes::from_static(b"chunk_a"), Bytes::from_static(b"one")),
-                (Bytes::from_static(b"chunk_b"), Bytes::from_static(b"two")),
-            ]
-        );
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn borrowed_first_read_api_exposes_entry_refs_without_owned_collection() {
-        let path = temp_dir("entry-ref-api");
-        let db = Db::open(
-            &path,
-            LevelDbOpenOptions {
-                compression_policy: CompressionPolicy::None,
-                ..LevelDbOpenOptions::default()
-            },
-        )
-        .expect("open");
-        db.put(
-            b"chunk_a".as_slice(),
-            b"one".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put a");
-        db.put(
-            b"chunk_b".as_slice(),
-            b"two".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put b");
-        db.flush().expect("flush");
-
-        let value = db
-            .get_with_ref(
-                b"chunk_a",
-                ReadOptions {
-                    read_strategy: crate::options::ReadStrategy::Shared,
-                    ..ReadOptions::default()
-                },
-            )
-            .expect("get ref")
-            .expect("value");
-        assert_eq!(value.as_bytes(), b"one");
-
-        let owned = db
-            .get_with_ref(
-                b"chunk_a",
-                ReadOptions {
-                    read_strategy: crate::options::ReadStrategy::Owned,
-                    ..ReadOptions::default()
-                },
-            )
-            .expect("get owned ref")
-            .expect("value");
-        assert!(matches!(owned, ValueRef::Owned(_)));
-
-        let mut entries = Vec::new();
-        db.for_each_prefix_ref(b"chunk_", ReadOptions::default(), |entry| {
-            entries.push((
-                Bytes::copy_from_slice(entry.key.as_bytes()),
-                Bytes::copy_from_slice(entry.value.as_bytes()),
-            ));
-            Ok(VisitorControl::Continue)
-        })
-        .expect("prefix refs");
-        assert_eq!(
-            entries,
-            vec![
-                (Bytes::from_static(b"chunk_a"), Bytes::from_static(b"one")),
-                (Bytes::from_static(b"chunk_b"), Bytes::from_static(b"two")),
-            ]
-        );
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn borrowed_strategy_scans_uncompressed_custom_table_as_borrowed() {
-        let path = temp_dir("borrowed-uncompressed");
-        let db = Db::open(
-            &path,
-            LevelDbOpenOptions {
-                compression_policy: CompressionPolicy::None,
-                ..LevelDbOpenOptions::default()
-            },
-        )
-        .expect("open");
-        db.put(
-            b"chunk_a".as_slice(),
-            b"one".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put a");
-        db.put(
-            b"chunk_b".as_slice(),
-            b"two".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put b");
-        db.flush().expect("flush");
-
-        let mut borrowed = 0usize;
-        let mut values = Vec::new();
-        db.for_each_prefix_ref(
-            b"chunk_",
-            ReadOptions {
-                read_strategy: ReadStrategy::Borrowed,
-                scan_mode: ScanMode::Sequential,
-                ..ReadOptions::default()
-            },
-            |entry| {
-                if matches!(entry.value, ValueRef::Borrowed(_)) {
-                    borrowed = borrowed.saturating_add(1);
-                }
-                values.push(Bytes::copy_from_slice(entry.value.as_bytes()));
-                Ok(VisitorControl::Continue)
-            },
-        )
-        .expect("borrowed prefix scan");
-
-        assert_eq!(
-            values,
-            vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")]
-        );
-        assert_eq!(borrowed, 2);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[cfg(feature = "zlib")]
-    #[test]
-    fn borrowed_strategy_keeps_compressed_custom_table_values_shared() {
-        let path = temp_dir("borrowed-compressed");
-        let db = Db::open(
-            &path,
-            LevelDbOpenOptions {
-                compression_policy: CompressionPolicy::Zlib,
-                ..LevelDbOpenOptions::default()
-            },
-        )
-        .expect("open");
-        db.put(
-            b"chunk_a".as_slice(),
-            b"one".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put a");
-        db.put(
-            b"chunk_b".as_slice(),
-            b"two".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put b");
-        db.flush().expect("flush");
-
-        let mut shared = 0usize;
-        db.for_each_prefix_ref(
-            b"chunk_",
-            ReadOptions {
-                read_strategy: ReadStrategy::Borrowed,
-                scan_mode: ScanMode::Sequential,
-                ..ReadOptions::default()
-            },
-            |entry| {
-                if matches!(entry.value, ValueRef::Shared(_)) {
-                    shared = shared.saturating_add(1);
-                }
-                Ok(VisitorControl::Continue)
-            },
-        )
-        .expect("compressed prefix scan");
-
-        assert_eq!(shared, 2);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn read_state_snapshot_allows_concurrent_lock_free_table_reads() {
-        let path = temp_dir("concurrent-reads");
-        let db = Arc::new(
-            Db::open(
-                &path,
-                LevelDbOpenOptions {
-                    compression_policy: CompressionPolicy::None,
-                    ..LevelDbOpenOptions::default()
-                },
-            )
-            .expect("open"),
-        );
-        let mut batch = WriteBatch::new();
-        for index in 0..64 {
-            batch.put(
-                Bytes::from(format!("key:{index:03}")),
-                Bytes::from(format!("value:{index:03}")),
-            );
-        }
-        db.write(batch, WriteOptions::default()).expect("write");
-        db.flush().expect("flush");
-
-        let handles = (0..8)
-            .map(|_| {
-                let db = Arc::clone(&db);
-                std::thread::spawn(move || {
-                    for index in 0..64 {
-                        let key = format!("key:{index:03}");
-                        let value = db
-                            .get_ref(key.as_bytes())
-                            .expect("get")
-                            .expect("value")
-                            .into_bytes();
-                        assert_eq!(value, Bytes::from(format!("value:{index:03}")));
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        for handle in handles {
-            handle.join().expect("reader thread");
-        }
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[cfg(feature = "async")]
-    #[test]
-    fn async_owned_reads_collect_prefix_keys() {
-        let path = temp_dir("async-prefix-keys");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            ..LevelDbOpenOptions::default()
-        };
-        let db = Arc::new(Db::open(&path, options).expect("open"));
-        db.put(
-            b"chunk_a".as_slice(),
-            b"one".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put a");
-        db.put(
-            b"chunk_b".as_slice(),
-            b"two".as_slice(),
-            WriteOptions::default(),
-        )
-        .expect("put b");
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime");
-        let keys = runtime
-            .block_on(db.clone().collect_prefix_keys_owned_async(
-                Bytes::from_static(b"chunk_"),
-                ReadOptions::default(),
-            ))
-            .expect("async prefix keys");
-        let value = runtime
-            .block_on(db.get_async(Bytes::from_static(b"chunk_a")))
-            .expect("async get")
-            .expect("value");
-
-        assert_eq!(
-            keys,
-            vec![
-                Bytes::from_static(b"chunk_a"),
-                Bytes::from_static(b"chunk_b")
-            ]
-        );
-        assert_eq!(value, Bytes::from_static(b"one"));
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn db_key_scan_can_stop_without_error() {
-        let path = temp_dir("key-scan-stop");
-        let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
-        db.put(b"a".as_slice(), b"one".as_slice(), WriteOptions::default())
-            .expect("put a");
-        db.put(b"b".as_slice(), b"two".as_slice(), WriteOptions::default())
-            .expect("put b");
-
-        let mut keys = Vec::new();
-        let outcome = db
-            .for_each_key(ReadOptions::default(), |key| {
-                keys.push(Bytes::copy_from_slice(key));
-                Ok(VisitorControl::Stop)
-            })
-            .expect("scan keys");
-        assert!(outcome.stopped);
-        assert_eq!(keys.len(), 1);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn db_scan_cancel_returns_typed_error() {
-        let path = temp_dir("scan-cancel");
+    fn scan_cancel_is_typed() {
+        let path = temp_dir("cancel");
         let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
         db.put(b"a".as_slice(), b"one".as_slice(), WriteOptions::default())
             .expect("put");
         let cancel = ScanCancelFlag::new();
         cancel.cancel();
-        let result = db.for_each_key(
-            ReadOptions {
-                cancel: Some(cancel),
-                ..ReadOptions::default()
-            },
-            |_key| Ok(VisitorControl::Continue),
-        );
-        assert_eq!(
-            result.expect_err("cancelled scan").kind(),
-            ErrorKind::Cancelled
-        );
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn parallel_scan_matches_sequential_scan() {
-        let path = temp_dir("parallel-scan");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            ..LevelDbOpenOptions::default()
-        };
-        let db = Db::open(&path, options).expect("open");
-        let mut batch = WriteBatch::new();
-        for index in 0..128 {
-            batch.put(
-                Bytes::from(format!("key:{index:03}")),
-                Bytes::from(format!("value:{index:03}")),
-            );
-        }
-        db.write(batch, WriteOptions::default()).expect("write");
-        db.flush().expect("flush");
-
-        let mut sequential = Vec::new();
-        db.for_each_key(ReadOptions::default(), |key| {
-            sequential.push(Bytes::copy_from_slice(key));
-            Ok(VisitorControl::Continue)
-        })
-        .expect("sequential");
-        let mut parallel = Vec::new();
-        db.for_each_key(
-            ReadOptions {
-                scan_mode: ScanMode::ParallelTables,
-                ..ReadOptions::default()
-            },
-            |key| {
-                parallel.push(Bytes::copy_from_slice(key));
-                Ok(VisitorControl::Continue)
-            },
-        )
-        .expect("parallel");
-        sequential.sort();
-        parallel.sort();
-        assert_eq!(parallel, sequential);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn partitioned_key_scan_reduces_locally() {
-        let path = temp_dir("partitioned-key-scan");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            ..LevelDbOpenOptions::default()
-        };
-        let db = Db::open(&path, options).expect("open");
-        let mut batch = WriteBatch::new();
-        for index in 0..64 {
-            batch.put(
-                Bytes::from(format!("key:{index:03}")),
-                Bytes::from(format!("value:{index:03}")),
-            );
-        }
-        db.write(batch, WriteOptions::default()).expect("write");
-        db.flush().expect("flush");
-
-        let (outcome, partitions) = db
-            .scan_keys_partitioned(
+        let error = db
+            .for_each_key(
                 ReadOptions {
-                    scan_mode: ScanMode::ParallelTables,
+                    cancel: Some(cancel),
                     ..ReadOptions::default()
                 },
-                Vec::<Bytes>::new,
-                |partition, key| {
-                    partition.push(Bytes::copy_from_slice(key));
-                    Ok(VisitorControl::Continue)
-                },
+                |_key| Ok(VisitorControl::Continue),
             )
-            .expect("partitioned scan");
-        let total_keys = partitions.iter().map(Vec::len).sum::<usize>();
-        assert_eq!(outcome.visited, 64);
-        assert_eq!(total_keys, 64);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn partitioned_entry_scan_reduces_values_locally() {
-        let path = temp_dir("partitioned-entry-scan");
-        let options = LevelDbOpenOptions {
-            compression_policy: CompressionPolicy::None,
-            ..LevelDbOpenOptions::default()
-        };
-        let db = Db::open(&path, options).expect("open");
-        let mut batch = WriteBatch::new();
-        for index in 0..32 {
-            batch.put(
-                Bytes::from(format!("key:{index:03}")),
-                Bytes::from_static(b"value"),
-            );
-        }
-        db.write(batch, WriteOptions::default()).expect("write");
-        db.flush().expect("flush");
-
-        let (outcome, partitions) = db
-            .scan_entries_partitioned(
-                ReadOptions {
-                    scan_mode: ScanMode::ParallelTables,
-                    ..ReadOptions::default()
-                },
-                || 0usize,
-                |partition, _key, value| {
-                    *partition = partition.saturating_add(value.len());
-                    Ok(VisitorControl::Continue)
-                },
-            )
-            .expect("partitioned entry scan");
-        assert_eq!(outcome.visited, 32);
-        assert_eq!(partitions.into_iter().sum::<usize>(), 32 * 5);
-        std::fs::remove_dir_all(path).expect("cleanup");
-    }
-
-    #[test]
-    fn snapshot_preserves_old_view() {
-        let path = temp_dir("snapshot");
-        let db = Db::open(&path, LevelDbOpenOptions::default()).expect("open");
-        db.put(b"k".as_slice(), b"old".as_slice(), WriteOptions::default())
-            .expect("put old");
-        let snapshot = db.snapshot().expect("snapshot");
-        db.put(b"k".as_slice(), b"new".as_slice(), WriteOptions::default())
-            .expect("put new");
-        assert_eq!(snapshot.get(b"k"), Some(Bytes::from_static(b"old")));
-        assert_eq!(db.get(b"k").expect("get"), Some(Bytes::from_static(b"new")));
-        std::fs::remove_dir_all(path).expect("cleanup");
+            .expect_err("cancelled");
+        assert_eq!(error.kind(), ErrorKind::Cancelled);
+        drop(db);
+        fs::remove_dir_all(path).expect("cleanup");
     }
 }
