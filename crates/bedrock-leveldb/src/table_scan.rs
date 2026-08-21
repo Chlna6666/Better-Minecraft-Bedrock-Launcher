@@ -45,6 +45,9 @@ const RUN_MAX_BLOCKS: usize = if cfg!(any(
 const MAX_PREFETCH_RUNS_PER_TABLE: usize = 32;
 const MIN_RUN_BUFFER_POOL: usize = 2;
 
+#[cfg(windows)]
+const WINDOWS_WORKER_FILE_CACHE_CAPACITY: usize = 8;
+
 thread_local! {
     /// Encoded run input never crosses the worker boundary. Keeping one Vec per
     /// Rayon worker avoids both per-run allocation and retaining encoded bytes in
@@ -52,6 +55,16 @@ thread_local! {
     static RUN_READ_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(
         RUN_TARGET_ENCODED_BYTES as usize + LEVELDB_BLOCK_TRAILER_LEN,
     ));
+}
+
+#[cfg(windows)]
+thread_local! {
+    /// Synchronous Windows file handles serialize I/O issued through the same
+    /// handle. Each persistent Rayon worker therefore keeps a small bounded cache
+    /// of independently opened SST handles so different workers can issue reads to
+    /// one large SST concurrently without switching the crate to overlapped I/O.
+    static WINDOWS_WORKER_FILES: RefCell<WindowsWorkerFileCache> =
+        RefCell::new(WindowsWorkerFileCache::default());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +109,7 @@ impl NativeTablePlan {
         if !path.exists() {
             return Ok(PlanOpen::Skip);
         }
-        let file = open_scan_file(&path)
+        let file = File::open(&path)
             .map_err(|error| LevelDbError::io_at("open planned table", &path, error))?;
         let mut magic = [0_u8; CUSTOM_TABLE_MAGIC.len()];
         let read = read_at(&file, &mut magic, 0)
@@ -405,6 +418,38 @@ struct SequentialSource {
     key: Vec<u8>,
     is_value: bool,
     rank: usize,
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+struct WindowsWorkerFileCache {
+    files: Vec<(PathBuf, File)>,
+    next_evict: usize,
+}
+
+#[cfg(windows)]
+impl WindowsWorkerFileCache {
+    fn read_run(&mut self, path: &Path, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
+        let index = if let Some(index) = self
+            .files
+            .iter()
+            .position(|(cached_path, _)| cached_path.as_path() == path)
+        {
+            index
+        } else {
+            let file = open_windows_worker_file(path)?;
+            if self.files.len() < WINDOWS_WORKER_FILE_CACHE_CAPACITY {
+                self.files.push((path.to_path_buf(), file));
+                self.files.len() - 1
+            } else {
+                let index = self.next_evict % WINDOWS_WORKER_FILE_CACHE_CAPACITY;
+                self.files[index] = (path.to_path_buf(), file);
+                self.next_evict = (index + 1) % WINDOWS_WORKER_FILE_CACHE_CAPACITY;
+                index
+            }
+        };
+        read_exact_at(&self.files[index].1, buffer, offset)
+    }
 }
 
 /// Scans current SSTables with visibility-correct newest-table semantics.
@@ -1084,7 +1129,7 @@ fn decode_planned_run(
         .map_err(|_| LevelDbError::corruption_at(&plan.path, "block run exceeds usize"))?;
     encoded_run.clear();
     encoded_run.resize(encoded_len, 0);
-    read_exact_at(&plan.file, encoded_run, run.offset)
+    read_planned_run(plan, encoded_run, run.offset)
         .map_err(|error| LevelDbError::io_at("read planned block run", &plan.path, error))?;
 
     output.prepare(run.block_count);
@@ -1492,22 +1537,28 @@ fn scan_pool(workers: usize) -> Result<Arc<rayon::ThreadPool>> {
 }
 
 #[cfg(windows)]
-fn open_scan_file(path: &Path) -> std::io::Result<File> {
+fn open_windows_worker_file(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
 
-    // FILE_FLAG_SEQUENTIAL_SCAN is only a Cache Manager hint. Do not set
-    // FILE_FLAG_OVERLAPPED: std's synchronous FileExt positional-read contract is
-    // retained and the same file handle remains safe to share between workers.
-    const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+    // Worker runs are deliberately distributed among threads, so the access
+    // pattern of one worker handle is strided rather than strictly sequential.
+    // RANDOM_ACCESS prevents aggressive per-handle sequential readahead from
+    // duplicating cache work while independent handles provide actual concurrency.
+    const FILE_FLAG_RANDOM_ACCESS: u32 = 0x1000_0000;
     std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+        .custom_flags(FILE_FLAG_RANDOM_ACCESS)
         .open(path)
 }
 
+#[cfg(windows)]
+fn read_planned_run(plan: &NativeTablePlan, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
+    WINDOWS_WORKER_FILES.with(|cache| cache.borrow_mut().read_run(&plan.path, buffer, offset))
+}
+
 #[cfg(not(windows))]
-fn open_scan_file(path: &Path) -> std::io::Result<File> {
-    File::open(path)
+fn read_planned_run(plan: &NativeTablePlan, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
+    read_exact_at(&plan.file, buffer, offset)
 }
 
 fn read_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LEN]> {
