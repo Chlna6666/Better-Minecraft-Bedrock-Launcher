@@ -1,5 +1,5 @@
 use crate::coding::{get_varint32, get_varint64, masked_crc32c};
-use crate::compression::{COMPRESSION_NONE, decompress_append, decompress_into};
+use crate::compression::{decompress_append, decompress_into};
 use crate::error::{LevelDbError, Result};
 use crate::manifest::{Manifest, TableFileMeta};
 use crate::options::{ReadOptions, ScanMode, ScanOutcome, VisitorControl};
@@ -1601,7 +1601,7 @@ fn read_one_block(
             ));
         }
     }
-    if compression_tag == COMPRESSION_NONE {
+    if compression_tag == 0 {
         decoded.clear();
         decoded.extend_from_slice(&encoded[..size]);
         return Ok(());
