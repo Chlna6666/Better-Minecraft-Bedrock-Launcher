@@ -4,16 +4,16 @@ use crate::options::VisitorControl;
 use crate::table;
 use bytes::Bytes;
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeMap, BinaryHeap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
 
 pub(crate) const MAX_LEVEL: u32 = 6;
+pub(crate) const TARGET_OUTPUT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const LEVEL_ZERO_FILE_TRIGGER: usize = 4;
 const MAX_LEVEL_ZERO_INPUTS_PER_PASS: usize = 8;
 const MAX_COMPACTION_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
-const TARGET_OUTPUT_FILE_BYTES: usize = 2 * 1024 * 1024;
 const STREAM_QUEUE_DEPTH: usize = 4;
 const COMPACTION_STREAM_STACK_BYTES: usize = 1024 * 1024;
 
@@ -76,9 +76,6 @@ impl PartialOrd for HeapEntry {
 
 impl Ord for HeapEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        // BinaryHeap is a max-heap. Reverse the key ordering so the smallest
-        // user key is popped first. Priority is only a deterministic tie-break;
-        // all equal-key heads are reconciled before an output entry is emitted.
         other
             .key
             .cmp(&self.key)
@@ -98,9 +95,6 @@ pub(crate) fn plan(manifest: &Manifest, force: bool) -> Option<CompactionPlan> {
         level_zero.sort_by_key(|table| table.number);
         take_bounded_level_zero_inputs(level_zero)
     } else {
-        // Leveled tables are compacted one source range at a time. Besides
-        // bounding the k-way merge fan-in, this avoids force compaction turning
-        // a large level into one enormous in-memory scheduling operation.
         manifest
             .table_files
             .iter()
@@ -148,34 +142,29 @@ fn take_bounded_level_zero_inputs(level_zero: Vec<TableFileMeta>) -> Vec<TableFi
 
 fn compaction_budget_bytes(table: &TableFileMeta) -> u64 {
     if table.file_size == 0 {
-        TARGET_OUTPUT_FILE_BYTES as u64
+        TARGET_OUTPUT_FILE_BYTES
     } else {
         table.file_size
     }
 }
 
-/// Merges compaction inputs with a bounded streaming k-way merge and emits each
-/// output partition as soon as it reaches the target size.
+/// Performs a bounded k-way merge and passes each resolved entry directly to
+/// the output sink in strictly increasing user-key order.
 ///
-/// Table scans feed small bounded queues and are activated lazily from manifest
-/// key ranges. The heap therefore retains only one current entry per active
-/// input instead of materializing every input table into a temporary map before
-/// merging. The caller can persist and drop each emitted partition immediately,
-/// bounding live output memory to one partition instead of the complete
-/// compaction result. Duplicate input-key buffers are recycled back to active
-/// producers so repeated versions do not continuously churn the allocator.
+/// There is no output partition map: the sink sees one borrowed key/value at a
+/// time and can append it directly to an incremental SSTable writer. Input key
+/// buffers are returned to their producer after the sink consumes them, keeping
+/// allocator churn bounded by active streams and queue depth.
 pub(crate) fn merge_into<F>(
     root: &Path,
     plan: &CompactionPlan,
     paranoid_checks: bool,
-    mut emit_partition: F,
+    mut emit_entry: F,
 ) -> Result<()>
 where
-    F: FnMut(BTreeMap<Vec<u8>, Option<Bytes>>) -> Result<()>,
+    F: FnMut(&[u8], Option<&Bytes>) -> Result<()>,
 {
     let mut priority_order = plan.inputs.clone();
-    // Preserve the previous last-write-wins ordering: output-level tables are
-    // older than the source level, while larger L0 file numbers are newer.
     priority_order.sort_by_key(|table| (Reverse(table.level), table.number));
 
     let mut pending = priority_order
@@ -206,11 +195,13 @@ where
                                 .unwrap_or_else(|_| Vec::with_capacity(key.len()));
                             owned_key.clear();
                             owned_key.extend_from_slice(key);
-                            let message = StreamMessage::Entry(StreamEntry {
-                                key: owned_key,
-                                value: value.cloned(),
-                            });
-                            if sender.send(message).is_err() {
+                            if sender
+                                .send(StreamMessage::Entry(StreamEntry {
+                                    key: owned_key,
+                                    value: value.cloned(),
+                                }))
+                                .is_err()
+                            {
                                 return Ok(VisitorControl::Stop);
                             }
                             Ok(VisitorControl::Continue)
@@ -232,14 +223,8 @@ where
             .take(input_count)
             .collect::<Vec<Option<StreamHandle>>>();
         let mut heap = BinaryHeap::<HeapEntry>::new();
-        let mut current = BTreeMap::<Vec<u8>, Option<Bytes>>::new();
-        let mut current_bytes = 0_usize;
 
         loop {
-            // A not-yet-opened table cannot contain a key below its manifest
-            // smallest key. Activate only the streams that could affect the
-            // current heap minimum. Unknown ranges are conservatively activated
-            // first; normal native tables carry exact user-key bounds.
             loop {
                 let activate = pending.front().is_some_and(|next| {
                     let current_key = heap.peek().map(|entry| entry.key.as_slice());
@@ -261,8 +246,6 @@ where
                 if pending.is_empty() {
                     break;
                 }
-                // An empty table may have been activated above. With an empty
-                // heap the next pending table must be opened before continuing.
                 continue;
             };
 
@@ -295,38 +278,12 @@ where
                 continue;
             }
 
-            let entry_bytes = winner_key
-                .len()
-                .saturating_add(winner_value.as_ref().map_or(0, Bytes::len))
-                .saturating_add(24);
-            if !current.is_empty()
-                && current_bytes.saturating_add(entry_bytes) > TARGET_OUTPUT_FILE_BYTES
-            {
-                emit_partition(std::mem::take(&mut current))?;
-                current_bytes = 0;
-            }
-            current_bytes = current_bytes.saturating_add(entry_bytes);
-            current.insert(winner_key, winner_value);
-        }
-
-        if !current.is_empty() {
-            emit_partition(current)?;
+            let emit_result = emit_entry(&winner_key, winner_value.as_ref());
+            recycle_key(winner_priority, winner_key, &streams);
+            emit_result?;
         }
         Ok(())
     })
-}
-
-pub(crate) fn merge(
-    root: &Path,
-    plan: &CompactionPlan,
-    paranoid_checks: bool,
-) -> Result<Vec<BTreeMap<Vec<u8>, Option<Bytes>>>> {
-    let mut outputs = Vec::new();
-    merge_into(root, plan, paranoid_checks, |partition| {
-        outputs.push(partition);
-        Ok(())
-    })?;
-    Ok(outputs)
 }
 
 fn recycle_key(priority: usize, key: Vec<u8>, streams: &[Option<StreamHandle>]) {
@@ -409,15 +366,13 @@ fn choose_input_level(manifest: &Manifest, force: bool) -> Option<u32> {
         return Some(0);
     }
     for level in 1..MAX_LEVEL {
-        let tables = manifest
-            .table_files
-            .iter()
-            .filter(|table| table.level == level)
-            .collect::<Vec<_>>();
-        let bytes = tables
-            .iter()
-            .fold(0_u64, |total, table| total.saturating_add(table.file_size));
-        if bytes > level_size_limit(level) || (force && !tables.is_empty()) {
+        let mut table_count = 0_usize;
+        let mut bytes = 0_u64;
+        for table in manifest.table_files.iter().filter(|table| table.level == level) {
+            table_count = table_count.saturating_add(1);
+            bytes = bytes.saturating_add(table.file_size);
+        }
+        if bytes > level_size_limit(level) || (force && table_count != 0) {
             return Some(level);
         }
     }
@@ -467,6 +422,7 @@ fn overlaps(table: &TableFileMeta, range: Option<&(Vec<u8>, Vec<u8>)>) -> bool {
 mod tests {
     use super::*;
     use crate::options::CompressionPolicy;
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
 
     fn write_table(
@@ -525,11 +481,12 @@ mod tests {
             inputs: vec![newer_l0, base, older_l0],
             output_level: 1,
         };
-        let partitions = merge(dir.path(), &plan, true).expect("streaming merge");
         let mut merged = BTreeMap::new();
-        for mut partition in partitions {
-            merged.append(&mut partition);
-        }
+        merge_into(dir.path(), &plan, true, |key, value| {
+            merged.insert(key.to_vec(), value.cloned());
+            Ok(())
+        })
+        .expect("streaming merge");
 
         assert_eq!(merged_value(&merged, b"a"), Some(b"newest".as_slice()));
         assert_eq!(merged_value(&merged, b"b"), Some(b"older-b".as_slice()));
@@ -553,16 +510,17 @@ mod tests {
             inputs: vec![old, delete],
             output_level: MAX_LEVEL,
         };
-        let partitions = merge(dir.path(), &plan, true).expect("terminal streaming merge");
-        assert!(
-            partitions
-                .iter()
-                .all(|partition| !partition.contains_key(b"gone".as_slice()))
-        );
+        let mut emitted = 0_usize;
+        merge_into(dir.path(), &plan, true, |_key, _value| {
+            emitted = emitted.saturating_add(1);
+            Ok(())
+        })
+        .expect("terminal streaming merge");
+        assert_eq!(emitted, 0);
     }
 
     #[test]
-    fn streaming_merge_emits_partitions_incrementally() {
+    fn streaming_merge_emits_ordered_entries_without_partitions() {
         let dir = tempdir().expect("tempdir");
         let mut entries = BTreeMap::new();
         for index in 0..96_u32 {
@@ -575,14 +533,19 @@ mod tests {
             output_level: 1,
         };
 
-        let mut partitions = 0_usize;
-        merge_into(dir.path(), &plan, true, |partition| {
-            partitions = partitions.saturating_add(1);
-            assert!(!partition.is_empty());
+        let mut previous = Vec::new();
+        let mut emitted = 0_usize;
+        merge_into(dir.path(), &plan, true, |key, _value| {
+            if !previous.is_empty() {
+                assert!(previous.as_slice() < key);
+            }
+            previous.clear();
+            previous.extend_from_slice(key);
+            emitted = emitted.saturating_add(1);
             Ok(())
         })
-        .expect("incremental streaming merge");
-        assert!(partitions >= 2);
+        .expect("entry streaming merge");
+        assert_eq!(emitted, 96);
     }
 
     #[test]
