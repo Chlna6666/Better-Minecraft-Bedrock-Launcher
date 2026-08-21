@@ -7,7 +7,6 @@ use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 struct LogEvent {
-    level: log::Level,
     message: String,
 }
 
@@ -28,7 +27,6 @@ impl log::Log for TestLogger {
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
             self.events.lock().expect("logger mutex").push(LogEvent {
-                level: record.level(),
                 message: record.args().to_string(),
             });
         }
