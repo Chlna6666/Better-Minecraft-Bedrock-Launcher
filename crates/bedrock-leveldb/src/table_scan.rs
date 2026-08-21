@@ -1,110 +1,389 @@
+use crate::coding::{get_varint32, get_varint64, masked_crc32c};
+use crate::compression::{COMPRESSION_NONE, decompress_into};
 use crate::error::{LevelDbError, Result};
 use crate::manifest::{Manifest, TableFileMeta};
-use crate::options::{
-    ReadOptions, ScanMode, ScanOutcome, ScanProgress, ThreadingOptions, VisitorControl,
-};
-use crate::table_cursor::BorrowedTableCursor;
-use rayon::prelude::*;
-use std::path::Path;
+use crate::options::{ReadOptions, ScanMode, ScanOutcome, VisitorControl};
+use rayon::ScopeFifo;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex, OnceLock,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
-    mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
+    mpsc::{Receiver, Sender, channel},
 };
-use std::thread;
-use std::time::Instant;
 
-const MAX_KEY_RANGES: usize = 256;
-const BATCH_ENTRY_LIMIT: usize = 512;
-const BATCH_BYTE_LIMIT: usize = 512 * 1024;
+const CUSTOM_TABLE_MAGIC: &[u8; 9] = b"BWLDBTBL1";
+const LEVELDB_TABLE_MAGIC: u64 = 0xdb47_7524_8b80_fb57;
+const LEVELDB_FOOTER_LEN: usize = 48;
+const LEVELDB_BLOCK_TRAILER_LEN: usize = 5;
+const RUN_TARGET_ENCODED_BYTES: u64 = 512 * 1024;
+const RUN_MAX_BLOCKS: usize = 128;
+const MAX_PREFETCH_RUNS_PER_TABLE: usize = 16;
+const MIN_RUN_BUFFER_POOL: usize = 2;
 
-struct MergeSource {
-    cursor: BorrowedTableCursor,
-    key: Vec<u8>,
-    is_value: bool,
-    rank: usize,
+thread_local! {
+    /// Encoded run input never crosses the worker boundary. Keeping one Vec per
+    /// Rayon worker avoids both per-run allocation and retaining encoded bytes in
+    /// pending merge results.
+    static RUN_READ_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(
+        RUN_TARGET_ENCODED_BYTES as usize + LEVELDB_BLOCK_TRAILER_LEN,
+    ));
 }
 
 #[derive(Debug, Clone, Copy)]
-struct FlatEntry {
-    key_start: usize,
-    key_len: usize,
-    value_start: usize,
-    value_len: usize,
+struct BlockHandle {
+    offset: u64,
+    size: u64,
 }
 
-struct FlatBatch {
-    bytes: Vec<u8>,
-    entries: Vec<FlatEntry>,
+#[derive(Debug, Clone, Copy)]
+struct BlockRun {
+    first_block: usize,
+    block_count: usize,
+    offset: u64,
+    encoded_len: u64,
 }
 
-impl FlatBatch {
-    fn with_capacity() -> Self {
-        Self {
-            bytes: Vec::with_capacity(BATCH_BYTE_LIMIT),
-            entries: Vec::with_capacity(BATCH_ENTRY_LIMIT),
-        }
-    }
-
-    fn clear(&mut self) {
-        self.bytes.clear();
-        self.entries.clear();
-    }
-
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    fn should_flush(&self) -> bool {
-        self.entries.len() >= BATCH_ENTRY_LIMIT || self.bytes.len() >= BATCH_BYTE_LIMIT
-    }
-
-    fn push(&mut self, key: &[u8], value: &[u8]) {
-        let key_start = self.bytes.len();
-        self.bytes.extend_from_slice(key);
-        let value_start = self.bytes.len();
-        self.bytes.extend_from_slice(value);
-        self.entries.push(FlatEntry {
-            key_start,
-            key_len: key.len(),
-            value_start,
-            value_len: value.len(),
-        });
-    }
-
-    fn entry(&self, entry: FlatEntry) -> (&[u8], &[u8]) {
-        let key = &self.bytes[entry.key_start..entry.key_start + entry.key_len];
-        let value = &self.bytes[entry.value_start..entry.value_start + entry.value_len];
-        (key, value)
-    }
-}
-
-enum WorkerMessage {
-    Batch(FlatBatch),
-    Done {
-        queue_wait_ms: u128,
-        cancel_checks: usize,
-    },
-    Error(LevelDbError),
-}
-
-struct WorkerPipe {
-    receiver: Receiver<WorkerMessage>,
-    recycle: SyncSender<FlatBatch>,
-}
-
-#[derive(Clone)]
-struct KeyRange {
+struct NativeTablePlan {
+    rank: usize,
+    path: PathBuf,
+    file: Arc<File>,
+    blocks: Vec<BlockHandle>,
+    runs: Vec<BlockRun>,
     lower: Option<Vec<u8>>,
     upper: Option<Vec<u8>>,
 }
 
-/// Scans current SSTables with LevelDB newest-table visibility semantics.
+impl NativeTablePlan {
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        root: &Path,
+        table: &TableFileMeta,
+        rank: usize,
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        paranoid_checks: bool,
+        planning: &mut PlanningScratch,
+    ) -> Result<PlanOpen> {
+        if !table_overlaps(table, lower, upper) {
+            return Ok(PlanOpen::Skip);
+        }
+        let path = root.join(Manifest::table_name(table.number));
+        if !path.exists() {
+            return Ok(PlanOpen::Skip);
+        }
+        let file = File::open(&path)
+            .map_err(|error| LevelDbError::io_at("open planned table", &path, error))?;
+        let mut magic = [0_u8; CUSTOM_TABLE_MAGIC.len()];
+        let read = read_at(&file, &mut magic, 0)
+            .map_err(|error| LevelDbError::io_at("read planned table header", &path, error))?;
+        if read == CUSTOM_TABLE_MAGIC.len() && magic == *CUSTOM_TABLE_MAGIC {
+            return Ok(PlanOpen::LegacyTable);
+        }
+
+        let footer = read_footer(&file, &path)?;
+        validate_footer_magic(&footer, &path)?;
+        let magic_offset = LEVELDB_FOOTER_LEN - 8;
+        let mut footer_input = &footer[..magic_offset];
+        let _meta_index = read_block_handle(&mut footer_input)?;
+        let index_handle = read_block_handle(&mut footer_input)?;
+
+        planning.reset();
+        read_one_block(
+            &file,
+            &path,
+            index_handle,
+            paranoid_checks,
+            &mut planning.encoded,
+            &mut planning.decoded,
+        )?;
+        let blocks = decode_index_handles(
+            &planning.decoded,
+            lower,
+            upper,
+            &mut planning.decoder_key,
+        )?;
+        if blocks.is_empty() {
+            return Ok(PlanOpen::Skip);
+        }
+        let runs = plan_block_runs(&blocks)?;
+        if runs.is_empty() {
+            return Ok(PlanOpen::Skip);
+        }
+
+        Ok(PlanOpen::Native(Self {
+            rank,
+            path,
+            file: Arc::new(file),
+            blocks,
+            runs,
+            lower: lower.map(<[u8]>::to_vec),
+            upper: upper.map(<[u8]>::to_vec),
+        }))
+    }
+}
+
+enum PlanOpen {
+    Native(NativeTablePlan),
+    LegacyTable,
+    Skip,
+}
+
+enum PreparedScan {
+    Native {
+        plans: Vec<Arc<NativeTablePlan>>,
+        workers: usize,
+    },
+    Legacy,
+    Empty,
+}
+
+#[derive(Default)]
+struct PlanningScratch {
+    encoded: Vec<u8>,
+    decoded: Vec<u8>,
+    decoder_key: Vec<u8>,
+}
+
+impl PlanningScratch {
+    fn reset(&mut self) {
+        self.encoded.clear();
+        self.decoded.clear();
+        self.decoder_key.clear();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockEntry {
+    key_start: u32,
+    key_len: u32,
+    value_start: u32,
+    value_len: u32,
+    is_value: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockMeta {
+    entry_start: u32,
+    entry_len: u32,
+}
+
+#[derive(Default)]
+struct RunBuffers {
+    decoded_blocks: Vec<Vec<u8>>,
+    keys: Vec<u8>,
+    entries: Vec<BlockEntry>,
+    block_meta: Vec<BlockMeta>,
+    decoder_key: Vec<u8>,
+    previous_user_key: Vec<u8>,
+}
+
+impl RunBuffers {
+    fn prepare(&mut self, block_count: usize) {
+        self.keys.clear();
+        self.entries.clear();
+        self.block_meta.clear();
+        self.decoder_key.clear();
+        self.previous_user_key.clear();
+        if self.decoded_blocks.len() < block_count {
+            self.decoded_blocks.resize_with(block_count, Vec::new);
+        }
+        for decoded in &mut self.decoded_blocks[..block_count] {
+            decoded.clear();
+        }
+        if self.block_meta.capacity() < block_count {
+            self.block_meta
+                .reserve(block_count.saturating_sub(self.block_meta.len()));
+        }
+    }
+
+    fn block_entry_count(&self, block_index: usize) -> usize {
+        self.block_meta[block_index].entry_len as usize
+    }
+
+    fn entry(&self, block_index: usize, entry_index: usize) -> BlockEntry {
+        let meta = self.block_meta[block_index];
+        self.entries[meta.entry_start as usize + entry_index]
+    }
+
+    fn key(&self, block_index: usize, entry_index: usize) -> &[u8] {
+        let entry = self.entry(block_index, entry_index);
+        let start = entry.key_start as usize;
+        let end = start + entry.key_len as usize;
+        &self.keys[start..end]
+    }
+
+    fn value(&self, block_index: usize, entry_index: usize) -> &[u8] {
+        let entry = self.entry(block_index, entry_index);
+        let start = entry.value_start as usize;
+        let end = start + entry.value_len as usize;
+        &self.decoded_blocks[block_index][start..end]
+    }
+
+    fn is_value(&self, block_index: usize, entry_index: usize) -> bool {
+        self.entry(block_index, entry_index).is_value
+    }
+}
+
+struct DecodedRun {
+    table_index: usize,
+    run_index: usize,
+    buffers: RunBuffers,
+}
+
+impl DecodedRun {
+    fn block_count(&self) -> usize {
+        self.buffers.block_meta.len()
+    }
+
+    fn block_entry_count(&self, block_index: usize) -> usize {
+        self.buffers.block_entry_count(block_index)
+    }
+
+    fn key(&self, block_index: usize, entry_index: usize) -> &[u8] {
+        self.buffers.key(block_index, entry_index)
+    }
+
+    fn value(&self, block_index: usize, entry_index: usize) -> &[u8] {
+        self.buffers.value(block_index, entry_index)
+    }
+
+    fn is_value(&self, block_index: usize, entry_index: usize) -> bool {
+        self.buffers.is_value(block_index, entry_index)
+    }
+}
+
+#[derive(Default)]
+struct RunBufferPool {
+    buffers: Mutex<Vec<RunBuffers>>,
+}
+
+impl RunBufferPool {
+    fn with_count(count: usize) -> Self {
+        let mut buffers = Vec::with_capacity(count);
+        buffers.resize_with(count, RunBuffers::default);
+        Self {
+            buffers: Mutex::new(buffers),
+        }
+    }
+
+    fn take(&self) -> RunBuffers {
+        self.buffers
+            .lock()
+            .ok()
+            .and_then(|mut buffers| buffers.pop())
+            .unwrap_or_default()
+    }
+
+    fn recycle(&self, mut buffers: RunBuffers) {
+        buffers.keys.clear();
+        buffers.entries.clear();
+        buffers.block_meta.clear();
+        buffers.decoder_key.clear();
+        buffers.previous_user_key.clear();
+        if let Ok(mut pool) = self.buffers.lock() {
+            pool.push(buffers);
+        }
+    }
+}
+
+enum DecodeMessage {
+    Run(DecodedRun),
+    Error(LevelDbError),
+}
+
+struct ResultRouter {
+    receiver: Receiver<DecodeMessage>,
+    pending: HashMap<(usize, usize), DecodedRun>,
+}
+
+impl ResultRouter {
+    fn new(receiver: Receiver<DecodeMessage>, max_inflight: usize) -> Self {
+        Self {
+            receiver,
+            pending: HashMap::with_capacity(max_inflight.max(1)),
+        }
+    }
+
+    fn wait_for(&mut self, table_index: usize, run_index: usize) -> Result<DecodedRun> {
+        let requested = (table_index, run_index);
+        if let Some(run) = self.pending.remove(&requested) {
+            return Ok(run);
+        }
+        loop {
+            match self.receiver.recv().map_err(|_| {
+                LevelDbError::corruption("parallel run worker stopped before producing a result")
+            })? {
+                DecodeMessage::Run(run) => {
+                    let id = (run.table_index, run.run_index);
+                    if id == requested {
+                        return Ok(run);
+                    }
+                    if self.pending.insert(id, run).is_some() {
+                        return Err(LevelDbError::corruption(
+                            "parallel block planner produced a duplicate run result",
+                        ));
+                    }
+                }
+                DecodeMessage::Error(error) => return Err(error),
+            }
+        }
+    }
+}
+
+struct TableLane {
+    plan: Arc<NativeTablePlan>,
+    next_run: usize,
+    scheduled_until: usize,
+    current: Option<DecodedRun>,
+    block_index: usize,
+    entry_index: usize,
+    previous_block_last_key: Option<Vec<u8>>,
+    current_is_value: bool,
+}
+
+impl TableLane {
+    fn new(plan: Arc<NativeTablePlan>) -> Self {
+        Self {
+            plan,
+            next_run: 0,
+            scheduled_until: 0,
+            current: None,
+            block_index: 0,
+            entry_index: 0,
+            previous_block_last_key: None,
+            current_is_value: false,
+        }
+    }
+
+    fn current_entry_index(&self) -> Option<usize> {
+        self.entry_index.checked_sub(1)
+    }
+
+    fn current_key(&self) -> Option<&[u8]> {
+        let run = self.current.as_ref()?;
+        Some(run.key(self.block_index, self.current_entry_index()?))
+    }
+
+    fn current_value(&self) -> Option<&[u8]> {
+        if !self.current_is_value {
+            return None;
+        }
+        let run = self.current.as_ref()?;
+        Some(run.value(self.block_index, self.current_entry_index()?))
+    }
+}
+
+/// Scans current SSTables with visibility-correct newest-table semantics.
 ///
-/// Sequential scans borrow values directly from cursor-owned reusable block buffers.
-/// `ParallelTables` is implemented as independent key-range merges, so a single large
-/// SST can still use all requested workers. Cross-thread delivery uses recycled flat
-/// batches instead of one allocation per key/value pair.
+/// Sequential mode retains the direct borrowed cursor. Native `ParallelTables`
+/// mode parses every SST index once, coalesces adjacent data blocks into bounded
+/// physical runs, reads each run with one positional I/O, performs CRC/DEFLATE on
+/// persistent Rayon workers, and merges table lanes in user-key order. Values are
+/// never copied into cross-thread batches: the visitor borrows them directly from
+/// the decoded block retained by the current run.
 pub(crate) fn scan_tables_visible<F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
@@ -118,37 +397,56 @@ where
     F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     S: Fn(&[u8]) -> bool + Sync,
 {
-    let workers = scan_worker_count(options)?;
-    if options.scan_mode != ScanMode::ParallelTables || workers <= 1 {
-        let (lower, upper) = prefix_bounds(prefix);
-        return scan_range_borrowed(
+    if options.scan_mode != ScanMode::ParallelTables {
+        return legacy_scan_tables(
             root,
             tables_newest_first,
-            lower.as_deref(),
-            upper.as_deref(),
+            prefix,
             paranoid_checks,
             options,
-            &shadowed,
+            shadowed,
             visitor,
         );
     }
 
-    scan_parallel_ranges(
+    match prepare_native_scan(
         root,
         tables_newest_first,
         prefix,
         paranoid_checks,
         options,
-        workers,
-        &shadowed,
-        visitor,
-    )
+    )? {
+        PreparedScan::Native { plans, workers } => scan_parallel_runs(
+            plans,
+            paranoid_checks,
+            options,
+            workers,
+            &shadowed,
+            visitor,
+        ),
+        PreparedScan::Legacy => legacy_scan_tables(
+            root,
+            tables_newest_first,
+            prefix,
+            paranoid_checks,
+            options,
+            shadowed,
+            visitor,
+        ),
+        PreparedScan::Empty => {
+            let mut outcome = ScanOutcome::empty();
+            outcome.worker_threads = 1;
+            Ok(outcome)
+        }
+    }
 }
 
-/// Runs visibility-correct key reduction directly inside range workers.
+/// Reduces visible keys into independent caller-owned partitions.
 ///
-/// No key/value batch crosses threads in this path. Each worker owns its reduction
-/// state and scans its disjoint key range with the same k-way newest-wins merge.
+/// I/O, checksum validation and decompression use the same block-range workers as
+/// entry scans, so each SST block is read and inflated once. The lightweight key
+/// reduction runs at merge time against borrowed run-level key arenas, avoiding
+/// a second key-copy pipeline and allocator churn.
 pub(crate) fn scan_table_keys_partitioned<T, I, F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
@@ -165,196 +463,704 @@ where
     F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
     S: Fn(&[u8]) -> bool + Send + Sync,
 {
-    let workers = scan_worker_count(options)?;
-    let ranges = if options.scan_mode == ScanMode::ParallelTables && workers > 1 {
-        partition_ranges(prefix, workers)
-    } else {
-        let (lower, upper) = prefix_bounds(prefix);
-        vec![KeyRange { lower, upper }]
-    };
-    let actual_workers = ranges.len();
-    let tables_scanned = count_overlapping_tables(tables_newest_first, prefix);
-
-    if actual_workers == 1 {
-        let range = ranges.into_iter().next().expect("one range was created");
-        let mut partition = init();
-        let mut worker_options = options.clone();
-        worker_options.scan_mode = ScanMode::Sequential;
-        worker_options.threading = ThreadingOptions::Single;
-        let outcome = scan_range_borrowed(
+    if options.scan_mode != ScanMode::ParallelTables {
+        return crate::table_scan_legacy::scan_table_keys_partitioned(
             root,
             tables_newest_first,
-            range.lower.as_deref(),
-            range.upper.as_deref(),
+            prefix,
             paranoid_checks,
-            &worker_options,
-            &shadowed,
-            &mut |key, _value| visitor(&mut partition, key),
-        )?;
-        return Ok((outcome, vec![partition]));
+            options,
+            shadowed,
+            init,
+            visitor,
+        );
     }
 
-    let pool = scan_pool(actual_workers)?;
-    let stop = AtomicBool::new(false);
-    let mut worker_options = options.clone();
-    worker_options.scan_mode = ScanMode::Sequential;
-    worker_options.threading = ThreadingOptions::Single;
-    worker_options.progress = None;
-
-    let results = pool.install(|| {
-        ranges
-            .into_par_iter()
-            .map(|range| {
-                let mut partition = init();
-                let outcome = scan_range_borrowed(
-                    root,
-                    tables_newest_first,
-                    range.lower.as_deref(),
-                    range.upper.as_deref(),
-                    paranoid_checks,
-                    &worker_options,
-                    &shadowed,
-                    &mut |key, _value| {
-                        if stop.load(Ordering::Relaxed) {
-                            return Ok(VisitorControl::Stop);
-                        }
-                        match visitor(&mut partition, key)? {
-                            VisitorControl::Continue => Ok(VisitorControl::Continue),
-                            VisitorControl::Stop => {
-                                stop.store(true, Ordering::Relaxed);
-                                Ok(VisitorControl::Stop)
-                            }
-                        }
-                    },
-                )?;
-                Ok::<_, LevelDbError>((outcome, partition))
-            })
-            .collect::<Result<Vec<_>>>()
-    })?;
-
-    let mut outcome = ScanOutcome::empty();
-    outcome.worker_threads = actual_workers;
-    let mut partitions = Vec::with_capacity(results.len());
-    for (worker_outcome, partition) in results {
-        outcome.merge(worker_outcome);
-        partitions.push(partition);
+    match prepare_native_scan(
+        root,
+        tables_newest_first,
+        prefix,
+        paranoid_checks,
+        options,
+    )? {
+        PreparedScan::Native { plans, workers } => {
+            let mut partitions = (0..workers).map(|_| init()).collect::<Vec<_>>();
+            let visitor_ref = &visitor;
+            let mut reduce = |key: &[u8], _value: &[u8]| {
+                let partition = partition_for_key(key, partitions.len());
+                visitor_ref(&mut partitions[partition], key)
+            };
+            let outcome = scan_parallel_runs(
+                plans,
+                paranoid_checks,
+                options,
+                workers,
+                &shadowed,
+                &mut reduce,
+            )?;
+            Ok((outcome, partitions))
+        }
+        PreparedScan::Legacy => crate::table_scan_legacy::scan_table_keys_partitioned(
+            root,
+            tables_newest_first,
+            prefix,
+            paranoid_checks,
+            options,
+            shadowed,
+            init,
+            visitor,
+        ),
+        PreparedScan::Empty => {
+            let mut outcome = ScanOutcome::empty();
+            outcome.worker_threads = 1;
+            Ok((outcome, vec![init()]))
+        }
     }
-    // The same SST may be opened by every disjoint range. Report logical tables,
-    // not table-range probes.
-    outcome.tables_scanned = tables_scanned;
-    outcome.worker_threads = actual_workers;
-    emit_progress(options, &outcome, 1);
-    Ok((outcome, partitions))
 }
 
-fn scan_worker_count(options: &ReadOptions) -> Result<usize> {
-    if options.scan_mode != ScanMode::ParallelTables {
-        return options.threading.resolve_checked(1);
-    }
-    options.threading.resolve_checked(MAX_KEY_RANGES)
-}
-
-fn scan_range_borrowed<F, S>(
+fn legacy_scan_tables<F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
-    lower: Option<&[u8]>,
-    upper: Option<&[u8]>,
+    prefix: Option<&[u8]>,
     paranoid_checks: bool,
     options: &ReadOptions,
+    shadowed: S,
+    visitor: &mut F,
+) -> Result<ScanOutcome>
+where
+    F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
+    S: Fn(&[u8]) -> bool + Sync,
+{
+    crate::table_scan_legacy::scan_tables_visible(
+        root,
+        tables_newest_first,
+        prefix,
+        paranoid_checks,
+        options,
+        shadowed,
+        visitor,
+    )
+}
+
+fn prepare_native_scan(
+    root: &Path,
+    tables_newest_first: &[TableFileMeta],
+    prefix: Option<&[u8]>,
+    paranoid_checks: bool,
+    options: &ReadOptions,
+) -> Result<PreparedScan> {
+    let (lower, upper) = prefix_bounds(prefix);
+    let mut planning = PlanningScratch::default();
+    let mut plans = Vec::<Arc<NativeTablePlan>>::new();
+    for (rank, table) in tables_newest_first.iter().enumerate() {
+        match NativeTablePlan::open(
+            root,
+            table,
+            rank,
+            lower.as_deref(),
+            upper.as_deref(),
+            paranoid_checks,
+            &mut planning,
+        )? {
+            PlanOpen::Native(plan) => plans.push(Arc::new(plan)),
+            PlanOpen::LegacyTable => return Ok(PreparedScan::Legacy),
+            PlanOpen::Skip => {}
+        }
+    }
+    if plans.is_empty() {
+        return Ok(PreparedScan::Empty);
+    }
+    let total_runs = plans.iter().map(|plan| plan.runs.len()).sum::<usize>();
+    let workers = options.threading.resolve_checked(total_runs.max(1))?;
+    if workers <= 1 {
+        return Ok(PreparedScan::Legacy);
+    }
+    Ok(PreparedScan::Native { plans, workers })
+}
+
+fn scan_parallel_runs<F, S>(
+    plans: Vec<Arc<NativeTablePlan>>,
+    paranoid_checks: bool,
+    options: &ReadOptions,
+    workers: usize,
     shadowed: &S,
     visitor: &mut F,
 ) -> Result<ScanOutcome>
 where
-    F: FnMut(&[u8], &[u8]) -> Result<VisitorControl>,
-    S: Fn(&[u8]) -> bool,
+    F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
+    S: Fn(&[u8]) -> bool + Sync,
 {
-    let mut sources = open_sources(
-        root,
-        tables_newest_first,
-        lower,
-        upper,
-        paranoid_checks,
-    )?;
-    let tables_scanned = sources.len();
-    let mut heap = Vec::<usize>::with_capacity(sources.len());
-    for index in 0..sources.len() {
-        heap_push(&mut heap, index, &sources);
-    }
+    let table_count = plans.len();
+    let target_inflight = workers.max(table_count);
+    let prefetch = target_inflight
+        .div_ceil(table_count.max(1))
+        .clamp(1, MAX_PREFETCH_RUNS_PER_TABLE);
+    let window_count = plans
+        .iter()
+        .map(|plan| plan.runs.len().min(prefetch))
+        .sum::<usize>()
+        .max(MIN_RUN_BUFFER_POOL);
 
-    let mut outcome = ScanOutcome::empty();
-    outcome.worker_threads = 1;
-    outcome.tables_scanned = tables_scanned;
-    let progress_interval = options.pipeline.resolve_progress_interval();
-    let mut same_sources = Vec::<usize>::with_capacity(sources.len().min(8));
+    let pool = crate::table_scan_legacy::scan_pool_for_v3(workers)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let buffers = Arc::new(RunBufferPool::with_count(window_count));
+    let (sender, receiver) = channel::<DecodeMessage>();
+    let progress_interval = options.pipeline.resolve_progress_interval().max(1);
+    let cancel = options.cancel.clone();
 
-    while !heap.is_empty() {
-        check_cancelled(options, &mut outcome)?;
-        let first = heap_pop(&mut heap, &sources).expect("heap was checked as non-empty");
-        same_sources.clear();
-        same_sources.push(first);
+    pool.scope_fifo(|scope| -> Result<ScanOutcome> {
+        let mut lanes = plans
+            .iter()
+            .cloned()
+            .map(TableLane::new)
+            .collect::<Vec<_>>();
+        seed_all_lanes(
+            scope,
+            prefetch,
+            &mut lanes,
+            paranoid_checks,
+            &sender,
+            &buffers,
+            &stop,
+            cancel.clone(),
+        );
 
-        {
-            // The heap orders equal keys by ascending rank, and rank 0 is newest.
-            // Therefore `first` is already the visibility winner for this user key.
-            let winner_key = sources[first].key.as_slice();
-            while let Some(index) = heap.first().copied() {
-                if sources[index].key.as_slice() != winner_key {
-                    break;
-                }
-                same_sources.push(
-                    heap_pop(&mut heap, &sources).expect("equal heap root was checked"),
-                );
-            }
-
-            if !shadowed(winner_key) && sources[first].is_value {
-                let value = sources[first].cursor.current_value().ok_or_else(|| {
-                    LevelDbError::corruption("borrowed table cursor lost current value")
-                })?;
-                outcome.record(value.len());
-                if visitor(winner_key, value)? == VisitorControl::Stop {
-                    outcome.stopped = true;
-                    return Ok(outcome);
-                }
-                emit_progress(options, &outcome, progress_interval);
+        let mut router = ResultRouter::new(receiver, window_count);
+        let mut heap = Vec::<usize>::with_capacity(lanes.len());
+        for index in 0..lanes.len() {
+            if advance_lane(
+                scope,
+                index,
+                &mut lanes,
+                &mut router,
+                paranoid_checks,
+                &sender,
+                &buffers,
+                &stop,
+                cancel.clone(),
+            )? {
+                heap_push(&mut heap, index, &lanes);
             }
         }
 
-        for source_index in same_sources.iter().copied() {
-            advance_source(source_index, &mut sources, &mut heap)?;
+        let mut outcome = ScanOutcome::empty();
+        outcome.worker_threads = workers;
+        outcome.tables_scanned = plans.len();
+        let mut same_lanes = Vec::<usize>::with_capacity(lanes.len().min(8));
+
+        while !heap.is_empty() {
+            check_cancelled(options, &mut outcome)?;
+            let first = heap_pop(&mut heap, &lanes).expect("heap was checked as non-empty");
+            same_lanes.clear();
+            same_lanes.push(first);
+            {
+                let winner_key = lanes[first]
+                    .current_key()
+                    .ok_or_else(|| LevelDbError::corruption("parallel table lane lost current key"))?;
+                while let Some(index) = heap.first().copied() {
+                    if lanes[index].current_key() != Some(winner_key) {
+                        break;
+                    }
+                    same_lanes.push(
+                        heap_pop(&mut heap, &lanes).expect("equal heap root was checked"),
+                    );
+                }
+
+                if !shadowed(winner_key) && lanes[first].current_is_value {
+                    let value = lanes[first].current_value().ok_or_else(|| {
+                        LevelDbError::corruption("parallel table lane lost current value")
+                    })?;
+                    outcome.record(value.len());
+                    if visitor(winner_key, value)? == VisitorControl::Stop {
+                        outcome.stopped = true;
+                        stop.store(true, Ordering::Relaxed);
+                        return Ok(outcome);
+                    }
+                    emit_progress(options, &outcome, progress_interval);
+                }
+            }
+
+            for lane_index in same_lanes.iter().copied() {
+                if advance_lane(
+                    scope,
+                    lane_index,
+                    &mut lanes,
+                    &mut router,
+                    paranoid_checks,
+                    &sender,
+                    &buffers,
+                    &stop,
+                    cancel.clone(),
+                )? {
+                    heap_push(&mut heap, lane_index, &lanes);
+                }
+            }
         }
-    }
-    Ok(outcome)
+        stop.store(true, Ordering::Relaxed);
+        Ok(outcome)
+    })
 }
 
-fn open_sources(
-    root: &Path,
-    tables_newest_first: &[TableFileMeta],
-    lower: Option<&[u8]>,
-    upper: Option<&[u8]>,
+#[allow(clippy::too_many_arguments)]
+fn seed_all_lanes<'scope>(
+    scope: &ScopeFifo<'scope>,
+    prefetch: usize,
+    lanes: &mut [TableLane],
     paranoid_checks: bool,
-) -> Result<Vec<MergeSource>> {
-    let mut sources = Vec::with_capacity(tables_newest_first.len());
-    for (rank, table) in tables_newest_first.iter().enumerate() {
-        if !table_overlaps(table, lower, upper) {
-            continue;
+    sender: &Sender<DecodeMessage>,
+    buffers: &Arc<RunBufferPool>,
+    stop: &Arc<AtomicBool>,
+    cancel: Option<crate::options::ScanCancelFlag>,
+) {
+    // Round-robin + FIFO keeps the first physical run of every table ahead of
+    // speculative prefetch, minimizing the time before the global merge can start.
+    for _ in 0..prefetch {
+        for table_index in 0..lanes.len() {
+            let _ = schedule_next_run(
+                scope,
+                table_index,
+                lanes,
+                paranoid_checks,
+                sender,
+                buffers,
+                stop,
+                cancel.clone(),
+            );
         }
-        let path = root.join(Manifest::table_name(table.number));
-        if !path.exists() {
-            continue;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_next_run<'scope>(
+    scope: &ScopeFifo<'scope>,
+    table_index: usize,
+    lanes: &mut [TableLane],
+    paranoid_checks: bool,
+    sender: &Sender<DecodeMessage>,
+    buffers: &Arc<RunBufferPool>,
+    stop: &Arc<AtomicBool>,
+    cancel: Option<crate::options::ScanCancelFlag>,
+) -> bool {
+    let lane = &mut lanes[table_index];
+    if lane.scheduled_until >= lane.plan.runs.len() {
+        return false;
+    }
+    let run_index = lane.scheduled_until;
+    lane.scheduled_until = lane.scheduled_until.saturating_add(1);
+    let plan = Arc::clone(&lane.plan);
+    let sender = sender.clone();
+    let buffers = Arc::clone(buffers);
+    let stop = Arc::clone(stop);
+    scope.spawn_fifo(move |_| {
+        if stop.load(Ordering::Relaxed) {
+            return;
         }
-        let mut cursor = BorrowedTableCursor::open_range(&path, paranoid_checks, lower, upper)?;
-        let mut key = Vec::with_capacity(48);
-        let Some(is_value) = cursor.next_key_into(&mut key)? else {
-            continue;
-        };
-        sources.push(MergeSource {
-            cursor,
-            key,
-            is_value,
-            rank,
+        if cancel.as_ref().is_some_and(|flag| flag.is_cancelled()) {
+            stop.store(true, Ordering::Relaxed);
+            let _ = sender.send(DecodeMessage::Error(LevelDbError::cancelled(
+                "parallel block-range scan",
+            )));
+            return;
+        }
+
+        let mut reusable = buffers.take();
+        let result = RUN_READ_SCRATCH.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            decode_planned_run(
+                &plan,
+                run_index,
+                paranoid_checks,
+                &stop,
+                cancel.as_ref(),
+                &mut scratch,
+                &mut reusable,
+            )
+        });
+        match result {
+            Ok(()) => {
+                let _ = sender.send(DecodeMessage::Run(DecodedRun {
+                    table_index,
+                    run_index,
+                    buffers: reusable,
+                }));
+            }
+            Err(error) => {
+                buffers.recycle(reusable);
+                stop.store(true, Ordering::Relaxed);
+                let _ = sender.send(DecodeMessage::Error(error));
+            }
+        }
+    });
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_lane<'scope>(
+    scope: &ScopeFifo<'scope>,
+    table_index: usize,
+    lanes: &mut [TableLane],
+    router: &mut ResultRouter,
+    paranoid_checks: bool,
+    sender: &Sender<DecodeMessage>,
+    buffers: &Arc<RunBufferPool>,
+    stop: &Arc<AtomicBool>,
+    cancel: Option<crate::options::ScanCancelFlag>,
+) -> Result<bool> {
+    loop {
+        {
+            let lane = &mut lanes[table_index];
+            if let Some(run) = lane.current.as_ref() {
+                while lane.block_index < run.block_count() {
+                    let entry_count = run.block_entry_count(lane.block_index);
+                    while lane.entry_index < entry_count {
+                        let entry_index = lane.entry_index;
+                        lane.entry_index = lane.entry_index.saturating_add(1);
+                        let key = run.key(lane.block_index, entry_index);
+                        if entry_index == 0
+                            && lane
+                                .previous_block_last_key
+                                .as_deref()
+                                .is_some_and(|previous| previous == key)
+                        {
+                            continue;
+                        }
+                        lane.current_is_value = run.is_value(lane.block_index, entry_index);
+                        return Ok(true);
+                    }
+
+                    if let Some(last_index) = entry_count.checked_sub(1) {
+                        let key = run.key(lane.block_index, last_index);
+                        let previous = lane
+                            .previous_block_last_key
+                            .get_or_insert_with(|| Vec::with_capacity(key.len().max(48)));
+                        previous.clear();
+                        previous.extend_from_slice(key);
+                    }
+                    lane.block_index = lane.block_index.saturating_add(1);
+                    lane.entry_index = 0;
+                }
+            }
+        }
+
+        if let Some(run) = lanes[table_index].current.take() {
+            buffers.recycle(run.buffers);
+            let _ = schedule_next_run(
+                scope,
+                table_index,
+                lanes,
+                paranoid_checks,
+                sender,
+                buffers,
+                stop,
+                cancel.clone(),
+            );
+        }
+
+        let next_run = lanes[table_index].next_run;
+        if next_run >= lanes[table_index].plan.runs.len() {
+            lanes[table_index].current_is_value = false;
+            return Ok(false);
+        }
+        let next = router.wait_for(table_index, next_run)?;
+        lanes[table_index].next_run = next_run.saturating_add(1);
+        lanes[table_index].block_index = 0;
+        lanes[table_index].entry_index = 0;
+        lanes[table_index].current = Some(next);
+    }
+}
+
+fn decode_planned_run(
+    plan: &NativeTablePlan,
+    run_index: usize,
+    paranoid_checks: bool,
+    stop: &AtomicBool,
+    cancel: Option<&crate::options::ScanCancelFlag>,
+    encoded_run: &mut Vec<u8>,
+    output: &mut RunBuffers,
+) -> Result<()> {
+    let run = plan.runs[run_index];
+    let encoded_len = usize::try_from(run.encoded_len)
+        .map_err(|_| LevelDbError::corruption_at(&plan.path, "block run exceeds usize"))?;
+    encoded_run.clear();
+    encoded_run.resize(encoded_len, 0);
+    read_exact_at(&plan.file, encoded_run, run.offset)
+        .map_err(|error| LevelDbError::io_at("read planned block run", &plan.path, error))?;
+
+    output.prepare(run.block_count);
+    let (decoded_blocks, keys, entries, block_meta, decoder_key, previous_user_key) = (
+        &mut output.decoded_blocks,
+        &mut output.keys,
+        &mut output.entries,
+        &mut output.block_meta,
+        &mut output.decoder_key,
+        &mut output.previous_user_key,
+    );
+
+    for local_block in 0..run.block_count {
+        if stop.load(Ordering::Relaxed)
+            || cancel.is_some_and(crate::options::ScanCancelFlag::is_cancelled)
+        {
+            return Err(LevelDbError::cancelled("parallel block-range decode"));
+        }
+        let global_block = run.first_block + local_block;
+        let handle = plan.blocks[global_block];
+        let relative = handle
+            .offset
+            .checked_sub(run.offset)
+            .ok_or_else(|| LevelDbError::corruption_at(&plan.path, "block precedes run offset"))?;
+        let relative = usize::try_from(relative)
+            .map_err(|_| LevelDbError::corruption_at(&plan.path, "block offset exceeds usize"))?;
+        let size = usize::try_from(handle.size)
+            .map_err(|_| LevelDbError::corruption_at(&plan.path, "block size exceeds usize"))?;
+        let trailer_end = relative
+            .checked_add(size)
+            .and_then(|end| end.checked_add(LEVELDB_BLOCK_TRAILER_LEN))
+            .ok_or_else(|| LevelDbError::corruption_at(&plan.path, "block run range overflow"))?;
+        if trailer_end > encoded_run.len() {
+            return Err(LevelDbError::corruption_at(
+                &plan.path,
+                "planned block exceeds coalesced run",
+            ));
+        }
+        let payload = &encoded_run[relative..relative + size];
+        let compression_tag = encoded_run[relative + size];
+        if paranoid_checks {
+            let expected_crc = u32::from_le_bytes(
+                encoded_run[relative + size + 1..trailer_end]
+                    .try_into()
+                    .map_err(|_| {
+                        LevelDbError::corruption_at(&plan.path, "native block crc is invalid")
+                    })?,
+            );
+            let actual_crc = masked_crc32c(&[payload, &[compression_tag]]);
+            if actual_crc != expected_crc {
+                return Err(LevelDbError::corruption_at(
+                    &plan.path,
+                    format!("native block checksum mismatch at offset {}", handle.offset),
+                ));
+            }
+        }
+
+        let decoded = &mut decoded_blocks[local_block];
+        if compression_tag == COMPRESSION_NONE {
+            decoded.clear();
+            decoded.extend_from_slice(payload);
+        } else {
+            decompress_into(compression_tag, payload, decoded)?;
+        }
+
+        decoder_key.clear();
+        previous_user_key.clear();
+        let entry_start = u32::try_from(entries.len())
+            .map_err(|_| LevelDbError::corruption("run entry arena exceeds u32"))?;
+        decode_block_entries(
+            decoded,
+            plan.lower.as_deref(),
+            plan.upper.as_deref(),
+            keys,
+            entries,
+            decoder_key,
+            previous_user_key,
+        )?;
+        let entry_end = u32::try_from(entries.len())
+            .map_err(|_| LevelDbError::corruption("run entry arena exceeds u32"))?;
+        block_meta.push(BlockMeta {
+            entry_start,
+            entry_len: entry_end.saturating_sub(entry_start),
         });
     }
-    Ok(sources)
+    Ok(())
+}
+
+fn decode_block_entries(
+    decoded: &[u8],
+    lower: Option<&[u8]>,
+    upper: Option<&[u8]>,
+    keys: &mut Vec<u8>,
+    entries: &mut Vec<BlockEntry>,
+    decoder_key: &mut Vec<u8>,
+    previous_user_key: &mut Vec<u8>,
+) -> Result<()> {
+    let entries_end = block_entries_end(decoded)?;
+    let mut offset = 0usize;
+    let mut has_previous_user_key = false;
+
+    while offset < entries_end {
+        let mut input = &decoded[offset..entries_end];
+        let shared = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native block shared key length overflow"))?;
+        let non_shared = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native block key delta length overflow"))?;
+        let value_len = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native block value length overflow"))?;
+        if shared > decoder_key.len() {
+            return Err(LevelDbError::corruption(
+                "native block shared prefix exceeds previous key",
+            ));
+        }
+        if input.len() < non_shared.saturating_add(value_len) {
+            return Err(LevelDbError::corruption("native block entry is truncated"));
+        }
+        decoder_key.truncate(shared);
+        decoder_key.extend_from_slice(&input[..non_shared]);
+        input = &input[non_shared..];
+        let value_start = entries_end.saturating_sub(input.len());
+        let value_end = value_start
+            .checked_add(value_len)
+            .ok_or_else(|| LevelDbError::corruption("native block value range overflow"))?;
+        input = &input[value_len..];
+        offset = entries_end.saturating_sub(input.len());
+
+        let Some((user_key, is_value)) = split_internal_key(decoder_key) else {
+            continue;
+        };
+        if has_previous_user_key && previous_user_key.as_slice() == user_key {
+            continue;
+        }
+        previous_user_key.clear();
+        previous_user_key.extend_from_slice(user_key);
+        has_previous_user_key = true;
+        if lower.is_some_and(|lower| user_key < lower) {
+            continue;
+        }
+        if upper.is_some_and(|upper| user_key >= upper) {
+            break;
+        }
+
+        let key_start = u32::try_from(keys.len())
+            .map_err(|_| LevelDbError::corruption("run key arena exceeds u32"))?;
+        let key_len = u32::try_from(user_key.len())
+            .map_err(|_| LevelDbError::corruption("native user key exceeds u32"))?;
+        let value_start_u32 = u32::try_from(value_start)
+            .map_err(|_| LevelDbError::corruption("native value offset exceeds u32"))?;
+        let value_len_u32 = u32::try_from(value_end.saturating_sub(value_start))
+            .map_err(|_| LevelDbError::corruption("native value length exceeds u32"))?;
+        keys.extend_from_slice(user_key);
+        entries.push(BlockEntry {
+            key_start,
+            key_len,
+            value_start: value_start_u32,
+            value_len: value_len_u32,
+            is_value,
+        });
+    }
+    Ok(())
+}
+
+fn decode_index_handles(
+    block: &[u8],
+    lower: Option<&[u8]>,
+    upper: Option<&[u8]>,
+    decoder_key: &mut Vec<u8>,
+) -> Result<Vec<BlockHandle>> {
+    let entries_end = block_entries_end(block)?;
+    let mut handles = Vec::<BlockHandle>::new();
+    decoder_key.clear();
+    let mut offset = 0usize;
+    let mut started = lower.is_none();
+
+    while offset < entries_end {
+        let mut input = &block[offset..entries_end];
+        let shared = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native index shared key length overflow"))?;
+        let non_shared = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native index key delta length overflow"))?;
+        let value_len = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native index value length overflow"))?;
+        if shared > decoder_key.len() || input.len() < non_shared.saturating_add(value_len) {
+            return Err(LevelDbError::corruption("native index block entry is truncated"));
+        }
+        decoder_key.truncate(shared);
+        decoder_key.extend_from_slice(&input[..non_shared]);
+        input = &input[non_shared..];
+        let value = &input[..value_len];
+        input = &input[value_len..];
+        offset = entries_end.saturating_sub(input.len());
+
+        let limit_key = split_internal_key(decoder_key)
+            .map_or(decoder_key.as_slice(), |(user_key, _)| user_key);
+        if !started {
+            if lower.is_some_and(|lower| limit_key < lower) {
+                continue;
+            }
+            started = true;
+        }
+
+        let mut handle_input = value;
+        handles.push(read_block_handle(&mut handle_input)?);
+        if upper.is_some_and(|upper| limit_key >= upper) {
+            break;
+        }
+    }
+    Ok(handles)
+}
+
+fn plan_block_runs(blocks: &[BlockHandle]) -> Result<Vec<BlockRun>> {
+    let Some(first) = blocks.first().copied() else {
+        return Ok(Vec::new());
+    };
+    let mut runs = Vec::<BlockRun>::new();
+    let mut first_block = 0usize;
+    let mut run_offset = first.offset;
+    let mut run_end = block_end(first)?;
+    let mut block_count = 1usize;
+
+    for (index, handle) in blocks.iter().copied().enumerate().skip(1) {
+        let end = block_end(handle)?;
+        let contiguous = handle.offset == run_end;
+        let candidate_len = end.saturating_sub(run_offset);
+        if contiguous
+            && candidate_len <= RUN_TARGET_ENCODED_BYTES
+            && block_count < RUN_MAX_BLOCKS
+        {
+            run_end = end;
+            block_count = block_count.saturating_add(1);
+            continue;
+        }
+
+        runs.push(BlockRun {
+            first_block,
+            block_count,
+            offset: run_offset,
+            encoded_len: run_end.saturating_sub(run_offset),
+        });
+        first_block = index;
+        run_offset = handle.offset;
+        run_end = end;
+        block_count = 1;
+    }
+
+    runs.push(BlockRun {
+        first_block,
+        block_count,
+        offset: run_offset,
+        encoded_len: run_end.saturating_sub(run_offset),
+    });
+    Ok(runs)
+}
+
+fn block_end(handle: BlockHandle) -> Result<u64> {
+    handle
+        .offset
+        .checked_add(handle.size)
+        .and_then(|end| end.checked_add(LEVELDB_BLOCK_TRAILER_LEN as u64))
+        .ok_or_else(|| LevelDbError::corruption("native block end offset overflow"))
+}
+
+fn partition_for_key(key: &[u8], partitions: usize) -> usize {
+    if partitions <= 1 {
+        return 0;
+    }
+    let first = u32::from(key.first().copied().unwrap_or(0));
+    let second = u32::from(key.get(1).copied().unwrap_or(0));
+    let last = u32::from(key.last().copied().unwrap_or(0));
+    let len = u32::try_from(key.len()).unwrap_or(u32::MAX);
+    let mixed = first
+        | (second << 8)
+        | (last << 16)
+        | ((len & 0xff) << 24);
+    let hash = mixed.wrapping_mul(0x9e37_79b1);
+    (hash as usize) % partitions
 }
 
 fn table_overlaps(table: &TableFileMeta, lower: Option<&[u8]>, upper: Option<&[u8]>) -> bool {
@@ -371,49 +1177,21 @@ fn table_overlaps(table: &TableFileMeta, lower: Option<&[u8]>, upper: Option<&[u
     true
 }
 
-fn count_overlapping_tables(tables: &[TableFileMeta], prefix: Option<&[u8]>) -> usize {
-    let (lower, upper) = prefix_bounds(prefix);
-    tables
-        .iter()
-        .filter(|table| table_overlaps(table, lower.as_deref(), upper.as_deref()))
-        .count()
-}
-
-fn advance_source(index: usize, sources: &mut [MergeSource], heap: &mut Vec<usize>) -> Result<()> {
-    let has_next = {
-        let source = &mut sources[index];
-        match source.cursor.next_key_into(&mut source.key)? {
-            Some(is_value) => {
-                source.is_value = is_value;
-                true
-            }
-            None => {
-                source.key.clear();
-                source.is_value = false;
-                false
-            }
-        }
-    };
-    if has_next {
-        heap_push(heap, index, sources);
-    }
-    Ok(())
-}
-
-fn heap_less(left: usize, right: usize, sources: &[MergeSource]) -> bool {
-    sources[left]
-        .key
-        .cmp(&sources[right].key)
-        .then_with(|| sources[left].rank.cmp(&sources[right].rank))
+fn heap_less(left: usize, right: usize, lanes: &[TableLane]) -> bool {
+    let left_key = lanes[left].current_key().unwrap_or(&[]);
+    let right_key = lanes[right].current_key().unwrap_or(&[]);
+    left_key
+        .cmp(right_key)
+        .then_with(|| lanes[left].plan.rank.cmp(&lanes[right].plan.rank))
         .is_lt()
 }
 
-fn heap_push(heap: &mut Vec<usize>, index: usize, sources: &[MergeSource]) {
+fn heap_push(heap: &mut Vec<usize>, index: usize, lanes: &[TableLane]) {
     heap.push(index);
     let mut child = heap.len() - 1;
     while child != 0 {
         let parent = (child - 1) / 2;
-        if !heap_less(heap[child], heap[parent], sources) {
+        if !heap_less(heap[child], heap[parent], lanes) {
             break;
         }
         heap.swap(child, parent);
@@ -421,7 +1199,7 @@ fn heap_push(heap: &mut Vec<usize>, index: usize, sources: &[MergeSource]) {
     }
 }
 
-fn heap_pop(heap: &mut Vec<usize>, sources: &[MergeSource]) -> Option<usize> {
+fn heap_pop(heap: &mut Vec<usize>, lanes: &[TableLane]) -> Option<usize> {
     let last = heap.pop()?;
     if heap.is_empty() {
         return Some(last);
@@ -435,276 +1213,16 @@ fn heap_pop(heap: &mut Vec<usize>, sources: &[MergeSource]) -> Option<usize> {
         }
         let right = left + 1;
         let mut smallest = left;
-        if right < heap.len() && heap_less(heap[right], heap[left], sources) {
+        if right < heap.len() && heap_less(heap[right], heap[left], lanes) {
             smallest = right;
         }
-        if !heap_less(heap[smallest], heap[parent], sources) {
+        if !heap_less(heap[smallest], heap[parent], lanes) {
             break;
         }
         heap.swap(parent, smallest);
         parent = smallest;
     }
     Some(result)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn scan_parallel_ranges<F, S>(
-    root: &Path,
-    tables_newest_first: &[TableFileMeta],
-    prefix: Option<&[u8]>,
-    paranoid_checks: bool,
-    options: &ReadOptions,
-    workers: usize,
-    shadowed: &S,
-    visitor: &mut F,
-) -> Result<ScanOutcome>
-where
-    F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
-    S: Fn(&[u8]) -> bool + Sync,
-{
-    let ranges = partition_ranges(prefix, workers);
-    let workers = ranges.len();
-    if workers <= 1 {
-        let range = ranges.into_iter().next().unwrap_or(KeyRange {
-            lower: None,
-            upper: None,
-        });
-        return scan_range_borrowed(
-            root,
-            tables_newest_first,
-            range.lower.as_deref(),
-            range.upper.as_deref(),
-            paranoid_checks,
-            options,
-            shadowed,
-            visitor,
-        );
-    }
-
-    let pool = scan_pool(workers)?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let root = root.to_path_buf();
-    let tables = Arc::<[TableFileMeta]>::from(tables_newest_first.to_vec());
-    let queue_depth = options
-        .pipeline
-        .resolve_queue_depth(workers, tables.len())
-        .div_ceil(workers)
-        .max(1);
-    let progress_interval = options.pipeline.resolve_progress_interval();
-    let options_for_workers = options.clone();
-    let mut final_outcome = ScanOutcome::empty();
-    final_outcome.worker_threads = workers;
-    final_outcome.tables_scanned = count_overlapping_tables(tables_newest_first, prefix);
-
-    pool.scope(|scope| -> Result<()> {
-        let mut pipes = Vec::<WorkerPipe>::with_capacity(workers);
-        for range in ranges {
-            let (sender, receiver) = sync_channel::<WorkerMessage>(queue_depth);
-            let (recycle, recycled) = sync_channel::<FlatBatch>(queue_depth.saturating_add(1));
-            pipes.push(WorkerPipe { receiver, recycle });
-            let root = root.clone();
-            let tables = Arc::clone(&tables);
-            let stop = Arc::clone(&stop);
-            let mut worker_options = options_for_workers.clone();
-            worker_options.scan_mode = ScanMode::Sequential;
-            worker_options.threading = ThreadingOptions::Single;
-            // Progress is emitted once in global visitor order below.
-            worker_options.progress = None;
-            scope.spawn(move |_| {
-                let result = produce_range(
-                    &root,
-                    &tables,
-                    range,
-                    paranoid_checks,
-                    &worker_options,
-                    &stop,
-                    &sender,
-                    &recycled,
-                );
-                if let Err(error) = result {
-                    let _ = try_send_message(&sender, WorkerMessage::Error(error), &stop);
-                }
-            });
-        }
-
-        // Ranges were created in lexical order. Draining pipes in the same order
-        // preserves deterministic global key order without a cross-worker heap.
-        for pipe in &pipes {
-            loop {
-                let message = pipe.receiver.recv().map_err(|_| {
-                    LevelDbError::corruption("parallel scan worker stopped early")
-                })?;
-                match message {
-                    WorkerMessage::Batch(mut batch) => {
-                        for entry in batch.entries.iter().copied() {
-                            if stop.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let (key, value) = batch.entry(entry);
-                            if shadowed(key) {
-                                continue;
-                            }
-                            final_outcome.record(value.len());
-                            if visitor(key, value)? == VisitorControl::Stop {
-                                final_outcome.stopped = true;
-                                stop.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                            emit_progress(options, &final_outcome, progress_interval);
-                        }
-                        batch.clear();
-                        let _ = pipe.recycle.try_send(batch);
-                        if final_outcome.stopped {
-                            break;
-                        }
-                    }
-                    WorkerMessage::Done {
-                        queue_wait_ms,
-                        cancel_checks,
-                    } => {
-                        final_outcome.queue_wait_ms =
-                            final_outcome.queue_wait_ms.saturating_add(queue_wait_ms);
-                        final_outcome.cancel_checks =
-                            final_outcome.cancel_checks.saturating_add(cancel_checks);
-                        break;
-                    }
-                    WorkerMessage::Error(error) => {
-                        stop.store(true, Ordering::Relaxed);
-                        return Err(error);
-                    }
-                }
-            }
-            if final_outcome.stopped {
-                break;
-            }
-        }
-        stop.store(true, Ordering::Relaxed);
-        Ok(())
-    })?;
-    Ok(final_outcome)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn produce_range(
-    root: &Path,
-    tables: &[TableFileMeta],
-    range: KeyRange,
-    paranoid_checks: bool,
-    options: &ReadOptions,
-    stop: &AtomicBool,
-    sender: &SyncSender<WorkerMessage>,
-    recycled: &Receiver<FlatBatch>,
-) -> Result<()> {
-    let mut batch = take_recycled_batch(recycled);
-    let mut queue_wait_ms = 0u128;
-    let worker_outcome = scan_range_borrowed(
-        root,
-        tables,
-        range.lower.as_deref(),
-        range.upper.as_deref(),
-        paranoid_checks,
-        options,
-        &|_| false,
-        &mut |key, value| {
-            if stop.load(Ordering::Relaxed) {
-                return Ok(VisitorControl::Stop);
-            }
-            batch.push(key, value);
-            if batch.should_flush() {
-                let next = take_recycled_batch(recycled);
-                let ready = std::mem::replace(&mut batch, next);
-                let wait_started = Instant::now();
-                if !try_send_message(sender, WorkerMessage::Batch(ready), stop) {
-                    return Ok(VisitorControl::Stop);
-                }
-                queue_wait_ms = queue_wait_ms.saturating_add(wait_started.elapsed().as_millis());
-            }
-            Ok(VisitorControl::Continue)
-        },
-    )?;
-
-    if !batch.is_empty() && !stop.load(Ordering::Relaxed) {
-        let wait_started = Instant::now();
-        if !try_send_message(sender, WorkerMessage::Batch(batch), stop) {
-            return Ok(());
-        }
-        queue_wait_ms = queue_wait_ms.saturating_add(wait_started.elapsed().as_millis());
-    }
-    let _ = try_send_message(
-        sender,
-        WorkerMessage::Done {
-            queue_wait_ms,
-            cancel_checks: worker_outcome.cancel_checks,
-        },
-        stop,
-    );
-    Ok(())
-}
-
-fn take_recycled_batch(recycled: &Receiver<FlatBatch>) -> FlatBatch {
-    match recycled.try_recv() {
-        Ok(mut batch) => {
-            batch.clear();
-            batch
-        }
-        Err(TryRecvError::Empty | TryRecvError::Disconnected) => FlatBatch::with_capacity(),
-    }
-}
-
-fn try_send_message(
-    sender: &SyncSender<WorkerMessage>,
-    mut message: WorkerMessage,
-    stop: &AtomicBool,
-) -> bool {
-    loop {
-        match sender.try_send(message) {
-            Ok(()) => return true,
-            Err(TrySendError::Full(returned)) => {
-                message = returned;
-                if stop.load(Ordering::Relaxed) {
-                    return false;
-                }
-                thread::yield_now();
-            }
-            Err(TrySendError::Disconnected(_)) => return false,
-        }
-    }
-}
-
-fn partition_ranges(prefix: Option<&[u8]>, workers: usize) -> Vec<KeyRange> {
-    let workers = workers.clamp(1, MAX_KEY_RANGES);
-    if workers == 1 {
-        let (lower, upper) = prefix_bounds(prefix);
-        return vec![KeyRange { lower, upper }];
-    }
-
-    let base = prefix.unwrap_or(&[]);
-    let prefix_upper = prefix.and_then(prefix_successor);
-    let mut ranges = Vec::with_capacity(workers);
-    for worker in 0..workers {
-        let start = worker * 256 / workers;
-        let end = (worker + 1) * 256 / workers;
-        let lower = if worker == 0 {
-            (!base.is_empty()).then(|| base.to_vec())
-        } else {
-            let mut lower = base.to_vec();
-            lower.push(u8::try_from(start).unwrap_or(u8::MAX));
-            Some(lower)
-        };
-        let upper = if worker + 1 == workers {
-            if base.is_empty() {
-                None
-            } else {
-                prefix_upper.clone()
-            }
-        } else {
-            let mut upper = base.to_vec();
-            upper.push(u8::try_from(end).unwrap_or(u8::MAX));
-            Some(upper)
-        };
-        ranges.push(KeyRange { lower, upper });
-    }
-    ranges
 }
 
 fn prefix_bounds(prefix: Option<&[u8]>) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
@@ -729,46 +1247,167 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 fn check_cancelled(options: &ReadOptions, outcome: &mut ScanOutcome) -> Result<()> {
     outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
     if options.cancel.as_ref().is_some_and(|cancel| cancel.is_cancelled()) {
-        return Err(LevelDbError::cancelled("table scan"));
+        return Err(LevelDbError::cancelled("parallel block-range scan"));
     }
     Ok(())
 }
 
 fn emit_progress(options: &ReadOptions, outcome: &ScanOutcome, interval: usize) {
-    if outcome.visited != 0 && outcome.visited.is_multiple_of(interval.max(1)) {
-        if let Some(progress) = &options.progress {
-            progress.emit(ScanProgress {
-                visited: outcome.visited,
-                bytes_read: outcome.bytes_read,
-            });
-        }
+    if outcome.visited != 0
+        && outcome.visited.is_multiple_of(interval)
+        && let Some(progress) = &options.progress
+    {
+        progress.emit(crate::options::ScanProgress {
+            visited: outcome.visited,
+            bytes_read: outcome.bytes_read,
+        });
     }
 }
 
-fn scan_pool(workers: usize) -> Result<Arc<rayon::ThreadPool>> {
-    static POOLS: OnceLock<Mutex<std::collections::HashMap<usize, Arc<rayon::ThreadPool>>>> =
-        OnceLock::new();
-    let pools = POOLS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    if let Ok(pools) = pools.lock()
-        && let Some(pool) = pools.get(&workers)
-    {
-        return Ok(Arc::clone(pool));
+fn read_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LEN]> {
+    let file_len = file
+        .metadata()
+        .map_err(|error| LevelDbError::io_at("stat planned table", path, error))?
+        .len();
+    if file_len < LEVELDB_FOOTER_LEN as u64 {
+        return Err(LevelDbError::corruption_at(path, "native table is truncated"));
     }
-    let pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(workers.max(1))
-            .thread_name(|index| format!("bedrock-leveldb-scan-{index}"))
-            .build()
-            .map_err(|error| {
-                LevelDbError::join(format!("failed to create scan worker pool: {error}"))
-            })?,
+    let mut footer = [0_u8; LEVELDB_FOOTER_LEN];
+    read_exact_at(
+        file,
+        &mut footer,
+        file_len.saturating_sub(LEVELDB_FOOTER_LEN as u64),
+    )
+    .map_err(|error| LevelDbError::io_at("read planned table footer", path, error))?;
+    Ok(footer)
+}
+
+fn validate_footer_magic(footer: &[u8; LEVELDB_FOOTER_LEN], path: &Path) -> Result<()> {
+    let magic_offset = LEVELDB_FOOTER_LEN - 8;
+    let magic = u64::from_le_bytes(
+        footer[magic_offset..]
+            .try_into()
+            .map_err(|_| LevelDbError::corruption_at(path, "native footer magic is invalid"))?,
     );
-    let mut pools = pools
-        .lock()
-        .map_err(|_| LevelDbError::join("scan worker pool registry poisoned"))?;
-    Ok(Arc::clone(
-        pools.entry(workers).or_insert_with(|| Arc::clone(&pool)),
+    if magic != LEVELDB_TABLE_MAGIC {
+        return Err(LevelDbError::corruption_at(path, "native table magic mismatch"));
+    }
+    Ok(())
+}
+
+fn read_one_block(
+    file: &File,
+    path: &Path,
+    handle: BlockHandle,
+    paranoid_checks: bool,
+    encoded: &mut Vec<u8>,
+    decoded: &mut Vec<u8>,
+) -> Result<()> {
+    let size = usize::try_from(handle.size)
+        .map_err(|_| LevelDbError::corruption_at(path, "native block size overflows usize"))?;
+    let total_size = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
+        LevelDbError::corruption_at(path, "native block trailer range overflow")
+    })?;
+    encoded.clear();
+    encoded.resize(total_size, 0);
+    read_exact_at(file, encoded, handle.offset)
+        .map_err(|error| LevelDbError::io_at("read native index block", path, error))?;
+    let compression_tag = encoded[size];
+    if paranoid_checks {
+        let expected_crc = u32::from_le_bytes(
+            encoded[size + 1..size + LEVELDB_BLOCK_TRAILER_LEN]
+                .try_into()
+                .map_err(|_| LevelDbError::corruption_at(path, "native block crc is invalid"))?,
+        );
+        let actual_crc = masked_crc32c(&[&encoded[..size], &[compression_tag]]);
+        if actual_crc != expected_crc {
+            return Err(LevelDbError::corruption_at(
+                path,
+                format!("native block checksum mismatch at offset {}", handle.offset),
+            ));
+        }
+    }
+    if compression_tag == COMPRESSION_NONE {
+        decoded.clear();
+        decoded.extend_from_slice(&encoded[..size]);
+        return Ok(());
+    }
+    decompress_into(compression_tag, &encoded[..size], decoded)
+}
+
+fn block_entries_end(block: &[u8]) -> Result<usize> {
+    if block.len() < 4 {
+        return Err(LevelDbError::corruption("native block is truncated"));
+    }
+    let count_offset = block.len() - 4;
+    let restart_count = usize::try_from(u32::from_le_bytes(
+        block[count_offset..]
+            .try_into()
+            .map_err(|_| LevelDbError::corruption("native restart count is invalid"))?,
     ))
+    .map_err(|_| LevelDbError::corruption("native restart count overflow"))?;
+    let restart_bytes = restart_count
+        .checked_mul(4)
+        .ok_or_else(|| LevelDbError::corruption("native restart array overflow"))?;
+    if restart_bytes > count_offset {
+        return Err(LevelDbError::corruption("native restart array is truncated"));
+    }
+    Ok(count_offset - restart_bytes)
+}
+
+fn read_block_handle(input: &mut &[u8]) -> Result<BlockHandle> {
+    Ok(BlockHandle {
+        offset: get_varint64(input)?,
+        size: get_varint64(input)?,
+    })
+}
+
+fn split_internal_key(internal_key: &[u8]) -> Option<(&[u8], bool)> {
+    let user_len = internal_key.len().checked_sub(8)?;
+    let user_key = internal_key.get(..user_len)?;
+    let trailer: [u8; 8] = internal_key.get(user_len..)?.try_into().ok()?;
+    let tag = u64::from_le_bytes(trailer);
+    match (tag & 0xff) as u8 {
+        crate::coding::VALUE_TYPE_VALUE => Some((user_key, true)),
+        crate::coding::VALUE_TYPE_DELETION => Some((user_key, false)),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buffer, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read(buffer)
+}
+
+fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    while !buffer.is_empty() {
+        match read_at(file, buffer, offset)? {
+            0 => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "failed to fill positional read buffer",
+                ));
+            }
+            read => {
+                offset = offset.saturating_add(read as u64);
+                buffer = &mut buffer[read..];
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -783,27 +1422,43 @@ mod tests {
     }
 
     #[test]
-    fn partitions_are_contiguous() {
-        let ranges = partition_ranges(Some(b"player_"), 4);
-        assert_eq!(ranges.len(), 4);
-        for pair in ranges.windows(2) {
-            assert_eq!(pair[0].upper, pair[1].lower);
-        }
-        assert_eq!(ranges[0].lower.as_deref(), Some(b"player_".as_slice()));
-        assert_eq!(
-            ranges.last().and_then(|range| range.upper.as_deref()),
-            Some(b"player`".as_slice())
-        );
+    fn run_planner_coalesces_contiguous_blocks() {
+        let blocks = [
+            BlockHandle { offset: 0, size: 100 },
+            BlockHandle { offset: 105, size: 200 },
+            BlockHandle { offset: 310, size: 50 },
+        ];
+        let runs = plan_block_runs(&blocks).expect("plan runs");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].block_count, 3);
+        assert_eq!(runs[0].encoded_len, 365);
     }
 
     #[test]
-    fn full_keyspace_partitions_cover_all_first_bytes() {
-        let ranges = partition_ranges(None, 16);
-        assert_eq!(ranges.len(), 16);
-        assert!(ranges.first().is_some_and(|range| range.lower.is_none()));
-        assert!(ranges.last().is_some_and(|range| range.upper.is_none()));
-        for pair in ranges.windows(2) {
-            assert_eq!(pair[0].upper, pair[1].lower);
+    fn run_planner_splits_non_contiguous_blocks() {
+        let blocks = [
+            BlockHandle { offset: 0, size: 100 },
+            BlockHandle { offset: 4096, size: 100 },
+        ];
+        let runs = plan_block_runs(&blocks).expect("plan runs");
+        assert_eq!(runs.len(), 2);
+    }
+
+    #[test]
+    fn run_buffer_pool_recycles_capacities() {
+        let pool = RunBufferPool::with_count(1);
+        let mut buffers = pool.take();
+        buffers.keys.reserve(16 * 1024);
+        let capacity = buffers.keys.capacity();
+        pool.recycle(buffers);
+        let buffers = pool.take();
+        assert!(buffers.keys.capacity() >= capacity);
+    }
+
+    #[test]
+    fn partition_hash_is_bounded() {
+        for key in [b"player_1".as_slice(), &[0, 1, 2, 3], &[255, 255]] {
+            assert!(partition_for_key(key, 16) < 16);
         }
     }
 }
