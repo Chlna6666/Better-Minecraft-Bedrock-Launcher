@@ -1,3 +1,4 @@
+use crate::bloom::{BloomFilterBlockBuilder, FILTER_META_KEY};
 use crate::coding::{
     VALUE_TYPE_DELETION, VALUE_TYPE_VALUE, masked_crc32c, put_varint32, put_varint64,
 };
@@ -30,9 +31,9 @@ struct BlockHandle {
 /// Incremental LevelDB SSTable writer.
 ///
 /// Entries must be supplied in strictly increasing user-key order. Data blocks,
-/// compression buffers and key-delta buffers are reused for the full table;
-/// only the final index block and footer are emitted when [`Self::finish`] is
-/// called.
+/// compression buffers, Bloom hashes and key-delta buffers are reused for the
+/// full table. The emitted filter block/metaindex follow the standard LevelDB
+/// `leveldb.BuiltinBloomFilter2` table format.
 pub(crate) struct NativeTableWriter {
     path: PathBuf,
     tmp_path: PathBuf,
@@ -42,6 +43,8 @@ pub(crate) struct NativeTableWriter {
     compression_tag: u8,
     file_offset: u64,
     data_block: NativeBlockBuilder,
+    filter_block: BloomFilterBlockBuilder,
+    meta_index_block: NativeBlockBuilder,
     index_block: NativeBlockBuilder,
     internal_key: Vec<u8>,
     last_user_key: Vec<u8>,
@@ -62,6 +65,8 @@ impl NativeTableWriter {
         let file = File::create(&tmp_path).map_err(|error| {
             LevelDbError::io_at("create native table temp file", &tmp_path, error)
         })?;
+        let mut filter_block = BloomFilterBlockBuilder::new();
+        filter_block.start_block(0)?;
         Ok(Self {
             path: path.to_path_buf(),
             tmp_path,
@@ -71,6 +76,8 @@ impl NativeTableWriter {
             compression_tag: compression_tag(compression),
             file_offset: 0,
             data_block: NativeBlockBuilder::new(NATIVE_DATA_BLOCK_TARGET),
+            filter_block,
+            meta_index_block: NativeBlockBuilder::new(128),
             index_block: NativeBlockBuilder::new(1024),
             internal_key: Vec::with_capacity(32),
             last_user_key: Vec::with_capacity(32),
@@ -96,8 +103,10 @@ impl NativeTableWriter {
     pub(crate) fn estimated_size(&self) -> u64 {
         self.file_offset
             .saturating_add(self.data_block.estimated_finished_size() as u64)
+            .saturating_add(self.filter_block.estimated_size() as u64)
+            .saturating_add(self.meta_index_block.estimated_finished_size() as u64)
             .saturating_add(self.index_block.estimated_finished_size() as u64)
-            .saturating_add(LEVELDB_FOOTER_LEN as u64)
+            .saturating_add((3 * LEVELDB_BLOCK_TRAILER_LEN + LEVELDB_FOOTER_LEN) as u64)
     }
 
     pub(crate) fn push(&mut self, user_key: &[u8], value: Option<&[u8]>) -> Result<()> {
@@ -120,11 +129,13 @@ impl NativeTableWriter {
                 > NATIVE_DATA_BLOCK_TARGET
         {
             self.flush_data_block()?;
+            self.filter_block.start_block(self.file_offset)?;
         }
 
         if self.smallest_internal_key.is_none() {
             self.smallest_internal_key = Some(self.internal_key.clone());
         }
+        self.filter_block.add_key(user_key)?;
         self.data_block.add(&self.internal_key, value)?;
         self.last_user_key.clear();
         self.last_user_key.extend_from_slice(user_key);
@@ -140,6 +151,36 @@ impl NativeTableWriter {
         }
 
         self.flush_data_block()?;
+
+        let filter_handle = {
+            let raw = self.filter_block.finish()?;
+            let writer = self.writer.as_mut().ok_or_else(writer_closed)?;
+            write_native_block(
+                writer,
+                &mut self.file_offset,
+                raw,
+                CompressionPolicy::None,
+                COMPRESSION_NONE,
+            )?
+        };
+
+        self.handle_bytes.clear();
+        write_block_handle(filter_handle, &mut self.handle_bytes);
+        self.meta_index_block
+            .add(FILTER_META_KEY, &self.handle_bytes)?;
+        self.meta_index_block.finish_in_place()?;
+        let meta_index_handle = {
+            let raw = self.meta_index_block.bytes();
+            let writer = self.writer.as_mut().ok_or_else(writer_closed)?;
+            write_native_block(
+                writer,
+                &mut self.file_offset,
+                raw,
+                CompressionPolicy::None,
+                COMPRESSION_NONE,
+            )?
+        };
+
         self.index_block.finish_in_place()?;
         let index_handle = {
             let raw = self.index_block.bytes();
@@ -154,7 +195,7 @@ impl NativeTableWriter {
         };
 
         let footer = native_footer(
-            BlockHandle { offset: 0, size: 0 },
+            meta_index_handle,
             index_handle,
             &mut self.footer_handles,
         );
