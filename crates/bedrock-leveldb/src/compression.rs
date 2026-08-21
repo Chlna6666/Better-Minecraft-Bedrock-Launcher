@@ -35,22 +35,6 @@ mod zlib {
                 decompressed: Vec::with_capacity(MIN_OUTPUT_CAPACITY),
             }
         }
-
-        fn compressor(&mut self, zlib_header: bool) -> &mut Compress {
-            if zlib_header {
-                &mut self.zlib_compressor
-            } else {
-                &mut self.raw_compressor
-            }
-        }
-
-        fn decompressor(&mut self, zlib_header: bool) -> &mut Decompress {
-            if zlib_header {
-                &mut self.zlib_decompressor
-            } else {
-                &mut self.raw_decompressor
-            }
-        }
     }
 
     thread_local! {
@@ -91,10 +75,19 @@ mod zlib {
             .saturating_add(payload.len() / 8)
             .saturating_add(256)
             .max(MIN_OUTPUT_CAPACITY);
-        scratch.compressed.clear();
-        ensure_capacity(&mut scratch.compressed, initial_capacity);
-
-        let compressor = scratch.compressor(zlib_header);
+        let CodecScratch {
+            zlib_compressor,
+            raw_compressor,
+            compressed,
+            ..
+        } = scratch;
+        compressed.clear();
+        ensure_capacity(compressed, initial_capacity);
+        let compressor = if zlib_header {
+            zlib_compressor
+        } else {
+            raw_compressor
+        };
         compressor.reset();
         let mut input_offset = 0_usize;
 
@@ -104,7 +97,7 @@ mod zlib {
             let status = compressor
                 .compress_vec(
                     &payload[input_offset..],
-                    &mut scratch.compressed,
+                    compressed,
                     FlushCompress::Finish,
                 )
                 .map_err(|error| LevelDbError::compression("table", error.to_string()))?;
@@ -118,12 +111,16 @@ mod zlib {
             if status == Status::StreamEnd {
                 return Ok(());
             }
-            if scratch.compressed.len() == scratch.compressed.capacity() {
-                grow(&mut scratch.compressed);
-                continue;
-            }
             if consumed == 0 && produced == 0 {
-                grow(&mut scratch.compressed);
+                if input_offset == payload.len() && compressed.len() < compressed.capacity() {
+                    return Err(LevelDbError::compression(
+                        "table",
+                        "compressor did not reach stream end".to_string(),
+                    ));
+                }
+                grow(compressed);
+            } else if compressed.len() == compressed.capacity() {
+                grow(compressed);
             }
         }
     }
@@ -137,10 +134,19 @@ mod zlib {
             .len()
             .saturating_mul(3)
             .max(MIN_OUTPUT_CAPACITY);
-        scratch.decompressed.clear();
-        ensure_capacity(&mut scratch.decompressed, initial_capacity);
-
-        let decompressor = scratch.decompressor(zlib_header);
+        let CodecScratch {
+            zlib_decompressor,
+            raw_decompressor,
+            decompressed,
+            ..
+        } = scratch;
+        decompressed.clear();
+        ensure_capacity(decompressed, initial_capacity);
+        let decompressor = if zlib_header {
+            zlib_decompressor
+        } else {
+            raw_decompressor
+        };
         decompressor.reset(zlib_header);
         let mut input_offset = 0_usize;
 
@@ -150,7 +156,7 @@ mod zlib {
             let status = decompressor
                 .decompress_vec(
                     &payload[input_offset..],
-                    &mut scratch.decompressed,
+                    decompressed,
                     FlushDecompress::Finish,
                 )
                 .map_err(|error| LevelDbError::compression("table", error.to_string()))?;
@@ -164,19 +170,23 @@ mod zlib {
             if status == Status::StreamEnd {
                 return Ok(());
             }
-            if scratch.decompressed.len() == scratch.decompressed.capacity() {
-                grow(&mut scratch.decompressed);
-                continue;
-            }
             if consumed == 0 && produced == 0 {
-                grow(&mut scratch.decompressed);
+                if input_offset == payload.len() && decompressed.len() < decompressed.capacity() {
+                    return Err(LevelDbError::compression(
+                        "table",
+                        "compressed stream ended before stream terminator".to_string(),
+                    ));
+                }
+                grow(decompressed);
+            } else if decompressed.len() == decompressed.capacity() {
+                grow(decompressed);
             }
         }
     }
 
     fn ensure_capacity(buffer: &mut Vec<u8>, required: usize) {
         if buffer.capacity() < required {
-            buffer.reserve(required.saturating_sub(buffer.capacity()));
+            buffer.reserve(required.saturating_sub(buffer.len()));
         }
     }
 
