@@ -40,7 +40,6 @@ mod options;
 mod table;
 mod table_cursor;
 mod table_scan;
-mod table_scan_legacy;
 mod version;
 mod wal;
 
