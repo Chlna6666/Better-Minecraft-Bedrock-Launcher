@@ -42,13 +42,13 @@ mod table_cursor;
 mod table_scan_legacy {
     include!("table_scan.rs");
 
-    pub(crate) fn scan_pool_for_v3(
+    pub(crate) fn scan_pool_for_block_planner(
         workers: usize,
     ) -> crate::error::Result<std::sync::Arc<rayon::ThreadPool>> {
         scan_pool(workers)
     }
 }
-#[path = "table_scan_v3.rs"]
+#[path = "table_scan_v4.rs"]
 mod table_scan;
 mod version;
 mod wal;
