@@ -132,7 +132,9 @@ pub fn scan_world_compatibility_blocking(
     let mut unknown_storage_keys = 0usize;
     let mut records_scanned = 0usize;
 
-    storage.for_each_entry(options, &mut |raw_key, value| {
+    storage.for_each_prefix_ref(b"", options, &mut |entry| {
+        let raw_key = entry.key;
+        let value = entry.value;
         records_scanned = records_scanned.saturating_add(1);
         match BedrockDbKey::decode(raw_key) {
             BedrockDbKey::Chunk(key) => {
