@@ -28,6 +28,7 @@ mod batch;
 mod coding;
 mod compaction;
 mod compression;
+#[path = "db_v2.rs"]
 mod db;
 mod db_lock;
 /// Storage-engine error types.
@@ -37,6 +38,7 @@ mod native_table_writer;
 mod obsolete;
 mod options;
 mod table;
+mod version;
 mod wal;
 
 pub use batch::{WriteBatch, WriteOp};
