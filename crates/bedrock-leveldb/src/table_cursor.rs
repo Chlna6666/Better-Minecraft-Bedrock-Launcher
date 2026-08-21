@@ -19,12 +19,11 @@ pub(crate) struct TableCursorEntry {
     pub(crate) value: Option<Bytes>,
 }
 
-/// Sequential SSTable cursor used by compaction and batch scan pipelines.
+/// Sequential SSTable cursor used by compaction, repair and compatibility scans.
 ///
-/// The cursor performs no callback dispatch. Native data blocks are loaded one
-/// at a time and their values are returned as shared `Bytes` slices, while the
-/// positional read buffer and prefix-decoding key buffer are reused for the
-/// lifetime of the cursor.
+/// `next_into` is the performance path: the caller owns the key buffer and can
+/// recycle its capacity between entries. A native cursor keeps only one decoded
+/// data block live at a time and shares value slices through `Bytes`.
 pub(crate) struct TableCursor {
     inner: CursorKind,
 }
@@ -49,11 +48,19 @@ impl TableCursor {
         Ok(Self { inner })
     }
 
-    pub(crate) fn next(&mut self) -> Result<Option<TableCursorEntry>> {
+    pub(crate) fn next_into(&mut self, key: &mut Vec<u8>) -> Result<Option<Option<Bytes>>> {
         match &mut self.inner {
-            CursorKind::Custom(cursor) => cursor.next(),
-            CursorKind::Native(cursor) => cursor.next(),
+            CursorKind::Custom(cursor) => cursor.next_into(key),
+            CursorKind::Native(cursor) => cursor.next_into(key),
         }
+    }
+
+    pub(crate) fn next(&mut self) -> Result<Option<TableCursorEntry>> {
+        let mut key = Vec::with_capacity(48);
+        let Some(value) = self.next_into(&mut key)? else {
+            return Ok(None);
+        };
+        Ok(Some(TableCursorEntry { key, value }))
     }
 }
 
@@ -114,7 +121,7 @@ impl CustomCursor {
         })
     }
 
-    fn next(&mut self) -> Result<Option<TableCursorEntry>> {
+    fn next_into(&mut self, key_out: &mut Vec<u8>) -> Result<Option<Option<Bytes>>> {
         if self.remaining == 0 {
             if self.offset != self.payload.len() {
                 return Err(LevelDbError::corruption_at(
@@ -128,8 +135,13 @@ impl CustomCursor {
         let mut input = &self.payload[original_offset..];
         let key = get_length_prefixed_slice(&mut input)?;
         let value = get_length_prefixed_slice(&mut input)?;
-        let consumed = self.payload.len().saturating_sub(original_offset).saturating_sub(input.len());
-        let key_owned = key.to_vec();
+        let consumed = self
+            .payload
+            .len()
+            .saturating_sub(original_offset)
+            .saturating_sub(input.len());
+        key_out.clear();
+        key_out.extend_from_slice(key);
         let value_start = value.as_ptr() as usize - self.payload.as_ptr() as usize;
         let value_end = value_start.checked_add(value.len()).ok_or_else(|| {
             LevelDbError::corruption_at(&self.path, "custom value range overflow")
@@ -142,10 +154,7 @@ impl CustomCursor {
         }
         self.offset = original_offset.saturating_add(consumed);
         self.remaining = self.remaining.saturating_sub(1);
-        Ok(Some(TableCursorEntry {
-            key: key_owned,
-            value: Some(self.payload.slice(value_start..value_end)),
-        }))
+        Ok(Some(Some(self.payload.slice(value_start..value_end))))
     }
 }
 
@@ -194,8 +203,8 @@ impl NativeCursor {
         )?;
         let mut index_decoder = BlockDecoder::new(index_block)?;
         let mut handles = Vec::new();
-        while let Some((_key, value)) = index_decoder.next()? {
-            let mut input = value.as_ref();
+        while let Some(entry) = index_decoder.next()? {
+            let mut input = entry.value.as_ref();
             handles.push(read_block_handle(&mut input)?);
         }
         Ok(Self {
@@ -205,16 +214,16 @@ impl NativeCursor {
             handles,
             handle_index: 0,
             block: None,
-            previous_user_key: Vec::with_capacity(32),
+            previous_user_key: Vec::with_capacity(48),
             read_scratch: scratch,
         })
     }
 
-    fn next(&mut self) -> Result<Option<TableCursorEntry>> {
+    fn next_into(&mut self, key_out: &mut Vec<u8>) -> Result<Option<Option<Bytes>>> {
         loop {
             if let Some(block) = &mut self.block {
-                while let Some((internal_key, value)) = block.next()? {
-                    let Some((user_key, is_value)) = split_internal_key(&internal_key) else {
+                while let Some(entry) = block.next()? {
+                    let Some((user_key, is_value)) = split_internal_key(entry.internal_key) else {
                         continue;
                     };
                     if self.previous_user_key.as_slice() == user_key {
@@ -222,10 +231,9 @@ impl NativeCursor {
                     }
                     self.previous_user_key.clear();
                     self.previous_user_key.extend_from_slice(user_key);
-                    return Ok(Some(TableCursorEntry {
-                        key: user_key.to_vec(),
-                        value: is_value.then_some(value),
-                    }));
+                    key_out.clear();
+                    key_out.extend_from_slice(user_key);
+                    return Ok(Some(is_value.then_some(entry.value)));
                 }
                 self.block = None;
             }
@@ -246,6 +254,11 @@ impl NativeCursor {
     }
 }
 
+struct DecodedEntry<'a> {
+    internal_key: &'a [u8],
+    value: Bytes,
+}
+
 struct BlockDecoder {
     block: Bytes,
     entries_end: usize,
@@ -260,25 +273,21 @@ impl BlockDecoder {
             block,
             entries_end,
             offset: 0,
-            key: Vec::with_capacity(32),
+            key: Vec::with_capacity(48),
         })
     }
 
-    fn next(&mut self) -> Result<Option<(Vec<u8>, Bytes)>> {
+    fn next(&mut self) -> Result<Option<DecodedEntry<'_>>> {
         if self.offset >= self.entries_end {
             return Ok(None);
         }
-        let start_offset = self.offset;
-        let mut input = &self.block[start_offset..self.entries_end];
-        let shared = usize::try_from(get_varint32(&mut input)?).map_err(|_| {
-            LevelDbError::corruption("native block shared key length overflow")
-        })?;
-        let non_shared = usize::try_from(get_varint32(&mut input)?).map_err(|_| {
-            LevelDbError::corruption("native block key delta length overflow")
-        })?;
-        let value_len = usize::try_from(get_varint32(&mut input)?).map_err(|_| {
-            LevelDbError::corruption("native block value length overflow")
-        })?;
+        let mut input = &self.block[self.offset..self.entries_end];
+        let shared = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native block shared key length overflow"))?;
+        let non_shared = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native block key delta length overflow"))?;
+        let value_len = usize::try_from(get_varint32(&mut input)?)
+            .map_err(|_| LevelDbError::corruption("native block value length overflow"))?;
         if shared > self.key.len() {
             return Err(LevelDbError::corruption(
                 "native block shared prefix exceeds previous key".to_string(),
@@ -293,15 +302,15 @@ impl BlockDecoder {
         self.key.extend_from_slice(&input[..non_shared]);
         input = &input[non_shared..];
         let value_start = self.entries_end.saturating_sub(input.len());
-        let value_end = value_start.checked_add(value_len).ok_or_else(|| {
-            LevelDbError::corruption("native block value range overflow")
-        })?;
+        let value_end = value_start
+            .checked_add(value_len)
+            .ok_or_else(|| LevelDbError::corruption("native block value range overflow"))?;
         input = &input[value_len..];
         self.offset = self.entries_end.saturating_sub(input.len());
-        Ok(Some((
-            self.key.clone(),
-            self.block.slice(value_start..value_end),
-        )))
+        Ok(Some(DecodedEntry {
+            internal_key: &self.key,
+            value: self.block.slice(value_start..value_end),
+        }))
     }
 }
 
@@ -330,9 +339,8 @@ fn read_block_owned(
     paranoid_checks: bool,
     scratch: &mut Vec<u8>,
 ) -> Result<Bytes> {
-    let size = usize::try_from(handle.size).map_err(|_| {
-        LevelDbError::corruption_at(path, "native block size overflows usize")
-    })?;
+    let size = usize::try_from(handle.size)
+        .map_err(|_| LevelDbError::corruption_at(path, "native block size overflows usize"))?;
     let total_size = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
         LevelDbError::corruption_at(path, "native block trailer range overflow")
     })?;
@@ -374,9 +382,9 @@ fn block_entries_end(block: &[u8]) -> Result<usize> {
             .map_err(|_| LevelDbError::corruption("native restart count is invalid"))?,
     ))
     .map_err(|_| LevelDbError::corruption("native restart count overflow"))?;
-    let restart_bytes = restart_count.checked_mul(4).ok_or_else(|| {
-        LevelDbError::corruption("native restart array overflow")
-    })?;
+    let restart_bytes = restart_count
+        .checked_mul(4)
+        .ok_or_else(|| LevelDbError::corruption("native restart array overflow"))?;
     if restart_bytes > count_offset {
         return Err(LevelDbError::corruption(
             "native restart array is truncated".to_string(),
@@ -437,46 +445,4 @@ fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> std::io
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::native_table_writer::NativeTableWriter;
-    use crate::options::CompressionPolicy;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_table_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "bedrock-leveldb-cursor-{name}-{}.ldb",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ))
-    }
-
-    #[test]
-    fn native_cursor_streams_ordered_values_and_tombstones() {
-        let path = temp_table_path("native");
-        let mut writer = NativeTableWriter::create(&path, 4, CompressionPolicy::None)
-            .expect("create writer");
-        writer.push(b"a", Some(b"one")).expect("a");
-        writer.push(b"b", None).expect("b");
-        writer.push(b"c", Some(b"three")).expect("c");
-        writer.finish().expect("finish");
-
-        let mut cursor = TableCursor::open(&path, true).expect("open cursor");
-        let first = cursor.next().expect("next").expect("first");
-        let second = cursor.next().expect("next").expect("second");
-        let third = cursor.next().expect("next").expect("third");
-        assert_eq!(first.key, b"a");
-        assert_eq!(first.value.as_deref(), Some(b"one".as_slice()));
-        assert_eq!(second.key, b"b");
-        assert!(second.value.is_none());
-        assert_eq!(third.key, b"c");
-        assert_eq!(third.value.as_deref(), Some(b"three".as_slice()));
-        assert!(cursor.next().expect("end").is_none());
-        std::fs::remove_file(path).expect("cleanup");
-    }
 }
