@@ -27,11 +27,13 @@
 mod batch;
 mod coding;
 mod compaction;
+mod compression;
 mod db;
 mod db_lock;
 /// Storage-engine error types.
 pub mod error;
 mod manifest;
+mod native_table_writer;
 mod obsolete;
 mod options;
 mod table;
