@@ -1,6 +1,6 @@
 mod core {
     include!("db_core.rs");
-    include!("db_scan_v2.rs");
+    include!("db_scan.rs");
 }
 
 pub use core::{
@@ -20,8 +20,8 @@ use std::sync::Arc;
 /// Public database handle.
 ///
 /// Point reads, WAL writes, snapshots and maintenance delegate to the stable core.
-/// Visibility scans are overridden here so SST traversal uses borrowed block buffers,
-/// ordered k-way visibility resolution and disjoint key-range parallelism.
+/// Visibility scans use borrowed block buffers, ordered newest-wins merging and
+/// bounded SST block-range workers.
 pub struct Db(core::Db);
 
 impl Db {
@@ -99,19 +99,19 @@ impl Db {
         self.0.write(batch, options)
     }
 
-    /// Visits visible keys through the visibility-correct borrowed k-way scan.
+    /// Visits visible keys through the visibility-correct borrowed scan.
     pub fn for_each_key<F>(&self, options: ReadOptions, visitor: F) -> Result<ScanOutcome>
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_key_v2(options, visitor)
+        self.0.for_each_key_scan(options, visitor)
     }
 
     /// Visits visible key/value entries as borrowed byte slices.
     ///
     /// The slices are valid only for the duration of the visitor call. Sequential
     /// scans point directly into reusable decoded SST block storage; parallel scans
-    /// point into recycled flat range batches.
+    /// borrow directly from bounded decoded block-run buffers.
     pub fn for_each_entry_borrowed<F>(
         &self,
         options: ReadOptions,
@@ -120,7 +120,7 @@ impl Db {
     where
         F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_entry_borrowed_v2(options, visitor)
+        self.0.for_each_entry_borrowed_scan(options, visitor)
     }
 
     /// Compatibility visitor that materializes one `Bytes` value per record.
@@ -160,7 +160,7 @@ impl Db {
     where
         F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_prefix_borrowed_v2(prefix, options, visitor)
+        self.0.for_each_prefix_borrowed_scan(prefix, options, visitor)
     }
 
     /// Compatibility prefix visitor that materializes one `Bytes` value per record.
@@ -205,11 +205,10 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_prefix_key_v2(prefix, options, visitor)
+        self.0.for_each_prefix_key_scan(prefix, options, visitor)
     }
 
-    /// Runs a visibility-correct key reduction with one independent state per
-    /// disjoint key-range worker.
+    /// Runs a visibility-correct key reduction using independent caller-owned states.
     pub fn scan_keys_partitioned<T, I, F>(
         &self,
         options: ReadOptions,
@@ -221,7 +220,7 @@ impl Db {
         I: Fn() -> T + Send + Sync,
         F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
     {
-        self.0.scan_keys_partitioned_v2(options, init, visitor)
+        self.0.scan_keys_partitioned_scan(options, init, visitor)
     }
 
     /// Runs an entry reduction through the compatibility `Bytes` visitor.
