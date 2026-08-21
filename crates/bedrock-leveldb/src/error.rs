@@ -216,6 +216,10 @@ impl LevelDbError {
         }
     }
 
+    pub(crate) const fn cancelled(_operation: &'static str) -> Self {
+        Self::Cancelled
+    }
+
     pub(crate) fn already_exists(path: impl Into<PathBuf>) -> Self {
         Self::AlreadyExists { path: path.into() }
     }
