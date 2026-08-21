@@ -1,5 +1,5 @@
 use crate::coding::{get_varint32, get_varint64, masked_crc32c};
-use crate::compression::{COMPRESSION_NONE, decompress_into};
+use crate::compression::{COMPRESSION_NONE, decompress_append, decompress_into};
 use crate::error::{LevelDbError, Result};
 use crate::manifest::{Manifest, TableFileMeta};
 use crate::options::{ReadOptions, ScanMode, ScanOutcome, VisitorControl};
@@ -20,10 +20,6 @@ const LEVELDB_TABLE_MAGIC: u64 = 0xdb47_7524_8b80_fb57;
 const LEVELDB_FOOTER_LEN: usize = 48;
 const LEVELDB_BLOCK_TRAILER_LEN: usize = 5;
 
-// Windows and Linux benefit from fewer, larger positional reads on the large SST
-// fixture. Apple/other targets stay conservative until platform-specific data says
-// otherwise. This is only an I/O batching boundary; individual LevelDB blocks are
-// still checksum-verified and decompressed independently.
 const RUN_TARGET_ENCODED_BYTES: u64 = if cfg!(any(
     windows,
     target_os = "linux",
@@ -49,9 +45,6 @@ const MIN_RUN_BUFFER_POOL: usize = 2;
 const WINDOWS_WORKER_FILE_CACHE_CAPACITY: usize = 8;
 
 thread_local! {
-    /// Encoded run input never crosses the worker boundary. Keeping one Vec per
-    /// Rayon worker avoids both per-run allocation and retaining encoded bytes in
-    /// pending merge results.
     static RUN_READ_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(
         RUN_TARGET_ENCODED_BYTES as usize + LEVELDB_BLOCK_TRAILER_LEN,
     ));
@@ -59,10 +52,6 @@ thread_local! {
 
 #[cfg(windows)]
 thread_local! {
-    /// Synchronous Windows file handles serialize I/O issued through the same
-    /// handle. Each persistent Rayon worker therefore keeps a small bounded cache
-    /// of independently opened SST handles so different workers can issue reads to
-    /// one large SST concurrently without switching the crate to overlapped I/O.
     static WINDOWS_WORKER_FILES: RefCell<WindowsWorkerFileCache> =
         RefCell::new(WindowsWorkerFileCache::default());
 }
@@ -207,7 +196,7 @@ struct BlockMeta {
 
 #[derive(Default)]
 struct RunBuffers {
-    decoded_blocks: Vec<Vec<u8>>,
+    decoded: Vec<u8>,
     keys: Vec<u8>,
     entries: Vec<BlockEntry>,
     block_meta: Vec<BlockMeta>,
@@ -217,17 +206,12 @@ struct RunBuffers {
 
 impl RunBuffers {
     fn prepare(&mut self, block_count: usize) {
+        self.decoded.clear();
         self.keys.clear();
         self.entries.clear();
         self.block_meta.clear();
         self.decoder_key.clear();
         self.previous_user_key.clear();
-        for decoded in &mut self.decoded_blocks {
-            decoded.clear();
-        }
-        if self.decoded_blocks.len() < block_count {
-            self.decoded_blocks.resize_with(block_count, Vec::new);
-        }
         if self.block_meta.capacity() < block_count {
             self.block_meta.reserve(block_count);
         }
@@ -253,7 +237,7 @@ impl RunBuffers {
         let entry = self.entry(block_index, entry_index);
         let start = entry.value_start as usize;
         let end = start + entry.value_len as usize;
-        &self.decoded_blocks[block_index][start..end]
+        &self.decoded[start..end]
     }
 
     fn is_value(&self, block_index: usize, entry_index: usize) -> bool {
@@ -312,9 +296,7 @@ impl RunBufferPool {
     }
 
     fn recycle(&self, mut buffers: RunBuffers) {
-        for decoded in &mut buffers.decoded_blocks {
-            decoded.clear();
-        }
+        buffers.decoded.clear();
         buffers.keys.clear();
         buffers.entries.clear();
         buffers.block_meta.clear();
@@ -452,14 +434,6 @@ impl WindowsWorkerFileCache {
     }
 }
 
-/// Scans current SSTables with visibility-correct newest-table semantics.
-///
-/// Sequential mode uses direct borrowed cursors. Native `ParallelTables` mode
-/// parses every SST index once, coalesces adjacent data blocks into bounded
-/// physical runs, reads each run with one positional I/O, performs CRC/DEFLATE on
-/// persistent Rayon workers, and merges table lanes in user-key order. Values are
-/// never copied into cross-thread batches: the visitor borrows them directly from
-/// the decoded block retained by the current run.
 pub(crate) fn scan_tables_visible<F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
@@ -517,11 +491,6 @@ where
     }
 }
 
-/// Reduces visible keys into independent caller-owned partitions.
-///
-/// Native parallel mode performs I/O, checksum validation and decompression on
-/// block-range workers. Visibility reduction remains ordered, and keys are routed
-/// into stable independent states without a second key-copy pipeline.
 pub(crate) fn scan_table_keys_partitioned<T, I, F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
@@ -805,11 +774,22 @@ fn prepare_native_scan(
     Ok(PreparedScan::Native { plans, workers })
 }
 
-fn target_inflight_runs(workers: usize, table_count: usize, total_runs: usize) -> usize {
-    let with_headroom = workers.saturating_add(workers.div_ceil(2));
-    with_headroom
+fn target_inflight_runs(
+    options: &ReadOptions,
+    workers: usize,
+    table_count: usize,
+    total_runs: usize,
+) -> usize {
+    let automatic = workers.saturating_add(workers.div_ceil(2));
+    let requested = if options.pipeline.queue_depth == 0 {
+        automatic
+    } else {
+        options.pipeline.queue_depth
+    };
+    requested
         .max(table_count)
         .min(total_runs.max(1))
+        .min(64)
         .max(1)
 }
 
@@ -827,7 +807,7 @@ where
 {
     let table_count = plans.len();
     let total_runs = plans.iter().map(|plan| plan.runs.len()).sum::<usize>();
-    let target_inflight = target_inflight_runs(workers, table_count, total_runs);
+    let target_inflight = target_inflight_runs(options, workers, table_count, total_runs);
     let prefetch = target_inflight
         .div_ceil(table_count.max(1))
         .clamp(1, MAX_PREFETCH_RUNS_PER_TABLE);
@@ -958,8 +938,6 @@ fn seed_all_lanes<'scope>(
     stop: &Arc<AtomicBool>,
     cancel: Option<crate::options::ScanCancelFlag>,
 ) {
-    // Round-robin + FIFO keeps the first physical run of every table ahead of
-    // speculative prefetch, minimizing the time before the global merge can start.
     for _ in 0..prefetch {
         for table_index in 0..lanes.len() {
             let _ = schedule_next_run(
@@ -1133,8 +1111,8 @@ fn decode_planned_run(
         .map_err(|error| LevelDbError::io_at("read planned block run", &plan.path, error))?;
 
     output.prepare(run.block_count);
-    let (decoded_blocks, keys, entries, block_meta, decoder_key, previous_user_key) = (
-        &mut output.decoded_blocks,
+    let (decoded, keys, entries, block_meta, decoder_key, previous_user_key) = (
+        &mut output.decoded,
         &mut output.keys,
         &mut output.entries,
         &mut output.block_meta,
@@ -1187,20 +1165,18 @@ fn decode_planned_run(
             }
         }
 
-        let decoded = &mut decoded_blocks[local_block];
-        if compression_tag == COMPRESSION_NONE {
-            decoded.clear();
-            decoded.extend_from_slice(payload);
-        } else {
-            decompress_into(compression_tag, payload, decoded)?;
-        }
+        let decoded_start = decoded.len();
+        decompress_append(compression_tag, payload, decoded)?;
+        let decoded_end = decoded.len();
+        let block = &decoded[decoded_start..decoded_end];
 
         decoder_key.clear();
         previous_user_key.clear();
         let entry_start = u32::try_from(entries.len())
             .map_err(|_| LevelDbError::corruption("run entry arena exceeds u32"))?;
         decode_block_entries(
-            decoded,
+            block,
+            decoded_start,
             plan.lower.as_deref(),
             plan.upper.as_deref(),
             keys,
@@ -1218,8 +1194,10 @@ fn decode_planned_run(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_block_entries(
     decoded: &[u8],
+    decoded_base: usize,
     lower: Option<&[u8]>,
     upper: Option<&[u8]>,
     keys: &mut Vec<u8>,
@@ -1277,7 +1255,10 @@ fn decode_block_entries(
             .map_err(|_| LevelDbError::corruption("run key arena exceeds u32"))?;
         let key_len = u32::try_from(user_key.len())
             .map_err(|_| LevelDbError::corruption("native user key exceeds u32"))?;
-        let value_start_u32 = u32::try_from(value_start)
+        let absolute_value_start = decoded_base
+            .checked_add(value_start)
+            .ok_or_else(|| LevelDbError::corruption("run decoded value offset overflow"))?;
+        let value_start_u32 = u32::try_from(absolute_value_start)
             .map_err(|_| LevelDbError::corruption("native value offset exceeds u32"))?;
         let value_len_u32 = u32::try_from(value_end.saturating_sub(value_start))
             .map_err(|_| LevelDbError::corruption("native value length exceeds u32"))?;
@@ -1540,10 +1521,6 @@ fn scan_pool(workers: usize) -> Result<Arc<rayon::ThreadPool>> {
 fn open_windows_worker_file(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
 
-    // Worker runs are deliberately distributed among threads, so the access
-    // pattern of one worker handle is strided rather than strictly sequential.
-    // RANDOM_ACCESS prevents aggressive per-handle sequential readahead from
-    // duplicating cache work while independent handles provide actual concurrency.
     const FILE_FLAG_RANDOM_ACCESS: u32 = 0x1000_0000;
     std::fs::OpenOptions::new()
         .read(true)
@@ -1746,14 +1723,15 @@ mod tests {
         let pool = RunBufferPool::with_count(1);
         let mut buffers = pool.take();
         buffers.keys.reserve(16 * 1024);
-        buffers.decoded_blocks.push(vec![1_u8; 4096]);
+        buffers.decoded.reserve(64 * 1024);
+        buffers.decoded.extend_from_slice(&vec![1_u8; 4096]);
         let key_capacity = buffers.keys.capacity();
-        let decoded_capacity = buffers.decoded_blocks[0].capacity();
+        let decoded_capacity = buffers.decoded.capacity();
         pool.recycle(buffers);
         let buffers = pool.take();
         assert!(buffers.keys.capacity() >= key_capacity);
-        assert!(buffers.decoded_blocks[0].capacity() >= decoded_capacity);
-        assert!(buffers.decoded_blocks[0].is_empty());
+        assert!(buffers.decoded.capacity() >= decoded_capacity);
+        assert!(buffers.decoded.is_empty());
     }
 
     #[test]
@@ -1765,8 +1743,13 @@ mod tests {
 
     #[test]
     fn inflight_window_has_bounded_worker_headroom() {
-        assert_eq!(target_inflight_runs(16, 5, 10_000), 24);
-        assert_eq!(target_inflight_runs(4, 20, 100), 20);
-        assert_eq!(target_inflight_runs(16, 5, 7), 7);
+        let default_options = ReadOptions::default();
+        assert_eq!(target_inflight_runs(&default_options, 16, 5, 10_000), 24);
+        assert_eq!(target_inflight_runs(&default_options, 4, 20, 100), 20);
+        assert_eq!(target_inflight_runs(&default_options, 16, 5, 7), 7);
+
+        let mut tuned = ReadOptions::default();
+        tuned.pipeline.queue_depth = 12;
+        assert_eq!(target_inflight_runs(&tuned, 16, 5, 10_000), 12);
     }
 }
