@@ -25,6 +25,7 @@
 #![warn(missing_docs)]
 
 mod batch;
+mod bloom;
 mod coding;
 mod compaction;
 mod compression;
