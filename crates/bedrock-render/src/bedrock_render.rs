@@ -6,7 +6,7 @@
 
 pub mod editor;
 mod error;
-/// Exact non-rectangular selection planning and data loading for render consumers.
+/// Exact non-rectangular selection planning with separate compact 2D-surface and full 3D-chunk loads.
 pub mod exact_selection;
 mod palette;
 mod renderer;
