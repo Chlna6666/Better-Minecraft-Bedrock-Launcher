@@ -141,16 +141,18 @@ impl Default for ReadOptions {
     }
 }
 
-/// Bounded pipeline policy used by table scans.
+/// Bounded pipeline policy used by scans.
 ///
-/// A zero value chooses an automatic default based on worker count and table
-/// count.
+/// A zero value chooses an automatic default. The native parallel scanner plans
+/// contiguous SST data-block runs and keeps only a bounded number of decoded runs
+/// in flight, so memory use is independent of the total database size.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScanPipelineOptions {
-    /// Maximum number of queued scan messages before worker threads apply
-    /// backpressure.
+    /// Maximum number of decoded block-runs kept in flight by a native parallel
+    /// scan. `0` selects an automatic window based on worker and table count.
     pub queue_depth: usize,
-    /// Number of table files assigned to one Rayon work item.
+    /// Legacy table-batch tuning knob retained for source compatibility. Native
+    /// block-range scans no longer use table files as the Rayon work-item unit.
     pub table_batch_size: usize,
     /// Emit progress after this many visited records.
     pub progress_interval: usize,
@@ -163,10 +165,10 @@ pub struct WriteOptions {
     pub sync: bool,
 }
 
-/// How many worker threads a table-parallel scan may use.
+/// How many worker threads a parallel scan may use.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThreadingOptions {
-    /// Use available parallelism, capped by the number of table files.
+    /// Use available parallelism, capped by the number of planned work items.
     #[default]
     Auto,
     /// Use an explicit worker count in `1..=512`.
@@ -181,7 +183,7 @@ pub enum ScanMode {
     /// Visit table files on the calling thread in manifest order.
     #[default]
     Sequential,
-    /// Partition table files across bounded workers.
+    /// Plan SST data-block ranges and process them on bounded workers.
     ParallelTables,
 }
 
@@ -310,9 +312,7 @@ impl ScanOutcome {
             .table_index_misses
             .saturating_add(other.table_index_misses);
         self.data_block_hits = self.data_block_hits.saturating_add(other.data_block_hits);
-        self.data_block_misses = self
-            .data_block_misses
-            .saturating_add(other.data_block_misses);
+        self.data_block_misses = self.data_block_misses.saturating_add(other.data_block_misses);
     }
 }
 
@@ -346,7 +346,7 @@ impl ScanCancelFlag {
 }
 
 impl ScanPipelineOptions {
-    /// Resolves the bounded queue depth for a scan.
+    /// Resolves the bounded in-flight depth for a scan.
     #[must_use]
     pub fn resolve_queue_depth(self, workers: usize, _tables: usize) -> usize {
         if self.queue_depth != 0 {
@@ -355,7 +355,7 @@ impl ScanPipelineOptions {
         workers.max(1).saturating_mul(2).min(64)
     }
 
-    /// Resolves the table batch size for one Rayon task.
+    /// Resolves the legacy table batch size.
     #[must_use]
     pub fn resolve_table_batch_size(self, workers: usize, tables: usize) -> usize {
         self.table_batch_size
