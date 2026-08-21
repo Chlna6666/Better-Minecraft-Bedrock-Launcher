@@ -8,33 +8,21 @@ pub use core::{
     ValueRef,
 };
 
+use crate::batch::WriteBatch;
 use crate::error::{LevelDbError, Result};
-use crate::options::{LevelDbOpenOptions, ReadOptions, ReadStrategy, ScanOutcome, VisitorControl};
+use crate::options::{
+    LevelDbOpenOptions, ReadOptions, ReadStrategy, ScanOutcome, VisitorControl, WriteOptions,
+};
 use bytes::Bytes;
-use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::Arc;
 
 /// Public database handle.
 ///
-/// Point reads, writes, WAL, snapshots and maintenance remain implemented by the
-/// stable core handle. Scan APIs are overridden here so visibility scans use the
-/// borrowed k-way/range implementation instead of the historical SST-wide seen set.
+/// Point reads, WAL writes, snapshots and maintenance delegate to the stable core.
+/// Visibility scans are overridden here so SST traversal uses borrowed block buffers,
+/// ordered k-way visibility resolution and disjoint key-range parallelism.
 pub struct Db(core::Db);
-
-impl Deref for Db {
-    type Target = core::Db;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Db {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 
 impl Db {
     /// Opens a Bedrock/native LevelDB directory.
@@ -45,6 +33,70 @@ impl Db {
     /// Rebuilds a native manifest/table from readable tables and logs.
     pub fn repair(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<RepairReport> {
         core::Db::repair(path, options)
+    }
+
+    /// Returns a point-in-time cache statistics snapshot.
+    #[must_use]
+    pub fn cache_stats(&self) -> DbCacheStats {
+        self.0.cache_stats()
+    }
+
+    /// Reads one key using default options.
+    pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        self.0.get(key)
+    }
+
+    /// Reads one key as a borrowed-first value view.
+    pub fn get_ref(&self, key: &[u8]) -> Result<Option<ValueRef<'static>>> {
+        self.0.get_ref(key)
+    }
+
+    /// Reads one key as shared owned bytes.
+    pub fn get_owned(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        self.0.get_owned(key)
+    }
+
+    /// Reads one key with explicit options.
+    pub fn get_with(&self, key: &[u8], options: ReadOptions) -> Result<Option<Bytes>> {
+        self.0.get_with(key, options)
+    }
+
+    /// Reads one key with explicit borrowed/shared/owned strategy.
+    pub fn get_with_ref(
+        &self,
+        key: &[u8],
+        options: ReadOptions,
+    ) -> Result<Option<ValueRef<'static>>> {
+        self.0.get_with_ref(key, options)
+    }
+
+    /// Reads many exact keys while preserving input order.
+    pub fn get_many_owned(
+        &self,
+        keys: impl IntoIterator<Item = Bytes>,
+        options: ReadOptions,
+    ) -> Result<Vec<Option<Bytes>>> {
+        self.0.get_many_owned(keys, options)
+    }
+
+    /// Appends one put operation to the WAL-backed active memtable.
+    pub fn put(
+        &self,
+        key: impl Into<Bytes>,
+        value: impl Into<Bytes>,
+        options: WriteOptions,
+    ) -> Result<()> {
+        self.0.put(key, value, options)
+    }
+
+    /// Appends one delete operation to the WAL-backed active memtable.
+    pub fn delete(&self, key: impl Into<Bytes>, options: WriteOptions) -> Result<()> {
+        self.0.delete(key, options)
+    }
+
+    /// Appends an atomic write batch.
+    pub fn write(&self, batch: WriteBatch, options: WriteOptions) -> Result<()> {
+        self.0.write(batch, options)
     }
 
     /// Visits visible keys through the visibility-correct borrowed k-way scan.
@@ -71,7 +123,7 @@ impl Db {
         self.0.for_each_entry_borrowed_v2(options, visitor)
     }
 
-    /// Compatibility visitor that materializes a `Bytes` value for each record.
+    /// Compatibility visitor that materializes one `Bytes` value per record.
     /// Prefer [`Db::for_each_entry_ref`] or [`Db::for_each_entry_borrowed`] in hot paths.
     pub fn for_each_entry<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
     where
@@ -111,7 +163,7 @@ impl Db {
         self.0.for_each_prefix_borrowed_v2(prefix, options, visitor)
     }
 
-    /// Compatibility prefix visitor that materializes one `Bytes` per value.
+    /// Compatibility prefix visitor that materializes one `Bytes` value per record.
     pub fn for_each_prefix<F>(
         &self,
         prefix: &[u8],
@@ -172,6 +224,28 @@ impl Db {
         self.0.scan_keys_partitioned_v2(options, init, visitor)
     }
 
+    /// Runs an entry reduction through the compatibility `Bytes` visitor.
+    ///
+    /// This API remains for source compatibility; value-heavy hot paths should use
+    /// borrowed entry scans and perform worker-local reduction at their own layer.
+    pub fn scan_entries_partitioned<T, I, F>(
+        &self,
+        options: ReadOptions,
+        init: I,
+        visitor: F,
+    ) -> Result<(ScanOutcome, Vec<T>)>
+    where
+        T: Send,
+        I: Fn() -> T + Send + Sync,
+        F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
+    {
+        let mut partition = init();
+        let outcome = self.for_each_entry(options, |key, value| {
+            visitor(&mut partition, key, value)
+        })?;
+        Ok((outcome, vec![partition]))
+    }
+
     /// Collects visible keys using the borrowed key scan.
     pub fn collect_keys_owned(&self, options: ReadOptions) -> Result<Vec<Bytes>> {
         let mut keys = Vec::new();
@@ -196,7 +270,7 @@ impl Db {
         Ok(keys)
     }
 
-    /// Collects visible prefix entries, materializing only the requested output.
+    /// Collects visible prefix entries, materializing only requested output values.
     pub fn collect_prefix_owned(
         &self,
         prefix: &[u8],
@@ -211,6 +285,39 @@ impl Db {
             Ok(VisitorControl::Continue)
         })?;
         Ok(entries)
+    }
+
+    /// Materializes all visible entries into an iterator.
+    ///
+    /// Iterator materialization is not a streaming hot path and remains delegated to
+    /// the stable pinned-snapshot implementation.
+    pub fn iterator(&self, options: ReadOptions) -> Result<RawIterator> {
+        self.0.iterator(options)
+    }
+
+    /// Materializes visible prefix entries into an iterator.
+    pub fn prefix_iterator(&self, prefix: &[u8], options: ReadOptions) -> Result<PrefixIterator> {
+        self.0.prefix_iterator(prefix, options)
+    }
+
+    /// Materializes a point-in-time visible snapshot.
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        self.0.snapshot()
+    }
+
+    /// Flushes the active memtable and waits for durability.
+    pub fn flush(&self) -> Result<()> {
+        self.0.flush()
+    }
+
+    /// Flushes outstanding writes and forces leveled compaction.
+    pub fn compact(&self) -> Result<()> {
+        self.0.compact()
+    }
+
+    /// Returns metadata/memtable statistics without table scans.
+    pub fn stats_fast(&self) -> Result<DbStats> {
+        self.0.stats_fast()
     }
 
     /// Computes full statistics using the borrowed visibility scan.
