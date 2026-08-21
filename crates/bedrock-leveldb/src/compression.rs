@@ -208,7 +208,10 @@ mod zlib {
 
     fn ensure_capacity(buffer: &mut Vec<u8>, required: usize) {
         if buffer.capacity() < required {
-            buffer.reserve(required.saturating_sub(buffer.capacity()));
+            // `reserve` is relative to the current length, not current capacity. Callers clear the
+            // buffer before this helper, but using `len` here also keeps the helper correct if that
+            // invariant changes later.
+            buffer.reserve(required.saturating_sub(buffer.len()));
         }
     }
 
