@@ -78,10 +78,6 @@ impl WriteBatch {
     }
 
     /// Returns an upper-bound-oriented encoded payload size estimate.
-    ///
-    /// The result includes the 12-byte batch header, operation tags, key/value bytes and a
-    /// conservative five-byte varint allowance for each length-prefixed slice. It is intended for
-    /// queue/backpressure decisions and capacity reservation, not as a replacement for [`Self::encode`].
     #[must_use]
     pub fn encoded_len_hint(&self) -> usize {
         self.ops.iter().fold(12usize, |total, op| match op {
@@ -109,15 +105,8 @@ impl WriteBatch {
 
     /// Removes superseded writes to the same key using LevelDB's last-write-wins semantics.
     ///
-    /// The final operation for every key is retained, and retained operations keep their relative
-    /// order from the original batch. This is useful for map-editor transactions where the same
-    /// chunk/subchunk record may be updated several times before commit: compacting avoids redundant
-    /// WAL and memtable traffic without changing the visible result of the batch.
-    ///
     /// The operation vector is compacted in place so large transactions retain and reuse their
     /// existing allocation instead of creating a second operation vector of equal capacity.
-    ///
-    /// Returns the number of removed operations.
     pub fn compact_last_write_wins(&mut self) -> usize {
         if self.ops.len() < 2 {
             return 0;
@@ -130,41 +119,45 @@ impl WriteBatch {
         original_len.saturating_sub(self.ops.len())
     }
 
-    /// Encodes this batch into the `LevelDB` write batch wire format.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LevelDbError::InvalidArgument`] when the batch contains more
-    /// than `u32::MAX` operations or when a key/value slice is too large to
-    /// encode as a `LevelDB` length-prefixed slice.
+    /// Encodes this batch into a newly allocated LevelDB write-batch buffer.
     pub fn encode(&self) -> Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(self.encoded_len_hint());
+        self.encode_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Encodes this batch into a caller-owned reusable buffer.
+    ///
+    /// Existing capacity is retained so high-frequency writers can keep one
+    /// thread-local WAL scratch allocation instead of allocating for every
+    /// batch.
+    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) -> Result<()> {
         let op_count = u32::try_from(self.ops.len())
             .map_err(|_| LevelDbError::invalid_argument("batch is too large".to_string()))?;
-        let mut out = Vec::with_capacity(self.encoded_len_hint());
+        out.clear();
+        let required = self.encoded_len_hint();
+        if out.capacity() < required {
+            out.reserve(required.saturating_sub(out.len()));
+        }
         out.extend_from_slice(&self.sequence.to_le_bytes());
         out.extend_from_slice(&op_count.to_le_bytes());
         for op in &self.ops {
             match op {
                 WriteOp::Put { key, value } => {
                     out.push(VALUE_TYPE_VALUE);
-                    put_length_prefixed_slice(key, &mut out)?;
-                    put_length_prefixed_slice(value, &mut out)?;
+                    put_length_prefixed_slice(key, out)?;
+                    put_length_prefixed_slice(value, out)?;
                 }
                 WriteOp::Delete { key } => {
                     out.push(VALUE_TYPE_DELETION);
-                    put_length_prefixed_slice(key, &mut out)?;
+                    put_length_prefixed_slice(key, out)?;
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Decodes one `LevelDB` write batch payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LevelDbError::Corruption`] when the header, record count, tag,
-    /// or length-prefixed payloads are malformed.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 12 {
             return Err(LevelDbError::corruption(
@@ -181,9 +174,6 @@ impl WriteBatch {
             .map_err(|_| LevelDbError::corruption("batch count overflow".to_string()))?;
 
         let mut input = &bytes[12..];
-        // Every operation requires at least a one-byte tag and a one-byte
-        // length prefix, even when its key is empty. Reject impossible counts
-        // before reserving attacker-controlled capacity.
         if expected_count > input.len() / 2 {
             return Err(LevelDbError::corruption(format!(
                 "batch record count {expected_count} exceeds payload capacity"
@@ -271,6 +261,17 @@ mod tests {
         batch.delete(Bytes::from_static(b"b"));
         let encoded = batch.encode().expect("encode");
         assert!(batch.encoded_len_hint() >= encoded.len());
+    }
+
+    #[test]
+    fn encode_into_reuses_existing_capacity() {
+        let mut batch = WriteBatch::new();
+        batch.put(Bytes::from_static(b"a"), Bytes::from_static(b"value"));
+        let mut scratch = Vec::with_capacity(4096);
+        let ptr = scratch.as_ptr();
+        batch.encode_into(&mut scratch).expect("encode into");
+        assert_eq!(scratch.as_ptr(), ptr);
+        assert_eq!(WriteBatch::decode(&scratch).expect("decode"), batch);
     }
 
     #[test]
