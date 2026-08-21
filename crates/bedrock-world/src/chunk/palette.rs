@@ -47,6 +47,7 @@ pub(crate) struct PackedPaletteIndices {
 }
 
 impl PackedPaletteIndices {
+    #[inline]
     pub(crate) fn get(&self, index: usize) -> Option<u16> {
         if index >= 4096 {
             return None;
@@ -67,30 +68,6 @@ impl PackedPaletteIndices {
         let mask = (1_u32 << self.bits_per_block) - 1;
         let value = ((word >> (item_index * usize::from(self.bits_per_block))) & mask) as u16;
         (usize::from(value) < self.palette_len).then_some(value)
-    }
-
-    pub(crate) fn decode_all(&self) -> Option<Vec<u16>> {
-        if self.bits_per_block == 0 {
-            return Some(vec![0; 4096]);
-        }
-        let values_per_word = usize::from(32 / self.bits_per_block);
-        let mask = (1_u32 << self.bits_per_block) - 1;
-        let mut values = Vec::with_capacity(4096);
-        for word_bytes in self.bytes.chunks_exact(4) {
-            let word = u32::from_le_bytes(word_bytes.try_into().ok()?);
-            for item_index in 0..values_per_word {
-                if values.len() == 4096 {
-                    return Some(values);
-                }
-                let value =
-                    ((word >> (item_index * usize::from(self.bits_per_block))) & mask) as u16;
-                if usize::from(value) >= self.palette_len {
-                    return None;
-                }
-                values.push(value);
-            }
-        }
-        (values.len() == 4096).then_some(values)
     }
 }
 
@@ -116,7 +93,14 @@ impl BlockPalette {
         if local_x >= 16 || local_y >= 16 || local_z >= 16 {
             return None;
         }
-        let index = block_storage_index(local_x, local_y, local_z);
+        self.palette_index_by_storage_index(block_storage_index(local_x, local_y, local_z))
+    }
+
+    #[inline]
+    pub(crate) fn palette_index_by_storage_index(&self, index: usize) -> Option<u16> {
+        if index >= 4096 {
+            return None;
+        }
         self.indices
             .as_ref()
             .and_then(|indices| indices.get(index).copied())
@@ -144,11 +128,15 @@ impl BlockPalette {
         })
     }
 
+    /// Returns already-unpacked indices when they exist.
+    ///
+    /// Packed `SurfaceColumns`/`PackedIndices` storage deliberately returns `None` here so callers
+    /// use [`Self::palette_index_by_storage_index`] instead of materializing a temporary 4096-entry
+    /// `Vec<u16>`. This keeps the exact surface path on the shared packed SubChunk backing buffer.
     pub(crate) fn surface_indices(&self) -> Option<Cow<'_, [u16]>> {
-        if let Some(indices) = &self.indices {
-            return (indices.len() >= 4096).then(|| Cow::Borrowed(&indices[..4096]));
-        }
-        self.packed_indices.as_ref()?.decode_all().map(Cow::Owned)
+        self.indices
+            .as_ref()
+            .and_then(|indices| (indices.len() >= 4096).then(|| Cow::Borrowed(&indices[..4096])))
     }
 }
 
