@@ -3,13 +3,14 @@ use crate::compression::{COMPRESSION_NONE, decompress_into};
 use crate::error::{LevelDbError, Result};
 use crate::manifest::{Manifest, TableFileMeta};
 use crate::options::{ReadOptions, ScanMode, ScanOutcome, VisitorControl};
+use crate::table_cursor::BorrowedTableCursor;
 use rayon::ScopeFifo;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
     mpsc::{Receiver, Sender, channel},
 };
@@ -18,9 +19,30 @@ const CUSTOM_TABLE_MAGIC: &[u8; 9] = b"BWLDBTBL1";
 const LEVELDB_TABLE_MAGIC: u64 = 0xdb47_7524_8b80_fb57;
 const LEVELDB_FOOTER_LEN: usize = 48;
 const LEVELDB_BLOCK_TRAILER_LEN: usize = 5;
-const RUN_TARGET_ENCODED_BYTES: u64 = 512 * 1024;
-const RUN_MAX_BLOCKS: usize = 128;
-const MAX_PREFETCH_RUNS_PER_TABLE: usize = 16;
+
+// Windows and Linux benefit from fewer, larger positional reads on the large SST
+// fixture. Apple/other targets stay conservative until platform-specific data says
+// otherwise. This is only an I/O batching boundary; individual LevelDB blocks are
+// still checksum-verified and decompressed independently.
+const RUN_TARGET_ENCODED_BYTES: u64 = if cfg!(any(
+    windows,
+    target_os = "linux",
+    target_os = "android"
+)) {
+    1024 * 1024
+} else {
+    512 * 1024
+};
+const RUN_MAX_BLOCKS: usize = if cfg!(any(
+    windows,
+    target_os = "linux",
+    target_os = "android"
+)) {
+    256
+} else {
+    128
+};
+const MAX_PREFETCH_RUNS_PER_TABLE: usize = 32;
 const MIN_RUN_BUFFER_POOL: usize = 2;
 
 thread_local! {
@@ -74,7 +96,7 @@ impl NativeTablePlan {
         if !path.exists() {
             return Ok(PlanOpen::Skip);
         }
-        let file = File::open(&path)
+        let file = open_scan_file(&path)
             .map_err(|error| LevelDbError::io_at("open planned table", &path, error))?;
         let mut magic = [0_u8; CUSTOM_TABLE_MAGIC.len()];
         let read = read_at(&file, &mut magic, 0)
@@ -136,7 +158,7 @@ enum PreparedScan {
         plans: Vec<Arc<NativeTablePlan>>,
         workers: usize,
     },
-    Legacy,
+    Sequential,
     Empty,
 }
 
@@ -187,15 +209,14 @@ impl RunBuffers {
         self.block_meta.clear();
         self.decoder_key.clear();
         self.previous_user_key.clear();
+        for decoded in &mut self.decoded_blocks {
+            decoded.clear();
+        }
         if self.decoded_blocks.len() < block_count {
             self.decoded_blocks.resize_with(block_count, Vec::new);
         }
-        for decoded in &mut self.decoded_blocks[..block_count] {
-            decoded.clear();
-        }
         if self.block_meta.capacity() < block_count {
-            self.block_meta
-                .reserve(block_count.saturating_sub(self.block_meta.len()));
+            self.block_meta.reserve(block_count);
         }
     }
 
@@ -278,6 +299,9 @@ impl RunBufferPool {
     }
 
     fn recycle(&self, mut buffers: RunBuffers) {
+        for decoded in &mut buffers.decoded_blocks {
+            decoded.clear();
+        }
         buffers.keys.clear();
         buffers.entries.clear();
         buffers.block_meta.clear();
@@ -376,10 +400,17 @@ impl TableLane {
     }
 }
 
+struct SequentialSource {
+    cursor: BorrowedTableCursor,
+    key: Vec<u8>,
+    is_value: bool,
+    rank: usize,
+}
+
 /// Scans current SSTables with visibility-correct newest-table semantics.
 ///
-/// Sequential mode retains the direct borrowed cursor. Native `ParallelTables`
-/// mode parses every SST index once, coalesces adjacent data blocks into bounded
+/// Sequential mode uses direct borrowed cursors. Native `ParallelTables` mode
+/// parses every SST index once, coalesces adjacent data blocks into bounded
 /// physical runs, reads each run with one positional I/O, performs CRC/DEFLATE on
 /// persistent Rayon workers, and merges table lanes in user-key order. Values are
 /// never copied into cross-thread batches: the visitor borrows them directly from
@@ -398,13 +429,13 @@ where
     S: Fn(&[u8]) -> bool + Sync,
 {
     if options.scan_mode != ScanMode::ParallelTables {
-        return legacy_scan_tables(
+        return scan_sequential(
             root,
             tables_newest_first,
             prefix,
             paranoid_checks,
             options,
-            shadowed,
+            &shadowed,
             visitor,
         );
     }
@@ -424,13 +455,13 @@ where
             &shadowed,
             visitor,
         ),
-        PreparedScan::Legacy => legacy_scan_tables(
+        PreparedScan::Sequential => scan_sequential(
             root,
             tables_newest_first,
             prefix,
             paranoid_checks,
             options,
-            shadowed,
+            &shadowed,
             visitor,
         ),
         PreparedScan::Empty => {
@@ -443,10 +474,9 @@ where
 
 /// Reduces visible keys into independent caller-owned partitions.
 ///
-/// I/O, checksum validation and decompression use the same block-range workers as
-/// entry scans, so each SST block is read and inflated once. The lightweight key
-/// reduction runs at merge time against borrowed run-level key arenas, avoiding
-/// a second key-copy pipeline and allocator churn.
+/// Native parallel mode performs I/O, checksum validation and decompression on
+/// block-range workers. Visibility reduction remains ordered, and keys are routed
+/// into stable independent states without a second key-copy pipeline.
 pub(crate) fn scan_table_keys_partitioned<T, I, F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
@@ -464,16 +494,17 @@ where
     S: Fn(&[u8]) -> bool + Send + Sync,
 {
     if options.scan_mode != ScanMode::ParallelTables {
-        return crate::table_scan_legacy::scan_table_keys_partitioned(
+        let mut partition = init();
+        let outcome = scan_sequential(
             root,
             tables_newest_first,
             prefix,
             paranoid_checks,
             options,
-            shadowed,
-            init,
-            visitor,
-        );
+            &shadowed,
+            &mut |key, _value| visitor(&mut partition, key),
+        )?;
+        return Ok((outcome, vec![partition]));
     }
 
     match prepare_native_scan(
@@ -500,16 +531,19 @@ where
             )?;
             Ok((outcome, partitions))
         }
-        PreparedScan::Legacy => crate::table_scan_legacy::scan_table_keys_partitioned(
-            root,
-            tables_newest_first,
-            prefix,
-            paranoid_checks,
-            options,
-            shadowed,
-            init,
-            visitor,
-        ),
+        PreparedScan::Sequential => {
+            let mut partition = init();
+            let outcome = scan_sequential(
+                root,
+                tables_newest_first,
+                prefix,
+                paranoid_checks,
+                options,
+                &shadowed,
+                &mut |key, _value| visitor(&mut partition, key),
+            )?;
+            Ok((outcome, vec![partition]))
+        }
         PreparedScan::Empty => {
             let mut outcome = ScanOutcome::empty();
             outcome.worker_threads = 1;
@@ -518,28 +552,176 @@ where
     }
 }
 
-fn legacy_scan_tables<F, S>(
+fn scan_sequential<F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
     prefix: Option<&[u8]>,
     paranoid_checks: bool,
     options: &ReadOptions,
-    shadowed: S,
+    shadowed: &S,
     visitor: &mut F,
 ) -> Result<ScanOutcome>
 where
-    F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
-    S: Fn(&[u8]) -> bool + Sync,
+    F: FnMut(&[u8], &[u8]) -> Result<VisitorControl>,
+    S: Fn(&[u8]) -> bool,
 {
-    crate::table_scan_legacy::scan_tables_visible(
+    let (lower, upper) = prefix_bounds(prefix);
+    let mut sources = open_sequential_sources(
         root,
         tables_newest_first,
-        prefix,
+        lower.as_deref(),
+        upper.as_deref(),
         paranoid_checks,
-        options,
-        shadowed,
-        visitor,
-    )
+    )?;
+    let mut heap = Vec::<usize>::with_capacity(sources.len());
+    for index in 0..sources.len() {
+        seq_heap_push(&mut heap, index, &sources);
+    }
+
+    let mut outcome = ScanOutcome::empty();
+    outcome.worker_threads = 1;
+    outcome.tables_scanned = sources.len();
+    let progress_interval = options.pipeline.resolve_progress_interval().max(1);
+    let mut same_sources = Vec::<usize>::with_capacity(sources.len().min(8));
+
+    while !heap.is_empty() {
+        check_cancelled(options, &mut outcome)?;
+        let first = seq_heap_pop(&mut heap, &sources).expect("heap was checked as non-empty");
+        same_sources.clear();
+        same_sources.push(first);
+
+        {
+            let winner_key = sources[first].key.as_slice();
+            while let Some(index) = heap.first().copied() {
+                if sources[index].key.as_slice() != winner_key {
+                    break;
+                }
+                same_sources.push(
+                    seq_heap_pop(&mut heap, &sources).expect("equal heap root was checked"),
+                );
+            }
+
+            if !shadowed(winner_key) && sources[first].is_value {
+                let value = sources[first].cursor.current_value().ok_or_else(|| {
+                    LevelDbError::corruption("borrowed table cursor lost current value")
+                })?;
+                outcome.record(value.len());
+                if visitor(winner_key, value)? == VisitorControl::Stop {
+                    outcome.stopped = true;
+                    return Ok(outcome);
+                }
+                emit_progress(options, &outcome, progress_interval);
+            }
+        }
+
+        for source_index in same_sources.iter().copied() {
+            advance_sequential_source(source_index, &mut sources, &mut heap)?;
+        }
+    }
+    Ok(outcome)
+}
+
+fn open_sequential_sources(
+    root: &Path,
+    tables_newest_first: &[TableFileMeta],
+    lower: Option<&[u8]>,
+    upper: Option<&[u8]>,
+    paranoid_checks: bool,
+) -> Result<Vec<SequentialSource>> {
+    let mut sources = Vec::with_capacity(tables_newest_first.len());
+    for (rank, table) in tables_newest_first.iter().enumerate() {
+        if !table_overlaps(table, lower, upper) {
+            continue;
+        }
+        let path = root.join(Manifest::table_name(table.number));
+        if !path.exists() {
+            continue;
+        }
+        let mut cursor = BorrowedTableCursor::open_range(&path, paranoid_checks, lower, upper)?;
+        let mut key = Vec::with_capacity(48);
+        let Some(is_value) = cursor.next_key_into(&mut key)? else {
+            continue;
+        };
+        sources.push(SequentialSource {
+            cursor,
+            key,
+            is_value,
+            rank,
+        });
+    }
+    Ok(sources)
+}
+
+fn advance_sequential_source(
+    index: usize,
+    sources: &mut [SequentialSource],
+    heap: &mut Vec<usize>,
+) -> Result<()> {
+    let has_next = {
+        let source = &mut sources[index];
+        match source.cursor.next_key_into(&mut source.key)? {
+            Some(is_value) => {
+                source.is_value = is_value;
+                true
+            }
+            None => {
+                source.key.clear();
+                source.is_value = false;
+                false
+            }
+        }
+    };
+    if has_next {
+        seq_heap_push(heap, index, sources);
+    }
+    Ok(())
+}
+
+fn seq_heap_less(left: usize, right: usize, sources: &[SequentialSource]) -> bool {
+    sources[left]
+        .key
+        .cmp(&sources[right].key)
+        .then_with(|| sources[left].rank.cmp(&sources[right].rank))
+        .is_lt()
+}
+
+fn seq_heap_push(heap: &mut Vec<usize>, index: usize, sources: &[SequentialSource]) {
+    heap.push(index);
+    let mut child = heap.len() - 1;
+    while child != 0 {
+        let parent = (child - 1) / 2;
+        if !seq_heap_less(heap[child], heap[parent], sources) {
+            break;
+        }
+        heap.swap(child, parent);
+        child = parent;
+    }
+}
+
+fn seq_heap_pop(heap: &mut Vec<usize>, sources: &[SequentialSource]) -> Option<usize> {
+    let last = heap.pop()?;
+    if heap.is_empty() {
+        return Some(last);
+    }
+    let result = std::mem::replace(&mut heap[0], last);
+    let mut parent = 0usize;
+    loop {
+        let left = parent.saturating_mul(2).saturating_add(1);
+        if left >= heap.len() {
+            break;
+        }
+        let right = left + 1;
+        let mut smallest = left;
+        if right < heap.len() && seq_heap_less(heap[right], heap[left], sources) {
+            smallest = right;
+        }
+        if !seq_heap_less(heap[smallest], heap[parent], sources) {
+            break;
+        }
+        heap.swap(parent, smallest);
+        parent = smallest;
+    }
+    Some(result)
 }
 
 fn prepare_native_scan(
@@ -563,7 +745,7 @@ fn prepare_native_scan(
             &mut planning,
         )? {
             PlanOpen::Native(plan) => plans.push(Arc::new(plan)),
-            PlanOpen::LegacyTable => return Ok(PreparedScan::Legacy),
+            PlanOpen::LegacyTable => return Ok(PreparedScan::Sequential),
             PlanOpen::Skip => {}
         }
     }
@@ -573,9 +755,17 @@ fn prepare_native_scan(
     let total_runs = plans.iter().map(|plan| plan.runs.len()).sum::<usize>();
     let workers = options.threading.resolve_checked(total_runs.max(1))?;
     if workers <= 1 {
-        return Ok(PreparedScan::Legacy);
+        return Ok(PreparedScan::Sequential);
     }
     Ok(PreparedScan::Native { plans, workers })
+}
+
+fn target_inflight_runs(workers: usize, table_count: usize, total_runs: usize) -> usize {
+    let with_headroom = workers.saturating_add(workers.div_ceil(2));
+    with_headroom
+        .max(table_count)
+        .min(total_runs.max(1))
+        .max(1)
 }
 
 fn scan_parallel_runs<F, S>(
@@ -591,7 +781,8 @@ where
     S: Fn(&[u8]) -> bool + Sync,
 {
     let table_count = plans.len();
-    let target_inflight = workers.max(table_count);
+    let total_runs = plans.iter().map(|plan| plan.runs.len()).sum::<usize>();
+    let target_inflight = target_inflight_runs(workers, table_count, total_runs);
     let prefetch = target_inflight
         .div_ceil(table_count.max(1))
         .clamp(1, MAX_PREFETCH_RUNS_PER_TABLE);
@@ -601,7 +792,17 @@ where
         .sum::<usize>()
         .max(MIN_RUN_BUFFER_POOL);
 
-    let pool = crate::table_scan_legacy::scan_pool_for_v3(workers)?;
+    log::debug!(
+        "parallel block-range scan plan (tables={}, runs={}, workers={}, inflight={}, prefetch_per_table={}, run_target_kib={})",
+        table_count,
+        total_runs,
+        workers,
+        window_count,
+        prefetch,
+        RUN_TARGET_ENCODED_BYTES / 1024
+    );
+
+    let pool = scan_pool(workers)?;
     let stop = Arc::new(AtomicBool::new(false));
     let buffers = Arc::new(RunBufferPool::with_count(window_count));
     let (sender, receiver) = channel::<DecodeMessage>();
@@ -1264,6 +1465,51 @@ fn emit_progress(options: &ReadOptions, outcome: &ScanOutcome, interval: usize) 
     }
 }
 
+fn scan_pool(workers: usize) -> Result<Arc<rayon::ThreadPool>> {
+    static POOLS: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
+    let pools = POOLS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(pools) = pools.lock()
+        && let Some(pool) = pools.get(&workers)
+    {
+        return Ok(Arc::clone(pool));
+    }
+
+    let pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers.max(1))
+            .thread_name(|index| format!("bedrock-leveldb-scan-{index}"))
+            .build()
+            .map_err(|error| {
+                LevelDbError::join(format!("failed to create scan worker pool: {error}"))
+            })?,
+    );
+    let mut pools = pools
+        .lock()
+        .map_err(|_| LevelDbError::join("scan worker pool registry poisoned"))?;
+    Ok(Arc::clone(
+        pools.entry(workers).or_insert_with(|| Arc::clone(&pool)),
+    ))
+}
+
+#[cfg(windows)]
+fn open_scan_file(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    // FILE_FLAG_SEQUENTIAL_SCAN is only a Cache Manager hint. Do not set
+    // FILE_FLAG_OVERLAPPED: std's synchronous FileExt positional-read contract is
+    // retained and the same file handle remains safe to share between workers.
+    const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_scan_file(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
 fn read_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LEN]> {
     let file_len = file
         .metadata()
@@ -1449,10 +1695,14 @@ mod tests {
         let pool = RunBufferPool::with_count(1);
         let mut buffers = pool.take();
         buffers.keys.reserve(16 * 1024);
-        let capacity = buffers.keys.capacity();
+        buffers.decoded_blocks.push(vec![1_u8; 4096]);
+        let key_capacity = buffers.keys.capacity();
+        let decoded_capacity = buffers.decoded_blocks[0].capacity();
         pool.recycle(buffers);
         let buffers = pool.take();
-        assert!(buffers.keys.capacity() >= capacity);
+        assert!(buffers.keys.capacity() >= key_capacity);
+        assert!(buffers.decoded_blocks[0].capacity() >= decoded_capacity);
+        assert!(buffers.decoded_blocks[0].is_empty());
     }
 
     #[test]
@@ -1460,5 +1710,12 @@ mod tests {
         for key in [b"player_1".as_slice(), &[0, 1, 2, 3], &[255, 255]] {
             assert!(partition_for_key(key, 16) < 16);
         }
+    }
+
+    #[test]
+    fn inflight_window_has_bounded_worker_headroom() {
+        assert_eq!(target_inflight_runs(16, 5, 10_000), 24);
+        assert_eq!(target_inflight_runs(4, 20, 100), 20);
+        assert_eq!(target_inflight_runs(16, 5, 7), 7);
     }
 }
