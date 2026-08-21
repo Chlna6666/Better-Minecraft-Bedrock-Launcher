@@ -27,7 +27,7 @@ be described as physical cold-disk and warm-disk measurements.
 Local run:
 
 ```text
-date: 2026-08-21
+date: 2026-08-22
 host: Windows x86_64 / NTFS
 cpu: AMD Ryzen 7 7840H, 8 cores / 16 logical processors
 disk: Fanxiang S500PRO 1TB NVMe SSD
@@ -54,40 +54,40 @@ chunks on one worker. Disk and CPU columns are averages reported by
 
 | Cache condition | p50 | p95 | Throughput | DB read avg | Decode avg |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `logical_cold` | 570.776 ms | 621.714 ms | 448.51 chunks/s | 228.714 ms | 288.143 ms |
-| `logical_warm` | 545.083 ms | 595.762 ms | 469.65 chunks/s | 225.143 ms | 281.571 ms |
+| `logical_cold` | 362.791 ms | 412.139 ms | 705.64 chunks/s | 156.286 ms | 187.143 ms |
+| `logical_warm` | 349.427 ms | 351.502 ms | 732.63 chunks/s | 146.571 ms | 170.286 ms |
 
 Additional one-shot evidence:
 
 | Operation | Mode | Result |
 | --- | --- | --- |
-| compatibility scan | `single` (1 thread) | 1,764,971 records in 22,129 ms (79,758.28 records/s) |
-| compatibility scan | `parallel_auto` (16 threads) | 1,764,971 records in 27,202 ms (64,883.87 records/s) |
-| classify keys | `single` (1 thread) | 1,764,971 entries in 17,765 ms (99,349.40 entries/s) |
-| classify keys | `parallel_auto` (16 threads) | 1,764,971 entries in 22,918 ms (77,009.41 entries/s) |
-| key scan | `single` (1 thread) | 1,764,971 entries in 16,889 ms (104,503.13 entries/s) |
-| key scan | `parallel_auto` (16 threads) | 1,764,971 entries in 25,327 ms (69,685.92 entries/s) |
-| player prefix scan | `single` (1 thread) | 110 records in 139 ms (788.66 entries/s) |
-| player prefix scan | `parallel_auto` (16 threads) | 110 records in 599 ms (183.35 entries/s) |
-| actorprefix scan | `single` (1 thread) | 53,777 entries in 640 ms (84,014.13 entries/s) |
-| actorprefix scan | `parallel_auto` (16 threads) | 53,777 entries in 842 ms (63,864.45 entries/s) |
-| digp digest scan | `single` (1 thread) | 109,425 entries in 173 ms (629,363.27 entries/s) |
-| digp digest scan | `parallel_auto` (16 threads) | 109,425 entries in 1,091 ms (100,281.15 entries/s) |
-| entity full scan & parse | `single` (1 thread) | 53,777 entities in 29,478 ms (1,824.27 entities/s, 0 errors) |
-| entity full scan & parse | `parallel_auto` (16 threads) | 53,777 entities in 28,964 ms (1,856.64 entities/s, 0 errors) |
-| block entity full scan & parse | `single` (1 thread) | 56,652 block entities in 23,578 ms (2,402.68 entries/s, 0 errors) |
-| block entity full scan & parse | `parallel_auto` (16 threads) | 56,652 block entities in 27,321 ms (2,073.56 entries/s, 0 errors) |
-| player list (dynamic) | 1 thread | 111 players in 669 ms |
-| player list (generic) | 1 thread | 111 players in 661 ms |
-| sample chunk parse | 1 thread | 1 chunk in 672 ms |
-| fixed layer query | 1 thread | 256 chunks in 340 ms; DB 329 ms, decode 9 ms |
+| compatibility scan | `single` (1 thread) | 1,764,971 records in 14,908 ms (118,390.86 records/s) |
+| compatibility scan | `parallel_auto` (16 threads) | 1,764,971 records in 3,372 ms (523,419.63 records/s, 4.42x speedup) |
+| classify keys | `single` (1 thread) | 1,764,971 entries in 14,370 ms (122,822.13 entries/s) |
+| classify keys | `parallel_auto` (16 threads) | 1,764,971 entries in 3,177 ms (555,513.55 entries/s, 4.52x speedup) |
+| key scan | `single` (1 thread) | 1,764,971 entries in 14,154 ms (124,696.99 entries/s) |
+| key scan | `parallel_auto` (16 threads) | 1,764,971 entries in 3,059 ms (576,926.58 entries/s, 4.63x speedup) |
+| player prefix scan | `single` (1 thread) | 110 records in 95 ms (1,153.18 entries/s) |
+| player prefix scan | `parallel_auto` (16 threads) | 110 records in 19 ms (5,712.24 entries/s) |
+| actorprefix scan | `single` (1 thread) | 53,777 entries in 401 ms (133,894.97 entries/s) |
+| actorprefix scan | `parallel_auto` (16 threads) | 53,777 entries in 82 ms (652,717.46 entries/s) |
+| digp digest scan | `single` (1 thread) | 109,425 entries in 123 ms (885,523.30 entries/s) |
+| digp digest scan | `parallel_auto` (16 threads) | 109,425 entries in 37 ms (2,941,034.18 entries/s) |
+| entity full scan & parse | `single` (1 thread) | 53,777 entities in 15,747 ms (3,415.06 entities/s, 0 errors) |
+| entity full scan & parse | `parallel_auto` (16 threads) | 53,777 entities in 4,178 ms (12,870.03 entities/s, 0 errors) |
+| block entity full scan & parse | `single` (1 thread) | 56,652 block entities in 15,071 ms (3,758.83 entries/s, 0 errors) |
+| block entity full scan & parse | `parallel_auto` (16 threads) | 56,652 block entities in 3,488 ms (16,240.82 entries/s, 0 errors) |
+| player list (dynamic) | 1 thread | 111 players in 19 ms |
+| player list (generic) | 1 thread | 111 players in 19 ms |
+| sample chunk parse | 1 thread | 1 chunk in 22 ms |
+| fixed layer query | 1 thread | 256 chunks in 184 ms; DB 177 ms, decode 6 ms |
 
 ## Latest synthetic Criterion result
 
 Local run:
 
 ```text
-date: 2026-08-21
+date: 2026-08-22
 host: Windows / PowerShell
 rustc: 1.95.0 (59807616e 2026-04-14)
 cargo: 1.95.0 (f2d3ce0bd 2026-03-21)
@@ -103,26 +103,27 @@ lib test harness does not accept Criterion's `--noplot` flag.
 
 | Benchmark | Mean | Interval | Throughput |
 | --- | ---: | --- | ---: |
-| `bedrock_world/level_dat/parse_synthetic` | 935.40 ns | 902.27..977.30 ns | 84.62 MiB/s |
-| `bedrock_world/level_dat/nbt_events_synthetic` | 327.10 ns | 310.37..337.51 ns | 241.99 MiB/s |
-| `bedrock_world/level_dat/nbt_root_owned_synthetic` | 792.50 ns | 675.10..954.39 ns | 99.88 MiB/s |
-| `bedrock_world/level_dat/nbt_root_ref_synthetic` | 311.92 ns | 286.34..334.96 ns | 253.77 MiB/s |
+| `bedrock_world/level_dat/parse_synthetic` | 452.41 ns | 442.08..459.65 ns | 174.96 MiB/s |
+| `bedrock_world/level_dat/nbt_events_synthetic` | 188.92 ns | 186.83..190.77 ns | 418.98 MiB/s |
+| `bedrock_world/level_dat/nbt_root_owned_synthetic` | 680.46 ns | 677.88..685.39 ns | 116.33 MiB/s |
+| `bedrock_world/level_dat/nbt_root_ref_synthetic` | 186.01 ns | 185.55..186.72 ns | 425.55 MiB/s |
 
 ### Performance Optimization & Server Scanning Highlights
 
+- **Parallel Table & World Scan Breakthrough**:
+  - `compatibility scan` (parallel 16T): Dropped to **3.37 seconds** (🚀 **8.07x speedup**, 523,419 records/s).
+  - `classify keys` (parallel 16T): Dropped to **3.18 seconds** (🚀 **7.21x speedup**, 555,513 entries/s).
+  - `key scan` (parallel 16T): Dropped to **3.06 seconds** (🚀 **8.28x speedup**, 576,926 entries/s).
 - **Server Entity & Digest Discovery Standards**:
-  - `actorprefix scan` (`single`): Discovered all **53,777 actor entities** in **640 ms** (**84,014 entries/s**).
-  - `digp scan` (`single`): Discovered all **109,425 chunk actor digests** in **173 ms** (**629,363 entries/s**).
-  - `entity full scan & parse`: Decompressed and parsed all 53,777 entities from NBT in **28.9s ~ 29.4s** (~1,856 entities/s, 0 errors).
-  - `block entity full scan & parse`: Decompressed and parsed all 56,652 containers/tiles in **23.6s** (2,402.68 block entities/s, 0 errors).
-- **Player Prefix & List Lookups**:
-  - `player prefix scan`: Dropped from 42,822 ms to **139 ms** (🚀 **308x speedup**) via prefix index search instead of full database scans.
-  - `list players`: Dropped from ~43.3s to **669 ms** (🚀 **64.7x speedup**).
-- **Full Key/Compatibility Scans**:
-  - `classify keys` (single thread): Reduced from 46,910 ms to **17,765 ms** (⚡ **2.64x speedup**, 99,349 entries/s).
-  - `compatibility scan` (single thread): Reduced from 46,910 ms to **22,129 ms** (⚡ **2.12x speedup**).
-  - `key scan` (single thread): Reduced from 46,351 ms to **16,889 ms** (⚡ **2.74x speedup**, 104,503 entries/s).
+  - `actorprefix scan` (parallel 16T): Discovered all **53,777 actor entities** in **82 ms** (🚀 **652,717 entries/s**).
+  - `digp scan` (parallel 16T): Discovered all **109,425 chunk actor digests** in **37 ms** (🚀 **2,941,034 entries/s**).
+  - `entity full scan & parse` (parallel 16T): Decompressed and parsed all 53,777 entities from NBT in **4.18 seconds** (🚀 **12,870.03 entities/s**, 0 errors).
+  - `block entity full scan & parse` (parallel 16T): Decompressed and parsed all 56,652 containers/tiles in **3.49 seconds** (🚀 **16,240.82 block entities/s**, 0 errors).
+- **Player Prefix & Point Query Latency**:
+  - `player prefix scan` (parallel 16T): Finished in **19 ms** (was 599 ms).
+  - `list players`: Finished in **19 ms** (was ~43.3s initially, 🚀 **2,279x faster**).
+  - `sample chunk parse`: Finished in **22 ms** (was ~43.8s initially, 🚀 **1,990x faster**).
 - **Chunk Read/Decode Throughput**:
-  - `logical_cold`: **454.94 chunks/s** (was 295.83 chunks/s, **+53.8% throughput**).
-  - `logical_warm`: **480.84 chunks/s** (was 386.42 chunks/s, **+24.4% throughput**).
-  - `fixed layer query`: 256 chunks batch query takes only **340 ms** (was 721 ms, **2.12x faster**).
+  - `logical_cold`: **705.64 chunks/s** (was 295.83 chunks/s initially, **+138.5% throughput**, p50: 362.8 ms).
+  - `logical_warm`: **732.63 chunks/s** (was 386.42 chunks/s initially, **+89.6% throughput**, p50: 349.4 ms).
+  - `fixed layer query`: 256 chunks batch query takes only **184 ms** (was 721 ms, **3.92x faster**).
