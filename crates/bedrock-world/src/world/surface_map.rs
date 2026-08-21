@@ -4,6 +4,10 @@
 //! general `ChunkData`. The public contract is always exact: execution hints are an implementation
 //! detail and may never change the returned surface. The output is a fixed 16x16 column plane plus
 //! a per-chunk deduplicated material table.
+//!
+//! The current loader keeps the existing exact `ChunkData` projection internally as a compatibility
+//! bridge. The public layout is intentionally independent so the next optimization stage can write
+//! palette/material ids directly during surface projection without changing consumers.
 
 use super::{
     BedrockWorld, BiomeDataRequirement, ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority,
