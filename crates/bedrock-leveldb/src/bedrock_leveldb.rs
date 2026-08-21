@@ -39,6 +39,7 @@ mod obsolete;
 mod options;
 mod table;
 mod table_cursor;
+mod table_scan;
 mod version;
 mod wal;
 
