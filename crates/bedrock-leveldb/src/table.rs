@@ -1,3 +1,4 @@
+use crate::bloom::{BloomFilterBlock, FILTER_META_KEY};
 use crate::coding::{get_varint32, get_varint64, masked_crc32c};
 use crate::compression::{COMPRESSION_NONE, with_decompressed};
 use crate::error::{LevelDbError, Result};
@@ -11,6 +12,7 @@ use std::hash::{Hash, Hasher};
 #[cfg(not(any(unix, windows)))]
 use std::io::{Read, Seek, SeekFrom};
 use std::mem::size_of;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex, MutexGuard, TryLockError,
@@ -22,6 +24,7 @@ const LEVELDB_TABLE_MAGIC: u64 = 0xdb47_7524_8b80_fb57;
 const LEVELDB_FOOTER_LEN: usize = 48;
 const LEVELDB_BLOCK_TRAILER_LEN: usize = 5;
 const READ_SCRATCH_FLOOR: usize = 16 * 1024;
+const BATCH_IO_MAX_BYTES: u64 = 256 * 1024;
 
 thread_local! {
     static READ_SCRATCH: RefCell<ReadScratch> = RefCell::new(ReadScratch::new());
@@ -220,7 +223,40 @@ struct NativeIndexEntry {
     handle: BlockHandle,
 }
 
-type NativeIndexEntries = Arc<[NativeIndexEntry]>;
+#[derive(Debug)]
+struct NativeTableIndex {
+    entries: Box<[NativeIndexEntry]>,
+    filter: Option<BloomFilterBlock>,
+}
+
+impl NativeTableIndex {
+    #[must_use]
+    fn key_may_match(&self, block_offset: u64, key: &[u8]) -> bool {
+        self.filter
+            .as_ref()
+            .is_none_or(|filter| filter.key_may_match(block_offset, key))
+    }
+
+    #[must_use]
+    fn weight(&self) -> usize {
+        let entries = self
+            .entries
+            .iter()
+            .map(|entry| entry.largest_user_key.len().saturating_add(size_of::<BlockHandle>()))
+            .sum::<usize>();
+        entries.saturating_add(self.filter.as_ref().map_or(0, BloomFilterBlock::len))
+    }
+}
+
+impl Deref for NativeTableIndex {
+    type Target = [NativeIndexEntry];
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+type NativeIndexEntries = Arc<NativeTableIndex>;
 
 #[derive(Debug)]
 pub(crate) struct NativeBlockCache {
@@ -281,10 +317,7 @@ impl NativeBlockCache {
     fn insert_index(&self, key: NativeIndexCacheKey, entries: NativeIndexEntries) {
         let shard = &self.indexes[cache_shard_index(&key, self.indexes.len())];
         if let Some(mut shard) = lock_cache_shard(shard, &self.counters.lock_contention) {
-            let weight = entries
-                .iter()
-                .map(|entry| entry.largest_user_key.len().saturating_add(size_of::<BlockHandle>()))
-                .sum();
+            let weight = entries.weight();
             shard.insert(key, entries, weight, &self.counters.index_evictions);
         }
     }
@@ -380,6 +413,9 @@ pub(crate) fn get_table_lookup(
     let Some(entry) = find_index_entry(&index, key) else {
         return Ok(TableLookup::Missing);
     };
+    if !index.key_may_match(entry.handle.offset, key) {
+        return Ok(TableLookup::Missing);
+    }
     let cache_key = NativeBlockCacheKey {
         table_id: table_id(path),
         offset: entry.handle.offset,
@@ -448,6 +484,13 @@ fn get_custom_table_lookups(
     Ok(results)
 }
 
+struct PlannedBlock {
+    block_index: usize,
+    request_start: usize,
+    request_end: usize,
+    cached: Option<Bytes>,
+}
+
 fn get_native_table_lookups(
     path: &Path,
     keys: &[Bytes],
@@ -458,13 +501,31 @@ fn get_native_table_lookups(
     let index = read_native_index_entries(&file, path, paranoid_checks, cache)?;
     let order = sorted_key_indices(keys);
     let mut planned = Vec::<(usize, usize)>::with_capacity(order.len());
-    for input_index in order {
-        let key = keys[input_index].as_ref();
+    let mut order_offset = 0_usize;
+    while order_offset < order.len() {
+        let duplicate_end = duplicate_key_group_end(keys, &order, order_offset);
+        let key = keys[order[order_offset]].as_ref();
         if let Some(block_index) = find_index_entry_position(&index, key) {
-            planned.push((block_index, input_index));
+            let entry = &index[block_index];
+            if index.key_may_match(entry.handle.offset, key) {
+                planned.extend(
+                    order[order_offset..duplicate_end]
+                        .iter()
+                        .copied()
+                        .map(|input_index| (block_index, input_index)),
+                );
+            }
         }
+        order_offset = duplicate_end;
     }
+
     let mut results = vec![TableLookup::Missing; keys.len()];
+    if planned.is_empty() {
+        return Ok(results);
+    }
+
+    let table_id = table_id(path);
+    let mut blocks = Vec::<PlannedBlock>::new();
     let mut start = 0_usize;
     while start < planned.len() {
         let block_index = planned[start].0;
@@ -474,19 +535,69 @@ fn get_native_table_lookups(
         }
         let entry = &index[block_index];
         let cache_key = NativeBlockCacheKey {
-            table_id: table_id(path),
+            table_id,
             offset: entry.handle.offset,
             size: entry.handle.size,
             paranoid_checks,
         };
-        if let Some(block) = cache.and_then(|cache| cache.get(&cache_key)) {
-            match_exact_shared_block(&block, keys, &planned[start..end], &mut results)?;
-        } else {
-            with_native_block(&file, path, entry.handle, paranoid_checks, |block| {
-                match_exact_borrowed_block(block, keys, &planned[start..end], &mut results)
-            })?;
-        }
+        let cached = cache.and_then(|cache| cache.get(&cache_key));
+        blocks.push(PlannedBlock {
+            block_index,
+            request_start: start,
+            request_end: end,
+            cached,
+        });
         start = end;
+    }
+
+    let mut block_offset = 0_usize;
+    while block_offset < blocks.len() {
+        if let Some(block) = &blocks[block_offset].cached {
+            let plan = &blocks[block_offset];
+            match_exact_shared_block(
+                block,
+                keys,
+                &planned[plan.request_start..plan.request_end],
+                &mut results,
+            )?;
+            block_offset = block_offset.saturating_add(1);
+            continue;
+        }
+
+        let run_start = block_offset;
+        let first_handle = index[blocks[run_start].block_index].handle;
+        let first_offset = first_handle.offset;
+        let mut run_end = run_start.saturating_add(1);
+        let mut physical_end = block_physical_end(first_handle)?;
+        while run_end < blocks.len() && blocks[run_end].cached.is_none() {
+            let next_handle = index[blocks[run_end].block_index].handle;
+            if next_handle.offset != physical_end {
+                break;
+            }
+            let candidate_end = block_physical_end(next_handle)?;
+            if candidate_end.saturating_sub(first_offset) > BATCH_IO_MAX_BYTES {
+                break;
+            }
+            physical_end = candidate_end;
+            run_end = run_end.saturating_add(1);
+        }
+
+        with_native_block_run(
+            &file,
+            path,
+            &blocks[run_start..run_end],
+            &index,
+            paranoid_checks,
+            |plan, block| {
+                match_exact_borrowed_block(
+                    block,
+                    keys,
+                    &planned[plan.request_start..plan.request_end],
+                    &mut results,
+                )
+            },
+        )?;
+        block_offset = run_end;
     }
     Ok(results)
 }
@@ -699,11 +810,7 @@ fn duplicate_key_group_end(keys: &[Bytes], order: &[usize], start: usize) -> usi
     end
 }
 
-fn planned_duplicate_end(
-    keys: &[Bytes],
-    planned: &[(usize, usize)],
-    start: usize,
-) -> usize {
+fn planned_duplicate_end(keys: &[Bytes], planned: &[(usize, usize)], start: usize) -> usize {
     let key = keys[planned[start].1].as_ref();
     let mut end = start.saturating_add(1);
     while end < planned.len() && keys[planned[end].1].as_ref() == key {
@@ -744,17 +851,19 @@ fn read_native_index_entries(
         return Err(LevelDbError::corruption_at(path, "native table magic mismatch"));
     }
     let mut footer_input = &footer[..magic_offset];
-    let _meta_index = read_block_handle(&mut footer_input)?;
+    let meta_index_handle = read_block_handle(&mut footer_input)?;
     let index_handle = read_block_handle(&mut footer_input)?;
     let index_block = read_native_block_owned(file, path, index_handle, paranoid_checks)?;
-    let entries = decode_native_index_entries(&index_block)?;
+    let entries = decode_native_index_entries(&index_block)?.into_boxed_slice();
+    let filter = read_native_filter(file, path, meta_index_handle, paranoid_checks);
+    let index = Arc::new(NativeTableIndex { entries, filter });
     if let Some(cache) = cache {
-        cache.insert_index(cache_key, Arc::clone(&entries));
+        cache.insert_index(cache_key, Arc::clone(&index));
     }
-    Ok(entries)
+    Ok(index)
 }
 
-fn decode_native_index_entries(block: &[u8]) -> Result<NativeIndexEntries> {
+fn decode_native_index_entries(block: &[u8]) -> Result<Vec<NativeIndexEntry>> {
     let mut decoder = BlockEntryDecoder::new(block)?;
     let mut entries = Vec::new();
     while let Some(entry) = decoder.next()? {
@@ -768,7 +877,33 @@ fn decode_native_index_entries(block: &[u8]) -> Result<NativeIndexEntries> {
             handle,
         });
     }
-    Ok(entries.into())
+    Ok(entries)
+}
+
+fn read_native_filter(
+    file: &File,
+    path: &Path,
+    meta_index_handle: BlockHandle,
+    paranoid_checks: bool,
+) -> Option<BloomFilterBlock> {
+    if meta_index_handle.size == 0 {
+        return None;
+    }
+    let meta_index = read_native_block_owned(file, path, meta_index_handle, paranoid_checks).ok()?;
+    let mut decoder = BlockEntryDecoder::new(&meta_index).ok()?;
+    while let Some(entry) = decoder.next().ok()? {
+        match entry.internal_key.cmp(FILTER_META_KEY) {
+            std::cmp::Ordering::Less => continue,
+            std::cmp::Ordering::Greater => return None,
+            std::cmp::Ordering::Equal => {
+                let mut handle_input = entry.value;
+                let filter_handle = read_block_handle(&mut handle_input).ok()?;
+                let filter = read_native_block_owned(file, path, filter_handle, paranoid_checks).ok()?;
+                return BloomFilterBlock::parse(filter);
+            }
+        }
+    }
+    None
 }
 
 fn read_native_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LEN]> {
@@ -818,26 +953,118 @@ fn with_native_block<T>(
         scratch.io.resize(total_size, 0);
         read_exact_at(file, &mut scratch.io, handle.offset)
             .map_err(|error| LevelDbError::io_at("read native table block", path, error))?;
-        let compression = scratch.io[size];
-        if paranoid_checks {
-            let expected_crc = u32::from_le_bytes(
-                scratch.io[size + 1..total_size]
-                    .try_into()
-                    .map_err(|_| LevelDbError::corruption_at(path, "native block crc is invalid"))?,
-            );
-            let actual_crc = masked_crc32c(&[&scratch.io[..size], &[compression]]);
-            if actual_crc != expected_crc {
-                return Err(LevelDbError::corruption_at(
-                    path,
-                    format!("native block checksum mismatch at offset {}", handle.offset),
-                ));
-            }
-        }
-        if compression == COMPRESSION_NONE {
-            return consume(&scratch.io[..size]);
-        }
-        with_decompressed(compression, &scratch.io[..size], consume)
+        consume_encoded_block(path, handle.offset, &scratch.io, size, paranoid_checks, consume)
     })
+}
+
+fn with_native_block_run<F>(
+    file: &File,
+    path: &Path,
+    plans: &[PlannedBlock],
+    index: &NativeTableIndex,
+    paranoid_checks: bool,
+    mut consume: F,
+) -> Result<()>
+where
+    F: FnMut(&PlannedBlock, &[u8]) -> Result<()>,
+{
+    let Some(first) = plans.first() else {
+        return Ok(());
+    };
+    let Some(last) = plans.last() else {
+        return Ok(());
+    };
+    let first_handle = index[first.block_index].handle;
+    let last_handle = index[last.block_index].handle;
+    let physical_end = block_physical_end(last_handle)?;
+    let total_u64 = physical_end.checked_sub(first_handle.offset).ok_or_else(|| {
+        LevelDbError::corruption_at(path, "coalesced native block range underflow")
+    })?;
+    let total = usize::try_from(total_u64)
+        .map_err(|_| LevelDbError::corruption_at(path, "coalesced native block range overflow"))?;
+
+    READ_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        scratch.io.clear();
+        scratch.io.resize(total, 0);
+        read_exact_at(file, &mut scratch.io, first_handle.offset)
+            .map_err(|error| LevelDbError::io_at("read native table block batch", path, error))?;
+
+        for plan in plans {
+            let handle = index[plan.block_index].handle;
+            let relative_u64 = handle.offset.checked_sub(first_handle.offset).ok_or_else(|| {
+                LevelDbError::corruption_at(path, "coalesced block offset underflow")
+            })?;
+            let relative = usize::try_from(relative_u64)
+                .map_err(|_| LevelDbError::corruption_at(path, "coalesced block offset overflow"))?;
+            let size = usize::try_from(handle.size)
+                .map_err(|_| LevelDbError::corruption_at(path, "native block size overflow"))?;
+            let encoded_len = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
+                LevelDbError::corruption_at(path, "native block trailer range overflow")
+            })?;
+            let end = relative.checked_add(encoded_len).ok_or_else(|| {
+                LevelDbError::corruption_at(path, "coalesced block range overflow")
+            })?;
+            let encoded = scratch.io.get(relative..end).ok_or_else(|| {
+                LevelDbError::corruption_at(path, "coalesced block range exceeds read buffer")
+            })?;
+            consume_encoded_block(
+                path,
+                handle.offset,
+                encoded,
+                size,
+                paranoid_checks,
+                |block| consume(plan, block),
+            )?;
+        }
+        Ok(())
+    })
+}
+
+fn consume_encoded_block<T>(
+    path: &Path,
+    block_offset: u64,
+    encoded: &[u8],
+    size: usize,
+    paranoid_checks: bool,
+    consume: impl FnOnce(&[u8]) -> Result<T>,
+) -> Result<T> {
+    let total_size = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
+        LevelDbError::corruption_at(path, "native block trailer range overflow")
+    })?;
+    if encoded.len() != total_size {
+        return Err(LevelDbError::corruption_at(
+            path,
+            "native block encoded length mismatch",
+        ));
+    }
+    let compression = encoded[size];
+    if paranoid_checks {
+        let expected_crc = u32::from_le_bytes(
+            encoded[size + 1..total_size]
+                .try_into()
+                .map_err(|_| LevelDbError::corruption_at(path, "native block crc is invalid"))?,
+        );
+        let actual_crc = masked_crc32c(&[&encoded[..size], &[compression]]);
+        if actual_crc != expected_crc {
+            return Err(LevelDbError::corruption_at(
+                path,
+                format!("native block checksum mismatch at offset {block_offset}"),
+            ));
+        }
+    }
+    if compression == COMPRESSION_NONE {
+        return consume(&encoded[..size]);
+    }
+    with_decompressed(compression, &encoded[..size], consume)
+}
+
+fn block_physical_end(handle: BlockHandle) -> Result<u64> {
+    handle
+        .offset
+        .checked_add(handle.size)
+        .and_then(|end| end.checked_add(LEVELDB_BLOCK_TRAILER_LEN as u64))
+        .ok_or_else(|| LevelDbError::corruption("native block physical range overflow"))
 }
 
 struct DecodedBlockEntry<'a> {
@@ -886,9 +1113,9 @@ impl<'a> BlockEntryDecoder<'a> {
         self.key.extend_from_slice(&input[..non_shared]);
         input = &input[non_shared..];
         let value_start = self.entries_end.saturating_sub(input.len());
-        let value_end = value_start.checked_add(value_len).ok_or_else(|| {
-            LevelDbError::corruption("native value range overflow")
-        })?;
+        let value_end = value_start
+            .checked_add(value_len)
+            .ok_or_else(|| LevelDbError::corruption("native value range overflow"))?;
         input = &input[value_len..];
         self.offset = self.entries_end.saturating_sub(input.len());
         Ok(Some(DecodedBlockEntry {
@@ -1066,5 +1293,16 @@ mod tests {
         let order = sorted_key_indices(&keys);
         assert_eq!(order, vec![0, 1, 2]);
         assert_eq!(duplicate_key_group_end(&keys, &order, 0), 2);
+    }
+
+    #[test]
+    fn physically_adjacent_blocks_are_coalescible() {
+        let first = BlockHandle { offset: 0, size: 100 };
+        let second = BlockHandle {
+            offset: 105,
+            size: 200,
+        };
+        assert_eq!(block_physical_end(first).expect("end"), second.offset);
+        assert_eq!(block_physical_end(second).expect("end"), 310);
     }
 }
