@@ -2,8 +2,8 @@
 //!
 //! Exact SubChunk keys are deduplicated, fetched in one storage batch and decoded once per unique
 //! SubChunk. The borrowed visitor API exposes palette-owned `BlockState` values directly, avoiding a
-//! deep `BlockState` clone for every queried position. Historical `LegacyTerrain` is fetched once per
-//! relevant chunk as an exact fallback; surface hints are never used by this path.
+//! deep `BlockState` clone for every queried position. Historical `LegacyTerrain` is fetched only for
+//! chunks whose exact modern SubChunk record is absent. Surface hints are never used by this path.
 
 use super::{BedrockWorld, WorldStorageHandle};
 use crate::chunk::{
@@ -56,10 +56,12 @@ pub struct BlockStateBatchStats {
     pub positions: usize,
     /// Number of unique exact SubChunk records requested.
     pub unique_subchunks: usize,
-    /// Number of unique legacy terrain fallback records requested.
+    /// Number of unique legacy terrain fallback records actually requested.
     pub unique_legacy_chunks: usize,
-    /// Number of exact storage keys issued in the single batch.
+    /// Total number of exact storage keys issued across all batches.
     pub storage_keys: usize,
+    /// Number of exact storage batches issued.
+    pub storage_batches: usize,
     /// Number of SubChunk payloads actually decoded.
     pub subchunks_decoded: usize,
     /// Number of LegacyTerrain payloads actually decoded.
@@ -74,10 +76,14 @@ where
 {
     /// Visits many authoritative block states in one dimension while preserving input order.
     ///
-    /// Modern V0-V9 SubChunks are fetched by exact key and decoded with
-    /// [`SubChunkDecodeMode::FullIndices`] exactly once per unique SubChunk. This path never uses
-    /// `ExactSurfaceSubchunkPolicy::HintThenVerify`, height-map hints, surface projection, or any
-    /// other render approximation. It is suitable for server-side authoritative reads.
+    /// Modern V0-V9 SubChunks are fetched by exact key exactly once per unique SubChunk. Packed
+    /// palette indices are retained for exact random access instead of eagerly materializing a
+    /// 4096-entry `Vec<u16>` per SubChunk. This has the same block-state semantics as `FullIndices`
+    /// for point lookup while substantially reducing decode allocation and memory traffic.
+    ///
+    /// This path never uses `ExactSurfaceSubchunkPolicy::HintThenVerify`, height-map hints, surface
+    /// projection, or any other render approximation. It is suitable for server-side authoritative
+    /// reads.
     ///
     /// Modern `BlockState` values are borrowed directly from their decoded palettes, so callers that
     /// can consume each result immediately avoid per-position `String`/NBT-map clones.
@@ -131,81 +137,126 @@ where
 
         // Flat Vec + sort/dedup avoids one tree/hash node allocation per unique SubChunk.
         let mut subchunk_order = Vec::<(ChunkPos, i8)>::with_capacity(positions.len());
-        let mut legacy_order = Vec::<ChunkPos>::with_capacity(positions.len().min(256));
         for &block_pos in positions {
-            let chunk_pos = block_pos.to_chunk_pos(dimension);
             if let Ok(subchunk_y) = i8::try_from(block_pos.y.div_euclid(16)) {
-                subchunk_order.push((chunk_pos, subchunk_y));
-            }
-            if (0..=127).contains(&block_pos.y) {
-                legacy_order.push(chunk_pos);
+                subchunk_order.push((block_pos.to_chunk_pos(dimension), subchunk_y));
             }
         }
         subchunk_order.sort_unstable();
         subchunk_order.dedup();
+
+        let mut storage_keys = 0usize;
+        let mut storage_batches = 0usize;
+        let mut subchunks_decoded = 0usize;
+        let mut subchunks = Vec::<Option<SubChunk>>::with_capacity(subchunk_order.len());
+
+        if subchunk_order.is_empty() {
+            subchunks.resize_with(0, || None);
+        } else {
+            let mut keys = StorageKeyBatchBuilder::with_capacity(
+                subchunk_order
+                    .len()
+                    .saturating_mul(MAX_ENCODED_CHUNK_KEY_BYTES),
+                subchunk_order.len(),
+            );
+            for &(chunk_pos, subchunk_y) in &subchunk_order {
+                let encoded = ChunkKey::subchunk(chunk_pos, subchunk_y).encode_inline();
+                keys.push(encoded.as_bytes());
+            }
+            let keys = keys.finish();
+            storage_keys = storage_keys.saturating_add(keys.len());
+            storage_batches = storage_batches.saturating_add(1);
+            let mut values = self.storage().get_many(keys.keys())?;
+            if values.len() != keys.len() {
+                return Err(BedrockWorldError::CorruptWorld(format!(
+                    "batch block-state read returned {} values for {} exact SubChunk keys",
+                    values.len(),
+                    keys.len()
+                )));
+            }
+            for (index, &(_, subchunk_y)) in subchunk_order.iter().enumerate() {
+                let parsed = values
+                    .get_mut(index)
+                    .and_then(Option::take)
+                    .map(|bytes| {
+                        subchunks_decoded = subchunks_decoded.saturating_add(1);
+                        parse_subchunk_with_mode(
+                            subchunk_y,
+                            bytes,
+                            SubChunkDecodeMode::PackedIndices,
+                        )
+                    })
+                    .transpose()?;
+                subchunks.push(parsed);
+            }
+        }
+
+        // LegacyTerrain is a true fallback. Do not probe it for every y=0..127 position in modern
+        // worlds; first prove that the exact target SubChunk record is absent.
+        let mut legacy_order = Vec::<ChunkPos>::with_capacity(positions.len().min(64));
+        for &block_pos in positions {
+            if !(0..=127).contains(&block_pos.y) {
+                continue;
+            }
+            let chunk_pos = block_pos.to_chunk_pos(dimension);
+            let modern_present = i8::try_from(block_pos.y.div_euclid(16))
+                .ok()
+                .and_then(|subchunk_y| {
+                    subchunk_order
+                        .binary_search(&(chunk_pos, subchunk_y))
+                        .ok()
+                })
+                .and_then(|index| subchunks.get(index))
+                .is_some_and(Option::is_some);
+            if !modern_present {
+                legacy_order.push(chunk_pos);
+            }
+        }
         legacy_order.sort_unstable();
         legacy_order.dedup();
 
-        let key_count = subchunk_order.len().saturating_add(legacy_order.len());
-        let mut keys = StorageKeyBatchBuilder::with_capacity(
-            key_count.saturating_mul(MAX_ENCODED_CHUNK_KEY_BYTES),
-            key_count,
-        );
-        for &(chunk_pos, subchunk_y) in &subchunk_order {
-            let encoded = ChunkKey::subchunk(chunk_pos, subchunk_y).encode_inline();
-            keys.push(encoded.as_bytes());
-        }
-        let legacy_base = keys.len();
-        for &chunk_pos in &legacy_order {
-            let encoded = ChunkKey::new(chunk_pos, ChunkRecordTag::LegacyTerrain).encode_inline();
-            keys.push(encoded.as_bytes());
-        }
-        let keys = keys.finish();
-
-        let mut values = self.storage().get_many(keys.keys())?;
-        if values.len() != keys.len() {
-            return Err(BedrockWorldError::CorruptWorld(format!(
-                "batch block-state read returned {} values for {} exact keys",
-                values.len(),
-                keys.len()
-            )));
-        }
-
-        // Keep decoded records aligned with their sorted keys. Binary search is cache-friendly for
-        // the small number of SubChunks in a sparse authoritative batch and avoids HashMap nodes.
-        let mut subchunks = Vec::<Option<SubChunk>>::with_capacity(subchunk_order.len());
-        let mut subchunks_decoded = 0usize;
-        for (index, &(_, subchunk_y)) in subchunk_order.iter().enumerate() {
-            let parsed = values
-                .get_mut(index)
-                .and_then(Option::take)
-                .map(|bytes| {
-                    subchunks_decoded = subchunks_decoded.saturating_add(1);
-                    parse_subchunk_with_mode(subchunk_y, bytes, SubChunkDecodeMode::FullIndices)
-                })
-                .transpose()?;
-            subchunks.push(parsed);
-        }
-
         let mut legacy_terrain = Vec::<Option<LegacyTerrain>>::with_capacity(legacy_order.len());
         let mut legacy_terrain_decoded = 0usize;
-        for offset in 0..legacy_order.len() {
-            let parsed = values
-                .get_mut(legacy_base.saturating_add(offset))
-                .and_then(Option::take)
-                .map(|bytes| {
-                    legacy_terrain_decoded = legacy_terrain_decoded.saturating_add(1);
-                    LegacyTerrain::parse(bytes)
-                })
-                .transpose()?;
-            legacy_terrain.push(parsed);
+        if !legacy_order.is_empty() {
+            let mut keys = StorageKeyBatchBuilder::with_capacity(
+                legacy_order
+                    .len()
+                    .saturating_mul(MAX_ENCODED_CHUNK_KEY_BYTES),
+                legacy_order.len(),
+            );
+            for &chunk_pos in &legacy_order {
+                let encoded = ChunkKey::new(chunk_pos, ChunkRecordTag::LegacyTerrain).encode_inline();
+                keys.push(encoded.as_bytes());
+            }
+            let keys = keys.finish();
+            storage_keys = storage_keys.saturating_add(keys.len());
+            storage_batches = storage_batches.saturating_add(1);
+            let mut values = self.storage().get_many(keys.keys())?;
+            if values.len() != keys.len() {
+                return Err(BedrockWorldError::CorruptWorld(format!(
+                    "batch block-state read returned {} values for {} LegacyTerrain keys",
+                    values.len(),
+                    keys.len()
+                )));
+            }
+            for value in &mut values {
+                let parsed = value
+                    .take()
+                    .map(|bytes| {
+                        legacy_terrain_decoded = legacy_terrain_decoded.saturating_add(1);
+                        LegacyTerrain::parse(bytes)
+                    })
+                    .transpose()?;
+                legacy_terrain.push(parsed);
+            }
         }
 
         let mut stats = BlockStateBatchStats {
             positions: positions.len(),
             unique_subchunks: subchunk_order.len(),
             unique_legacy_chunks: legacy_order.len(),
-            storage_keys: key_count,
+            storage_keys,
+            storage_batches,
             subchunks_decoded,
             legacy_terrain_decoded,
             stopped: false,
@@ -408,5 +459,6 @@ mod tests {
         assert_eq!(visited, 1);
         assert!(stats.stopped);
         assert_eq!(stats.unique_legacy_chunks, 1);
+        assert_eq!(stats.storage_batches, 2);
     }
 }
