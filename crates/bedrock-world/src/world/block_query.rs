@@ -150,9 +150,7 @@ where
         let mut subchunks_decoded = 0usize;
         let mut subchunks = Vec::<Option<SubChunk>>::with_capacity(subchunk_order.len());
 
-        if subchunk_order.is_empty() {
-            subchunks.resize_with(0, || None);
-        } else {
+        if !subchunk_order.is_empty() {
             let mut keys = StorageKeyBatchBuilder::with_capacity(
                 subchunk_order
                     .len()
