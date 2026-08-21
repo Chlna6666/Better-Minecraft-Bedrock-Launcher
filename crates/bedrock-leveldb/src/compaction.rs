@@ -1,7 +1,6 @@
 use crate::error::{LevelDbError, Result};
 use crate::manifest::{Manifest, TableFileMeta};
-use crate::options::VisitorControl;
-use crate::table;
+use crate::table_cursor::TableCursor;
 use bytes::Bytes;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet, VecDeque};
@@ -151,10 +150,9 @@ fn compaction_budget_bytes(table: &TableFileMeta) -> u64 {
 /// Performs a bounded k-way merge and passes each resolved entry directly to
 /// the output sink in strictly increasing user-key order.
 ///
-/// There is no output partition map: the sink sees one borrowed key/value at a
-/// time and can append it directly to an incremental SSTable writer. Input key
-/// buffers are returned to their producer after the sink consumes them, keeping
-/// allocator churn bounded by active streams and queue depth.
+/// Input producers use `TableCursor::next_into`, so the key buffer returned by
+/// the consumer is reused directly by the SST decoder instead of passing
+/// through a visitor callback or a second key copy.
 pub(crate) fn merge_into<F>(
     root: &Path,
     plan: &CompactionPlan,
@@ -185,30 +183,28 @@ where
                 .name(format!("bedrock-leveldb-compact-{table_number}"))
                 .stack_size(COMPACTION_STREAM_STACK_BYTES)
                 .spawn_scoped(scope, move || {
-                    let result = table::for_each_table_lookup(
-                        &path,
-                        paranoid_checks,
-                        None,
-                        |key, value| {
-                            let mut owned_key = recycled_keys
-                                .try_recv()
-                                .unwrap_or_else(|_| Vec::with_capacity(key.len()));
-                            owned_key.clear();
-                            owned_key.extend_from_slice(key);
+                    let result = (|| -> Result<()> {
+                        let mut cursor = TableCursor::open(&path, paranoid_checks)?;
+                        let mut key = recycled_keys
+                            .try_recv()
+                            .unwrap_or_else(|_| Vec::with_capacity(48));
+                        loop {
+                            let Some(value) = cursor.next_into(&mut key)? else {
+                                return Ok(());
+                            };
                             if sender
-                                .send(StreamMessage::Entry(StreamEntry {
-                                    key: owned_key,
-                                    value: value.cloned(),
-                                }))
+                                .send(StreamMessage::Entry(StreamEntry { key, value }))
                                 .is_err()
                             {
-                                return Ok(VisitorControl::Stop);
+                                return Ok(());
                             }
-                            Ok(VisitorControl::Continue)
-                        },
-                    );
+                            key = recycled_keys
+                                .try_recv()
+                                .unwrap_or_else(|_| Vec::with_capacity(48));
+                        }
+                    })();
                     let final_message = match result {
-                        Ok(_) => StreamMessage::Done,
+                        Ok(()) => StreamMessage::Done,
                         Err(error) => StreamMessage::Error(error),
                     };
                     let _ = sender.send(final_message);
@@ -421,6 +417,7 @@ fn overlaps(table: &TableFileMeta, range: Option<&(Vec<u8>, Vec<u8>)>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_table_writer::NativeTableWriter;
     use crate::options::CompressionPolicy;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
@@ -431,13 +428,15 @@ mod tests {
         level: u32,
         entries: BTreeMap<Vec<u8>, Option<Bytes>>,
     ) -> TableFileMeta {
-        let written = table::write_native_memtable(
-            &root.join(Manifest::table_name(number)),
-            &entries,
-            number,
-            CompressionPolicy::None,
-        )
-        .expect("write compaction test table");
+        let path = root.join(Manifest::table_name(number));
+        let mut writer = NativeTableWriter::create(&path, number, CompressionPolicy::None)
+            .expect("create compaction test table");
+        for (key, value) in &entries {
+            writer
+                .push(key, value.as_deref())
+                .expect("write compaction test entry");
+        }
+        let written = writer.finish().expect("finish compaction test table");
         TableFileMeta::native(
             number,
             level,
