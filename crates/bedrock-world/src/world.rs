@@ -26,6 +26,7 @@ mod pocket_world_storage;
 mod subchunk_numeric;
 mod subchunk_upgrade;
 pub(crate) mod surface;
+mod surface_map;
 mod world_clock;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
@@ -68,3 +69,7 @@ pub use pocket_entities_dat::{
     write_pocket_entities_dat_atomic,
 };
 pub use subchunk_upgrade::BedrockWorldSubChunkUpgradeReport;
+pub use surface_map::{
+    SurfaceMapBatchStats, SurfaceMapChunk, SurfaceMapColumn, SurfaceMapMaterial,
+    SurfaceMapQueryOptions,
+};
