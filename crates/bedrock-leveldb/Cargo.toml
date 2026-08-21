@@ -43,6 +43,8 @@ bench = []
 
 [dependencies]
 bytes = "1.10.1"
+# crc32c performs runtime ISA detection and software fallback; this does not
+# require a global target-cpu=native build.
 crc32c = "0.6.8"
 log = "0.4"
 fs2 = "0.4.3"
@@ -55,7 +57,8 @@ tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"
 # Native 64-bit server/desktop builds use zlib-ng. zlib-ng keeps runtime CPU
 # detection enabled by default, selecting AVX2/BMI2/SSE/NEON implementations only
 # when the running CPU supports them and otherwise falling back to generic code.
-# Other architectures retain the portable zlib-rs backend.
+# Other architectures retain the portable zlib-rs backend. No target-cpu=native
+# requirement is imposed on consumers.
 [target.'cfg(any(target_arch = "x86_64", target_arch = "aarch64"))'.dependencies]
 flate2 = { version = "1.1.5", default-features = false, features = ["zlib-ng"], optional = true }
 
