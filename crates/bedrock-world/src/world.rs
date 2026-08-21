@@ -33,7 +33,9 @@ pub use bedrock_world::*;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use block_entities::ChunkBlockEntities;
-pub use block_query::BlockStateQueryResult;
+pub use block_query::{
+    BlockStateBatchStats, BlockStateQueryControl, BlockStateQueryRef, BlockStateQueryResult,
+};
 pub use chunk_presence::{ChunkPresence, ChunkPresenceMode};
 pub use create::{
     BedrockDifficulty, BedrockGameMode, BedrockWorldCreateOptions, BedrockWorldSpawn,
