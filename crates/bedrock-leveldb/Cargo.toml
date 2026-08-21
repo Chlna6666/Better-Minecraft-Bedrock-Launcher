@@ -43,7 +43,6 @@ bench = []
 
 [dependencies]
 bytes = "1.10.1"
-flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"], optional = true }
 log = "0.4"
 fs2 = "0.4.3"
 memmap2 = { version = "0.9.9", optional = true }
@@ -51,6 +50,16 @@ rayon = "1.11.0"
 snap = { version = "1.1.1", optional = true }
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
+
+# Native 64-bit server/desktop builds use zlib-ng. zlib-ng keeps runtime CPU
+# detection enabled by default, selecting AVX2/BMI2/SSE/NEON implementations only
+# when the running CPU supports them and otherwise falling back to generic code.
+# Other architectures retain the portable zlib-rs backend.
+[target.'cfg(any(target_arch = "x86_64", target_arch = "aarch64"))'.dependencies]
+flate2 = { version = "1.1.5", default-features = false, features = ["zlib-ng"], optional = true }
+
+[target.'cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+flate2 = { version = "1.1.5", default-features = false, features = ["zlib-rs"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
