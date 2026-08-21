@@ -84,6 +84,7 @@ pub(crate) use world::surface;
 
 pub use biome::{
     Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeData, ParsedBiomeStorage,
+    encode_data3d_quart,
 };
 pub use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
 pub use chunk::{
