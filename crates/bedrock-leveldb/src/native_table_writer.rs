@@ -46,6 +46,7 @@ pub(crate) struct NativeTableWriter {
     internal_key: Vec<u8>,
     last_user_key: Vec<u8>,
     handle_bytes: Vec<u8>,
+    footer_handles: Vec<u8>,
     smallest_internal_key: Option<Vec<u8>>,
     entry_count: usize,
     committed: bool,
@@ -74,6 +75,7 @@ impl NativeTableWriter {
             internal_key: Vec::with_capacity(32),
             last_user_key: Vec::with_capacity(32),
             handle_bytes: Vec::with_capacity(20),
+            footer_handles: Vec::with_capacity(40),
             smallest_internal_key: None,
             entry_count: 0,
             committed: false,
@@ -139,19 +141,25 @@ impl NativeTableWriter {
 
         self.flush_data_block()?;
         self.index_block.finish_in_place()?;
-        let index_handle = write_native_block(
-            self.writer_mut()?,
-            &mut self.file_offset,
-            self.index_block.bytes(),
-            CompressionPolicy::None,
-            COMPRESSION_NONE,
-        )?;
+        let index_handle = {
+            let raw = self.index_block.bytes();
+            let writer = self.writer.as_mut().ok_or_else(writer_closed)?;
+            write_native_block(
+                writer,
+                &mut self.file_offset,
+                raw,
+                CompressionPolicy::None,
+                COMPRESSION_NONE,
+            )?
+        };
 
-        let footer = native_footer(BlockHandle { offset: 0, size: 0 }, index_handle);
+        let footer = native_footer(
+            BlockHandle { offset: 0, size: 0 },
+            index_handle,
+            &mut self.footer_handles,
+        );
         let tmp_path = self.tmp_path.clone();
-        let mut writer = self.writer.take().ok_or_else(|| {
-            LevelDbError::invalid_argument("native table writer is already finished".to_string())
-        })?;
+        let mut writer = self.writer.take().ok_or_else(writer_closed)?;
         writer
             .write_all(&footer)
             .map_err(|error| LevelDbError::io_at("write native table footer", &tmp_path, error))?;
@@ -187,9 +195,7 @@ impl NativeTableWriter {
 
         let handle = {
             let raw = self.data_block.bytes();
-            let writer = self.writer.as_mut().ok_or_else(|| {
-                LevelDbError::invalid_argument("native table writer is already finished".to_string())
-            })?;
+            let writer = self.writer.as_mut().ok_or_else(writer_closed)?;
             write_native_block(
                 writer,
                 &mut self.file_offset,
@@ -205,12 +211,6 @@ impl NativeTableWriter {
             .add(self.data_block.last_key(), &self.handle_bytes)?;
         self.data_block.reset();
         Ok(())
-    }
-
-    fn writer_mut(&mut self) -> Result<&mut BufWriter<File>> {
-        self.writer.as_mut().ok_or_else(|| {
-            LevelDbError::invalid_argument("native table writer is already finished".to_string())
-        })
     }
 }
 
@@ -229,6 +229,10 @@ impl Drop for NativeTableWriter {
             }
         }
     }
+}
+
+fn writer_closed() -> LevelDbError {
+    LevelDbError::invalid_argument("native table writer is already finished".to_string())
 }
 
 fn write_native_block(
@@ -385,7 +389,7 @@ fn encode_internal_key(user_key: &[u8], sequence: u64, value_type: u8, out: &mut
     out.clear();
     let required = user_key.len().saturating_add(8);
     if out.capacity() < required {
-        out.reserve(required.saturating_sub(out.capacity()));
+        out.reserve(required.saturating_sub(out.len()));
     }
     out.extend_from_slice(user_key);
     out.extend_from_slice(&((sequence << 8) | u64::from(value_type)).to_le_bytes());
@@ -403,10 +407,14 @@ fn write_block_handle(handle: BlockHandle, out: &mut Vec<u8>) {
     put_varint64(handle.size, out);
 }
 
-fn native_footer(meta_index: BlockHandle, index: BlockHandle) -> [u8; LEVELDB_FOOTER_LEN] {
-    let mut handles = Vec::with_capacity(40);
-    write_block_handle(meta_index, &mut handles);
-    write_block_handle(index, &mut handles);
+fn native_footer(
+    meta_index: BlockHandle,
+    index: BlockHandle,
+    handles: &mut Vec<u8>,
+) -> [u8; LEVELDB_FOOTER_LEN] {
+    handles.clear();
+    write_block_handle(meta_index, handles);
+    write_block_handle(index, handles);
 
     let mut footer = [0_u8; LEVELDB_FOOTER_LEN];
     let handle_len = handles.len().min(LEVELDB_FOOTER_LEN - 8);
