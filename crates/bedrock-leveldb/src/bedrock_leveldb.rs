@@ -48,7 +48,7 @@ mod table_scan_legacy {
         scan_pool(workers)
     }
 }
-#[path = "table_scan_v4.rs"]
+#[path = "table_scan_v5.rs"]
 mod table_scan;
 mod version;
 mod wal;
