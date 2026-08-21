@@ -6,19 +6,21 @@
 
 pub mod editor;
 mod error;
-/// Exact non-rectangular selection planning and chunk loading for render consumers.
+/// Exact non-rectangular selection planning and data loading for render consumers.
 pub mod exact_selection;
 mod palette;
 mod renderer;
 
 pub use bedrock_world::{
-    BedrockWorld, ChunkData, ChunkLoadOptions,
+    BedrockWorld, ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk,
+    SurfaceMapColumn, SurfaceMapMaterial, SurfaceMapQueryOptions,
     query::{ExactChunkSelection, SlimeChunkBounds},
 };
 pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
 pub use exact_selection::{
-    ExactChunkRenderData, ExactChunkRenderPlan, load_exact_chunk_render_data_blocking,
+    ExactChunkRenderData, ExactChunkRenderPlan, ExactSurfaceRenderData,
+    load_exact_chunk_render_data_blocking, load_exact_surface_render_data_blocking,
 };
 pub use palette::{PaletteImportReport, RenderPalette, RgbaColor};
 #[cfg(feature = "async")]
