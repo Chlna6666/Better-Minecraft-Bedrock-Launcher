@@ -60,10 +60,19 @@ mod zlib {
     ) -> Result<T> {
         CODEC_SCRATCH.with(|scratch| {
             let mut scratch = scratch.borrow_mut();
-            let CodecScratch { decompressed, .. } = &mut *scratch;
-            decompressed.clear();
-            decompress_into_reused(&mut scratch, payload, zlib_header, false)?;
-            consume(&scratch.decompressed)
+            let CodecScratch {
+                zlib_decompressor,
+                raw_decompressor,
+                decompressed,
+                ..
+            } = &mut *scratch;
+            let decompressor = if zlib_header {
+                zlib_decompressor
+            } else {
+                raw_decompressor
+            };
+            decompress_with_state(decompressor, payload, zlib_header, decompressed)?;
+            consume(decompressed)
         })
     }
 
@@ -74,7 +83,17 @@ mod zlib {
     ) -> Result<()> {
         CODEC_SCRATCH.with(|scratch| {
             let mut scratch = scratch.borrow_mut();
-            decompress_to_external(&mut scratch, payload, zlib_header, output)
+            let CodecScratch {
+                zlib_decompressor,
+                raw_decompressor,
+                ..
+            } = &mut *scratch;
+            let decompressor = if zlib_header {
+                zlib_decompressor
+            } else {
+                raw_decompressor
+            };
+            decompress_with_state(decompressor, payload, zlib_header, output)
         })
     }
 
@@ -138,53 +157,6 @@ mod zlib {
         }
     }
 
-    fn decompress_into_reused(
-        scratch: &mut CodecScratch,
-        payload: &[u8],
-        zlib_header: bool,
-        _external: bool,
-    ) -> Result<()> {
-        let CodecScratch {
-            zlib_decompressor,
-            raw_decompressor,
-            decompressed,
-            ..
-        } = scratch;
-        decompress_with_state(
-            if zlib_header {
-                zlib_decompressor
-            } else {
-                raw_decompressor
-            },
-            payload,
-            zlib_header,
-            decompressed,
-        )
-    }
-
-    fn decompress_to_external(
-        scratch: &mut CodecScratch,
-        payload: &[u8],
-        zlib_header: bool,
-        output: &mut Vec<u8>,
-    ) -> Result<()> {
-        let CodecScratch {
-            zlib_decompressor,
-            raw_decompressor,
-            ..
-        } = scratch;
-        decompress_with_state(
-            if zlib_header {
-                zlib_decompressor
-            } else {
-                raw_decompressor
-            },
-            payload,
-            zlib_header,
-            output,
-        )
-    }
-
     fn decompress_with_state(
         decompressor: &mut Decompress,
         payload: &[u8],
@@ -236,7 +208,7 @@ mod zlib {
 
     fn ensure_capacity(buffer: &mut Vec<u8>, required: usize) {
         if buffer.capacity() < required {
-            buffer.reserve(required.saturating_sub(buffer.len()));
+            buffer.reserve(required.saturating_sub(buffer.capacity()));
         }
     }
 
@@ -292,6 +264,11 @@ pub(crate) fn with_decompressed<T>(
     }
 }
 
+/// Decompresses one table block into caller-owned reusable storage.
+///
+/// The output allocation survives across blocks/cursor iterations. This is the
+/// preferred primitive when a scan or worker needs the decoded bytes beyond the
+/// immediate TLS callback.
 pub(crate) fn decompress_into(tag: u8, payload: &[u8], output: &mut Vec<u8>) -> Result<()> {
     match tag {
         COMPRESSION_NONE => {
