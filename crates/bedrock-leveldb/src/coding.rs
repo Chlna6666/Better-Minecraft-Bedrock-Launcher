@@ -97,11 +97,48 @@ pub(crate) fn masked_crc32c(chunks: &[&[u8]]) -> u32 {
     mask_crc(finalize_crc32c(crc))
 }
 
+/// Extends an in-progress Castagnoli CRC. On x86_64 this uses the SSE4.2 CRC32
+/// instruction when the running CPU advertises it; otherwise the portable table
+/// implementation is used. Runtime detection keeps binaries safe on older CPUs.
 #[inline]
-fn update_crc32c(mut crc: u32, bytes: &[u8]) -> u32 {
+fn update_crc32c(crc: u32, bytes: &[u8]) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            // SAFETY: the target feature is checked immediately above. The helper performs no raw
+            // pointer loads; words are assembled from bounded byte slices before entering the
+            // intrinsic.
+            return unsafe { update_crc32c_sse42(crc, bytes) };
+        }
+    }
+    update_crc32c_portable(crc, bytes)
+}
+
+#[inline]
+fn update_crc32c_portable(mut crc: u32, bytes: &[u8]) -> u32 {
     for &byte in bytes {
         let index = usize::from((crc as u8) ^ byte);
         crc = (crc >> 8) ^ CRC32C_TABLE[index];
+    }
+    crc
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+unsafe fn update_crc32c_sse42(mut crc: u32, mut bytes: &[u8]) -> u32 {
+    use std::arch::x86_64::{_mm_crc32_u8, _mm_crc32_u64};
+
+    while bytes.len() >= 8 {
+        let word = u64::from_le_bytes(
+            bytes[..8]
+                .try_into()
+                .expect("eight-byte CRC slice has fixed length"),
+        );
+        crc = _mm_crc32_u64(u64::from(crc), word) as u32;
+        bytes = &bytes[8..];
+    }
+    for &byte in bytes {
+        crc = _mm_crc32_u8(crc, byte);
     }
     crc
 }
@@ -191,6 +228,20 @@ mod tests {
             unmask_crc(masked_crc32c(chunks)),
             crc32c(b"123456789")
         );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn hardware_crc_matches_portable_when_available() {
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            let payload = (0_u32..16_384)
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>();
+            let portable = finalize_crc32c(update_crc32c_portable(!0_u32, &payload));
+            // SAFETY: this test executes the specialized helper only after runtime detection.
+            let hardware = finalize_crc32c(unsafe { update_crc32c_sse42(!0_u32, &payload) });
+            assert_eq!(hardware, portable);
+        }
     }
 
     #[test]
