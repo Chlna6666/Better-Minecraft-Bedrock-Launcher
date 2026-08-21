@@ -1,15 +1,20 @@
 use crate::error::{LevelDbError, Result};
 use crate::manifest::{Manifest, TableFileMeta};
-use crate::options::{ReadOptions, ScanMode, ScanOutcome, ScanProgress, VisitorControl};
+use crate::options::{
+    ReadOptions, ScanMode, ScanOutcome, ScanProgress, ThreadingOptions, VisitorControl,
+};
 use crate::table_cursor::BorrowedTableCursor;
-use std::path::{Path, PathBuf};
+use rayon::prelude::*;
+use std::path::Path;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
-    mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+    mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
 };
+use std::thread;
 use std::time::Instant;
 
+const MAX_KEY_RANGES: usize = 256;
 const BATCH_ENTRY_LIMIT: usize = 512;
 const BATCH_BYTE_LIMIT: usize = 512 * 1024;
 
@@ -76,7 +81,10 @@ impl FlatBatch {
 
 enum WorkerMessage {
     Batch(FlatBatch),
-    Done { queue_wait_ms: u128, cancel_checks: usize },
+    Done {
+        queue_wait_ms: u128,
+        cancel_checks: usize,
+    },
     Error(LevelDbError),
 }
 
@@ -93,10 +101,10 @@ struct KeyRange {
 
 /// Scans current SSTables with LevelDB newest-table visibility semantics.
 ///
-/// Sequential scans borrow values directly from a cursor-owned reusable decoded
-/// block. `ParallelTables` partitions the requested key range and performs one
-/// independent k-way merge per worker; batches crossing the thread boundary use
-/// one flat byte allocation instead of per-key/per-value heap objects.
+/// Sequential scans borrow values directly from cursor-owned reusable block buffers.
+/// `ParallelTables` is implemented as independent key-range merges, so a single large
+/// SST can still use all requested workers. Cross-thread delivery uses recycled flat
+/// batches instead of one allocation per key/value pair.
 pub(crate) fn scan_tables_visible<F, S>(
     root: &Path,
     tables_newest_first: &[TableFileMeta],
@@ -110,11 +118,8 @@ where
     F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     S: Fn(&[u8]) -> bool + Sync,
 {
-    let workers = options
-        .threading
-        .resolve_checked(tables_newest_first.len().max(1))?;
-    if options.scan_mode != ScanMode::ParallelTables || workers <= 1 || tables_newest_first.len() <= 1
-    {
+    let workers = scan_worker_count(options)?;
+    if options.scan_mode != ScanMode::ParallelTables || workers <= 1 {
         let (lower, upper) = prefix_bounds(prefix);
         return scan_range_borrowed(
             root,
@@ -138,6 +143,115 @@ where
         &shadowed,
         visitor,
     )
+}
+
+/// Runs visibility-correct key reduction directly inside range workers.
+///
+/// No key/value batch crosses threads in this path. Each worker owns its reduction
+/// state and scans its disjoint key range with the same k-way newest-wins merge.
+pub(crate) fn scan_table_keys_partitioned<T, I, F, S>(
+    root: &Path,
+    tables_newest_first: &[TableFileMeta],
+    prefix: Option<&[u8]>,
+    paranoid_checks: bool,
+    options: &ReadOptions,
+    shadowed: S,
+    init: I,
+    visitor: F,
+) -> Result<(ScanOutcome, Vec<T>)>
+where
+    T: Send,
+    I: Fn() -> T + Send + Sync,
+    F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
+    S: Fn(&[u8]) -> bool + Send + Sync,
+{
+    let workers = scan_worker_count(options)?;
+    let ranges = if options.scan_mode == ScanMode::ParallelTables && workers > 1 {
+        partition_ranges(prefix, workers)
+    } else {
+        let (lower, upper) = prefix_bounds(prefix);
+        vec![KeyRange { lower, upper }]
+    };
+    let actual_workers = ranges.len();
+    let tables_scanned = count_overlapping_tables(tables_newest_first, prefix);
+
+    if actual_workers == 1 {
+        let range = ranges.into_iter().next().expect("one range was created");
+        let mut partition = init();
+        let mut worker_options = options.clone();
+        worker_options.scan_mode = ScanMode::Sequential;
+        worker_options.threading = ThreadingOptions::Single;
+        let outcome = scan_range_borrowed(
+            root,
+            tables_newest_first,
+            range.lower.as_deref(),
+            range.upper.as_deref(),
+            paranoid_checks,
+            &worker_options,
+            &shadowed,
+            &mut |key, _value| visitor(&mut partition, key),
+        )?;
+        return Ok((outcome, vec![partition]));
+    }
+
+    let pool = scan_pool(actual_workers)?;
+    let stop = AtomicBool::new(false);
+    let mut worker_options = options.clone();
+    worker_options.scan_mode = ScanMode::Sequential;
+    worker_options.threading = ThreadingOptions::Single;
+    worker_options.progress = None;
+
+    let results = pool.install(|| {
+        ranges
+            .into_par_iter()
+            .map(|range| {
+                let mut partition = init();
+                let outcome = scan_range_borrowed(
+                    root,
+                    tables_newest_first,
+                    range.lower.as_deref(),
+                    range.upper.as_deref(),
+                    paranoid_checks,
+                    &worker_options,
+                    &shadowed,
+                    &mut |key, _value| {
+                        if stop.load(Ordering::Relaxed) {
+                            return Ok(VisitorControl::Stop);
+                        }
+                        match visitor(&mut partition, key)? {
+                            VisitorControl::Continue => Ok(VisitorControl::Continue),
+                            VisitorControl::Stop => {
+                                stop.store(true, Ordering::Relaxed);
+                                Ok(VisitorControl::Stop)
+                            }
+                        }
+                    },
+                )?;
+                Ok::<_, LevelDbError>((outcome, partition))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+
+    let mut outcome = ScanOutcome::empty();
+    outcome.worker_threads = actual_workers;
+    let mut partitions = Vec::with_capacity(results.len());
+    for (worker_outcome, partition) in results {
+        outcome.merge(worker_outcome);
+        partitions.push(partition);
+    }
+    // The same SST may be opened by every disjoint range. Report logical tables,
+    // not table-range probes.
+    outcome.tables_scanned = tables_scanned;
+    outcome.worker_threads = actual_workers;
+    emit_progress(options, &outcome, 1);
+    Ok((outcome, partitions))
+}
+
+fn scan_worker_count(options: &ReadOptions) -> Result<usize> {
+    if options.scan_mode != ScanMode::ParallelTables {
+        return options.threading.resolve_checked(1);
+    }
+    options.threading.resolve_checked(MAX_KEY_RANGES)
 }
 
 fn scan_range_borrowed<F, S>(
@@ -171,39 +285,42 @@ where
     outcome.worker_threads = 1;
     outcome.tables_scanned = tables_scanned;
     let progress_interval = options.pipeline.resolve_progress_interval();
+    let mut same_sources = Vec::<usize>::with_capacity(sources.len().min(8));
 
     while !heap.is_empty() {
         check_cancelled(options, &mut outcome)?;
         let first = heap_pop(&mut heap, &sources).expect("heap was checked as non-empty");
-        let key = sources[first].key.clone();
-        let mut same = Vec::with_capacity(4);
-        same.push(first);
-        while heap
-            .first()
-            .is_some_and(|index| sources[*index].key.as_slice() == key.as_slice())
+        same_sources.clear();
+        same_sources.push(first);
+
         {
-            same.push(heap_pop(&mut heap, &sources).expect("equal heap root exists"));
-        }
-        let winner = same
-            .iter()
-            .copied()
-            .min_by_key(|index| sources[*index].rank)
-            .expect("equal-key group contains first source");
-
-        if !shadowed(&key) && sources[winner].is_value {
-            let value = sources[winner].cursor.current_value().ok_or_else(|| {
-                LevelDbError::corruption("borrowed table cursor lost current value".to_string())
-            })?;
-            outcome.record(value.len());
-            if visitor(&key, value)? == VisitorControl::Stop {
-                outcome.stopped = true;
-                return Ok(outcome);
+            // The heap orders equal keys by ascending rank, and rank 0 is newest.
+            // Therefore `first` is already the visibility winner for this user key.
+            let winner_key = sources[first].key.as_slice();
+            while let Some(index) = heap.first().copied() {
+                if sources[index].key.as_slice() != winner_key {
+                    break;
+                }
+                same_sources.push(
+                    heap_pop(&mut heap, &sources).expect("equal heap root was checked"),
+                );
             }
-            emit_progress(options, &outcome, progress_interval);
+
+            if !shadowed(winner_key) && sources[first].is_value {
+                let value = sources[first].cursor.current_value().ok_or_else(|| {
+                    LevelDbError::corruption("borrowed table cursor lost current value")
+                })?;
+                outcome.record(value.len());
+                if visitor(winner_key, value)? == VisitorControl::Stop {
+                    outcome.stopped = true;
+                    return Ok(outcome);
+                }
+                emit_progress(options, &outcome, progress_interval);
+            }
         }
 
-        for index in same {
-            advance_source(index, &mut sources, &mut heap)?;
+        for source_index in same_sources.iter().copied() {
+            advance_source(source_index, &mut sources, &mut heap)?;
         }
     }
     Ok(outcome)
@@ -254,14 +371,31 @@ fn table_overlaps(table: &TableFileMeta, lower: Option<&[u8]>, upper: Option<&[u
     true
 }
 
+fn count_overlapping_tables(tables: &[TableFileMeta], prefix: Option<&[u8]>) -> usize {
+    let (lower, upper) = prefix_bounds(prefix);
+    tables
+        .iter()
+        .filter(|table| table_overlaps(table, lower.as_deref(), upper.as_deref()))
+        .count()
+}
+
 fn advance_source(index: usize, sources: &mut [MergeSource], heap: &mut Vec<usize>) -> Result<()> {
-    let source = &mut sources[index];
-    if let Some(is_value) = source.cursor.next_key_into(&mut source.key)? {
-        source.is_value = is_value;
+    let has_next = {
+        let source = &mut sources[index];
+        match source.cursor.next_key_into(&mut source.key)? {
+            Some(is_value) => {
+                source.is_value = is_value;
+                true
+            }
+            None => {
+                source.key.clear();
+                source.is_value = false;
+                false
+            }
+        }
+    };
+    if has_next {
         heap_push(heap, index, sources);
-    } else {
-        source.key.clear();
-        source.is_value = false;
     }
     Ok(())
 }
@@ -331,7 +465,7 @@ where
     let ranges = partition_ranges(prefix, workers);
     let workers = ranges.len();
     if workers <= 1 {
-        let range = ranges.first().cloned().unwrap_or(KeyRange {
+        let range = ranges.into_iter().next().unwrap_or(KeyRange {
             lower: None,
             upper: None,
         });
@@ -360,7 +494,7 @@ where
     let options_for_workers = options.clone();
     let mut final_outcome = ScanOutcome::empty();
     final_outcome.worker_threads = workers;
-    final_outcome.tables_scanned = tables_newest_first.len();
+    final_outcome.tables_scanned = count_overlapping_tables(tables_newest_first, prefix);
 
     pool.scope(|scope| -> Result<()> {
         let mut pipes = Vec::<WorkerPipe>::with_capacity(workers);
@@ -373,7 +507,9 @@ where
             let stop = Arc::clone(&stop);
             let mut worker_options = options_for_workers.clone();
             worker_options.scan_mode = ScanMode::Sequential;
-            worker_options.threading = crate::options::ThreadingOptions::Single;
+            worker_options.threading = ThreadingOptions::Single;
+            // Progress is emitted once in global visitor order below.
+            worker_options.progress = None;
             scope.spawn(move |_| {
                 let result = produce_range(
                     &root,
@@ -386,15 +522,17 @@ where
                     &recycled,
                 );
                 if let Err(error) = result {
-                    let _ = sender.send(WorkerMessage::Error(error));
+                    let _ = try_send_message(&sender, WorkerMessage::Error(error), &stop);
                 }
             });
         }
 
+        // Ranges were created in lexical order. Draining pipes in the same order
+        // preserves deterministic global key order without a cross-worker heap.
         for pipe in &pipes {
             loop {
                 let message = pipe.receiver.recv().map_err(|_| {
-                    LevelDbError::corruption("parallel scan worker stopped early".to_string())
+                    LevelDbError::corruption("parallel scan worker stopped early")
                 })?;
                 match message {
                     WorkerMessage::Batch(mut batch) => {
@@ -457,16 +595,9 @@ fn produce_range(
     sender: &SyncSender<WorkerMessage>,
     recycled: &Receiver<FlatBatch>,
 ) -> Result<()> {
-    let mut batch = match recycled.try_recv() {
-        Ok(mut batch) => {
-            batch.clear();
-            batch
-        }
-        Err(TryRecvError::Empty | TryRecvError::Disconnected) => FlatBatch::with_capacity(),
-    };
+    let mut batch = take_recycled_batch(recycled);
     let mut queue_wait_ms = 0u128;
-    let mut cancel_checks = 0usize;
-    let mut worker_outcome = scan_range_borrowed(
+    let worker_outcome = scan_range_borrowed(
         root,
         tables,
         range.lower.as_deref(),
@@ -480,18 +611,10 @@ fn produce_range(
             }
             batch.push(key, value);
             if batch.should_flush() {
-                let next = match recycled.try_recv() {
-                    Ok(mut recycled) => {
-                        recycled.clear();
-                        recycled
-                    }
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
-                        FlatBatch::with_capacity()
-                    }
-                };
+                let next = take_recycled_batch(recycled);
                 let ready = std::mem::replace(&mut batch, next);
                 let wait_started = Instant::now();
-                if sender.send(WorkerMessage::Batch(ready)).is_err() {
+                if !try_send_message(sender, WorkerMessage::Batch(ready), stop) {
                     return Ok(VisitorControl::Stop);
                 }
                 queue_wait_ms = queue_wait_ms.saturating_add(wait_started.elapsed().as_millis());
@@ -499,28 +622,62 @@ fn produce_range(
             Ok(VisitorControl::Continue)
         },
     )?;
-    cancel_checks = cancel_checks.saturating_add(worker_outcome.cancel_checks);
+
     if !batch.is_empty() && !stop.load(Ordering::Relaxed) {
         let wait_started = Instant::now();
-        if sender.send(WorkerMessage::Batch(batch)).is_err() {
+        if !try_send_message(sender, WorkerMessage::Batch(batch), stop) {
             return Ok(());
         }
         queue_wait_ms = queue_wait_ms.saturating_add(wait_started.elapsed().as_millis());
     }
-    worker_outcome.stopped |= stop.load(Ordering::Relaxed);
-    let _ = sender.send(WorkerMessage::Done {
-        queue_wait_ms,
-        cancel_checks,
-    });
+    let _ = try_send_message(
+        sender,
+        WorkerMessage::Done {
+            queue_wait_ms,
+            cancel_checks: worker_outcome.cancel_checks,
+        },
+        stop,
+    );
     Ok(())
 }
 
+fn take_recycled_batch(recycled: &Receiver<FlatBatch>) -> FlatBatch {
+    match recycled.try_recv() {
+        Ok(mut batch) => {
+            batch.clear();
+            batch
+        }
+        Err(TryRecvError::Empty | TryRecvError::Disconnected) => FlatBatch::with_capacity(),
+    }
+}
+
+fn try_send_message(
+    sender: &SyncSender<WorkerMessage>,
+    mut message: WorkerMessage,
+    stop: &AtomicBool,
+) -> bool {
+    loop {
+        match sender.try_send(message) {
+            Ok(()) => return true,
+            Err(TrySendError::Full(returned)) => {
+                message = returned;
+                if stop.load(Ordering::Relaxed) {
+                    return false;
+                }
+                thread::yield_now();
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
+    }
+}
+
 fn partition_ranges(prefix: Option<&[u8]>, workers: usize) -> Vec<KeyRange> {
-    let workers = workers.clamp(1, 256);
+    let workers = workers.clamp(1, MAX_KEY_RANGES);
     if workers == 1 {
         let (lower, upper) = prefix_bounds(prefix);
         return vec![KeyRange { lower, upper }];
     }
+
     let base = prefix.unwrap_or(&[]);
     let prefix_upper = prefix.and_then(prefix_successor);
     let mut ranges = Vec::with_capacity(workers);
@@ -528,7 +685,7 @@ fn partition_ranges(prefix: Option<&[u8]>, workers: usize) -> Vec<KeyRange> {
         let start = worker * 256 / workers;
         let end = (worker + 1) * 256 / workers;
         let lower = if worker == 0 {
-            if base.is_empty() { None } else { Some(base.to_vec()) }
+            (!base.is_empty()).then(|| base.to_vec())
         } else {
             let mut lower = base.to_vec();
             lower.push(u8::try_from(start).unwrap_or(u8::MAX));
@@ -552,8 +709,7 @@ fn partition_ranges(prefix: Option<&[u8]>, workers: usize) -> Vec<KeyRange> {
 
 fn prefix_bounds(prefix: Option<&[u8]>) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     match prefix {
-        None => (None, None),
-        Some(prefix) if prefix.is_empty() => (None, None),
+        None | Some([]) => (None, None),
         Some(prefix) => (Some(prefix.to_vec()), prefix_successor(prefix)),
     }
 }
@@ -638,5 +794,16 @@ mod tests {
             ranges.last().and_then(|range| range.upper.as_deref()),
             Some(b"player`".as_slice())
         );
+    }
+
+    #[test]
+    fn full_keyspace_partitions_cover_all_first_bytes() {
+        let ranges = partition_ranges(None, 16);
+        assert_eq!(ranges.len(), 16);
+        assert!(ranges.first().is_some_and(|range| range.lower.is_none()));
+        assert!(ranges.last().is_some_and(|range| range.upper.is_none()));
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].upper, pair[1].lower);
+        }
     }
 }
