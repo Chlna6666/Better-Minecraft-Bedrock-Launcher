@@ -96,7 +96,7 @@ impl Db {
 
         if let Some(immutable) = &state.immutable {
             for (key, value) in immutable.entries() {
-                check_scan_cancelled(&options, &mut outcome)?;
+                check_visibility_scan_cancelled(&options, &mut outcome)?;
                 if state.active.contains_key(key) {
                     continue;
                 }
@@ -106,19 +106,19 @@ impl Db {
                         outcome.stopped = true;
                         return Ok((outcome, partitions));
                     }
-                    emit_scan_progress(&options, &outcome);
+                    emit_visibility_scan_progress(&options, &outcome);
                 }
             }
         }
         for (key, value) in state.active.iter() {
-            check_scan_cancelled(&options, &mut outcome)?;
+            check_visibility_scan_cancelled(&options, &mut outcome)?;
             if let Some(value) = value {
                 outcome.record(value.len());
                 if visitor(partition, key)? == VisitorControl::Stop {
                     outcome.stopped = true;
                     return Ok((outcome, partitions));
                 }
-                emit_scan_progress(&options, &outcome);
+                emit_visibility_scan_progress(&options, &outcome);
             }
         }
         Ok((outcome, partitions))
@@ -169,7 +169,7 @@ impl Db {
         // unbounded SST-wide seen HashSet with direct BTreeMap membership checks.
         if let Some(immutable) = &state.immutable {
             for (key, value) in immutable.entries() {
-                check_scan_cancelled(options, &mut outcome)?;
+                check_visibility_scan_cancelled(options, &mut outcome)?;
                 if state.active.contains_key(key)
                     || prefix.is_some_and(|prefix| !key.starts_with(prefix))
                 {
@@ -181,12 +181,12 @@ impl Db {
                         outcome.stopped = true;
                         return Ok(outcome);
                     }
-                    emit_scan_progress(options, &outcome);
+                    emit_visibility_scan_progress(options, &outcome);
                 }
             }
         }
         for (key, value) in state.active.iter() {
-            check_scan_cancelled(options, &mut outcome)?;
+            check_visibility_scan_cancelled(options, &mut outcome)?;
             if prefix.is_some_and(|prefix| !key.starts_with(prefix)) {
                 continue;
             }
@@ -196,7 +196,7 @@ impl Db {
                     outcome.stopped = true;
                     return Ok(outcome);
                 }
-                emit_scan_progress(options, &outcome);
+                emit_visibility_scan_progress(options, &outcome);
             }
         }
         outcome.worker_threads = outcome.worker_threads.max(1);
@@ -211,19 +211,22 @@ impl Db {
     }
 }
 
-fn check_scan_cancelled(options: &ReadOptions, outcome: &mut ScanOutcome) -> Result<()> {
+fn check_visibility_scan_cancelled(
+    options: &ReadOptions,
+    outcome: &mut ScanOutcome,
+) -> Result<()> {
     outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
     if options
         .cancel
         .as_ref()
         .is_some_and(|cancel| cancel.is_cancelled())
     {
-        return Err(LevelDbError::cancelled("database scan"));
+        return Err(LevelDbError::cancelled("database visibility scan"));
     }
     Ok(())
 }
 
-fn emit_scan_progress(options: &ReadOptions, outcome: &ScanOutcome) {
+fn emit_visibility_scan_progress(options: &ReadOptions, outcome: &ScanOutcome) {
     let interval = options.pipeline.resolve_progress_interval().max(1);
     if outcome.visited != 0
         && outcome.visited.is_multiple_of(interval)
