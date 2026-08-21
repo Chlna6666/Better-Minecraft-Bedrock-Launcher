@@ -1,5 +1,5 @@
 impl Db {
-    pub(super) fn for_each_key_v2<F>(
+    pub(super) fn for_each_key_scan<F>(
         &self,
         options: ReadOptions,
         mut visitor: F,
@@ -7,10 +7,10 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        self.scan_visible_borrowed_v2(None, &options, &mut |key, _value| visitor(key))
+        self.scan_visible_borrowed(None, &options, &mut |key, _value| visitor(key))
     }
 
-    pub(super) fn for_each_entry_borrowed_v2<F>(
+    pub(super) fn for_each_entry_borrowed_scan<F>(
         &self,
         options: ReadOptions,
         mut visitor: F,
@@ -18,10 +18,10 @@ impl Db {
     where
         F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     {
-        self.scan_visible_borrowed_v2(None, &options, &mut visitor)
+        self.scan_visible_borrowed(None, &options, &mut visitor)
     }
 
-    pub(super) fn for_each_prefix_borrowed_v2<F>(
+    pub(super) fn for_each_prefix_borrowed_scan<F>(
         &self,
         prefix: &[u8],
         options: ReadOptions,
@@ -30,10 +30,10 @@ impl Db {
     where
         F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     {
-        self.scan_visible_borrowed_v2(Some(prefix), &options, &mut visitor)
+        self.scan_visible_borrowed(Some(prefix), &options, &mut visitor)
     }
 
-    pub(super) fn for_each_prefix_key_v2<F>(
+    pub(super) fn for_each_prefix_key_scan<F>(
         &self,
         prefix: &[u8],
         options: ReadOptions,
@@ -42,10 +42,10 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        self.scan_visible_borrowed_v2(Some(prefix), &options, &mut |key, _value| visitor(key))
+        self.scan_visible_borrowed(Some(prefix), &options, &mut |key, _value| visitor(key))
     }
 
-    pub(super) fn scan_keys_partitioned_v2<T, I, F>(
+    pub(super) fn scan_keys_partitioned_scan<T, I, F>(
         &self,
         options: ReadOptions,
         init: I,
@@ -96,7 +96,7 @@ impl Db {
 
         if let Some(immutable) = &state.immutable {
             for (key, value) in immutable.entries() {
-                check_scan_cancelled_v2(&options, &mut outcome)?;
+                check_scan_cancelled(&options, &mut outcome)?;
                 if state.active.contains_key(key) {
                     continue;
                 }
@@ -106,25 +106,25 @@ impl Db {
                         outcome.stopped = true;
                         return Ok((outcome, partitions));
                     }
-                    emit_scan_progress_v2(&options, &outcome);
+                    emit_scan_progress(&options, &outcome);
                 }
             }
         }
         for (key, value) in state.active.iter() {
-            check_scan_cancelled_v2(&options, &mut outcome)?;
+            check_scan_cancelled(&options, &mut outcome)?;
             if let Some(value) = value {
                 outcome.record(value.len());
                 if visitor(partition, key)? == VisitorControl::Stop {
                     outcome.stopped = true;
                     return Ok((outcome, partitions));
                 }
-                emit_scan_progress_v2(&options, &outcome);
+                emit_scan_progress(&options, &outcome);
             }
         }
         Ok((outcome, partitions))
     }
 
-    fn scan_visible_borrowed_v2<F>(
+    fn scan_visible_borrowed<F>(
         &self,
         prefix: Option<&[u8]>,
         options: &ReadOptions,
@@ -169,7 +169,7 @@ impl Db {
         // unbounded SST-wide seen HashSet with direct BTreeMap membership checks.
         if let Some(immutable) = &state.immutable {
             for (key, value) in immutable.entries() {
-                check_scan_cancelled_v2(options, &mut outcome)?;
+                check_scan_cancelled(options, &mut outcome)?;
                 if state.active.contains_key(key)
                     || prefix.is_some_and(|prefix| !key.starts_with(prefix))
                 {
@@ -181,12 +181,12 @@ impl Db {
                         outcome.stopped = true;
                         return Ok(outcome);
                     }
-                    emit_scan_progress_v2(options, &outcome);
+                    emit_scan_progress(options, &outcome);
                 }
             }
         }
         for (key, value) in state.active.iter() {
-            check_scan_cancelled_v2(options, &mut outcome)?;
+            check_scan_cancelled(options, &mut outcome)?;
             if prefix.is_some_and(|prefix| !key.starts_with(prefix)) {
                 continue;
             }
@@ -196,7 +196,7 @@ impl Db {
                     outcome.stopped = true;
                     return Ok(outcome);
                 }
-                emit_scan_progress_v2(options, &outcome);
+                emit_scan_progress(options, &outcome);
             }
         }
         outcome.worker_threads = outcome.worker_threads.max(1);
@@ -211,7 +211,7 @@ impl Db {
     }
 }
 
-fn check_scan_cancelled_v2(options: &ReadOptions, outcome: &mut ScanOutcome) -> Result<()> {
+fn check_scan_cancelled(options: &ReadOptions, outcome: &mut ScanOutcome) -> Result<()> {
     outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
     if options
         .cancel
@@ -223,7 +223,7 @@ fn check_scan_cancelled_v2(options: &ReadOptions, outcome: &mut ScanOutcome) -> 
     Ok(())
 }
 
-fn emit_scan_progress_v2(options: &ReadOptions, outcome: &ScanOutcome) {
+fn emit_scan_progress(options: &ReadOptions, outcome: &ScanOutcome) {
     let interval = options.pipeline.resolve_progress_interval().max(1);
     if outcome.visited != 0
         && outcome.visited.is_multiple_of(interval)
