@@ -181,6 +181,7 @@ def generate(resource_packs: list[Path], output: Path) -> dict[str, str]:
         "snowball": ("geometry.item_sprite", "textures/items/snowball"),
         "trident": ("geometry.trident", "textures/entity/trident"),
         "xp_orb": ("geometry.experience_orb", "textures/entity/experience_orb"),
+        "leash_knot": ("geometry.leash_knot", "textures/entity/lead_knot"),
     }
     for identifier, (geometry_id, texture_ref) in model_fallbacks.items():
         if identifier in manifest:

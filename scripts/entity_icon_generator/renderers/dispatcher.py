@@ -15,6 +15,7 @@ from entity_icon_generator.geometry import (
 from entity_icon_generator.renderers.cat import render_cat
 from entity_icon_generator.renderers.front_face import render_front_face_2d
 from entity_icon_generator.renderers.goat import render_goat
+from entity_icon_generator.renderers.leash_knot import render_leash_knot
 from entity_icon_generator.renderers.llama import render_llama
 from entity_icon_generator.renderers.model import render_model_3d
 from entity_icon_generator.renderers.parrot import render_parrot
@@ -405,6 +406,10 @@ def dispatch_render_portrait(
     # Standalone Variant: Nautilus
     if identifier in {"nautilus", "zombie_nautilus"}:
         return render_nautilus(texture, geometry)
+
+    # Standalone Variant: Leash Knot
+    if identifier == "leash_knot":
+        return render_leash_knot(texture, geometry, resource_packs)
 
     # Subcategory Variant: Villager Family
     if identifier in VILLAGER_FAMILY_ENTITIES:
