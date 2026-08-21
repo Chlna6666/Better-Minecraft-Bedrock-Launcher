@@ -60,8 +60,21 @@ mod zlib {
     ) -> Result<T> {
         CODEC_SCRATCH.with(|scratch| {
             let mut scratch = scratch.borrow_mut();
-            decompress_reused(&mut scratch, payload, zlib_header)?;
+            let CodecScratch { decompressed, .. } = &mut *scratch;
+            decompressed.clear();
+            decompress_into_reused(&mut scratch, payload, zlib_header, false)?;
             consume(&scratch.decompressed)
+        })
+    }
+
+    pub(super) fn decompress_into(
+        payload: &[u8],
+        zlib_header: bool,
+        output: &mut Vec<u8>,
+    ) -> Result<()> {
+        CODEC_SCRATCH.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            decompress_to_external(&mut scratch, payload, zlib_header, output)
         })
     }
 
@@ -125,28 +138,65 @@ mod zlib {
         }
     }
 
-    fn decompress_reused(
+    fn decompress_into_reused(
         scratch: &mut CodecScratch,
         payload: &[u8],
         zlib_header: bool,
+        _external: bool,
     ) -> Result<()> {
-        let initial_capacity = payload
-            .len()
-            .saturating_mul(3)
-            .max(MIN_OUTPUT_CAPACITY);
         let CodecScratch {
             zlib_decompressor,
             raw_decompressor,
             decompressed,
             ..
         } = scratch;
-        decompressed.clear();
-        ensure_capacity(decompressed, initial_capacity);
-        let decompressor = if zlib_header {
-            zlib_decompressor
-        } else {
-            raw_decompressor
-        };
+        decompress_with_state(
+            if zlib_header {
+                zlib_decompressor
+            } else {
+                raw_decompressor
+            },
+            payload,
+            zlib_header,
+            decompressed,
+        )
+    }
+
+    fn decompress_to_external(
+        scratch: &mut CodecScratch,
+        payload: &[u8],
+        zlib_header: bool,
+        output: &mut Vec<u8>,
+    ) -> Result<()> {
+        let CodecScratch {
+            zlib_decompressor,
+            raw_decompressor,
+            ..
+        } = scratch;
+        decompress_with_state(
+            if zlib_header {
+                zlib_decompressor
+            } else {
+                raw_decompressor
+            },
+            payload,
+            zlib_header,
+            output,
+        )
+    }
+
+    fn decompress_with_state(
+        decompressor: &mut Decompress,
+        payload: &[u8],
+        zlib_header: bool,
+        output: &mut Vec<u8>,
+    ) -> Result<()> {
+        let initial_capacity = payload
+            .len()
+            .saturating_mul(3)
+            .max(MIN_OUTPUT_CAPACITY);
+        output.clear();
+        ensure_capacity(output, initial_capacity);
         decompressor.reset(zlib_header);
         let mut input_offset = 0_usize;
 
@@ -156,7 +206,7 @@ mod zlib {
             let status = decompressor
                 .decompress_vec(
                     &payload[input_offset..],
-                    decompressed,
+                    output,
                     FlushDecompress::Finish,
                 )
                 .map_err(|error| LevelDbError::compression("table", error.to_string()))?;
@@ -171,15 +221,15 @@ mod zlib {
                 return Ok(());
             }
             if consumed == 0 && produced == 0 {
-                if input_offset == payload.len() && decompressed.len() < decompressed.capacity() {
+                if input_offset == payload.len() && output.len() < output.capacity() {
                     return Err(LevelDbError::compression(
                         "table",
                         "compressed stream ended before stream terminator".to_string(),
                     ));
                 }
-                grow(decompressed);
-            } else if decompressed.len() == decompressed.capacity() {
-                grow(decompressed);
+                grow(output);
+            } else if output.len() == output.capacity() {
+                grow(output);
             }
         }
     }
@@ -242,8 +292,27 @@ pub(crate) fn with_decompressed<T>(
     }
 }
 
+pub(crate) fn decompress_into(tag: u8, payload: &[u8], output: &mut Vec<u8>) -> Result<()> {
+    match tag {
+        COMPRESSION_NONE => {
+            output.clear();
+            output.extend_from_slice(payload);
+            Ok(())
+        }
+        COMPRESSION_SNAPPY => decompress_snappy_into(payload, output),
+        COMPRESSION_ZLIB => zlib_decompress_into(payload, true, output),
+        COMPRESSION_BEDROCK_ZLIB => zlib_decompress_into(payload, false, output),
+        other => Err(LevelDbError::compression(
+            "table",
+            format!("unknown table compression tag {other}"),
+        )),
+    }
+}
+
 pub(crate) fn decompress_owned(tag: u8, payload: &[u8]) -> Result<Vec<u8>> {
-    with_decompressed(tag, payload, |decoded| Ok(decoded.to_vec()))
+    let mut output = Vec::new();
+    decompress_into(tag, payload, &mut output)?;
+    Ok(output)
 }
 
 #[cfg(feature = "zlib")]
@@ -288,6 +357,23 @@ fn with_zlib_decompressed<T>(
     ))
 }
 
+#[cfg(feature = "zlib")]
+fn zlib_decompress_into(payload: &[u8], zlib_header: bool, output: &mut Vec<u8>) -> Result<()> {
+    zlib::decompress_into(payload, zlib_header, output)
+}
+
+#[cfg(not(feature = "zlib"))]
+fn zlib_decompress_into(
+    _payload: &[u8],
+    _zlib_header: bool,
+    _output: &mut Vec<u8>,
+) -> Result<()> {
+    Err(LevelDbError::unsupported(
+        "zlib",
+        "zlib feature is disabled",
+    ))
+}
+
 #[cfg(feature = "snappy")]
 fn compress_snappy(payload: &[u8]) -> Result<Vec<u8>> {
     snap::raw::Encoder::new()
@@ -318,6 +404,22 @@ fn decompress_snappy(_payload: &[u8]) -> Result<Vec<u8>> {
     ))
 }
 
+#[cfg(feature = "snappy")]
+fn decompress_snappy_into(payload: &[u8], output: &mut Vec<u8>) -> Result<()> {
+    let decoded = decompress_snappy(payload)?;
+    output.clear();
+    output.extend_from_slice(&decoded);
+    Ok(())
+}
+
+#[cfg(not(feature = "snappy"))]
+fn decompress_snappy_into(_payload: &[u8], _output: &mut Vec<u8>) -> Result<()> {
+    Err(LevelDbError::unsupported(
+        "snappy",
+        "snappy feature is disabled",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,28 +427,36 @@ mod tests {
     #[cfg(feature = "zlib")]
     #[test]
     fn reused_raw_deflate_state_roundtrips_repeated_blocks() {
+        let mut output = Vec::new();
+        let mut first_capacity = 0;
         for index in 0..64_u8 {
             let payload = vec![index; 4096];
             let encoded = with_compressed(CompressionPolicy::RawDeflate, &payload, |encoded| {
                 Ok(encoded.to_vec())
             })
             .expect("compress");
-            let decoded = decompress_owned(COMPRESSION_BEDROCK_ZLIB, &encoded).expect("decompress");
-            assert_eq!(decoded, payload);
+            decompress_into(COMPRESSION_BEDROCK_ZLIB, &encoded, &mut output).expect("decompress");
+            assert_eq!(output, payload);
+            if index == 0 {
+                first_capacity = output.capacity();
+            } else {
+                assert!(output.capacity() >= first_capacity);
+            }
         }
     }
 
     #[cfg(feature = "zlib")]
     #[test]
     fn reused_zlib_state_roundtrips_repeated_blocks() {
+        let mut output = Vec::new();
         for index in 0..32_u8 {
             let payload = vec![index; 8192];
             let encoded = with_compressed(CompressionPolicy::Zlib, &payload, |encoded| {
                 Ok(encoded.to_vec())
             })
             .expect("compress");
-            let decoded = decompress_owned(COMPRESSION_ZLIB, &encoded).expect("decompress");
-            assert_eq!(decoded, payload);
+            decompress_into(COMPRESSION_ZLIB, &encoded, &mut output).expect("decompress");
+            assert_eq!(output, payload);
         }
     }
 }
