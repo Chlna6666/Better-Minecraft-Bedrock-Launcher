@@ -28,7 +28,7 @@ These labels do not claim that Windows system or device caches were cleared.
 ## Latest 0.7.0 fixture result
 
 ```text
-date: 2026-08-20
+date: 2026-08-21
 host: Windows x86_64 / AMD Ryzen 7 7840H / 8 cores, 16 threads
 disk: C: / NTFS / Fanxiang S500PRO 1TB / NVMe SSD
 fixture_hash: 342010d8883d5b5399120b1ecded04fc (XXH3-128)
@@ -39,22 +39,22 @@ samples: 7 per cache condition
 
 | Cache condition | p50 | p95 | Records/s | MiB/s |
 | --- | ---: | ---: | ---: | ---: |
-| `logical_cold` | 34,145.503 ms | 36,138.335 ms | 51,796.02 | 79.59 |
-| `logical_warm` | 38,655.041 ms | 39,254.873 ms | 45,753.44 | 70.30 |
+| `logical_cold` | 48,366.635 ms | 49,635.690 ms | 36,566.55 | 56.19 |
+| `logical_warm` | 52,138.520 ms | 53,721.049 ms | 33,921.20 | 52.12 |
 
 The cache-enabled full scan was slower on this fixture. This is a measured result, not an assumed
 benefit: the 1.09 GB physical snapshot expands to 2.85 GB of visited key/value bytes, so cache
 bookkeeping and churn can outweigh reuse for a sequential whole-database scan.
 
-## Historical synthetic results
+## Latest synthetic results
 
 Local run:
 
 ```text
-date: 2026-05-07
+date: 2026-08-21
 host: Windows / PowerShell
-rustc: 1.93.1 (01f6ddf75 2026-02-11)
-cargo: 1.93.1 (083ac5135 2025-12-15)
+rustc: 1.95.0 (59807616e 2026-04-14)
+cargo: 1.95.0 (f2d3ce0bd 2026-03-21)
 features: --all-features
 criterion: sample_size=10, measurement_time=2s
 plotting: gnuplot not installed; Criterion used Plotters
@@ -63,23 +63,24 @@ plotting: gnuplot not installed; Criterion used Plotters
 Run the named bench target instead of passing `--noplot` to the whole package;
 the lib test harness does not accept Criterion's `--noplot` flag.
 
-| Benchmark | Mean | Interval |
-| --- | ---: | --- |
-| `bedrock_leveldb/write/batch_1000_overlay` | 2.3576 ms | 2.3293..2.3915 ms |
-| `bedrock_leveldb/get_point/overlay_hot` | 116.35 ns | 113.58..118.91 ns |
-| `bedrock_leveldb/get_point/custom_table` | 5.0447 ms | 4.9506..5.1866 ms |
-| `bedrock_leveldb/get_point/native_table` | 4.9751 ms | 4.9268..5.0552 ms |
-| `bedrock_leveldb/get_point/native_table_ref_shared` | 5.0564 ms | 4.9894..5.1388 ms |
-| `bedrock_leveldb/scan/custom_for_each_key` | 6.8257 ms | 6.6420..7.1484 ms |
-| `bedrock_leveldb/scan/custom_for_each_entry` | 7.1233 ms | 6.9656..7.3259 ms |
-| `bedrock_leveldb/scan/native_for_each_prefix` | 6.6402 ms | 6.4509..7.0278 ms |
-| `bedrock_leveldb/scan/native_parallel_tables` | 3.7625 ms | 3.5858..4.1023 ms |
-| `bedrock_leveldb/scan/native_prefix_ref_shared` | 6.8587 ms | 6.4358..7.3452 ms |
-| `bedrock_leveldb/scan/native_prefix_ref_borrowed_mmap` | 7.2782 ms | 7.1565..7.4650 ms |
-| `bedrock_leveldb/recover/wal_1000_overlay` | 2.1511 ms | 1.9346..2.4335 ms |
+| Benchmark | Mean | Interval | Throughput |
+| --- | ---: | --- | ---: |
+| `bedrock_leveldb/write/batch_1000_overlay` | 2.6076 ms | 2.5085..2.7201 ms | 383.49 Kelem/s |
+| `bedrock_leveldb/get_point/overlay_hot` | 112.56 ns | 111.03..114.16 ns | 8.88 Melem/s |
+| `bedrock_leveldb/get_point/custom_table` | 34.496 us | 32.502..37.583 us | 28.99 Kelem/s |
+| `bedrock_leveldb/get_point/native_table` | 2.9256 ms | 2.8165..2.9867 ms | 341.81 elem/s |
+| `bedrock_leveldb/get_point/native_table_ref_shared` | 2.9799 ms | 2.9175..3.0201 ms | 335.58 elem/s |
+| `bedrock_leveldb/get_many/native_table_256_dense_bypass` | 2.7376 ms | 2.6952..2.7960 ms | 93.51 Kelem/s |
+| `bedrock_leveldb/get_many/native_table_256_dense_use` | 2.9677 ms | 2.9323..3.0097 ms | 86.26 Kelem/s |
+| `bedrock_leveldb/get_many/native_table_512_sparse_bypass` | 2.7479 ms | 2.7308..2.7713 ms | 186.33 Kelem/s |
+| `bedrock_leveldb/get_many/native_table_512_sparse_use` | 2.9911 ms | 2.8652..3.0911 ms | 171.17 Kelem/s |
+| `bedrock_leveldb/scan/custom_for_each_key` | 4.1619 ms | 4.0830..4.2982 ms | 984.16 Kelem/s |
+| `bedrock_leveldb/scan/custom_for_each_entry` | 4.2543 ms | 4.1331..4.4003 ms | 962.80 Kelem/s |
+| `bedrock_leveldb/scan/native_for_each_prefix` | 3.9668 ms | 3.9038..4.0358 ms | 1.03 Melem/s |
+| `bedrock_leveldb/scan/native_for_each_prefix_key` | 3.9382 ms | 3.9010..3.9855 ms | 1.04 Melem/s |
+| `bedrock_leveldb/scan/native_parallel_tables` | 4.0201 ms | 3.8907..4.1834 ms | 1.02 Melem/s |
+| `bedrock_leveldb/scan/native_prefix_ref_shared` | 4.1783 ms | 4.0452..4.3135 ms | 980.29 Kelem/s |
+| `bedrock_leveldb/scan/native_prefix_ref_borrowed_mmap` | 3.8263 ms | 3.7802..3.8860 ms | 1.07 Melem/s |
+| `bedrock_leveldb/recover/wal_1000_overlay` | 3.6836 ms | 3.2686..4.6478 ms | 271.47 Kelem/s |
 
-Criterion reported local improvements for native point reads, WAL recovery, and
-overlay writes versus the prior machine baseline. It reported regressions for
-legacy custom-table reads/scans and the mmap borrowed-prefix scan. Treat those
-comparisons as local signals only; the absolute numbers above are the v0.2.0
-reference for this machine.
+Criterion reported significant improvements for custom-table point lookups (34.5 µs vs prior 5.04 ms, ~146x faster), native table point lookups (2.93 ms vs 4.98 ms, 1.7x faster), table scans (4.16 ms vs 6.83 ms), and prefix scans (3.83 ms vs 7.28 ms, ~1.9x faster). Treat comparisons as local machine indicators.
