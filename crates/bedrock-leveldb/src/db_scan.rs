@@ -164,9 +164,6 @@ impl Db {
             return Ok(outcome);
         }
 
-        // Memtables are bounded overlays. They are visited after the immutable SST
-        // snapshot, matching the historical public scan ordering while replacing the
-        // unbounded SST-wide seen HashSet with direct BTreeMap membership checks.
         if let Some(immutable) = &state.immutable {
             for (key, value) in immutable.entries() {
                 check_visibility_scan_cancelled(options, &mut outcome)?;
@@ -221,7 +218,7 @@ fn check_visibility_scan_cancelled(
         .as_ref()
         .is_some_and(|cancel| cancel.is_cancelled())
     {
-        return Err(LevelDbError::cancelled("database visibility scan"));
+        return Err(LevelDbError::cancelled("database scan"));
     }
     Ok(())
 }
