@@ -44,8 +44,33 @@ fn main() {
         std::thread::available_parallelism().map_or(1, usize::from)
     );
 
-    measure_condition(&db_path, "logical_cold", CachePolicy::Bypass, false);
-    measure_condition(&db_path, "logical_warm", CachePolicy::Use, true);
+    for (mode, threading, scan_mode) in [
+        ("single", ThreadingOptions::Single, ScanMode::Sequential),
+        (
+            "parallel_auto",
+            ThreadingOptions::Auto,
+            ScanMode::ParallelTables,
+        ),
+    ] {
+        measure_condition(
+            &db_path,
+            "logical_cold",
+            mode,
+            CachePolicy::Bypass,
+            false,
+            threading,
+            scan_mode,
+        );
+        measure_condition(
+            &db_path,
+            "logical_warm",
+            mode,
+            CachePolicy::Use,
+            true,
+            threading,
+            scan_mode,
+        );
+    }
 
     let (fixture_hash_after, fixture_bytes_after) =
         fixture_hash(hash_root).expect("fixture hash after benchmark");
@@ -53,14 +78,24 @@ fn main() {
     assert_eq!(fixture_bytes_after, fixture_bytes, "fixture size changed");
 }
 
-fn measure_condition(db_path: &Path, label: &str, cache_policy: CachePolicy, reuse_handle: bool) {
+#[allow(clippy::too_many_arguments)]
+fn measure_condition(
+    db_path: &Path,
+    cache_label: &str,
+    mode: &str,
+    cache_policy: CachePolicy,
+    reuse_handle: bool,
+    threading: ThreadingOptions,
+    scan_mode: ScanMode,
+) {
     let shared = reuse_handle.then(|| open_read_only(db_path));
     if let Some(db) = &shared {
-        let _ = scan_once(db, cache_policy);
+        let _ = scan_once(db, cache_policy, threading, scan_mode);
     }
     let mut elapsed = Vec::with_capacity(SAMPLE_COUNT);
     let mut records = 0_usize;
     let mut bytes = 0_usize;
+    let mut workers = 0_usize;
     for _ in 0..SAMPLE_COUNT {
         let owned;
         let db = if let Some(shared) = &shared {
@@ -70,16 +105,18 @@ fn measure_condition(db_path: &Path, label: &str, cache_policy: CachePolicy, reu
             &owned
         };
         let started = Instant::now();
-        let (sample_records, sample_bytes) = scan_once(db, cache_policy);
+        let (sample_records, sample_bytes, sample_workers) =
+            scan_once(db, cache_policy, threading, scan_mode);
         elapsed.push(started.elapsed());
         records = sample_records;
         bytes = sample_bytes;
+        workers = sample_workers;
     }
     elapsed.sort_unstable();
     let p50 = percentile(&elapsed, 50);
     let p95 = percentile(&elapsed, 95);
     println!(
-        "leveldb_fixture.scan cache={label} samples={SAMPLE_COUNT} records={records} bytes={bytes} p50_ms={:.3} p95_ms={:.3} records_per_sec={:.2} mib_per_sec={:.2}",
+        "leveldb_fixture.scan cache={cache_label} mode={mode} workers={workers} samples={SAMPLE_COUNT} records={records} bytes={bytes} p50_ms={:.3} p95_ms={:.3} records_per_sec={:.2} mib_per_sec={:.2}",
         p50.as_secs_f64() * 1_000.0,
         p95.as_secs_f64() * 1_000.0,
         records as f64 / p50.as_secs_f64(),
@@ -99,14 +136,19 @@ fn open_read_only(path: &Path) -> Db {
     .expect("open read-only Mojang LevelDB")
 }
 
-fn scan_once(db: &Db, cache_policy: CachePolicy) -> (usize, usize) {
+fn scan_once(
+    db: &Db,
+    cache_policy: CachePolicy,
+    threading: ThreadingOptions,
+    scan_mode: ScanMode,
+) -> (usize, usize, usize) {
     let mut bytes = 0_usize;
     let outcome = db
-        .for_each_entry(
+        .for_each_entry_borrowed(
             ReadOptions {
                 cache_policy,
-                threading: ThreadingOptions::Single,
-                scan_mode: ScanMode::Sequential,
+                threading,
+                scan_mode,
                 ..ReadOptions::default()
             },
             |key, value| {
@@ -115,7 +157,7 @@ fn scan_once(db: &Db, cache_policy: CachePolicy) -> (usize, usize) {
             },
         )
         .expect("scan read-only fixture");
-    (outcome.visited, bytes)
+    (outcome.visited, bytes, outcome.worker_threads)
 }
 
 fn percentile(samples: &[Duration], percentile: usize) -> Duration {
