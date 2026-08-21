@@ -17,9 +17,9 @@ const MAX_SUBCHUNK_PALETTE_LEN: usize = 4096;
 pub enum SubChunkDecodeMode {
     /// Decode palette counts without retaining all block indices.
     CountsOnly,
-    /// Retain packed palette indices for exact surface-column sampling.
+    /// Retain zero-copy packed palette words for exact surface-column sampling.
     SurfaceColumns,
-    /// Retain packed palette words while allowing full 3D random access.
+    /// Retain zero-copy packed palette words while allowing full 3D random access.
     PackedIndices,
     #[default]
     /// Decode and retain full block index arrays.
