@@ -1,6 +1,9 @@
 use super::*;
 
 pub(super) struct NovaPreparedBackdropBlurGroup {
+    /// Incremental scene segment that advances the shared backdrop source from the previous blur
+    /// barrier to this group's exact draw-order prefix. The first group starts from a clear target;
+    /// later groups load the existing source and append only the delta.
     pub(super) source_steps: Vec<RenderStepDescriptor>,
     pub(super) filter_passes: Vec<NovaBackdropBlurRenderPass>,
 }
@@ -37,11 +40,13 @@ impl NovaRenderer {
         );
     }
 
-    /// Builds one exact source-prefix render for every backdrop batch.
+    /// Builds one sequential source segment for every backdrop draw-order barrier.
     ///
-    /// Each group renders only the source rectangle needed by its Gaussian kernel. Compatible
-    /// overlapping primitives can share one canonical filter target, while different source groups
-    /// remain strict draw-order barriers and can never share their filtered result.
+    /// `BackdropSourceThrough` still gives us the exact semantic prefix for a group, but that
+    /// prefix is used only as CPU-side planning input. We subtract the previous prefix and submit
+    /// only the newly exposed segment to the shared source texture. Earlier backdrop groups are
+    /// therefore composited once and become part of the source for later groups instead of causing
+    /// the renderer to replay the whole scene prefix for every blur.
     pub(super) fn prepare_backdrop_blur_groups(
         &self,
         enabled: bool,
@@ -57,20 +62,40 @@ impl NovaRenderer {
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
-        let mut groups = Vec::new();
 
-        for (batch_index, batch) in self.frame_upload.batches.iter().enumerate() {
-            let NovaUploadedBatch::BackdropBlurs { first, count } = *batch else {
-                continue;
-            };
-            let configs = self
-                .frame_upload
-                .backdrop_blur_configs_for_range(first, count);
-            if configs.is_empty() {
-                continue;
-            }
+        let blur_groups: Vec<_> = self
+            .frame_upload
+            .batches
+            .iter()
+            .enumerate()
+            .filter_map(|(batch_index, batch)| {
+                let NovaUploadedBatch::BackdropBlurs { first, count } = *batch else {
+                    return None;
+                };
+                let configs = self
+                    .frame_upload
+                    .backdrop_blur_configs_for_range(first, count);
+                (!configs.is_empty()).then_some((batch_index, configs))
+            })
+            .collect();
+        if blur_groups.is_empty() {
+            return Vec::new();
+        }
 
-            let mut source_steps = Vec::new();
+        // Every incremental segment uses the same source footprint. This is essential because a
+        // later blur may sample pixels that an earlier blur did not need; rendering each segment
+        // with a different local scissor would leave holes in the accumulated source texture.
+        let source_scissor = blur_groups
+            .iter()
+            .flat_map(|(_, configs)| configs.iter().copied())
+            .filter_map(|config| blur_source_scissor(config, self.current_size))
+            .reduce(union_scissor_rects);
+
+        let mut groups = Vec::with_capacity(blur_groups.len());
+        let mut previous_prefix = Vec::<RenderStepDescriptor>::new();
+
+        for (batch_index, configs) in blur_groups {
+            let mut exact_prefix = Vec::new();
             draw_steps_for_upload_into(
                 &self.frame_upload,
                 &self.pipelines,
@@ -92,16 +117,14 @@ impl NovaRenderer {
                 NovaDrawStepMode::BackdropSourceThrough {
                     batch_end: batch_index,
                 },
-                &mut source_steps,
+                &mut exact_prefix,
             );
 
-            let group_source_scissor = configs
-                .iter()
-                .filter_map(|config| blur_source_scissor(*config, self.current_size))
-                .reduce(union_scissor_rects);
-            if let Some(scissor) = group_source_scissor {
-                apply_scissor_to_steps(&mut source_steps, scissor);
+            if let Some(scissor) = source_scissor {
+                apply_scissor_to_steps(&mut exact_prefix, scissor);
             }
+            let source_steps = incremental_source_steps(&previous_prefix, &exact_prefix);
+            previous_prefix = exact_prefix;
 
             let mut filter_passes = Vec::new();
             backdrop_blur_render_passes_for_configs_into(
@@ -203,6 +226,80 @@ impl NovaRenderer {
             &mut self.draw_step_scratch.path_mask_steps,
         );
     }
+}
+
+/// Returns the GPU work needed to advance `previous_prefix` to `current_prefix`.
+///
+/// Draw packing may merge two adjacent batches into one instanced draw. In that case the current
+/// prefix is not a literal vector prefix of the previous one, so the final merged draw is split at
+/// the old instance boundary. Any unexpected structural mismatch falls back to the exact current
+/// prefix to preserve rendering correctness.
+fn incremental_source_steps(
+    previous_prefix: &[RenderStepDescriptor],
+    current_prefix: &[RenderStepDescriptor],
+) -> Vec<RenderStepDescriptor> {
+    if previous_prefix.is_empty() {
+        return current_prefix.to_vec();
+    }
+    if is_only_noop_draw(previous_prefix) {
+        return current_prefix.to_vec();
+    }
+
+    let common = previous_prefix
+        .iter()
+        .zip(current_prefix)
+        .take_while(|(previous, current)| previous == current)
+        .count();
+    if common == previous_prefix.len() {
+        return current_prefix[common..].to_vec();
+    }
+
+    if common + 1 == previous_prefix.len()
+        && let (
+            Some(RenderStepDescriptor::Draw(previous)),
+            Some(RenderStepDescriptor::Draw(current)),
+        ) = (previous_prefix.get(common), current_prefix.get(common))
+        && draw_step_extends(previous, current)
+    {
+        let mut result = Vec::with_capacity(current_prefix.len().saturating_sub(common));
+        let added_instances = current.instance_count.saturating_sub(previous.instance_count);
+        if added_instances != 0
+            && let Some(first_instance) = previous
+                .first_instance
+                .checked_add(previous.instance_count)
+        {
+            let mut delta = current.clone();
+            delta.first_instance = first_instance;
+            delta.instance_count = added_instances;
+            result.push(RenderStepDescriptor::Draw(delta));
+        }
+        result.extend_from_slice(&current_prefix[common + 1..]);
+        return result;
+    }
+
+    log::debug!(
+        "nova backdrop incremental source prefix mismatch: previous_steps={} current_steps={}; falling back to exact prefix",
+        previous_prefix.len(),
+        current_prefix.len()
+    );
+    current_prefix.to_vec()
+}
+
+fn is_only_noop_draw(steps: &[RenderStepDescriptor]) -> bool {
+    matches!(
+        steps,
+        [RenderStepDescriptor::Draw(step)] if step.vertex_count == 0 || step.instance_count == 0
+    )
+}
+
+fn draw_step_extends(previous: &DrawStepDescriptor, current: &DrawStepDescriptor) -> bool {
+    previous.pipeline == current.pipeline
+        && previous.resource_sets == current.resource_sets
+        && previous.vertex_count == current.vertex_count
+        && previous.first_vertex == current.first_vertex
+        && previous.first_instance == current.first_instance
+        && previous.scissor == current.scissor
+        && current.instance_count >= previous.instance_count
 }
 
 fn sprite_resource_set(
