@@ -13,7 +13,7 @@ struct RemovalTarget {
     bmcbl_managed: bool,
 }
 
-/// 移除当前用户下已注册的同包家族实例。
+/// 移除当前用户下已注册的同包家族主包。
 ///
 /// 只有同时满足以下条件的注册才属于 BMCBL 自己管理的散装包：
 /// - Windows 报告该包以 DevelopmentMode 部署；
@@ -21,7 +21,8 @@ struct RemovalTarget {
 ///
 /// 对这种注册使用 PreserveApplicationData，以便不同 Minecraft 散装版本之间切换时
 /// 保留 LocalState。Store/外部注册在卸载前必须先完成可验证的外部数据备份；
-/// 备份失败则拒绝卸载。
+/// 备份失败则拒绝卸载。资源包（ResourceId 非空）由部署系统随主包处理，不参与
+/// 注册来源判定，也不单独执行 RemovePackageWithOptionsAsync。
 pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
     let package_manager = PackageManager::new().map_err(|e| {
         error!("无法创建 PackageManager: {:?}", e);
@@ -39,6 +40,14 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
 
         for package in packages {
             let Ok(id) = package.Id() else { continue };
+            if id.ResourceId().is_ok_and(|resource_id| !resource_id.is_empty()) {
+                debug!(
+                    family_name = package_family_name,
+                    "跳过同包家族资源包，注册替换仅处理主包"
+                );
+                continue;
+            }
+
             let Ok(full_name) = id.FullName() else { continue };
             let installed_path = package
                 .InstalledLocation()
@@ -60,7 +69,7 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
     }
 
     if targets.is_empty() {
-        info!("未找到当前用户已安装的包实例 ({})，跳过移除。", package_family_name);
+        info!("未找到当前用户已安装的主包实例 ({})，跳过移除。", package_family_name);
         return Ok(());
     }
 
@@ -98,7 +107,7 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
             development_mode = target.development_mode,
             bmcbl_managed = target.bmcbl_managed,
             preserve_application_data = target.bmcbl_managed,
-            "准备按当前用户模式移除 UWP 注册"
+            "准备按当前用户模式移除 UWP 主包注册"
         );
 
         let async_op = package_manager
@@ -115,7 +124,7 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
                 full_name = %full_name_str,
                 development_mode = target.development_mode,
                 preserve_application_data = target.bmcbl_managed,
-                "UWP 包注册成功移除"
+                "UWP 主包注册成功移除"
             );
         } else {
             if extended_hr == HRESULT(0x80073CFAu32 as i32) {
