@@ -64,6 +64,10 @@ impl LinuxOnboardingState {
         self.request_id
     }
 
+    pub fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
     pub fn apply_environment(
         &mut self,
         request_id: u64,
