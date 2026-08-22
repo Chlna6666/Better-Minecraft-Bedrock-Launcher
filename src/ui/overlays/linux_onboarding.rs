@@ -99,7 +99,7 @@ pub fn render_linux_onboarding_overlay(
             div()
                 .flex_1()
                 .min_h(px(0.))
-                .overflow_y_scroll()
+                .overflow_y_scrollbar()
                 .px(px(26.))
                 .py(px(20.))
                 .child(body),
