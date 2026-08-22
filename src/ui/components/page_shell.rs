@@ -16,7 +16,9 @@ use gpui::{
 };
 
 pub const PAGE_INSET_X: Pixels = px(22.);
-pub const PAGE_INSET_TOP: Pixels = px(92.);
+// 主窗口标题栏固定为 60px。页面只保留 12px 的透明布局间距，避免旧的 32px
+// 顶部空带在高 DPI 下被放大成明显的横向色带；这里不创建任何额外背景或模糊层。
+pub const PAGE_INSET_TOP: Pixels = px(72.);
 pub const PAGE_INSET_BOTTOM: Pixels = px(20.);
 pub const SPLIT_PAGE_SIDEBAR_WIDTH: Pixels = px(280.);
 pub const SPLIT_PAGE_GAP: Pixels = px(16.);
@@ -196,7 +198,7 @@ mod tests {
     #[test]
     fn route_pages_share_one_outer_inset() {
         assert_eq!(PAGE_INSET_X, px(22.));
-        assert_eq!(PAGE_INSET_TOP, px(92.));
+        assert_eq!(PAGE_INSET_TOP, px(72.));
         assert_eq!(PAGE_INSET_BOTTOM, px(20.));
     }
 
