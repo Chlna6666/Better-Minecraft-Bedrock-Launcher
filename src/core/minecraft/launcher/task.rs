@@ -40,6 +40,7 @@ use crate::utils::file_ops;
 const LAUNCH_TOTAL_STEPS: u64 = 5;
 const GAME_INFO_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
+const LEGACY_UWP_RUNTIME_INJECTION_CUTOFF: &str = "1.21.0.0";
 const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 5] = [
     ("parsing", "解析中"),
     ("preparing_files", "准备安装"),
@@ -417,6 +418,11 @@ fn is_win32_version(version: &str) -> bool {
     compare_versions(version, "1.21.12000.21") != Ordering::Less
 }
 
+fn is_legacy_uwp_runtime_injection_only(version: &str, is_win32: bool) -> bool {
+    !is_win32
+        && compare_versions(version, LEGACY_UWP_RUNTIME_INJECTION_CUTOFF) == Ordering::Less
+}
+
 pub fn embedded_dll_version_string() -> Option<String> {
     Some(bloader::embedded_version_string().to_string())
 }
@@ -494,11 +500,14 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         .await
         .map_err(|error| format!("Manifest 解析失败: {error}"))?;
     let is_win32 = is_win32_version(&identity_version);
+    let legacy_uwp_runtime_injection_only =
+        is_legacy_uwp_runtime_injection_only(&identity_version, is_win32);
     info!(
         task_id = %task_id,
         identity_name = %identity_name,
         identity_version = %identity_version,
         is_win32,
+        legacy_uwp_runtime_injection_only,
         "游戏包 Manifest 解析完成"
     );
     advance_step(
@@ -506,6 +515,13 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         "parsing",
         format!("版本信息已解析: {identity_version} ({identity_name})"),
     );
+    if legacy_uwp_runtime_injection_only {
+        append_log(
+            task_id,
+            "检测到 1.21 以下 UWP：禁用 BLoader 静态部署与 PE 修补，仅使用运行时 DLL 注入"
+                .to_string(),
+        );
+    }
 
     let mut final_launch_args = request.launch_args.as_ref().map(ToString::to_string);
     if version_config.editor_mode
@@ -521,6 +537,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
 
     check_cancelled(task_id)?;
     let mut startup_mods_relative_paths = Vec::new();
+    let mut startup_mods_direct_paths = Vec::new();
     let mut delayed_mods = Vec::new();
     if request.auto_start
         && !version_config.disable_mod_loading
@@ -535,7 +552,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             }
 
             if delay == 0 {
-                if let Some(file_name) = path_buf.file_name().and_then(|name| name.to_str()) {
+                if legacy_uwp_runtime_injection_only {
+                    startup_mods_direct_paths.push(path_string);
+                } else if let Some(file_name) = path_buf.file_name().and_then(|name| name.to_str()) {
                     startup_mods_relative_paths.push(format!("mods/{file_name}"));
                 }
             } else {
@@ -545,7 +564,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     }
     debug!(
         task_id = %task_id,
-        startup_mods = startup_mods_relative_paths.len(),
+        startup_mods = startup_mods_relative_paths.len() + startup_mods_direct_paths.len(),
+        startup_mods_direct = startup_mods_direct_paths.len(),
         delayed_mods = delayed_mods.len(),
         disable_mod_loading = version_config.disable_mod_loading,
         "模组注入计划已生成"
@@ -555,7 +575,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         "preparing_files",
         format!(
             "已准备模组加载信息，立即注入 {} 个，延迟注入 {} 个",
-            startup_mods_relative_paths.len(),
+            startup_mods_relative_paths.len() + startup_mods_direct_paths.len(),
             delayed_mods.len()
         ),
     );
@@ -569,61 +589,83 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             exe_path = %exe_path.display(),
             "已定位游戏可执行文件"
         );
-        let exe_dir = exe_path.parent().ok_or("无效的游戏目录".to_string())?;
-        let local_data_root = exe_dir.join(BLOADER_DEFAULT_REDIRECTION_ROOT);
-        if !local_data_root.exists() {
-            fs::create_dir_all(&local_data_root)
-                .map_err(|error| format!("创建重定向目录失败: {error}"))?;
-        }
-        let _ = grant_all_application_packages_access(&local_data_root);
 
-        let injector_name = "BLoader.dll";
-        let injector_target_path = exe_dir.join(injector_name);
-        let mut need_update = true;
-        if injector_target_path.exists() {
-            remove_readonly(&injector_target_path);
-            if let Ok(disk_bytes) = fs::read(&injector_target_path) {
-                need_update = bloader::version_string(&disk_bytes).as_deref()
-                    != Some(bloader::embedded_version_string());
+        if legacy_uwp_runtime_injection_only {
+            if is_file_patched(&exe_path) {
+                remove_readonly(&exe_path);
+                restore_original_pe(&exe_path)
+                    .map_err(|error| format!("清理旧版 UWP PE 补丁失败: {error}"))?;
+                if is_file_patched(&exe_path) {
+                    return Err("清理旧版 UWP PE 补丁后仍检测到补丁标记".to_string());
+                }
+                append_log(
+                    task_id,
+                    "已还原历史 BMCBL PE 补丁；后续不再修改 1.21 以下 UWP 的 EXE"
+                        .to_string(),
+                );
             }
-        }
-
-        if need_update {
-            let injector_bytes = bloader::bytes()?;
-            ensure_file_in_dir(exe_dir, injector_name, injector_bytes)?;
-        }
-
-        let file_redirections =
-            version_config.effective_file_redirections(Path::new(package_folder));
-        if !file_redirections.is_empty() {
             append_log(
                 task_id,
-                format!("已配置 {} 条文件重定向", file_redirections.len()),
+                "1.21 以下 UWP 已跳过 BLoader.dll/config.json 部署和 PE 静态导入修补"
+                    .to_string(),
             );
-        }
-
-        let _ = write_bloader_config(
-            exe_dir,
-            version_config.disable_mod_loading,
-            version_config.enable_debug_console,
-            version_config.enable_redirection,
-            json!(file_redirections),
-            json!(startup_mods_relative_paths),
-        )?;
-        remove_legacy_preloader_config(exe_dir);
-
-        if let Err(error) = ensure_backup(&exe_path) {
-            warn!("无法创建 EXE 备份，将继续使用自标记还原机制: {error}");
-        }
-
-        if is_file_patched(&exe_path) {
-            append_log(task_id, "检测到 PE 已包含补丁标记，跳过修补".to_string());
         } else {
-            let _ = restore_original_pe(&exe_path);
-            remove_readonly(&exe_path);
-            inject_dll_import(&exe_path, injector_name, None)
-                .map_err(|error| format!("PE 修改失败: {error}"))?;
-            append_log(task_id, "静态注入环境已部署".to_string());
+            let exe_dir = exe_path.parent().ok_or("无效的游戏目录".to_string())?;
+            let local_data_root = exe_dir.join(BLOADER_DEFAULT_REDIRECTION_ROOT);
+            if !local_data_root.exists() {
+                fs::create_dir_all(&local_data_root)
+                    .map_err(|error| format!("创建重定向目录失败: {error}"))?;
+            }
+            let _ = grant_all_application_packages_access(&local_data_root);
+
+            let injector_name = "BLoader.dll";
+            let injector_target_path = exe_dir.join(injector_name);
+            let mut need_update = true;
+            if injector_target_path.exists() {
+                remove_readonly(&injector_target_path);
+                if let Ok(disk_bytes) = fs::read(&injector_target_path) {
+                    need_update = bloader::version_string(&disk_bytes).as_deref()
+                        != Some(bloader::embedded_version_string());
+                }
+            }
+
+            if need_update {
+                let injector_bytes = bloader::bytes()?;
+                ensure_file_in_dir(exe_dir, injector_name, injector_bytes)?;
+            }
+
+            let file_redirections =
+                version_config.effective_file_redirections(Path::new(package_folder));
+            if !file_redirections.is_empty() {
+                append_log(
+                    task_id,
+                    format!("已配置 {} 条文件重定向", file_redirections.len()),
+                );
+            }
+
+            let _ = write_bloader_config(
+                exe_dir,
+                version_config.disable_mod_loading,
+                version_config.enable_debug_console,
+                version_config.enable_redirection,
+                json!(file_redirections),
+                json!(startup_mods_relative_paths),
+            )?;
+            remove_legacy_preloader_config(exe_dir);
+
+            if let Err(error) = ensure_backup(&exe_path) {
+                warn!("无法创建 EXE 备份，将继续使用自标记还原机制: {error}");
+            }
+
+            if is_file_patched(&exe_path) {
+                append_log(task_id, "检测到 PE 已包含补丁标记，跳过修补".to_string());
+            } else {
+                let _ = restore_original_pe(&exe_path);
+                remove_readonly(&exe_path);
+                inject_dll_import(&exe_path, injector_name, None)
+                    .map_err(|error| format!("PE 修改失败: {error}"))?;
+                append_log(task_id, "静态注入环境已部署".to_string());
+            }
         }
     }
     advance_step(task_id, "patching", "启动环境准备完成".to_string());
@@ -812,6 +854,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             task_id = %task_id,
             aumid = %aumid,
             launch_args = ?final_launch_args.as_deref(),
+            legacy_uwp_runtime_injection_only,
             "准备启动 UWP 版本"
         );
         let activated_pid =
@@ -832,14 +875,25 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         };
         if !version_config.disable_mod_loading {
             let log_task_id = task_id.to_string();
-            handle_delayed_injection(
-                pid,
-                delayed_mods,
-                Arc::new(move |message: String| {
-                    append_log(&log_task_id, message);
-                }),
-                false,
-            );
+            let log_callback = Arc::new(move |message: String| {
+                append_log(&log_task_id, message);
+            });
+
+            if legacy_uwp_runtime_injection_only {
+                for path in startup_mods_direct_paths {
+                    inject_existing_process(
+                        pid,
+                        path.clone(),
+                        Some(log_callback.clone()),
+                        true,
+                        false,
+                    )
+                    .await
+                    .map_err(|error| format!("旧版 UWP 运行时注入失败 ({path}): {error:?}"))?;
+                }
+            }
+
+            handle_delayed_injection(pid, delayed_mods, log_callback, false);
         }
         info!(task_id = %task_id, pid, "UWP 版本启动成功");
         pid
