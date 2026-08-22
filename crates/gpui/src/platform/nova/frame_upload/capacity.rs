@@ -81,6 +81,41 @@ impl NovaFrameUpload {
         usize::from(self.backdrop_blur_levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS))
     }
 
+    /// Atlas textures that can contribute pixels to at least one backdrop source.
+    ///
+    /// Batches after the final backdrop barrier can never be sampled by a backdrop in this frame,
+    /// so uploads targeting only those textures must not invalidate the blur cache.
+    pub(in crate::platform::nova) fn backdrop_source_atlas_texture_ids(
+        &self,
+    ) -> Vec<AtlasTextureId> {
+        let Some(last_blur_batch) = self
+            .batches
+            .iter()
+            .rposition(|batch| matches!(batch, NovaUploadedBatch::BackdropBlurs { .. }))
+        else {
+            return Vec::new();
+        };
+
+        let mut textures = FxHashSet::default();
+        for batch in &self.batches[..last_blur_batch] {
+            match *batch {
+                NovaUploadedBatch::MonoSprites { texture_id, .. }
+                | NovaUploadedBatch::PolySprites { texture_id, .. } => {
+                    textures.insert(texture_id);
+                }
+                NovaUploadedBatch::SolidQuads { .. }
+                | NovaUploadedBatch::Quads { .. }
+                | NovaUploadedBatch::Shadows { .. }
+                | NovaUploadedBatch::PathRasterization { .. }
+                | NovaUploadedBatch::Paths { .. }
+                | NovaUploadedBatch::Underlines { .. }
+                | NovaUploadedBatch::BackdropBlurs { .. }
+                | NovaUploadedBatch::CustomMesh3d { .. } => {}
+            }
+        }
+        textures.into_iter().collect()
+    }
+
     pub(in crate::platform::nova) fn uploaded_bytes(&self) -> usize {
         self.globals
             .len()
