@@ -1,6 +1,9 @@
 use super::*;
 
 pub(super) struct NovaPreparedBackdropBlurGroup {
+    /// Scene segment that advances the shared backdrop source from the previous blur barrier to this
+    /// group's exact source state. The previous blur batch itself is included in the next segment,
+    /// so its filtered result is composited once into the accumulated scene color.
     pub(super) source_steps: Vec<RenderStepDescriptor>,
     pub(super) filter_passes: Vec<NovaBackdropBlurRenderPass>,
 }
@@ -37,11 +40,11 @@ impl NovaRenderer {
         );
     }
 
-    /// Builds one exact source-prefix render for every backdrop batch.
+    /// Builds a true draw-order compositor plan for backdrop blur.
     ///
-    /// Each group renders only the source rectangle needed by its Gaussian kernel. Compatible
-    /// overlapping primitives can share one canonical filter target, while different source groups
-    /// remain strict draw-order barriers and can never share their filtered result.
+    /// Unlike the old prefix-replay implementation, every scene batch belongs to at most one
+    /// backdrop source segment. Group 0 draws `[0, blur0)`, group 1 draws `[blur0, blur1)`, and so
+    /// on. The shared source render target is cleared once and then loaded between groups.
     pub(super) fn prepare_backdrop_blur_groups(
         &self,
         enabled: bool,
@@ -57,19 +60,38 @@ impl NovaRenderer {
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
-        let mut groups = Vec::new();
 
-        for (batch_index, batch) in self.frame_upload.batches.iter().enumerate() {
-            let NovaUploadedBatch::BackdropBlurs { first, count } = *batch else {
-                continue;
-            };
-            let configs = self
-                .frame_upload
-                .backdrop_blur_configs_for_range(first, count);
-            if configs.is_empty() {
-                continue;
-            }
+        let blur_groups: Vec<_> = self
+            .frame_upload
+            .batches
+            .iter()
+            .enumerate()
+            .filter_map(|(batch_index, batch)| {
+                let NovaUploadedBatch::BackdropBlurs { first, count } = *batch else {
+                    return None;
+                };
+                let configs = self
+                    .frame_upload
+                    .backdrop_blur_configs_for_range(first, count);
+                (!configs.is_empty()).then_some((batch_index, configs))
+            })
+            .collect();
+        if blur_groups.is_empty() {
+            return Vec::new();
+        }
 
+        // All sequential segments render the same union footprint. A later backdrop may sample
+        // pixels that an earlier backdrop did not need, so varying the source scissor per segment
+        // would leave holes in the accumulated scene-color texture.
+        let source_scissor = blur_groups
+            .iter()
+            .flat_map(|(_, configs)| configs.iter().copied())
+            .filter_map(|config| blur_source_scissor(config, self.current_size))
+            .reduce(union_scissor_rects);
+
+        let mut groups = Vec::with_capacity(blur_groups.len());
+        let mut batch_start = 0usize;
+        for (batch_end, configs) in blur_groups {
             let mut source_steps = Vec::new();
             draw_steps_for_upload_into(
                 &self.frame_upload,
@@ -89,17 +111,13 @@ impl NovaRenderer {
                 |config| targets.resource_set_for_config(config, frame_resource_index),
                 self.custom_mesh_3d_resource_set,
                 self.custom_mesh_3d_indices_buffer,
-                NovaDrawStepMode::BackdropSourceThrough {
-                    batch_end: batch_index,
+                NovaDrawStepMode::BackdropSegment {
+                    batch_start,
+                    batch_end,
                 },
                 &mut source_steps,
             );
-
-            let group_source_scissor = configs
-                .iter()
-                .filter_map(|config| blur_source_scissor(*config, self.current_size))
-                .reduce(union_scissor_rects);
-            if let Some(scissor) = group_source_scissor {
+            if let Some(scissor) = source_scissor {
                 apply_scissor_to_steps(&mut source_steps, scissor);
             }
 
@@ -117,43 +135,11 @@ impl NovaRenderer {
                 source_steps,
                 filter_passes,
             });
+            // Include this group's backdrop batch in the next segment. Its draw samples the final
+            // filtered target produced immediately after this source segment.
+            batch_start = batch_end;
         }
         groups
-    }
-
-    pub(super) fn prepare_backdrop_blur_source_steps(&mut self, enabled: bool) {
-        self.draw_step_scratch.backdrop_blur_source_steps.clear();
-        if !enabled {
-            return;
-        }
-        let blend_pipelines = self.current_blend_pipelines();
-        let frame_resource_index = self.current_frame_resource_index;
-        let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
-        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
-        let backdrop_blur_targets = self.backdrop_blur_targets.as_ref();
-        let steps = &mut self.draw_step_scratch.backdrop_blur_source_steps;
-        draw_steps_for_upload_into(
-            &self.frame_upload,
-            &self.pipelines,
-            blend_pipelines,
-            self.quad_resource_set,
-            self.shadow_resource_set,
-            self.path_resource_set,
-            |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
-            |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
-            |mesh_id, generation| {
-                custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
-            },
-            self.underline_resource_set,
-            |config| {
-                backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index)
-            },
-            self.custom_mesh_3d_resource_set,
-            self.custom_mesh_3d_indices_buffer,
-            NovaDrawStepMode::BackdropSource,
-            steps,
-        );
     }
 
     pub(super) fn prepare_backdrop_blur_passes(&mut self, enabled: bool) {
@@ -169,9 +155,6 @@ impl NovaRenderer {
         let Some(targets) = self.backdrop_blur_targets.as_ref() else {
             return;
         };
-        // GPU targets have stable identities and deliberately keep their allocation across animated
-        // bounds changes. Always derive pass geometry/scissors from the current frame instead of
-        // reading the bounds stored when the target texture was originally allocated.
         let configs = self.frame_upload.backdrop_blur_configs();
         backdrop_blur_render_passes_for_configs_into(
             &self.pipelines,
@@ -238,14 +221,21 @@ fn apply_filter_pass_scissors(
     passes: &mut [NovaBackdropBlurRenderPass],
 ) {
     for (config, pass_pair) in configs.iter().zip(passes.chunks_mut(2)) {
+        let [horizontal, vertical] = pass_pair else {
+            continue;
+        };
         let Some(source_scissor) = blur_source_scissor(*config, drawable_size) else {
             continue;
         };
-        let target_scissor =
+        let horizontal_scissor = downsample_x_scissor(
+            source_scissor,
+            config.downsample(),
+            drawable_size,
+        );
+        let final_scissor =
             downsample_scissor(source_scissor, config.downsample(), drawable_size);
-        for pass in pass_pair {
-            pass.step.scissor = Some(clip_scissor(pass.step.scissor, target_scissor));
-        }
+        horizontal.step.scissor = Some(clip_scissor(horizontal.step.scissor, horizontal_scissor));
+        vertical.step.scissor = Some(clip_scissor(vertical.step.scissor, final_scissor));
     }
 }
 
@@ -291,14 +281,34 @@ fn blur_source_scissor(
     (!scissor.is_empty()).then_some(scissor)
 }
 
+fn downsample_x_scissor(
+    source: ScissorRect,
+    downsample: u8,
+    drawable_size: DrawableSize,
+) -> ScissorRect {
+    let factor = u32::from(downsample.max(1));
+    let target_width = drawable_size.width.div_ceil(factor).max(1);
+    let right = source.x.saturating_add(source.width);
+    let x = (source.x / factor).min(target_width);
+    let scaled_right = right.div_ceil(factor).min(target_width);
+    ScissorRect {
+        x,
+        y: source.y.min(drawable_size.height),
+        width: scaled_right.saturating_sub(x),
+        height: source
+            .height
+            .min(drawable_size.height.saturating_sub(source.y.min(drawable_size.height))),
+    }
+}
+
 fn downsample_scissor(
     source: ScissorRect,
     downsample: u8,
     drawable_size: DrawableSize,
 ) -> ScissorRect {
     let factor = u32::from(downsample.max(1));
-    let target_width = (drawable_size.width / factor).max(1);
-    let target_height = (drawable_size.height / factor).max(1);
+    let target_width = drawable_size.width.div_ceil(factor).max(1);
+    let target_height = drawable_size.height.div_ceil(factor).max(1);
     let right = source.x.saturating_add(source.width);
     let bottom = source.y.saturating_add(source.height);
     let x = (source.x / factor).min(target_width);
