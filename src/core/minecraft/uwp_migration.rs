@@ -80,17 +80,20 @@ fn read_registration(family_name: &str) -> RegistrationSummary {
         return RegistrationSummary::default();
     };
 
+    // 同一个 PackageFamily 可能包含资源包。引导只展示主包注册状态，避免把语言/资源包
+    // 的版本或安装路径误当成 Minecraft 主包。
     for package in packages {
-        let version = package
-            .Id()
-            .ok()
-            .and_then(|id| id.Version().ok())
-            .map(|version| {
-                format!(
-                    "{}.{}.{}.{}",
-                    version.Major, version.Minor, version.Build, version.Revision
-                )
-            });
+        let Ok(id) = package.Id() else { continue };
+        if id.ResourceId().is_ok_and(|resource_id| !resource_id.is_empty()) {
+            continue;
+        }
+
+        let version = id.Version().ok().map(|version| {
+            format!(
+                "{}.{}.{}.{}",
+                version.Major, version.Minor, version.Build, version.Revision
+            )
+        });
         let path = package
             .InstalledLocation()
             .ok()
@@ -145,10 +148,11 @@ fn walk_stats(path: &Path) -> (u64, u64) {
 
 pub fn summarize_family(family_name: &str) -> MinecraftDataSummary {
     let registration = read_registration(family_name);
-    let bmcbl_managed_registration = registration
-        .path
-        .as_deref()
-        .is_some_and(is_bmcbl_managed_registration);
+    let bmcbl_managed_registration = registration.development_mode
+        && registration
+            .path
+            .as_deref()
+            .is_some_and(is_bmcbl_managed_registration);
     let local_state = local_state_for_family(family_name).unwrap_or_default();
     let com_mojang = local_state.join("games").join("com.mojang");
     let data_present = com_mojang.is_dir();
@@ -225,6 +229,21 @@ fn pending_root() -> PathBuf {
         .join("uwp")
 }
 
+fn safe_family_name(family_name: &str) -> String {
+    family_name.replace(
+        |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
+        "_",
+    )
+}
+
+fn pending_marker_for_family(family_name: &str) -> PathBuf {
+    pending_root().join(format!("pending-{}.txt", safe_family_name(family_name)))
+}
+
+fn legacy_pending_marker() -> PathBuf {
+    pending_root().join("pending.txt")
+}
+
 fn copy_tree(source: &Path, destination: &Path) -> Result<(u64, u64), String> {
     fs::create_dir_all(destination).map_err(|e| format!("创建迁移目录失败: {e}"))?;
     let mut files = 0u64;
@@ -265,31 +284,47 @@ pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<
         return Ok(None);
     }
 
-    let (source_files, source_bytes) = walk_stats(&source);
-    if source_files == 0 {
+    let source_before = walk_stats(&source);
+    if source_before.0 == 0 {
         return Ok(None);
     }
 
-    let epoch = SystemTime::now()
+    let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let safe_family = family_name.replace(
-        |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
-        "_",
-    );
-    let root = pending_root().join(format!("{epoch}-{safe_family}"));
+        .unwrap_or_default();
+    let epoch = timestamp.as_secs();
+    let root = pending_root().join(format!(
+        "{}-{}",
+        timestamp.as_nanos(),
+        safe_family_name(family_name)
+    ));
     let partial = root.with_extension("partial");
     if partial.exists() {
         fs::remove_dir_all(&partial)
             .map_err(|e| format!("清理旧迁移临时目录失败: {e}"))?;
     }
+
     let backup_local_state = partial.join("LocalState");
     let backup_com_mojang = backup_local_state.join("games").join("com.mojang");
-    let (copied_files, copied_bytes) = copy_tree(&source, &backup_com_mojang)?;
-    if copied_files != source_files || copied_bytes != source_bytes {
+    let copied = copy_tree(&source, &backup_com_mojang)?;
+    let source_after = walk_stats(&source);
+    let backup_after = walk_stats(&backup_com_mojang);
+
+    if source_before != source_after {
         return Err(format!(
-            "UWP 数据备份校验失败：源 {source_files} 个文件/{source_bytes} 字节，备份 {copied_files} 个文件/{copied_bytes} 字节；已阻止卸载原版 Minecraft"
+            "UWP 数据在备份过程中发生变化：开始时 {} 个文件/{} 字节，结束时 {} 个文件/{} 字节；可能仍有 Minecraft 进程正在写入，已阻止卸载",
+            source_before.0, source_before.1, source_after.0, source_after.1
+        ));
+    }
+    if copied != source_after || backup_after != source_after {
+        return Err(format!(
+            "UWP 数据备份校验失败：源 {} 个文件/{} 字节，复制统计 {} 个文件/{} 字节，备份复核 {} 个文件/{} 字节；已阻止卸载原版 Minecraft",
+            source_after.0,
+            source_after.1,
+            copied.0,
+            copied.1,
+            backup_after.0,
+            backup_after.1
         ));
     }
 
@@ -299,8 +334,8 @@ pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<
         created_at_epoch: epoch,
         source_local_state: local_state,
         backup_local_state: root.join("LocalState"),
-        file_count: copied_files,
-        total_size: copied_bytes,
+        file_count: source_after.0,
+        total_size: source_after.1,
         restored: false,
     };
     fs::write(
@@ -311,18 +346,42 @@ pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<
     fs::create_dir_all(root.parent().unwrap_or_else(|| Path::new(".")))
         .map_err(|e| e.to_string())?;
     fs::rename(&partial, &root).map_err(|e| format!("提交迁移备份失败: {e}"))?;
-    fs::write(
-        pending_root().join("pending.txt"),
-        root.to_string_lossy().as_bytes(),
-    )
-    .map_err(|e| format!("写入迁移待恢复标记失败: {e}"))?;
+
+    let marker = pending_marker_for_family(family_name);
+    fs::write(&marker, root.to_string_lossy().as_bytes())
+        .map_err(|e| format!("写入迁移待恢复标记失败 {}: {e}", marker.display()))?;
     Ok(Some(root))
+}
+
+fn read_pending_root_for_family(family_name: &str) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let family_marker = pending_marker_for_family(family_name);
+    match fs::read_to_string(&family_marker) {
+        Ok(root) => return Ok(Some((family_marker, PathBuf::from(root.trim())))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "读取 UWP 迁移待恢复标记失败 {}: {error}",
+                family_marker.display()
+            ));
+        }
+    }
+
+    // 兼容此前版本创建的全局 pending.txt。只有 manifest 的包家族匹配时才会消费它。
+    let legacy_marker = legacy_pending_marker();
+    match fs::read_to_string(&legacy_marker) {
+        Ok(root) => Ok(Some((legacy_marker, PathBuf::from(root.trim())))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "读取旧版 UWP 迁移待恢复标记失败 {}: {error}",
+            legacy_marker.display()
+        )),
+    }
 }
 
 /// DevelopmentMode 注册成功后恢复 Store/外部 UWP 的用户数据。
 ///
-/// 恢复动作必须与刚注册的 Minecraft Identity 匹配。这样导入其它 APPX 时不会误消费
-/// 一个仍待恢复的 Minecraft 迁移备份。
+/// 恢复动作必须与刚注册的 Minecraft Identity 匹配。不同包家族使用独立 pending 标记，
+/// Release/Preview 可各自保留待恢复迁移；同时拒绝覆盖已经出现新文件的目标 com.mojang。
 pub fn restore_pending_backup_for_identity(
     identity_name: &str,
 ) -> Result<Option<PathBuf>, String> {
@@ -330,11 +389,9 @@ pub fn restore_pending_backup_for_identity(
         return Ok(None);
     };
 
-    let marker = pending_root().join("pending.txt");
-    let Ok(root_text) = fs::read_to_string(&marker) else {
+    let Some((marker, root)) = read_pending_root_for_family(expected_family)? else {
         return Ok(None);
     };
-    let root = PathBuf::from(root_text.trim());
     let manifest_path = root.join("manifest.json");
     let mut manifest: MigrationManifest = serde_json::from_slice(
         &fs::read(&manifest_path).map_err(|e| format!("读取迁移清单失败: {e}"))?,
@@ -342,13 +399,19 @@ pub fn restore_pending_backup_for_identity(
     .map_err(|e| format!("解析迁移清单失败: {e}"))?;
 
     if manifest.family_name != expected_family {
-        tracing::info!(
-            identity_name,
-            expected_family,
-            pending_family = %manifest.family_name,
-            "待恢复 UWP 数据与本次注册包家族不匹配，保留迁移备份等待正确版本注册"
-        );
-        return Ok(None);
+        if marker == legacy_pending_marker() {
+            tracing::info!(
+                identity_name,
+                expected_family,
+                pending_family = %manifest.family_name,
+                "旧版全局待恢复 UWP 数据与本次注册包家族不匹配，保留迁移备份等待正确版本注册"
+            );
+            return Ok(None);
+        }
+        return Err(format!(
+            "UWP 迁移标记与清单包家族不一致：期望 {expected_family}，实际 {}",
+            manifest.family_name
+        ));
     }
 
     let Some(target_local_state) = local_state_for_family(&manifest.family_name) else {
@@ -358,20 +421,49 @@ pub fn restore_pending_backup_for_identity(
         .backup_local_state
         .join("games")
         .join("com.mojang");
-    let target = target_local_state.join("games").join("com.mojang");
-    let (restored_files, restored_bytes) = copy_tree(&source, &target)?;
-    if restored_files != manifest.file_count || restored_bytes != manifest.total_size {
+    let source_stats = walk_stats(&source);
+    if source_stats != (manifest.file_count, manifest.total_size) {
         return Err(format!(
-            "UWP 数据恢复校验失败：期望 {} 个文件/{} 字节，实际 {restored_files} 个文件/{restored_bytes} 字节",
-            manifest.file_count, manifest.total_size
+            "UWP 迁移备份在恢复前校验失败：清单 {} 个文件/{} 字节，当前备份 {} 个文件/{} 字节",
+            manifest.file_count, manifest.total_size, source_stats.0, source_stats.1
         ));
     }
+
+    let target = target_local_state.join("games").join("com.mojang");
+    if target.is_dir() {
+        let target_stats = walk_stats(&target);
+        if target_stats.0 > 0 {
+            return Err(format!(
+                "新注册 UWP 的目标数据目录已存在 {} 个文件/{} 字节，为避免覆盖新生成或用户现有的数据，已拒绝自动恢复；迁移备份仍保留在 {}",
+                target_stats.0,
+                target_stats.1,
+                root.display()
+            ));
+        }
+    }
+
+    let restored = copy_tree(&source, &target)?;
+    let target_after = walk_stats(&target);
+    let expected = (manifest.file_count, manifest.total_size);
+    if restored != expected || target_after != expected {
+        return Err(format!(
+            "UWP 数据恢复校验失败：期望 {} 个文件/{} 字节，复制统计 {} 个文件/{} 字节，目标复核 {} 个文件/{} 字节",
+            expected.0,
+            expected.1,
+            restored.0,
+            restored.1,
+            target_after.0,
+            target_after.1
+        ));
+    }
+
     manifest.restored = true;
     fs::write(
         &manifest_path,
         serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("更新迁移清单失败: {e}"))?;
-    let _ = fs::remove_file(marker);
+    fs::remove_file(&marker)
+        .map_err(|e| format!("清理迁移待恢复标记失败 {}: {e}", marker.display()))?;
     Ok(Some(root))
 }
