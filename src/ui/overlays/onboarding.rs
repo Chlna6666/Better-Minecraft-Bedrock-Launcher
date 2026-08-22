@@ -122,13 +122,13 @@ fn render_welcome(colors: &ThemeColors) -> AnyElement {
         )
         .child(feature_card(
             colors,
-            lucide_icons::icon_download(),
+            lucide_icons::icon_package_plus(),
             "下载和导入版本",
             "支持在线版本列表，以及 APPX、ZIP、MSIXVC 本地安装包。",
         ))
         .child(feature_card(
             colors,
-            lucide_icons::icon_layers_3(),
+            lucide_icons::icon_package(),
             "多版本管理",
             "版本文件保存在 BMCBL/versions，下次切换时无需重新下载。",
         ))
@@ -254,7 +254,7 @@ fn render_acquire(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyElement
         )
         .child(feature_card(
             colors,
-            lucide_icons::icon_cloud_download(),
+            lucide_icons::icon_package_plus(),
             "从 BMCBL 下载",
             "浏览正式版和 Preview 版本，选择后由任务系统完成下载、校验和解包。",
         ))
@@ -266,7 +266,7 @@ fn render_acquire(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyElement
         ))
         .child(feature_card(
             colors,
-            lucide_icons::icon_folder_check(),
+            lucide_icons::icon_circle_check(),
             "使用已有版本",
             if existing > 0 {
                 "已经检测到本地版本，可以直接完成向导并从主页启动。"
@@ -305,7 +305,7 @@ fn render_data_safety(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyEle
         ))
         .child(feature_card(
             colors,
-            lucide_icons::icon_copy_check(),
+            lucide_icons::icon_shield_check(),
             "历史版本建议使用数据隔离",
             "跨大版本直接打开同一世界可能导致方块、区块或世界数据发生不可逆迁移。使用版本设置中的文件重定向/隔离可以降低降级风险。",
         ))
