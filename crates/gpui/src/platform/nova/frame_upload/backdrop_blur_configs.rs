@@ -117,7 +117,6 @@ impl NovaBackdropBlurConfig {
             && (!self.recompute_overlap || self.same_target_slot(other))
     }
 
-    /// Compatibility name used by target lookup. Coverage means target membership, not geometry.
     pub(in crate::platform::nova) fn covers(self, other: Self) -> bool {
         self.owns(other)
     }
@@ -151,8 +150,6 @@ impl NovaBackdropBlurConfig {
         merged
     }
 
-    /// Compatibility accessor retained for diagnostics/tests that previously referred to the
-    /// Dual-Kawase sample offset. The Gaussian pipeline now treats this as the real radius.
     pub(in crate::platform::nova) fn offset(self) -> f32 {
         self.radius()
     }
@@ -204,7 +201,7 @@ impl PartialEq for NovaBackdropBlurConfigSet {
             && self
                 .configs
                 .iter()
-                .zip(&other.configs)
+                .zip(other.configs())
                 .all(|(left, right)| left.same_target_slot(*right))
     }
 }
@@ -248,11 +245,6 @@ impl NovaFrameUpload {
         configs
     }
 
-    /// Returns canonical filter targets for one backdrop source group.
-    ///
-    /// Adjacent equal Gaussian configurations whose kernel footprints overlap are coalesced into
-    /// one union target by default, so the overlap is filtered only once. A blur primitive can opt
-    /// into independent overlap recomputation through its packed `recompute_overlap` parameter.
     pub(in crate::platform::nova) fn backdrop_blur_configs_for_range(
         &self,
         first: u32,
@@ -284,7 +276,8 @@ impl NovaFrameUpload {
         )
     }
 
-    /// Rebuilds the pass parameter buffer for a separable Gaussian filter.
+    /// Rebuilds the two axis pass records. Both source axes are still full resolution at the point
+    /// where their convolution runs; X is downsampled by the first target and Y by the second.
     pub(in crate::platform::nova) fn rebuild_backdrop_blur_passes(
         &mut self,
         configs: &[NovaBackdropBlurConfig],
@@ -295,10 +288,7 @@ impl NovaFrameUpload {
         for config in configs {
             let radius = config.radius().max(1.0 / 4096.0);
             write_backdrop_blur_pass(&mut self.backdrop_blur_passes, radius);
-            write_backdrop_blur_pass(
-                &mut self.backdrop_blur_passes,
-                radius / f32::from(config.downsample().max(1)),
-            );
+            write_backdrop_blur_pass(&mut self.backdrop_blur_passes, radius);
         }
     }
 
@@ -511,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn gaussian_pass_parameters_keep_subpixel_radius() {
+    fn gaussian_pass_parameters_are_precomputed_and_normalized() {
         let mut upload = NovaFrameUpload::default();
         push_blur_record(&mut upload, 1, 1, 1, 0.1, [8.0, 12.0, 320.0, 180.0], false);
         upload
@@ -523,15 +513,22 @@ mod tests {
             upload.backdrop_blur_passes.len(),
             BACKDROP_BLUR_PASS_BYTES * 2
         );
-        let horizontal =
-            f32::from_ne_bytes(upload.backdrop_blur_passes[0..4].try_into().unwrap());
-        let vertical = f32::from_ne_bytes(
-            upload.backdrop_blur_passes
-                [BACKDROP_BLUR_PASS_BYTES..BACKDROP_BLUR_PASS_BYTES + 4]
-                .try_into()
-                .unwrap(),
-        );
-        assert!((horizontal - 0.1).abs() <= f32::EPSILON);
-        assert!((vertical - 0.1).abs() <= f32::EPSILON);
+        for pass in 0..2 {
+            let base = pass * BACKDROP_BLUR_PASS_BYTES;
+            let read_f32 = |offset: usize| {
+                f32::from_ne_bytes(
+                    upload.backdrop_blur_passes[base + offset..base + offset + 4]
+                        .try_into()
+                        .unwrap(),
+                )
+            };
+            let offsets = [read_f32(0), read_f32(4), read_f32(8), read_f32(12)];
+            let weights = [read_f32(16), read_f32(20), read_f32(24), read_f32(28)];
+            let center = read_f32(32);
+            assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(weights.iter().all(|weight| *weight > 0.0));
+            let sum = center + weights.iter().sum::<f32>() * 2.0;
+            assert!((sum - 1.0).abs() < 1e-5);
+        }
     }
 }
