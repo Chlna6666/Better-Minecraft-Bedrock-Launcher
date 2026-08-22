@@ -1,17 +1,13 @@
-// --- isolated backdrop blur --- //
+// --- compositor backdrop blur --- //
 //
-// Nova uses a separable Gaussian filter for backdrop blur. The blur radius stays in floating-point
-// source pixels from the GPUI primitive through the shader, so values such as 0.1px remain valid.
-//
-// Each axis uses bilinear tap pairing: the equivalent 17-tap kernel is evaluated with 9 texture
-// samples (center + four positive/negative pairs). This keeps the visual kernel smooth while
-// substantially reducing texture bandwidth during high-refresh-rate UI animation.
+// Nova uses a separable Gaussian filter with CPU-precomputed bilinear paired taps. The public blur
+// radius stays floating-point end-to-end, including subpixel values. Large kernels are handled at
+// reduced resolution by the target planner rather than stretching an unbounded fragment kernel.
 
 struct BackdropBlurPass {
-    radius: f32,
-    pad0: f32,
-    pad1: f32,
-    pad: u32,
+    offsets: vec4<f32>,
+    weights: vec4<f32>,
+    center_and_pad: vec4<f32>,
 }
 
 struct BackdropBlur {
@@ -71,47 +67,27 @@ fn sample_backdrop_blur_texture(texture_coords: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(t_sprite, s_sprite, texture_coords, 0.0);
 }
 
-fn gaussian_weight(distance: f32, sigma: f32) -> f32 {
-    return exp(-(distance * distance) / max(2.0 * sigma * sigma, 1e-8));
-}
-
 fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
     let blur_pass = b_backdrop_blur_passes[input.instance_id];
-    let radius = max(blur_pass.radius, 1.0 / 4096.0);
-    let sigma = max(radius / 3.0, 1.0 / 4096.0);
-    let tap_step = radius / 8.0;
     let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0));
     let horizontal = (input.instance_id & 1u) == 0u;
     let axis = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), horizontal);
     let texel_axis = axis / source_size;
 
-    // Center tap.
-    let center_weight = gaussian_weight(0.0, sigma);
-    var color = sample_backdrop_blur_texture(input.texture_coords) * center_weight;
-    var weight_sum = center_weight;
-
-    // Pair adjacent Gaussian taps and let the linear sampler interpolate between them. Four
-    // paired distances on each side are equivalent to the old +/-8 discrete taps but require
-    // eight texture samples instead of sixteen.
-    for (var pair: i32 = 0; pair < 4; pair = pair + 1) {
-        let tap0 = f32(pair * 2 + 1) * tap_step;
-        let tap1 = f32(pair * 2 + 2) * tap_step;
-        let weight0 = gaussian_weight(tap0, sigma);
-        let weight1 = gaussian_weight(tap1, sigma);
-        let pair_weight = weight0 + weight1;
-        let paired_distance = (tap0 * weight0 + tap1 * weight1) / max(pair_weight, 1e-8);
-        let delta = texel_axis * paired_distance;
-
-        color += sample_backdrop_blur_texture(input.texture_coords + delta) * pair_weight;
-        color += sample_backdrop_blur_texture(input.texture_coords - delta) * pair_weight;
-        weight_sum += pair_weight * 2.0;
+    // The CPU already normalized center + 2 * paired weights to one. Fragment work is therefore
+    // only nine texture samples and fused multiply-adds; no exp(), divisions or kernel setup.
+    var color = sample_backdrop_blur_texture(input.texture_coords) * blur_pass.center_and_pad.x;
+    for (var pair: u32 = 0u; pair < 4u; pair = pair + 1u) {
+        let delta = texel_axis * blur_pass.offsets[pair];
+        let weight = blur_pass.weights[pair];
+        color += sample_backdrop_blur_texture(input.texture_coords + delta) * weight;
+        color += sample_backdrop_blur_texture(input.texture_coords - delta) * weight;
     }
-
-    return color / max(weight_sum, 1e-6);
+    return color;
 }
 
-// Keep the existing pipeline entry names so the gfx abstraction remains backend-neutral.
-// The first instance of a configuration is horizontal and the second is vertical.
+// Entry names stay stable for the backend-neutral pipeline table. The first pass blurs X while the
+// target planner downsamples X only; the second pass blurs Y while downsampling Y to final size.
 @fragment
 fn fs_backdrop_blur_downsample(input: BackdropBlurPassVarying) -> @location(0) vec4<f32> {
     return gaussian_blur(input);
