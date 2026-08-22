@@ -3,7 +3,7 @@
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
-use crate::ui::state::launch_prereq::{LaunchPrereqMode, LaunchPrereqState, OnboardingStep};
+use crate::ui::state::launch_prereq::LaunchPrereqState;
 use crate::ui::theme::colors::ThemeColors;
 
 pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
@@ -28,21 +28,8 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
         .justify_center()
         .child("重新打开引导")
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-            if let Err(error) = crate::config::onboarding::reset_onboarding() {
-                crate::ui::components::toast::error(
-                    cx,
-                    SharedString::from(format!("无法重置首次运行引导: {error}")),
-                );
-                return;
-            }
-
             cx.update_global(|state: &mut LaunchPrereqState, _cx| {
-                state.visible = true;
-                state.mode = LaunchPrereqMode::Onboarding;
-                state.onboarding_step = OnboardingStep::Welcome;
-                state.onboarding_scanning = false;
-                state.onboarding_environment = None;
-                state.onboarding_error = None;
+                state.reopen_onboarding();
             });
         });
 
@@ -100,7 +87,7 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
                         .text_size(px(12.))
                         .line_height(px(18.))
                         .text_color(colors.text_secondary)
-                        .child("重新查看版本下载、导入、散装 UWP 多版本切换和数据保护说明。"),
+                        .child("重新查看版本下载、导入、散装 UWP 多版本切换和数据保护说明。不会重置已经完成的首次运行状态。"),
                 ),
         )
         .child(action)
