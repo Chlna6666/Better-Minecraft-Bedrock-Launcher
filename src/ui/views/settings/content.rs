@@ -9,7 +9,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::time::Duration;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod onboarding;
 
 #[cfg(target_os = "linux")]
@@ -86,7 +86,7 @@ pub(super) fn render_settings_content(
         SettingsTab::About => {
             let about_panel =
                 about::render_about_tab(colors, window_width, render_engine, i18n, state, update);
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
                 div()
                     .w_full()
@@ -97,7 +97,7 @@ pub(super) fn render_settings_content(
                     .child(onboarding::render_onboarding_card(colors))
                     .into_any_element()
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
             {
                 about_panel.into_any_element()
             }
