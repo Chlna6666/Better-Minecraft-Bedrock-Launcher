@@ -83,17 +83,18 @@ impl NovaFrameUpload {
 
     /// Atlas textures that can contribute pixels to at least one backdrop source.
     ///
-    /// Batches after the final backdrop barrier can never be sampled by a backdrop in this frame,
-    /// so uploads targeting only those textures must not invalidate the blur cache.
+    /// Keep this as a hash set all the way through invalidation: converting it to a temporary Vec
+    /// would add another allocation and turn pending-upload lookup into an O(uploads * textures)
+    /// nested scan.
     pub(in crate::platform::nova) fn backdrop_source_atlas_texture_ids(
         &self,
-    ) -> Vec<AtlasTextureId> {
+    ) -> FxHashSet<AtlasTextureId> {
         let Some(last_blur_batch) = self
             .batches
             .iter()
             .rposition(|batch| matches!(batch, NovaUploadedBatch::BackdropBlurs { .. }))
         else {
-            return Vec::new();
+            return FxHashSet::default();
         };
 
         let mut textures = FxHashSet::default();
@@ -113,7 +114,7 @@ impl NovaFrameUpload {
                 | NovaUploadedBatch::CustomMesh3d { .. } => {}
             }
         }
-        textures.into_iter().collect()
+        textures
     }
 
     pub(in crate::platform::nova) fn uploaded_bytes(&self) -> usize {
