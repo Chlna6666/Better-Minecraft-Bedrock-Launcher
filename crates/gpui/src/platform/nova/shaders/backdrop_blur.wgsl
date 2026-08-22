@@ -1,8 +1,10 @@
 // --- compositor backdrop blur --- //
 //
-// Nova uses a separable Gaussian filter with CPU-precomputed bilinear paired taps. The public blur
-// radius stays floating-point end-to-end, including subpixel values. Large kernels are handled at
-// reduced resolution by the target planner rather than stretching an unbounded fragment kernel.
+// Nova uses a separable 17-tap Gaussian filter. The CPU precomputes four pair centroids and pair
+// weight sums, but the shader expands those pairs back into the two exact logical taps before
+// sampling. This preserves the intended Gaussian kernel for large/subpixel radii: hardware linear
+// filtering can only combine adjacent texels and is not mathematically equivalent to merging two
+// logical taps that may be several source pixels apart.
 
 struct BackdropBlurPass {
     offsets: vec4<f32>,
@@ -46,6 +48,18 @@ struct BackdropBlurVarying {
     @location(7) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
 
+// write_backdrop_blur_pass() uses sigma = radius / 3 and tap_step = radius / 8. Therefore the
+// Gaussian ratio between tap n+1 and n depends only on n, not on radius. The first packed pair
+// centroid is likewise a fixed multiple of tap_step. Keeping those constants here lets us recover
+// the exact 17 logical taps without per-fragment exp().
+const GAUSSIAN_PAIR0_CENTROID_IN_TAPS: f32 = 1.4474603;
+const GAUSSIAN_PAIR_RATIOS: array<f32, 4> = array<f32, 4>(
+    0.8098247,
+    0.6112877,
+    0.4614242,
+    0.3483013,
+);
+
 @vertex
 fn vs_backdrop_blur_pass(
     @builtin(vertex_index) vertex_id: u32,
@@ -73,15 +87,23 @@ fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
     let horizontal = (input.instance_id & 1u) == 0u;
     let axis = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), horizontal);
     let texel_axis = axis / source_size;
+    let tap_step = blur_pass.offsets.x / GAUSSIAN_PAIR0_CENTROID_IN_TAPS;
 
-    // The CPU already normalized center + 2 * paired weights to one. Fragment work is therefore
-    // only nine texture samples and fused multiply-adds; no exp(), divisions or kernel setup.
     var color = sample_backdrop_blur_texture(input.texture_coords) * blur_pass.center_and_pad.x;
     for (var pair: u32 = 0u; pair < 4u; pair = pair + 1u) {
-        let delta = texel_axis * blur_pass.offsets[pair];
-        let weight = blur_pass.weights[pair];
-        color += sample_backdrop_blur_texture(input.texture_coords + delta) * weight;
-        color += sample_backdrop_blur_texture(input.texture_coords - delta) * weight;
+        let first_tap = f32(pair * 2u + 1u);
+        let second_tap = first_tap + 1.0;
+        let ratio = GAUSSIAN_PAIR_RATIOS[pair];
+        let pair_weight = blur_pass.weights[pair];
+        let first_weight = pair_weight / (1.0 + ratio);
+        let second_weight = pair_weight - first_weight;
+        let first_delta = texel_axis * (tap_step * first_tap);
+        let second_delta = texel_axis * (tap_step * second_tap);
+
+        color += sample_backdrop_blur_texture(input.texture_coords + first_delta) * first_weight;
+        color += sample_backdrop_blur_texture(input.texture_coords - first_delta) * first_weight;
+        color += sample_backdrop_blur_texture(input.texture_coords + second_delta) * second_weight;
+        color += sample_backdrop_blur_texture(input.texture_coords - second_delta) * second_weight;
     }
     return color;
 }
