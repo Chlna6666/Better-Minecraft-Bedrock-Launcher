@@ -1,5 +1,6 @@
 #![cfg(target_os = "windows")]
 use std::io;
+use std::path::Path;
 use tracing::{error, info, warn};
 use windows::Foundation::Uri;
 use windows::Management::Deployment::{DeploymentOptions, DeploymentResult, PackageManager};
@@ -11,6 +12,17 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
     if manifest_path.ends_with('/') {
         manifest_path.pop();
     }
+
+    let identity_name = crate::core::minecraft::appx::utils::get_manifest_identity_from_dir_blocking(
+        Path::new(package_folder),
+    )
+    .map(|(name, _version)| name)
+    .map_err(|error| {
+        WinError::from(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("解析 AppX Identity 失败: {error}"),
+        ))
+    })?;
 
     let manifest_file = format!("{}/AppxManifest.xml", manifest_path);
     let absolute_path = std::fs::canonicalize(&manifest_file).map_err(|e| {
@@ -26,7 +38,7 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
     }
 
     let uri_str = format!("file:///{}", uri_path.replace("\\", "/"));
-    info!("注册 APPX (DevelopmentMode)，使用 URI：{}", uri_str);
+    info!(identity_name, "注册 APPX (DevelopmentMode)，使用 URI：{}", uri_str);
 
     let package_manager = PackageManager::new().expect("无法创建 PackageManager");
     let uri = Uri::CreateUri(&HSTRING::from(uri_str))?;
@@ -39,12 +51,22 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
     let error_text = error_text_h.to_string_lossy();
 
     if extended_error == HRESULT(0) {
-        info!("APPX DevelopmentMode 注册成功");
-        match crate::core::minecraft::uwp_migration::restore_pending_backup() {
-            Ok(Some(path)) => info!(backup = %path.display(), "原版 UWP 用户数据已恢复到新注册的散装版本"),
+        info!(identity_name, "APPX DevelopmentMode 注册成功");
+        match crate::core::minecraft::uwp_migration::restore_pending_backup_for_identity(
+            &identity_name,
+        ) {
+            Ok(Some(path)) => info!(
+                identity_name,
+                backup = %path.display(),
+                "原版 UWP 用户数据已恢复到新注册的散装版本"
+            ),
             Ok(None) => {}
             Err(error) => {
-                warn!(%error, "散装 UWP 已注册，但原版数据自动恢复失败；保留外部迁移备份以供重试");
+                warn!(
+                    identity_name,
+                    %error,
+                    "散装 UWP 已注册，但原版数据自动恢复失败；保留外部迁移备份以供重试"
+                );
                 return Err(WinError::from(io::Error::other(format!(
                     "APPX 已注册，但 Minecraft 数据恢复失败: {error}"
                 ))));
