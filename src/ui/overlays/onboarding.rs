@@ -4,6 +4,7 @@ use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
 use crate::ui::components::modal;
+use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::launch_prereq::{LaunchPrereqState, OnboardingStep};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
