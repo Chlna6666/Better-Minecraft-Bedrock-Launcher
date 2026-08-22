@@ -28,8 +28,25 @@ pub enum LaunchPrereqOperation {
     InstallingWindowsAppSdk,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LaunchPrereqMode {
+    #[default]
+    Launch,
+    Onboarding,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OnboardingStep {
+    #[default]
+    Welcome,
+    Environment,
+    AcquireGame,
+    DataSafety,
+}
+
 pub struct LaunchPrereqState {
     pub visible: bool,
+    pub mode: LaunchPrereqMode,
     pub request_id: u64,
     pub version: Option<PendingLaunchVersion>,
     pub check: Option<LaunchPrerequisiteCheck>,
@@ -39,6 +56,11 @@ pub struct LaunchPrereqState {
     pub progress_target: Option<SharedString>,
     pub error_message: Option<SharedString>,
     pub admin_notice: Option<SharedString>,
+    pub onboarding_step: OnboardingStep,
+    pub onboarding_scanning: bool,
+    pub onboarding_environment:
+        Option<crate::core::minecraft::uwp_migration::OnboardingEnvironmentSummary>,
+    pub onboarding_error: Option<SharedString>,
     logs: VecDeque<SharedString>,
     busy_animation_started_at: Option<Instant>,
 }
@@ -47,8 +69,14 @@ impl Global for LaunchPrereqState {}
 
 impl Default for LaunchPrereqState {
     fn default() -> Self {
+        let onboarding_visible = !crate::config::onboarding::is_current_onboarding_completed();
         Self {
-            visible: false,
+            visible: onboarding_visible,
+            mode: if onboarding_visible {
+                LaunchPrereqMode::Onboarding
+            } else {
+                LaunchPrereqMode::Launch
+            },
             request_id: 0,
             version: None,
             check: None,
@@ -58,6 +86,10 @@ impl Default for LaunchPrereqState {
             progress_target: None,
             error_message: None,
             admin_notice: None,
+            onboarding_step: OnboardingStep::Welcome,
+            onboarding_scanning: false,
+            onboarding_environment: None,
+            onboarding_error: None,
             logs: VecDeque::new(),
             busy_animation_started_at: None,
         }
@@ -69,6 +101,7 @@ impl LaunchPrereqState {
         let now = Instant::now();
         self.request_id = self.request_id.wrapping_add(1).max(1);
         self.visible = true;
+        self.mode = LaunchPrereqMode::Launch;
         self.version = Some(version);
         self.check = None;
         self.operation = Some(LaunchPrereqOperation::Checking);
@@ -82,12 +115,79 @@ impl LaunchPrereqState {
         self.request_id
     }
 
+    pub fn is_onboarding(&self) -> bool {
+        self.visible && self.mode == LaunchPrereqMode::Onboarding
+    }
+
+    pub fn begin_onboarding_scan(&mut self) {
+        self.visible = true;
+        self.mode = LaunchPrereqMode::Onboarding;
+        self.onboarding_step = OnboardingStep::Environment;
+        self.onboarding_scanning = true;
+        self.onboarding_error = None;
+        self.start_busy_animation();
+    }
+
+    pub fn set_onboarding_environment(
+        &mut self,
+        environment: crate::core::minecraft::uwp_migration::OnboardingEnvironmentSummary,
+    ) {
+        if !self.is_onboarding() {
+            return;
+        }
+        self.onboarding_environment = Some(environment);
+        self.onboarding_scanning = false;
+        self.onboarding_error = None;
+        self.stop_busy_animation();
+    }
+
+    pub fn set_onboarding_error(&mut self, error: impl Into<SharedString>) {
+        if !self.is_onboarding() {
+            return;
+        }
+        self.onboarding_scanning = false;
+        self.onboarding_error = Some(error.into());
+        self.stop_busy_animation();
+    }
+
+    pub fn onboarding_next(&mut self) {
+        if !self.is_onboarding() {
+            return;
+        }
+        self.onboarding_step = match self.onboarding_step {
+            OnboardingStep::Welcome => OnboardingStep::Environment,
+            OnboardingStep::Environment => OnboardingStep::AcquireGame,
+            OnboardingStep::AcquireGame => OnboardingStep::DataSafety,
+            OnboardingStep::DataSafety => OnboardingStep::DataSafety,
+        };
+    }
+
+    pub fn onboarding_back(&mut self) {
+        if !self.is_onboarding() {
+            return;
+        }
+        self.onboarding_step = match self.onboarding_step {
+            OnboardingStep::Welcome => OnboardingStep::Welcome,
+            OnboardingStep::Environment => OnboardingStep::Welcome,
+            OnboardingStep::AcquireGame => OnboardingStep::Environment,
+            OnboardingStep::DataSafety => OnboardingStep::AcquireGame,
+        };
+    }
+
+    pub fn finish_onboarding(&mut self) {
+        self.visible = false;
+        self.mode = LaunchPrereqMode::Launch;
+        self.onboarding_scanning = false;
+        self.onboarding_error = None;
+        self.stop_busy_animation();
+    }
+
     pub fn request_matches(&self, request_id: u64) -> bool {
-        self.visible && self.request_id == request_id
+        self.visible && self.mode == LaunchPrereqMode::Launch && self.request_id == request_id
     }
 
     pub fn cancel_active_request(&mut self) -> Option<u64> {
-        if !self.visible {
+        if !self.visible || self.mode != LaunchPrereqMode::Launch {
             return None;
         }
 
@@ -197,7 +297,7 @@ impl LaunchPrereqState {
     }
 
     pub fn clear_if_matches(&mut self, request_id: u64) -> bool {
-        if self.request_id != request_id {
+        if self.request_id != request_id || self.mode != LaunchPrereqMode::Launch {
             return false;
         }
 
@@ -207,6 +307,7 @@ impl LaunchPrereqState {
 
     pub fn dismiss(&mut self) {
         self.visible = false;
+        self.mode = LaunchPrereqMode::Launch;
         self.version = None;
         self.check = None;
         self.operation = None;
@@ -224,11 +325,11 @@ impl LaunchPrereqState {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.operation.is_some()
+        self.operation.is_some() || self.onboarding_scanning
     }
 
     pub fn has_active_request(&self) -> bool {
-        self.visible
+        self.visible && self.mode == LaunchPrereqMode::Launch
     }
 
     fn start_busy_animation(&mut self) {
@@ -288,6 +389,7 @@ mod tests {
     #[test]
     fn busy_animation_deadline_advances_by_low_fps_interval() {
         let mut state = LaunchPrereqState::default();
+        state.finish_onboarding();
         let now = Instant::now();
 
         state.begin(pending_version());
@@ -304,6 +406,7 @@ mod tests {
     #[test]
     fn busy_animation_stops_when_operation_finishes() {
         let mut state = LaunchPrereqState::default();
+        state.finish_onboarding();
         let now = Instant::now();
 
         let request_id = state.begin(pending_version());
@@ -324,6 +427,7 @@ mod tests {
     #[test]
     fn active_request_remains_active_after_issues_are_shown() {
         let mut state = LaunchPrereqState::default();
+        state.finish_onboarding();
         let request_id = state.begin(pending_version());
         let check = crate::core::minecraft::launcher::preflight::LaunchPrerequisiteCheck {
             platform: crate::core::minecraft::launcher::preflight::LaunchPlatform::Uwp,
