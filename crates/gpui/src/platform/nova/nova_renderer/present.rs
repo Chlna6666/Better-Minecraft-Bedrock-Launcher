@@ -143,9 +143,9 @@ where
 
 /// Advances one shared scene-color source through each backdrop draw-order barrier.
 ///
-/// The first segment clears the source target. Later segments use `Load`, preserving everything
-/// already rendered. The previous group's backdrop draw is part of the next direct batch segment,
-/// so each scene batch is rasterized at most once while constructing backdrop sources.
+/// The first segment clears scene color and depth. Later segments load both, preserving 3D
+/// occlusion as well as color across backdrop barriers. Gaussian filter passes never attach the
+/// scene depth texture, so filtering cannot accidentally erase the accumulated source depth.
 fn render_backdrop_blur_groups<D>(
     device: &mut D,
     source_texture_view: TextureViewId,
@@ -157,17 +157,26 @@ where
     D: BackendPresentationCompat,
 {
     for (group_index, group) in groups.iter().enumerate() {
-        let source_load_op = if group_index == 0 {
+        let first_group = group_index == 0;
+        let source_load_op = if first_group {
             LoadOp::Clear(clear_color())
         } else {
             LoadOp::Load
+        };
+        let source_depth_attachment = RenderPassDepthAttachment {
+            target: depth_attachment.target,
+            depth_load_op: if first_group {
+                LoadOp::Clear(1.0)
+            } else {
+                LoadOp::Load
+            },
         };
         device.render_steps_to_texture(
             source_texture_view,
             render_pass,
             &group.source_steps,
             source_load_op,
-            Some(depth_attachment),
+            Some(source_depth_attachment),
         )?;
         for pass in &group.filter_passes {
             device.render_step_list_to_texture(
@@ -175,7 +184,7 @@ where
                 render_pass,
                 RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                 LoadOp::Clear(clear_color()),
-                Some(depth_attachment),
+                None,
             )?;
         }
     }
@@ -207,7 +216,6 @@ impl NovaRenderer {
             let factor = usize::from(config.downsample().max(1));
             let filtered_width = source_width.div_ceil(factor).max(1);
             let filtered_height = source_height.div_ceil(factor).max(1);
-            // X low-pass/downsample keeps full Y resolution. Y low-pass then produces final size.
             level_pixels[0] = level_pixels[0]
                 .saturating_add(filtered_width.saturating_mul(source_height));
             level_pixels[1] = level_pixels[1]
@@ -237,9 +245,6 @@ impl NovaRenderer {
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
 
-        // Atlas invalidation is dependency based, not atlas-global. A glyph or icon upload that is
-        // drawn only after the last backdrop barrier cannot affect any sampled backdrop source and
-        // therefore must not force the expensive filter graph to refresh.
         let backdrop_source_atlas_textures = if has_backdrop_blurs {
             self.frame_upload.backdrop_source_atlas_texture_ids()
         } else {
@@ -270,7 +275,6 @@ impl NovaRenderer {
         self.prepare_draw_steps();
         self.prepare_path_mask_draw_steps();
         self.prepare_backdrop_blur_passes(has_backdrop_blurs);
-        // Direct batch segments are generated only when the cached filter graph is actually dirty.
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
         } else {
