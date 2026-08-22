@@ -188,25 +188,8 @@ fn render_environment(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyEle
             .into_any_element();
     };
 
-    let release_text = if environment.release.data_present {
-        format!(
-            "发现 {} 个世界 · {} 个资源包 · {}",
-            environment.release.worlds,
-            environment.release.resource_packs,
-            human_bytes(environment.release.total_size)
-        )
-    } else {
-        "未发现原版 Release 用户数据".to_string()
-    };
-    let preview_text = if environment.preview.data_present {
-        format!(
-            "发现 {} 个世界 · {}",
-            environment.preview.worlds,
-            human_bytes(environment.preview.total_size)
-        )
-    } else {
-        "未发现 Preview 用户数据".to_string()
-    };
+    let release_text = minecraft_environment_text(&environment.release);
+    let preview_text = minecraft_environment_text(&environment.preview);
 
     div()
         .flex()
@@ -216,7 +199,7 @@ fn render_environment(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyEle
             div()
                 .text_size(px(14.))
                 .text_color(colors.text_secondary)
-                .child("已自动检查当前 Windows 用户的 Minecraft 数据和 BMCBL 版本目录。"),
+                .child("已自动检查当前 Windows 用户的 Minecraft 注册来源、版本、用户数据和 BMCBL 版本目录。"),
         )
         .child(status_card(
             colors,
@@ -237,6 +220,34 @@ fn render_environment(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyEle
             false,
         ))
         .into_any_element()
+}
+
+fn minecraft_environment_text(
+    summary: &crate::core::minecraft::uwp_migration::MinecraftDataSummary,
+) -> String {
+    let registration = if !summary.registered {
+        "未注册".to_string()
+    } else {
+        let version = summary.registered_version.as_deref().unwrap_or("未知版本");
+        if summary.bmcbl_managed_registration {
+            format!("BMCBL 散装 DevelopmentMode · 版本 {version}")
+        } else if summary.development_mode {
+            format!("外部 DevelopmentMode · 版本 {version}")
+        } else {
+            format!("Microsoft Store / 外部安装包 · 版本 {version}")
+        }
+    };
+
+    if summary.data_present {
+        format!(
+            "{registration} · 数据：{} 个世界 · {} 个资源包 · {}",
+            summary.worlds,
+            summary.resource_packs,
+            human_bytes(summary.total_size)
+        )
+    } else {
+        format!("{registration} · 未发现 games/com.mojang 用户数据")
+    }
 }
 
 fn render_acquire(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyElement {
