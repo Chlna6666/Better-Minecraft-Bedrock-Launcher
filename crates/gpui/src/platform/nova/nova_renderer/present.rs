@@ -144,9 +144,8 @@ where
 /// Advances one shared scene-color source through each backdrop draw-order barrier.
 ///
 /// The first segment clears the source target. Later segments use `Load`, preserving everything
-/// already rendered (including the previous group's freshly filtered backdrop composite contained
-/// in the incremental draw steps). This removes the old GPU behavior that cleared the target and
-/// replayed the entire scene prefix for every blur group.
+/// already rendered. The previous group's backdrop draw is part of the next direct batch segment,
+/// so each scene batch is rasterized at most once while constructing backdrop sources.
 fn render_backdrop_blur_groups<D>(
     device: &mut D,
     source_texture_view: TextureViewId,
@@ -196,20 +195,23 @@ impl NovaRenderer {
         if !enabled {
             return (0, [0; 6]);
         }
-        // Source groups are now draw-order segments of one accumulated scene-color target. The
-        // renderer no longer redraws an entire drawable-sized prefix once per group.
         let source_pixels = if source_group_count == 0 {
             0
         } else {
             self.drawable_pixels()
         };
         let mut level_pixels = [0usize; 6];
+        let source_width = self.current_size.width as usize;
+        let source_height = self.current_size.height as usize;
         for config in self.frame_upload.backdrop_blur_configs() {
             let factor = usize::from(config.downsample().max(1));
-            let width = (self.current_size.width as usize / factor).max(1);
-            let height = (self.current_size.height as usize / factor).max(1);
+            let filtered_width = source_width.div_ceil(factor).max(1);
+            let filtered_height = source_height.div_ceil(factor).max(1);
+            // X low-pass/downsample keeps full Y resolution. Y low-pass then produces final size.
             level_pixels[0] = level_pixels[0]
-                .saturating_add(width.saturating_mul(height).saturating_mul(2));
+                .saturating_add(filtered_width.saturating_mul(source_height));
+            level_pixels[1] = level_pixels[1]
+                .saturating_add(filtered_width.saturating_mul(filtered_height));
         }
         (source_pixels, level_pixels)
     }
@@ -234,14 +236,23 @@ impl NovaRenderer {
             self.backend.supports_partial_presentation(self.swapchain);
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
-        // Atlas content_generation is bumped when CPU-side atlas content is encoded, before the
-        // deferred GPU upload happens. Therefore a pending glyph/image upload already invalidates
-        // the blur cache here and does not need a second post-upload source rebuild.
-        let atlas_content_generation = self.atlas.content_generation();
+
+        // Atlas invalidation is dependency based, not atlas-global. A glyph or icon upload that is
+        // drawn only after the last backdrop barrier cannot affect any sampled backdrop source and
+        // therefore must not force the expensive filter graph to refresh.
+        let backdrop_source_atlas_textures = if has_backdrop_blurs {
+            self.frame_upload.backdrop_source_atlas_texture_ids()
+        } else {
+            Vec::new()
+        };
+        let backdrop_source_atlas_dirty = has_backdrop_blurs
+            && self
+                .atlas
+                .pending_uploads_touch_any(&backdrop_source_atlas_textures);
         let backdrop_blur_refresh_required = has_backdrop_blurs
             && (render_plan.backdrop_blur_refresh_required
                 || !self.backdrop_blur_cache_valid
-                || self.backdrop_blur_cache_atlas_generation != atlas_content_generation
+                || backdrop_source_atlas_dirty
                 || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality));
         if backdrop_blur_refresh_required {
             self.backdrop_blur_cache_valid = false;
@@ -259,9 +270,7 @@ impl NovaRenderer {
         self.prepare_draw_steps();
         self.prepare_path_mask_draw_steps();
         self.prepare_backdrop_blur_passes(has_backdrop_blurs);
-        // Exact prefixes are still compared on the CPU for semantic planning, but the generated
-        // source steps are incremental and each scene batch is submitted only once across the
-        // ordered blur barriers instead of replaying every prefix on the GPU.
+        // Direct batch segments are generated only when the cached filter graph is actually dirty.
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
         } else {
@@ -320,7 +329,8 @@ impl NovaRenderer {
                     "async_submission={} async_wait={} async_presentation={} ",
                     "async_partial_presentation={} native_partial_presentation={} ",
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
-                    "dirty_area={} blur_cache_refresh={} blur_groups={} animation_bindings={} ",
+                    "dirty_area={} blur_cache_refresh={} blur_source_atlas_dirty={} ",
+                    "blur_source_atlas_textures={} blur_groups={} animation_bindings={} ",
                     "animation_values={} threading={:?}"
                 ),
                 backend_label,
@@ -351,6 +361,8 @@ impl NovaRenderer {
                 render_plan.dirty_region.rect_count(),
                 render_plan.dirty_region.area(),
                 backdrop_blur_refresh_required,
+                backdrop_source_atlas_dirty,
+                backdrop_source_atlas_textures.len(),
                 backdrop_blur_groups.len(),
                 upload.animation_binding_count,
                 upload.animation_value_count,
@@ -702,7 +714,6 @@ impl NovaRenderer {
         render_result?;
         if has_backdrop_blurs {
             self.backdrop_blur_cache_valid = true;
-            self.backdrop_blur_cache_atlas_generation = atlas_content_generation;
             self.backdrop_blur_cache_quality = Some(backdrop_blur_quality);
         } else {
             self.invalidate_backdrop_blur_cache();
@@ -731,7 +742,8 @@ impl NovaRenderer {
                     "atlas_texture_bytes={} mapped_frame_upload_bytes={} ",
                     "mapped_frame_upload_is_gpu_copy=false retained_present_copy_regions={} ",
                     "path_mask_render_passes={} blur_render_passes={} blur_groups={} ",
-                    "blur_source_mode=sequential-load main_render_passes=1 present_damage={:?} ",
+                    "blur_source_atlas_dirty={} blur_source_atlas_textures={} ",
+                    "blur_source_mode=sequential-segments main_render_passes=1 present_damage={:?} ",
                     "dirty_mode={:?} dirty_full={} dirty_rects={} dirty_area={}"
                 ),
                 backend_label,
@@ -743,6 +755,8 @@ impl NovaRenderer {
                 mask_pass_count,
                 blur_render_passes,
                 backdrop_blur_groups.len(),
+                backdrop_source_atlas_dirty,
+                backdrop_source_atlas_textures.len(),
                 present_damage,
                 render_plan.partial_present_mode,
                 render_plan.dirty_region.is_full(),
