@@ -145,8 +145,9 @@ where
 /// Advances one shared scene-color source through each backdrop draw-order barrier.
 ///
 /// The first segment clears scene color and depth. Later segments load both, preserving 3D
-/// occlusion as well as color across backdrop barriers. Gaussian filter passes never attach the
-/// scene depth texture, so filtering cannot accidentally erase the accumulated source depth.
+/// occlusion as well as color across backdrop barriers. Gaussian filter pipelines have depth
+/// disabled, but still bind the shared depth view with `LoadOp::Load` because the renderer's
+/// render-pass contract requires a depth attachment whenever the pass declares a depth format.
 fn render_backdrop_blur_groups<D>(
     device: &mut D,
     source_texture_view: TextureViewId,
@@ -179,13 +180,17 @@ where
             source_load_op,
             Some(source_depth_attachment),
         )?;
+        let filter_depth_attachment = RenderPassDepthAttachment {
+            target: depth_attachment.target,
+            depth_load_op: LoadOp::Load,
+        };
         for pass in &group.filter_passes {
             device.render_step_list_to_texture(
                 pass.target_texture_view,
                 render_pass,
                 RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                 LoadOp::Clear(clear_color()),
-                None,
+                Some(filter_depth_attachment),
             )?;
         }
     }
