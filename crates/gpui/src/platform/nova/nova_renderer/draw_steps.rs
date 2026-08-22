@@ -155,9 +155,6 @@ impl NovaRenderer {
         let Some(targets) = self.backdrop_blur_targets.as_ref() else {
             return;
         };
-        // GPU targets have stable identities and deliberately keep their allocation across animated
-        // bounds changes. Always derive pass geometry/scissors from the current frame instead of
-        // reading the bounds stored when the target texture was originally allocated.
         let configs = self.frame_upload.backdrop_blur_configs();
         backdrop_blur_render_passes_for_configs_into(
             &self.pipelines,
@@ -224,14 +221,21 @@ fn apply_filter_pass_scissors(
     passes: &mut [NovaBackdropBlurRenderPass],
 ) {
     for (config, pass_pair) in configs.iter().zip(passes.chunks_mut(2)) {
+        let [horizontal, vertical] = pass_pair else {
+            continue;
+        };
         let Some(source_scissor) = blur_source_scissor(*config, drawable_size) else {
             continue;
         };
-        let target_scissor =
+        let horizontal_scissor = downsample_x_scissor(
+            source_scissor,
+            config.downsample(),
+            drawable_size,
+        );
+        let final_scissor =
             downsample_scissor(source_scissor, config.downsample(), drawable_size);
-        for pass in pass_pair {
-            pass.step.scissor = Some(clip_scissor(pass.step.scissor, target_scissor));
-        }
+        horizontal.step.scissor = Some(clip_scissor(horizontal.step.scissor, horizontal_scissor));
+        vertical.step.scissor = Some(clip_scissor(vertical.step.scissor, final_scissor));
     }
 }
 
@@ -263,8 +267,6 @@ fn blur_source_scissor(
         return None;
     }
 
-    // Three sigma contains 99.7% of a Gaussian kernel. GPUI's public blur radius is treated as
-    // the three-sigma support radius by the shader, so this is the minimum safe source expansion.
     let support = config.radius().max(0.0) + 1.0;
     let left = floor_clamped_u32(x - support, drawable_size.width);
     let top = floor_clamped_u32(y - support, drawable_size.height);
@@ -277,6 +279,26 @@ fn blur_source_scissor(
         height: bottom.saturating_sub(top),
     };
     (!scissor.is_empty()).then_some(scissor)
+}
+
+fn downsample_x_scissor(
+    source: ScissorRect,
+    downsample: u8,
+    drawable_size: DrawableSize,
+) -> ScissorRect {
+    let factor = u32::from(downsample.max(1));
+    let target_width = drawable_size.width.div_ceil(factor).max(1);
+    let right = source.x.saturating_add(source.width);
+    let x = (source.x / factor).min(target_width);
+    let scaled_right = right.div_ceil(factor).min(target_width);
+    ScissorRect {
+        x,
+        y: source.y.min(drawable_size.height),
+        width: scaled_right.saturating_sub(x),
+        height: source
+            .height
+            .min(drawable_size.height.saturating_sub(source.y.min(drawable_size.height))),
+    }
 }
 
 fn downsample_scissor(
