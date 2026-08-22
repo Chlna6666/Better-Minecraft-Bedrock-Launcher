@@ -86,11 +86,52 @@ pub(super) fn write_custom_mesh_3d_index(bytes: &mut Vec<u8>, index: u32) {
     write_u32_vec(bytes, index);
 }
 
-pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, offset: f32) {
-    write_f32_vec(bytes, offset);
+/// Packs a normalized 17-tap Gaussian kernel as four bilinear sample pairs plus the center tap.
+///
+/// The old shader recomputed eight exponentials, four paired offsets, and normalization for every
+/// fragment. These values depend only on the blur radius, so compute them once per pass on the CPU.
+pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
+    let radius = if radius.is_finite() {
+        radius.max(1.0 / 4096.0)
+    } else {
+        1.0 / 4096.0
+    };
+    let sigma = (radius / 3.0).max(1.0 / 4096.0);
+    let tap_step = radius / 8.0;
+    let gaussian = |distance: f32| {
+        (-(distance * distance) / (2.0 * sigma * sigma).max(1e-8)).exp()
+    };
+
+    let center_weight = gaussian(0.0);
+    let mut offsets = [0.0_f32; 4];
+    let mut pair_weights = [0.0_f32; 4];
+    let mut weight_sum = center_weight;
+    for pair in 0..4 {
+        let tap0 = (pair * 2 + 1) as f32 * tap_step;
+        let tap1 = (pair * 2 + 2) as f32 * tap_step;
+        let weight0 = gaussian(tap0);
+        let weight1 = gaussian(tap1);
+        let pair_weight = weight0 + weight1;
+        offsets[pair] = if pair_weight > 1e-8 {
+            (tap0 * weight0 + tap1 * weight1) / pair_weight
+        } else {
+            tap0
+        };
+        pair_weights[pair] = pair_weight;
+        weight_sum += pair_weight * 2.0;
+    }
+
+    let normalization = weight_sum.max(1e-8).recip();
+    for offset in offsets {
+        write_f32_vec(bytes, offset);
+    }
+    for weight in pair_weights {
+        write_f32_vec(bytes, weight * normalization);
+    }
+    write_f32_vec(bytes, center_weight * normalization);
     write_f32_vec(bytes, 0.0);
     write_f32_vec(bytes, 0.0);
-    write_u32_vec(bytes, 0);
+    write_f32_vec(bytes, 0.0);
 }
 
 pub(super) fn write_backdrop_blur(
