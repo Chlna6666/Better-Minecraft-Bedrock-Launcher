@@ -17,7 +17,9 @@ pub(super) const MAX_ANIMATION_VALUES: usize = MAX_ANIMATION_BINDINGS;
 pub(super) const MAX_IN_FLIGHT_SUBMISSIONS: usize = 2;
 pub(super) const GLOBAL_UPLOAD_BYTES: usize = 24;
 pub(super) const TEXT_RASTER_UPLOAD_BYTES: usize = 32;
-pub(super) const BACKDROP_BLUR_PASS_BYTES: usize = 16;
+// Four bilinear paired offsets + four normalized pair weights + center weight/padding.
+// Keeping the Gaussian kernel in the upload buffer removes exp()/normalization from every fragment.
+pub(super) const BACKDROP_BLUR_PASS_BYTES: usize = 48;
 pub(super) const PACKED_QUAD_BYTES: usize = 192;
 pub(super) const PACKED_SHADOW_BYTES: usize = 104;
 pub(super) const PACKED_PATH_RASTERIZATION_VERTEX_BYTES: usize = 136;
