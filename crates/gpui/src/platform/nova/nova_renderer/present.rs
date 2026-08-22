@@ -1,4 +1,5 @@
 use super::*;
+use super::draw_steps::NovaPreparedBackdropBlurGroup;
 
 #[derive(Clone, Copy)]
 struct FrameBufferTargets {
@@ -248,7 +249,7 @@ impl NovaRenderer {
         let backdrop_source_atlas_textures = if has_backdrop_blurs {
             self.frame_upload.backdrop_source_atlas_texture_ids()
         } else {
-            Vec::new()
+            Default::default()
         };
         let backdrop_source_atlas_dirty = has_backdrop_blurs
             && self
