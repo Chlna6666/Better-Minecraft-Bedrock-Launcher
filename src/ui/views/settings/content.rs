@@ -9,6 +9,9 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+mod onboarding;
+
 #[cfg(target_os = "linux")]
 use super::proton_gdk;
 use super::{about, customization, game, launcher, plugins};
@@ -81,8 +84,23 @@ pub(super) fn render_settings_content(
                 .into_any_element()
         }
         SettingsTab::About => {
-            about::render_about_tab(colors, window_width, render_engine, i18n, state, update)
-                .into_any_element()
+            let about_panel =
+                about::render_about_tab(colors, window_width, render_engine, i18n, state, update);
+            #[cfg(target_os = "windows")]
+            {
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(about_panel)
+                    .child(onboarding::render_onboarding_card(colors))
+                    .into_any_element()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                about_panel.into_any_element()
+            }
         }
     };
 
