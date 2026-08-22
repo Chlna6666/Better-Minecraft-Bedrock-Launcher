@@ -103,7 +103,7 @@ pub fn render_onboarding_overlay(
         )
         .child(footer);
 
-    modal::modal_layer(card, hsla(0.0, 0.0, 0.0, 0.38)).into_any_element()
+    modal::modal_layer(card, hsla(0.0, 0.0, 0.0, 0.0, 0.38)).into_any_element()
 }
 
 fn render_welcome(colors: &ThemeColors) -> AnyElement {
@@ -313,11 +313,14 @@ fn render_data_safety(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyEle
 }
 
 fn render_footer(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyElement {
-    let mut left = secondary_button(colors, if state.onboarding_step == OnboardingStep::Welcome {
-        "稍后设置"
-    } else {
-        "上一步"
-    });
+    let mut left = secondary_button(
+        colors,
+        if state.onboarding_step == OnboardingStep::Welcome {
+            "跳过引导"
+        } else {
+            "上一步"
+        },
+    );
     if state.onboarding_step == OnboardingStep::Welcome {
         left = left.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
             complete_onboarding(cx, None);
@@ -330,7 +333,10 @@ fn render_footer(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyElement 
 
     let (right_label, right_enabled) = match state.onboarding_step {
         OnboardingStep::Welcome => ("开始设置", true),
-        OnboardingStep::Environment => ("继续", !state.onboarding_scanning && state.onboarding_environment.is_some()),
+        OnboardingStep::Environment => (
+            "继续",
+            !state.onboarding_scanning && state.onboarding_environment.is_some(),
+        ),
         OnboardingStep::AcquireGame => ("前往数据安全", true),
         OnboardingStep::DataSafety => ("完成设置", true),
     };
@@ -418,22 +424,31 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
-fn icon_shell(colors: &ThemeColors, path: SharedString) -> AnyElement {
+fn icon_shell(colors: &ThemeColors, path: &'static str) -> AnyElement {
     div()
         .w(px(40.))
         .h(px(40.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(Hsla { a: 0.14, ..colors.accent })
+        .bg(Hsla {
+            a: 0.14,
+            ..colors.accent
+        })
         .flex()
         .items_center()
         .justify_center()
-        .child(svg().path(path).w(px(20.)).h(px(20.)).text_color(colors.accent))
+        .child(
+            svg()
+                .path(path)
+                .w(px(20.))
+                .h(px(20.))
+                .text_color(colors.accent),
+        )
         .into_any_element()
 }
 
 fn feature_card(
     colors: &ThemeColors,
-    icon: SharedString,
+    icon: &'static str,
     title: &'static str,
     description: &'static str,
 ) -> AnyElement {
@@ -453,8 +468,20 @@ fn feature_card(
                 .flex()
                 .flex_col()
                 .gap(px(5.))
-                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(colors.text_primary).child(title))
-                .child(div().text_size(px(12.)).line_height(relative(1.45)).text_color(colors.text_secondary).child(description)),
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.text_primary)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(relative(1.45))
+                        .text_color(colors.text_secondary)
+                        .child(description),
+                ),
         )
         .into_any_element()
 }
@@ -477,7 +504,11 @@ fn status_card(
         .gap(px(12.))
         .child(
             svg()
-                .path(if danger { lucide_icons::icon_triangle_alert() } else { lucide_icons::icon_circle_check() })
+                .path(if danger {
+                    lucide_icons::icon_triangle_alert()
+                } else {
+                    lucide_icons::icon_circle_check()
+                })
                 .w(px(19.))
                 .h(px(19.))
                 .text_color(accent),
@@ -488,8 +519,20 @@ fn status_card(
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(colors.text_primary).child(title))
-                .child(div().text_size(px(12.)).line_height(relative(1.45)).text_color(colors.text_secondary).child(description)),
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.text_primary)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(relative(1.45))
+                        .text_color(colors.text_secondary)
+                        .child(description),
+                ),
         )
         .into_any_element()
 }
