@@ -81,6 +81,26 @@ impl NovaAtlas {
         result.map(|()| stats)
     }
 
+    /// Returns whether pending GPU uploads can change pixels sampled by the current backdrop plan.
+    ///
+    /// This is intentionally texture-granular rather than atlas-global. Uploading a glyph to a
+    /// texture that appears only after the last backdrop barrier no longer invalidates an unrelated
+    /// background/titlebar filter cache.
+    pub(in crate::platform::nova) fn pending_uploads_touch_any(
+        &self,
+        texture_ids: &[AtlasTextureId],
+    ) -> bool {
+        if texture_ids.is_empty() {
+            return false;
+        }
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        state.pending_uploads.iter().any(|upload| {
+            texture_ids
+                .iter()
+                .any(|texture_id| *texture_id == upload.texture_id)
+        })
+    }
+
     fn take_pending_uploads(&self) -> AtlasUploadBatch {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         AtlasUploadBatch {
