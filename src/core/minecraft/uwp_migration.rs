@@ -7,6 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const RELEASE_FAMILY: &str = "Microsoft.MinecraftUWP_8wekyb3d8bbwe";
 const PREVIEW_FAMILY: &str = "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe";
+const EDUCATION_FAMILY: &str = "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe";
+const EDUCATION_PREVIEW_FAMILY: &str =
+    "Microsoft.MinecraftEducationEditionBeta_8wekyb3d8bbwe";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MinecraftDataSummary {
@@ -43,12 +46,22 @@ struct MigrationManifest {
 
 fn local_state_for_family(family_name: &str) -> Option<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(local).join("Packages").join(family_name).join("LocalState"))
+    Some(
+        PathBuf::from(local)
+            .join("Packages")
+            .join(family_name)
+            .join("LocalState"),
+    )
 }
 
 fn count_directories(path: &Path) -> u64 {
     fs::read_dir(path)
-        .map(|entries| entries.flatten().filter(|entry| entry.path().is_dir()).count() as u64)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .count() as u64
+        })
         .unwrap_or(0)
 }
 
@@ -57,10 +70,14 @@ fn walk_stats(path: &Path) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(dir) else { continue };
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(metadata) = entry.metadata() else { continue };
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
             if metadata.is_dir() {
                 stack.push(path);
             } else if metadata.is_file() {
@@ -76,7 +93,11 @@ pub fn summarize_family(family_name: &str) -> MinecraftDataSummary {
     let local_state = local_state_for_family(family_name).unwrap_or_default();
     let com_mojang = local_state.join("games").join("com.mojang");
     let data_present = com_mojang.is_dir();
-    let (file_count, total_size) = if data_present { walk_stats(&com_mojang) } else { (0, 0) };
+    let (file_count, total_size) = if data_present {
+        walk_stats(&com_mojang)
+    } else {
+        (0, 0)
+    };
     MinecraftDataSummary {
         family_name: family_name.to_string(),
         local_state,
@@ -88,7 +109,12 @@ pub fn summarize_family(family_name: &str) -> MinecraftDataSummary {
         behavior_packs: count_directories(&com_mojang.join("behavior_packs")),
         skin_packs: count_directories(&com_mojang.join("skin_packs")),
         screenshots: fs::read_dir(com_mojang.join("Screenshots"))
-            .map(|entries| entries.flatten().filter(|entry| entry.path().is_file()).count() as u64)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.path().is_file())
+                    .count() as u64
+            })
             .unwrap_or(0),
     }
 }
@@ -96,7 +122,12 @@ pub fn summarize_family(family_name: &str) -> MinecraftDataSummary {
 pub fn scan_onboarding_environment() -> OnboardingEnvironmentSummary {
     let versions = crate::utils::file_ops::bmcbl_subdir("versions");
     let bmcbl_versions = fs::read_dir(versions)
-        .map(|entries| entries.flatten().filter(|entry| entry.path().is_dir()).count() as u64)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .count() as u64
+        })
         .unwrap_or(0);
     OnboardingEnvironmentSummary {
         release: summarize_family(RELEASE_FAMILY),
@@ -112,6 +143,18 @@ pub fn is_bmcbl_managed_registration(path: &Path) -> bool {
     path.starts_with(versions)
 }
 
+fn package_family_for_identity(identity_name: &str) -> Option<&'static str> {
+    match identity_name {
+        "Microsoft.MinecraftUWP" => Some(RELEASE_FAMILY),
+        "Microsoft.MinecraftWindowsBeta" => Some(PREVIEW_FAMILY),
+        "Microsoft.MinecraftEducationEdition" => Some(EDUCATION_FAMILY),
+        "Microsoft.MinecraftEducationPreview" | "Microsoft.MinecraftEducationEditionBeta" => {
+            Some(EDUCATION_PREVIEW_FAMILY)
+        }
+        _ => None,
+    }
+}
+
 fn pending_root() -> PathBuf {
     crate::utils::file_ops::bmcbl_subdir("backups")
         .join("migrations")
@@ -124,8 +167,11 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(u64, u64), String> {
     let mut bytes = 0u64;
     let mut stack = vec![(source.to_path_buf(), destination.to_path_buf())];
     while let Some((src_dir, dst_dir)) = stack.pop() {
-        fs::create_dir_all(&dst_dir).map_err(|e| format!("创建目录失败 {}: {e}", dst_dir.display()))?;
-        for entry in fs::read_dir(&src_dir).map_err(|e| format!("读取目录失败 {}: {e}", src_dir.display()))? {
+        fs::create_dir_all(&dst_dir)
+            .map_err(|e| format!("创建目录失败 {}: {e}", dst_dir.display()))?;
+        for entry in fs::read_dir(&src_dir)
+            .map_err(|e| format!("读取目录失败 {}: {e}", src_dir.display()))?
+        {
             let entry = entry.map_err(|e| e.to_string())?;
             let src = entry.path();
             let dst = dst_dir.join(entry.file_name());
@@ -133,8 +179,9 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(u64, u64), String> {
             if metadata.is_dir() {
                 stack.push((src, dst));
             } else if metadata.is_file() {
-                let copied = fs::copy(&src, &dst)
-                    .map_err(|e| format!("复制失败 {} -> {}: {e}", src.display(), dst.display()))?;
+                let copied = fs::copy(&src, &dst).map_err(|e| {
+                    format!("复制失败 {} -> {}: {e}", src.display(), dst.display())
+                })?;
                 files = files.saturating_add(1);
                 bytes = bytes.saturating_add(copied);
             }
@@ -146,7 +193,9 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(u64, u64), String> {
 /// Store/外部注册切换为 BMCBL DevelopmentMode 前的强制安全门。
 /// 无有效数据时返回 Ok(None)；有数据时只有完成并校验外部备份才允许继续卸载。
 pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<PathBuf>, String> {
-    let Some(local_state) = local_state_for_family(family_name) else { return Ok(None) };
+    let Some(local_state) = local_state_for_family(family_name) else {
+        return Ok(None);
+    };
     let source = local_state.join("games").join("com.mojang");
     if !source.is_dir() {
         return Ok(None);
@@ -157,12 +206,19 @@ pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<
         return Ok(None);
     }
 
-    let epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let safe_family = family_name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "_");
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let safe_family = family_name.replace(
+        |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
+        "_",
+    );
     let root = pending_root().join(format!("{epoch}-{safe_family}"));
     let partial = root.with_extension("partial");
     if partial.exists() {
-        fs::remove_dir_all(&partial).map_err(|e| format!("清理旧迁移临时目录失败: {e}"))?;
+        fs::remove_dir_all(&partial)
+            .map_err(|e| format!("清理旧迁移临时目录失败: {e}"))?;
     }
     let backup_local_state = partial.join("LocalState");
     let backup_com_mojang = backup_local_state.join("games").join("com.mojang");
@@ -188,27 +244,56 @@ pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<
         serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("写入迁移清单失败: {e}"))?;
-    fs::create_dir_all(root.parent().unwrap_or_else(|| Path::new("."))).map_err(|e| e.to_string())?;
+    fs::create_dir_all(root.parent().unwrap_or_else(|| Path::new(".")))
+        .map_err(|e| e.to_string())?;
     fs::rename(&partial, &root).map_err(|e| format!("提交迁移备份失败: {e}"))?;
-    fs::write(pending_root().join("pending.txt"), root.to_string_lossy().as_bytes())
-        .map_err(|e| format!("写入迁移待恢复标记失败: {e}"))?;
+    fs::write(
+        pending_root().join("pending.txt"),
+        root.to_string_lossy().as_bytes(),
+    )
+    .map_err(|e| format!("写入迁移待恢复标记失败: {e}"))?;
     Ok(Some(root))
 }
 
 /// DevelopmentMode 注册成功后恢复 Store/外部 UWP 的用户数据。
-pub fn restore_pending_backup() -> Result<Option<PathBuf>, String> {
+///
+/// 恢复动作必须与刚注册的 Minecraft Identity 匹配。这样导入其它 APPX 时不会误消费
+/// 一个仍待恢复的 Minecraft 迁移备份。
+pub fn restore_pending_backup_for_identity(
+    identity_name: &str,
+) -> Result<Option<PathBuf>, String> {
+    let Some(expected_family) = package_family_for_identity(identity_name) else {
+        return Ok(None);
+    };
+
     let marker = pending_root().join("pending.txt");
-    let Ok(root_text) = fs::read_to_string(&marker) else { return Ok(None) };
+    let Ok(root_text) = fs::read_to_string(&marker) else {
+        return Ok(None);
+    };
     let root = PathBuf::from(root_text.trim());
     let manifest_path = root.join("manifest.json");
     let mut manifest: MigrationManifest = serde_json::from_slice(
         &fs::read(&manifest_path).map_err(|e| format!("读取迁移清单失败: {e}"))?,
     )
     .map_err(|e| format!("解析迁移清单失败: {e}"))?;
+
+    if manifest.family_name != expected_family {
+        tracing::info!(
+            identity_name,
+            expected_family,
+            pending_family = %manifest.family_name,
+            "待恢复 UWP 数据与本次注册包家族不匹配，保留迁移备份等待正确版本注册"
+        );
+        return Ok(None);
+    }
+
     let Some(target_local_state) = local_state_for_family(&manifest.family_name) else {
         return Err("无法定位新注册 UWP 的 LocalState".to_string());
     };
-    let source = manifest.backup_local_state.join("games").join("com.mojang");
+    let source = manifest
+        .backup_local_state
+        .join("games")
+        .join("com.mojang");
     let target = target_local_state.join("games").join("com.mojang");
     let (restored_files, restored_bytes) = copy_tree(&source, &target)?;
     if restored_files != manifest.file_count || restored_bytes != manifest.total_size {
@@ -218,8 +303,11 @@ pub fn restore_pending_backup() -> Result<Option<PathBuf>, String> {
         ));
     }
     manifest.restored = true;
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("更新迁移清单失败: {e}"))?;
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("更新迁移清单失败: {e}"))?;
     let _ = fs::remove_file(marker);
     Ok(Some(root))
 }
