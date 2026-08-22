@@ -18,8 +18,7 @@ pub(super) struct NovaPathMaskTargetDescriptor {
 #[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
     pub(super) downsample: NovaBackdropBlurConfigSet,
-    // Raw source is transient. Filtered targets are isolated by source group and filter key, while
-    // overlapping rectangles inside one compatible group may intentionally share a variant.
+    /// Shared accumulated scene color used as the ordered backdrop source.
     pub(super) source: NovaTextureTarget,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
@@ -28,8 +27,10 @@ pub(super) struct NovaBackdropBlurTargets {
 #[derive(Clone)]
 pub(super) struct NovaBackdropBlurVariantTargets {
     pub(super) config: NovaBackdropBlurConfig,
-    // Two same-resolution scratch targets form a separable Gaussian ping/pong pair:
-    // levels[0] = horizontal result, levels[1] = vertical/final result.
+    /// Two separable Gaussian targets with axis-specific resolution:
+    /// levels[0] = X-blurred target at `(W/downsample, H)`;
+    /// levels[1] = Y-blurred final target at `(W/downsample, H/downsample)`.
+    /// This prevents vertical aliasing from shrinking Y before a vertical low-pass has run.
     pub(super) levels: Vec<NovaBackdropBlurLevelTarget>,
     pub(super) target_resource_sets: Vec<ResourceSetId>,
 }
@@ -74,7 +75,7 @@ impl NovaBackdropBlurTargets {
     /// Returns whether the existing GPU texture layout can serve the next frame.
     ///
     /// Bounds are intentionally ignored. Moving/resizing an animated glass surface updates only
-    /// CPU metadata and scissors instead of destroying and recreating full-size GPU textures.
+    /// CPU metadata and scissors instead of destroying and recreating GPU textures.
     pub(super) fn is_layout_compatible(&self, next: &NovaBackdropBlurConfigSet) -> bool {
         self.variants.len() == next.configs().len()
             && self
@@ -183,7 +184,7 @@ where
 {
     let source = create_render_texture_target(
         device,
-        &format!("{label} backdrop blur raw source"),
+        &format!("{label} backdrop scene color"),
         descriptor.size,
         descriptor.format,
     )?;
@@ -191,7 +192,7 @@ where
     for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
         source_pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
             label: Some(format!(
-                "{label} backdrop blur raw source frame {index} resource set"
+                "{label} backdrop scene color frame {index} resource set"
             )),
             layout: descriptor.pass_resource_set_layout,
             bindings: backdrop_blur_pass_resource_bindings(
@@ -205,12 +206,17 @@ where
     let mut variants = Vec::with_capacity(configs.len());
     for (variant_index, config) in configs.iter().copied().enumerate() {
         let downsample = u32::from(config.downsample().max(1));
-        let target_size = Extent2d::new(
-            (descriptor.size.width() / downsample).max(1),
-            (descriptor.size.height() / downsample).max(1),
+        let horizontal_size = Extent2d::new(
+            descriptor.size.width().div_ceil(downsample).max(1),
+            descriptor.size.height(),
         )?;
-        let mut levels = Vec::with_capacity(2);
-        for pass_index in 0..2 {
+        let final_size = Extent2d::new(
+            descriptor.size.width().div_ceil(downsample).max(1),
+            descriptor.size.height().div_ceil(downsample).max(1),
+        )?;
+        let pass_sizes = [horizontal_size, final_size];
+        let mut levels = Vec::with_capacity(pass_sizes.len());
+        for (pass_index, target_size) in pass_sizes.into_iter().enumerate() {
             let target = create_render_texture_target(
                 device,
                 &format!(
