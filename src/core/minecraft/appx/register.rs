@@ -1,6 +1,6 @@
 #![cfg(target_os = "windows")]
 use std::io;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use windows::Foundation::Uri;
 use windows::Management::Deployment::{DeploymentOptions, DeploymentResult, PackageManager};
 use windows::core::{Error as WinError, HRESULT, HSTRING, Result as WinResult};
@@ -30,18 +30,26 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
 
     let package_manager = PackageManager::new().expect("无法创建 PackageManager");
     let uri = Uri::CreateUri(&HSTRING::from(uri_str))?;
-
     let async_op =
         package_manager.RegisterPackageAsync(&uri, None, DeploymentOptions::DevelopmentMode)?;
     let result: DeploymentResult = async_op.await?;
 
-    // 检查结果信息
-    let extended_error = result.ExtendedErrorCode()?; // 返回 HRESULT
-    let error_text_h = result.ErrorText()?; // 返回 HSTRING
+    let extended_error = result.ExtendedErrorCode()?;
+    let error_text_h = result.ErrorText()?;
     let error_text = error_text_h.to_string_lossy();
 
     if extended_error == HRESULT(0) {
         info!("APPX DevelopmentMode 注册成功");
+        match crate::core::minecraft::uwp_migration::restore_pending_backup() {
+            Ok(Some(path)) => info!(backup = %path.display(), "原版 UWP 用户数据已恢复到新注册的散装版本"),
+            Ok(None) => {}
+            Err(error) => {
+                warn!(%error, "散装 UWP 已注册，但原版数据自动恢复失败；保留外部迁移备份以供重试");
+                return Err(WinError::from(io::Error::other(format!(
+                    "APPX 已注册，但 Minecraft 数据恢复失败: {error}"
+                ))));
+            }
+        }
         Ok(result)
     } else {
         error!(
