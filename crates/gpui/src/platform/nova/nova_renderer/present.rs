@@ -141,6 +141,48 @@ where
     )
 }
 
+/// Advances one shared scene-color source through each backdrop draw-order barrier.
+///
+/// The first segment clears the source target. Later segments use `Load`, preserving everything
+/// already rendered (including the previous group's freshly filtered backdrop composite contained
+/// in the incremental draw steps). This removes the old GPU behavior that cleared the target and
+/// replayed the entire scene prefix for every blur group.
+fn render_backdrop_blur_groups<D>(
+    device: &mut D,
+    source_texture_view: TextureViewId,
+    render_pass: RenderPassId,
+    depth_attachment: RenderPassDepthAttachment,
+    groups: &[NovaPreparedBackdropBlurGroup],
+) -> Result<()>
+where
+    D: BackendPresentationCompat,
+{
+    for (group_index, group) in groups.iter().enumerate() {
+        let source_load_op = if group_index == 0 {
+            LoadOp::Clear(clear_color())
+        } else {
+            LoadOp::Load
+        };
+        device.render_steps_to_texture(
+            source_texture_view,
+            render_pass,
+            &group.source_steps,
+            source_load_op,
+            Some(depth_attachment),
+        )?;
+        for pass in &group.filter_passes {
+            device.render_step_list_to_texture(
+                pass.target_texture_view,
+                render_pass,
+                RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                LoadOp::Clear(clear_color()),
+                Some(depth_attachment),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 impl NovaRenderer {
     fn drawable_pixels(&self) -> usize {
         (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
@@ -154,7 +196,13 @@ impl NovaRenderer {
         if !enabled {
             return (0, [0; 6]);
         }
-        let source_pixels = self.drawable_pixels().saturating_mul(source_group_count);
+        // Source groups are now draw-order segments of one accumulated scene-color target. The
+        // renderer no longer redraws an entire drawable-sized prefix once per group.
+        let source_pixels = if source_group_count == 0 {
+            0
+        } else {
+            self.drawable_pixels()
+        };
         let mut level_pixels = [0usize; 6];
         for config in self.frame_upload.backdrop_blur_configs() {
             let factor = usize::from(config.downsample().max(1));
@@ -211,8 +259,9 @@ impl NovaRenderer {
         self.prepare_draw_steps();
         self.prepare_path_mask_draw_steps();
         self.prepare_backdrop_blur_passes(has_backdrop_blurs);
-        // Building exact source prefixes is O(blur_groups * scene_batches). Do not do that on
-        // every tab/button animation frame when all filtered targets are still valid.
+        // Exact prefixes are still compared on the CPU for semantic planning, but the generated
+        // source steps are incremental and each scene batch is submitted only once across the
+        // ordered blur barriers instead of replaying every prefix on the GPU.
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
         } else {
@@ -398,24 +447,13 @@ impl NovaRenderer {
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
-                    for group in &backdrop_blur_groups {
-                        device.render_steps_to_texture(
-                            source_texture_view,
-                            self.render_pass,
-                            &group.source_steps,
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
-                        )?;
-                        for pass in &group.filter_passes {
-                            device.render_step_list_to_texture(
-                                pass.target_texture_view,
-                                self.render_pass,
-                                RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                                LoadOp::Clear(clear_color()),
-                                Some(depth_attachment),
-                            )?;
-                        }
-                    }
+                    render_backdrop_blur_groups(
+                        device,
+                        source_texture_view,
+                        self.render_pass,
+                        depth_attachment,
+                        &backdrop_blur_groups,
+                    )?;
                 }
                 let offscreen_elapsed_ms = offscreen_started.elapsed().as_millis();
                 let present_started = Instant::now();
@@ -500,24 +538,13 @@ impl NovaRenderer {
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
-                    for group in &backdrop_blur_groups {
-                        device.render_steps_to_texture(
-                            source_texture_view,
-                            self.render_pass,
-                            &group.source_steps,
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
-                        )?;
-                        for pass in &group.filter_passes {
-                            device.render_step_list_to_texture(
-                                pass.target_texture_view,
-                                self.render_pass,
-                                RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                                LoadOp::Clear(clear_color()),
-                                Some(depth_attachment),
-                            )?;
-                        }
-                    }
+                    render_backdrop_blur_groups(
+                        device,
+                        source_texture_view,
+                        self.render_pass,
+                        depth_attachment,
+                        &backdrop_blur_groups,
+                    )?;
                 }
                 render_main_and_present(
                     device,
@@ -586,24 +613,13 @@ impl NovaRenderer {
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
-                    for group in &backdrop_blur_groups {
-                        device.render_steps_to_texture(
-                            source_texture_view,
-                            self.render_pass,
-                            &group.source_steps,
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
-                        )?;
-                        for pass in &group.filter_passes {
-                            device.render_step_list_to_texture(
-                                pass.target_texture_view,
-                                self.render_pass,
-                                RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                                LoadOp::Clear(clear_color()),
-                                Some(depth_attachment),
-                            )?;
-                        }
-                    }
+                    render_backdrop_blur_groups(
+                        device,
+                        source_texture_view,
+                        self.render_pass,
+                        depth_attachment,
+                        &backdrop_blur_groups,
+                    )?;
                 }
                 let offscreen_elapsed_ms = offscreen_started.elapsed().as_millis();
                 let present_started = Instant::now();
@@ -715,8 +731,8 @@ impl NovaRenderer {
                     "atlas_texture_bytes={} mapped_frame_upload_bytes={} ",
                     "mapped_frame_upload_is_gpu_copy=false retained_present_copy_regions={} ",
                     "path_mask_render_passes={} blur_render_passes={} blur_groups={} ",
-                    "main_render_passes=1 present_damage={:?} dirty_mode={:?} dirty_full={} ",
-                    "dirty_rects={} dirty_area={}"
+                    "blur_source_mode=sequential-load main_render_passes=1 present_damage={:?} ",
+                    "dirty_mode={:?} dirty_full={} dirty_rects={} dirty_area={}"
                 ),
                 backend_label,
                 self.submitted_frames.saturating_add(1),
