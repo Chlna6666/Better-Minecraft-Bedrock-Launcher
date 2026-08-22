@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use windows::Management::Deployment::PackageManager;
+use windows::core::HSTRING;
 
 const RELEASE_FAMILY: &str = "Microsoft.MinecraftUWP_8wekyb3d8bbwe";
 const PREVIEW_FAMILY: &str = "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe";
@@ -14,6 +16,11 @@ const EDUCATION_PREVIEW_FAMILY: &str =
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MinecraftDataSummary {
     pub family_name: String,
+    pub registered: bool,
+    pub registered_version: Option<String>,
+    pub registered_path: Option<PathBuf>,
+    pub development_mode: bool,
+    pub bmcbl_managed_registration: bool,
     pub local_state: PathBuf,
     pub data_present: bool,
     pub file_count: u64,
@@ -44,6 +51,14 @@ struct MigrationManifest {
     restored: bool,
 }
 
+#[derive(Debug, Default)]
+struct RegistrationSummary {
+    registered: bool,
+    version: Option<String>,
+    path: Option<PathBuf>,
+    development_mode: bool,
+}
+
 fn local_state_for_family(family_name: &str) -> Option<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
     Some(
@@ -52,6 +67,45 @@ fn local_state_for_family(family_name: &str) -> Option<PathBuf> {
             .join(family_name)
             .join("LocalState"),
     )
+}
+
+fn read_registration(family_name: &str) -> RegistrationSummary {
+    let Ok(manager) = PackageManager::new() else {
+        return RegistrationSummary::default();
+    };
+    let Ok(packages) = manager.FindPackagesByUserSecurityIdPackageFamilyName(
+        &HSTRING::new(),
+        &HSTRING::from(family_name),
+    ) else {
+        return RegistrationSummary::default();
+    };
+
+    for package in packages {
+        let version = package
+            .Id()
+            .ok()
+            .and_then(|id| id.Version().ok())
+            .map(|version| {
+                format!(
+                    "{}.{}.{}.{}",
+                    version.Major, version.Minor, version.Build, version.Revision
+                )
+            });
+        let path = package
+            .InstalledLocation()
+            .ok()
+            .and_then(|location| location.Path().ok())
+            .map(|path| PathBuf::from(path.to_string_lossy().to_string()));
+        let development_mode = package.IsDevelopmentMode().unwrap_or(false);
+        return RegistrationSummary {
+            registered: true,
+            version,
+            path,
+            development_mode,
+        };
+    }
+
+    RegistrationSummary::default()
 }
 
 fn count_directories(path: &Path) -> u64 {
@@ -90,6 +144,11 @@ fn walk_stats(path: &Path) -> (u64, u64) {
 }
 
 pub fn summarize_family(family_name: &str) -> MinecraftDataSummary {
+    let registration = read_registration(family_name);
+    let bmcbl_managed_registration = registration
+        .path
+        .as_deref()
+        .is_some_and(is_bmcbl_managed_registration);
     let local_state = local_state_for_family(family_name).unwrap_or_default();
     let com_mojang = local_state.join("games").join("com.mojang");
     let data_present = com_mojang.is_dir();
@@ -100,6 +159,11 @@ pub fn summarize_family(family_name: &str) -> MinecraftDataSummary {
     };
     MinecraftDataSummary {
         family_name: family_name.to_string(),
+        registered: registration.registered,
+        registered_version: registration.version,
+        registered_path: registration.path,
+        development_mode: registration.development_mode,
+        bmcbl_managed_registration,
         local_state,
         data_present,
         file_count,
