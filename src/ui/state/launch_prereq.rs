@@ -119,6 +119,28 @@ impl LaunchPrereqState {
         self.visible && self.mode == LaunchPrereqMode::Onboarding
     }
 
+    /// 从设置页重新打开引导，只影响当前运行时状态，不修改已经完成的首次运行标记。
+    /// 同时递增 request_id，使之前可能仍在飞行中的启动前置任务结果失效。
+    pub fn reopen_onboarding(&mut self) {
+        self.request_id = self.request_id.wrapping_add(1).max(1);
+        self.visible = true;
+        self.mode = LaunchPrereqMode::Onboarding;
+        self.version = None;
+        self.check = None;
+        self.operation = None;
+        self.progress_percent = None;
+        self.progress_stage = SharedString::default();
+        self.progress_target = None;
+        self.error_message = None;
+        self.admin_notice = None;
+        self.logs.clear();
+        self.onboarding_step = OnboardingStep::Welcome;
+        self.onboarding_scanning = false;
+        self.onboarding_environment = None;
+        self.onboarding_error = None;
+        self.stop_busy_animation();
+    }
+
     pub fn begin_onboarding_scan(&mut self) {
         self.visible = true;
         self.mode = LaunchPrereqMode::Onboarding;
