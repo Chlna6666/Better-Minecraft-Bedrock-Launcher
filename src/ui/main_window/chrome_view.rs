@@ -58,9 +58,9 @@ impl AppChromeView {
             labels_layout_factor: nav.labels_layout_factor(now),
             labels_opacity_factor: nav.labels_opacity_factor(now),
             nav_animating: nav.is_animating(now),
-            // 临时质量隔离测试：标题栏不启用 backdrop blur，只保留原 surface 与底边框。
-            // 若底部色带消失，可确认是 blur 边缘采样而不是渐变样式。
-            glass_effect_enabled: false,
+            glass_effect_enabled: cx
+                .global::<crate::ui::views::settings::state::SettingsPageState>()
+                .glass_effect_enabled,
             plugin_navigation_pages: std::sync::Arc::new(
                 crate::plugins::runtime::navigation_pages(cx),
             ),
