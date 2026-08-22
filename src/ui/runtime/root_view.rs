@@ -1,14 +1,32 @@
-use gpui::{AnyView, Context, IntoElement, ParentElement, Render, Styled, Window, div};
+use gpui::{
+    AnyView, Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div,
+};
 
 pub struct RootView {
     view: AnyView,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl RootView {
     pub fn new(view: impl Into<AnyView>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut subscriptions = Vec::new();
         #[cfg(target_os = "linux")]
-        cx.default_global::<crate::ui::state::linux_onboarding::LinuxOnboardingState>();
-        Self { view: view.into() }
+        {
+            cx.default_global::<crate::ui::state::linux_onboarding::LinuxOnboardingState>();
+            subscriptions.push(cx.observe_global::<
+                crate::ui::state::linux_onboarding::LinuxOnboardingState,
+            >(|_this, cx| cx.notify()));
+            subscriptions.push(cx.observe_global::<crate::ui::state::agreement::AgreementState>(
+                |_this, cx| cx.notify(),
+            ));
+            subscriptions.push(cx.observe_global::<crate::ui::window::debug::DebugState>(
+                |_this, cx| cx.notify(),
+            ));
+        }
+        Self {
+            view: view.into(),
+            _subscriptions: subscriptions,
+        }
     }
 }
 
