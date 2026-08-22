@@ -48,12 +48,21 @@ impl NovaBackdropBlurConfig {
         bounds: [f32; 4],
         recompute_overlap: bool,
     ) -> Self {
-        let downsample = downsample.max(1);
+        let requested_downsample = downsample.max(1);
         let levels = levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS);
         let radius = if radius.is_finite() {
             radius.max(0.0)
         } else {
             0.0
+        };
+        // Medium-radius UI glass is sensitive to half-resolution reconstruction at thin edges.
+        // Keep it full-resolution and reserve downsampling for genuinely large kernels where the
+        // bandwidth reduction outweighs reconstruction loss. This also makes application-level
+        // auto_quality() a hint rather than a hard quality downgrade for titlebars/popovers.
+        let downsample = if radius <= 24.0 {
+            1
+        } else {
+            requested_downsample
         };
         let bounds = bounds.map(|value| if value.is_finite() { value } else { 0.0 });
         Self {
