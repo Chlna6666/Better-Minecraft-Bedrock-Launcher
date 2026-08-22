@@ -103,7 +103,7 @@ pub fn render_onboarding_overlay(
         )
         .child(footer);
 
-    modal::modal_layer(card, hsla(0.0, 0.0, 0.0, 0.0, 0.38)).into_any_element()
+    modal::modal_layer(card, hsla(0.0, 0.0, 0.0, 0.38)).into_any_element()
 }
 
 fn render_welcome(colors: &ThemeColors) -> AnyElement {
