@@ -9,14 +9,19 @@ use windows::core::{Error as WinError, HRESULT, HSTRING, Result as WinResult};
 struct RemovalTarget {
     full_name: HSTRING,
     installed_path: Option<PathBuf>,
+    development_mode: bool,
     bmcbl_managed: bool,
 }
 
 /// 移除当前用户下已注册的同包家族实例。
 ///
-/// BMCBL 自己从 versions 目录注册的 DevelopmentMode 散装包使用
-/// PreserveApplicationData，以便在不同 Minecraft 版本之间切换时保留 LocalState。
-/// Store/外部注册在卸载前必须先完成可验证的外部数据备份；备份失败则拒绝卸载。
+/// 只有同时满足以下条件的注册才属于 BMCBL 自己管理的散装包：
+/// - Windows 报告该包以 DevelopmentMode 部署；
+/// - 安装路径位于 BMCBL/versions 下。
+///
+/// 对这种注册使用 PreserveApplicationData，以便不同 Minecraft 散装版本之间切换时
+/// 保留 LocalState。Store/外部注册在卸载前必须先完成可验证的外部数据备份；
+/// 备份失败则拒绝卸载。
 pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
     let package_manager = PackageManager::new().map_err(|e| {
         error!("无法创建 PackageManager: {:?}", e);
@@ -40,12 +45,15 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
                 .ok()
                 .and_then(|location| location.Path().ok())
                 .map(|path| PathBuf::from(path.to_string_lossy().to_string()));
-            let bmcbl_managed = installed_path
-                .as_deref()
-                .is_some_and(crate::core::minecraft::uwp_migration::is_bmcbl_managed_registration);
+            let development_mode = package.IsDevelopmentMode().unwrap_or(false);
+            let bmcbl_managed = development_mode
+                && installed_path
+                    .as_deref()
+                    .is_some_and(crate::core::minecraft::uwp_migration::is_bmcbl_managed_registration);
             targets.push(RemovalTarget {
                 full_name,
                 installed_path,
+                development_mode,
                 bmcbl_managed,
             });
         }
@@ -87,6 +95,8 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
         debug!(
             full_name = %full_name_str,
             installed_path = ?target.installed_path,
+            development_mode = target.development_mode,
+            bmcbl_managed = target.bmcbl_managed,
             preserve_application_data = target.bmcbl_managed,
             "准备按当前用户模式移除 UWP 注册"
         );
@@ -103,6 +113,7 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
         if extended_hr == HRESULT(0) {
             info!(
                 full_name = %full_name_str,
+                development_mode = target.development_mode,
                 preserve_application_data = target.bmcbl_managed,
                 "UWP 包注册成功移除"
             );
