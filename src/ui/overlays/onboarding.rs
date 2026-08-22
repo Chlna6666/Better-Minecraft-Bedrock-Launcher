@@ -10,7 +10,7 @@ use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_
 
 pub fn render_onboarding_overlay(
     state: &LaunchPrereqState,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &App,
 ) -> AnyElement {
     let theme = cx.global::<ThemeState>();
@@ -20,6 +20,9 @@ pub fn render_onboarding_overlay(
         theme.factor(std::time::Instant::now()),
         theme.accent,
     );
+    let window_size = window.bounds().size;
+    let card_width = (window_size.width - px(40.)).max(px(360.)).min(px(720.));
+    let card_height = (window_size.height - px(48.)).max(px(420.)).min(px(660.));
 
     let step_index = match state.onboarding_step {
         OnboardingStep::Welcome => 1,
@@ -37,9 +40,8 @@ pub fn render_onboarding_overlay(
 
     let footer = render_footer(state, &colors);
     let card = div()
-        .w(px(720.))
-        .max_w(relative(0.92))
-        .max_h(relative(0.90))
+        .w(card_width)
+        .h(card_height)
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .overflow_hidden()
         .bg(colors.bg)
@@ -354,7 +356,17 @@ fn render_footer(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyElement 
         });
     }
 
-    let mut footer = div()
+    let mut actions = div().flex().items_center().gap(px(10.));
+    if state.onboarding_step == OnboardingStep::AcquireGame {
+        let mut download = secondary_button(colors, "打开下载页");
+        download = download.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+            complete_onboarding(cx, Some(crate::ui::navigation::AppRoute::Download));
+        });
+        actions = actions.child(download);
+    }
+    actions = actions.child(right);
+
+    div()
         .px(px(26.))
         .py(px(16.))
         .border_t_1()
@@ -363,16 +375,8 @@ fn render_footer(state: &LaunchPrereqState, colors: &ThemeColors) -> AnyElement 
         .items_center()
         .justify_between()
         .child(left)
-        .child(div().flex().items_center().gap(px(10.)).child(right));
-
-    if state.onboarding_step == OnboardingStep::AcquireGame {
-        let mut download = secondary_button(colors, "打开下载页");
-        download = download.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-            complete_onboarding(cx, Some(crate::ui::navigation::AppRoute::Download));
-        });
-        footer = footer.child(download);
-    }
-    footer.into_any_element()
+        .child(actions)
+        .into_any_element()
 }
 
 fn start_environment_scan(cx: &mut App) {
