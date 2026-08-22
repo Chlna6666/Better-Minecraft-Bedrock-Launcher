@@ -4,6 +4,7 @@ use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
 use crate::ui::components::modal;
+use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::linux_onboarding::{
     LinuxOnboardingEnvironmentSummary, LinuxOnboardingState, LinuxOnboardingStep,
 };
