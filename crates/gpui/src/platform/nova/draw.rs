@@ -3,29 +3,30 @@ use super::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NovaDrawStepMode {
     Present,
-    /// Legacy first-backdrop prefix, retained for callers/tests while the staged path is used by
-    /// the renderer.
-    BackdropSource,
-    /// Draw every batch strictly before `batch_end`. Earlier backdrop groups are composited using
-    /// their own cached targets, so the resulting texture is the exact source for the next group.
-    BackdropSourceThrough { batch_end: usize },
+    /// Draw only batches in `[batch_start, batch_end)`. Backdrop groups use this mode to advance
+    /// one shared scene-color target between draw-order barriers without rebuilding old prefixes.
+    BackdropSegment {
+        batch_start: usize,
+        batch_end: usize,
+    },
 }
 
 impl NovaDrawStepMode {
-    fn stops_before(self, batch_index: usize, batch: &NovaUploadedBatch) -> bool {
+    fn is_past_end(self, batch_index: usize) -> bool {
+        matches!(
+            self,
+            Self::BackdropSegment { batch_end, .. } if batch_index >= batch_end
+        )
+    }
+
+    fn includes_batch(self, batch_index: usize) -> bool {
         match self {
-            Self::Present => false,
-            Self::BackdropSource => matches!(batch, NovaUploadedBatch::BackdropBlurs { .. }),
-            Self::BackdropSourceThrough { batch_end } => batch_index >= batch_end,
+            Self::Present => true,
+            Self::BackdropSegment {
+                batch_start,
+                batch_end,
+            } => batch_index >= batch_start && batch_index < batch_end,
         }
-    }
-
-    fn draws_backdrop_blurs(self) -> bool {
-        !matches!(self, Self::BackdropSource)
-    }
-
-    fn draws_custom_mesh(self) -> bool {
-        !matches!(self, Self::BackdropSource)
     }
 }
 
@@ -86,8 +87,11 @@ pub(super) fn draw_steps_for_upload_into(
     steps.clear();
     steps.reserve(upload.batches.len().saturating_add(1));
     for (batch_index, batch) in upload.batches.iter().enumerate() {
-        if mode.stops_before(batch_index, batch) {
+        if mode.is_past_end(batch_index) {
             break;
+        }
+        if !mode.includes_batch(batch_index) {
+            continue;
         }
         match *batch {
             NovaUploadedBatch::SolidQuads { first, count } => push_draw_step(
@@ -200,25 +204,23 @@ pub(super) fn draw_steps_for_upload_into(
                 },
             ),
             NovaUploadedBatch::BackdropBlurs { first, count } => {
-                if mode.draws_backdrop_blurs() {
-                    upload.for_each_backdrop_blur_run(first, count, |run| {
-                        let Some(resource_set) = backdrop_blur_resource_set(run.config) else {
-                            return;
-                        };
-                        push_draw_step(
-                            steps,
-                            DrawStepDescriptor {
-                                pipeline: blend_pipelines.backdrop_blurs,
-                                resource_sets: resource_set_list([resource_set]),
-                                vertex_count: 4,
-                                first_vertex: 0,
-                                instance_count: run.count,
-                                first_instance: run.first,
-                                scissor: None,
-                            },
-                        );
-                    });
-                }
+                upload.for_each_backdrop_blur_run(first, count, |run| {
+                    let Some(resource_set) = backdrop_blur_resource_set(run.config) else {
+                        return;
+                    };
+                    push_draw_step(
+                        steps,
+                        DrawStepDescriptor {
+                            pipeline: blend_pipelines.backdrop_blurs,
+                            resource_sets: resource_set_list([resource_set]),
+                            vertex_count: 4,
+                            first_vertex: 0,
+                            instance_count: run.count,
+                            first_instance: run.first,
+                            scissor: None,
+                        },
+                    );
+                });
             }
             NovaUploadedBatch::CustomMesh3d {
                 mesh_id,
@@ -227,39 +229,37 @@ pub(super) fn draw_steps_for_upload_into(
                 range,
                 first_parameter_index,
             } => {
-                if mode.draws_custom_mesh() {
-                    let Some(mesh) = custom_mesh_3d_cache_entry(mesh_id, generation) else {
-                        continue;
-                    };
-                    let Some(range_end) = range.start.checked_add(range.count) else {
-                        continue;
-                    };
-                    if range.count == 0 || range_end > mesh.index_count || mesh.vertex_count == 0 {
-                        continue;
-                    }
-                    let Some(first_index) = mesh.index_offset.checked_add(range.start) else {
-                        continue;
-                    };
-                    let Ok(base_vertex) = i32::try_from(mesh.vertex_offset) else {
-                        continue;
-                    };
-                    if let Some(pipeline) = custom_mesh_3d_pipeline(shader_id) {
-                        steps.push(RenderStepDescriptor::DrawIndexed(DrawIndexedStepDescriptor {
-                            pipeline,
-                            resource_sets: resource_set_list([custom_mesh_3d_resource_set]),
-                            index_buffer: IndexBufferBinding {
-                                buffer: custom_mesh_3d_indices_buffer,
-                                format: IndexFormat::Uint32,
-                                offset: 0,
-                            },
-                            index_count: range.count,
-                            first_index,
-                            base_vertex,
-                            instance_count: 1,
-                            first_instance: first_parameter_index,
-                            scissor: None,
-                        }));
-                    }
+                let Some(mesh) = custom_mesh_3d_cache_entry(mesh_id, generation) else {
+                    continue;
+                };
+                let Some(range_end) = range.start.checked_add(range.count) else {
+                    continue;
+                };
+                if range.count == 0 || range_end > mesh.index_count || mesh.vertex_count == 0 {
+                    continue;
+                }
+                let Some(first_index) = mesh.index_offset.checked_add(range.start) else {
+                    continue;
+                };
+                let Ok(base_vertex) = i32::try_from(mesh.vertex_offset) else {
+                    continue;
+                };
+                if let Some(pipeline) = custom_mesh_3d_pipeline(shader_id) {
+                    steps.push(RenderStepDescriptor::DrawIndexed(DrawIndexedStepDescriptor {
+                        pipeline,
+                        resource_sets: resource_set_list([custom_mesh_3d_resource_set]),
+                        index_buffer: IndexBufferBinding {
+                            buffer: custom_mesh_3d_indices_buffer,
+                            format: IndexFormat::Uint32,
+                            offset: 0,
+                        },
+                        index_count: range.count,
+                        first_index,
+                        base_vertex,
+                        instance_count: 1,
+                        first_instance: first_parameter_index,
+                        scissor: None,
+                    }));
                 }
             }
         }
