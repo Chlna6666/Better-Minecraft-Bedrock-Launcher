@@ -1,7 +1,7 @@
 mod overlay;
 pub mod state;
 
-use gpui::{App, SharedString};
+use gpui::{App, AppContext as _, BorrowAppContext as _, SharedString};
 
 use state::{
     OnboardingPlatformSummary, OnboardingScene, OnboardingSummaryItem, OnboardingTourState,
