@@ -1,5 +1,5 @@
 pub mod anchor;
-mod overlay;
+mod guided_overlay;
 pub mod state;
 
 use gpui::{App, AppContext as _, BorrowAppContext as _, SharedString};
@@ -8,7 +8,7 @@ use state::{
     OnboardingPlatformSummary, OnboardingScene, OnboardingSummaryItem, OnboardingTourState,
 };
 
-pub use overlay::render_onboarding_tour;
+pub use guided_overlay::render_onboarding_tour;
 
 pub fn reopen(cx: &mut App) {
     cx.update_default_global(|state: &mut OnboardingTourState, _cx| state.reopen());
@@ -32,6 +32,9 @@ pub fn back(cx: &mut App) {
         state.set_scene(previous);
     });
     apply_scene_route(previous, cx);
+    if previous == OnboardingScene::PlatformSetup {
+        start_platform_scan(cx);
+    }
 }
 
 pub fn skip(cx: &mut App) {
@@ -70,8 +73,6 @@ fn complete(cx: &mut App, route: Option<crate::ui::navigation::AppRoute>) {
 
     cx.update_global(|state: &mut OnboardingTourState, _cx| state.finish());
 
-    // 旧版 Windows onboarding 状态仅保留给启动前置兼容链路；新导览完成后同步关闭，
-    // 避免 MainWindow 每帧继续进入旧 router 的空 onboarding 分支。
     #[cfg(target_os = "windows")]
     cx.update_global(
         |state: &mut crate::ui::state::launch_prereq::LaunchPrereqState, _cx| {
@@ -88,15 +89,29 @@ fn complete(cx: &mut App, route: Option<crate::ui::navigation::AppRoute>) {
 }
 
 fn apply_scene_route(scene: OnboardingScene, cx: &mut App) {
+    use crate::ui::views::download::state::DownloadTab;
+
     match scene {
         OnboardingScene::Welcome | OnboardingScene::Finish => {
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Home);
         }
-        OnboardingScene::DownloadOverview | OnboardingScene::ImportPackage => {
-            prepare_download(cx);
+        OnboardingScene::GameDownload => {
+            prepare_download(DownloadTab::Game, cx);
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Download);
         }
-        OnboardingScene::VersionManagement => {
+        OnboardingScene::ResourcePackDownload => {
+            prepare_download(DownloadTab::ResourcePack, cx);
+            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Download);
+        }
+        OnboardingScene::ModDownload => {
+            prepare_download(DownloadTab::Mod, cx);
+            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Download);
+        }
+        OnboardingScene::ImportPackage => {
+            prepare_download(DownloadTab::Game, cx);
+            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Download);
+        }
+        OnboardingScene::ManageOverview => {
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Manage);
         }
         OnboardingScene::PlatformSetup => {
@@ -119,17 +134,39 @@ fn apply_scene_route(scene: OnboardingScene, cx: &mut App) {
 
 fn prepare_route(route: crate::ui::navigation::AppRoute, cx: &mut App) {
     if route == crate::ui::navigation::AppRoute::Download {
-        prepare_download(cx);
+        prepare_download(crate::ui::views::download::state::DownloadTab::Game, cx);
     }
 }
 
-fn prepare_download(cx: &mut App) {
+fn prepare_download(tab: crate::ui::views::download::state::DownloadTab, cx: &mut App) {
     cx.update_global(
         |state: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
-            state.tab = crate::ui::views::download::state::DownloadTab::Game;
-            state.page_index = 0;
-            state.game_rows_scroll
-                .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+            if state.tab != tab {
+                state.tab_anim_from = state.tab;
+                state.tab_anim_at = Some(std::time::Instant::now());
+            }
+            state.tab = tab;
+            state.search_query = SharedString::from("");
+            match tab {
+                crate::ui::views::download::state::DownloadTab::Game => {
+                    state.page_index = 0;
+                    state.game_rows_scroll
+                        .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                }
+                crate::ui::views::download::state::DownloadTab::ResourcePack => {
+                    state.curseforge_page_index = 0;
+                    state.curseforge_results_scroll
+                        .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                    state.curseforge_sidebar_scroll
+                        .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                }
+                crate::ui::views::download::state::DownloadTab::Mod => {
+                    state.levilauncher_page_index = 0;
+                    state
+                        .levilauncher_scroll
+                        .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                }
+            }
         },
     );
 }
@@ -301,9 +338,11 @@ pub(crate) fn scene_is(cx: &App, scene: OnboardingScene) -> bool {
 pub(crate) fn scene_label(scene: OnboardingScene) -> SharedString {
     SharedString::from(match scene {
         OnboardingScene::Welcome => "欢迎",
-        OnboardingScene::DownloadOverview => "下载版本",
+        OnboardingScene::GameDownload => "游戏下载",
+        OnboardingScene::ResourcePackDownload => "CF 资源",
+        OnboardingScene::ModDownload => "模组",
         OnboardingScene::ImportPackage => "导入版本",
-        OnboardingScene::VersionManagement => "版本管理",
+        OnboardingScene::ManageOverview => "版本管理",
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "windows")]
             {
