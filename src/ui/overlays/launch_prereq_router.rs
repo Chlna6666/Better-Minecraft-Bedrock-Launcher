@@ -10,13 +10,9 @@ pub fn render_launch_prereq_overlay(
     cx: &App,
 ) -> AnyElement {
     if state.is_onboarding() {
-        let current_window_id = window.window_handle().window_id().as_u64();
-        let main_window_id = cx.global::<crate::ui::window::debug::DebugState>().main_window_id;
-        if main_window_id == Some(current_window_id) {
-            return super::onboarding::render_onboarding_overlay(state, window, cx);
-        }
-
-        // 文件关联/独立导入窗口共享 LaunchPrereqState，但不应展示主窗口首次引导。
+        // 首次运行导览已经迁移到 RootView 上的独立 Guided Tour。
+        // LaunchPrereqState 继续保留旧字段只用于兼容现有启动前置状态机，
+        // 这里不再把 onboarding 当作 modal 渲染。
         return div().into_any_element();
     }
 
