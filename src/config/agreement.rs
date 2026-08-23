@@ -1,5 +1,5 @@
 use crate::utils::file_ops;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{fs, io, path::PathBuf};
 
 /// 当前内置用户协议版本。
@@ -7,31 +7,59 @@ use std::{fs, io, path::PathBuf};
 /// 协议内容发生需要用户重新确认的变更时，只需递增此版本。
 pub const CURRENT_AGREEMENT_VERSION: u32 = 2;
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(default)]
-struct AgreementVersionConfig {
+struct LegacyAgreementVersionConfig {
     accepted_version: u32,
 }
 
-pub fn get_agreement_config_file_path() -> PathBuf {
+fn legacy_agreement_config_file_path() -> PathBuf {
     file_ops::config_dir().join("agreement.toml")
 }
 
-pub fn accepted_agreement_version() -> io::Result<u32> {
-    let path = get_agreement_config_file_path();
-    let content = match fs::read_to_string(&path) {
+fn read_legacy_agreement_version() -> io::Result<u32> {
+    let content = match fs::read_to_string(legacy_agreement_config_file_path()) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error),
     };
-
-    let config: AgreementVersionConfig = toml::from_str(&content).map_err(|error| {
+    let config: LegacyAgreementVersionConfig = toml::from_str(&content).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Failed to parse agreement version config: {error}"),
+            format!("Failed to parse legacy agreement config: {error}"),
         )
     })?;
     Ok(config.accepted_version)
+}
+
+fn remove_legacy_agreement_config() -> io::Result<()> {
+    match fs::remove_file(legacy_agreement_config_file_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// 从统一 settings.toml 读取协议版本；旧 agreement.toml 只作为一次性迁移来源。
+pub fn accepted_agreement_version() -> io::Result<u32> {
+    let config = super::config::read_config()?;
+    let current = config.app_state.agreement_accepted_version;
+    let legacy_file_version = read_legacy_agreement_version()?;
+    // 最早的 BMCBL 只有 agreement_accepted 布尔值，将它视为 v1，不能因此自动接受 v2。
+    let legacy_bool_version = u32::from(config.agreement_accepted);
+    let migrated = current.max(legacy_file_version).max(legacy_bool_version);
+
+    if migrated != current || legacy_file_version > 0 {
+        super::config::update_config(|config| {
+            config.app_state.agreement_accepted_version = migrated;
+            config.agreement_accepted = migrated > 0;
+        })?;
+        // 旧文件只有在 settings.toml 已同步落盘后才删除，避免崩溃窗口丢失接受状态。
+        super::config::flush_config_now();
+        remove_legacy_agreement_config()?;
+    }
+
+    Ok(migrated)
 }
 
 #[must_use]
@@ -39,47 +67,35 @@ pub fn is_current_agreement_accepted() -> bool {
     match accepted_agreement_version() {
         Ok(version) => version >= CURRENT_AGREEMENT_VERSION,
         Err(error) => {
-            tracing::warn!(?error, "failed to read agreement version config");
+            tracing::warn!(?error, "failed to read agreement version from main config");
             false
         }
     }
 }
 
 pub fn accept_current_agreement() -> io::Result<()> {
-    let config_dir = file_ops::config_dir();
-    fs::create_dir_all(&config_dir)?;
-
-    let content = toml::to_string(&AgreementVersionConfig {
-        accepted_version: CURRENT_AGREEMENT_VERSION,
-    })
-    .map_err(|error| {
-        io::Error::other(format!(
-            "Failed to serialize agreement version config: {error}"
-        ))
+    super::config::update_config(|config| {
+        config.app_state.agreement_accepted_version = CURRENT_AGREEMENT_VERSION;
+        // 保留旧字段，兼容回退到尚未识别 app_state 的 BMCBL 版本。
+        config.agreement_accepted = true;
     })?;
-
-    fs::write(get_agreement_config_file_path(), content)
+    super::config::flush_config_now();
+    remove_legacy_agreement_config()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AgreementVersionConfig, CURRENT_AGREEMENT_VERSION};
+    use super::{CURRENT_AGREEMENT_VERSION, LegacyAgreementVersionConfig};
 
     #[test]
-    fn missing_accepted_version_defaults_to_unaccepted() {
-        let config: AgreementVersionConfig =
-            toml::from_str("").expect("empty agreement config should deserialize");
+    fn legacy_empty_config_defaults_to_unaccepted() {
+        let config: LegacyAgreementVersionConfig =
+            toml::from_str("").expect("empty legacy agreement config should deserialize");
         assert_eq!(config.accepted_version, 0);
     }
 
     #[test]
-    fn current_version_round_trips() {
-        let encoded = toml::to_string(&AgreementVersionConfig {
-            accepted_version: CURRENT_AGREEMENT_VERSION,
-        })
-        .expect("agreement config should serialize");
-        let decoded: AgreementVersionConfig =
-            toml::from_str(&encoded).expect("agreement config should deserialize");
-        assert_eq!(decoded.accepted_version, CURRENT_AGREEMENT_VERSION);
+    fn current_version_is_newer_than_legacy_boolean_version() {
+        assert!(CURRENT_AGREEMENT_VERSION > 1);
     }
 }
