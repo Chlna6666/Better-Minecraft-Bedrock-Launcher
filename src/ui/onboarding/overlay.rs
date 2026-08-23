@@ -9,7 +9,7 @@ use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_
 const PANEL_WIDTH: f32 = 398.0;
 const PANEL_MARGIN: f32 = 22.0;
 const PANEL_TOP: f32 = 82.0;
-const DOWNLOAD_PANEL_TOP: f32 = 188.0;
+const DOWNLOAD_PANEL_TOP: f32 = 212.0;
 const COMPACT_MARGIN: f32 = 14.0;
 const CALLOUT_GAP: f32 = 10.0;
 const CALLOUT_WIDTH: f32 = 280.0;
@@ -64,8 +64,8 @@ impl RectF {
 #[derive(Clone, Copy, Debug)]
 enum PanelSide {
     Left,
+    LeftLower,
     Right,
-    RightLower,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,24 +93,25 @@ pub fn render_onboarding_tour(
     let compact = width < 860.0 || height < 560.0;
     let geometry = scene_geometry(state.scene, width, height, compact);
 
-    let mut root = div()
-        .absolute()
-        .inset_0()
-        .child(render_dim_layer(compact));
+    let mut root = div().absolute().inset_0();
 
-    // Layer 2: spotlight。这里只负责目标框，不再把说明气泡作为它的子元素，
-    // 避免提示被目标框自己的尺寸、裁剪或窗口边缘限制。
+    // Layer 1: 遮罩只覆盖 spotlight 之外的区域，并且这些区域 occlude 底层命中。
+    // 中间的真实目标区域没有透明挡板，因此搜索、筛选、导入按钮等仍可直接操作；
+    // 同时其他区域不会继续触发无关 hover/tooltip 来干扰导览。
+    root = root.child(render_dim_layer(width, height, geometry.focus, compact));
+
+    // Layer 2: spotlight 只画目标边框，不拦截点击。
     if let Some(focus) = geometry.focus {
         root = root.child(render_spotlight(focus, &colors));
     }
 
-    // Layer 3: 主教学面板。下载步骤主动下移，保证正在介绍的完整工具栏可见。
+    // Layer 3: 主教学面板。下载步骤放在左下，保留右侧真实下载/安装操作按钮。
     root = root.child(render_panel_layer(
         geometry.panel,
         render_guide_panel(state, &colors, compact),
     ));
 
-    // Layer 4: callout 永远最后绘制，是引导自己的最高层。
+    // Layer 4: callout 始终最后绘制，不再属于 spotlight 子树，也不会被目标框裁切。
     if let Some(callout) = geometry.callout {
         if let Some(text) = scene_callout_text(state.scene) {
             root = root.child(render_callout_layer(callout, text, &colors));
@@ -120,11 +121,75 @@ pub fn render_onboarding_tour(
     root.into_any_element()
 }
 
-fn render_dim_layer(compact: bool) -> Div {
-    div().absolute().inset_0().bg(Hsla {
-        a: if compact { 0.08 } else { 0.14 },
-        ..black()
-    })
+fn dim_block(bounds: RectF, alpha: f32) -> Div {
+    if bounds.w <= 0.0 || bounds.h <= 0.0 {
+        return div().absolute().w(px(0.0)).h(px(0.0));
+    }
+    div()
+        .absolute()
+        .left(px(bounds.x))
+        .top(px(bounds.y))
+        .w(px(bounds.w))
+        .h(px(bounds.h))
+        .bg(Hsla { a: alpha, ..black() })
+        .occlude()
+}
+
+fn render_dim_layer(
+    width: f32,
+    height: f32,
+    focus: Option<RectF>,
+    compact: bool,
+) -> Div {
+    let alpha = if compact { 0.10 } else { 0.18 };
+    let Some(focus) = focus else {
+        return div()
+            .absolute()
+            .inset_0()
+            .bg(Hsla { a: alpha, ..black() })
+            .occlude();
+    };
+
+    // 四块遮罩围成真正的“交互孔”，不需要 clip-path，也不会产生额外中间纹理。
+    div()
+        .absolute()
+        .inset_0()
+        .child(dim_block(
+            RectF {
+                x: 0.0,
+                y: 0.0,
+                w: width,
+                h: focus.y.max(0.0),
+            },
+            alpha,
+        ))
+        .child(dim_block(
+            RectF {
+                x: 0.0,
+                y: focus.bottom(),
+                w: width,
+                h: (height - focus.bottom()).max(0.0),
+            },
+            alpha,
+        ))
+        .child(dim_block(
+            RectF {
+                x: 0.0,
+                y: focus.y,
+                w: focus.x.max(0.0),
+                h: focus.h,
+            },
+            alpha,
+        ))
+        .child(dim_block(
+            RectF {
+                x: focus.right(),
+                y: focus.y,
+                w: (width - focus.right()).max(0.0),
+                h: focus.h,
+            },
+            alpha,
+        ))
 }
 
 fn render_panel_layer(bounds: RectF, panel: Div) -> Div {
@@ -148,7 +213,7 @@ fn render_spotlight(bounds: RectF, colors: &ThemeColors) -> Div {
         .border_2()
         .border_color(colors.accent)
         .bg(Hsla {
-            a: 0.025,
+            a: 0.018,
             ..colors.accent
         })
 }
@@ -159,9 +224,9 @@ fn render_callout_layer(bounds: RectF, text: &'static str, colors: &ThemeColors)
         .left(px(bounds.x))
         .top(px(bounds.y))
         .w(px(bounds.w))
-        .min_h(px(34.))
-        .px(px(11.))
-        .py(px(8.))
+        .min_h(px(34.0))
+        .px(px(11.0))
+        .py(px(8.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
@@ -170,26 +235,27 @@ fn render_callout_layer(bounds: RectF, text: &'static str, colors: &ThemeColors)
         })
         .bg(colors.accent)
         .shadow_lg()
+        .occlude()
         .flex()
         .items_start()
-        .gap(px(8.))
+        .gap(px(8.0))
         .child(
             div()
                 .flex_none()
-                .pt(px(1.))
+                .pt(px(1.0))
                 .child(
                     svg()
                         .path(lucide_icons::icon_map_pin())
-                        .size(px(14.))
+                        .size(px(14.0))
                         .text_color(colors.btn_primary_text),
                 ),
         )
         .child(
             div()
                 .flex_1()
-                .min_w(px(0.))
-                .text_size(px(11.))
-                .line_height(px(17.))
+                .min_w(px(0.0))
+                .text_size(px(11.0))
+                .line_height(px(17.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.btn_primary_text)
                 .child(text),
@@ -214,14 +280,14 @@ fn scene_geometry(scene: OnboardingScene, width: f32, height: f32, compact: bool
 
     let side = match scene {
         OnboardingScene::ImportPackage => PanelSide::Left,
-        OnboardingScene::DownloadOverview => PanelSide::RightLower,
+        OnboardingScene::DownloadOverview => PanelSide::LeftLower,
         #[cfg(target_os = "linux")]
         OnboardingScene::PlatformSetup => PanelSide::Left,
         _ => PanelSide::Right,
     };
     let panel = desktop_panel_rect(side, width, height);
 
-    // 页面坐标来自当前统一 page_shell，而不是旧版本遗留的 154/438 等魔法数。
+    // 坐标直接绑定当前统一 page_shell 的布局常量，避免旧版 154/438 等遗留魔法数。
     let page_x = crate::ui::components::page_shell::PAGE_INSET_X / px(1.0);
     let page_y = crate::ui::components::page_shell::PAGE_INSET_TOP / px(1.0);
     let page_bottom = crate::ui::components::page_shell::PAGE_INSET_BOTTOM / px(1.0);
@@ -240,7 +306,7 @@ fn scene_geometry(scene: OnboardingScene, width: f32, height: f32, compact: bool
         ),
         OnboardingScene::ImportPackage => {
             // download toolbar: page right inset 22 + toolbar right padding 20 +
-            // refresh 32 + gap 12 + import 32。按真实控件布局反推导入按钮位置。
+            // refresh 32 + gap 12 + import 32。按真实 toolbar 控件顺序反推导入按钮。
             let import_x = width - page_x - 20.0 - 32.0 - 12.0 - 32.0;
             Some(
                 RectF {
@@ -300,14 +366,14 @@ fn scene_geometry(scene: OnboardingScene, width: f32, height: f32, compact: bool
 
 fn desktop_panel_rect(side: PanelSide, width: f32, height: f32) -> RectF {
     let top = match side {
-        PanelSide::RightLower => DOWNLOAD_PANEL_TOP,
-        _ => PANEL_TOP,
+        PanelSide::LeftLower => DOWNLOAD_PANEL_TOP,
+        PanelSide::Left | PanelSide::Right => PANEL_TOP,
     };
     let available_h = (height - top - PANEL_MARGIN).max(320.0);
     let w = PANEL_WIDTH.min((width - PANEL_MARGIN * 2.0).max(320.0));
     let x = match side {
-        PanelSide::Left => PANEL_MARGIN,
-        PanelSide::Right | PanelSide::RightLower => width - PANEL_MARGIN - w,
+        PanelSide::Left | PanelSide::LeftLower => PANEL_MARGIN,
+        PanelSide::Right => width - PANEL_MARGIN - w,
     };
     RectF {
         x,
@@ -326,12 +392,12 @@ fn place_callout(
     height: f32,
 ) -> RectF {
     let margin = 10.0;
-    let mut candidate = preferred.clamp_to_viewport(width, height, margin);
+    let candidate = preferred.clamp_to_viewport(width, height, margin);
     if !candidate.intersects(panel) {
         return candidate;
     }
 
-    // 首选位置与教学面板冲突时，依次尝试目标下方、上方、左侧、右侧。
+    // 与教学面板冲突时自动换边，而不是把文本挤窄或让其跑出窗口。
     let candidates = [
         RectF {
             x: focus.x,
@@ -366,7 +432,6 @@ fn place_callout(
         }
     }
 
-    candidate = candidate.clamp_to_viewport(width, height, margin);
     candidate
 }
 
@@ -386,7 +451,7 @@ fn render_guide_panel(
 ) -> Div {
     div()
         .size_full()
-        .min_h(px(0.))
+        .min_h(px(0.0))
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
@@ -406,7 +471,7 @@ fn render_guide_panel(
         .child(
             div()
                 .flex_1()
-                .min_h(px(0.))
+                .min_h(px(0.0))
                 .overflow_y_scrollbar()
                 .px(px(if compact { 18.0 } else { 22.0 }))
                 .py(px(18.0))
@@ -503,7 +568,7 @@ fn render_welcome(colors: &ThemeColors) -> AnyElement {
         .gap(px(14.0))
         .child(intro_text(
             colors,
-            "接下来不会只显示说明文字。BMCBL 会自动进入真实页面，并把正在介绍的区域高亮出来。你可以直接操作底层页面，也可以只按“下一步”完成导览。",
+            "接下来不会只显示说明文字。BMCBL 会自动进入真实页面，并把正在介绍的区域高亮出来。你可以直接操作高亮区域，也可以只按“下一步”完成导览。",
         ))
         .child(feature_card(
             colors,
@@ -525,7 +590,7 @@ fn render_welcome(colors: &ThemeColors) -> AnyElement {
         ))
         .child(tip_box(
             colors,
-            "绿色描边是当前要看的真实区域；绿色小提示属于引导最高层，不会再被主教学面板裁切。",
+            "高亮区域是真实可操作区域；其余区域会暂时阻止无关点击和悬浮提示，避免干扰教学。",
         ))
         .into_any_element()
 }
@@ -538,7 +603,7 @@ fn render_download_overview(colors: &ThemeColors) -> AnyElement {
         .child(route_badge(colors, "当前页面：下载 → 游戏"))
         .child(intro_text(
             colors,
-            "顶部这一整行就是下载页的控制区。先决定要找什么，再从下方列表选择版本。",
+            "顶部高亮整行是下载页控制区。你可以直接点标签、搜索或筛选；右侧下载按钮保持可见。",
         ))
         .child(numbered_step(
             colors,
@@ -556,7 +621,7 @@ fn render_download_overview(colors: &ThemeColors) -> AnyElement {
             colors,
             3,
             "从列表下载",
-            "点击目标版本右侧的下载/安装操作。BMCBL 会完成下载、校验和解包。",
+            "列表右侧的下载/安装按钮不会被教学面板挡住，选择目标版本后即可开始任务。",
         ))
         .child(tip_box(
             colors,
@@ -573,7 +638,7 @@ fn render_import_package(colors: &ThemeColors) -> AnyElement {
         .child(route_badge(colors, "当前页面：下载 → 上传按钮"))
         .child(intro_text(
             colors,
-            "如果你已经有 Minecraft 安装包，不需要重新下载。右上角高亮的是实际导入按钮。",
+            "如果已经有 Minecraft 安装包，不需要重新下载。右上角高亮的是实际导入按钮，可以直接点击。",
         ))
         .child(format_card(colors, "APPX", "常见的 Minecraft UWP 安装包。"))
         .child(format_card(colors, "ZIP", "BMCBL 支持的 ZIP 游戏版本包。"))
@@ -610,7 +675,7 @@ fn render_version_management(colors: &ThemeColors) -> AnyElement {
         .child(route_badge(colors, "当前页面：管理"))
         .child(intro_text(
             colors,
-            "管理页是“本地已经有的版本”的入口。左侧固定侧栏用于选版本，右侧内容会跟随当前版本切换。",
+            "管理页是本地已有版本的入口。左侧高亮区域用于选版本，右侧内容会跟随当前版本切换。",
         ))
         .child(numbered_step(
             colors,
@@ -1319,6 +1384,7 @@ mod tests {
         assert!(focus.x < 30.0);
         assert!(focus.w > 1100.0);
         assert!(geometry.panel.y > focus.bottom());
+        assert!(geometry.panel.x < 30.0);
     }
 
     #[test]
@@ -1336,5 +1402,15 @@ mod tests {
         let focus = geometry.focus.expect("manage focus");
         assert!(focus.x < 30.0);
         assert!((focus.w - 290.0).abs() < 20.0);
+    }
+
+    #[test]
+    fn dim_focus_hole_remains_inside_viewport() {
+        let geometry = scene_geometry(OnboardingScene::ImportPackage, 1215.0, 750.0, false);
+        let focus = geometry.focus.expect("focus");
+        assert!(focus.x >= 0.0);
+        assert!(focus.y >= 0.0);
+        assert!(focus.right() <= 1215.0);
+        assert!(focus.bottom() <= 750.0);
     }
 }
