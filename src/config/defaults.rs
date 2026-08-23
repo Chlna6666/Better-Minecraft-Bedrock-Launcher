@@ -139,6 +139,6 @@ pub fn get_default_config() -> Config {
         },
         online: OnlineConfig::default(),
         app_state: AppStateConfig::default(),
-        legacy_agreement_accepted: false,
+        agreement_accepted: false,
     }
 }
