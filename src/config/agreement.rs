@@ -44,12 +44,14 @@ fn remove_legacy_agreement_config() -> io::Result<()> {
 pub fn accepted_agreement_version() -> io::Result<u32> {
     let config = super::config::read_config()?;
     let current = config.app_state.agreement_accepted_version;
+    let legacy_path = legacy_agreement_config_file_path();
+    let legacy_file_present = legacy_path.is_file();
     let legacy_file_version = read_legacy_agreement_version()?;
     // 最早的 BMCBL 只有 agreement_accepted 布尔值，将它视为 v1，不能因此自动接受 v2。
     let legacy_bool_version = u32::from(config.agreement_accepted);
     let migrated = current.max(legacy_file_version).max(legacy_bool_version);
 
-    if migrated != current || legacy_file_version > 0 {
+    if migrated != current || legacy_file_present {
         super::config::update_config(|config| {
             config.app_state.agreement_accepted_version = migrated;
             config.agreement_accepted = migrated > 0;
