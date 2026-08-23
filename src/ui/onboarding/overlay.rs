@@ -21,7 +21,7 @@ pub fn render_onboarding_tour(
     let size = window.bounds().size;
     let compact = size.width < px(860.) || size.height < px(560.);
     let panel_on_left = matches!(state.scene, OnboardingScene::ImportPackage)
-        || cfg!(target_os = "linux") && state.scene == OnboardingScene::PlatformSetup;
+        || (cfg!(target_os = "linux") && state.scene == OnboardingScene::PlatformSetup);
 
     let panel = render_guide_panel(state, &colors, compact);
     let panel_layer = if compact {
@@ -30,7 +30,7 @@ pub fn render_onboarding_tour(
             .left(px(14.))
             .right(px(14.))
             .bottom(px(14.))
-            .max_h((size.height - px(96.)).max(px(300.)))
+            .h((size.height - px(110.)).min(px(430.)).max(px(300.)))
             .child(panel)
     } else if panel_on_left {
         div()
@@ -53,14 +53,10 @@ pub fn render_onboarding_tour(
     let mut root = div()
         .absolute()
         .inset_0()
-        .child(
-            // 这是导览遮罩，不拦截底层页面事件。用户既可以使用面板按钮，
-            // 也可以直接点击被介绍的真实页面控件。
-            div().absolute().inset_0().bg(Hsla {
-                a: if compact { 0.10 } else { 0.16 },
-                ..black()
-            }),
-        );
+        .child(div().absolute().inset_0().bg(Hsla {
+            a: if compact { 0.10 } else { 0.16 },
+            ..black()
+        }));
 
     if let Some(spotlight) = render_spotlight(state.scene, size, &colors, compact) {
         root = root.child(spotlight);
@@ -74,9 +70,6 @@ fn render_guide_panel(
     colors: &ThemeColors,
     compact: bool,
 ) -> Div {
-    let body = render_scene_body(state, colors);
-    let scene = state.scene;
-
     div()
         .size_full()
         .min_h(px(0.))
@@ -103,9 +96,9 @@ fn render_guide_panel(
                 .overflow_y_scrollbar()
                 .px(px(if compact { 18. } else { 22. }))
                 .py(px(18.))
-                .child(body),
+                .child(render_scene_body(state, colors)),
         )
-        .child(render_footer(scene, state, colors))
+        .child(render_footer(state.scene, state, colors))
 }
 
 fn render_header(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
@@ -146,6 +139,7 @@ fn render_header(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
                 .gap(px(4.))
                 .child(
                     div()
+                        .w_full()
                         .text_size(px(17.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
@@ -294,13 +288,11 @@ fn render_import_package(colors: &ThemeColors) -> AnyElement {
             "选择文件后等待任务完成",
             "导入不会要求你手动整理 versions 目录；完成后可以直接去“管理”页查看。",
         ))
-        .child(
-            primary_action(colors, "现在选择一个安装包", |_, window, cx| {
-                crate::ui::views::download::version_import::pick_and_import_local_version(
-                    window, cx,
-                );
-            }),
-        )
+        .child(primary_action(
+            colors,
+            "现在选择一个安装包",
+            |_, window, cx| pick_and_import_local_version(window, cx),
+        ))
         .into_any_element()
 }
 
@@ -413,6 +405,8 @@ fn render_platform_setup(state: &OnboardingTourState, colors: &ThemeColors) -> A
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w(px(0.))
                         .text_size(px(12.))
                         .text_color(colors.text_secondary)
                         .child("正在检测当前电脑的实际环境…"),
@@ -482,7 +476,7 @@ fn render_finish(colors: &ThemeColors) -> AnyElement {
                         .text_size(px(12.))
                         .line_height(px(19.))
                         .text_color(colors.text_secondary)
-                        .child("以后忘记入口，可以从“设置 → 关于 → 首次运行设置向导”重新打开，不会重置你的游戏或配置。"),
+                        .child("以后忘记入口，可以从“设置 → 关于 → 交互式首次运行导览”重新打开，不会重置你的游戏或配置。"),
                 ),
         )
         .child(primary_action(colors, "去下载游戏版本", |_, _, cx| {
@@ -564,7 +558,7 @@ fn render_spotlight(
         OnboardingScene::DownloadOverview => Some((
             154.0,
             82.0,
-            (width - 154.0 - 444.0).max(260.0),
+            (width - 598.0).max(260.0),
             86.0,
             "这里是下载页的搜索、筛选和操作区",
         )),
@@ -578,7 +572,7 @@ fn render_spotlight(
         OnboardingScene::VersionManagement => Some((
             154.0,
             92.0,
-            (width - 154.0 - 444.0).max(230.0).min(300.0),
+            (width - 598.0).max(230.0).min(300.0),
             (height - 126.0).max(280.0),
             "左侧版本列表：先选择要管理的版本",
         )),
@@ -659,7 +653,7 @@ fn scene_header(scene: OnboardingScene) -> (&'static str, &'static str, &'static
             #[cfg(target_os = "linux")]
             {
                 (
-                    lucide_icons::icon_cog(),
+                    lucide_icons::icon_settings_2(),
                     "Linux 怎么运行 Bedrock？",
                     "检查 Proton-GDK / UMU 和当前系统环境。",
                 )
@@ -854,11 +848,9 @@ fn platform_summary_card(
                 .items_start()
                 .gap(px(8.))
                 .child(
-                    svg()
-                        .path(icon)
-                        .size(px(15.))
-                        .flex_none()
-                        .text_color(color),
+                    div().flex_none().pt(px(1.)).child(
+                        svg().path(icon).size(px(15.)).text_color(color),
+                    ),
                 )
                 .child(
                     div()
@@ -869,6 +861,7 @@ fn platform_summary_card(
                         .gap(px(2.))
                         .child(
                             div()
+                                .w_full()
                                 .text_size(px(11.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
@@ -935,11 +928,12 @@ fn route_badge(colors: &ThemeColors, label: &'static str) -> Div {
         .items_center()
         .gap(px(7.))
         .child(
-            svg()
-                .path(lucide_icons::icon_map_pin())
-                .size(px(14.))
-                .flex_none()
-                .text_color(colors.accent),
+            div().flex_none().child(
+                svg()
+                    .path(lucide_icons::icon_map_pin())
+                    .size(px(14.))
+                    .text_color(colors.accent),
+            ),
         )
         .child(
             div()
@@ -974,11 +968,12 @@ fn tip_box(colors: &ThemeColors, text: &'static str) -> Div {
         .items_start()
         .gap(px(8.))
         .child(
-            svg()
-                .path(lucide_icons::icon_lightbulb())
-                .size(px(15.))
-                .flex_none()
-                .text_color(colors.text_secondary),
+            div().flex_none().pt(px(1.)).child(
+                svg()
+                    .path(lucide_icons::icon_info())
+                    .size(px(15.))
+                    .text_color(colors.text_secondary),
+            ),
         )
         .child(
             div()
@@ -1004,11 +999,12 @@ fn error_box(colors: &ThemeColors, error: &str) -> Div {
         .items_start()
         .gap(px(8.))
         .child(
-            svg()
-                .path(lucide_icons::icon_triangle_alert())
-                .size(px(15.))
-                .flex_none()
-                .text_color(colors.danger),
+            div().flex_none().pt(px(1.)).child(
+                svg()
+                    .path(lucide_icons::icon_triangle_alert())
+                    .size(px(15.))
+                    .text_color(colors.danger),
+            ),
         )
         .child(
             div()
@@ -1084,4 +1080,26 @@ fn secondary_button(colors: &ThemeColors, label: &'static str) -> Stateful<Div> 
         .text_size(px(12.))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label)
+}
+
+fn pick_and_import_local_version(window: &Window, cx: &mut App) {
+    let Some(path) = crate::utils::file_picker::pick_file_path_with_filter_for_window(
+        window,
+        "Minecraft 游戏版本安装包",
+        crate::core::minecraft::local_package::LOCAL_GAME_PACKAGE_EXTENSIONS,
+    ) else {
+        return;
+    };
+
+    cx.spawn(async move |cx| {
+        let result = crate::core::minecraft::local_package::start_local_game_package_import(path).await;
+        cx.update(|cx| match result {
+            Ok(_) => crate::ui::components::toast::push(
+                cx,
+                SharedString::from("游戏版本导入任务已开始"),
+            ),
+            Err(error) => crate::ui::components::toast::error(cx, SharedString::from(error)),
+        })
+    })
+    .detach();
 }
