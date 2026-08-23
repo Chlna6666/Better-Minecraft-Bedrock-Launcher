@@ -2,7 +2,7 @@ use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
 use crate::ui::components::scroll::ScrollableElement as _;
-use crate::ui::onboarding::state::{OnboardingScene, OnboardingTourState};
+use crate::ui::onboarding::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
@@ -91,7 +91,8 @@ pub fn render_onboarding_tour(
     let width = size.width / px(1.0);
     let height = size.height / px(1.0);
     let compact = width < 860.0 || height < 560.0;
-    let geometry = scene_geometry(state.scene, width, height, compact);
+    let mut geometry = scene_geometry(state.scene, width, height, compact);
+    apply_observed_focus(state, &mut geometry, width, height, compact);
 
     let mut root = div().absolute().inset_0();
 
@@ -215,6 +216,74 @@ fn render_callout_layer(bounds: RectF, text: &'static str, colors: &ThemeColors)
         )
 }
 
+fn rect_from_bounds(bounds: Bounds<Pixels>) -> RectF {
+    RectF {
+        x: bounds.origin.x / px(1.0),
+        y: bounds.origin.y / px(1.0),
+        w: bounds.size.width / px(1.0),
+        h: bounds.size.height / px(1.0),
+    }
+}
+
+fn apply_observed_focus(
+    state: &OnboardingTourState,
+    geometry: &mut SceneGeometry,
+    width: f32,
+    height: f32,
+    compact: bool,
+) {
+    if compact {
+        return;
+    }
+
+    let (anchor, padding) = match state.scene {
+        OnboardingScene::DownloadOverview => (OnboardingAnchor::DownloadToolbar, 6.0),
+        OnboardingScene::ImportPackage => (OnboardingAnchor::DownloadImport, 8.0),
+        OnboardingScene::VersionManagement => (OnboardingAnchor::VersionSidebar, 5.0),
+        _ => return,
+    };
+    let Some(bounds) = state.anchor(anchor) else {
+        return;
+    };
+
+    let focus = rect_from_bounds(bounds)
+        .padded(padding)
+        .clamp_to_viewport(width, height, 8.0);
+    geometry.focus = Some(focus);
+    geometry.callout = scene_callout_bounds(state.scene, focus, geometry.panel, width, height);
+}
+
+fn scene_callout_bounds(
+    scene: OnboardingScene,
+    focus: RectF,
+    panel: RectF,
+    width: f32,
+    height: f32,
+) -> Option<RectF> {
+    let preferred = match scene {
+        OnboardingScene::DownloadOverview => RectF {
+            x: focus.x + 12.0,
+            y: focus.bottom() + CALLOUT_GAP,
+            w: CALLOUT_WIDTH,
+            h: 44.0,
+        },
+        OnboardingScene::ImportPackage => RectF {
+            x: focus.x - CALLOUT_WIDTH - CALLOUT_GAP,
+            y: focus.y,
+            w: CALLOUT_WIDTH,
+            h: 62.0,
+        },
+        OnboardingScene::VersionManagement => RectF {
+            x: focus.right() + CALLOUT_GAP,
+            y: focus.y + 14.0,
+            w: CALLOUT_WIDTH,
+            h: 48.0,
+        },
+        _ => return None,
+    };
+    Some(place_callout(preferred, focus, panel, width, height))
+}
+
 fn scene_geometry(scene: OnboardingScene, width: f32, height: f32, compact: bool) -> SceneGeometry {
     if compact {
         let panel_h = (height - 110.0).min(430.0).max(300.0);
@@ -240,7 +309,7 @@ fn scene_geometry(scene: OnboardingScene, width: f32, height: f32, compact: bool
     };
     let panel = desktop_panel_rect(side, width, height);
 
-    // 坐标直接绑定当前统一 page_shell 的布局常量，避免旧版 154/438 等遗留魔法数。
+    // 仅作为首帧兜底：页面完成 prepaint 后会被真实元素 Bounds 覆盖。
     let page_x = crate::ui::components::page_shell::PAGE_INSET_X / px(1.0);
     let page_y = crate::ui::components::page_shell::PAGE_INSET_TOP / px(1.0);
     let page_bottom = crate::ui::components::page_shell::PAGE_INSET_BOTTOM / px(1.0);
@@ -258,8 +327,6 @@ fn scene_geometry(scene: OnboardingScene, width: f32, height: f32, compact: bool
             .clamp_to_viewport(width, height, 8.0),
         ),
         OnboardingScene::ImportPackage => {
-            // download toolbar: page right inset 22 + toolbar right padding 20 +
-            // refresh 32 + gap 12 + import 32。按真实 toolbar 控件顺序反推导入按钮。
             let import_x = width - page_x - 20.0 - 32.0 - 12.0 - 32.0;
             Some(
                 RectF {
@@ -285,30 +352,7 @@ fn scene_geometry(scene: OnboardingScene, width: f32, height: f32, compact: bool
         _ => None,
     };
 
-    let callout = focus.and_then(|focus| {
-        let preferred = match scene {
-            OnboardingScene::DownloadOverview => RectF {
-                x: focus.x + 12.0,
-                y: focus.bottom() + CALLOUT_GAP,
-                w: CALLOUT_WIDTH,
-                h: 44.0,
-            },
-            OnboardingScene::ImportPackage => RectF {
-                x: focus.x - CALLOUT_WIDTH - CALLOUT_GAP,
-                y: focus.y,
-                w: CALLOUT_WIDTH,
-                h: 62.0,
-            },
-            OnboardingScene::VersionManagement => RectF {
-                x: focus.right() + CALLOUT_GAP,
-                y: focus.y + 14.0,
-                w: CALLOUT_WIDTH,
-                h: 48.0,
-            },
-            _ => return None,
-        };
-        Some(place_callout(preferred, focus, panel, width, height))
-    });
+    let callout = focus.and_then(|focus| scene_callout_bounds(scene, focus, panel, width, height));
 
     SceneGeometry {
         panel,
