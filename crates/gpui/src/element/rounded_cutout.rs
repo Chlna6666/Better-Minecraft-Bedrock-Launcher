@@ -2,7 +2,7 @@ use refineable::Refineable as _;
 
 use crate::{
     App, Background, Bounds, Element, ElementId, FillOptions, FillRule, GlobalElementId,
-    HitboxBehavior, InspectorElementId, Path, PathBuilder, PathStyle, Pixels, Style,
+    HitboxBehavior, InspectorElementId, IntoElement, Path, PathBuilder, PathStyle, Pixels, Style,
     StyleRefinement, Styled, Window, point, px, size,
 };
 
