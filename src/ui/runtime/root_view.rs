@@ -34,12 +34,18 @@ impl RootView {
                 subscriptions.push(cx.observe_global::<
                     crate::ui::views::download::state::DownloadPageState,
                 >(|_this, cx| {
-                    let uwp_dialog_visible = cx
+                    let uwp_download_dialog_visible = cx
                         .global::<crate::ui::views::download::state::DownloadPageState>()
                         .game_dialog
                         .as_ref()
-                        .is_some_and(|dialog| !dialog.is_gdk);
-                    if uwp_dialog_visible {
+                        .is_some_and(|dialog| {
+                            !dialog.is_gdk
+                                && matches!(
+                                    dialog.kind,
+                                    crate::ui::views::download::state::GameDialogKind::ConfirmDownload
+                                )
+                        });
+                    if uwp_download_dialog_visible {
                         crate::ui::onboarding::uwp_safety::request(
                             crate::ui::onboarding::uwp_safety::UwpSafetyGuideTrigger::Download,
                             cx,
