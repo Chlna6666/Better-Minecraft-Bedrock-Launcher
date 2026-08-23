@@ -5,8 +5,9 @@ use std::{fs, io, path::PathBuf};
 /// 当前首次运行引导版本。
 ///
 /// v2 将旧的静态说明弹窗升级为会切换真实页面的交互式功能导览。
+/// v3 从新用户实际操作路径重新组织导览，并补齐任务、管理内容、设置与工具页面。
 /// 当后续新增必须再次展示给现有用户的重要迁移/安全步骤时继续递增。
-pub const CURRENT_ONBOARDING_VERSION: u32 = 2;
+pub const CURRENT_ONBOARDING_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(default)]
