@@ -12,7 +12,7 @@ impl RootView {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         let subscriptions = {
             cx.default_global::<crate::ui::onboarding::state::OnboardingTourState>();
-            vec![
+            let mut subscriptions = vec![
                 cx.observe_global::<crate::ui::onboarding::state::OnboardingTourState>(
                     |_this, cx| cx.notify(),
                 ),
@@ -22,7 +22,55 @@ impl RootView {
                 cx.observe_global::<crate::ui::window::debug::DebugState>(|_this, cx| {
                     cx.notify();
                 }),
-            ]
+            ];
+
+            #[cfg(target_os = "linux")]
+            {
+                // 首次导览自己负责解释 Proton-GDK。不要同时叠加旧的 Linux runtime
+                // “缺少运行环境”提示；真正处于安装中的进度层仍然保留优先级。
+                let tour_visible = cx
+                    .global::<crate::ui::onboarding::state::OnboardingTourState>()
+                    .visible;
+                let should_dismiss_runtime = tour_visible && {
+                    let runtime = cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
+                    runtime.visible
+                        && runtime.status
+                            != crate::ui::state::linux_runtime::LinuxRuntimeStatus::Installing
+                };
+                if should_dismiss_runtime {
+                    cx.update_global(
+                        |runtime: &mut crate::ui::state::linux_runtime::LinuxRuntimeState, _cx| {
+                            runtime.dismiss();
+                        },
+                    );
+                }
+
+                subscriptions.push(cx.observe_global::<
+                    crate::ui::state::linux_runtime::LinuxRuntimeState,
+                >(|_this, cx| {
+                    let tour_visible = cx
+                        .global::<crate::ui::onboarding::state::OnboardingTourState>()
+                        .visible;
+                    let should_dismiss = tour_visible && {
+                        let runtime =
+                            cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
+                        runtime.visible
+                            && runtime.status
+                                != crate::ui::state::linux_runtime::LinuxRuntimeStatus::Installing
+                    };
+                    if should_dismiss {
+                        cx.update_global(
+                            |runtime: &mut crate::ui::state::linux_runtime::LinuxRuntimeState,
+                             _cx| {
+                                runtime.dismiss();
+                            },
+                        );
+                    }
+                    cx.notify();
+                }));
+            }
+
+            subscriptions
         };
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         let subscriptions = Vec::new();
@@ -47,7 +95,24 @@ impl Render for RootView {
                 .is_visible();
             let tour_state = cx.global::<crate::ui::onboarding::state::OnboardingTourState>();
 
-            if !agreement_visible && tour_state.visible && main_window_id == Some(current_window_id) {
+            #[cfg(target_os = "windows")]
+            let platform_blocker_visible = {
+                let prereq = cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
+                prereq.visible && !prereq.is_onboarding()
+            };
+            #[cfg(target_os = "linux")]
+            let platform_blocker_visible = {
+                let runtime = cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
+                runtime.visible
+                    && runtime.status
+                        == crate::ui::state::linux_runtime::LinuxRuntimeStatus::Installing
+            };
+
+            if !agreement_visible
+                && !platform_blocker_visible
+                && tour_state.visible
+                && main_window_id == Some(current_window_id)
+            {
                 root = root.child(crate::ui::onboarding::render_onboarding_tour(
                     tour_state, window, cx,
                 ));
