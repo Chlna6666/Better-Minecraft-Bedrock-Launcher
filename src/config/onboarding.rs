@@ -16,7 +16,6 @@ pub const CURRENT_ONBOARDING_VERSION: u32 = 4;
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(default)]
 struct LegacyOnboardingVersionConfig {
-    /// v1 旧字段。历史版本只在 Windows 上实现首次引导，因此继续把它视为 Windows 完成状态。
     completed_version: u32,
     windows_completed_version: u32,
     linux_completed_version: u32,
@@ -58,24 +57,29 @@ fn app_state_with_legacy_migration() -> io::Result<AppStateConfig> {
     let legacy_file_present = legacy_path.is_file();
     let legacy = read_legacy_onboarding_config()?;
 
-    let before = state.clone();
-    state.onboarding_completed_version = state
+    let unified_version = state
         .onboarding_completed_version
-        .max(legacy.completed_version);
-    state.onboarding_windows_completed_version = state
-        .onboarding_windows_completed_version
+        .max(state.legacy_onboarding_windows_completed_version)
+        .max(state.legacy_onboarding_linux_completed_version)
         .max(legacy.completed_version)
-        .max(legacy.windows_completed_version);
-    state.onboarding_linux_completed_version = state
-        .onboarding_linux_completed_version
+        .max(legacy.windows_completed_version)
         .max(legacy.linux_completed_version);
 
-    if state != before || legacy_file_present {
+    let needs_migration = unified_version != state.onboarding_completed_version
+        || state.legacy_onboarding_windows_completed_version != 0
+        || state.legacy_onboarding_linux_completed_version != 0
+        || legacy_file_present;
+
+    state.onboarding_completed_version = unified_version;
+    state.legacy_onboarding_windows_completed_version = 0;
+    state.legacy_onboarding_linux_completed_version = 0;
+
+    if needs_migration {
         let migrated = state.clone();
         super::config::update_config(|config| {
             config.app_state = migrated;
         })?;
-        // 保证统一配置已经同步写盘，再移除旧 onboarding.toml。
+        // 先确保统一状态已写入 settings.toml，再删除旧 onboarding.toml。
         super::config::flush_config_now();
         remove_legacy_onboarding_config()?;
     }
@@ -84,24 +88,7 @@ fn app_state_with_legacy_migration() -> io::Result<AppStateConfig> {
 }
 
 pub fn completed_onboarding_version() -> io::Result<u32> {
-    let state = app_state_with_legacy_migration()?;
-
-    #[cfg(target_os = "windows")]
-    {
-        return Ok(state
-            .onboarding_completed_version
-            .max(state.onboarding_windows_completed_version));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        return Ok(state.onboarding_linux_completed_version);
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    {
-        Ok(state.onboarding_completed_version)
-    }
+    Ok(app_state_with_legacy_migration()?.onboarding_completed_version)
 }
 
 #[must_use]
@@ -117,33 +104,20 @@ pub fn is_current_onboarding_completed() -> bool {
 
 pub fn complete_current_onboarding() -> io::Result<()> {
     super::config::update_config(|config| {
-        #[cfg(target_os = "windows")]
-        {
-            // 同时保留通用字段，保证回退到只认识单一完成版本的后续兼容实现时不重复弹窗。
-            config.app_state.onboarding_completed_version = CURRENT_ONBOARDING_VERSION;
-            config.app_state.onboarding_windows_completed_version = CURRENT_ONBOARDING_VERSION;
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            config.app_state.onboarding_linux_completed_version = CURRENT_ONBOARDING_VERSION;
-        }
-
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        {
-            config.app_state.onboarding_completed_version = CURRENT_ONBOARDING_VERSION;
-        }
+        config.app_state.onboarding_completed_version = CURRENT_ONBOARDING_VERSION;
+        config.app_state.legacy_onboarding_windows_completed_version = 0;
+        config.app_state.legacy_onboarding_linux_completed_version = 0;
     })?;
     super::config::flush_config_now();
     remove_legacy_onboarding_config()
 }
 
-/// 允许调试/迁移场景显式清空所有平台的首次运行完成状态。
+/// 允许调试/迁移场景显式清空首次运行完成状态。
 pub fn reset_onboarding() -> io::Result<()> {
     super::config::update_config(|config| {
         config.app_state.onboarding_completed_version = 0;
-        config.app_state.onboarding_windows_completed_version = 0;
-        config.app_state.onboarding_linux_completed_version = 0;
+        config.app_state.legacy_onboarding_windows_completed_version = 0;
+        config.app_state.legacy_onboarding_linux_completed_version = 0;
     })?;
     super::config::flush_config_now();
     remove_legacy_onboarding_config()
@@ -163,10 +137,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_is_older_than_current_tour() {
-        let decoded: LegacyOnboardingVersionConfig = toml::from_str("completed_version = 1\n")
-            .expect("legacy onboarding config should deserialize");
-        assert_eq!(decoded.completed_version, 1);
-        assert!(decoded.completed_version < CURRENT_ONBOARDING_VERSION);
+    fn legacy_platform_versions_collapse_to_one_version() {
+        let decoded: LegacyOnboardingVersionConfig = toml::from_str(
+            "completed_version = 1\nwindows_completed_version = 4\nlinux_completed_version = 3\n",
+        )
+        .expect("legacy onboarding config should deserialize");
+        let unified = decoded
+            .completed_version
+            .max(decoded.windows_completed_version)
+            .max(decoded.linux_completed_version);
+        assert_eq!(unified, CURRENT_ONBOARDING_VERSION);
     }
 }
