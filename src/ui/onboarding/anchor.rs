@@ -20,8 +20,12 @@ pub fn observe(anchor: OnboardingAnchor) -> BoundsObserver {
 const fn anchor_is_active(anchor: OnboardingAnchor, scene: OnboardingScene) -> bool {
     matches!(
         (anchor, scene),
-        (OnboardingAnchor::DownloadToolbar, OnboardingScene::DownloadOverview)
-            | (OnboardingAnchor::DownloadImport, OnboardingScene::ImportPackage)
-            | (OnboardingAnchor::VersionSidebar, OnboardingScene::VersionManagement)
+        (
+            OnboardingAnchor::DownloadToolbar,
+            OnboardingScene::GameDownload
+                | OnboardingScene::ResourcePackDownload
+                | OnboardingScene::ModDownload
+        ) | (OnboardingAnchor::DownloadImport, OnboardingScene::ImportPackage)
+            | (OnboardingAnchor::VersionSidebar, OnboardingScene::ManageOverview)
     )
 }
