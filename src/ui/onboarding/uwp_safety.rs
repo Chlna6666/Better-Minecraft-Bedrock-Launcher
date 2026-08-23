@@ -1,5 +1,6 @@
 #![cfg(target_os = "windows")]
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{AppContext as _, BorrowAppContext as _, *};
 use lucide_gpui::icons as lucide_icons;
 
