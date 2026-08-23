@@ -50,7 +50,9 @@ fn system_registration_for_family(
         .ok()?;
 
     for package in packages {
-        let id = package.Id().ok()?;
+        let Ok(id) = package.Id() else {
+            continue;
+        };
         if id.ResourceId().is_ok_and(|resource_id| !resource_id.is_empty()) {
             continue;
         }
