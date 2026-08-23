@@ -33,9 +33,9 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
         });
 
     #[cfg(target_os = "windows")]
-    let description = "重新进入交互式功能导览：会实际切换下载、导入和版本管理页面，并重新说明 Windows UWP 数据保护。不会重置游戏或配置。";
+    let description = "重新进入完整交互式导览：会依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置、工具，并重新说明 Windows UWP 数据保护。演示数据不会写入磁盘。";
     #[cfg(target_os = "linux")]
-    let description = "重新进入交互式功能导览：会实际切换下载、导入、版本管理和 Proton-GDK 页面。Linux 导览不会执行 UWP 检查。";
+    let description = "重新进入完整交互式导览：会依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置、工具和 Proton-GDK。Linux 导览不会执行 UWP 检查。";
 
     crate::ui::components::page_shell::glass_card(colors)
         .shadow(Vec::new())
@@ -86,7 +86,7 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("交互式首次运行导览"),
+                        .child("完整交互式功能导览"),
                 )
                 .child(
                     div()
