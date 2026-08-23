@@ -7,10 +7,6 @@ mod launch_prereq_legacy;
 pub mod launch_prereq;
 pub mod launcher;
 #[cfg(target_os = "linux")]
-pub mod linux_onboarding;
-#[cfg(target_os = "linux")]
 pub mod linux_runtime;
-#[cfg(target_os = "windows")]
-mod onboarding;
 pub mod update;
 pub mod user_agreement;
