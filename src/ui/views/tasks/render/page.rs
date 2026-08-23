@@ -219,13 +219,19 @@ pub(super) fn render_tasks_page(
         .overflow_y_scrollbar()
         .child(div().w_full().child(list_body));
 
-    page_shell(
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(body),
-        &colors,
-    )
+    div()
+        .size_full()
+        .relative()
+        .child(page_shell(
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(body),
+            &colors,
+        ))
+        .child(crate::ui::onboarding::anchor::observe(
+            crate::ui::onboarding::state::OnboardingAnchor::TasksPage,
+        ))
 }
