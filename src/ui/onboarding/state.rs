@@ -6,35 +6,41 @@ use gpui::{Bounds, Global, Pixels};
 pub enum OnboardingScene {
     #[default]
     Welcome,
-    DownloadOverview,
+    GameDownload,
+    ResourcePackDownload,
+    ModDownload,
     ImportPackage,
-    VersionManagement,
+    ManageOverview,
     PlatformSetup,
     Finish,
 }
 
 impl OnboardingScene {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 8;
 
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
             Self::Welcome => 1,
-            Self::DownloadOverview => 2,
-            Self::ImportPackage => 3,
-            Self::VersionManagement => 4,
-            Self::PlatformSetup => 5,
-            Self::Finish => 6,
+            Self::GameDownload => 2,
+            Self::ResourcePackDownload => 3,
+            Self::ModDownload => 4,
+            Self::ImportPackage => 5,
+            Self::ManageOverview => 6,
+            Self::PlatformSetup => 7,
+            Self::Finish => 8,
         }
     }
 
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
-            Self::Welcome => Self::DownloadOverview,
-            Self::DownloadOverview => Self::ImportPackage,
-            Self::ImportPackage => Self::VersionManagement,
-            Self::VersionManagement => Self::PlatformSetup,
+            Self::Welcome => Self::GameDownload,
+            Self::GameDownload => Self::ResourcePackDownload,
+            Self::ResourcePackDownload => Self::ModDownload,
+            Self::ModDownload => Self::ImportPackage,
+            Self::ImportPackage => Self::ManageOverview,
+            Self::ManageOverview => Self::PlatformSetup,
             Self::PlatformSetup => Self::Finish,
             Self::Finish => Self::Finish,
         }
@@ -44,12 +50,25 @@ impl OnboardingScene {
     pub const fn previous(self) -> Self {
         match self {
             Self::Welcome => Self::Welcome,
-            Self::DownloadOverview => Self::Welcome,
-            Self::ImportPackage => Self::DownloadOverview,
-            Self::VersionManagement => Self::ImportPackage,
-            Self::PlatformSetup => Self::VersionManagement,
+            Self::GameDownload => Self::Welcome,
+            Self::ResourcePackDownload => Self::GameDownload,
+            Self::ModDownload => Self::ResourcePackDownload,
+            Self::ImportPackage => Self::ModDownload,
+            Self::ManageOverview => Self::ImportPackage,
+            Self::PlatformSetup => Self::ManageOverview,
             Self::Finish => Self::PlatformSetup,
         }
+    }
+
+    #[must_use]
+    pub const fn is_download_scene(self) -> bool {
+        matches!(
+            self,
+            Self::GameDownload
+                | Self::ResourcePackDownload
+                | Self::ModDownload
+                | Self::ImportPackage
+        )
     }
 }
 
