@@ -15,6 +15,22 @@ pub(super) fn pick_and_import_local_version(window: &Window, cx: &mut App) {
         return;
     };
 
+    #[cfg(target_os = "windows")]
+    {
+        let is_uwp = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("appx") || extension.eq_ignore_ascii_case("zip")
+            });
+        if is_uwp {
+            crate::ui::onboarding::uwp_safety::request(
+                crate::ui::onboarding::uwp_safety::UwpSafetyGuideTrigger::Import,
+                cx,
+            );
+        }
+    }
+
     cx.spawn(async move |cx| {
         let result = start_local_game_package_import(path).await;
         cx.update(|cx| match result {

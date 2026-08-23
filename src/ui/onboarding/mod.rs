@@ -1,12 +1,14 @@
 pub mod anchor;
 mod guided_overlay;
 pub mod state;
+#[cfg(target_os = "windows")]
+pub mod uwp_safety;
 
 use gpui::{App, AppContext as _, BorrowAppContext as _, SharedString};
 
-use state::{
-    OnboardingPlatformSummary, OnboardingScene, OnboardingSummaryItem, OnboardingTourState,
-};
+use state::{OnboardingScene, OnboardingTourState};
+#[cfg(target_os = "linux")]
+use state::{OnboardingPlatformSummary, OnboardingSummaryItem};
 
 pub use guided_overlay::render_onboarding_tour;
 
@@ -20,6 +22,7 @@ pub fn advance(cx: &mut App) {
         .read_global(|state: &OnboardingTourState, _cx| state.scene.next());
     cx.update_global(|state: &mut OnboardingTourState, _cx| state.set_scene(next));
     apply_scene_route(next, cx);
+    #[cfg(target_os = "linux")]
     if next == OnboardingScene::PlatformSetup {
         start_platform_scan(cx);
     }
@@ -32,6 +35,7 @@ pub fn back(cx: &mut App) {
         state.set_scene(previous);
     });
     apply_scene_route(previous, cx);
+    #[cfg(target_os = "linux")]
     if previous == OnboardingScene::PlatformSetup {
         start_platform_scan(cx);
     }
@@ -86,6 +90,9 @@ fn complete(cx: &mut App, route: Option<crate::ui::navigation::AppRoute>) {
         prepare_route(route, cx);
         crate::ui::navigation::navigate_to(cx, route);
     }
+
+    #[cfg(target_os = "windows")]
+    uwp_safety::activate_pending(cx);
 }
 
 fn apply_scene_route(scene: OnboardingScene, cx: &mut App) {
@@ -135,18 +142,18 @@ fn apply_scene_route(scene: OnboardingScene, cx: &mut App) {
         }
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "linux")]
-            cx.update_global(
-                |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
-                    state.tab = crate::ui::views::settings::state::SettingsTab::ProtonGdk;
-                },
-            );
-            #[cfg(target_os = "windows")]
-            cx.update_global(
-                |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
-                    state.tab = crate::ui::views::settings::state::SettingsTab::Game;
-                },
-            );
-            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Settings);
+            {
+                cx.update_global(
+                    |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
+                        state.tab = crate::ui::views::settings::state::SettingsTab::ProtonGdk;
+                    },
+                );
+                crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Settings);
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Home);
+            }
         }
     }
 }
@@ -190,6 +197,7 @@ fn prepare_download(tab: crate::ui::views::download::state::DownloadTab, cx: &mu
     );
 }
 
+#[cfg(target_os = "linux")]
 fn start_platform_scan(cx: &mut App) {
     let request_id = cx.update_global(|state: &mut OnboardingTourState, _cx| {
         state.begin_platform_scan()
@@ -212,71 +220,6 @@ fn start_platform_scan(cx: &mut App) {
         Ok::<(), anyhow::Error>(())
     })
     .detach();
-}
-
-#[cfg(target_os = "windows")]
-fn build_platform_summary() -> OnboardingPlatformSummary {
-    let environment = crate::core::minecraft::uwp_migration::scan_onboarding_environment();
-    let release = &environment.release;
-    let preview = &environment.preview;
-    let protected_data = release.data_present || preview.data_present;
-
-    let registration_text = |summary: &crate::core::minecraft::uwp_migration::MinecraftDataSummary| {
-        if !summary.registered {
-            return "未注册".to_string();
-        }
-        let version = summary.registered_version.as_deref().unwrap_or("未知版本");
-        if summary.bmcbl_managed_registration {
-            format!("BMCBL 散装 DevelopmentMode · {version}")
-        } else if summary.development_mode {
-            format!("外部 DevelopmentMode · {version}")
-        } else {
-            format!("Microsoft Store / 外部安装 · {version}")
-        }
-    };
-
-    let data_text = |summary: &crate::core::minecraft::uwp_migration::MinecraftDataSummary| {
-        if summary.data_present {
-            format!(
-                "{} 个世界 · {} 个资源包 · {}",
-                summary.worlds,
-                summary.resource_packs,
-                human_bytes(summary.total_size)
-            )
-        } else {
-            "未发现 games/com.mojang 用户数据".to_string()
-        }
-    };
-
-    OnboardingPlatformSummary {
-        title: if protected_data {
-            "检测到现有 Minecraft UWP 数据".to_string()
-        } else {
-            "当前没有需要迁移的 Store UWP 数据".to_string()
-        },
-        detail: if protected_data {
-            "BMCBL 在替换 Store/外部 UWP 注册之前会先备份并校验数据；备份失败会直接阻止卸载。".to_string()
-        } else {
-            "以后如果检测到 Store/外部 UWP 数据，同一套强制备份安全门仍会自动生效。".to_string()
-        },
-        items: vec![
-            OnboardingSummaryItem {
-                label: "正式版注册".to_string(),
-                value: format!("{} · {}", registration_text(release), data_text(release)),
-                warning: release.data_present && !release.bmcbl_managed_registration,
-            },
-            OnboardingSummaryItem {
-                label: "Preview 注册".to_string(),
-                value: format!("{} · {}", registration_text(preview), data_text(preview)),
-                warning: preview.data_present && !preview.bmcbl_managed_registration,
-            },
-            OnboardingSummaryItem {
-                label: "BMCBL 本地版本".to_string(),
-                value: format!("{} 个版本目录", environment.bmcbl_versions),
-                warning: false,
-            },
-        ],
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -333,22 +276,6 @@ fn build_platform_summary() -> OnboardingPlatformSummary {
     }
 }
 
-fn human_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    let bytes = bytes as f64;
-    if bytes >= GIB {
-        format!("{:.2} GiB", bytes / GIB)
-    } else if bytes >= MIB {
-        format!("{:.1} MiB", bytes / MIB)
-    } else if bytes >= KIB {
-        format!("{:.1} KiB", bytes / KIB)
-    } else {
-        format!("{} B", bytes as u64)
-    }
-}
-
 pub(crate) fn scene_is(cx: &App, scene: OnboardingScene) -> bool {
     cx.try_global::<OnboardingTourState>()
         .is_some_and(|state| state.visible && state.scene == scene)
@@ -368,13 +295,13 @@ pub(crate) fn scene_label(scene: OnboardingScene) -> SharedString {
         OnboardingScene::SettingsOverview => "设置",
         OnboardingScene::ToolsOverview => "工具",
         OnboardingScene::PlatformSetup => {
-            #[cfg(target_os = "windows")]
-            {
-                "UWP 数据保护"
-            }
             #[cfg(target_os = "linux")]
             {
                 "Proton-GDK"
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                "完成"
             }
         }
         OnboardingScene::Finish => "完成",

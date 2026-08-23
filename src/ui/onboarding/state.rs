@@ -21,7 +21,10 @@ pub enum OnboardingScene {
 }
 
 impl OnboardingScene {
+    #[cfg(target_os = "linux")]
     pub const COUNT: usize = 13;
+    #[cfg(not(target_os = "linux"))]
+    pub const COUNT: usize = 12;
 
     #[must_use]
     pub const fn index(self) -> usize {
@@ -38,7 +41,16 @@ impl OnboardingScene {
             Self::SettingsOverview => 10,
             Self::ToolsOverview => 11,
             Self::PlatformSetup => 12,
-            Self::Finish => 13,
+            Self::Finish => {
+                #[cfg(target_os = "linux")]
+                {
+                    13
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    12
+                }
+            }
         }
     }
 
@@ -55,7 +67,16 @@ impl OnboardingScene {
             Self::ManageOverview => Self::ManageContent,
             Self::ManageContent => Self::SettingsOverview,
             Self::SettingsOverview => Self::ToolsOverview,
-            Self::ToolsOverview => Self::PlatformSetup,
+            Self::ToolsOverview => {
+                #[cfg(target_os = "linux")]
+                {
+                    Self::PlatformSetup
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Self::Finish
+                }
+            }
             Self::PlatformSetup => Self::Finish,
             Self::Finish => Self::Finish,
         }
@@ -76,7 +97,16 @@ impl OnboardingScene {
             Self::SettingsOverview => Self::ManageContent,
             Self::ToolsOverview => Self::SettingsOverview,
             Self::PlatformSetup => Self::ToolsOverview,
-            Self::Finish => Self::PlatformSetup,
+            Self::Finish => {
+                #[cfg(target_os = "linux")]
+                {
+                    Self::PlatformSetup
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Self::ToolsOverview
+                }
+            }
         }
     }
 }

@@ -33,9 +33,9 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
         });
 
     #[cfg(target_os = "windows")]
-    let description = "重新进入完整交互式导览：会依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置、工具，并重新说明 Windows UWP 数据保护。演示数据不会写入磁盘。";
+    let description = "重新进入完整交互式功能导览：依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置和工具。UWP 数据保护已从主导览拆出，只会在首次下载或导入 UWP 版本时单独提示。";
     #[cfg(target_os = "linux")]
-    let description = "重新进入完整交互式导览：会依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置、工具和 Proton-GDK。Linux 导览不会执行 UWP 检查。";
+    let description = "重新进入完整交互式功能导览：会依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置、工具和 Proton-GDK。Linux 导览不会执行 UWP 检查。";
 
     crate::ui::components::page_shell::glass_card(colors)
         .shadow(Vec::new())

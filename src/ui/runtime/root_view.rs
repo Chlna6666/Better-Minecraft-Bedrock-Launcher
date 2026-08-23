@@ -25,6 +25,29 @@ impl RootView {
                 }),
             ];
 
+            #[cfg(target_os = "windows")]
+            {
+                cx.default_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
+                subscriptions.push(cx.observe_global::<
+                    crate::ui::onboarding::uwp_safety::UwpSafetyGuideState,
+                >(|_this, cx| cx.notify()));
+                subscriptions.push(cx.observe_global::<
+                    crate::ui::views::download::state::DownloadPageState,
+                >(|_this, cx| {
+                    let uwp_dialog_visible = cx
+                        .global::<crate::ui::views::download::state::DownloadPageState>()
+                        .game_dialog
+                        .as_ref()
+                        .is_some_and(|dialog| !dialog.is_gdk);
+                    if uwp_dialog_visible {
+                        crate::ui::onboarding::uwp_safety::request(
+                            crate::ui::onboarding::uwp_safety::UwpSafetyGuideTrigger::Download,
+                            cx,
+                        );
+                    }
+                }));
+            }
+
             #[cfg(target_os = "linux")]
             {
                 // 首次导览自己负责解释 Proton-GDK。不要同时叠加旧的 Linux runtime
@@ -94,7 +117,10 @@ impl Render for RootView {
             let agreement_visible = cx
                 .global::<crate::ui::state::agreement::AgreementState>()
                 .is_visible();
-            let tour_state = cx.global::<crate::ui::onboarding::state::OnboardingTourState>();
+            let (tour_visible, tour_scene) = {
+                let tour = cx.global::<crate::ui::onboarding::state::OnboardingTourState>();
+                (tour.visible, tour.scene)
+            };
 
             #[cfg(target_os = "windows")]
             let platform_blocker_visible = {
@@ -111,20 +137,37 @@ impl Render for RootView {
 
             if !agreement_visible
                 && !platform_blocker_visible
-                && tour_state.visible
+                && tour_visible
                 && main_window_id == Some(current_window_id)
             {
                 // 管理页教学使用纯 UI 演示数据，不允许任何点击穿透到背后的真实实例。
                 // 演示层和教学面板随后绘制在此透明 hitbox 之上，仍可正常使用“上一步/下一步”。
-                if tour_state.scene
-                    == crate::ui::onboarding::state::OnboardingScene::ManageOverview
-                {
+                if tour_scene == crate::ui::onboarding::state::OnboardingScene::ManageOverview {
                     root = root.child(div().absolute().inset_0().occlude());
                 }
 
+                let tour_state = cx.global::<crate::ui::onboarding::state::OnboardingTourState>();
                 root = root.child(crate::ui::onboarding::render_onboarding_tour(
                     tour_state, window, cx,
                 ));
+            }
+
+            #[cfg(target_os = "windows")]
+            if !agreement_visible
+                && !platform_blocker_visible
+                && !tour_visible
+                && main_window_id == Some(current_window_id)
+                && cx
+                    .global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>()
+                    .visible
+            {
+                let guide =
+                    cx.global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
+                root = root.child(
+                    crate::ui::onboarding::uwp_safety::render_uwp_safety_guide(
+                        guide, window, cx,
+                    ),
+                );
             }
         }
 
