@@ -8,12 +8,12 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
-const WELCOME_WIDE_WIDTH: f32 = 520.0;
-const WELCOME_REGULAR_WIDTH: f32 = 472.0;
-const WELCOME_TIGHT_WIDTH: f32 = 388.0;
-const WELCOME_WIDE_HEIGHT: f32 = 438.0;
-const WELCOME_REGULAR_HEIGHT: f32 = 420.0;
-const WELCOME_TIGHT_HEIGHT: f32 = 404.0;
+const WELCOME_WIDE_WIDTH: f32 = 548.0;
+const WELCOME_REGULAR_WIDTH: f32 = 492.0;
+const WELCOME_TIGHT_WIDTH: f32 = 404.0;
+const WELCOME_WIDE_HEIGHT: f32 = 520.0;
+const WELCOME_REGULAR_HEIGHT: f32 = 492.0;
+const WELCOME_TIGHT_HEIGHT: f32 = 456.0;
 
 /// 统一的首次导览呈现入口。
 ///
