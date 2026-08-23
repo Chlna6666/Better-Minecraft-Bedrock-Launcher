@@ -1,7 +1,7 @@
 use super::config::{
-    CURRENT_CONFIG_VERSION, Config, CustomStyle, DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN,
-    DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, Launcher, OnlineConfig, ProxyConfig,
-    ProxyType, UpdateChannel,
+    AppStateConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle, DEFAULT_APPX_API,
+    DEFAULT_ERROR_REPORT_SENTRY_DSN, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, Launcher,
+    OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
 };
 
 pub(super) fn default_true() -> bool {
@@ -138,6 +138,7 @@ pub fn get_default_config() -> Config {
             uwp_minimize_fix: true,
         },
         online: OnlineConfig::default(),
+        app_state: AppStateConfig::default(),
         agreement_accepted: false,
     }
 }
