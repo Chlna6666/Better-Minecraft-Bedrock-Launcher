@@ -109,10 +109,10 @@ impl Element for RoundedCutout {
         let radius = clamp_radius(cutout, self.radius);
         let path = build_cutout_path(bounds, cutout, radius).ok();
 
-        if path.is_some()
-            && let Some(behavior) = self.hitbox_behavior
-        {
-            insert_outside_hitboxes(window, bounds, cutout, radius, behavior);
+        if path.is_some() {
+            if let Some(behavior) = self.hitbox_behavior {
+                insert_outside_hitboxes(window, bounds, cutout, radius, behavior);
+            }
         }
 
         path
@@ -164,8 +164,7 @@ fn build_cutout_path(
     cutout: Bounds<Pixels>,
     radius: Pixels,
 ) -> anyhow::Result<Path<Pixels>> {
-    let mut builder =
-        PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::even_odd()));
+    let mut builder = PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::even_odd()));
 
     add_rect(&mut builder, bounds);
     if !cutout.is_empty() {
