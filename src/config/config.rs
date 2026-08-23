@@ -14,7 +14,7 @@ pub use super::defaults::{
     default_theme_mode, get_default_config,
 };
 
-pub(super) const CURRENT_CONFIG_VERSION: u32 = 3;
+pub(super) const CURRENT_CONFIG_VERSION: u32 = 4;
 pub(super) const LEGACY_DEFAULT_APPX_API: &str = "https://data.mcappx.com/v2/bedrock.json";
 pub(super) const INCORRECT_MIRROR_APPX_API: &str =
     "https://api.chlna6666.com/api/v1/bedrock/versions";
@@ -241,8 +241,8 @@ impl FromStr for UpdateChannel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "nightly" => Ok(UpdateChannel::Nightly),
-            _ => Ok(UpdateChannel::Stable),
-        }
+            _ => Ok(UpdateChannel::Stable,
+        )
     }
 }
 
@@ -276,6 +276,15 @@ impl Default for OnlineConfig {
             disable_p2p: false,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct AppStateConfig {
+    pub agreement_accepted_version: u32,
+    pub onboarding_completed_version: u32,
+    pub onboarding_windows_completed_version: u32,
+    pub onboarding_linux_completed_version: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -327,6 +336,8 @@ pub struct Config {
     pub game: GameConfig,
     #[serde(default)]
     pub online: OnlineConfig,
+    #[serde(default)]
+    pub app_state: AppStateConfig,
     pub agreement_accepted: bool,
 }
 
