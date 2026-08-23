@@ -1,4 +1,4 @@
-use gpui::{BoundsObserver, IntoElement as _, bounds_observer};
+use gpui::{BoundsObserver, Styled as _, bounds_observer};
 
 use super::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
 
