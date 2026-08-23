@@ -179,7 +179,7 @@ fn render_callout_layer(bounds: RectF, text: &'static str, colors: &ThemeColors)
                 .pt(px(1.))
                 .child(
                     svg()
-                        .path(lucide_icons::icon_mouse_pointer_2())
+                        .path(lucide_icons::icon_map_pin())
                         .size(px(14.))
                         .text_color(colors.btn_primary_text),
                 ),
