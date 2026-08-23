@@ -40,7 +40,7 @@ fn remove_legacy_agreement_config() -> io::Result<()> {
     }
 }
 
-/// 从统一 settings.toml 读取协议版本；旧 agreement.toml 只作为一次性迁移来源。
+/// 从统一 settings.toml 读取协议版本；旧 agreement.toml 与旧布尔字段只作为一次性迁移来源。
 pub fn accepted_agreement_version() -> io::Result<u32> {
     let config = super::config::read_config()?;
     let current = config.app_state.agreement_accepted_version;
@@ -48,15 +48,16 @@ pub fn accepted_agreement_version() -> io::Result<u32> {
     let legacy_file_present = legacy_path.is_file();
     let legacy_file_version = read_legacy_agreement_version()?;
     // 最早的 BMCBL 只有 agreement_accepted 布尔值，将它视为 v1，不能因此自动接受 v2。
-    let legacy_bool_version = u32::from(config.agreement_accepted);
+    let legacy_bool_present = config.legacy_agreement_accepted;
+    let legacy_bool_version = u32::from(legacy_bool_present);
     let migrated = current.max(legacy_file_version).max(legacy_bool_version);
 
-    if migrated != current || legacy_file_present {
+    if migrated != current || legacy_file_present || legacy_bool_present {
         super::config::update_config(|config| {
             config.app_state.agreement_accepted_version = migrated;
-            config.agreement_accepted = migrated > 0;
+            config.legacy_agreement_accepted = false;
         })?;
-        // 旧文件只有在 settings.toml 已同步落盘后才删除，避免崩溃窗口丢失接受状态。
+        // 旧状态只有在 settings.toml 已同步落盘后才清理，避免崩溃窗口丢失接受记录。
         super::config::flush_config_now();
         remove_legacy_agreement_config()?;
     }
@@ -78,8 +79,7 @@ pub fn is_current_agreement_accepted() -> bool {
 pub fn accept_current_agreement() -> io::Result<()> {
     super::config::update_config(|config| {
         config.app_state.agreement_accepted_version = CURRENT_AGREEMENT_VERSION;
-        // 保留旧字段，兼容回退到尚未识别 app_state 的 BMCBL 版本。
-        config.agreement_accepted = true;
+        config.legacy_agreement_accepted = false;
     })?;
     super::config::flush_config_now();
     remove_legacy_agreement_config()
