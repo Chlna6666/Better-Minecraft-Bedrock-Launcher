@@ -126,6 +126,7 @@ pub fn reset_onboarding() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{CURRENT_ONBOARDING_VERSION, LegacyOnboardingVersionConfig};
+    use crate::config::config::AppStateConfig;
 
     #[test]
     fn legacy_empty_config_defaults_to_incomplete() {
@@ -147,5 +148,21 @@ mod tests {
             .max(decoded.windows_completed_version)
             .max(decoded.linux_completed_version);
         assert_eq!(unified, CURRENT_ONBOARDING_VERSION);
+    }
+
+    #[test]
+    fn app_state_serializes_only_cross_platform_versions() {
+        let state = AppStateConfig {
+            agreement_accepted_version: 2,
+            onboarding_completed_version: CURRENT_ONBOARDING_VERSION,
+            legacy_onboarding_windows_completed_version: 4,
+            legacy_onboarding_linux_completed_version: 3,
+        };
+        let encoded = toml::to_string(&state).expect("app state should serialize");
+
+        assert!(encoded.contains("agreement_accepted_version = 2"));
+        assert!(encoded.contains("onboarding_completed_version = 4"));
+        assert!(!encoded.contains("onboarding_windows_completed_version"));
+        assert!(!encoded.contains("onboarding_linux_completed_version"));
     }
 }
