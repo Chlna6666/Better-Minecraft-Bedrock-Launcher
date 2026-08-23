@@ -8,8 +8,6 @@ pub mod import;
 pub mod launch_prereq;
 pub mod launcher;
 #[cfg(target_os = "linux")]
-pub mod linux_onboarding;
-#[cfg(target_os = "linux")]
 pub mod linux_runtime;
 pub mod local_versions;
 pub mod navigation;
