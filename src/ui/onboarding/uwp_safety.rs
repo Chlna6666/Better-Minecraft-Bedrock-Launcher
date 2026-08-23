@@ -3,7 +3,9 @@
 use gpui::{AppContext as _, BorrowAppContext as _, *};
 use lucide_gpui::icons as lucide_icons;
 
-use crate::core::minecraft::uwp_migration::MinecraftDataSummary;
+use crate::core::minecraft::uwp_registration::{
+    MinecraftUwpChannel, SystemUwpRegistration,
+};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
@@ -19,7 +21,7 @@ pub struct UwpSafetyGuideState {
     pub visible: bool,
     pub checking: bool,
     pub trigger: Option<UwpSafetyGuideTrigger>,
-    pub system_registration: Option<MinecraftDataSummary>,
+    pub system_registration: Option<SystemUwpRegistration>,
     request_id: u64,
     pending: bool,
     active_download_package: Option<SharedString>,
@@ -77,7 +79,7 @@ impl UwpSafetyGuideState {
     fn apply_check(
         &mut self,
         request_id: u64,
-        registration: Option<MinecraftDataSummary>,
+        registration: Option<SystemUwpRegistration>,
         tour_visible: bool,
     ) {
         if self.request_id != request_id {
@@ -124,8 +126,8 @@ impl UwpSafetyGuideState {
             return;
         }
 
-        // 对话框已经结束时让同一个版本下一次下载重新实时检测。
-        // 若异步检查仍未返回，同时递增 request_id 使旧结果失效。
+        // 对话框结束后，同一个版本下一次下载会重新按当前系统注册状态检查。
+        // 异步查询尚未返回时递增 request_id，使旧结果自动失效。
         if matches!(
             self.trigger,
             Some(
@@ -142,11 +144,7 @@ impl UwpSafetyGuideState {
     }
 }
 
-pub fn request_download(
-    package_id: SharedString,
-    version_type: i32,
-    cx: &mut App,
-) {
+pub fn request_download(package_id: SharedString, version_type: i32, cx: &mut App) {
     cx.default_global::<UwpSafetyGuideState>();
     let request = cx.update_global(|state: &mut UwpSafetyGuideState, _cx| {
         state.begin_download(package_id, version_type)
@@ -188,19 +186,19 @@ fn start_system_registration_check(
     cx: &mut App,
 ) {
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            let environment = crate::core::minecraft::uwp_migration::scan_onboarding_environment();
-            match trigger {
-                UwpSafetyGuideTrigger::DownloadRelease => {
-                    official_store_registration(environment.release)
-                }
-                UwpSafetyGuideTrigger::DownloadPreview => {
-                    official_store_registration(environment.preview)
-                }
-                UwpSafetyGuideTrigger::Import => {
-                    official_store_registration(environment.release)
-                        .or_else(|| official_store_registration(environment.preview))
-                }
+        let result = crate::tasks::runtime::run_io_blocking(move || match trigger {
+            UwpSafetyGuideTrigger::DownloadRelease => {
+                crate::core::minecraft::uwp_registration::system_registration(
+                    MinecraftUwpChannel::Release,
+                )
+            }
+            UwpSafetyGuideTrigger::DownloadPreview => {
+                crate::core::minecraft::uwp_registration::system_registration(
+                    MinecraftUwpChannel::Preview,
+                )
+            }
+            UwpSafetyGuideTrigger::Import => {
+                crate::core::minecraft::uwp_registration::any_system_registration()
             }
         })
         .await;
@@ -222,19 +220,11 @@ fn start_system_registration_check(
                     });
                 }
             }
-            Ok::<(), anyhow::Error>(())
-        })??;
+        })?;
 
         Ok::<(), anyhow::Error>(())
     })
     .detach();
-}
-
-fn official_store_registration(summary: MinecraftDataSummary) -> Option<MinecraftDataSummary> {
-    // Microsoft Store / 系统安装的主包不是 DevelopmentMode。
-    // 外部 DevelopmentMode 与 BMCBL loose UWP 都不在下载阶段弹提示；真正替换注册时
-    // 仍由 uwp_migration 的强制备份安全门负责保护数据。
-    (summary.registered && !summary.development_mode).then_some(summary)
 }
 
 fn dismiss(cx: &mut App) {
@@ -257,7 +247,7 @@ pub fn render_uwp_safety_guide(
     let width = size.width / px(1.0);
     let height = size.height / px(1.0);
     let card_w = (width - 28.0).clamp(350.0, 520.0);
-    let card_h = (height - 40.0).clamp(400.0, 476.0);
+    let card_h = (height - 40.0).clamp(390.0, 456.0);
     let trigger = state.trigger.unwrap_or_default();
     let registration = state.system_registration.as_ref();
 
@@ -271,20 +261,12 @@ pub fn render_uwp_safety_guide(
     };
 
     let registration_text = registration.map(|summary| {
-        let channel = if summary.family_name.contains("Beta") {
-            "Microsoft Store Preview"
-        } else {
-            "Microsoft Store 正式版"
+        let channel = match summary.channel {
+            MinecraftUwpChannel::Release => "Microsoft Store 正式版",
+            MinecraftUwpChannel::Preview => "Microsoft Store Preview",
         };
-        let version = summary.registered_version.as_deref().unwrap_or("未知版本");
-        if summary.data_present {
-            format!(
-                "{channel} · {version} · {} 个世界 · {} 个资源包",
-                summary.worlds, summary.resource_packs
-            )
-        } else {
-            format!("{channel} · {version} · 未发现 games/com.mojang 数据")
-        }
+        let version = summary.version.as_deref().unwrap_or("未知版本");
+        format!("当前系统注册：{channel} · {version}")
     });
 
     let mut content = div()
@@ -324,13 +306,13 @@ pub fn render_uwp_safety_guide(
             &colors,
             1,
             "当前系统版本不会在下载时被删除",
-            "BMCBL 只是取得新的本地 UWP 版本文件；此时不会更改 Microsoft Store 注册。",
+            "BMCBL 此时只取得新的本地 UWP 版本文件，不会更改 Microsoft Store 注册。",
         ))
         .child(safety_step(
             &colors,
             2,
-            "真正切换时先备份再替换",
-            "如果后续需要替换 Store 注册并检测到 games/com.mojang 数据，会先备份并校验；失败就停止卸载。",
+            "真正切换时才检查并保护数据",
+            "后续确实需要替换 Store 注册时，BMCBL 才读取现有 Minecraft 数据并执行备份、校验；失败就停止卸载。",
         ))
         .child(safety_step(
             &colors,
@@ -350,7 +332,7 @@ pub fn render_uwp_safety_guide(
                 .text_size(px(11.0))
                 .line_height(px(17.0))
                 .text_color(colors.text_secondary)
-                .child("此提示没有独立配置或“已确认”记录；每次 UWP 下载/导入都会按当前系统注册状态实时判断。GDK / MSIXVC 不触发。"),
+                .child("此提示不保存独立配置。每次 UWP 下载/导入都只按当前 Windows 主包注册状态实时判断；GDK / MSIXVC 不触发。"),
         );
 
     let card = div()
@@ -429,7 +411,7 @@ pub fn render_uwp_safety_guide(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(colors.text_secondary)
-                                .child("仅根据当前 Windows 注册状态实时提示，不保存独立配置。"),
+                                .child("只读取 Windows 包注册元数据，不扫描存档。"),
                         ),
                 ),
         )
