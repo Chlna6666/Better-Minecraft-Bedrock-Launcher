@@ -24,10 +24,7 @@ pub(super) fn pick_and_import_local_version(window: &Window, cx: &mut App) {
                 extension.eq_ignore_ascii_case("appx") || extension.eq_ignore_ascii_case("zip")
             });
         if is_uwp {
-            crate::ui::onboarding::uwp_safety::request(
-                crate::ui::onboarding::uwp_safety::UwpSafetyGuideTrigger::Import,
-                cx,
-            );
+            crate::ui::onboarding::uwp_safety::request_import(cx);
         }
     }
 
