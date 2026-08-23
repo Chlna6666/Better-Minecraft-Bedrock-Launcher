@@ -29,6 +29,7 @@ pub(super) fn render_sidebar(colors: &ThemeColors, active: ToolsTab) -> Div {
     }];
 
     crate::ui::components::page_shell::split_sidebar_panel(colors)
+        .relative()
         .p(px(14.))
         .flex()
         .flex_col()
@@ -40,6 +41,9 @@ pub(super) fn render_sidebar(colors: &ThemeColors, active: ToolsTab) -> Div {
                     .map(|item| render_navigation_item(colors, item, active)),
             ),
         )
+        .child(crate::ui::onboarding::anchor::observe(
+            crate::ui::onboarding::state::OnboardingAnchor::ToolsSidebar,
+        ))
 }
 
 fn render_navigation_item(
