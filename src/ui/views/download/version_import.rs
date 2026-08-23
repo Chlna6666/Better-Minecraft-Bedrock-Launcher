@@ -17,7 +17,7 @@ pub(super) fn pick_and_import_local_version(window: &Window, cx: &mut App) {
 
     #[cfg(target_os = "windows")]
     {
-        let is_uwp = path
+        let is_uwp = std::path::Path::new(&path)
             .extension()
             .and_then(|value| value.to_str())
             .is_some_and(|extension| {
