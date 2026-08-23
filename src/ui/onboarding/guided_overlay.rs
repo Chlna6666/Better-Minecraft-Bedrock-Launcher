@@ -6,10 +6,11 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
-const PANEL_WIDTH: f32 = 390.0;
+const PANEL_WIDTH: f32 = 334.0;
+const PANEL_HEIGHT: f32 = 334.0;
 const PANEL_MARGIN: f32 = 22.0;
-const PANEL_TOP: f32 = 84.0;
-const CALLOUT_WIDTH: f32 = 310.0;
+const PAGE_TOP: f32 = 72.0;
+const CALLOUT_WIDTH: f32 = 300.0;
 const CALLOUT_GAP: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug)]
@@ -81,13 +82,19 @@ pub fn render_onboarding_tour(
     let size = window.bounds().size;
     let width = size.width / px(1.0);
     let height = size.height / px(1.0);
-    let compact = width < 900.0 || height < 580.0;
+    let compact = width < 900.0 || height < 620.0;
     let geometry = scene_geometry(state, width, height, compact);
 
     let mut root = div().absolute().inset_0();
 
-    if state.scene == OnboardingScene::ManageOverview && !compact {
-        root = root.child(render_manage_demo_layer(width, height, &colors));
+    match state.scene {
+        OnboardingScene::TasksOverview if !compact => {
+            root = root.child(render_tasks_demo_layer(width, height, &colors));
+        }
+        OnboardingScene::ManageOverview | OnboardingScene::ManageContent if !compact => {
+            root = root.child(render_manage_demo_layer(state.scene, width, height, &colors));
+        }
+        _ => {}
     }
 
     root = root.child(render_dim_layer(geometry.focus, compact, state.scene));
@@ -96,10 +103,10 @@ pub fn render_onboarding_tour(
         root = root.child(render_spotlight(focus, &colors));
     }
 
-    if let Some(callout) = geometry.callout
-        && let Some(text) = scene_callout_text(state.scene)
-    {
-        root = root.child(render_callout(callout, text, &colors));
+    if let Some(callout) = geometry.callout {
+        if let Some(text) = scene_callout_text(state.scene) {
+            root = root.child(render_callout(callout, text, &colors));
+        }
     }
 
     root = root.child(
@@ -124,10 +131,10 @@ fn scene_geometry(
     if compact {
         return SceneGeometry {
             panel: RectF {
-                x: 14.0,
-                y: 74.0,
-                w: (width - 28.0).max(320.0),
-                h: (height - 92.0).max(320.0),
+                x: 12.0,
+                y: (height - 360.0).max(78.0),
+                w: (width - 24.0).max(320.0),
+                h: (height - 92.0).min(350.0).max(300.0),
             }
             .clamp(width, height, 10.0),
             focus: None,
@@ -135,28 +142,12 @@ fn scene_geometry(
         };
     }
 
-    let panel_left = matches!(
-        state.scene,
-        OnboardingScene::GameDownload
-            | OnboardingScene::ResourcePackDownload
-            | OnboardingScene::ModDownload
-            | OnboardingScene::ImportPackage
-    );
-    let panel_w = PANEL_WIDTH.min((width - PANEL_MARGIN * 2.0).max(320.0));
-    let panel = RectF {
-        x: if panel_left {
-            PANEL_MARGIN
-        } else {
-            width - PANEL_MARGIN - panel_w
-        },
-        y: PANEL_TOP,
-        w: panel_w,
-        h: (height - PANEL_TOP - PANEL_MARGIN).max(330.0),
-    }
-    .clamp(width, height, PANEL_MARGIN);
-
-    let focus = observed_focus(state, width, height).or_else(|| fallback_focus(state.scene, width, height));
-    let callout = focus.and_then(|focus| scene_callout_bounds(state.scene, focus, panel, width, height));
+    let focus = observed_focus(state, width, height)
+        .or_else(|| fallback_focus(state.scene, width, height));
+    let panel = panel_bounds(state.scene, focus, width, height);
+    let callout = focus.and_then(|focus| {
+        scene_callout_bounds(state.scene, focus, panel, width, height)
+    });
 
     SceneGeometry {
         panel,
@@ -165,13 +156,84 @@ fn scene_geometry(
     }
 }
 
+fn panel_bounds(scene: OnboardingScene, focus: Option<RectF>, width: f32, height: f32) -> RectF {
+    let panel_w = PANEL_WIDTH.min((width - PANEL_MARGIN * 2.0).max(300.0));
+    let panel_h = match scene {
+        OnboardingScene::Welcome | OnboardingScene::Finish => 390.0,
+        OnboardingScene::PlatformSetup => 370.0,
+        _ => PANEL_HEIGHT,
+    }
+    .min((height - PAGE_TOP - PANEL_MARGIN).max(290.0));
+
+    let bottom = height - PANEL_MARGIN - panel_h;
+    let left = PANEL_MARGIN;
+    let right = width - PANEL_MARGIN - panel_w;
+
+    let preferred = match scene {
+        OnboardingScene::Welcome | OnboardingScene::Finish => RectF {
+            x: (width - panel_w) * 0.5,
+            y: (height - panel_h) * 0.5,
+            w: panel_w,
+            h: panel_h,
+        },
+        OnboardingScene::DownloadNavigation
+        | OnboardingScene::GameDownload
+        | OnboardingScene::ResourcePackDownload
+        | OnboardingScene::ModDownload
+        | OnboardingScene::ImportPackage => RectF {
+            x: left,
+            y: bottom,
+            w: panel_w,
+            h: panel_h,
+        },
+        OnboardingScene::TasksOverview | OnboardingScene::ManageOverview => RectF {
+            x: right,
+            y: bottom,
+            w: panel_w,
+            h: panel_h,
+        },
+        OnboardingScene::ManageContent => RectF {
+            x: left,
+            y: bottom,
+            w: panel_w,
+            h: panel_h,
+        },
+        OnboardingScene::SettingsOverview
+        | OnboardingScene::ToolsOverview
+        | OnboardingScene::PlatformSetup => RectF {
+            x: right,
+            y: bottom,
+            w: panel_w,
+            h: panel_h,
+        },
+    };
+
+    let preferred = preferred.clamp(width, height, PANEL_MARGIN);
+    if focus.is_some_and(|focus| preferred.intersects(focus)) {
+        let alternate = RectF {
+            x: if preferred.x < width * 0.5 { right } else { left },
+            ..preferred
+        }
+        .clamp(width, height, PANEL_MARGIN);
+        if !focus.is_some_and(|focus| alternate.intersects(focus)) {
+            return alternate;
+        }
+    }
+    preferred
+}
+
 fn observed_focus(state: &OnboardingTourState, width: f32, height: f32) -> Option<RectF> {
     let (anchor, padding) = match state.scene {
+        OnboardingScene::DownloadNavigation => (OnboardingAnchor::DownloadTabs, 4.0),
         OnboardingScene::GameDownload
         | OnboardingScene::ResourcePackDownload
         | OnboardingScene::ModDownload => (OnboardingAnchor::DownloadToolbar, 3.0),
-        OnboardingScene::ImportPackage => (OnboardingAnchor::DownloadImport, 4.0),
-        OnboardingScene::ManageOverview => (OnboardingAnchor::VersionSidebar, 3.0),
+        OnboardingScene::ImportPackage => (OnboardingAnchor::DownloadImport, 5.0),
+        OnboardingScene::TasksOverview => (OnboardingAnchor::TasksPage, 0.0),
+        OnboardingScene::SettingsOverview | OnboardingScene::PlatformSetup => {
+            (OnboardingAnchor::SettingsTabs, 4.0)
+        }
+        OnboardingScene::ToolsOverview => (OnboardingAnchor::ToolsSidebar, 4.0),
         _ => return None,
     };
     let bounds = state.anchor(anchor)?;
@@ -194,6 +256,12 @@ fn fallback_focus(scene: OnboardingScene, width: f32, height: f32) -> Option<Rec
     let sidebar_w = crate::ui::components::page_shell::SPLIT_PAGE_SIDEBAR_WIDTH / px(1.0);
 
     match scene {
+        OnboardingScene::DownloadNavigation => Some(RectF {
+            x: page_x + 20.0,
+            y: page_y + 14.0,
+            w: 320.0,
+            h: 40.0,
+        }),
         OnboardingScene::GameDownload
         | OnboardingScene::ResourcePackDownload
         | OnboardingScene::ModDownload => Some(
@@ -203,30 +271,50 @@ fn fallback_focus(scene: OnboardingScene, width: f32, height: f32) -> Option<Rec
                 w: (width - page_x * 2.0).max(240.0),
                 h: 68.0,
             }
-            .padded(3.0)
-            .clamp(width, height, 6.0),
+            .padded(3.0),
         ),
         OnboardingScene::ImportPackage => Some(
             RectF {
-                x: width - page_x - 20.0 - 32.0 - 12.0 - 32.0,
+                x: width - page_x - 96.0,
                 y: page_y + 14.0,
                 w: 32.0,
                 h: 32.0,
             }
-            .padded(4.0)
-            .clamp(width, height, 6.0),
+            .padded(5.0),
         ),
-        OnboardingScene::ManageOverview => Some(
-            RectF {
-                x: page_x,
-                y: page_y,
-                w: sidebar_w,
-                h: (height - page_y - page_bottom).max(260.0),
-            }
-            .clamp(width, height, 6.0),
-        ),
+        OnboardingScene::TasksOverview => Some(RectF {
+            x: page_x,
+            y: page_y,
+            w: width - page_x * 2.0,
+            h: height - page_y - page_bottom,
+        }),
+        OnboardingScene::ManageOverview => Some(RectF {
+            x: page_x,
+            y: page_y,
+            w: sidebar_w,
+            h: height - page_y - page_bottom,
+        }),
+        OnboardingScene::ManageContent => Some(RectF {
+            x: page_x + sidebar_w + 12.0,
+            y: page_y,
+            w: width - page_x * 2.0 - sidebar_w - 12.0,
+            h: height - page_y - page_bottom,
+        }),
+        OnboardingScene::SettingsOverview | OnboardingScene::PlatformSetup => Some(RectF {
+            x: page_x + 12.0,
+            y: page_y + 12.0,
+            w: width - page_x * 2.0 - 24.0,
+            h: 54.0,
+        }),
+        OnboardingScene::ToolsOverview => Some(RectF {
+            x: page_x,
+            y: page_y,
+            w: sidebar_w,
+            h: height - page_y - page_bottom,
+        }),
         _ => None,
     }
+    .map(|bounds| bounds.clamp(width, height, 6.0))
 }
 
 fn render_dim_layer(
@@ -234,11 +322,16 @@ fn render_dim_layer(
     compact: bool,
     scene: OnboardingScene,
 ) -> AnyElement {
-    let alpha = if compact { 0.10 } else { 0.18 };
-    if scene == OnboardingScene::ManageOverview {
+    if matches!(
+        scene,
+        OnboardingScene::TasksOverview
+            | OnboardingScene::ManageOverview
+            | OnboardingScene::ManageContent
+    ) {
         return div().absolute().inset_0().into_any_element();
     }
 
+    let alpha = if compact { 0.08 } else { 0.14 };
     let Some(focus) = focus else {
         return div()
             .absolute()
@@ -274,7 +367,7 @@ fn render_spotlight(bounds: RectF, colors: &ThemeColors) -> Div {
         .border_2()
         .border_color(colors.accent)
         .bg(Hsla {
-            a: 0.018,
+            a: 0.014,
             ..colors.accent
         })
 }
@@ -287,19 +380,26 @@ fn scene_callout_bounds(
     height: f32,
 ) -> Option<RectF> {
     let preferred = match scene {
-        OnboardingScene::GameDownload
+        OnboardingScene::DownloadNavigation
+        | OnboardingScene::GameDownload
         | OnboardingScene::ResourcePackDownload
         | OnboardingScene::ModDownload => RectF {
             x: focus.right() - CALLOUT_WIDTH,
             y: focus.bottom() + CALLOUT_GAP,
             w: CALLOUT_WIDTH,
-            h: 58.0,
+            h: 52.0,
         },
         OnboardingScene::ImportPackage => RectF {
             x: focus.x - CALLOUT_WIDTH - CALLOUT_GAP,
             y: focus.y,
             w: CALLOUT_WIDTH,
-            h: 62.0,
+            h: 54.0,
+        },
+        OnboardingScene::SettingsOverview | OnboardingScene::ToolsOverview => RectF {
+            x: focus.x,
+            y: focus.bottom() + CALLOUT_GAP,
+            w: CALLOUT_WIDTH,
+            h: 52.0,
         },
         _ => return None,
     };
@@ -360,12 +460,12 @@ fn render_callout(bounds: RectF, text: &'static str, colors: &ThemeColors) -> Di
         .top(px(bounds.y))
         .w(px(bounds.w))
         .min_h(px(42.0))
-        .px(px(12.0))
-        .py(px(9.0))
+        .px(px(11.0))
+        .py(px(8.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
-            a: 0.62,
+            a: 0.56,
             ..colors.accent
         })
         .bg(colors.accent)
@@ -373,19 +473,19 @@ fn render_callout(bounds: RectF, text: &'static str, colors: &ThemeColors) -> Di
         .occlude()
         .flex()
         .items_start()
-        .gap(px(8.0))
+        .gap(px(7.0))
         .child(
             svg()
                 .path(lucide_icons::icon_map_pin())
-                .size(px(15.0))
+                .size(px(14.0))
                 .text_color(colors.btn_primary_text),
         )
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .text_size(px(11.0))
-                .line_height(px(17.0))
+                .text_size(px(10.0))
+                .line_height(px(16.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.btn_primary_text)
                 .child(text),
@@ -394,18 +494,27 @@ fn render_callout(bounds: RectF, text: &'static str, colors: &ThemeColors) -> Di
 
 fn scene_callout_text(scene: OnboardingScene) -> Option<&'static str> {
     match scene {
-        OnboardingScene::GameDownload => Some(
-            "游戏页：标签、搜索、加载器/版本通道筛选、导入和刷新都在这一行；列表里的按钮负责下载或安装。",
-        ),
-        OnboardingScene::ResourcePackDownload => Some(
-            "资源包页：这里会切换到 CurseForge。可按游戏版本、分类、排序和关键字筛选，再选择本地版本安装。",
-        ),
-        OnboardingScene::ModDownload => Some(
-            "模组页：面向 LeviLamina/LeviLauncher 生态。先确认加载器与游戏版本兼容，再选择目标实例安装。",
-        ),
-        OnboardingScene::ImportPackage => Some(
-            "这是实际上传按钮。已有 APPX、ZIP 或 MSIXVC 时直接导入，不需要重新下载同一版本。",
-        ),
+        OnboardingScene::DownloadNavigation => {
+            Some("先记住这三个入口：游戏本体、CurseForge 资源包、客户端模组。")
+        }
+        OnboardingScene::GameDownload => {
+            Some("这里负责搜索、版本通道和加载器筛选；真正下载按钮在下面的版本列表。")
+        }
+        OnboardingScene::ResourcePackDownload => {
+            Some("这里会切到 CurseForge，可按版本、分类、排序和关键字缩小结果。")
+        }
+        OnboardingScene::ModDownload => {
+            Some("模组页先确认加载器和游戏版本，再选择目标本地实例。")
+        }
+        OnboardingScene::ImportPackage => {
+            Some("已有 APPX、ZIP、MSIXVC 就点这里导入，不必重新下载。")
+        }
+        OnboardingScene::SettingsOverview => {
+            Some("设置按游戏、启动器、外观、插件和关于分组；这里随时可以回来调整。")
+        }
+        OnboardingScene::ToolsOverview => {
+            Some("工具页当前包含联机大厅；这里不是日常启动必经步骤，需要时再用。")
+        }
         _ => None,
     }
 }
@@ -421,11 +530,11 @@ fn render_guide_panel(
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
-            a: 0.58,
+            a: 0.54,
             ..colors.border
         })
         .bg(Hsla {
-            a: 0.985,
+            a: 0.982,
             ..colors.bg
         })
         .shadow_lg()
@@ -439,8 +548,8 @@ fn render_guide_panel(
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scrollbar()
-                .px(px(if compact { 18.0 } else { 22.0 }))
-                .py(px(18.0))
+                .px(px(if compact { 15.0 } else { 17.0 }))
+                .py(px(13.0))
                 .child(render_scene_body(state, colors)),
         )
         .child(render_footer(state, colors))
@@ -449,31 +558,31 @@ fn render_guide_panel(
 fn render_header(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
     let (icon, title, subtitle) = scene_header(state.scene);
     div()
-        .px(px(22.0))
-        .pt(px(20.0))
-        .pb(px(16.0))
+        .px(px(17.0))
+        .pt(px(15.0))
+        .pb(px(12.0))
         .border_b_1()
         .border_color(Hsla {
-            a: 0.35,
+            a: 0.30,
             ..colors.border
         })
         .flex()
         .items_start()
-        .gap(px(12.0))
+        .gap(px(10.0))
         .child(
             div()
                 .flex_none()
-                .w(px(42.0))
-                .h(px(42.0))
+                .w(px(38.0))
+                .h(px(38.0))
                 .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla {
-                    a: 0.15,
+                    a: 0.14,
                     ..colors.accent
                 })
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(svg().path(icon).size(px(20.0)).text_color(colors.accent)),
+                .child(svg().path(icon).size(px(18.0)).text_color(colors.accent)),
         )
         .child(
             div()
@@ -481,18 +590,18 @@ fn render_header(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
                 .min_w(px(0.0))
                 .flex()
                 .flex_col()
-                .gap(px(4.0))
+                .gap(px(2.0))
                 .child(
                     div()
-                        .text_size(px(17.0))
+                        .text_size(px(15.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
                         .child(title),
                 )
                 .child(
                     div()
-                        .text_size(px(12.0))
-                        .line_height(px(18.0))
+                        .text_size(px(10.5))
+                        .line_height(px(16.0))
                         .text_color(colors.text_secondary)
                         .child(subtitle),
                 ),
@@ -500,14 +609,14 @@ fn render_header(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
         .child(
             div()
                 .flex_none()
-                .px(px(9.0))
-                .py(px(5.0))
+                .px(px(8.0))
+                .py(px(4.0))
                 .rounded(px(crate::ui::theme::tokens::radius::FULL))
                 .bg(Hsla {
                     a: 0.10,
                     ..colors.accent
                 })
-                .text_size(px(11.0))
+                .text_size(px(10.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.accent)
                 .child(format!("{} / {}", state.scene.index(), OnboardingScene::COUNT)),
@@ -517,11 +626,16 @@ fn render_header(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
 fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors) -> AnyElement {
     match state.scene {
         OnboardingScene::Welcome => render_welcome(colors),
+        OnboardingScene::DownloadNavigation => render_download_navigation(colors),
         OnboardingScene::GameDownload => render_game_download(colors),
         OnboardingScene::ResourcePackDownload => render_resource_download(colors),
         OnboardingScene::ModDownload => render_mod_download(colors),
         OnboardingScene::ImportPackage => render_import(colors),
+        OnboardingScene::TasksOverview => render_tasks_overview(colors),
         OnboardingScene::ManageOverview => render_manage_overview(colors),
+        OnboardingScene::ManageContent => render_manage_content(colors),
+        OnboardingScene::SettingsOverview => render_settings_overview(colors),
+        OnboardingScene::ToolsOverview => render_tools_overview(colors),
         OnboardingScene::PlatformSetup => render_platform(state, colors),
         OnboardingScene::Finish => render_finish(colors),
     }
@@ -531,16 +645,28 @@ fn render_welcome(colors: &ThemeColors) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(13.0))
+        .gap(px(10.0))
         .child(intro(
             colors,
-            "这次导览会进入真实页面，而不是只展示说明文字。下载游戏、CurseForge 资源包、模组、导入、版本管理和平台环境都会分别说明。",
+            "不需要先记住所有功能。接下来只带你走一遍“从下载安装到能管理”的真实路径。",
         ))
-        .child(feature(colors, lucide_icons::icon_download(), "游戏下载", "选择版本、通道、加载器并开始下载/安装。"))
-        .child(feature(colors, lucide_icons::icon_package(), "CurseForge 资源", "搜索和筛选资源包，再安装到指定本地实例。"))
-        .child(feature(colors, lucide_icons::icon_layers(), "模组", "识别 LeviLamina/加载器兼容关系和安装目标。"))
-        .child(feature(colors, lucide_icons::icon_settings_2(), "版本管理", "用演示数据认识地图、资源、模组、截图、服务器和版本工具。"))
-        .child(tip(colors, "导览中的“演示版本/演示数据”只用于 UI 说明，不会创建目录、写配置或启动任何任务。"))
+        .child(feature(colors, lucide_icons::icon_download(), "先获得游戏", "下载或导入 Minecraft，再去任务页看进度。"))
+        .child(feature(colors, lucide_icons::icon_settings_2(), "再管理实例", "版本、模组、资源包、地图和服务器都按实例管理。"))
+        .child(feature(colors, lucide_icons::icon_wrench(), "最后认识设置与工具", "这些不是第一次启动必须配置，知道入口即可。"))
+        .child(tip(colors, "演示数据只存在于导览 UI，不会创建版本、任务或修改磁盘。"))
+        .into_any_element()
+}
+
+fn render_download_navigation(colors: &ThemeColors) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(route_badge(colors, "下载页：先认三个标签"))
+        .child(feature(colors, lucide_icons::icon_box(), "游戏", "Minecraft Bedrock 本体和不同版本。"))
+        .child(feature(colors, lucide_icons::icon_package(), "资源包", "CurseForge 资源内容，安装到指定实例。"))
+        .child(feature(colors, lucide_icons::icon_layers(), "模组", "LeviLamina / LeviLauncher 客户端模组生态。"))
+        .child(tip(colors, "下一步开始逐个进入这些真实页面。"))
         .into_any_element()
 }
 
@@ -548,13 +674,12 @@ fn render_game_download(colors: &ThemeColors) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(13.0))
-        .child(route_badge(colors, "当前页面：下载 → 游戏"))
-        .child(intro(colors, "游戏页负责 Minecraft Bedrock 本体。当前已经自动切到“游戏”标签。"))
-        .child(step(colors, 1, "版本通道", "正式版用于日常游玩；Preview/测试版用于提前体验新内容。"))
-        .child(step(colors, 2, "加载器筛选", "原版和 LeviLamina 可以分开筛选。安装加载器前先确认该游戏版本受支持。"))
-        .child(step(colors, 3, "下载 / 安装", "列表右侧会根据本地状态显示下载、安装或已有版本。任务进度由统一任务系统管理。"))
-        .child(tip(colors, "知道版本号时直接搜索；不确定时保持“正式版 + 原版”是最稳妥的选择。"))
+        .gap(px(10.0))
+        .child(route_badge(colors, "下载 → 游戏"))
+        .child(step(colors, 1, "先筛选", "正式版适合日常使用；知道版本号时直接搜索最快。"))
+        .child(step(colors, 2, "再看加载器", "原版最简单；需要 LeviLamina 时再选择对应加载器。"))
+        .child(step(colors, 3, "最后点列表按钮", "下载、安装、已有版本状态都显示在每个版本右侧。"))
+        .child(tip(colors, "不确定选什么：正式版 + 原版。"))
         .into_any_element()
 }
 
@@ -562,13 +687,12 @@ fn render_resource_download(colors: &ThemeColors) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(13.0))
-        .child(route_badge(colors, "当前页面：下载 → 资源包 / CurseForge"))
-        .child(intro(colors, "资源包页使用 CurseForge 数据源。导览会保留真实分类栏和结果区域，网络慢时看到加载状态也是正常的。"))
-        .child(step(colors, 1, "分类和搜索", "按材质、界面、光影等类别缩小范围，也可以直接搜索项目名。"))
-        .child(step(colors, 2, "游戏版本与排序", "先选目标 Minecraft 版本，再按精选、热门、更新、名称或下载量排序。"))
-        .child(step(colors, 3, "安装目标", "打开项目后选择具体文件和本地游戏实例；资源会写入对应版本的数据目录，而不是覆盖游戏本体。"))
-        .child(tip(colors, "CurseForge 项目版本与 Minecraft 版本不匹配时，不建议强行安装。"))
+        .gap(px(10.0))
+        .child(route_badge(colors, "下载 → 资源包 / CurseForge"))
+        .child(step(colors, 1, "找项目", "用分类和搜索缩小范围。"))
+        .child(step(colors, 2, "确认兼容版本", "先选 Minecraft 版本，再看具体文件。"))
+        .child(step(colors, 3, "选择安装目标", "资源最终写入你指定的本地游戏实例，不会覆盖游戏本体。"))
+        .child(tip(colors, "版本不匹配时不要强行安装。"))
         .into_any_element()
 }
 
@@ -576,13 +700,12 @@ fn render_mod_download(colors: &ThemeColors) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(13.0))
-        .child(route_badge(colors, "当前页面：下载 → 模组"))
-        .child(intro(colors, "模组页面向 BMCBL 支持的 Bedrock 客户端模组生态，不等同于 Java Edition 的 Forge/Fabric。"))
-        .child(step(colors, 1, "加载器", "先选择 LeviLamina 等加载器类型，再选择加载器版本。"))
-        .child(step(colors, 2, "兼容性", "游戏版本、加载器版本、模组版本三者必须匹配；导览不会自动替你忽略兼容检查。"))
-        .child(step(colors, 3, "安装到实例", "确认目标本地版本后再安装，避免把模组放进错误版本目录。"))
-        .child(tip(colors, "如果一个模组要求特定 LeviLamina 版本，优先满足模组声明，而不是只选最新加载器。"))
+        .gap(px(10.0))
+        .child(route_badge(colors, "下载 → 模组"))
+        .child(step(colors, 1, "加载器", "先确定 LeviLamina 等加载器类型与版本。"))
+        .child(step(colors, 2, "兼容关系", "游戏版本、加载器版本、模组版本必须匹配。"))
+        .child(step(colors, 3, "目标实例", "安装前确认目标版本，避免把模组放错目录。"))
+        .child(tip(colors, "这里是 Bedrock 客户端模组，不是 Java Forge/Fabric。"))
         .into_any_element()
 }
 
@@ -590,14 +713,25 @@ fn render_import(colors: &ThemeColors) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(13.0))
-        .child(route_badge(colors, "当前页面：下载 → 上传按钮"))
-        .child(intro(colors, "已经有游戏安装包时直接导入，不需要重复下载。高亮区域就是实际上传按钮。"))
-        .child(format_card(colors, "APPX", "常见的 Minecraft UWP 安装包。"))
+        .gap(px(10.0))
+        .child(route_badge(colors, "下载 → 右上角上传按钮"))
+        .child(format_card(colors, "APPX", "常见 UWP 安装包。"))
         .child(format_card(colors, "ZIP", "BMCBL 支持的游戏版本压缩包。"))
-        .child(format_card(colors, "MSIXVC", "部分 GDK 版本使用的容器格式，会进入对应解包流程。"))
-        .child(step(colors, 1, "点击上传", "选择受支持的本地文件。"))
-        .child(step(colors, 2, "等待导入任务", "BMCBL 自动解析并整理到 versions，不需要手动复制文件。"))
+        .child(format_card(colors, "MSIXVC", "部分 GDK 版本使用的容器格式。"))
+        .child(tip(colors, "选择文件后交给任务系统处理，不需要手动复制到 versions。"))
+        .into_any_element()
+}
+
+fn render_tasks_overview(colors: &ThemeColors) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(route_badge(colors, "任务页：下载之后看这里"))
+        .child(step(colors, 1, "进度", "下载量、百分比、速度、线程和 ETA 会集中显示。"))
+        .child(step(colors, 2, "控制", "支持的任务可以暂停或取消；完成项可以移除。"))
+        .child(step(colors, 3, "错误", "导入或安装失败时，错误摘要也会留在这里。"))
+        .child(tip(colors, "页面中的 4 条任务都是演示数据，不会真正占用带宽。"))
         .into_any_element()
 }
 
@@ -605,47 +739,80 @@ fn render_manage_overview(colors: &ThemeColors) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(13.0))
-        .child(route_badge(colors, "当前页面：管理 · 当前显示引导演示数据"))
-        .child(intro(colors, "即使第一次使用还没有真实版本，这一步也会在页面上投影一个“演示版本”，让每个管理入口都能看见。"))
-        .child(step(colors, 1, "左侧版本列表", "真实使用时这里来自 BMCBL/versions。选择版本后，右侧所有操作都绑定该实例。"))
-        .child(step(colors, 2, "顶部实例工具", "打开目录、创建快捷方式、版本设置、删除和启动都属于实例级操作。"))
-        .child(step(colors, 3, "功能标签", "概览、模组、资源包、皮肤包、地图、截图、服务器分别管理不同数据。"))
-        .child(step(colors, 4, "高级数据操作", "地图和 level.dat 编辑会修改真实存档；正式操作前应确认目标版本与备份。"))
-        .child(tip(colors, "页面里的绿色“引导演示数据”区域完全是临时 UI，不会被保存到 ManagePageState。"))
+        .gap(px(10.0))
+        .child(route_badge(colors, "管理：先选一个版本"))
+        .child(step(colors, 1, "左边选实例", "真实使用时来自 BMCBL/versions；不同版本互相独立。"))
+        .child(step(colors, 2, "顶部是实例级操作", "打开目录、快捷方式、版本设置、删除和启动都只作用于当前版本。"))
+        .child(tip(colors, "这里显示的是只读演示版本，不会执行任何真实操作。"))
+        .into_any_element()
+}
+
+fn render_manage_content(colors: &ThemeColors) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(route_badge(colors, "管理：再管理这个版本里的内容"))
+        .child(step(colors, 1, "功能标签", "统计、模组、资源包、皮肤、地图、截图、服务器分别管理不同数据。"))
+        .child(step(colors, 2, "内容操作", "搜索、启用/禁用、导入、删除等操作都以当前实例为边界。"))
+        .child(step(colors, 3, "存档操作要谨慎", "地图和 level.dat 修改的是实际世界，正式操作前应保留备份。"))
+        .child(tip(colors, "演示页当前模拟“资源包”列表，让结构更接近真实管理界面。"))
+        .into_any_element()
+}
+
+fn render_settings_overview(colors: &ThemeColors) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(route_badge(colors, "设置：不是第一次使用必须全部修改"))
+        .child(step(colors, 1, "游戏", "启动后的启动器行为和少量游戏/UWP 选项。"))
+        .child(step(colors, 2, "启动器", "下载线程、代理、CurseForge API、日志、更新和渲染设置。"))
+        .child(step(colors, 3, "外观 / 插件 / 关于", "主题背景、WASM 插件、版本信息和重新打开本导览。"))
+        .child(tip(colors, "遇到下载慢或网络问题时，优先回到“启动器”设置检查代理和下载配置。"))
+        .into_any_element()
+}
+
+fn render_tools_overview(colors: &ThemeColors) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(route_badge(colors, "工具：按需使用，不是启动必经步骤"))
+        .child(step(colors, 1, "联机大厅", "通过 EasyTier 创建或加入房间，让不同网络中的玩家互联。"))
+        .child(step(colors, 2, "网络状态", "NAT、节点、玩家和房间状态会在真实页面持续更新。"))
+        .child(step(colors, 3, "遇到联机问题", "先看页面状态和阻塞原因，再调整 P2P / bootstrap 等高级设置。"))
+        .child(tip(colors, "以后新增工具也会从左侧列表进入。"))
         .into_any_element()
 }
 
 fn render_platform(state: &OnboardingTourState, colors: &ThemeColors) -> AnyElement {
-    let mut body = div().flex().flex_col().gap(px(13.0));
+    let mut body = div().flex().flex_col().gap(px(10.0));
 
     #[cfg(target_os = "windows")]
     {
         body = body
-            .child(route_badge(colors, "Windows：UWP 注册与数据保护"))
-            .child(intro(colors, "旧版 UWP 可以在多个 BMCBL 版本目录之间重新注册。Store/外部 UWP 切换前的数据保护由运行时安全门强制执行。"))
-            .child(step(colors, 1, "BMCBL 散装 UWP", "使用 DevelopmentMode 指向对应版本目录，切换版本时重新注册目标目录。"))
-            .child(step(colors, 2, "Store/外部 UWP 迁移", "发现 games/com.mojang 数据时先备份和校验；失败就阻止卸载。"))
-            .child(step(colors, 3, "恢复条件", "注册成功后只有目标数据目录为空才恢复备份，避免覆盖新数据。"));
+            .child(route_badge(colors, "Windows：UWP 注册与数据安全"))
+            .child(step(colors, 1, "切换旧版 UWP", "BMCBL 会把散装 DevelopmentMode 注册重新指向目标版本目录。"))
+            .child(step(colors, 2, "遇到 Store/外部注册", "先备份并校验 games/com.mojang；失败就停止替换。"));
     }
 
     #[cfg(target_os = "linux")]
     {
         body = body
             .child(route_badge(colors, "Linux：Proton-GDK / UMU"))
-            .child(intro(colors, "Linux 不执行 Windows UWP 注册，也不检查 Store UWP。需要确认的是兼容运行环境和系统依赖。"))
-            .child(step(colors, 1, "Runner", "选择或安装可用 Proton-GDK/UMU runner。"))
-            .child(step(colors, 2, "系统依赖", "缺少 32 位 glibc 等依赖时，Linux runtime 检测会给出原因。"));
+            .child(step(colors, 1, "Linux 不做 UWP", "不会检查 Microsoft Store 注册，也不会执行 Windows UWP 数据迁移。"))
+            .child(step(colors, 2, "需要的是兼容运行环境", "确认 Proton-GDK / UMU runner 和系统依赖即可。"));
     }
 
     if state.platform_scanning {
-        body = body.child(status(colors, lucide_icons::icon_loader_circle(), "正在检查当前平台环境…", false));
+        body = body.child(status(colors, lucide_icons::icon_loader_circle(), "正在检测当前电脑…", false));
     } else if let Some(error) = state.error.as_deref() {
         body = body.child(dynamic_status(colors, lucide_icons::icon_triangle_alert(), error, true));
     } else if let Some(summary) = &state.platform_summary {
         body = body.child(platform_summary(colors, summary));
     } else {
-        body = body.child(tip(colors, "正在等待平台环境检测结果。"));
+        body = body.child(tip(colors, "等待环境检测结果。"));
     }
 
     body.into_any_element()
@@ -655,18 +822,18 @@ fn render_finish(colors: &ThemeColors) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(13.0))
+        .gap(px(11.0))
         .child(
             div()
-                .py(px(18.0))
+                .py(px(10.0))
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(10.0))
+                .gap(px(7.0))
                 .child(
                     div()
-                        .w(px(52.0))
-                        .h(px(52.0))
+                        .w(px(48.0))
+                        .h(px(48.0))
                         .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.14,
@@ -675,26 +842,31 @@ fn render_finish(colors: &ThemeColors) -> AnyElement {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(svg().path(lucide_icons::icon_circle_check()).size(px(25.0)).text_color(colors.accent)),
+                        .child(
+                            svg()
+                                .path(lucide_icons::icon_circle_check())
+                                .size(px(23.0))
+                                .text_color(colors.accent),
+                        ),
                 )
                 .child(
                     div()
-                        .text_size(px(18.0))
+                        .text_size(px(16.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("首次使用的关键路径已经看完"),
+                        .child("现在知道下一步去哪了"),
                 ),
         )
-        .child(feature(colors, lucide_icons::icon_download(), "下一步：下载", "回到游戏下载页选择正式版。"))
-        .child(feature(colors, lucide_icons::icon_settings_2(), "下一步：管理", "已经有版本时直接进入版本管理。"))
-        .child(tip(colors, "以后可以从“设置 → 关于 → 首次运行设置向导”重新打开，不会重置版本或游戏数据。"))
+        .child(feature(colors, lucide_icons::icon_download(), "没有游戏", "去下载页选正式版，或导入已有安装包。"))
+        .child(feature(colors, lucide_icons::icon_settings_2(), "已经有版本", "去管理页选择实例并启动或管理内容。"))
+        .child(tip(colors, "以后可在“设置 → 关于”重新打开导览，不会重置任何数据。"))
         .into_any_element()
 }
 
 fn render_footer(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
     let scene = state.scene;
     let left_label = if scene == OnboardingScene::Welcome {
-        "跳过引导"
+        "跳过"
     } else {
         "上一步"
     };
@@ -727,56 +899,215 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
     }
 
     div()
-        .px(px(22.0))
-        .py(px(15.0))
+        .px(px(16.0))
+        .py(px(11.0))
         .border_t_1()
         .border_color(Hsla {
-            a: 0.35,
+            a: 0.30,
             ..colors.border
         })
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(10.0))
+        .gap(px(9.0))
         .child(left)
         .child(next)
 }
 
 fn scene_header(scene: OnboardingScene) -> (&'static str, &'static str, &'static str) {
     match scene {
-        OnboardingScene::Welcome => (lucide_icons::icon_route(), "欢迎使用 BMCBL", "先认识真实工作流，再开始操作。"),
-        OnboardingScene::GameDownload => (lucide_icons::icon_download(), "下载 Minecraft", "游戏本体、版本通道与加载器。"),
-        OnboardingScene::ResourcePackDownload => (lucide_icons::icon_package(), "CurseForge 资源包", "分类、搜索、版本筛选与安装目标。"),
-        OnboardingScene::ModDownload => (lucide_icons::icon_layers(), "客户端模组", "加载器兼容关系与目标实例。"),
-        OnboardingScene::ImportPackage => (lucide_icons::icon_upload(), "导入本地安装包", "APPX、ZIP、MSIXVC 不需要重复下载。"),
-        OnboardingScene::ManageOverview => (lucide_icons::icon_settings_2(), "版本管理功能", "使用临时演示数据认识每个入口。"),
+        OnboardingScene::Welcome => (lucide_icons::icon_route(), "欢迎使用 BMCBL", "只学习第一次真正会用到的路径。"),
+        OnboardingScene::DownloadNavigation => (lucide_icons::icon_download(), "先认识下载页", "游戏、资源包、模组是三个不同入口。"),
+        OnboardingScene::GameDownload => (lucide_icons::icon_box(), "下载 Minecraft", "筛选版本，然后从列表开始任务。"),
+        OnboardingScene::ResourcePackDownload => (lucide_icons::icon_package(), "CurseForge 资源包", "找项目、确认版本、选择安装目标。"),
+        OnboardingScene::ModDownload => (lucide_icons::icon_layers(), "客户端模组", "先看兼容关系，再安装到实例。"),
+        OnboardingScene::ImportPackage => (lucide_icons::icon_upload(), "导入已有安装包", "已有文件就不需要重新下载。"),
+        OnboardingScene::TasksOverview => (lucide_icons::icon_activity(), "任务去哪里看？", "下载、安装、导入和错误都集中在这里。"),
+        OnboardingScene::ManageOverview => (lucide_icons::icon_settings_2(), "管理一个版本", "先选实例，再做启动和实例级操作。"),
+        OnboardingScene::ManageContent => (lucide_icons::icon_package(), "管理实例内容", "模组、资源包、地图等都属于当前版本。"),
+        OnboardingScene::SettingsOverview => (lucide_icons::icon_settings(), "设置在哪里？", "大多数选项保持默认即可，需要时再回来。"),
+        OnboardingScene::ToolsOverview => (lucide_icons::icon_wrench(), "工具在哪里？", "高级能力集中在这里，当前主要是联机大厅。"),
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "windows")]
             {
-                (lucide_icons::icon_shield_check(), "Windows UWP 数据保护", "检查注册来源和需要保护的数据。")
+                (lucide_icons::icon_shield_check(), "Windows 数据安全", "切换 UWP 前先保护现有世界数据。")
             }
             #[cfg(target_os = "linux")]
             {
-                (lucide_icons::icon_settings_2(), "Linux 运行环境", "检查 Proton-GDK / UMU 与依赖。")
+                (lucide_icons::icon_box(), "Linux 运行环境", "确认 Proton-GDK / UMU，而不是 Windows UWP。")
             }
         }
-        OnboardingScene::Finish => (lucide_icons::icon_circle_check(), "导览完成", "现在可以开始下载或管理真实版本。"),
+        OnboardingScene::Finish => (lucide_icons::icon_circle_check(), "导览完成", "现在可以按自己的情况开始。"),
     }
 }
 
-fn render_manage_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> AnyElement {
+fn render_tasks_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> AnyElement {
     let page_x = crate::ui::components::page_shell::PAGE_INSET_X / px(1.0);
     let page_y = crate::ui::components::page_shell::PAGE_INSET_TOP / px(1.0);
     let page_bottom = crate::ui::components::page_shell::PAGE_INSET_BOTTOM / px(1.0);
-    let sidebar_w = crate::ui::components::page_shell::SPLIT_PAGE_SIDEBAR_WIDTH / px(1.0);
-    let full_h = (height - page_y - page_bottom).max(300.0);
-    let gap = 12.0;
-    let content_x = page_x + sidebar_w + gap;
-    let content_w = (width - content_x - page_x).max(360.0);
+    let page_w = (width - page_x * 2.0).max(560.0);
+    let page_h = (height - page_y - page_bottom).max(420.0);
 
     div()
         .absolute()
         .inset_0()
+        .occlude()
+        .child(
+            div()
+                .absolute()
+                .left(px(page_x))
+                .top(px(page_y))
+                .w(px(page_w))
+                .h(px(page_h))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .border_1()
+                .border_color(Hsla { a: 0.30, ..colors.border })
+                .bg(Hsla { a: 0.98, ..colors.bg })
+                .shadow_lg()
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(22.0))
+                        .py(px(14.0))
+                        .border_b_1()
+                        .border_color(Hsla { a: 0.18, ..colors.border })
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_size(px(18.0)).font_weight(FontWeight::BOLD).text_color(colors.text_primary).child("任务管理器"))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(14.0))
+                                .child(demo_badge(colors, "活动任务 2"))
+                                .child(demo_badge(colors, "总线程 12")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .p(px(16.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .child(demo_task_card(colors, lucide_icons::icon_download(), "Minecraft 1.21.100", "下载游戏包", "68%", 0.68, "18.4 MB/s · 12 线程 · ETA 00:42", false, false))
+                        .child(demo_task_card(colors, lucide_icons::icon_package(), "Faithful 32x Bedrock", "安装资源包", "安装中", 0.88, "正在写入目标实例的 resource_packs", false, false))
+                        .child(demo_task_card(colors, lucide_icons::icon_layers(), "LeviLamina 模组依赖", "安装完成", "完成", 1.0, "已安装到演示版本 1.21.100", false, true))
+                        .child(demo_task_card(colors, lucide_icons::icon_upload(), "旧版 APPX 导入", "解析安装包", "失败", 0.37, "示例错误：安装包不完整，可在这里看到原因", true, true)),
+                ),
+        )
+        .into_any_element()
+}
+
+fn demo_task_card(
+    colors: &ThemeColors,
+    icon: &'static str,
+    title: &'static str,
+    stage: &'static str,
+    status: &'static str,
+    progress: f32,
+    detail: &'static str,
+    danger: bool,
+    terminal: bool,
+) -> Div {
+    let accent = if danger { colors.danger } else { colors.accent };
+    div()
+        .w_full()
+        .px(px(14.0))
+        .py(px(11.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla { a: 0.24, ..if danger { colors.danger } else { colors.border } })
+        .bg(Hsla { a: 0.72, ..colors.surface })
+        .flex()
+        .items_center()
+        .gap(px(12.0))
+        .child(
+            div()
+                .flex_none()
+                .size(px(38.0))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(Hsla { a: 0.10, ..accent })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(svg().path(icon).size(px(19.0)).text_color(accent)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(5.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(title))
+                        .child(div().text_size(px(10.0)).font_weight(FontWeight::SEMIBOLD).text_color(accent).child(status)),
+                )
+                .child(div().text_size(px(9.5)).text_color(colors.text_secondary).child(stage))
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(5.0))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
+                        .bg(Hsla { a: 0.12, ..colors.text_secondary })
+                        .child(
+                            div()
+                                .w(relative(progress.clamp(0.0, 1.0)))
+                                .h_full()
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
+                                .bg(accent),
+                        ),
+                )
+                .child(div().text_size(px(9.0)).text_color(if danger { colors.danger } else { colors.text_muted }).child(detail)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .size(px(28.0))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(Hsla { a: 0.06, ..colors.text_secondary })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(if terminal { lucide_icons::icon_x() } else { lucide_icons::icon_pause() })
+                        .size(px(13.0))
+                        .text_color(colors.text_secondary),
+                ),
+        )
+}
+
+fn render_manage_demo_layer(
+    scene: OnboardingScene,
+    width: f32,
+    height: f32,
+    colors: &ThemeColors,
+) -> AnyElement {
+    let page_x = crate::ui::components::page_shell::PAGE_INSET_X / px(1.0);
+    let page_y = crate::ui::components::page_shell::PAGE_INSET_TOP / px(1.0);
+    let page_bottom = crate::ui::components::page_shell::PAGE_INSET_BOTTOM / px(1.0);
+    let sidebar_w = crate::ui::components::page_shell::SPLIT_PAGE_SIDEBAR_WIDTH / px(1.0);
+    let full_h = (height - page_y - page_bottom).max(360.0);
+    let gap = 12.0;
+    let content_x = page_x + sidebar_w + gap;
+    let content_w = (width - content_x - page_x).max(420.0);
+    let content_is_resource = scene == OnboardingScene::ManageContent;
+
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
         .child(
             div()
                 .absolute()
@@ -785,18 +1116,19 @@ fn render_manage_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> An
                 .w(px(sidebar_w))
                 .h(px(full_h))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
-                .border_2()
-                .border_color(Hsla { a: 0.55, ..colors.accent })
-                .bg(Hsla { a: 0.97, ..colors.bg })
+                .border_1()
+                .border_color(Hsla { a: 0.34, ..colors.border })
+                .bg(Hsla { a: 0.98, ..colors.bg })
                 .shadow_lg()
                 .p(px(12.0))
                 .flex()
                 .flex_col()
-                .gap(px(10.0))
-                .child(demo_badge(colors, "引导演示数据"))
+                .gap(px(9.0))
+                .child(demo_badge(colors, "只读引导演示"))
                 .child(demo_version(colors, "演示版本 1.21.100", "UWP · 正式版", true))
+                .child(demo_version(colors, "LeviLamina 1.21.93", "UWP · LeviLamina", false))
                 .child(demo_version(colors, "演示 Preview", "GDK · Preview", false))
-                .child(tip(colors, "真实版本会从 BMCBL/versions 自动读取。")),
+                .child(demo_version(colors, "旧版 1.20.80", "UWP · 正式版", false)),
         )
         .child(
             div()
@@ -806,16 +1138,18 @@ fn render_manage_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> An
                 .w(px(content_w))
                 .h(px(full_h))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
-                .border_2()
-                .border_color(Hsla { a: 0.55, ..colors.accent })
-                .bg(Hsla { a: 0.97, ..colors.bg })
+                .border_1()
+                .border_color(Hsla { a: 0.34, ..colors.border })
+                .bg(Hsla { a: 0.98, ..colors.bg })
                 .shadow_lg()
-                .p(px(14.0))
+                .overflow_hidden()
                 .flex()
                 .flex_col()
-                .gap(px(11.0))
                 .child(
                     div()
+                        .px(px(16.0))
+                        .pt(px(13.0))
+                        .pb(px(8.0))
                         .flex()
                         .items_center()
                         .justify_between()
@@ -825,20 +1159,18 @@ fn render_manage_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> An
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.0))
-                                .child(div().text_size(px(16.0)).font_weight(FontWeight::BOLD).text_color(colors.text_primary).child("演示版本 1.21.100"))
-                                .child(div().text_size(px(11.0)).text_color(colors.text_secondary).child("以下按钮和项目只是说明，不会执行真实操作")),
+                                .child(div().text_size(px(17.0)).font_weight(FontWeight::BOLD).text_color(colors.text_primary).child("演示版本 1.21.100"))
+                                .child(div().text_size(px(10.0)).text_color(colors.text_secondary).child("UWP · 正式版 · 隔离数据目录")),
                         )
                         .child(demo_badge(colors, "不会写入磁盘")),
                 )
                 .child(render_demo_tool_row(colors))
-                .child(render_demo_tabs(colors))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .overflow_y_scrollbar()
-                        .child(render_demo_feature_grid(colors)),
-                ),
+                .child(render_demo_tabs(colors, content_is_resource))
+                .child(if content_is_resource {
+                    render_demo_resource_list(colors).into_any_element()
+                } else {
+                    render_demo_statistics(colors).into_any_element()
+                }),
         )
         .into_any_element()
 }
@@ -846,16 +1178,24 @@ fn render_manage_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> An
 fn demo_version(colors: &ThemeColors, name: &'static str, detail: &'static str, selected: bool) -> Div {
     div()
         .w_full()
-        .p(px(11.0))
+        .p(px(10.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
-        .border_color(if selected { Hsla { a: 0.48, ..colors.accent } } else { Hsla { a: 0.30, ..colors.border } })
-        .bg(if selected { Hsla { a: 0.08, ..colors.accent } } else { Hsla { a: 0.65, ..colors.surface } })
+        .border_color(if selected {
+            Hsla { a: 0.45, ..colors.accent }
+        } else {
+            Hsla { a: 0.26, ..colors.border }
+        })
+        .bg(if selected {
+            Hsla { a: 0.08, ..colors.accent }
+        } else {
+            Hsla { a: 0.62, ..colors.surface }
+        })
         .flex()
         .flex_col()
-        .gap(px(3.0))
-        .child(div().text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(name))
-        .child(div().text_size(px(10.0)).text_color(colors.text_secondary).child(detail))
+        .gap(px(2.0))
+        .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(name))
+        .child(div().text_size(px(9.5)).text_color(colors.text_secondary).child(detail))
 }
 
 fn render_demo_tool_row(colors: &ThemeColors) -> Div {
@@ -867,94 +1207,149 @@ fn render_demo_tool_row(colors: &ThemeColors) -> Div {
         (lucide_icons::icon_play(), "启动"),
     ];
     div()
+        .px(px(16.0))
+        .py(px(6.0))
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(px(7.0))
         .children(tools.into_iter().map(|(icon, label)| {
-            div()
-                .px(px(9.0))
-                .py(px(7.0))
-                .rounded(px(crate::ui::theme::tokens::radius::SM))
-                .bg(Hsla { a: 0.70, ..colors.surface })
-                .border_1()
-                .border_color(Hsla { a: 0.28, ..colors.border })
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .child(svg().path(icon).size(px(13.0)).text_color(colors.text_secondary))
-                .child(div().text_size(px(10.0)).text_color(colors.text_secondary).child(label))
-        }))
-}
-
-fn render_demo_tabs(colors: &ThemeColors) -> Div {
-    let tabs = ["概览", "模组", "资源包", "皮肤包", "地图", "截图", "服务器"];
-    div()
-        .flex()
-        .items_center()
-        .gap(px(6.0))
-        .children(tabs.into_iter().enumerate().map(|(index, label)| {
             div()
                 .px(px(8.0))
                 .py(px(6.0))
                 .rounded(px(crate::ui::theme::tokens::radius::SM))
-                .bg(if index == 0 { Hsla { a: 0.12, ..colors.accent } } else { Hsla { a: 0.60, ..colors.surface } })
-                .text_size(px(10.0))
-                .font_weight(if index == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
-                .text_color(if index == 0 { colors.accent } else { colors.text_secondary })
+                .bg(Hsla { a: 0.65, ..colors.surface })
+                .border_1()
+                .border_color(Hsla { a: 0.24, ..colors.border })
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(svg().path(icon).size(px(12.0)).text_color(colors.text_secondary))
+                .child(div().text_size(px(9.0)).text_color(colors.text_secondary).child(label))
+        }))
+}
+
+fn render_demo_tabs(colors: &ThemeColors, resource_active: bool) -> Div {
+    let tabs = ["统计", "模组", "资源包", "皮肤", "地图", "截图", "服务器"];
+    div()
+        .px(px(16.0))
+        .pt(px(5.0))
+        .pb(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .children(tabs.into_iter().enumerate().map(|(index, label)| {
+            let active = if resource_active { index == 2 } else { index == 0 };
+            div()
+                .px(px(7.0))
+                .py(px(5.0))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(if active {
+                    Hsla { a: 0.12, ..colors.accent }
+                } else {
+                    Hsla { a: 0.55, ..colors.surface }
+                })
+                .text_size(px(9.0))
+                .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                .text_color(if active { colors.accent } else { colors.text_secondary })
                 .child(label)
         }))
 }
 
-fn render_demo_feature_grid(colors: &ThemeColors) -> Div {
-    let features = [
-        (lucide_icons::icon_chart_no_axes_combined(), "概览", "版本信息、数据位置和实例状态。"),
-        (lucide_icons::icon_blocks(), "模组", "启用、禁用、导入和查看客户端模组。"),
-        (lucide_icons::icon_package(), "资源包", "管理资源包/行为包以及排序和导入。"),
-        (lucide_icons::icon_user_round(), "皮肤包", "预览和管理皮肤包内容。"),
-        (lucide_icons::icon_map(), "地图", "导入、导出、查看世界，并可进入 level.dat/地图工具。"),
-        (lucide_icons::icon_image(), "截图", "按时间查看并打开游戏截图。"),
-        (lucide_icons::icon_server(), "服务器", "管理 servers.dat 项目并查看 MOTD/延迟。"),
-        (lucide_icons::icon_settings(), "版本设置", "隔离、重定向、调试、鼠标和启动行为。"),
-    ];
-
+fn render_demo_statistics(colors: &ThemeColors) -> Div {
     div()
-        .w_full()
+        .flex_1()
+        .min_h(px(0.0))
+        .px(px(16.0))
+        .pb(px(14.0))
         .flex()
         .flex_wrap()
         .gap(px(9.0))
-        .children(features.into_iter().map(|(icon, title, detail)| {
+        .child(demo_stat(colors, "游戏版本", "1.21.100"))
+        .child(demo_stat(colors, "平台", "UWP"))
+        .child(demo_stat(colors, "世界", "3 个"))
+        .child(demo_stat(colors, "模组", "2 个启用"))
+        .child(demo_stat(colors, "资源包", "4 个"))
+        .child(demo_stat(colors, "数据模式", "实例隔离"))
+}
+
+fn demo_stat(colors: &ThemeColors, label: &'static str, value: &'static str) -> Div {
+    div()
+        .w(px(185.0))
+        .min_h(px(72.0))
+        .p(px(11.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla { a: 0.24, ..colors.border })
+        .bg(Hsla { a: 0.66, ..colors.surface })
+        .flex()
+        .flex_col()
+        .gap(px(5.0))
+        .child(div().text_size(px(9.5)).text_color(colors.text_muted).child(label))
+        .child(div().text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(value))
+}
+
+fn render_demo_resource_list(colors: &ThemeColors) -> Div {
+    div()
+        .flex_1()
+        .min_h(px(0.0))
+        .px(px(16.0))
+        .pb(px(14.0))
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(demo_asset_row(colors, "Faithful 32x Bedrock", "resource_pack · 已启用", "1.21.x"))
+        .child(demo_asset_row(colors, "UI Tweaks", "resource_pack · 已启用", "1.21.x"))
+        .child(demo_asset_row(colors, "Better Animations", "behavior_pack · 已禁用", "1.21.100"))
+        .child(demo_asset_row(colors, "RTX Demo Pack", "resource_pack · 已禁用", "RTX"))
+}
+
+fn demo_asset_row(
+    colors: &ThemeColors,
+    name: &'static str,
+    detail: &'static str,
+    version: &'static str,
+) -> Div {
+    div()
+        .w_full()
+        .px(px(11.0))
+        .py(px(9.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla { a: 0.22, ..colors.border })
+        .bg(Hsla { a: 0.64, ..colors.surface })
+        .flex()
+        .items_center()
+        .gap(px(9.0))
+        .child(
             div()
-                .w(px(210.0))
-                .min_h(px(82.0))
-                .p(px(10.0))
+                .size(px(34.0))
                 .rounded(px(crate::ui::theme::tokens::radius::SM))
-                .border_1()
-                .border_color(Hsla { a: 0.28, ..colors.border })
-                .bg(Hsla { a: 0.65, ..colors.surface })
+                .bg(Hsla { a: 0.10, ..colors.accent })
                 .flex()
-                .items_start()
-                .gap(px(8.0))
-                .child(svg().path(icon).size(px(16.0)).text_color(colors.accent))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(3.0))
-                        .child(div().text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(title))
-                        .child(div().text_size(px(10.0)).line_height(px(15.0)).text_color(colors.text_secondary).child(detail)),
-                )
-        }))
+                .items_center()
+                .justify_center()
+                .child(svg().path(lucide_icons::icon_package()).size(px(16.0)).text_color(colors.accent)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(div().text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(name))
+                .child(div().text_size(px(9.0)).text_color(colors.text_secondary).child(detail)),
+        )
+        .child(demo_badge(colors, version))
 }
 
 fn demo_badge(colors: &ThemeColors, label: &'static str) -> Div {
     div()
-        .px(px(8.0))
-        .py(px(4.0))
+        .px(px(7.0))
+        .py(px(3.0))
         .rounded(px(crate::ui::theme::tokens::radius::FULL))
-        .bg(Hsla { a: 0.12, ..colors.accent })
-        .text_size(px(9.0))
+        .bg(Hsla { a: 0.11, ..colors.accent })
+        .text_size(px(8.5))
         .font_weight(FontWeight::BOLD)
         .text_color(colors.accent)
         .child(label)
@@ -963,24 +1358,24 @@ fn demo_badge(colors: &ThemeColors, label: &'static str) -> Div {
 fn feature(colors: &ThemeColors, icon: &'static str, title: &'static str, detail: &'static str) -> Div {
     div()
         .w_full()
-        .p(px(12.0))
+        .p(px(9.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
-        .border_color(Hsla { a: 0.34, ..colors.border })
-        .bg(Hsla { a: 0.62, ..colors.surface })
+        .border_color(Hsla { a: 0.28, ..colors.border })
+        .bg(Hsla { a: 0.58, ..colors.surface })
         .flex()
         .items_start()
-        .gap(px(10.0))
-        .child(svg().path(icon).size(px(17.0)).text_color(colors.accent))
+        .gap(px(8.0))
+        .child(svg().path(icon).size(px(15.0)).text_color(colors.accent))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.0))
                 .flex()
                 .flex_col()
-                .gap(px(3.0))
-                .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(title))
-                .child(div().text_size(px(11.0)).line_height(px(17.0)).text_color(colors.text_secondary).child(detail)),
+                .gap(px(2.0))
+                .child(div().text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(title))
+                .child(div().text_size(px(9.5)).line_height(px(15.0)).text_color(colors.text_secondary).child(detail)),
         )
 }
 
@@ -989,18 +1384,18 @@ fn step(colors: &ThemeColors, number: usize, title: &'static str, detail: &'stat
         .w_full()
         .flex()
         .items_start()
-        .gap(px(10.0))
+        .gap(px(8.0))
         .child(
             div()
                 .flex_none()
-                .w(px(25.0))
-                .h(px(25.0))
+                .w(px(23.0))
+                .h(px(23.0))
                 .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                .bg(Hsla { a: 0.13, ..colors.accent })
+                .bg(Hsla { a: 0.12, ..colors.accent })
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(10.0))
+                .text_size(px(9.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(colors.accent)
                 .child(number.to_string()),
@@ -1011,42 +1406,42 @@ fn step(colors: &ThemeColors, number: usize, title: &'static str, detail: &'stat
                 .min_w(px(0.0))
                 .flex()
                 .flex_col()
-                .gap(px(3.0))
-                .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(title))
-                .child(div().text_size(px(11.0)).line_height(px(17.0)).text_color(colors.text_secondary).child(detail)),
+                .gap(px(2.0))
+                .child(div().text_size(px(10.5)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(title))
+                .child(div().text_size(px(9.5)).line_height(px(15.0)).text_color(colors.text_secondary).child(detail)),
         )
 }
 
 fn format_card(colors: &ThemeColors, format: &'static str, detail: &'static str) -> Div {
     div()
         .w_full()
-        .p(px(10.0))
+        .p(px(8.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(Hsla { a: 0.06, ..colors.accent })
+        .bg(Hsla { a: 0.055, ..colors.accent })
         .flex()
         .items_center()
-        .gap(px(10.0))
+        .gap(px(9.0))
         .child(
             div()
-                .min_w(px(70.0))
-                .px(px(8.0))
-                .py(px(5.0))
+                .min_w(px(62.0))
+                .px(px(7.0))
+                .py(px(4.0))
                 .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla { a: 0.12, ..colors.accent })
                 .text_center()
-                .text_size(px(10.0))
+                .text_size(px(9.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(colors.accent)
                 .child(format),
         )
-        .child(div().flex_1().text_size(px(11.0)).text_color(colors.text_secondary).child(detail))
+        .child(div().flex_1().text_size(px(9.5)).text_color(colors.text_secondary).child(detail))
 }
 
 fn intro(colors: &ThemeColors, text: &'static str) -> Div {
     div()
         .w_full()
-        .text_size(px(12.0))
-        .line_height(px(19.0))
+        .text_size(px(10.5))
+        .line_height(px(16.5))
         .text_color(colors.text_secondary)
         .child(text)
 }
@@ -1054,15 +1449,15 @@ fn intro(colors: &ThemeColors, text: &'static str) -> Div {
 fn route_badge(colors: &ThemeColors, label: &'static str) -> Div {
     div()
         .w_full()
-        .px(px(10.0))
-        .py(px(8.0))
+        .px(px(9.0))
+        .py(px(7.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(Hsla { a: 0.09, ..colors.accent })
+        .bg(Hsla { a: 0.08, ..colors.accent })
         .flex()
         .items_center()
-        .gap(px(7.0))
-        .child(svg().path(lucide_icons::icon_map_pin()).size(px(14.0)).text_color(colors.accent))
-        .child(div().flex_1().text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.accent).child(label))
+        .gap(px(6.0))
+        .child(svg().path(lucide_icons::icon_map_pin()).size(px(12.0)).text_color(colors.accent))
+        .child(div().flex_1().text_size(px(9.5)).font_weight(FontWeight::SEMIBOLD).text_color(colors.accent).child(label))
 }
 
 fn tip(colors: &ThemeColors, text: &'static str) -> Div {
@@ -1077,69 +1472,73 @@ fn dynamic_status(colors: &ThemeColors, icon: &'static str, text: &str, danger: 
     let color = if danger { colors.danger } else { colors.text_secondary };
     div()
         .w_full()
-        .p(px(10.0))
+        .p(px(8.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(Hsla { a: 0.07, ..color })
+        .bg(Hsla { a: 0.06, ..color })
         .flex()
         .items_start()
-        .gap(px(8.0))
-        .child(svg().path(icon).size(px(14.0)).text_color(color))
-        .child(div().flex_1().min_w(px(0.0)).text_size(px(11.0)).line_height(px(17.0)).text_color(colors.text_secondary).child(text.to_string()))
+        .gap(px(7.0))
+        .child(svg().path(icon).size(px(12.0)).text_color(color))
+        .child(div().flex_1().min_w(px(0.0)).text_size(px(9.5)).line_height(px(15.0)).text_color(colors.text_secondary).child(text.to_string()))
 }
 
 fn platform_summary(
     colors: &ThemeColors,
     summary: &crate::ui::onboarding::state::OnboardingPlatformSummary,
 ) -> Div {
-    let mut items = div().w_full().flex().flex_col().gap(px(8.0));
+    let mut items = div().w_full().flex().flex_col().gap(px(6.0));
     for item in &summary.items {
         let color = if item.warning { colors.danger } else { colors.accent };
-        let icon = if item.warning { lucide_icons::icon_triangle_alert() } else { lucide_icons::icon_circle_check() };
+        let icon = if item.warning {
+            lucide_icons::icon_triangle_alert()
+        } else {
+            lucide_icons::icon_circle_check()
+        };
         items = items.child(
             div()
                 .flex()
                 .items_start()
-                .gap(px(8.0))
-                .child(svg().path(icon).size(px(14.0)).text_color(color))
+                .gap(px(7.0))
+                .child(svg().path(icon).size(px(12.0)).text_color(color))
                 .child(
                     div()
                         .flex_1()
                         .min_w(px(0.0))
                         .flex()
                         .flex_col()
-                        .gap(px(2.0))
-                        .child(div().text_size(px(10.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(item.label.clone()))
-                        .child(div().text_size(px(10.0)).line_height(px(16.0)).text_color(colors.text_secondary).child(item.value.clone())),
+                        .gap(px(1.0))
+                        .child(div().text_size(px(9.0)).font_weight(FontWeight::SEMIBOLD).text_color(colors.text_primary).child(item.label.clone()))
+                        .child(div().text_size(px(8.5)).line_height(px(13.5)).text_color(colors.text_secondary).child(item.value.clone())),
                 ),
         );
     }
 
     div()
         .w_full()
-        .p(px(12.0))
+        .p(px(9.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
-        .border_color(Hsla { a: 0.34, ..colors.border })
-        .bg(Hsla { a: 0.68, ..colors.surface })
+        .border_color(Hsla { a: 0.28, ..colors.border })
+        .bg(Hsla { a: 0.62, ..colors.surface })
         .flex()
         .flex_col()
-        .gap(px(9.0))
-        .child(div().text_size(px(12.0)).font_weight(FontWeight::BOLD).text_color(colors.text_primary).child(summary.title.clone()))
-        .child(div().text_size(px(10.0)).line_height(px(16.0)).text_color(colors.text_secondary).child(summary.detail.clone()))
+        .gap(px(6.0))
+        .child(div().text_size(px(10.0)).font_weight(FontWeight::BOLD).text_color(colors.text_primary).child(summary.title.clone()))
+        .child(div().text_size(px(8.5)).line_height(px(13.5)).text_color(colors.text_secondary).child(summary.detail.clone()))
         .child(items)
 }
 
 fn primary_button(colors: &ThemeColors, label: &'static str, enabled: bool) -> Stateful<Div> {
     let mut button = div()
         .id(SharedString::from(format!("onboarding-guided-primary-{label}")))
-        .min_h(px(38.0))
-        .px(px(15.0))
-        .py(px(9.0))
+        .min_h(px(34.0))
+        .px(px(13.0))
+        .py(px(7.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(12.0))
+        .text_size(px(10.5))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label);
     if enabled {
@@ -1157,12 +1556,12 @@ fn primary_button(colors: &ThemeColors, label: &'static str, enabled: bool) -> S
 fn secondary_button(colors: &ThemeColors, label: &'static str) -> Stateful<Div> {
     div()
         .id(SharedString::from(format!("onboarding-guided-secondary-{label}")))
-        .min_h(px(38.0))
-        .px(px(14.0))
-        .py(px(9.0))
+        .min_h(px(34.0))
+        .px(px(12.0))
+        .py(px(7.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
-        .border_color(Hsla { a: 0.44, ..colors.border })
+        .border_color(Hsla { a: 0.40, ..colors.border })
         .bg(colors.surface)
         .text_color(colors.text_primary)
         .cursor_pointer()
@@ -1170,7 +1569,7 @@ fn secondary_button(colors: &ThemeColors, label: &'static str) -> Stateful<Div> 
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(12.0))
+        .text_size(px(10.5))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label)
 }
