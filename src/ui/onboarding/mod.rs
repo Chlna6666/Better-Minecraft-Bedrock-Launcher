@@ -95,7 +95,7 @@ fn apply_scene_route(scene: OnboardingScene, cx: &mut App) {
         OnboardingScene::Welcome | OnboardingScene::Finish => {
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Home);
         }
-        OnboardingScene::GameDownload => {
+        OnboardingScene::DownloadNavigation | OnboardingScene::GameDownload => {
             prepare_download(DownloadTab::Game, cx);
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Download);
         }
@@ -111,23 +111,42 @@ fn apply_scene_route(scene: OnboardingScene, cx: &mut App) {
             prepare_download(DownloadTab::Game, cx);
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Download);
         }
-        OnboardingScene::ManageOverview => {
+        OnboardingScene::TasksOverview => {
+            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Tasks);
+        }
+        OnboardingScene::ManageOverview | OnboardingScene::ManageContent => {
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Manage);
+        }
+        OnboardingScene::SettingsOverview => {
+            cx.update_global(
+                |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
+                    state.tab = crate::ui::views::settings::state::SettingsTab::Launcher;
+                },
+            );
+            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Settings);
+        }
+        OnboardingScene::ToolsOverview => {
+            cx.update_global(
+                |state: &mut crate::ui::views::tools::state::ToolsPageState, _cx| {
+                    state.tab = crate::ui::views::tools::state::ToolsTab::Online;
+                },
+            );
+            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Tools);
         }
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "linux")]
-            {
-                cx.update_global(
-                    |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
-                        state.tab = crate::ui::views::settings::state::SettingsTab::ProtonGdk;
-                    },
-                );
-                crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Settings);
-            }
+            cx.update_global(
+                |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
+                    state.tab = crate::ui::views::settings::state::SettingsTab::ProtonGdk;
+                },
+            );
             #[cfg(target_os = "windows")]
-            {
-                crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Manage);
-            }
+            cx.update_global(
+                |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
+                    state.tab = crate::ui::views::settings::state::SettingsTab::Game;
+                },
+            );
+            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Settings);
         }
     }
 }
@@ -338,11 +357,16 @@ pub(crate) fn scene_is(cx: &App, scene: OnboardingScene) -> bool {
 pub(crate) fn scene_label(scene: OnboardingScene) -> SharedString {
     SharedString::from(match scene {
         OnboardingScene::Welcome => "欢迎",
+        OnboardingScene::DownloadNavigation => "下载页",
         OnboardingScene::GameDownload => "游戏下载",
         OnboardingScene::ResourcePackDownload => "CF 资源",
         OnboardingScene::ModDownload => "模组",
-        OnboardingScene::ImportPackage => "导入版本",
+        OnboardingScene::ImportPackage => "导入",
+        OnboardingScene::TasksOverview => "任务",
         OnboardingScene::ManageOverview => "版本管理",
+        OnboardingScene::ManageContent => "实例内容",
+        OnboardingScene::SettingsOverview => "设置",
+        OnboardingScene::ToolsOverview => "工具",
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "windows")]
             {
