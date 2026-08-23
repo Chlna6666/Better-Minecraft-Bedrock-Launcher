@@ -8,8 +8,10 @@ use crate::ui::theme::colors::ThemeColors;
 pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
     let action = div()
         .id("settings-reopen-onboarding")
-        .h(px(36.))
+        .flex_none()
+        .min_h(px(36.))
         .px(px(14.))
+        .py(px(8.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
@@ -25,27 +27,15 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .child("重新打开引导")
+        .child("重新打开导览")
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-            #[cfg(target_os = "windows")]
-            cx.update_global(
-                |state: &mut crate::ui::state::launch_prereq::LaunchPrereqState, _cx| {
-                    state.reopen_onboarding();
-                },
-            );
-
-            #[cfg(target_os = "linux")]
-            cx.update_global(
-                |state: &mut crate::ui::state::linux_onboarding::LinuxOnboardingState, _cx| {
-                    state.reopen();
-                },
-            );
+            crate::ui::onboarding::reopen(cx);
         });
 
     #[cfg(target_os = "windows")]
-    let description = "重新查看版本下载、导入、散装 UWP 多版本切换和数据保护说明。不会重置已经完成的首次运行状态。";
+    let description = "重新进入交互式功能导览：会实际切换下载、导入和版本管理页面，并重新说明 Windows UWP 数据保护。不会重置游戏或配置。";
     #[cfg(target_os = "linux")]
-    let description = "重新查看版本下载、导入、Linux 运行环境和 Proton-GDK 配置说明。Linux 引导不会执行 UWP 检查，也不会重置已经完成的首次运行状态。";
+    let description = "重新进入交互式功能导览：会实际切换下载、导入、版本管理和 Proton-GDK 页面。Linux 导览不会执行 UWP 检查。";
 
     crate::ui::components::page_shell::glass_card(colors)
         .shadow(Vec::new())
@@ -64,6 +54,7 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
         .gap(px(14.))
         .child(
             div()
+                .flex_none()
                 .w(px(42.))
                 .h(px(42.))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
@@ -91,13 +82,15 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
                 .gap(px(4.))
                 .child(
                     div()
+                        .w_full()
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("首次运行设置向导"),
+                        .child("交互式首次运行导览"),
                 )
                 .child(
                     div()
+                        .w_full()
                         .text_size(px(12.))
                         .line_height(px(18.))
                         .text_color(colors.text_secondary)
