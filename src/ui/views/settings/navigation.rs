@@ -105,6 +105,7 @@ pub(super) fn render_tabs(
     };
 
     let container = div()
+        .relative()
         .w_full()
         .min_w(px(0.))
         .rounded(px(crate::ui::theme::tokens::radius::MD))
@@ -167,5 +168,8 @@ pub(super) fn render_tabs(
             i18n.t("Settings.tabs.about"),
             SettingsTab::About,
             active,
+        ))
+        .child(crate::ui::onboarding::anchor::observe(
+            crate::ui::onboarding::state::OnboardingAnchor::SettingsTabs,
         ))
 }
