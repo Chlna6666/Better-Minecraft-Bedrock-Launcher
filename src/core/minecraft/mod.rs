@@ -29,4 +29,6 @@ pub mod skin_packs;
 #[cfg(target_os = "windows")]
 pub mod uwp_migration;
 #[cfg(target_os = "windows")]
+pub mod uwp_registration;
+#[cfg(target_os = "windows")]
 pub mod uwp_minimize_fix;
