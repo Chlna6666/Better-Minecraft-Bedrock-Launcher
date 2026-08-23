@@ -1,67 +1,178 @@
 #![cfg(target_os = "windows")]
 
-use gpui::*;
+use gpui::{AppContext as _, BorrowAppContext as _, *};
 use lucide_gpui::icons as lucide_icons;
 
+use crate::core::minecraft::uwp_migration::MinecraftDataSummary;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UwpSafetyGuideTrigger {
     #[default]
-    Download,
+    DownloadRelease,
+    DownloadPreview,
     Import,
 }
 
 pub struct UwpSafetyGuideState {
     pub visible: bool,
+    pub checking: bool,
     pub trigger: Option<UwpSafetyGuideTrigger>,
-    acknowledged: bool,
+    pub system_registration: Option<MinecraftDataSummary>,
+    request_id: u64,
+    pending: bool,
+    active_download_package: Option<SharedString>,
 }
 
 impl Global for UwpSafetyGuideState {}
 
 impl Default for UwpSafetyGuideState {
     fn default() -> Self {
-        let acknowledged = crate::config::uwp_safety::is_current_guide_acknowledged();
         Self {
             visible: false,
+            checking: false,
             trigger: None,
-            acknowledged,
+            system_registration: None,
+            request_id: 0,
+            pending: false,
+            active_download_package: None,
         }
     }
 }
 
 impl UwpSafetyGuideState {
-    fn request(&mut self, trigger: UwpSafetyGuideTrigger, defer_until_tour_finishes: bool) {
-        if self.acknowledged {
+    fn begin_download(
+        &mut self,
+        package_id: SharedString,
+        version_type: i32,
+    ) -> Option<(u64, UwpSafetyGuideTrigger)> {
+        if self.active_download_package.as_ref() == Some(&package_id) {
+            return None;
+        }
+
+        self.active_download_package = Some(package_id);
+        let trigger = if version_type == 0 {
+            UwpSafetyGuideTrigger::DownloadRelease
+        } else {
+            UwpSafetyGuideTrigger::DownloadPreview
+        };
+        Some(self.begin_check(trigger))
+    }
+
+    fn begin_import(&mut self) -> (u64, UwpSafetyGuideTrigger) {
+        self.begin_check(UwpSafetyGuideTrigger::Import)
+    }
+
+    fn begin_check(&mut self, trigger: UwpSafetyGuideTrigger) -> (u64, UwpSafetyGuideTrigger) {
+        self.request_id = self.request_id.wrapping_add(1).max(1);
+        self.visible = false;
+        self.checking = true;
+        self.pending = false;
+        self.trigger = Some(trigger);
+        self.system_registration = None;
+        (self.request_id, trigger)
+    }
+
+    fn apply_check(
+        &mut self,
+        request_id: u64,
+        registration: Option<MinecraftDataSummary>,
+        tour_visible: bool,
+    ) {
+        if self.request_id != request_id {
             return;
         }
-        self.trigger = Some(trigger);
-        self.visible = !defer_until_tour_finishes;
+
+        self.checking = false;
+        self.system_registration = registration;
+        let should_show = self.system_registration.is_some();
+        self.pending = should_show && tour_visible;
+        self.visible = should_show && !tour_visible;
+        if !should_show {
+            self.trigger = None;
+        }
+    }
+
+    fn fail_check(&mut self, request_id: u64) {
+        if self.request_id != request_id {
+            return;
+        }
+        self.checking = false;
+        self.visible = false;
+        self.pending = false;
+        self.trigger = None;
+        self.system_registration = None;
     }
 
     fn activate_pending(&mut self) {
-        if !self.acknowledged && self.trigger.is_some() {
+        if self.pending && self.system_registration.is_some() {
+            self.pending = false;
             self.visible = true;
         }
     }
 
-    fn acknowledge(&mut self) {
+    fn dismiss(&mut self) {
         self.visible = false;
+        self.pending = false;
         self.trigger = None;
-        self.acknowledged = true;
+        self.system_registration = None;
+    }
+
+    fn clear_download_context(&mut self) {
+        if self.active_download_package.take().is_none() {
+            return;
+        }
+
+        // 对话框已经结束时让同一个版本下一次下载重新实时检测。
+        // 若异步检查仍未返回，同时递增 request_id 使旧结果失效。
+        if matches!(
+            self.trigger,
+            Some(
+                UwpSafetyGuideTrigger::DownloadRelease | UwpSafetyGuideTrigger::DownloadPreview
+            )
+        ) {
+            self.request_id = self.request_id.wrapping_add(1).max(1);
+            self.checking = false;
+            self.visible = false;
+            self.pending = false;
+            self.trigger = None;
+            self.system_registration = None;
+        }
     }
 }
 
-pub fn request(trigger: UwpSafetyGuideTrigger, cx: &mut App) {
+pub fn request_download(
+    package_id: SharedString,
+    version_type: i32,
+    cx: &mut App,
+) {
     cx.default_global::<UwpSafetyGuideState>();
-    let tour_visible = cx
-        .try_global::<super::state::OnboardingTourState>()
-        .is_some_and(|tour| tour.visible);
-    cx.update_global(|state: &mut UwpSafetyGuideState, _cx| {
-        state.request(trigger, tour_visible);
+    let request = cx.update_global(|state: &mut UwpSafetyGuideState, _cx| {
+        state.begin_download(package_id, version_type)
     });
+    if let Some((request_id, trigger)) = request {
+        start_system_registration_check(request_id, trigger, cx);
+    }
+}
+
+pub fn request_import(cx: &mut App) {
+    cx.default_global::<UwpSafetyGuideState>();
+    let (request_id, trigger) = cx.update_global(|state: &mut UwpSafetyGuideState, _cx| {
+        state.begin_import()
+    });
+    start_system_registration_check(request_id, trigger, cx);
+}
+
+pub fn clear_download_context(cx: &mut App) {
+    let should_clear = cx
+        .try_global::<UwpSafetyGuideState>()
+        .is_some_and(|state| state.active_download_package.is_some());
+    if should_clear {
+        cx.update_global(|state: &mut UwpSafetyGuideState, _cx| {
+            state.clear_download_context();
+        });
+    }
 }
 
 pub fn activate_pending(cx: &mut App) {
@@ -71,15 +182,63 @@ pub fn activate_pending(cx: &mut App) {
     });
 }
 
-fn acknowledge(cx: &mut App) {
-    cx.update_global(|state: &mut UwpSafetyGuideState, _cx| state.acknowledge());
-    if let Err(error) = crate::tasks::runtime::spawn_io(async {
-        if let Err(error) = crate::config::uwp_safety::acknowledge_current_guide() {
-            tracing::error!(%error, "persist UWP safety guide acknowledgement failed");
-        }
-    }) {
-        tracing::error!(%error, "failed to schedule UWP safety guide acknowledgement persistence");
-    }
+fn start_system_registration_check(
+    request_id: u64,
+    trigger: UwpSafetyGuideTrigger,
+    cx: &mut App,
+) {
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            let environment = crate::core::minecraft::uwp_migration::scan_onboarding_environment();
+            match trigger {
+                UwpSafetyGuideTrigger::DownloadRelease => {
+                    official_store_registration(environment.release)
+                }
+                UwpSafetyGuideTrigger::DownloadPreview => {
+                    official_store_registration(environment.preview)
+                }
+                UwpSafetyGuideTrigger::Import => {
+                    official_store_registration(environment.release)
+                        .or_else(|| official_store_registration(environment.preview))
+                }
+            }
+        })
+        .await;
+
+        cx.update(|cx| {
+            match result {
+                Ok(registration) => {
+                    let tour_visible = cx
+                        .try_global::<super::state::OnboardingTourState>()
+                        .is_some_and(|tour| tour.visible);
+                    cx.update_global(|state: &mut UwpSafetyGuideState, _cx| {
+                        state.apply_check(request_id, registration, tour_visible);
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "检测 Microsoft Store Minecraft UWP 注册失败");
+                    cx.update_global(|state: &mut UwpSafetyGuideState, _cx| {
+                        state.fail_check(request_id);
+                    });
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        })??;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
+fn official_store_registration(summary: MinecraftDataSummary) -> Option<MinecraftDataSummary> {
+    // Microsoft Store / 系统安装的主包不是 DevelopmentMode。
+    // 外部 DevelopmentMode 与 BMCBL loose UWP 都不在下载阶段弹提示；真正替换注册时
+    // 仍由 uwp_migration 的强制备份安全门负责保护数据。
+    (summary.registered && !summary.development_mode).then_some(summary)
+}
+
+fn dismiss(cx: &mut App) {
+    cx.update_global(|state: &mut UwpSafetyGuideState, _cx| state.dismiss());
 }
 
 pub fn render_uwp_safety_guide(
@@ -97,18 +256,102 @@ pub fn render_uwp_safety_guide(
     let size = window.bounds().size;
     let width = size.width / px(1.0);
     let height = size.height / px(1.0);
-    let card_w = (width - 28.0).clamp(340.0, 520.0);
-    let card_h = (height - 40.0).clamp(390.0, 470.0);
+    let card_w = (width - 28.0).clamp(350.0, 520.0);
+    let card_h = (height - 40.0).clamp(400.0, 476.0);
     let trigger = state.trigger.unwrap_or_default();
+    let registration = state.system_registration.as_ref();
 
     let context = match trigger {
-        UwpSafetyGuideTrigger::Download => {
-            "你正在处理 Windows UWP 版本。下载本身不会卸载 Microsoft Store 版本；只有后续真正切换 UWP 注册时才会进入数据保护流程。"
+        UwpSafetyGuideTrigger::DownloadRelease | UwpSafetyGuideTrigger::DownloadPreview => {
+            "检测到当前 Windows 使用 Microsoft Store / 系统方式安装的 Minecraft UWP。你正在下载另一个 UWP 版本；下载本身不会卸载系统版本，只有以后实际切换注册时才会进入数据保护流程。"
         }
         UwpSafetyGuideTrigger::Import => {
-            "你正在导入 APPX / ZIP UWP 版本。导入只会把版本保存到 BMCBL；只有后续真正切换 UWP 注册时才会进入数据保护流程。"
+            "检测到当前 Windows 使用 Microsoft Store / 系统方式安装的 Minecraft UWP。你正在导入 APPX / ZIP；导入本身不会卸载系统版本，只有以后实际切换注册时才会进入数据保护流程。"
         }
     };
+
+    let registration_text = registration.map(|summary| {
+        let channel = if summary.family_name.contains("Beta") {
+            "Microsoft Store Preview"
+        } else {
+            "Microsoft Store 正式版"
+        };
+        let version = summary.registered_version.as_deref().unwrap_or("未知版本");
+        if summary.data_present {
+            format!(
+                "{channel} · {version} · {} 个世界 · {} 个资源包",
+                summary.worlds, summary.resource_packs
+            )
+        } else {
+            format!("{channel} · {version} · 未发现 games/com.mojang 数据")
+        }
+    });
+
+    let mut content = div()
+        .flex_1()
+        .min_h(px(0.0))
+        .p(px(20.0))
+        .flex()
+        .flex_col()
+        .gap(px(11.0))
+        .child(
+            div()
+                .text_size(px(12.0))
+                .line_height(px(19.0))
+                .text_color(colors.text_secondary)
+                .child(context),
+        );
+
+    if let Some(registration_text) = registration_text {
+        content = content.child(
+            div()
+                .px(px(11.0))
+                .py(px(9.0))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(Hsla {
+                    a: 0.10,
+                    ..colors.accent
+                })
+                .text_size(px(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child(registration_text),
+        );
+    }
+
+    content = content
+        .child(safety_step(
+            &colors,
+            1,
+            "当前系统版本不会在下载时被删除",
+            "BMCBL 只是取得新的本地 UWP 版本文件；此时不会更改 Microsoft Store 注册。",
+        ))
+        .child(safety_step(
+            &colors,
+            2,
+            "真正切换时先备份再替换",
+            "如果后续需要替换 Store 注册并检测到 games/com.mojang 数据，会先备份并校验；失败就停止卸载。",
+        ))
+        .child(safety_step(
+            &colors,
+            3,
+            "注册成功后才恢复数据",
+            "目标数据目录为空时才自动恢复备份，避免覆盖已经存在的 Minecraft 数据。",
+        ))
+        .child(
+            div()
+                .px(px(11.0))
+                .py(px(8.0))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(Hsla {
+                    a: 0.07,
+                    ..colors.surface
+                })
+                .text_size(px(11.0))
+                .line_height(px(17.0))
+                .text_color(colors.text_secondary)
+                .child("此提示没有独立配置或“已确认”记录；每次 UWP 下载/导入都会按当前系统注册状态实时判断。GDK / MSIXVC 不触发。"),
+        );
 
     let card = div()
         .w(px(card_w))
@@ -122,7 +365,7 @@ pub fn render_uwp_safety_guide(
         })
         .border_1()
         .border_color(Hsla {
-            a: 0.24,
+            a: 0.22,
             ..colors.border
         })
         .shadow(vec![BoxShadow {
@@ -180,64 +423,17 @@ pub fn render_uwp_safety_guide(
                                 .text_size(px(17.0))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(colors.text_primary)
-                                .child("UWP 数据保护说明"),
+                                .child("检测到系统安装的 UWP"),
                         )
                         .child(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(colors.text_secondary)
-                                .child("仅在首次下载或导入 UWP 时提示，与主功能导览分离。"),
+                                .child("仅根据当前 Windows 注册状态实时提示，不保存独立配置。"),
                         ),
                 ),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_h(px(0.0))
-                .p(px(20.0))
-                .flex()
-                .flex_col()
-                .gap(px(11.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .line_height(px(19.0))
-                        .text_color(colors.text_secondary)
-                        .child(context),
-                )
-                .child(safety_step(
-                    &colors,
-                    1,
-                    "先判断当前 UWP 注册来源",
-                    "BMCBL 会区分自己管理的散装 DevelopmentMode 注册与 Microsoft Store / 外部注册。",
-                ))
-                .child(safety_step(
-                    &colors,
-                    2,
-                    "Store / 外部数据先备份再替换",
-                    "如果检测到 games/com.mojang 数据，会先备份并校验；备份失败就停止卸载和替换注册。",
-                ))
-                .child(safety_step(
-                    &colors,
-                    3,
-                    "注册成功后再恢复",
-                    "目标数据目录为空时才自动恢复备份；BMCBL 自己管理的散装 UWP 切换则优先保留应用数据。",
-                ))
-                .child(
-                    div()
-                        .px(px(11.0))
-                        .py(px(8.0))
-                        .rounded(px(crate::ui::theme::tokens::radius::SM))
-                        .bg(Hsla {
-                            a: 0.08,
-                            ..colors.accent
-                        })
-                        .text_size(px(11.0))
-                        .line_height(px(17.0))
-                        .text_color(colors.text_secondary)
-                        .child("GDK / MSIXVC 不使用这套 UWP 注册迁移流程，因此不会显示本说明。"),
-                ),
-        )
+        .child(content)
         .child(
             div()
                 .px(px(20.0))
@@ -251,7 +447,7 @@ pub fn render_uwp_safety_guide(
                 .justify_end()
                 .child(
                     div()
-                        .id("uwp-safety-guide-acknowledge")
+                        .id("uwp-safety-guide-dismiss")
                         .h(px(38.0))
                         .px(px(18.0))
                         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -267,9 +463,9 @@ pub fn render_uwp_safety_guide(
                         .text_size(px(13.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.btn_primary_text)
-                        .child("我已了解，继续")
+                        .child("知道了，继续")
                         .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                            acknowledge(cx);
+                            dismiss(cx);
                         }),
                 ),
         );
