@@ -4,14 +4,15 @@ use std::{fs, io, path::PathBuf};
 
 /// 当前首次运行引导版本。
 ///
-/// 当新增必须再次展示给现有用户的重要迁移/安全步骤时递增此值。
-pub const CURRENT_ONBOARDING_VERSION: u32 = 1;
+/// v2 将旧的静态说明弹窗升级为会切换真实页面的交互式功能导览。
+/// 当后续新增必须再次展示给现有用户的重要迁移/安全步骤时继续递增。
+pub const CURRENT_ONBOARDING_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct OnboardingVersionConfig {
     /// v1 旧字段。历史版本只在 Windows 上实现首次引导，因此继续把它视为
-    /// Windows 完成状态，避免升级后重复展示原有 UWP 引导。
+    /// Windows 完成状态；当 CURRENT_ONBOARDING_VERSION 提升时，旧值仍会自然触发新导览。
     completed_version: u32,
     windows_completed_version: u32,
     linux_completed_version: u32,
@@ -137,11 +138,11 @@ mod tests {
 
     #[test]
     fn legacy_config_keeps_linux_incomplete() {
-        let decoded: OnboardingVersionConfig = toml::from_str(&format!(
-            "completed_version = {CURRENT_ONBOARDING_VERSION}\n"
-        ))
-        .expect("legacy onboarding config should deserialize");
+        let decoded: OnboardingVersionConfig = toml::from_str("completed_version = 1\n")
+            .expect("legacy onboarding config should deserialize");
+        assert_eq!(decoded.completed_version, 1);
         assert_eq!(decoded.windows_completed_version, 0);
         assert_eq!(decoded.linux_completed_version, 0);
+        assert!(decoded.completed_version < CURRENT_ONBOARDING_VERSION);
     }
 }
