@@ -1,4 +1,6 @@
-use gpui::Global;
+use std::collections::HashMap;
+
+use gpui::{Bounds, Global, Pixels};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OnboardingScene {
@@ -51,6 +53,13 @@ impl OnboardingScene {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OnboardingAnchor {
+    DownloadToolbar,
+    DownloadImport,
+    VersionSidebar,
+}
+
 #[derive(Clone, Debug)]
 pub struct OnboardingSummaryItem {
     pub label: String,
@@ -72,6 +81,7 @@ pub struct OnboardingTourState {
     pub platform_scanning: bool,
     pub platform_summary: Option<OnboardingPlatformSummary>,
     pub error: Option<String>,
+    anchors: HashMap<OnboardingAnchor, Bounds<Pixels>>,
     request_id: u64,
 }
 
@@ -86,6 +96,7 @@ impl Default for OnboardingTourState {
             platform_scanning: false,
             platform_summary: None,
             error: None,
+            anchors: HashMap::new(),
             request_id: 0,
         }
     }
@@ -100,14 +111,25 @@ impl OnboardingTourState {
         self.platform_scanning = false;
         self.platform_summary = None;
         self.error = None;
+        self.anchors.clear();
     }
 
     pub fn set_scene(&mut self, scene: OnboardingScene) {
         self.scene = scene;
         self.error = None;
+        self.anchors.clear();
         if scene != OnboardingScene::PlatformSetup {
             self.platform_scanning = false;
         }
+    }
+
+    #[must_use]
+    pub fn anchor(&self, anchor: OnboardingAnchor) -> Option<Bounds<Pixels>> {
+        self.anchors.get(&anchor).copied()
+    }
+
+    pub fn set_anchor(&mut self, anchor: OnboardingAnchor, bounds: Bounds<Pixels>) {
+        self.anchors.insert(anchor, bounds);
     }
 
     pub fn begin_platform_scan(&mut self) -> u64 {
@@ -153,5 +175,6 @@ impl OnboardingTourState {
         self.visible = false;
         self.platform_scanning = false;
         self.error = None;
+        self.anchors.clear();
     }
 }
