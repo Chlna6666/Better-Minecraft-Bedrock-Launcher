@@ -14,7 +14,7 @@ pub use super::defaults::{
     default_theme_mode, get_default_config,
 };
 
-pub(super) const CURRENT_CONFIG_VERSION: u32 = 4;
+pub(super) const CURRENT_CONFIG_VERSION: u32 = 5;
 pub(super) const LEGACY_DEFAULT_APPX_API: &str = "https://data.mcappx.com/v2/bedrock.json";
 pub(super) const INCORRECT_MIRROR_APPX_API: &str =
     "https://api.chlna6666.com/api/v1/bedrock/versions";
@@ -283,8 +283,20 @@ impl Default for OnlineConfig {
 pub struct AppStateConfig {
     pub agreement_accepted_version: u32,
     pub onboarding_completed_version: u32,
-    pub onboarding_windows_completed_version: u32,
-    pub onboarding_linux_completed_version: u32,
+    /// v4 及更早版本写入过的平台完成状态。只读取用于迁移，不再写回 settings.toml。
+    #[serde(
+        default,
+        rename = "onboarding_windows_completed_version",
+        skip_serializing
+    )]
+    pub(super) legacy_onboarding_windows_completed_version: u32,
+    /// v4 及更早版本写入过的平台完成状态。只读取用于迁移，不再写回 settings.toml。
+    #[serde(
+        default,
+        rename = "onboarding_linux_completed_version",
+        skip_serializing
+    )]
+    pub(super) legacy_onboarding_linux_completed_version: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -338,7 +350,9 @@ pub struct Config {
     pub online: OnlineConfig,
     #[serde(default)]
     pub app_state: AppStateConfig,
-    pub agreement_accepted: bool,
+    /// v3 及更早版本的协议布尔状态。只读取用于迁移，不再写回 settings.toml。
+    #[serde(default, rename = "agreement_accepted", skip_serializing)]
+    pub(super) legacy_agreement_accepted: bool,
 }
 
 pub(super) fn normalize_language_code(lang: &str) -> String {
