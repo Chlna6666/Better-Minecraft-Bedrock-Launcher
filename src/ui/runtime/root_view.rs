@@ -34,22 +34,27 @@ impl RootView {
                 subscriptions.push(cx.observe_global::<
                     crate::ui::views::download::state::DownloadPageState,
                 >(|_this, cx| {
-                    let uwp_download_dialog_visible = cx
+                    let uwp_download = cx
                         .global::<crate::ui::views::download::state::DownloadPageState>()
                         .game_dialog
                         .as_ref()
-                        .is_some_and(|dialog| {
-                            !dialog.is_gdk
+                        .and_then(|dialog| {
+                            (!dialog.is_gdk
                                 && matches!(
                                     dialog.kind,
                                     crate::ui::views::download::state::GameDialogKind::ConfirmDownload
-                                )
+                                ))
+                            .then(|| (dialog.package_id.clone(), dialog.version_type))
                         });
-                    if uwp_download_dialog_visible {
-                        crate::ui::onboarding::uwp_safety::request(
-                            crate::ui::onboarding::uwp_safety::UwpSafetyGuideTrigger::Download,
+
+                    if let Some((package_id, version_type)) = uwp_download {
+                        crate::ui::onboarding::uwp_safety::request_download(
+                            package_id,
+                            version_type,
                             cx,
                         );
+                    } else {
+                        crate::ui::onboarding::uwp_safety::clear_download_context(cx);
                     }
                 }));
             }
