@@ -8,12 +8,19 @@ use crate::{
 
 const CORNER_HITBOX_STEPS: usize = 8;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CutoutCoordinateSpace {
+    #[default]
+    Local,
+    Window,
+}
+
 /// Creates an overlay element that fills its own layout bounds while leaving one rounded,
 /// transparent cutout.
 ///
-/// `cutout` is expressed in coordinates relative to this element's layout origin. The visual mask
-/// is tessellated as a single even-odd path, so the cutout and its rounded corners do not require
-/// multiple overlapping quads.
+/// By default `cutout` is expressed relative to this element's layout origin. Call
+/// [`RoundedCutout::window_space`] when the supplied bounds already use absolute window
+/// coordinates, for example when they come from a post-layout bounds observer or hitbox.
 ///
 /// Mouse input is not blocked by default. Use [`RoundedCutout::block_mouse`] or
 /// [`RoundedCutout::block_mouse_except_scroll`] when the area outside the cutout should occlude
@@ -28,6 +35,7 @@ pub fn rounded_cutout(
         radius,
         background: Some(background.into()),
         hitbox_behavior: None,
+        coordinate_space: CutoutCoordinateSpace::Local,
         style: StyleRefinement::default(),
     }
 }
@@ -38,10 +46,20 @@ pub struct RoundedCutout {
     radius: Pixels,
     background: Option<Background>,
     hitbox_behavior: Option<HitboxBehavior>,
+    coordinate_space: CutoutCoordinateSpace,
     style: StyleRefinement,
 }
 
 impl RoundedCutout {
+    /// Interprets the configured cutout as absolute window-space bounds.
+    ///
+    /// This avoids adding the overlay element's own layout origin a second time when the target
+    /// bounds were captured from another element after layout/prepaint.
+    pub fn window_space(mut self) -> Self {
+        self.coordinate_space = CutoutCoordinateSpace::Window;
+        self
+    }
+
     /// Blocks all mouse interaction outside the rounded cutout.
     pub fn block_mouse(mut self) -> Self {
         self.hitbox_behavior = Some(HitboxBehavior::BlockMouse);
@@ -105,7 +123,7 @@ impl Element for RoundedCutout {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        let cutout = resolve_cutout(bounds, self.cutout);
+        let cutout = resolve_cutout(bounds, self.cutout, self.coordinate_space);
         let radius = clamp_radius(cutout, self.radius);
         let path = build_cutout_path(bounds, cutout, radius).ok();
 
@@ -144,14 +162,21 @@ impl Styled for RoundedCutout {
     }
 }
 
-fn resolve_cutout(bounds: Bounds<Pixels>, cutout: Bounds<Pixels>) -> Bounds<Pixels> {
-    Bounds::new(
-        point(
-            bounds.origin.x + cutout.origin.x,
-            bounds.origin.y + cutout.origin.y,
+fn resolve_cutout(
+    bounds: Bounds<Pixels>,
+    cutout: Bounds<Pixels>,
+    coordinate_space: CutoutCoordinateSpace,
+) -> Bounds<Pixels> {
+    match coordinate_space {
+        CutoutCoordinateSpace::Local => Bounds::new(
+            point(
+                bounds.origin.x + cutout.origin.x,
+                bounds.origin.y + cutout.origin.y,
+            ),
+            cutout.size,
         ),
-        cutout.size,
-    )
+        CutoutCoordinateSpace::Window => cutout,
+    }
     .intersect(&bounds)
 }
 
@@ -340,5 +365,25 @@ mod tests {
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(200.0), px(120.0)));
         let cutout = Bounds::new(point(px(40.0), px(30.0)), size(px(80.0), px(50.0)));
         assert!(build_cutout_path(bounds, cutout, px(12.0)).is_ok());
+    }
+
+    #[test]
+    fn local_cutout_adds_overlay_origin_once() {
+        let bounds = Bounds::new(point(px(20.0), px(30.0)), size(px(200.0), px(120.0)));
+        let cutout = Bounds::new(point(px(40.0), px(10.0)), size(px(80.0), px(50.0)));
+        assert_eq!(
+            resolve_cutout(bounds, cutout, CutoutCoordinateSpace::Local),
+            Bounds::new(point(px(60.0), px(40.0)), size(px(80.0), px(50.0)))
+        );
+    }
+
+    #[test]
+    fn window_cutout_does_not_add_overlay_origin_again() {
+        let bounds = Bounds::new(point(px(20.0), px(30.0)), size(px(200.0), px(120.0)));
+        let cutout = Bounds::new(point(px(80.0), px(70.0)), size(px(80.0), px(50.0)));
+        assert_eq!(
+            resolve_cutout(bounds, cutout, CutoutCoordinateSpace::Window),
+            cutout
+        );
     }
 }
