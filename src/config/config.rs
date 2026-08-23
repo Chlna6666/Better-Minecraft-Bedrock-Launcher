@@ -241,8 +241,8 @@ impl FromStr for UpdateChannel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "nightly" => Ok(UpdateChannel::Nightly),
-            _ => Ok(UpdateChannel::Stable,
-        )
+            _ => Ok(UpdateChannel::Stable),
+        }
     }
 }
 
