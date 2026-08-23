@@ -95,12 +95,11 @@ pub fn render_onboarding_tour(
 
     let mut root = div().absolute().inset_0();
 
-    // Layer 1: 遮罩只覆盖 spotlight 之外的区域，并且这些区域 occlude 底层命中。
-    // 中间的真实目标区域没有透明挡板，因此搜索、筛选、导入按钮等仍可直接操作；
-    // 同时其他区域不会继续触发无关 hover/tooltip 来干扰导览。
-    root = root.child(render_dim_layer(width, height, geometry.focus, compact));
+    // Layer 1: 使用 GPUI 公共 rounded_cutout 元素绘制真正的圆角透明孔。
+    // 孔外区域阻断无关鼠标命中，孔内保持真实页面可交互。
+    root = root.child(render_dim_layer(geometry.focus, compact));
 
-    // Layer 2: spotlight 只画目标边框，不拦截点击。
+    // Layer 2: spotlight 只画目标边框，不拦截点击；圆角与 cutout 共用同一 token。
     if let Some(focus) = geometry.focus {
         root = root.child(render_spotlight(focus, &colors));
     }
@@ -121,75 +120,29 @@ pub fn render_onboarding_tour(
     root.into_any_element()
 }
 
-fn dim_block(bounds: RectF, alpha: f32) -> Div {
-    if bounds.w <= 0.0 || bounds.h <= 0.0 {
-        return div().absolute().w(px(0.0)).h(px(0.0));
-    }
-    div()
-        .absolute()
-        .left(px(bounds.x))
-        .top(px(bounds.y))
-        .w(px(bounds.w))
-        .h(px(bounds.h))
-        .bg(Hsla { a: alpha, ..black() })
-        .occlude()
-}
-
-fn render_dim_layer(
-    width: f32,
-    height: f32,
-    focus: Option<RectF>,
-    compact: bool,
-) -> Div {
+fn render_dim_layer(focus: Option<RectF>, compact: bool) -> AnyElement {
     let alpha = if compact { 0.10 } else { 0.18 };
     let Some(focus) = focus else {
         return div()
             .absolute()
             .inset_0()
             .bg(Hsla { a: alpha, ..black() })
-            .occlude();
+            .occlude()
+            .into_any_element();
     };
 
-    // 四块遮罩围成真正的“交互孔”，不需要 clip-path，也不会产生额外中间纹理。
-    div()
-        .absolute()
-        .inset_0()
-        .child(dim_block(
-            RectF {
-                x: 0.0,
-                y: 0.0,
-                w: width,
-                h: focus.y.max(0.0),
-            },
-            alpha,
-        ))
-        .child(dim_block(
-            RectF {
-                x: 0.0,
-                y: focus.bottom(),
-                w: width,
-                h: (height - focus.bottom()).max(0.0),
-            },
-            alpha,
-        ))
-        .child(dim_block(
-            RectF {
-                x: 0.0,
-                y: focus.y,
-                w: focus.x.max(0.0),
-                h: focus.h,
-            },
-            alpha,
-        ))
-        .child(dim_block(
-            RectF {
-                x: focus.right(),
-                y: focus.y,
-                w: (width - focus.right()).max(0.0),
-                h: focus.h,
-            },
-            alpha,
-        ))
+    rounded_cutout(
+        Bounds::new(
+            point(px(focus.x), px(focus.y)),
+            size(px(focus.w), px(focus.h)),
+        ),
+        px(crate::ui::theme::tokens::radius::MD),
+        Hsla { a: alpha, ..black() },
+    )
+    .absolute()
+    .inset_0()
+    .block_mouse()
+    .into_any_element()
 }
 
 fn render_panel_layer(bounds: RectF, panel: Div) -> Div {
