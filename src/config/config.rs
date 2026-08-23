@@ -351,8 +351,8 @@ pub struct Config {
     #[serde(default)]
     pub app_state: AppStateConfig,
     /// v3 及更早版本的协议布尔状态。只读取用于迁移，不再写回 settings.toml。
-    #[serde(default, rename = "agreement_accepted", skip_serializing)]
-    pub(super) legacy_agreement_accepted: bool,
+    #[serde(default, skip_serializing)]
+    pub agreement_accepted: bool,
 }
 
 pub(super) fn normalize_language_code(lang: &str) -> String {
@@ -458,7 +458,7 @@ pub fn merge_json_values(target: &mut Value, overlay: Value) {
                 match target_map.get_mut(&key) {
                     Some(target_value) => merge_json_values(target_value, overlay_value),
                     None => {
-                        target_map.insert(key, overlay_value);
+                        target_map.insert(key.to_string(), overlay_value);
                     }
                 }
             }
