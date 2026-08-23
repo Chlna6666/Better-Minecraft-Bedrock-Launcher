@@ -6,41 +6,56 @@ use gpui::{Bounds, Global, Pixels};
 pub enum OnboardingScene {
     #[default]
     Welcome,
+    DownloadNavigation,
     GameDownload,
     ResourcePackDownload,
     ModDownload,
     ImportPackage,
+    TasksOverview,
     ManageOverview,
+    ManageContent,
+    SettingsOverview,
+    ToolsOverview,
     PlatformSetup,
     Finish,
 }
 
 impl OnboardingScene {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 13;
 
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
             Self::Welcome => 1,
-            Self::GameDownload => 2,
-            Self::ResourcePackDownload => 3,
-            Self::ModDownload => 4,
-            Self::ImportPackage => 5,
-            Self::ManageOverview => 6,
-            Self::PlatformSetup => 7,
-            Self::Finish => 8,
+            Self::DownloadNavigation => 2,
+            Self::GameDownload => 3,
+            Self::ResourcePackDownload => 4,
+            Self::ModDownload => 5,
+            Self::ImportPackage => 6,
+            Self::TasksOverview => 7,
+            Self::ManageOverview => 8,
+            Self::ManageContent => 9,
+            Self::SettingsOverview => 10,
+            Self::ToolsOverview => 11,
+            Self::PlatformSetup => 12,
+            Self::Finish => 13,
         }
     }
 
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
-            Self::Welcome => Self::GameDownload,
+            Self::Welcome => Self::DownloadNavigation,
+            Self::DownloadNavigation => Self::GameDownload,
             Self::GameDownload => Self::ResourcePackDownload,
             Self::ResourcePackDownload => Self::ModDownload,
             Self::ModDownload => Self::ImportPackage,
-            Self::ImportPackage => Self::ManageOverview,
-            Self::ManageOverview => Self::PlatformSetup,
+            Self::ImportPackage => Self::TasksOverview,
+            Self::TasksOverview => Self::ManageOverview,
+            Self::ManageOverview => Self::ManageContent,
+            Self::ManageContent => Self::SettingsOverview,
+            Self::SettingsOverview => Self::ToolsOverview,
+            Self::ToolsOverview => Self::PlatformSetup,
             Self::PlatformSetup => Self::Finish,
             Self::Finish => Self::Finish,
         }
@@ -50,33 +65,30 @@ impl OnboardingScene {
     pub const fn previous(self) -> Self {
         match self {
             Self::Welcome => Self::Welcome,
-            Self::GameDownload => Self::Welcome,
+            Self::DownloadNavigation => Self::Welcome,
+            Self::GameDownload => Self::DownloadNavigation,
             Self::ResourcePackDownload => Self::GameDownload,
             Self::ModDownload => Self::ResourcePackDownload,
             Self::ImportPackage => Self::ModDownload,
-            Self::ManageOverview => Self::ImportPackage,
-            Self::PlatformSetup => Self::ManageOverview,
+            Self::TasksOverview => Self::ImportPackage,
+            Self::ManageOverview => Self::TasksOverview,
+            Self::ManageContent => Self::ManageOverview,
+            Self::SettingsOverview => Self::ManageContent,
+            Self::ToolsOverview => Self::SettingsOverview,
+            Self::PlatformSetup => Self::ToolsOverview,
             Self::Finish => Self::PlatformSetup,
         }
-    }
-
-    #[must_use]
-    pub const fn is_download_scene(self) -> bool {
-        matches!(
-            self,
-            Self::GameDownload
-                | Self::ResourcePackDownload
-                | Self::ModDownload
-                | Self::ImportPackage
-        )
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum OnboardingAnchor {
     DownloadToolbar,
+    DownloadTabs,
     DownloadImport,
-    VersionSidebar,
+    TasksPage,
+    SettingsTabs,
+    ToolsSidebar,
 }
 
 #[derive(Clone, Debug)]
