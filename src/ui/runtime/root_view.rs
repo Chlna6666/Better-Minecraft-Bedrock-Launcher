@@ -1,5 +1,6 @@
 use gpui::{
-    AnyView, Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div,
+    AnyView, Context, InteractiveElement as _, IntoElement, ParentElement, Render, Styled,
+    Subscription, Window, div,
 };
 
 pub struct RootView {
@@ -113,6 +114,14 @@ impl Render for RootView {
                 && tour_state.visible
                 && main_window_id == Some(current_window_id)
             {
+                // 管理页教学使用纯 UI 演示数据，不允许任何点击穿透到背后的真实实例。
+                // 演示层和教学面板随后绘制在此透明 hitbox 之上，仍可正常使用“上一步/下一步”。
+                if tour_state.scene
+                    == crate::ui::onboarding::state::OnboardingScene::ManageOverview
+                {
+                    root = root.child(div().absolute().inset_0().occlude());
+                }
+
                 root = root.child(crate::ui::onboarding::render_onboarding_tour(
                     tour_state, window, cx,
                 ));
