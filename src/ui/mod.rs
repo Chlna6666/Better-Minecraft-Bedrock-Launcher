@@ -3,6 +3,7 @@ pub mod components;
 pub mod hooks;
 pub mod main_window;
 pub mod navigation;
+pub mod onboarding;
 pub mod overlays;
 pub mod runtime;
 pub mod state;
