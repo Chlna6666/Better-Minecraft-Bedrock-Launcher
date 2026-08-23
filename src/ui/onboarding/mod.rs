@@ -1,5 +1,6 @@
 pub mod anchor;
 mod guided_overlay;
+mod presentation;
 pub mod state;
 #[cfg(target_os = "windows")]
 pub mod uwp_safety;
@@ -10,7 +11,7 @@ use state::{OnboardingScene, OnboardingTourState};
 #[cfg(target_os = "linux")]
 use state::{OnboardingPlatformSummary, OnboardingSummaryItem};
 
-pub use guided_overlay::render_onboarding_tour;
+pub use presentation::render_onboarding_tour;
 
 pub fn reopen(cx: &mut App) {
     cx.update_default_global(|state: &mut OnboardingTourState, _cx| state.reopen());
