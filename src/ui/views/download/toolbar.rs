@@ -15,6 +15,7 @@ pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, no
     let search = render_toolbar_search(colors, state);
 
     div()
+        .relative()
         .w_full()
         .h(px(68.))
         .bg(Hsla {
@@ -37,6 +38,9 @@ pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, no
                 .child(div().w(px(200.)).min_w(px(0.)).child(search)),
         )
         .child(render_toolbar_controls(colors, state))
+        .child(crate::ui::onboarding::anchor::observe(
+            crate::ui::onboarding::state::OnboardingAnchor::DownloadToolbar,
+        ))
 }
 
 fn render_toolbar_search(colors: &ThemeColors, state: &DownloadPageState) -> AnyElement {
@@ -456,18 +460,27 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 .child(loader_filter)
                 .child(channel_filter)
                 .child(
-                    IconButton::new("download-import", lucide_icons::icon_upload())
-                        .icon_color(colors.text_secondary)
+                    div()
+                        .relative()
                         .w(px(32.))
                         .h(px(32.))
-                        .rounded(px(crate::ui::theme::tokens::radius::MD))
-                        .bg(Hsla {
-                            a: 0.06,
-                            ..colors.text_secondary
-                        })
-                        .on_click(|_, window, cx| {
-                            super::version_import::pick_and_import_local_version(window, cx);
-                        }),
+                        .child(
+                            IconButton::new("download-import", lucide_icons::icon_upload())
+                                .icon_color(colors.text_secondary)
+                                .w(px(32.))
+                                .h(px(32.))
+                                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                                .bg(Hsla {
+                                    a: 0.06,
+                                    ..colors.text_secondary
+                                })
+                                .on_click(|_, window, cx| {
+                                    super::version_import::pick_and_import_local_version(window, cx);
+                                }),
+                        )
+                        .child(crate::ui::onboarding::anchor::observe(
+                            crate::ui::onboarding::state::OnboardingAnchor::DownloadImport,
+                        )),
                 )
                 .child(refresh);
         }
