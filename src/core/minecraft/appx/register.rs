@@ -31,7 +31,7 @@ fn verify_development_registration(
     let family_name = minecraft_package_family_name(identity_name);
     let packages = package_manager.FindPackagesByUserSecurityIdPackageFamilyName(
         &HSTRING::new(),
-        &HSTRING::from(&family_name),
+        &HSTRING::from(family_name.as_str()),
     )?;
     let expected_path = Path::new(package_folder);
     let mut observed = Vec::new();
