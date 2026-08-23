@@ -1,9 +1,9 @@
 use refineable::Refineable as _;
 
 use crate::{
-    App, Background, Bounds, Element, ElementId, FillOptions, FillRule, GlobalElementId,
-    HitboxBehavior, InspectorElementId, IntoElement, Path, PathBuilder, PathStyle, Pixels, Style,
-    StyleRefinement, Styled, Window, point, px, size,
+    App, Background, Bounds, Element, ElementId, FillOptions, GlobalElementId, HitboxBehavior,
+    InspectorElementId, IntoElement, Path, PathBuilder, PathStyle, Pixels, Style, StyleRefinement,
+    Styled, Window, point, px, size,
 };
 
 const CORNER_HITBOX_STEPS: usize = 8;
@@ -107,12 +107,15 @@ impl Element for RoundedCutout {
     ) -> Self::PrepaintState {
         let cutout = resolve_cutout(bounds, self.cutout);
         let radius = clamp_radius(cutout, self.radius);
+        let path = build_cutout_path(bounds, cutout, radius).ok();
 
-        if let Some(behavior) = self.hitbox_behavior {
+        if path.is_some()
+            && let Some(behavior) = self.hitbox_behavior
+        {
             insert_outside_hitboxes(window, bounds, cutout, radius, behavior);
         }
 
-        build_cutout_path(bounds, cutout, radius).ok()
+        path
     }
 
     fn paint(
@@ -161,9 +164,8 @@ fn build_cutout_path(
     cutout: Bounds<Pixels>,
     radius: Pixels,
 ) -> anyhow::Result<Path<Pixels>> {
-    let mut builder = PathBuilder::fill().with_style(PathStyle::Fill(
-        FillOptions::default().with_fill_rule(FillRule::EvenOdd),
-    ));
+    let mut builder =
+        PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::even_odd()));
 
     add_rect(&mut builder, bounds);
     if !cutout.is_empty() {
