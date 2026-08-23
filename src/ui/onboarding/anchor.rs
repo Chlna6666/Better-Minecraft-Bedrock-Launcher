@@ -21,11 +21,19 @@ const fn anchor_is_active(anchor: OnboardingAnchor, scene: OnboardingScene) -> b
     matches!(
         (anchor, scene),
         (
+            OnboardingAnchor::DownloadTabs,
+            OnboardingScene::DownloadNavigation
+        ) | (
             OnboardingAnchor::DownloadToolbar,
             OnboardingScene::GameDownload
                 | OnboardingScene::ResourcePackDownload
                 | OnboardingScene::ModDownload
         ) | (OnboardingAnchor::DownloadImport, OnboardingScene::ImportPackage)
-            | (OnboardingAnchor::VersionSidebar, OnboardingScene::ManageOverview)
+            | (OnboardingAnchor::TasksPage, OnboardingScene::TasksOverview)
+            | (
+                OnboardingAnchor::SettingsTabs,
+                OnboardingScene::SettingsOverview | OnboardingScene::PlatformSetup
+            )
+            | (OnboardingAnchor::ToolsSidebar, OnboardingScene::ToolsOverview)
     )
 }
