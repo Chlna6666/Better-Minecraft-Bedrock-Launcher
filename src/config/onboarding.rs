@@ -54,6 +54,8 @@ fn remove_legacy_onboarding_config() -> io::Result<()> {
 fn app_state_with_legacy_migration() -> io::Result<AppStateConfig> {
     let config = super::config::read_config()?;
     let mut state = config.app_state.clone();
+    let legacy_path = legacy_onboarding_config_file_path();
+    let legacy_file_present = legacy_path.is_file();
     let legacy = read_legacy_onboarding_config()?;
 
     let before = state.clone();
@@ -68,10 +70,7 @@ fn app_state_with_legacy_migration() -> io::Result<AppStateConfig> {
         .onboarding_linux_completed_version
         .max(legacy.linux_completed_version);
 
-    let legacy_present = legacy.completed_version > 0
-        || legacy.windows_completed_version > 0
-        || legacy.linux_completed_version > 0;
-    if state != before || legacy_present {
+    if state != before || legacy_file_present {
         let migrated = state.clone();
         super::config::update_config(|config| {
             config.app_state = migrated;
