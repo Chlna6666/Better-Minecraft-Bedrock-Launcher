@@ -1,5 +1,24 @@
 use super::*;
 
+struct RetainedEntitySegments<'a> {
+    bounds: Bounds<ScaledPixels>,
+    segments: SmallVec<[&'a RetainedSceneSegment; 1]>,
+}
+
+impl<'a> RetainedEntitySegments<'a> {
+    fn new(segment: &'a RetainedSceneSegment) -> Self {
+        Self {
+            bounds: segment.bounds,
+            segments: SmallVec::from_elem(segment, 1),
+        }
+    }
+
+    fn push(&mut self, segment: &'a RetainedSceneSegment) {
+        self.bounds = self.bounds.union(&segment.bounds);
+        self.segments.push(segment);
+    }
+}
+
 impl Window {
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
     /// the contents of the new [`Scene`], use [`Self::present`].
@@ -321,57 +340,47 @@ impl Window {
             return;
         }
 
-        let mut previous_bounds: FxHashMap<EntityId, Bounds<ScaledPixels>> = FxHashMap::default();
-        let mut current_bounds: FxHashMap<EntityId, Bounds<ScaledPixels>> = FxHashMap::default();
-        let mut previous_segments: FxHashMap<EntityId, SmallVec<[&RetainedSceneSegment; 1]>> =
+        let mut previous_entities: FxHashMap<EntityId, RetainedEntitySegments<'_>> =
             FxHashMap::default();
-        let mut current_segments: FxHashMap<EntityId, SmallVec<[&RetainedSceneSegment; 1]>> =
+        let mut current_entities: FxHashMap<EntityId, RetainedEntitySegments<'_>> =
             FxHashMap::default();
 
         for segment in &self.rendered_frame.retained_scene_segments {
-            previous_segments
+            previous_entities
                 .entry(segment.entity_id)
-                .or_default()
-                .push(segment);
-            previous_bounds
-                .entry(segment.entity_id)
-                .and_modify(|bounds| *bounds = bounds.union(&segment.bounds))
-                .or_insert(segment.bounds);
+                .and_modify(|entity| entity.push(segment))
+                .or_insert_with(|| RetainedEntitySegments::new(segment));
         }
         for segment in &self.next_frame.retained_scene_segments {
-            current_segments
+            current_entities
                 .entry(segment.entity_id)
-                .or_default()
-                .push(segment);
-            current_bounds
-                .entry(segment.entity_id)
-                .and_modify(|bounds| *bounds = bounds.union(&segment.bounds))
-                .or_insert(segment.bounds);
+                .and_modify(|entity| entity.push(segment))
+                .or_insert_with(|| RetainedEntitySegments::new(segment));
         }
 
         // Diff the directly invalidated view's retained scene operations. A layout-driven spring
         // often belongs to a full-window page view even though only a button, pill, or menu changes;
         // using the whole view segment would promote that animation to full-window presentation.
         for entity_id in directly_dirty_views {
-            let previous = previous_segments.get(entity_id);
-            let current = current_segments.get(entity_id);
+            let previous = previous_entities.get(entity_id);
+            let current = current_entities.get(entity_id);
             let diffed = previous.zip(current).is_some_and(|(previous, current)| {
-                if previous.len() != 1 || current.len() != 1 {
+                if previous.segments.len() != 1 || current.segments.len() != 1 {
                     return false;
                 }
                 self.next_frame.scene.for_each_changed_bounds(
-                    current[0].scene_range.clone(),
+                    current.segments[0].scene_range.clone(),
                     &self.rendered_frame.scene,
-                    previous[0].scene_range.clone(),
+                    previous.segments[0].scene_range.clone(),
                     |bounds| dirty_region.push(bounds),
                 )
             });
             if !diffed {
-                if let Some(bounds) = previous_bounds.get(entity_id) {
-                    dirty_region.push(*bounds);
+                if let Some(previous) = previous {
+                    dirty_region.push(previous.bounds);
                 }
-                if let Some(bounds) = current_bounds.get(entity_id) {
-                    dirty_region.push(*bounds);
+                if let Some(current) = current {
+                    dirty_region.push(current.bounds);
                 }
             }
         }
@@ -379,32 +388,33 @@ impl Window {
         // Layout changes can move siblings even though those siblings were not directly notified.
         // Compare retained bounds across frames and damage only entities whose visual extent moved,
         // appeared, or disappeared. Stable ancestors such as MainWindow therefore remain clean.
-        for (entity_id, segments) in &current_segments {
-            match previous_segments.get(entity_id) {
+        for (entity_id, current) in &current_entities {
+            match previous_entities.get(entity_id) {
                 Some(previous)
-                    if previous.len() == segments.len()
+                    if previous.segments.len() == current.segments.len()
                         && previous
+                            .segments
                             .iter()
-                            .zip(segments)
+                            .zip(&current.segments)
                             .all(|(previous, current)| previous.bounds == current.bounds) => {}
                 Some(previous) => {
-                    for segment in previous {
+                    for segment in &previous.segments {
                         dirty_region.push(segment.bounds);
                     }
-                    for segment in segments {
+                    for segment in &current.segments {
                         dirty_region.push(segment.bounds);
                     }
                 }
                 None => {
-                    for segment in segments {
+                    for segment in &current.segments {
                         dirty_region.push(segment.bounds);
                     }
                 }
             }
         }
-        for (entity_id, segments) in &previous_segments {
-            if !current_segments.contains_key(entity_id) {
-                for segment in segments {
+        for (entity_id, previous) in &previous_entities {
+            if !current_entities.contains_key(entity_id) {
+                for segment in &previous.segments {
                     dirty_region.push(segment.bounds);
                 }
             }

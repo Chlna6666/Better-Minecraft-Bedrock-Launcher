@@ -417,8 +417,8 @@ impl NovaRenderer {
         let mesh_upload_bytes = self.custom_mesh_3d_uploaded_bytes_this_frame;
         let mesh_retained_bytes = self.custom_mesh_3d_retained_bytes();
         let mesh_buffer_count = self.custom_mesh_3d_buffer_count();
-        let atlas_texture_region_count;
-        let atlas_texture_upload_bytes;
+        let atlas_texture_region_count: usize;
+        let atlas_texture_upload_bytes: usize;
 
         let render_result: Result<()> = match &mut self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]

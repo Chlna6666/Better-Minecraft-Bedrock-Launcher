@@ -9,7 +9,7 @@ use std::{
     fmt,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicBool, AtomicUsize, Ordering, Ordering::SeqCst},
         mpsc::{TryRecvError, sync_channel},
     },
     time::Duration,
@@ -179,12 +179,15 @@ impl RenderImage {
         let config = config.clamped();
         let (queue_sender, queue_receiver) = sync_channel(config.decode_ahead_frames);
         let mut next_source_index = first_frame.sequence().saturating_add(1);
+        let mut queued_byte_len = 0usize;
         for frame in queued_frames {
             let next_frame_index = frame.sequence().saturating_add(1);
+            let frame_byte_len = frame.byte_len();
             if queue_sender.try_send(frame).is_err() {
                 break;
             }
             next_source_index = next_source_index.max(next_frame_index);
+            queued_byte_len = queued_byte_len.saturating_add(frame_byte_len);
         }
         let state = StreamingImageState {
             source,
@@ -194,6 +197,8 @@ impl RenderImage {
             queue_receiver: Mutex::new(queue_receiver),
             next_sequence: next_source_index,
             next_source_index,
+            queued_byte_len: Arc::new(AtomicUsize::new(queued_byte_len)),
+            delivered_byte_len: AtomicUsize::new(0),
             decode_task_running: AtomicBool::new(false),
             completed: AtomicBool::new(false),
         };
@@ -276,7 +281,11 @@ impl RenderImage {
     pub fn decoded_byte_len(&self) -> usize {
         match &self.data {
             RenderImageData::Resident(frames) => frames.iter().map(AnimatedFrame::byte_len).sum(),
-            RenderImageData::Streaming(state) => state.first_frame.byte_len(),
+            RenderImageData::Streaming(state) => state
+                .first_frame
+                .byte_len()
+                .saturating_add(state.queued_byte_len.load(Ordering::Relaxed))
+                .saturating_add(state.delivered_byte_len.load(Ordering::Relaxed)),
         }
     }
 
@@ -331,10 +340,21 @@ impl RenderImage {
         loop {
             match state.queue_receiver.lock().try_recv() {
                 Ok(frame) if frame.sequence > current_sequence => {
+                    let frame_byte_len = frame.byte_len();
+                    state
+                        .queued_byte_len
+                        .fetch_sub(frame_byte_len, Ordering::Relaxed);
+                    state
+                        .delivered_byte_len
+                        .store(frame_byte_len, Ordering::Relaxed);
                     next_frame = Some(frame);
                     break;
                 }
-                Ok(_) => {}
+                Ok(frame) => {
+                    state
+                        .queued_byte_len
+                        .fetch_sub(frame.byte_len(), Ordering::Relaxed);
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     state.completed.store(true, SeqCst);

@@ -53,9 +53,12 @@ pub fn decode_image_bytes_to_target(
     match format {
         ImageFormat::Jpeg => decode_jpeg_to_target(bytes, target, object_fit),
         ImageFormat::Png => decode_png_to_target(bytes, config, target, object_fit),
-        ImageFormat::WebP => decode_webp_to_target(bytes, target, object_fit).or_else(|_| {
-            decode_image_bytes_to_target_via_full_decode(bytes, format, config, target, object_fit)
-        }),
+        ImageFormat::WebP => match decode_webp_to_target(bytes, target, object_fit) {
+            Ok(Some(decoded)) => Ok(decoded),
+            Ok(None) | Err(_) => decode_image_bytes_to_target_via_full_decode(
+                bytes, format, config, target, object_fit,
+            ),
+        },
         ImageFormat::Bmp => decode_bmp_to_target(bytes, target, object_fit),
         _ => {
             decode_image_bytes_to_target_via_full_decode(bytes, format, config, target, object_fit)

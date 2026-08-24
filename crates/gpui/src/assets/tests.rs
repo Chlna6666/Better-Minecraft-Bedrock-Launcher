@@ -8,7 +8,9 @@ use image::{
 use rand::SeedableRng as _;
 use std::io::Cursor;
 use std::sync::{Arc, atomic::Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+mod webp_tests;
 
 fn frame(width: u32, height: u32) -> Frame {
     let image: RgbaImage = ImageBuffer::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
@@ -326,7 +328,7 @@ fn large_animation_enters_streaming_mode() {
 }
 
 #[test]
-fn streaming_animation_decoded_byte_len_uses_resident_frames_only() {
+fn streaming_animation_decoded_byte_len_counts_queued_frames() {
     let bytes = animated_png_bytes();
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
@@ -345,7 +347,12 @@ fn streaming_animation_decoded_byte_len_uses_resident_frames_only() {
 
     assert!(matches!(image.data, RenderImageData::Streaming(_)));
     assert_eq!(image.frame_count(), usize::MAX);
-    assert_eq!(image.decoded_byte_len(), image.frame_byte_len(0));
+    let first_frame_bytes = image.frame_byte_len(0);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while image.decoded_byte_len() == first_frame_bytes && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(image.decoded_byte_len() > first_frame_bytes);
 }
 
 #[test]

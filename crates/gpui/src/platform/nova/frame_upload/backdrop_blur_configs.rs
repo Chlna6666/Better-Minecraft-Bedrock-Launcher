@@ -172,6 +172,23 @@ impl PartialEq for NovaBackdropBlurConfig {
 
 impl Eq for NovaBackdropBlurConfig {}
 
+#[cfg(test)]
+pub(in crate::platform::nova) fn test_backdrop_blur_config(
+    downsample: u8,
+    levels: u8,
+) -> NovaBackdropBlurConfig {
+    NovaBackdropBlurConfig::new(
+        0,
+        0,
+        0,
+        downsample,
+        levels,
+        12.0,
+        [0.0, 0.0, 64.0, 32.0],
+        false,
+    )
+}
+
 #[derive(Clone, Debug)]
 pub(in crate::platform::nova) struct NovaBackdropBlurConfigSet {
     configs: Vec<NovaBackdropBlurConfig>,

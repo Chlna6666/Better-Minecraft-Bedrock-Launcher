@@ -130,6 +130,7 @@ fn backdrop_blur(order: DrawOrder) -> PaintBackdropBlur {
         radius: ScaledPixels(8.0),
         downsample: 2,
         levels: 3,
+        recompute_overlap: false,
         saturation: 1.0,
         tint: None,
     }
@@ -181,6 +182,7 @@ fn backdrop_blur_does_not_force_scene_full_redraw_fallback() {
         radius: ScaledPixels(8.0),
         downsample: 2,
         levels: 3,
+        recompute_overlap: false,
         saturation: 1.0,
         tint: None,
     });

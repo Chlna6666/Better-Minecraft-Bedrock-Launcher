@@ -44,18 +44,32 @@ fn check_nova_wgsl_shaders() {
     let shader_bundles = [
         (
             "nova solid quad shader",
+            "",
             &[CORE, "./src/platform/nova/shaders/solid_quad.wgsl"][..],
         ),
         (
             "nova mono sprite shader",
+            "",
             &[
                 CORE,
                 "./src/platform/nova/shaders/text.wgsl",
+                "./src/platform/nova/shaders/sprite_common.wgsl",
                 "./src/platform/nova/shaders/mono_sprite.wgsl",
             ][..],
         ),
         (
+            "nova subpixel sprite shader",
+            "enable dual_source_blending;\n",
+            &[
+                CORE,
+                "./src/platform/nova/shaders/text.wgsl",
+                "./src/platform/nova/shaders/sprite_common.wgsl",
+                "./src/platform/nova/shaders/subpixel_sprite.wgsl",
+            ][..],
+        ),
+        (
             "nova quad shader",
+            "",
             &[
                 CORE,
                 SHAPE,
@@ -65,26 +79,32 @@ fn check_nova_wgsl_shaders() {
         ),
         (
             "nova shadow shader",
+            "",
             &[CORE, SHAPE, "./src/platform/nova/shaders/shadow.wgsl"][..],
         ),
         (
             "nova path shader",
+            "",
             &[CORE, QUAD_COMMON, "./src/platform/nova/shaders/path.wgsl"][..],
         ),
         (
             "nova poly sprite shader",
+            "",
             &[CORE, SHAPE, "./src/platform/nova/shaders/poly_sprite.wgsl"][..],
         ),
         (
             "nova underline shader",
+            "",
             &[CORE, "./src/platform/nova/shaders/underline.wgsl"][..],
         ),
         (
             "nova surface shader",
+            "",
             &[CORE, "./src/platform/nova/shaders/surface.wgsl"][..],
         ),
         (
             "nova backdrop blur shader",
+            "",
             &[
                 CORE,
                 SHAPE,
@@ -94,11 +114,11 @@ fn check_nova_wgsl_shaders() {
     ];
 
     let mut covered_shader_paths = BTreeSet::new();
-    for (bundle_name, shader_source_paths) in shader_bundles {
+    for (bundle_name, prelude, shader_source_paths) in shader_bundles {
         for shader_source_path in shader_source_paths {
             covered_shader_paths.insert(*shader_source_path);
         }
-        check_wgsl_shader_bundle(bundle_name, shader_source_paths);
+        check_wgsl_shader_bundle(bundle_name, prelude, shader_source_paths);
     }
 
     check_nova_wgsl_shader_coverage(&covered_shader_paths);
@@ -191,11 +211,11 @@ fn check_wgsl_shader(shader_source_path: &str) {
 }
 
 #[cfg(feature = "build-shader-validation")]
-fn check_wgsl_shader_bundle(bundle_name: &str, shader_source_paths: &[&str]) {
+fn check_wgsl_shader_bundle(bundle_name: &str, prelude: &str, shader_source_paths: &[&str]) {
     use std::path::PathBuf;
     use std::str::FromStr;
 
-    let mut shader_source = String::new();
+    let mut shader_source = String::from(prelude);
     for shader_source_path in shader_source_paths {
         let shader_path = PathBuf::from_str(shader_source_path).unwrap();
         println!("cargo:rerun-if-changed={}", &shader_path.display());

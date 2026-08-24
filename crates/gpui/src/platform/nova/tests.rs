@@ -1723,7 +1723,10 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
         test_resource_set_id(16),
         test_resource_set_id(17),
         test_buffer_id(18),
-        NovaDrawStepMode::BackdropSource,
+        NovaDrawStepMode::BackdropSegment {
+            batch_start: 0,
+            batch_end: 1,
+        },
     );
 
     assert_eq!(
@@ -1829,51 +1832,44 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
 }
 
 #[test]
-fn backdrop_blur_render_passes_downsample_then_upsample_levels() {
+fn backdrop_blur_render_passes_blur_each_axis() {
     let pipelines = test_pipelines();
+    let config = test_backdrop_blur_config(2, 3);
     let targets = NovaBackdropBlurTargets {
-        downsample: 2,
+        downsample: NovaBackdropBlurConfigSet::new(vec![config], 2),
         source: NovaTextureTarget {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },
-        levels: vec![
-            NovaBackdropBlurLevelTarget {
-                texture: test_texture_id(2),
-                texture_view: test_texture_view_id(2),
-                pass_resource_sets: vec![test_resource_set_id(12)],
-            },
-            NovaBackdropBlurLevelTarget {
-                texture: test_texture_id(3),
-                texture_view: test_texture_view_id(3),
-                pass_resource_sets: vec![test_resource_set_id(13)],
-            },
-            NovaBackdropBlurLevelTarget {
-                texture: test_texture_id(4),
-                texture_view: test_texture_view_id(4),
-                pass_resource_sets: vec![test_resource_set_id(14)],
-            },
-        ],
         source_pass_resource_sets: vec![test_resource_set_id(11)],
-        target_resource_sets: vec![test_resource_set_id(15)],
+        variants: vec![NovaBackdropBlurVariantTargets {
+            config,
+            levels: vec![
+                NovaBackdropBlurLevelTarget {
+                    texture: test_texture_id(2),
+                    texture_view: test_texture_view_id(2),
+                    pass_resource_sets: vec![test_resource_set_id(12)],
+                },
+                NovaBackdropBlurLevelTarget {
+                    texture: test_texture_id(3),
+                    texture_view: test_texture_view_id(3),
+                    pass_resource_sets: vec![test_resource_set_id(13)],
+                },
+            ],
+            target_resource_sets: vec![test_resource_set_id(15)],
+        }],
     };
 
     let mut passes = Vec::new();
-    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, 3, &mut passes);
+    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, &mut passes);
 
-    assert_eq!(passes.len(), 5);
+    assert_eq!(passes.len(), 2);
     assert_eq!(
         passes
             .iter()
             .map(|pass| pass.target_texture_view)
             .collect::<Vec<_>>(),
-        vec![
-            test_texture_view_id(2),
-            test_texture_view_id(3),
-            test_texture_view_id(4),
-            test_texture_view_id(3),
-            test_texture_view_id(2),
-        ]
+        vec![test_texture_view_id(2), test_texture_view_id(3),]
     );
     assert_eq!(
         passes
@@ -1882,9 +1878,6 @@ fn backdrop_blur_render_passes_downsample_then_upsample_levels() {
             .collect::<Vec<_>>(),
         vec![
             pipelines.backdrop_blur_downsample,
-            pipelines.backdrop_blur_downsample,
-            pipelines.backdrop_blur_downsample,
-            pipelines.backdrop_blur_upsample,
             pipelines.backdrop_blur_upsample,
         ]
     );
@@ -1896,9 +1889,6 @@ fn backdrop_blur_render_passes_downsample_then_upsample_levels() {
         vec![
             [test_resource_set_id(11)].as_slice(),
             [test_resource_set_id(12)].as_slice(),
-            [test_resource_set_id(13)].as_slice(),
-            [test_resource_set_id(14)].as_slice(),
-            [test_resource_set_id(13)].as_slice(),
         ]
     );
 }
@@ -1907,18 +1897,17 @@ fn backdrop_blur_render_passes_downsample_then_upsample_levels() {
 fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
     let targets = NovaBackdropBlurTargets {
-        downsample: 2,
+        downsample: NovaBackdropBlurConfigSet::new(Vec::new(), 2),
         source: NovaTextureTarget {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },
-        levels: Vec::new(),
         source_pass_resource_sets: vec![test_resource_set_id(11)],
-        target_resource_sets: vec![test_resource_set_id(15)],
+        variants: Vec::new(),
     };
 
     let mut passes = Vec::new();
-    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, 3, &mut passes);
+    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, &mut passes);
     assert!(passes.is_empty());
 }
 
@@ -2988,6 +2977,8 @@ fn test_blend_pipelines(base: u32) -> NovaBlendPipelines {
         quads: test_render_pipeline_id(base + 2),
         shadows: test_render_pipeline_id(base + 3),
         mono_sprites: test_render_pipeline_id(base + 6),
+        #[cfg(target_os = "windows")]
+        subpixel_sprites: test_render_pipeline_id(base + 10),
         poly_sprites: test_render_pipeline_id(base + 7),
         underlines: test_render_pipeline_id(base + 8),
         backdrop_blurs: test_render_pipeline_id(base + 9),
@@ -3049,6 +3040,7 @@ fn backdrop_blur_scene(tint: Option<crate::Hsla>) -> crate::Scene {
         radius: crate::ScaledPixels(12.0),
         downsample: 2,
         levels: 3,
+        recompute_overlap: false,
         saturation: 1.0,
         tint,
     });
