@@ -3,6 +3,8 @@ mod guided_overlay;
 mod presentation;
 pub mod state;
 #[cfg(target_os = "windows")]
+pub mod uwp_backup_tools;
+#[cfg(target_os = "windows")]
 pub mod uwp_safety;
 
 use gpui::{App, AppContext as _, BorrowAppContext as _, SharedString};

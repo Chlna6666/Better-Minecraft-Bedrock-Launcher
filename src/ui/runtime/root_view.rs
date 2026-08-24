@@ -28,8 +28,15 @@ impl RootView {
             #[cfg(target_os = "windows")]
             {
                 cx.default_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
+                cx.default_global::<crate::ui::onboarding::uwp_backup_tools::UwpBackupToolsState>();
                 subscriptions.push(cx.observe_global::<
                     crate::ui::onboarding::uwp_safety::UwpSafetyGuideState,
+                >(|_this, cx| {
+                    crate::ui::onboarding::uwp_backup_tools::sync_from_safety(cx);
+                    cx.notify();
+                }));
+                subscriptions.push(cx.observe_global::<
+                    crate::ui::onboarding::uwp_backup_tools::UwpBackupToolsState,
                 >(|_this, cx| cx.notify()));
                 subscriptions.push(cx.observe_global::<
                     crate::ui::views::download::state::DownloadPageState,
@@ -61,8 +68,6 @@ impl RootView {
 
             #[cfg(target_os = "linux")]
             {
-                // 首次导览自己负责解释 Proton-GDK。不要同时叠加旧的 Linux runtime
-                // “缺少运行环境”提示；真正处于安装中的进度层仍然保留优先级。
                 let tour_visible = cx
                     .global::<crate::ui::onboarding::state::OnboardingTourState>()
                     .visible;
@@ -151,8 +156,6 @@ impl Render for RootView {
                 && tour_visible
                 && main_window_id == Some(current_window_id)
             {
-                // 管理页教学使用纯 UI 演示数据，不允许任何点击穿透到背后的真实实例。
-                // 演示层和教学面板随后绘制在此透明 hitbox 之上，仍可正常使用“上一步/下一步”。
                 if tour_scene == crate::ui::onboarding::state::OnboardingScene::ManageOverview {
                     root = root.child(div().absolute().inset_0().occlude());
                 }
@@ -179,6 +182,18 @@ impl Render for RootView {
                         guide, window, cx,
                     ),
                 );
+
+                if !guide.checking && guide.system_registration.is_some() {
+                    let backup_tools = cx
+                        .global::<crate::ui::onboarding::uwp_backup_tools::UwpBackupToolsState>();
+                    root = root.child(
+                        crate::ui::onboarding::uwp_backup_tools::render_uwp_backup_tools(
+                            backup_tools,
+                            window,
+                            cx,
+                        ),
+                    );
+                }
             }
         }
 

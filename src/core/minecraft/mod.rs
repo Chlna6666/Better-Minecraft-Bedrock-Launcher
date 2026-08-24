@@ -27,6 +27,8 @@ pub mod servers;
 pub(crate) mod skin_pack_preview;
 pub mod skin_packs;
 #[cfg(target_os = "windows")]
+pub mod uwp_backup;
+#[cfg(target_os = "windows")]
 pub mod uwp_migration;
 #[cfg(target_os = "windows")]
 pub mod uwp_registration;
