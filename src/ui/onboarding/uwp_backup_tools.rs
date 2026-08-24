@@ -237,7 +237,7 @@ fn open_migration_backups(cx: &mut App) {
 fn action_button(
     id: &'static str,
     label: &'static str,
-    icon: SharedString,
+    icon: &'static str,
     colors: ThemeColors,
     enabled: bool,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
@@ -273,7 +273,7 @@ fn action_button(
 
 fn compact_action_button(
     id: &'static str,
-    icon: SharedString,
+    icon: &'static str,
     colors: ThemeColors,
     enabled: bool,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
