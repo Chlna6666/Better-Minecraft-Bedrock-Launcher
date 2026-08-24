@@ -43,7 +43,6 @@ impl UwpBackupToolsState {
         {
             return None;
         }
-
         self.request_id = self.request_id.wrapping_add(1).max(1);
         self.family_name = Some(family_name.clone());
         self.scanning = true;
@@ -257,14 +256,9 @@ fn action_button(
         .gap(px(6.0))
         .text_size(px(11.0))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(if enabled {
-            colors.text_primary
-        } else {
-            colors.text_muted
-        })
+        .text_color(if enabled { colors.text_primary } else { colors.text_muted })
         .child(svg().path(icon).size(px(14.0)).text_color(colors.accent))
         .child(label);
-
     if enabled {
         button
             .cursor_pointer()
@@ -316,7 +310,7 @@ pub fn render_uwp_backup_tools(
     state: &UwpBackupToolsState,
     window: &mut Window,
     cx: &App,
-) -> impl IntoElement {
+) -> AnyElement {
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
@@ -432,7 +426,8 @@ pub fn render_uwp_backup_tools(
                 colors,
                 true,
                 |_event, _window, cx| open_migration_backups(cx),
-            ));
+            ))
+            .into_any_element();
     }
 
     let panel_w = right_space.clamp(210.0, 272.0);
@@ -555,3 +550,4 @@ pub fn render_uwp_backup_tools(
                     .child(status),
             )
         })
+        .into_any_element()
