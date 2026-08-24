@@ -551,3 +551,4 @@ pub fn render_uwp_backup_tools(
             )
         })
         .into_any_element()
+}
