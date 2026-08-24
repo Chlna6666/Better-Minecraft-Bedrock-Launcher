@@ -28,15 +28,8 @@ impl RootView {
             #[cfg(target_os = "windows")]
             {
                 cx.default_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
-                cx.default_global::<crate::ui::onboarding::uwp_backup_tools::UwpBackupToolsState>();
                 subscriptions.push(cx.observe_global::<
                     crate::ui::onboarding::uwp_safety::UwpSafetyGuideState,
-                >(|_this, cx| {
-                    crate::ui::onboarding::uwp_backup_tools::sync_from_safety(cx);
-                    cx.notify();
-                }));
-                subscriptions.push(cx.observe_global::<
-                    crate::ui::onboarding::uwp_backup_tools::UwpBackupToolsState,
                 >(|_this, cx| cx.notify()));
                 subscriptions.push(cx.observe_global::<
                     crate::ui::views::download::state::DownloadPageState,
@@ -182,18 +175,6 @@ impl Render for RootView {
                         guide, window, cx,
                     ),
                 );
-
-                if !guide.checking && guide.system_registration.is_some() {
-                    let backup_tools = cx
-                        .global::<crate::ui::onboarding::uwp_backup_tools::UwpBackupToolsState>();
-                    root = root.child(
-                        crate::ui::onboarding::uwp_backup_tools::render_uwp_backup_tools(
-                            backup_tools,
-                            window,
-                            cx,
-                        ),
-                    );
-                }
             }
         }
 

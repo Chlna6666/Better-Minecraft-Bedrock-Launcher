@@ -10,6 +10,8 @@ use gpui_hooks::hooks::{UseRefHook, UseStateHook};
 use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError, unbounded_channel};
 use tracing::{debug, info, warn};
 
+#[cfg(target_os = "windows")]
+use crate::core::minecraft::launcher::preflight::{LaunchPlatform, detect_launch_platform};
 use crate::core::minecraft::launcher::preflight::{
     LaunchPrerequisiteCheck, check_launch_prerequisites,
 };
@@ -225,24 +227,61 @@ pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<
     }
 
     let pending_version = pending_launch_version(&version);
+    #[cfg(target_os = "windows")]
+    if detect_launch_platform(version.kind.as_ref()) == LaunchPlatform::Uwp {
+        let request_id = crate::ui::onboarding::uwp_safety::request_launch(pending_version, cx);
+        info!(
+            request_id,
+            version_name = %version.name,
+            version = %version.version,
+            kind = %version.kind,
+            package_path = %version.path,
+            "收到 UWP 启动请求，先检查当前 Store 注册和数据导出提示"
+        );
+        return Some(Arc::from(format!("uwp-safety-{request_id}")));
+    }
+
+    Some(begin_launch_prereq(pending_version, cx))
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn continue_launcher_after_uwp_check(version: PendingLaunchVersion, cx: &mut App) {
+    if launch_flow_is_busy(cx) {
+        warn!(
+            version_name = %version.name,
+            version = %version.version,
+            "UWP 数据提示结束后无法继续：已有其他启动流程"
+        );
+        return;
+    }
+    let _ = begin_launch_prereq(version, cx);
+}
+
+fn begin_launch_prereq(pending_version: PendingLaunchVersion, cx: &mut App) -> Arc<str> {
     let request_id =
         cx.update_global(|state: &mut LaunchPrereqState, _cx| state.begin(pending_version.clone()));
     info!(
         request_id,
-        version_name = %version.name,
-        version = %version.version,
-        kind = %version.kind,
-        package_path = %version.path,
+        version_name = %pending_version.name,
+        version = %pending_version.version,
+        kind = %pending_version.kind,
+        package_path = %pending_version.path,
         "收到启动请求，开始执行启动前检查"
     );
     spawn_launch_prereq_check_for_request(pending_version, request_id, cx);
-    Some(launch_prereq_ticket(request_id))
+    launch_prereq_ticket(request_id)
 }
 
 fn launch_flow_is_busy(cx: &App) -> bool {
     let prereq_busy = cx.read_global(|state: &LaunchPrereqState, _cx| state.has_active_request());
     let launcher_busy = cx.read_global(|state: &LauncherState, _cx| state.launch_in_progress());
-    prereq_busy || launcher_busy
+    #[cfg(target_os = "windows")]
+    let uwp_safety_busy = cx
+        .try_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>()
+        .is_some_and(|state| state.has_pending_launch());
+    #[cfg(not(target_os = "windows"))]
+    let uwp_safety_busy = false;
+    prereq_busy || launcher_busy || uwp_safety_busy
 }
 
 pub fn close_launcher(cx: &mut App) {
