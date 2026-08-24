@@ -9,6 +9,7 @@ use crate::core::minecraft::uwp_backup::{
     ManualUwpBackupResult, export_user_data_backup, migration_backup_root, user_data_path,
 };
 use crate::core::minecraft::uwp_migration::MinecraftDataSummary;
+use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
@@ -471,7 +472,7 @@ pub fn render_uwp_backup_tools(
         .top(px(safety_top))
         .w(px(panel_w))
         .max_h(px(safety_h))
-        .overflow_y_scroll()
+        .overflow_y_scrollbar()
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla { a: 0.32, ..colors.border })
