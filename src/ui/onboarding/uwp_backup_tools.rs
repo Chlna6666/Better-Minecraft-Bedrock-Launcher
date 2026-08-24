@@ -42,6 +42,7 @@ impl UwpBackupToolsState {
         {
             return None;
         }
+
         self.request_id = self.request_id.wrapping_add(1).max(1);
         self.family_name = Some(family_name.clone());
         self.scanning = true;
@@ -76,17 +77,18 @@ pub fn sync_from_safety(cx: &mut App) {
     let family = cx
         .try_global::<super::uwp_safety::UwpSafetyGuideState>()
         .and_then(|state| {
-            (state.visible && !state.checking)
-                .then(|| state.system_registration.as_ref().map(|registration| registration.family_name.clone()))
-                .flatten()
+            if state.visible && !state.checking {
+                state
+                    .system_registration
+                    .as_ref()
+                    .map(|registration| registration.family_name.clone())
+            } else {
+                None
+            }
         });
 
     let Some(family) = family else {
-        let should_reset = cx
-            .global::<UwpBackupToolsState>()
-            .family_name
-            .is_some();
-        if should_reset {
+        if cx.global::<UwpBackupToolsState>().family_name.is_some() {
             cx.update_global(|state: &mut UwpBackupToolsState, _cx| state.reset());
         }
         return;
@@ -254,10 +256,49 @@ fn action_button(
         .gap(px(6.0))
         .text_size(px(11.0))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(if enabled { colors.text_primary } else { colors.text_muted })
+        .text_color(if enabled {
+            colors.text_primary
+        } else {
+            colors.text_muted
+        })
         .child(svg().path(icon).size(px(14.0)).text_color(colors.accent))
         .child(label);
 
+    if enabled {
+        button
+            .cursor_pointer()
+            .hover(move |this| this.bg(colors.surface_hover))
+            .active(|this| this.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
+            .on_mouse_down(MouseButton::Left, handler)
+            .into_any_element()
+    } else {
+        button.into_any_element()
+    }
+}
+
+fn compact_action_button(
+    id: &'static str,
+    icon: SharedString,
+    colors: ThemeColors,
+    enabled: bool,
+    handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let button = div()
+        .id(id)
+        .size(px(34.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .bg(colors.surface)
+        .border_1()
+        .border_color(colors.border)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            svg()
+                .path(icon)
+                .size(px(15.0))
+                .text_color(if enabled { colors.accent } else { colors.text_muted }),
+        );
     if enabled {
         button
             .cursor_pointer()
@@ -285,14 +326,19 @@ pub fn render_uwp_backup_tools(
     let bounds = window.bounds().size;
     let width = bounds.width / px(1.0);
     let height = bounds.height / px(1.0);
-    let wide = width >= 1040.0;
+    let safety_w = (width - 32.0).max(280.0).min(560.0);
+    let safety_h = (height - 32.0).max(220.0).min(500.0);
+    let safety_left = ((width - safety_w) / 2.0).max(16.0);
+    let safety_top = ((height - safety_h) / 2.0).max(16.0);
+    let right_space = width - (safety_left + safety_w) - 16.0;
+    let attached = right_space >= 210.0;
 
     let data_text = if state.scanning {
         "正在统计世界、资源包和数据大小…".to_string()
     } else if let Some(summary) = state.summary.as_ref() {
         if summary.data_present && summary.file_count > 0 {
             format!(
-                "{} 个文件 · {}\n世界 {} · 资源包 {} · 行为包 {} · 皮肤包 {} · 截图 {}",
+                "{} 个文件 · {}\n世界 {} · 资源包 {} · 行为包 {}\n皮肤包 {} · 截图 {}",
                 summary.file_count,
                 format_bytes(summary.total_size),
                 summary.worlds,
@@ -320,6 +366,75 @@ pub fn render_uwp_backup_tools(
         .as_ref()
         .is_some_and(|summary| user_data_path(summary).is_dir());
 
+    if !attached {
+        let compact_label = state
+            .summary
+            .as_ref()
+            .filter(|summary| summary.data_present && summary.file_count > 0)
+            .map(|summary| format!("UWP 数据 · {}", format_bytes(summary.total_size)))
+            .unwrap_or_else(|| {
+                if state.scanning {
+                    "正在检查 UWP 数据".to_string()
+                } else {
+                    "UWP 数据工具".to_string()
+                }
+            });
+
+        return div()
+            .absolute()
+            .right(px(16.0))
+            .top(px(16.0))
+            .max_w(px((width - 32.0).max(220.0)))
+            .h(px(46.0))
+            .px(px(7.0))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
+            .border_1()
+            .border_color(Hsla { a: 0.32, ..colors.border })
+            .bg(Hsla { a: 0.985, ..colors.bg })
+            .shadow(vec![BoxShadow {
+                color: Hsla { a: 0.16, ..black() },
+                blur_radius: px(20.0),
+                spread_radius: px(-5.0),
+                offset: point(px(0.0), px(8.0)),
+            }])
+            .occlude()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors.text_secondary)
+                    .truncate()
+                    .child(compact_label),
+            )
+            .child(compact_action_button(
+                "uwp-manual-backup-export-compact",
+                lucide_icons::icon_download(),
+                colors,
+                can_export,
+                |_event, window, cx| start_export(window, cx),
+            ))
+            .child(compact_action_button(
+                "uwp-manual-backup-open-data-compact",
+                lucide_icons::icon_folder_open(),
+                colors,
+                can_open_data,
+                |_event, _window, cx| open_user_data(cx),
+            ))
+            .child(compact_action_button(
+                "uwp-manual-backup-open-migrations-compact",
+                lucide_icons::icon_folder_open(),
+                colors,
+                true,
+                |_event, _window, cx| open_migration_backups(cx),
+            ));
+    }
+
+    let panel_w = right_space.clamp(210.0, 272.0);
     let actions = div()
         .w_full()
         .flex()
@@ -350,17 +465,22 @@ pub fn render_uwp_backup_tools(
             |_event, _window, cx| open_migration_backups(cx),
         ));
 
-    let panel = div()
-        .w(if wide { px(276.0) } else { px((width - 32.0).clamp(280.0, 620.0)) })
+    div()
+        .absolute()
+        .left(px(safety_left + safety_w - 1.0))
+        .top(px(safety_top))
+        .w(px(panel_w))
+        .max_h(px(safety_h))
+        .overflow_y_scroll()
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla { a: 0.32, ..colors.border })
         .bg(Hsla { a: 0.985, ..colors.bg })
         .shadow(vec![BoxShadow {
-            color: Hsla { a: 0.18, ..black() },
-            blur_radius: px(24.0),
-            spread_radius: px(-5.0),
-            offset: point(px(0.0), px(10.0)),
+            color: Hsla { a: 0.14, ..black() },
+            blur_radius: px(20.0),
+            spread_radius: px(-6.0),
+            offset: point(px(6.0), px(8.0)),
         }])
         .occlude()
         .p(px(14.0))
@@ -403,8 +523,9 @@ pub fn render_uwp_backup_tools(
                         .child(
                             div()
                                 .text_size(px(10.0))
+                                .line_height(px(14.0))
                                 .text_color(colors.text_muted)
-                                .child("手动备份是额外保险，不替代自动迁移校验"),
+                                .child("额外手动保险，不替代自动迁移校验"),
                         ),
                 ),
         )
@@ -432,19 +553,4 @@ pub fn render_uwp_backup_tools(
                     .text_color(colors.text_secondary)
                     .child(status),
             )
-        });
-
-    if wide {
-        div()
-            .absolute()
-            .right(px(16.0))
-            .top(px(((height - 500.0) / 2.0).max(16.0)))
-            .child(panel)
-    } else {
-        div()
-            .absolute()
-            .left(px(16.0))
-            .bottom(px(16.0))
-            .child(panel)
-    }
-}
+        })
