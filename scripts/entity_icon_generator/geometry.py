@@ -29,6 +29,7 @@ SPECIAL_ITEMS = {
     "furnace_minecart": "minecart_furnace",
     "hopper_minecart": "minecart_hopper",
     "minecart": "minecart_normal",
+    "painting": "painting",
     "spawner_minecart": "minecart_normal",
     "tnt_minecart": "minecart_tnt",
 }

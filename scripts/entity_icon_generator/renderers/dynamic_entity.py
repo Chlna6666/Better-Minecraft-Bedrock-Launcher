@@ -19,6 +19,14 @@ def render_falling_block(resource_packs: list[Path]) -> Image.Image | None:
     return _load_texture(resource_packs, "textures/blocks/sand")
 
 
+def render_tnt(resource_packs: list[Path]) -> Image.Image | None:
+    return _load_texture(resource_packs, "textures/blocks/tnt_side")
+
+
+def render_painting(resource_packs: list[Path]) -> Image.Image | None:
+    return _load_texture(resource_packs, "textures/items/painting")
+
+
 def render_dropped_item(resource_packs: list[Path]) -> Image.Image | None:
     tool_specs = (
         ("textures/items/diamond_pickaxe", False),
@@ -45,4 +53,8 @@ def render_dynamic_entity_icon(
         return render_falling_block(resource_packs)
     if identifier == "item":
         return render_dropped_item(resource_packs)
+    if identifier == "tnt":
+        return render_tnt(resource_packs)
+    if identifier == "painting":
+        return render_painting(resource_packs)
     return None

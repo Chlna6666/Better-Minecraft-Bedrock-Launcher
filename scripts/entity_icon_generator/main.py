@@ -163,7 +163,7 @@ def generate(resource_packs: list[Path], output: Path) -> dict[str, str]:
     resource_packs = [path for path in resource_packs if path.is_dir()]
     manifest.update(entity_head_assets(resource_packs, output))
 
-    for identifier in ("falling_block", "item"):
+    for identifier in ("falling_block", "item", "tnt", "painting"):
         if identifier in manifest:
             continue
         icon = render_dynamic_entity_icon(identifier, resource_packs)
