@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from textwrap import dedent
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected 1 match, found {count}")
+    return text.replace(old, new, 1)
+
+
+def replace_section(text: str, start: str, end: str, replacement: str, label: str) -> str:
+    start_index = text.find(start)
+    if start_index < 0:
+        raise SystemExit(f"{label}: start marker missing")
+    end_index = text.find(end, start_index)
+    if end_index < 0:
+        raise SystemExit(f"{label}: end marker missing")
+    return text[:start_index] + dedent(replacement).lstrip("\n") + text[end_index:]
+
+
+def ensure_detail_shape_initializers(text: str) -> str:
+    """Add the new field to any explicit Preview3dDetailShape literal missed by targeted patches."""
+    pattern = re.compile(r"(?<!struct )Preview3dDetailShape\s*\{")
+    matches = list(pattern.finditer(text))
+    insertions: list[int] = []
+
+    for match in matches:
+        open_brace = text.find("{", match.start(), match.end())
+        depth = 0
+        close_brace = -1
+        for index in range(open_brace, len(text)):
+            char = text[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    close_brace = index
+                    break
+        if close_brace < 0:
+            raise SystemExit("unterminated Preview3dDetailShape initializer")
+
+        body = text[open_brace + 1 : close_brace]
+        if "one_sided_planes" in body or ".." in body:
+            continue
+        insertions.append(close_brace)
+
+    for close_brace in reversed(insertions):
+        line_start = text.rfind("\n", 0, close_brace) + 1
+        closing_indent = text[line_start:close_brace]
+        field_indent = closing_indent + "    "
+        text = (
+            text[:close_brace]
+            + f"{field_indent}one_sided_planes: Vec::new(),\n{closing_indent}"
+            + text[close_brace:]
+        )
+
+    return text
+
+
+def main() -> None:
+    java_runtime = Path("crates/bedrock-block-model/src/java_runtime.rs")
+    text = java_runtime.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        "            ModelPlane::new(corners, nearest_axis_normal(normal))\n                .with_material_slot(face.material_slot)",
+        "            ModelPlane::new(corners, nearest_axis_normal(normal))\n                .front_only()\n                .with_material_slot(face.material_slot)",
+        "Java packed physical face sidedness",
+    )
+    java_runtime.write_text(text, encoding="utf-8")
+
+    model_family = Path("crates/bedrock-block-model/src/model_family.rs")
+    text = model_family.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        "pub use shape::{ModelCuboid, ModelPlane, ModelShape};",
+        "pub use shape::{ModelCuboid, ModelPlane, ModelPlaneSidedness, ModelShape};",
+        "ModelPlaneSidedness family export",
+    )
+    model_family.write_text(text, encoding="utf-8")
+
+    crate_root = Path("crates/bedrock-block-model/src/bedrock_block_model.rs")
+    text = crate_root.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        "    ModelCuboid, ModelFamily, ModelPlane, ModelShape, canonical_block_name_for_state,",
+        "    ModelCuboid, ModelFamily, ModelPlane, ModelPlaneSidedness, ModelShape,\n    canonical_block_name_for_state,",
+        "ModelPlaneSidedness crate export",
+    )
+    crate_root.write_text(text, encoding="utf-8")
+
+    preview = Path("src/ui/window/map_viewer/preview_3d_source.rs")
+    text = preview.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        "    ModelCuboid, ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,",
+        "    ModelCuboid, ModelPlane, ModelPlaneSidedness, ModelShape, ModelWarning,\n    block_export_material_name_for_block,",
+        "preview sidedness import",
+    )
+    text = replace_once(
+        text,
+        "struct Preview3dDetailShape {\n    cuboids: Vec<Preview3dCuboid>,\n    planes: Vec<Preview3dPlane>,\n}",
+        "struct Preview3dDetailShape {\n    cuboids: Vec<Preview3dCuboid>,\n    planes: Vec<Preview3dPlane>,\n    one_sided_planes: Vec<Preview3dPlane>,\n}",
+        "preview detail shape sidedness storage",
+    )
+    text = replace_once(
+        text,
+        "        Self {\n            cuboids: cuboids.into(),\n            planes: Vec::new(),\n        }",
+        "        Self {\n            cuboids: cuboids.into(),\n            planes: Vec::new(),\n            one_sided_planes: Vec::new(),\n        }",
+        "preview detail constructor",
+    )
+    text = replace_once(
+        text,
+        "        self.cuboids.is_empty() && self.planes.is_empty()",
+        "        self.cuboids.is_empty()\n            && self.planes.is_empty()\n            && self.one_sided_planes.is_empty()",
+        "preview detail empty check",
+    )
+
+    text = replace_section(
+        text,
+        "fn preview_3d_detail_shape_from_model_shape(",
+        "fn preview_3d_cuboid_from_model_cuboid(",
+        r'''
+        fn preview_3d_detail_shape_from_model_shape(shape: ModelShape) -> Preview3dDetailShape {
+            let mut result = Preview3dDetailShape {
+                cuboids: shape
+                    .cuboids
+                    .into_iter()
+                    .map(preview_3d_cuboid_from_model_cuboid)
+                    .collect(),
+                planes: Vec::new(),
+                one_sided_planes: Vec::new(),
+            };
+            for plane in shape.planes {
+                let sidedness = plane.sidedness;
+                let plane = preview_3d_plane_from_model_plane(plane);
+                match sidedness {
+                    ModelPlaneSidedness::DoubleSided => result.planes.push(plane),
+                    ModelPlaneSidedness::FrontOnly => result.one_sided_planes.push(plane),
+                }
+            }
+            result
+        }
+
+        ''',
+        "preview model shape conversion",
+    )
+
+    text = replace_section(
+        text,
+        "fn preview_3d_apply_full_texture_uv(",
+        "fn preview_3d_normalize_shulker_geometry_shape(",
+        r'''
+        fn preview_3d_apply_full_texture_uv(shape: &mut Preview3dDetailShape) {
+            let uv = preview_3d_full_texture_uv();
+            for cuboid in &mut shape.cuboids {
+                for face in [
+                    BlockFace::Up,
+                    BlockFace::Down,
+                    BlockFace::North,
+                    BlockFace::South,
+                    BlockFace::East,
+                    BlockFace::West,
+                ] {
+                    cuboid.face_uvs.insert(face, uv);
+                }
+            }
+            for plane in shape
+                .planes
+                .iter_mut()
+                .chain(shape.one_sided_planes.iter_mut())
+            {
+                plane.uv = Some(uv);
+            }
+        }
+
+        ''',
+        "preview full texture UV",
+    )
+
+    text = replace_section(
+        text,
+        "fn preview_3d_normalize_shulker_geometry_shape(",
+        "fn preview_3d_push_bone_geometry(",
+        r'''
+        fn preview_3d_normalize_shulker_geometry_shape(shape: &mut Preview3dDetailShape) {
+            shape.cuboids.retain(|cuboid| {
+                let width = cuboid.max[0] - cuboid.min[0];
+                let height = cuboid.max[1] - cuboid.min[1];
+                let depth = cuboid.max[2] - cuboid.min[2];
+                !(width <= 0.4 && height <= 0.4 && depth <= 0.4)
+            });
+            for cuboid in &mut shape.cuboids {
+                *cuboid = preview_3d_detail_cuboid_with_local_uv(cuboid.clone())
+                    .with_face_material_slot(BlockFace::Down, "down")
+                    .with_face_material_slot(BlockFace::Up, "up")
+                    .with_face_material_slot(BlockFace::Side, "side");
+            }
+            shape.planes.clear();
+            shape.one_sided_planes.clear();
+        }
+
+        ''',
+        "preview shulker normalization",
+    )
+
+    text = replace_once(
+        text,
+        "    shape.planes.extend(preview_3d_rotated_cuboid_planes(",
+        "    shape\n        .one_sided_planes\n        .extend(preview_3d_rotated_cuboid_planes(",
+        "Bedrock rotated cube sidedness",
+    )
+
+    text = replace_section(
+        text,
+        "fn preview_3d_shape_is_full_cube(",
+        "fn preview_3d_nearly_eq(",
+        r'''
+        fn preview_3d_shape_is_full_cube(shape: &Preview3dDetailShape) -> bool {
+            shape.planes.is_empty()
+                && shape.one_sided_planes.is_empty()
+                && shape.cuboids.len() == 1
+                && shape.cuboids.first().is_some_and(|cuboid| {
+                    preview_3d_nearly_eq(cuboid.min, [0.0, 0.0, 0.0])
+                        && preview_3d_nearly_eq(cuboid.max, [1.0, 1.0, 1.0])
+                })
+        }
+
+        ''',
+        "preview full cube detection",
+    )
+
+    text = replace_section(
+        text,
+        "fn preview_3d_push_detail_block_faces(",
+        "fn preview_3d_push_cuboid_faces(",
+        r'''
+        fn preview_3d_push_detail_block_faces(
+            block: &Preview3dDetailBlock,
+            shape: &Preview3dDetailShape,
+            faces: &mut Vec<Preview3dFace>,
+        ) {
+            for cuboid in &shape.cuboids {
+                preview_3d_push_cuboid_faces(
+                    block.key,
+                    cuboid.clone(),
+                    block.color,
+                    block.material.clone(),
+                    faces,
+                );
+            }
+            for plane in &shape.planes {
+                preview_3d_push_plane_face(
+                    block.key,
+                    plane.clone(),
+                    block.color,
+                    block.material.clone(),
+                    faces,
+                );
+                preview_3d_push_plane_face(
+                    block.key,
+                    Preview3dPlane {
+                        corners: [
+                            plane.corners[3],
+                            plane.corners[2],
+                            plane.corners[1],
+                            plane.corners[0],
+                        ],
+                        normal: [-plane.normal[0], -plane.normal[1], -plane.normal[2]],
+                        material_slot: plane.material_slot.clone(),
+                        uv: plane.uv.map(|[a, b, c, d]| [d, c, b, a]),
+                    },
+                    block.color,
+                    block.material.clone(),
+                    faces,
+                );
+            }
+            for plane in &shape.one_sided_planes {
+                preview_3d_push_plane_face(
+                    block.key,
+                    plane.clone(),
+                    block.color,
+                    block.material.clone(),
+                    faces,
+                );
+            }
+        }
+
+        ''',
+        "preview detail face emission",
+    )
+
+    text = ensure_detail_shape_initializers(text)
+    preview.write_text(text, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()
