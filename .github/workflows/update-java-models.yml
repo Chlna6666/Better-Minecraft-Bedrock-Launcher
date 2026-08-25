@@ -11,6 +11,7 @@ on:
       - scripts/fetch_java_models.py
       - crates/bedrock-block-model/src/java.rs
       - crates/bedrock-block-model/src/java_bake.rs
+      - crates/bedrock-block-model/src/java_db.rs
       - crates/bedrock-block-model/src/bin/block_model_tool.rs
       - .github/workflows/update-java-models.yml
 
@@ -93,6 +94,10 @@ jobs:
             target/java-model-cache/current \
             crates/bedrock-block-model/generated/vanilla_models.bin \
             --json | tee target/java-model-bake-stats.json
+
+      - name: Test packed Java model database reader
+        shell: bash
+        run: cargo test -p bedrock-block-model --lib java_db
 
       - name: Write model database metadata
         id: metadata
