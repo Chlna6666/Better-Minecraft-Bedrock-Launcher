@@ -16,6 +16,8 @@ pub(super) const NOVA_ATLAS_SIZE: u32 = NOVA_DEFAULT_ATLAS_SIZE;
 pub(super) const NOVA_ATLAS_BYTES_PER_PIXEL: usize = 4;
 pub(super) const NOVA_ATLAS_TILE_PADDING: u32 = 1;
 pub(super) const NOVA_ATLAS_KIND_COUNT: usize = 4;
+const NOVA_DEDICATED_IMAGE_AXIS_THRESHOLD: u32 = 1536;
+const NOVA_DEDICATED_IMAGE_AREA_DIVISOR: u64 = 4;
 const NOVA_FALLBACK_ATLAS_BYTES: usize = NOVA_ATLAS_KIND_COUNT
     * NOVA_DEFAULT_ATLAS_SIZE as usize
     * NOVA_DEFAULT_ATLAS_SIZE as usize
@@ -420,6 +422,31 @@ impl PlatformAtlas for NovaAtlas {
             }
         }
     }
+
+    fn remove_image(&self, image_id: ImageId) {
+        let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        let keys = state
+            .tiles
+            .keys()
+            .filter(|key| {
+                matches!(key, AtlasKey::Image(params) if params.image_id == image_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut queued_removal = false;
+        for key in keys {
+            if let Some(tile) = state.tiles.remove(&key) {
+                if state.is_fallback_tile(tile) {
+                    continue;
+                }
+                state.pending_removals.push(PendingAtlasRemoval { key, tile });
+                queued_removal = true;
+            }
+        }
+        if queued_removal {
+            self.publish_state_flags(&state);
+        }
+    }
 }
 
 fn preferred_atlas_axis_size(content_axis: i32) -> Option<u32> {
@@ -432,6 +459,27 @@ fn preferred_atlas_axis_size(content_axis: i32) -> Option<u32> {
         NOVA_DEFAULT_ATLAS_SIZE
     };
     Some(padded.max(floor).min(NOVA_MAX_ATLAS_SIZE))
+}
+
+fn padded_content_texture_size(content_size: Size<DevicePixels>) -> Option<(u32, u32)> {
+    let width = u32::try_from(content_size.width.0.max(1))
+        .ok()?
+        .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2));
+    let height = u32::try_from(content_size.height.0.max(1))
+        .ok()?
+        .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2));
+    (width <= NOVA_MAX_ATLAS_SIZE && height <= NOVA_MAX_ATLAS_SIZE).then_some((width, height))
+}
+
+fn image_prefers_dedicated_texture(content_size: Size<DevicePixels>) -> bool {
+    let width = u32::try_from(content_size.width.0.max(1)).unwrap_or(u32::MAX);
+    let height = u32::try_from(content_size.height.0.max(1)).unwrap_or(u32::MAX);
+    let area = u64::from(width).saturating_mul(u64::from(height));
+    let shared_page_area = u64::from(NOVA_DEFAULT_ATLAS_SIZE)
+        .saturating_mul(u64::from(NOVA_DEFAULT_ATLAS_SIZE));
+    area >= shared_page_area / NOVA_DEDICATED_IMAGE_AREA_DIVISOR
+        || width > NOVA_DEDICATED_IMAGE_AXIS_THRESHOLD
+        || height > NOVA_DEDICATED_IMAGE_AXIS_THRESHOLD
 }
 
 impl NovaAtlasState {
@@ -468,7 +516,8 @@ impl NovaAtlasState {
         size: Size<DevicePixels>,
         bytes: &[u8],
     ) -> Option<AtlasTile> {
-        self.allocate_and_upload_kind(key.texture_kind(), size, bytes)
+        let dedicated = matches!(key, AtlasKey::Image(_)) && image_prefers_dedicated_texture(size);
+        self.allocate_and_upload_kind_with_placement(key.texture_kind(), size, bytes, dedicated)
     }
 
     fn allocate_and_upload_kind(
@@ -476,6 +525,16 @@ impl NovaAtlasState {
         texture_kind: AtlasTextureKind,
         size: Size<DevicePixels>,
         bytes: &[u8],
+    ) -> Option<AtlasTile> {
+        self.allocate_and_upload_kind_with_placement(texture_kind, size, bytes, false)
+    }
+
+    fn allocate_and_upload_kind_with_placement(
+        &mut self,
+        texture_kind: AtlasTextureKind,
+        size: Size<DevicePixels>,
+        bytes: &[u8],
+        dedicated: bool,
     ) -> Option<AtlasTile> {
         #[cfg(test)]
         if self.disabled_kinds.contains(&texture_kind) {
@@ -494,8 +553,8 @@ impl NovaAtlasState {
             i32::try_from(padded_width).ok()?,
             i32::try_from(padded_height).ok()?,
         );
-        let (texture_id, allocation_id, allocation_min_x, allocation_min_y) =
-            self.allocate_in_texture(texture_kind, size, allocation_size)?;
+        let (texture_id, allocation_id, allocation_min_x, allocation_min_y) = self
+            .allocate_in_texture(texture_kind, size, allocation_size, dedicated)?;
 
         let origin = Point {
             x: DevicePixels(
@@ -532,8 +591,9 @@ impl NovaAtlasState {
         texture_kind: AtlasTextureKind,
         content_size: Size<DevicePixels>,
         allocation_size: etagere::Size,
+        dedicated: bool,
     ) -> Option<(AtlasTextureId, AllocId, i32, i32)> {
-        {
+        if !dedicated {
             let list = &mut self.texture_lists[atlas_kind_index(texture_kind)];
             for texture in list.textures.iter_mut().flatten().rev() {
                 if let Some(allocation) = texture.allocator.allocate(allocation_size) {
@@ -557,8 +617,14 @@ impl NovaAtlasState {
         if texture_count >= self.max_atlas_textures {
             return None;
         }
-        let width = preferred_atlas_axis_size(content_size.width.0)?;
-        let height = preferred_atlas_axis_size(content_size.height.0)?;
+        let (width, height) = if dedicated {
+            padded_content_texture_size(content_size)?
+        } else {
+            (
+                preferred_atlas_axis_size(content_size.width.0)?,
+                preferred_atlas_axis_size(content_size.height.0)?,
+            )
+        };
         let texture_bytes = usize::try_from(width)
             .ok()?
             .checked_mul(usize::try_from(height).ok()?)
@@ -581,7 +647,7 @@ impl NovaAtlasState {
         // missed bump could leave a new texture without GPU resources.
         self.texture_set_generation = self.texture_set_generation.wrapping_add(1);
         let list = &mut self.texture_lists[atlas_kind_index(texture_kind)];
-        let texture = Self::push_texture(texture_kind, content_size, list)?;
+        let texture = Self::push_texture_with_size(texture_kind, width, height, list)?;
         let allocation = texture.allocator.allocate(allocation_size)?;
         texture.live_tile_count = texture.live_tile_count.saturating_add(1);
         Some((
@@ -592,13 +658,12 @@ impl NovaAtlasState {
         ))
     }
 
-    fn push_texture(
+    fn push_texture_with_size(
         texture_kind: AtlasTextureKind,
-        min_size: Size<DevicePixels>,
+        width: u32,
+        height: u32,
         list: &mut NovaAtlasTextureList,
     ) -> Option<&mut NovaAtlasTexture> {
-        let width = preferred_atlas_axis_size(min_size.width.0)?;
-        let height = preferred_atlas_axis_size(min_size.height.0)?;
         let size = Size {
             width: DevicePixels(i32::try_from(width).ok()?),
             height: DevicePixels(i32::try_from(height).ok()?),
@@ -700,6 +765,21 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_image_prefers_exact_dedicated_texture() {
+        let image_size = size(DevicePixels(2304), DevicePixels(1296));
+        assert!(image_prefers_dedicated_texture(image_size));
+        assert_eq!(padded_content_texture_size(image_size), Some((2306, 1298)));
+    }
+
+    #[test]
+    fn map_tile_remains_shared_atlas_candidate() {
+        assert!(!image_prefers_dedicated_texture(size(
+            DevicePixels(512),
+            DevicePixels(512)
+        )));
+    }
+
+    #[test]
     fn queued_tile_upload_advances_atlas_content_generation() {
         let mut state = NovaAtlasState::default();
         let generation = state.content_generation;
@@ -707,9 +787,9 @@ mod tests {
         assert!(state.enqueue_tile_upload(
             AtlasTextureId {
                 index: 0,
-                kind: AtlasTextureKind::Bgra,
+                kind: AtlasTextureKind::Rgba,
             },
-            AtlasTextureKind::Bgra,
+            AtlasTextureKind::Rgba,
             Point {
                 x: DevicePixels(0),
                 y: DevicePixels(0),
@@ -788,6 +868,37 @@ mod tests {
         assert_ne!(first_tile.bounds, second_tile.bounds);
         atlas.apply_pending_removals();
         assert!(!atlas.has_pending_removals());
+    }
+
+    #[test]
+    fn removing_image_retires_all_frame_slots() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let image_id = ImageId(30);
+        let pixels = vec![255; 64 * 64 * NOVA_ATLAS_BYTES_PER_PIXEL];
+        for frame_slot in 0..2 {
+            let key = AtlasKey::Image(RenderImageParams {
+                image_id,
+                frame_slot,
+                pixel_format: ImagePixelFormat::Rgba8,
+            });
+            atlas
+                .ensure_tile_with(&key, &mut || {
+                    Ok(Some((
+                        size(DevicePixels(64), DevicePixels(64)),
+                        Cow::Borrowed(pixels.as_slice()),
+                    )))
+                })
+                .expect("image frame should allocate")
+                .expect("image frame should have a tile");
+        }
+
+        atlas.remove_image(image_id);
+        let state = atlas.state.lock().expect("nova atlas lock poisoned");
+        assert!(state.tiles.keys().all(|key| {
+            !matches!(key, AtlasKey::Image(params) if params.image_id == image_id)
+        }));
+        assert_eq!(state.pending_removals.len(), 2);
     }
 
     #[test]

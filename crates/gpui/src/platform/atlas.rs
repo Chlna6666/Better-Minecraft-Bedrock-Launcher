@@ -3,8 +3,8 @@ use std::{borrow::Cow, ops};
 use anyhow::Result;
 
 use crate::{
-    Bounds, DevicePixels, ImagePixelFormat, RenderGlyphParams, RenderImageParams, RenderSvgParams,
-    Rgba, Size,
+    Bounds, DevicePixels, ImageId, ImagePixelFormat, RenderGlyphParams, RenderImageParams,
+    RenderSvgParams, Rgba, Size,
 };
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -100,6 +100,13 @@ pub(crate) trait PlatformAtlas: Send + Sync {
 
     fn clear_glyphs(&self);
     fn remove(&self, key: &AtlasKey);
+
+    /// Removes every atlas tile owned by one decoded image.
+    ///
+    /// Backends that do not retain image tiles may keep the default no-op. Atlas-backed
+    /// renderers should queue the tiles for GPU-safe retirement instead of keeping them alive
+    /// after the last image owner disappears.
+    fn remove_image(&self, _image_id: ImageId) {}
 }
 
 pub(crate) struct GlyphBitmap {

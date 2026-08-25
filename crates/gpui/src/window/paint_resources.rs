@@ -513,12 +513,16 @@ impl Window {
         });
     }
 
-    /// Drops this window's decoded-image lookup state while preserving GPU atlas residency.
+    /// Drops this window's decoded-image lookup state and retires its atlas residency.
+    ///
+    /// The atlas backend defers physical deallocation until a GPU-safe point, and can cancel the
+    /// pending removal if the same image is painted again before retirement completes.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         self.animated_image_slots
             .retain(|slot_key, _| slot_key.image_id != data.id);
         self.image_paint_tile_cache
             .retain(|cache_key, _| cache_key.image_id != data.id);
+        self.sprite_atlas.remove_image(data.id);
         record_image_drop(1);
 
         Ok(())
