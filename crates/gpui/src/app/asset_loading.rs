@@ -16,121 +16,42 @@ use super::App;
 mod asset_loading_tests;
 
 impl App {
-    /// Records the byte sizes of compressed asset tasks that completed since the last call.
-    ///
-    /// This keeps `enforce_compressed_asset_budget` from downcasting and polling every retained
-    /// task on each fetch: only tasks still pending completion are polled here, and everything
-    /// else is served from the accounted byte counter.
-    fn account_completed_compressed_assets(&mut self) {
-        if self.compressed_assets_pending.is_empty() {
-            return;
-        }
-        let mut pending = std::mem::take(&mut self.compressed_assets_pending);
-        pending.retain(|asset_id| {
-            let Some(task) = self.loading_assets.get(asset_id).and_then(|task| {
-                task.downcast_ref::<
-                    Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
-                >()
-            }) else {
-                // The asset was removed while its load was pending; nothing to account.
-                return false;
-            };
-            match task.clone().now_or_never() {
-                Some(result) => {
-                    // Failed loads are recorded with zero bytes so they stop being polled.
-                    let bytes = result.map(|bytes| bytes.len()).unwrap_or(0);
-                    self.compressed_asset_sizes.insert(*asset_id, bytes);
-                    self.compressed_asset_accounted_bytes =
-                        self.compressed_asset_accounted_bytes.saturating_add(bytes);
-                    false
-                }
-                None => true,
-            }
-        });
-        self.compressed_assets_pending = pending;
-    }
-
-    /// Drops budget accounting for a compressed asset that is being removed.
-    fn forget_compressed_asset_accounting(&mut self, asset_id: (TypeId, u64)) {
-        if let Some(bytes) = self.compressed_asset_sizes.remove(&asset_id) {
-            self.compressed_asset_accounted_bytes =
-                self.compressed_asset_accounted_bytes.saturating_sub(bytes);
-        }
-        self.compressed_assets_pending
-            .retain(|candidate| *candidate != asset_id);
-    }
-
-    fn enforce_compressed_asset_budget(&mut self) {
-        self.account_completed_compressed_assets();
-        let max_bytes = self.image_pipeline_config.max_compressed_bytes;
-        if self.compressed_asset_accounted_bytes <= max_bytes {
-            return;
-        }
-        let mut evicted = Vec::new();
-        let mut retained_bytes = self.compressed_asset_accounted_bytes;
-        for asset_id in &self.compressed_asset_lru {
-            if retained_bytes <= max_bytes {
-                break;
-            }
-            let Some(bytes) = self.compressed_asset_sizes.get(asset_id).copied() else {
-                continue;
-            };
-            if bytes == 0 {
-                continue;
-            }
-            evicted.push(*asset_id);
-            retained_bytes = retained_bytes.saturating_sub(bytes);
-        }
-        for asset_id in evicted {
-            self.loading_assets.remove(&asset_id);
-            self.compressed_asset_lru
-                .retain(|candidate| *candidate != asset_id);
-            self.forget_compressed_asset_accounting(asset_id);
-        }
-    }
-
-    /// Trims resident image state while retaining the bounded compressed byte layer.
+    /// Trims idle image state without applying byte ceilings to active images.
     pub fn trim_image_memory(&mut self, level: ImageMemoryTrimLevel) {
-        let config = self.image_pipeline_config;
         let bitmap_pool_limit = match level {
-            ImageMemoryTrimLevel::Light => config.bitmap_pool_bytes.saturating_mul(3) / 4,
+            ImageMemoryTrimLevel::Light => self.image_pipeline_config.bitmap_pool_bytes.saturating_mul(3) / 4,
             ImageMemoryTrimLevel::Moderate | ImageMemoryTrimLevel::Aggressive => 0,
         };
-        let compressed_limit = match level {
-            ImageMemoryTrimLevel::Light => config.max_compressed_bytes.saturating_mul(3) / 4,
-            ImageMemoryTrimLevel::Moderate | ImageMemoryTrimLevel::Aggressive => {
-                config.max_compressed_bytes
-            }
-        };
         crate::assets::trim_global_bitmap_pool_to(bitmap_pool_limit);
-        crate::trim_compressed_cache(compressed_limit);
-        self.enforce_compressed_asset_budget();
+        crate::trim_compressed_cache();
 
         if matches!(level, ImageMemoryTrimLevel::Light) {
             return;
         }
 
+        // Completed compressed-image tasks are reusable cache state rather than active image
+        // ownership. Moderate/aggressive trims release those strong task outputs; the global
+        // compressed cache contains only Weak references, so bytes disappear when no decode or
+        // explicit preload still owns them.
+        let compressed_type = TypeId::of::<crate::CompressedImageLoader>();
         let completed_compressed = self
-            .compressed_asset_lru
+            .loading_assets
             .iter()
-            .filter(|asset_id| {
-                self.loading_assets
-                    .get(asset_id)
-                    .and_then(|task| {
-                        task.downcast_ref::<
-                            Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
-                        >()
-                    })
-                    .is_some_and(|task| task.clone().now_or_never().is_some())
+            .filter_map(|(asset_id, task)| {
+                if asset_id.0 != compressed_type {
+                    return None;
+                }
+                task.downcast_ref::<
+                    Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
+                >()
+                .is_some_and(|task| task.clone().now_or_never().is_some())
+                .then_some(*asset_id)
             })
-            .copied()
             .collect::<Vec<_>>();
         for asset_id in completed_compressed {
             self.loading_assets.remove(&asset_id);
-            self.compressed_asset_lru
-                .retain(|candidate| *candidate != asset_id);
-            self.forget_compressed_asset_accounting(asset_id);
         }
+        crate::trim_compressed_cache();
 
         let resource_type = TypeId::of::<crate::ResourceImageLoader>();
         let inline_type = TypeId::of::<crate::AssetLogger<crate::ClipboardImageLoader>>();
@@ -167,7 +88,7 @@ impl App {
         }
     }
 
-    /// Remove an asset from GPUI's cache
+    /// Remove an asset from GPUI's cache.
     pub fn remove_asset<A: Asset>(&mut self, source: &A::Source) {
         self.take_asset::<A>(source);
     }
@@ -175,20 +96,15 @@ impl App {
     /// Remove an asset from GPUI's cache and return its task if it exists.
     pub fn take_asset<A: Asset>(&mut self, source: &A::Source) -> Option<Shared<Task<A::Output>>> {
         let asset_id = (TypeId::of::<A>(), hash(source));
-        let task = self
-            .loading_assets
+        self.loading_assets
             .remove(&asset_id)
-            .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap());
-        self.compressed_asset_lru
-            .retain(|candidate| *candidate != asset_id);
-        self.forget_compressed_asset_accounting(asset_id);
-        task
+            .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap())
     }
 
     /// Asynchronously load an asset, if the asset hasn't finished loading this will return None.
     ///
-    /// Note that the multiple calls to this method will only result in one `Asset::load` call at a
-    /// time, and the results of this call will be cached
+    /// Multiple calls only result in one `Asset::load` call at a time, and the result is shared
+    /// through the normal GPUI asset task cache.
     pub fn fetch_asset<A: Asset>(&mut self, source: &A::Source) -> (Shared<Task<A::Output>>, bool) {
         let asset_id = (TypeId::of::<A>(), hash(source));
         // Fast path: clone an already registered task without removing and re-boxing it.
@@ -205,16 +121,6 @@ impl App {
             self.loading_assets.insert(asset_id, Box::new(task.clone()));
             task
         });
-
-        if asset_id.0 == TypeId::of::<crate::CompressedImageLoader>() {
-            self.compressed_asset_lru
-                .retain(|candidate| *candidate != asset_id);
-            self.compressed_asset_lru.push_back(asset_id);
-            if is_first {
-                self.compressed_assets_pending.push(asset_id);
-            }
-            self.enforce_compressed_asset_budget();
-        }
 
         (task, is_first)
     }
@@ -234,8 +140,8 @@ impl App {
     ///
     /// This is intended for images that will later be rendered with
     /// [`StyledImage::render_to_bounds`](crate::StyledImage::render_to_bounds). The final decode
-    /// still happens after layout determines the target size, but file/network I/O and compressed
-    /// byte retention can begin earlier and will be shared with target-size decodes.
+    /// still happens after layout determines the target size, but file/network I/O can begin
+    /// earlier and the task output is shared with target-size decodes while it remains owned.
     pub fn preload_compressed_image_resources(
         &mut self,
         sources: impl IntoIterator<Item = AssetLocation>,
@@ -364,17 +270,19 @@ impl App {
         self.remove_image_render_request_in(&target_source, current_window)
     }
 
-    /// Drops render-image lookup state on all windows while preserving GPU atlas residency.
+    /// Retires an image's window-side lookup state and GPU atlas allocations.
     ///
-    /// If the current window is being updated, it will be removed from `App.windows`, you can use `current_window` to specify the current window.
-    /// This is a no-op if the image has no window-side lookup state.
+    /// Backends defer the physical GPU resource destruction until it is safe for submitted frames;
+    /// a quick repaint can cancel a still-pending image retirement and reuse the existing upload.
+    /// If the current window is being updated, it will be removed from `App.windows`; use
+    /// `current_window` to include it explicitly.
     pub fn drop_image(&mut self, image: Arc<RenderImage>, current_window: Option<&mut Window>) {
-        // remove the texture from all other windows
+        // Remove the texture from all other windows.
         for window in self.windows.values_mut().flatten() {
             _ = window.drop_image(image.clone());
         }
 
-        // remove the texture from the current window
+        // Remove the texture from the current window.
         if let Some(window) = current_window {
             _ = window.drop_image(image);
         }
