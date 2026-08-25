@@ -220,16 +220,10 @@ impl Application {
 
     /// Sets the application-wide image pipeline behavior.
     ///
-    /// Active image memory is lifecycle-managed by GPUI rather than rejected by fixed byte
-    /// ceilings. Count-based scheduling controls and the idle bitmap reuse-pool budget are kept.
+    /// Active image memory is lifetime-managed by GPUI rather than rejected by fixed byte
+    /// ceilings. Count-based scheduling controls and the idle bitmap reuse-pool policy are kept.
     pub fn with_image_pipeline_config(self, config: ImagePipelineConfig) -> Self {
-        let config = config.lifecycle_managed();
-        crate::assets::configure_global_bitmap_pool(
-            config.bitmap_pool_bytes,
-            config.bitmap_pool_max_buffer_bytes,
-        );
-        crate::assets::configure_animation_queue(config.animation_prefetch_byte_limit);
-        crate::configure_compressed_cache(config.max_compressed_bytes);
+        crate::assets::configure_global_bitmap_pool(config.bitmap_pool_bytes);
         self.0.borrow_mut().image_pipeline_config = config;
         self
     }
