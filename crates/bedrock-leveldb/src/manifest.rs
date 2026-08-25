@@ -412,14 +412,20 @@ mod tests {
         let cloned = table.clone();
 
         assert_eq!(
-            table.smallest_internal_key.as_ref().map(|bytes| bytes.as_ptr()),
+            table
+                .smallest_internal_key
+                .as_ref()
+                .map(|bytes| bytes.as_ptr()),
             cloned
                 .smallest_internal_key
                 .as_ref()
                 .map(|bytes| bytes.as_ptr())
         );
         assert_eq!(
-            table.largest_internal_key.as_ref().map(|bytes| bytes.as_ptr()),
+            table
+                .largest_internal_key
+                .as_ref()
+                .map(|bytes| bytes.as_ptr()),
             cloned
                 .largest_internal_key
                 .as_ref()

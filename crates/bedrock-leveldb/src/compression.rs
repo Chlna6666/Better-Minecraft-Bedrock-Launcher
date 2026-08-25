@@ -136,11 +136,7 @@ mod zlib {
             let before_in = compressor.total_in();
             let before_out = compressor.total_out();
             let status = compressor
-                .compress_vec(
-                    &payload[input_offset..],
-                    compressed,
-                    FlushCompress::Finish,
-                )
+                .compress_vec(&payload[input_offset..], compressed, FlushCompress::Finish)
                 .map_err(|error| LevelDbError::compression("table", error.to_string()))?;
             let consumed = usize::try_from(compressor.total_in().saturating_sub(before_in))
                 .unwrap_or(usize::MAX)
@@ -182,10 +178,7 @@ mod zlib {
         zlib_header: bool,
         output: &mut Vec<u8>,
     ) -> Result<()> {
-        let initial_additional = payload
-            .len()
-            .saturating_mul(3)
-            .max(MIN_OUTPUT_CAPACITY);
+        let initial_additional = payload.len().saturating_mul(3).max(MIN_OUTPUT_CAPACITY);
         ensure_additional_capacity(output, initial_additional);
         decompressor.reset(zlib_header);
         let mut input_offset = 0_usize;
@@ -194,11 +187,7 @@ mod zlib {
             let before_in = decompressor.total_in();
             let before_out = decompressor.total_out();
             let status = decompressor
-                .decompress_vec(
-                    &payload[input_offset..],
-                    output,
-                    FlushDecompress::Finish,
-                )
+                .decompress_vec(&payload[input_offset..], output, FlushDecompress::Finish)
                 .map_err(|error| LevelDbError::compression("table", error.to_string()))?;
             let consumed = usize::try_from(decompressor.total_in().saturating_sub(before_in))
                 .unwrap_or(usize::MAX)

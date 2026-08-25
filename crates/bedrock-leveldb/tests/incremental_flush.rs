@@ -1,6 +1,6 @@
 use bedrock_leveldb::{
-    CompressionPolicy, Db, LevelDbOpenOptions, ReadOptions, ReadStrategy, ScanMode,
-    VisitorControl, WriteOptions,
+    CompressionPolicy, Db, LevelDbOpenOptions, ReadOptions, ReadStrategy, ScanMode, VisitorControl,
+    WriteOptions,
 };
 use std::fs;
 
@@ -23,9 +23,11 @@ fn every_scan_api_reconciles_newer_values_and_tombstones() {
         ..LevelDbOpenOptions::default()
     };
     let db = Db::open(directory.path(), options).expect("open database");
-    db.put("key", "old", WriteOptions::default()).expect("put old");
+    db.put("key", "old", WriteOptions::default())
+        .expect("put old");
     db.flush().expect("flush old");
-    db.put("key", "new", WriteOptions::default()).expect("put new");
+    db.put("key", "new", WriteOptions::default())
+        .expect("put new");
     db.flush().expect("flush new");
 
     for scan_mode in [ScanMode::Sequential, ScanMode::ParallelTables] {
@@ -50,7 +52,10 @@ fn every_scan_api_reconciles_newer_values_and_tombstones() {
             Ok(VisitorControl::Continue)
         })
         .expect("scan keys");
-        assert_eq!(keys.iter().filter(|key| key.as_slice() == b"key").count(), 1);
+        assert_eq!(
+            keys.iter().filter(|key| key.as_slice() == b"key").count(),
+            1
+        );
 
         let (_, partitions) = db
             .scan_entries_partitioned(read_options, Vec::new, |entries, key, value| {
@@ -60,10 +65,14 @@ fn every_scan_api_reconciles_newer_values_and_tombstones() {
                 Ok(VisitorControl::Continue)
             })
             .expect("scan partitioned entries");
-        assert_eq!(partitions.into_iter().flatten().collect::<Vec<_>>(), [b"new".to_vec()]);
+        assert_eq!(
+            partitions.into_iter().flatten().collect::<Vec<_>>(),
+            [b"new".to_vec()]
+        );
     }
 
-    db.delete("key", WriteOptions::default()).expect("delete key");
+    db.delete("key", WriteOptions::default())
+        .expect("delete key");
     db.flush().expect("flush tombstone");
     let mut keys = Vec::new();
     db.for_each_key(ReadOptions::default(), |key| {
@@ -108,5 +117,8 @@ fn flush_writes_only_memtable_and_preserves_tombstones_across_reopen() {
 
     let db = Db::open(directory.path(), options).expect("reopen database");
     assert_eq!(db.get(b"large").expect("read tombstoned key"), None);
-    assert_eq!(db.get(b"small").expect("read small key").as_deref(), Some(b"value".as_slice()));
+    assert_eq!(
+        db.get(b"small").expect("read small key").as_deref(),
+        Some(b"value".as_slice())
+    );
 }

@@ -457,18 +457,28 @@ where
                     output.push(decoded.chunk);
                 }
                 SurfaceDecodeOutput::CompatibilityFallback(pos) => {
-                    output.push(fallback_chunks.remove(&pos).unwrap_or_else(|| SurfaceMapChunk {
-                        pos,
-                        materials: Vec::new(),
-                        columns: Box::new(std::array::from_fn(|_| None)),
-                    }));
+                    output.push(
+                        fallback_chunks
+                            .remove(&pos)
+                            .unwrap_or_else(|| SurfaceMapChunk {
+                                pos,
+                                materials: Vec::new(),
+                                columns: Box::new(std::array::from_fn(|_| None)),
+                            }),
+                    );
                 }
             }
         }
 
         let columns = output
             .iter()
-            .map(|chunk| chunk.columns.iter().filter(|column| column.is_some()).count())
+            .map(|chunk| {
+                chunk
+                    .columns
+                    .iter()
+                    .filter(|column| column.is_some())
+                    .count()
+            })
             .sum::<usize>();
         let materials = output
             .iter()
@@ -592,22 +602,24 @@ fn decode_direct_surface_chunk(raw: RawSurfaceChunk) -> Result<SurfaceDecodeOutp
     // Historical fixed-array/numeric terrain uses a different material-name migration path. Keep it
     // on the canonical compatibility implementation instead of duplicating that policy here.
     if raw.legacy_terrain.is_some()
-        || raw.subchunks.values().any(|value| {
-            !matches!(value.first().copied(), Some(1 | 8 | 9))
-        })
+        || raw
+            .subchunks
+            .values()
+            .any(|value| !matches!(value.first().copied(), Some(1 | 8 | 9)))
     {
         return Ok(SurfaceDecodeOutput::CompatibilityFallback(raw.pos));
     }
 
     let biome_started = Instant::now();
     let biome_data = parse_surface_biome_record(raw.biome_record.as_ref())?;
-    let version = raw.biome_record.as_ref().map_or(ChunkVersion::New, |(tag, _)| {
-        match tag {
+    let version = raw
+        .biome_record
+        .as_ref()
+        .map_or(ChunkVersion::New, |(tag, _)| match tag {
             ChunkRecordTag::Data3D => ChunkVersion::New,
             ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => ChunkVersion::Old,
             _ => ChunkVersion::New,
-        }
-    });
+        });
     let height_map = biome_data
         .as_ref()
         .map(|biome_data| surface_height_map(raw.pos, biome_data));
@@ -640,7 +652,11 @@ fn decode_direct_surface_chunk(raw: RawSurfaceChunk) -> Result<SurfaceDecodeOutp
         &render_biomes,
     )?;
     let surface_us = surface_started.elapsed().as_micros();
-    let populated = chunk.columns.iter().filter(|column| column.is_some()).count();
+    let populated = chunk
+        .columns
+        .iter()
+        .filter(|column| column.is_some())
+        .count();
     let raw_height_mismatches = height_map.as_ref().map_or(0, |height_map| {
         chunk
             .columns
@@ -686,18 +702,16 @@ fn parse_surface_biome_record(
     Ok(Some(parsed))
 }
 
-fn surface_height_map(
-    pos: ChunkPos,
-    biome_data: &ParsedBiomeData,
-) -> [[Option<i16>; 16]; 16] {
+fn surface_height_map(pos: ChunkPos, biome_data: &ParsedBiomeData) -> [[Option<i16>; 16]; 16] {
     let mut heights = [[None; 16]; 16];
     let (min_y, _) = pos.y_range(biome_data.version);
     for local_z in 0..16usize {
         for local_x in 0..16usize {
             let index = local_z * 16 + local_x;
-            heights[local_z][local_x] = biome_data.height_map.get(index).and_then(|height| {
-                i16::try_from(i32::from(*height).saturating_add(min_y)).ok()
-            });
+            heights[local_z][local_x] = biome_data
+                .height_map
+                .get(index)
+                .and_then(|height| i16::try_from(i32::from(*height).saturating_add(min_y)).ok());
         }
     }
     heights
@@ -1043,7 +1057,10 @@ fn compact_surface_chunk(chunk: &super::ChunkData) -> Result<SurfaceMapChunk> {
 }
 
 fn intern_material(materials: &mut Vec<SurfaceMapMaterial>, state: &BlockState) -> Result<u16> {
-    if let Some(index) = materials.iter().position(|material| material.matches_state(state)) {
+    if let Some(index) = materials
+        .iter()
+        .position(|material| material.matches_state(state))
+    {
         return u16::try_from(index).map_err(|_| {
             BedrockWorldError::Validation("surface material table exceeds u16".to_string())
         });
@@ -1125,7 +1142,9 @@ fn merge_fallback_load_stats(target: &mut ChunkLoadStats, fallback: ChunkLoadSta
         .saturating_add(fallback.subchunks_decoded);
     target.worker_threads = target.worker_threads.max(fallback.worker_threads);
     target.queue_wait_ms = target.queue_wait_ms.saturating_add(fallback.queue_wait_ms);
-    target.keys_requested = target.keys_requested.saturating_add(fallback.keys_requested);
+    target.keys_requested = target
+        .keys_requested
+        .saturating_add(fallback.keys_requested);
     target.keys_found = target.keys_found.saturating_add(fallback.keys_found);
     target.exact_get_batches = target
         .exact_get_batches
@@ -1145,7 +1164,9 @@ fn merge_fallback_load_stats(target: &mut ChunkLoadStats, fallback: ChunkLoadSta
     target.biome_parse_ms = target.biome_parse_us / 1_000;
     target.subchunk_parse_ms = target.subchunk_parse_us / 1_000;
     target.surface_scan_ms = target.surface_scan_us / 1_000;
-    target.full_reload_ms = target.full_reload_ms.saturating_add(fallback.full_reload_ms);
+    target.full_reload_ms = target
+        .full_reload_ms
+        .saturating_add(fallback.full_reload_ms);
     target.legacy_terrain_records = target
         .legacy_terrain_records
         .saturating_add(fallback.legacy_terrain_records);

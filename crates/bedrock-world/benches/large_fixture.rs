@@ -94,11 +94,17 @@ fn main() {
     let compatibility = scan_world_compatibility_blocking(
         &storage,
         WorldFormat::LevelDb,
-        scan_options(StorageThreadingOptions::Auto, StorageScanMode::ParallelTables),
+        scan_options(
+            StorageThreadingOptions::Auto,
+            StorageScanMode::ParallelTables,
+        ),
     )
     .expect("compatibility parallel scan");
     let compatibility_parallel_elapsed = compatibility_started.elapsed();
-    assert_eq!(compatibility, compatibility_single, "parallel compatibility differs");
+    assert_eq!(
+        compatibility, compatibility_single,
+        "parallel compatibility differs"
+    );
     println!(
         "large_fixture.compatibility.parallel_auto elapsed_ms={} records={} chunks={} speedup_vs_single={:.3}",
         compatibility_parallel_elapsed.as_millis(),
@@ -146,7 +152,10 @@ fn main() {
         })
         .expect("classify keys parallel");
     let parallel_classify_elapsed = parallel_classify_started.elapsed();
-    assert_eq!(parallel_key_kinds, single_key_kinds, "parallel key classification differs");
+    assert_eq!(
+        parallel_key_kinds, single_key_kinds,
+        "parallel key classification differs"
+    );
     println!(
         "large_fixture.classify_keys.parallel_auto elapsed_ms={} entries={} entries_per_sec={:.2} speedup_vs_single={:.3}",
         parallel_classify_elapsed.as_millis(),
@@ -158,10 +167,9 @@ fn main() {
     for (mode, threading, scan_mode) in scan_modes() {
         let started = Instant::now();
         let key_scan = storage
-            .for_each_key(
-                scan_options(threading, scan_mode),
-                &mut |_key| Ok(StorageVisitorControl::Continue),
-            )
+            .for_each_key(scan_options(threading, scan_mode), &mut |_key| {
+                Ok(StorageVisitorControl::Continue)
+            })
             .expect("key scan");
         let elapsed = started.elapsed();
         println!(
@@ -217,11 +225,9 @@ fn main() {
     for (mode, threading, scan_mode) in scan_modes() {
         let started = Instant::now();
         let prefix_scan = storage
-            .for_each_prefix_ref(
-                b"digp",
-                scan_options(threading, scan_mode),
-                &mut |_entry| Ok(StorageVisitorControl::Continue),
-            )
+            .for_each_prefix_ref(b"digp", scan_options(threading, scan_mode), &mut |_entry| {
+                Ok(StorageVisitorControl::Continue)
+            })
             .expect("digp prefix scan");
         let elapsed = started.elapsed();
         println!(
@@ -304,7 +310,9 @@ fn main() {
             dimension: Dimension::Overworld,
         });
     let start = Instant::now();
-    let chunk = dynamic_world.parse_chunk_blocking(pos).expect("parse chunk");
+    let chunk = dynamic_world
+        .parse_chunk_blocking(pos)
+        .expect("parse chunk");
     println!(
         "large_fixture.sample_chunk elapsed_ms={} records={} subchunks={} block_entities={} parse_errors={}",
         start.elapsed().as_millis(),

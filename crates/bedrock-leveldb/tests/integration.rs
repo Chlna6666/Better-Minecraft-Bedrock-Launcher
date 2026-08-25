@@ -392,9 +392,11 @@ fn repair_ignores_unreferenced_files_and_library_does_not_init_logger() {
     .expect("repair");
 
     assert_eq!(report.dropped_files, 0);
-    assert!(!captured_logs()
-        .iter()
-        .any(|event| event.message.contains("000123.ldb")));
+    assert!(
+        !captured_logs()
+            .iter()
+            .any(|event| event.message.contains("000123.ldb"))
+    );
 }
 
 #[test]

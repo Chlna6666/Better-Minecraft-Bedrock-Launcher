@@ -122,10 +122,8 @@ where
     S: WorldStorageHandle,
 {
     let plan = ExactChunkRenderPlan::new(selection);
-    let (chunks, _) = world.query_chunk_data_with_stats_blocking(
-        plan.positions().iter().copied(),
-        options,
-    )?;
+    let (chunks, _) =
+        world.query_chunk_data_with_stats_blocking(plan.positions().iter().copied(), options)?;
     Ok(ExactChunkRenderData { plan, chunks })
 }
 
@@ -149,10 +147,8 @@ where
     S: WorldStorageHandle,
 {
     let plan = ExactChunkRenderPlan::new(selection);
-    let (chunks, stats) = world.query_surface_map_many_blocking(
-        plan.positions().iter().copied(),
-        options,
-    )?;
+    let (chunks, stats) =
+        world.query_surface_map_many_blocking(plan.positions().iter().copied(), options)?;
     Ok(ExactSurfaceRenderData {
         plan,
         chunks,
@@ -175,8 +171,8 @@ mod tests {
 
     #[test]
     fn plan_preserves_disconnected_selection() {
-        let selection = ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)])
-            .expect("exact selection");
+        let selection =
+            ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)]).expect("exact selection");
         let plan = ExactChunkRenderPlan::new(selection);
 
         assert_eq!(plan.chunk_count(), 2);

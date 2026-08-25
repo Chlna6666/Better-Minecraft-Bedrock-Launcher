@@ -41,11 +41,14 @@ fn explicit_compaction_keeps_newest_value_and_reclaims_bottom_level_tombstone() 
         ..LevelDbOpenOptions::default()
     };
     let db = Db::open(directory.path(), options).expect("open database");
-    db.put("actor", "old", WriteOptions::default()).expect("put old");
+    db.put("actor", "old", WriteOptions::default())
+        .expect("put old");
     db.flush().expect("flush old");
-    db.put("actor", "new", WriteOptions::default()).expect("put new");
+    db.put("actor", "new", WriteOptions::default())
+        .expect("put new");
     db.flush().expect("flush new");
-    db.delete("actor", WriteOptions::default()).expect("delete actor");
+    db.delete("actor", WriteOptions::default())
+        .expect("delete actor");
     db.flush().expect("flush tombstone");
 
     db.compact().expect("compact all levels");

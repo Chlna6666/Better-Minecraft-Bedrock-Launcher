@@ -7,8 +7,7 @@ use bedrock_render::{
 };
 use bedrock_world::{
     BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, ChunkPos, Dimension,
-    GlobalRecordKind,
-    SlimeChunkBounds, WorldScanOptions,
+    GlobalRecordKind, SlimeChunkBounds, WorldScanOptions,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::path::PathBuf;

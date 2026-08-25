@@ -312,7 +312,9 @@ impl ScanOutcome {
             .table_index_misses
             .saturating_add(other.table_index_misses);
         self.data_block_hits = self.data_block_hits.saturating_add(other.data_block_hits);
-        self.data_block_misses = self.data_block_misses.saturating_add(other.data_block_misses);
+        self.data_block_misses = self
+            .data_block_misses
+            .saturating_add(other.data_block_misses);
     }
 }
 

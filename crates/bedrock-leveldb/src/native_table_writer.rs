@@ -125,7 +125,9 @@ impl NativeTableWriter {
         encode_internal_key(user_key, self.sequence, value_type, &mut self.internal_key);
 
         if !self.data_block.is_empty()
-            && self.data_block.estimated_size_after(&self.internal_key, value)
+            && self
+                .data_block
+                .estimated_size_after(&self.internal_key, value)
                 > NATIVE_DATA_BLOCK_TARGET
         {
             self.flush_data_block()?;
@@ -194,11 +196,7 @@ impl NativeTableWriter {
             )?
         };
 
-        let footer = native_footer(
-            meta_index_handle,
-            index_handle,
-            &mut self.footer_handles,
-        );
+        let footer = native_footer(meta_index_handle, index_handle, &mut self.footer_handles);
         let tmp_path = self.tmp_path.clone();
         let mut writer = self.writer.take().ok_or_else(writer_closed)?;
         writer
@@ -293,9 +291,7 @@ fn write_native_block(
         writer.write_all(encoded)?;
         let mut trailer = [0_u8; LEVELDB_BLOCK_TRAILER_LEN];
         trailer[0] = compression_tag;
-        trailer[1..].copy_from_slice(
-            &masked_crc32c(&[encoded, &[compression_tag]]).to_le_bytes(),
-        );
+        trailer[1..].copy_from_slice(&masked_crc32c(&[encoded, &[compression_tag]]).to_le_bytes());
         writer.write_all(&trailer)?;
         *file_offset = file_offset
             .saturating_add(handle.size)

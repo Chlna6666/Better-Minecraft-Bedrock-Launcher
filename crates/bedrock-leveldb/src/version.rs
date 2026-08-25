@@ -149,17 +149,16 @@ mod tests {
         smallest.extend_from_slice(&1_u64.to_le_bytes());
         let mut largest = b"z".to_vec();
         largest.extend_from_slice(&1_u64.to_le_bytes());
-        manifest.table_files.push(TableFileMeta::native(
-            2,
-            1,
-            100,
-            smallest,
-            largest,
-        ));
+        manifest
+            .table_files
+            .push(TableFileMeta::native(2, 1, 100, smallest, largest));
         manifest.table_numbers.push(2);
 
         let version = ReadVersion::from_manifest(&manifest);
         assert_eq!(version.tables().len(), 1);
-        assert_eq!(version.tables()[0].smallest_user_key(), Some(b"a".as_slice()));
+        assert_eq!(
+            version.tables()[0].smallest_user_key(),
+            Some(b"a".as_slice())
+        );
     }
 }

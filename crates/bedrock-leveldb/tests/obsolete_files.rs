@@ -6,7 +6,8 @@ fn writable_open_reclaims_unreferenced_tables_and_logs_but_read_only_open_does_n
     let directory = tempfile::tempdir().expect("create temporary database directory");
     {
         let db = Db::open(directory.path(), LevelDbOpenOptions::default()).expect("open database");
-        db.put("live", "value", WriteOptions::default()).expect("put live value");
+        db.put("live", "value", WriteOptions::default())
+            .expect("put live value");
         db.flush().expect("flush live value");
     }
     let obsolete_table = directory.path().join("999998.ldb");
@@ -28,5 +29,8 @@ fn writable_open_reclaims_unreferenced_tables_and_logs_but_read_only_open_does_n
     let db = Db::open(directory.path(), LevelDbOpenOptions::default()).expect("open writer");
     assert!(!obsolete_table.exists());
     assert!(!obsolete_log.exists());
-    assert_eq!(db.get(b"live").expect("read live value").as_deref(), Some(b"value".as_slice()));
+    assert_eq!(
+        db.get(b"live").expect("read live value").as_deref(),
+        Some(b"value".as_slice())
+    );
 }

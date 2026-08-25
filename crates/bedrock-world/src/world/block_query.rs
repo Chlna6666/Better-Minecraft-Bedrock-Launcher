@@ -199,11 +199,7 @@ where
             let chunk_pos = block_pos.to_chunk_pos(dimension);
             let modern_present = i8::try_from(block_pos.y.div_euclid(16))
                 .ok()
-                .and_then(|subchunk_y| {
-                    subchunk_order
-                        .binary_search(&(chunk_pos, subchunk_y))
-                        .ok()
-                })
+                .and_then(|subchunk_y| subchunk_order.binary_search(&(chunk_pos, subchunk_y)).ok())
                 .and_then(|index| subchunks.get(index))
                 .is_some_and(Option::is_some);
             if !modern_present {
@@ -223,7 +219,8 @@ where
                 legacy_order.len(),
             );
             for &chunk_pos in &legacy_order {
-                let encoded = ChunkKey::new(chunk_pos, ChunkRecordTag::LegacyTerrain).encode_inline();
+                let encoded =
+                    ChunkKey::new(chunk_pos, ChunkRecordTag::LegacyTerrain).encode_inline();
                 keys.push(encoded.as_bytes());
             }
             let keys = keys.finish();
@@ -274,7 +271,8 @@ where
             if let Ok(subchunk_y) = i8::try_from(block_pos.y.div_euclid(16)) {
                 if let Ok(index) = subchunk_order.binary_search(&(chunk_pos, subchunk_y)) {
                     if let Some(subchunk) = subchunks.get(index).and_then(Option::as_ref) {
-                        if let Some(block_state) = subchunk.block_state_at(local_x, local_y, local_z)
+                        if let Some(block_state) =
+                            subchunk.block_state_at(local_x, local_y, local_z)
                         {
                             resolved = ResolvedBlockState::Borrowed(block_state);
                         } else if let Some(id) =
@@ -401,10 +399,7 @@ mod tests {
                 format: WorldFormatHint::LevelDb,
             },
         );
-        let input = [
-            BlockPos { x: 1, y: 5, z: 2 },
-            BlockPos { x: 3, y: 7, z: 4 },
-        ];
+        let input = [BlockPos { x: 1, y: 5, z: 2 }, BlockPos { x: 3, y: 7, z: 4 }];
         let results = world
             .get_block_states_at_blocking(Dimension::Overworld, input)
             .expect("query");
@@ -443,10 +438,7 @@ mod tests {
         let stats = world
             .for_each_block_state_at_blocking(
                 Dimension::Overworld,
-                [
-                    BlockPos { x: 1, y: 5, z: 2 },
-                    BlockPos { x: 3, y: 7, z: 4 },
-                ],
+                [BlockPos { x: 1, y: 5, z: 2 }, BlockPos { x: 3, y: 7, z: 4 }],
                 |entry| {
                     visited = visited.saturating_add(1);
                     assert!(entry.state.is_some());

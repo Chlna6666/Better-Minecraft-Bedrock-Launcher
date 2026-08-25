@@ -364,7 +364,11 @@ fn choose_input_level(manifest: &Manifest, force: bool) -> Option<u32> {
     for level in 1..MAX_LEVEL {
         let mut table_count = 0_usize;
         let mut bytes = 0_u64;
-        for table in manifest.table_files.iter().filter(|table| table.level == level) {
+        for table in manifest
+            .table_files
+            .iter()
+            .filter(|table| table.level == level)
+        {
             table_count = table_count.saturating_add(1);
             bytes = bytes.saturating_add(table.file_size);
         }
@@ -558,11 +562,7 @@ mod tests {
         }
 
         let plan = plan(&manifest, true).expect("forced level-zero plan");
-        let level_zero_inputs = plan
-            .inputs
-            .iter()
-            .filter(|table| table.level == 0)
-            .count();
+        let level_zero_inputs = plan.inputs.iter().filter(|table| table.level == 0).count();
         assert_eq!(level_zero_inputs, MAX_LEVEL_ZERO_INPUTS_PER_PASS);
     }
 
@@ -604,10 +604,7 @@ mod tests {
 
         let plan = plan(&manifest, true).expect("oversized level-zero plan");
         assert_eq!(
-            plan.inputs
-                .iter()
-                .filter(|table| table.level == 0)
-                .count(),
+            plan.inputs.iter().filter(|table| table.level == 0).count(),
             1
         );
     }

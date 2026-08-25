@@ -136,11 +136,7 @@ impl Db {
     }
 
     /// Visits visible entries as borrowed-first entry views.
-    pub fn for_each_entry_ref<F>(
-        &self,
-        options: ReadOptions,
-        mut visitor: F,
-    ) -> Result<ScanOutcome>
+    pub fn for_each_entry_ref<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
     where
         F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
     {
@@ -160,7 +156,8 @@ impl Db {
     where
         F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_prefix_borrowed_scan(prefix, options, visitor)
+        self.0
+            .for_each_prefix_borrowed_scan(prefix, options, visitor)
     }
 
     /// Compatibility prefix visitor that materializes one `Bytes` value per record.
@@ -239,9 +236,8 @@ impl Db {
         F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
     {
         let mut partition = init();
-        let outcome = self.for_each_entry(options, |key, value| {
-            visitor(&mut partition, key, value)
-        })?;
+        let outcome =
+            self.for_each_entry(options, |key, value| visitor(&mut partition, key, value))?;
         Ok((outcome, vec![partition]))
     }
 
@@ -277,10 +273,7 @@ impl Db {
     ) -> Result<Vec<(Bytes, Bytes)>> {
         let mut entries = Vec::new();
         self.for_each_prefix_borrowed(prefix, options, |key, value| {
-            entries.push((
-                Bytes::copy_from_slice(key),
-                Bytes::copy_from_slice(value),
-            ));
+            entries.push((Bytes::copy_from_slice(key), Bytes::copy_from_slice(value)));
             Ok(VisitorControl::Continue)
         })?;
         Ok(entries)

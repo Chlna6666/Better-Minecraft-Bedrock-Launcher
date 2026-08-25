@@ -149,11 +149,7 @@ where
                 self.hand = 0;
             }
             let key = self.clock[self.hand].clone();
-            if self
-                .entries
-                .get(&key)
-                .is_some_and(|entry| entry.referenced)
-            {
+            if self.entries.get(&key).is_some_and(|entry| entry.referenced) {
                 if let Some(entry) = self.entries.get_mut(&key) {
                     entry.referenced = false;
                 }
@@ -242,7 +238,12 @@ impl NativeTableIndex {
         let entries = self
             .entries
             .iter()
-            .map(|entry| entry.largest_user_key.len().saturating_add(size_of::<BlockHandle>()))
+            .map(|entry| {
+                entry
+                    .largest_user_key
+                    .len()
+                    .saturating_add(size_of::<BlockHandle>())
+            })
             .sum::<usize>();
         entries.saturating_add(self.filter.as_ref().map_or(0, BloomFilterBlock::len))
     }
@@ -472,9 +473,7 @@ fn get_custom_table_lookups(
         }
         if keys[order[requested]].as_ref() == entry.key.as_slice() {
             let end = duplicate_key_group_end(keys, &order, requested);
-            let lookup = entry
-                .value
-                .map_or(TableLookup::Deleted, TableLookup::Value);
+            let lookup = entry.value.map_or(TableLookup::Deleted, TableLookup::Value);
             for input_index in &order[requested..end] {
                 results[*input_index] = lookup.clone();
             }
@@ -611,9 +610,7 @@ pub(crate) fn read_table_lookups(
     while let Some(entry) = cursor.next()? {
         entries.insert(
             entry.key,
-            entry
-                .value
-                .map_or(TableLookup::Deleted, TableLookup::Value),
+            entry.value.map_or(TableLookup::Deleted, TableLookup::Value),
         );
     }
     Ok(entries)
@@ -848,7 +845,10 @@ fn read_native_index_entries(
             .map_err(|_| LevelDbError::corruption_at(path, "native footer magic is invalid"))?,
     );
     if magic != LEVELDB_TABLE_MAGIC {
-        return Err(LevelDbError::corruption_at(path, "native table magic mismatch"));
+        return Err(LevelDbError::corruption_at(
+            path,
+            "native table magic mismatch",
+        ));
     }
     let mut footer_input = &footer[..magic_offset];
     let meta_index_handle = read_block_handle(&mut footer_input)?;
@@ -889,7 +889,8 @@ fn read_native_filter(
     if meta_index_handle.size == 0 {
         return None;
     }
-    let meta_index = read_native_block_owned(file, path, meta_index_handle, paranoid_checks).ok()?;
+    let meta_index =
+        read_native_block_owned(file, path, meta_index_handle, paranoid_checks).ok()?;
     let mut decoder = BlockEntryDecoder::new(&meta_index).ok()?;
     while let Some(entry) = decoder.next().ok()? {
         match entry.internal_key.cmp(FILTER_META_KEY) {
@@ -898,7 +899,8 @@ fn read_native_filter(
             std::cmp::Ordering::Equal => {
                 let mut handle_input = entry.value;
                 let filter_handle = read_block_handle(&mut handle_input).ok()?;
-                let filter = read_native_block_owned(file, path, filter_handle, paranoid_checks).ok()?;
+                let filter =
+                    read_native_block_owned(file, path, filter_handle, paranoid_checks).ok()?;
                 return BloomFilterBlock::parse(filter);
             }
         }
@@ -912,7 +914,10 @@ fn read_native_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LE
         .map_err(|error| LevelDbError::io_at("stat native table", path, error))?
         .len();
     if file_len < LEVELDB_FOOTER_LEN as u64 {
-        return Err(LevelDbError::corruption_at(path, "native table is truncated"));
+        return Err(LevelDbError::corruption_at(
+            path,
+            "native table is truncated",
+        ));
     }
     let mut footer = [0_u8; LEVELDB_FOOTER_LEN];
     read_exact_at(
@@ -953,7 +958,14 @@ fn with_native_block<T>(
         scratch.io.resize(total_size, 0);
         read_exact_at(file, &mut scratch.io, handle.offset)
             .map_err(|error| LevelDbError::io_at("read native table block", path, error))?;
-        consume_encoded_block(path, handle.offset, &scratch.io, size, paranoid_checks, consume)
+        consume_encoded_block(
+            path,
+            handle.offset,
+            &scratch.io,
+            size,
+            paranoid_checks,
+            consume,
+        )
     })
 }
 
@@ -977,9 +989,11 @@ where
     let first_handle = index[first.block_index].handle;
     let last_handle = index[last.block_index].handle;
     let physical_end = block_physical_end(last_handle)?;
-    let total_u64 = physical_end.checked_sub(first_handle.offset).ok_or_else(|| {
-        LevelDbError::corruption_at(path, "coalesced native block range underflow")
-    })?;
+    let total_u64 = physical_end
+        .checked_sub(first_handle.offset)
+        .ok_or_else(|| {
+            LevelDbError::corruption_at(path, "coalesced native block range underflow")
+        })?;
     let total = usize::try_from(total_u64)
         .map_err(|_| LevelDbError::corruption_at(path, "coalesced native block range overflow"))?;
 
@@ -992,11 +1006,15 @@ where
 
         for plan in plans {
             let handle = index[plan.block_index].handle;
-            let relative_u64 = handle.offset.checked_sub(first_handle.offset).ok_or_else(|| {
-                LevelDbError::corruption_at(path, "coalesced block offset underflow")
+            let relative_u64 = handle
+                .offset
+                .checked_sub(first_handle.offset)
+                .ok_or_else(|| {
+                    LevelDbError::corruption_at(path, "coalesced block offset underflow")
+                })?;
+            let relative = usize::try_from(relative_u64).map_err(|_| {
+                LevelDbError::corruption_at(path, "coalesced block offset overflow")
             })?;
-            let relative = usize::try_from(relative_u64)
-                .map_err(|_| LevelDbError::corruption_at(path, "coalesced block offset overflow"))?;
             let size = usize::try_from(handle.size)
                 .map_err(|_| LevelDbError::corruption_at(path, "native block size overflow"))?;
             let encoded_len = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
@@ -1029,9 +1047,9 @@ fn consume_encoded_block<T>(
     paranoid_checks: bool,
     consume: impl FnOnce(&[u8]) -> Result<T>,
 ) -> Result<T> {
-    let total_size = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
-        LevelDbError::corruption_at(path, "native block trailer range overflow")
-    })?;
+    let total_size = size
+        .checked_add(LEVELDB_BLOCK_TRAILER_LEN)
+        .ok_or_else(|| LevelDbError::corruption_at(path, "native block trailer range overflow"))?;
     if encoded.len() != total_size {
         return Err(LevelDbError::corruption_at(
             path,
@@ -1141,7 +1159,9 @@ fn native_block_entries_end(block: &[u8]) -> Result<usize> {
         .checked_mul(4)
         .ok_or_else(|| LevelDbError::corruption("native restart array overflow"))?;
     if restart_bytes > count_offset {
-        return Err(LevelDbError::corruption("native restart array is truncated"));
+        return Err(LevelDbError::corruption(
+            "native restart array is truncated",
+        ));
     }
     Ok(count_offset - restart_bytes)
 }
@@ -1297,7 +1317,10 @@ mod tests {
 
     #[test]
     fn physically_adjacent_blocks_are_coalescible() {
-        let first = BlockHandle { offset: 0, size: 100 };
+        let first = BlockHandle {
+            offset: 0,
+            size: 100,
+        };
         let second = BlockHandle {
             offset: 105,
             size: 200,

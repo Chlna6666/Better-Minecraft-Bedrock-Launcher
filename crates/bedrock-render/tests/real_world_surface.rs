@@ -3,10 +3,9 @@ use bedrock_render::{
     RenderPalette, RenderThreadingOptions, TileCoord,
 };
 use bedrock_world::{
-    BedrockWorld, ChunkData, ChunkLoadOptions, ChunkPos, Dimension, ExactSurfaceBiomeLoad,
-    BedrockWorldOpenOptions, ExactSurfaceSubchunkPolicy, NbtTag, SubChunkFormat,
-    WorldThreadingOptions,
-    read_level_dat_document,
+    BedrockWorld, BedrockWorldOpenOptions, ChunkData, ChunkLoadOptions, ChunkPos, Dimension,
+    ExactSurfaceBiomeLoad, ExactSurfaceSubchunkPolicy, NbtTag, SubChunkFormat,
+    WorldThreadingOptions, read_level_dat_document,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,8 +84,7 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
 fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
 -> Result<(), Box<dyn std::error::Error>> {
     let world_path = PathBuf::from("tests/fixtures/bedrock-world");
-    let world =
-        BedrockWorld::open_blocking(&world_path, BedrockWorldOpenOptions::default())?;
+    let world = BedrockWorld::open_blocking(&world_path, BedrockWorldOpenOptions::default())?;
 
     for (block_x, block_z) in [(340_i32, 36_i32), (360_i32, 67_i32)] {
         let chunk_pos = ChunkPos {

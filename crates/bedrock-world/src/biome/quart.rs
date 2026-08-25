@@ -17,7 +17,10 @@ const BLOCK_VOLUME: usize = 16 * 16 * 16;
 /// `height_map` uses Bedrock `z * 16 + x` order. Each quart storage uses
 /// `(quart_y * 4 + quart_z) * 4 + quart_x`, matching Java's 4x4x4 biome-cell layout. The emitted
 /// packed indices use Bedrock's `x * 256 + z * 16 + y` block-storage order.
-pub fn encode_data3d_quart(height_map: &[i16; 256], storages: &[[u32; QUART_VOLUME]]) -> Result<Vec<u8>> {
+pub fn encode_data3d_quart(
+    height_map: &[i16; 256],
+    storages: &[[u32; QUART_VOLUME]],
+) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(512 + storages.len().saturating_mul(320));
     for height in height_map {
         bytes.extend_from_slice(&height.to_le_bytes());
@@ -36,7 +39,10 @@ fn encode_quart_storage(bytes: &mut Vec<u8>, quart: &[u32; QUART_VOLUME]) -> Res
     let mut palette_len = 0usize;
 
     for (slot, id) in quart.iter().copied().enumerate() {
-        let palette_index = match palette[..palette_len].iter().position(|current| *current == id) {
+        let palette_index = match palette[..palette_len]
+            .iter()
+            .position(|current| *current == id)
+        {
             Some(index) => index,
             None => {
                 let index = palette_len;
@@ -126,10 +132,13 @@ mod tests {
         let mut palette = Vec::<u32>::new();
         let mut quart_palette = [0_u16; 64];
         for (slot, id) in quart.iter().copied().enumerate() {
-            let index = palette.iter().position(|current| *current == id).unwrap_or_else(|| {
-                palette.push(id);
-                palette.len() - 1
-            });
+            let index = palette
+                .iter()
+                .position(|current| *current == id)
+                .unwrap_or_else(|| {
+                    palette.push(id);
+                    palette.len() - 1
+                });
             quart_palette[slot] = index as u16;
         }
         let mut indices = vec![0_u16; 4096];
@@ -169,7 +178,10 @@ mod tests {
         let direct = encode_data3d_quart(&heights, &quart).expect("quart encode");
         let generic = Biome3d::new(
             heights.to_vec(),
-            vec![expanded_storage(-64, &first), expanded_storage(-48, &second)],
+            vec![
+                expanded_storage(-64, &first),
+                expanded_storage(-48, &second),
+            ],
         )
         .expect("generic model")
         .encode()

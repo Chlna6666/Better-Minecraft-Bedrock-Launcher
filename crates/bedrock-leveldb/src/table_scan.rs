@@ -20,20 +20,13 @@ const LEVELDB_TABLE_MAGIC: u64 = 0xdb47_7524_8b80_fb57;
 const LEVELDB_FOOTER_LEN: usize = 48;
 const LEVELDB_BLOCK_TRAILER_LEN: usize = 5;
 
-const RUN_TARGET_ENCODED_BYTES: u64 = if cfg!(any(
-    windows,
-    target_os = "linux",
-    target_os = "android"
-)) {
-    1024 * 1024
-} else {
-    512 * 1024
-};
-const RUN_MAX_BLOCKS: usize = if cfg!(any(
-    windows,
-    target_os = "linux",
-    target_os = "android"
-)) {
+const RUN_TARGET_ENCODED_BYTES: u64 =
+    if cfg!(any(windows, target_os = "linux", target_os = "android")) {
+        1024 * 1024
+    } else {
+        512 * 1024
+    };
+const RUN_MAX_BLOCKS: usize = if cfg!(any(windows, target_os = "linux", target_os = "android")) {
     256
 } else {
     128
@@ -123,12 +116,8 @@ impl NativeTablePlan {
             &mut planning.encoded,
             &mut planning.decoded,
         )?;
-        let blocks = decode_index_handles(
-            &planning.decoded,
-            lower,
-            upper,
-            &mut planning.decoder_key,
-        )?;
+        let blocks =
+            decode_index_handles(&planning.decoded, lower, upper, &mut planning.decoder_key)?;
         if blocks.is_empty() {
             return Ok(PlanOpen::Skip);
         }
@@ -459,21 +448,10 @@ where
         );
     }
 
-    match prepare_native_scan(
-        root,
-        tables_newest_first,
-        prefix,
-        paranoid_checks,
-        options,
-    )? {
-        PreparedScan::Native { plans, workers } => scan_parallel_runs(
-            plans,
-            paranoid_checks,
-            options,
-            workers,
-            &shadowed,
-            visitor,
-        ),
+    match prepare_native_scan(root, tables_newest_first, prefix, paranoid_checks, options)? {
+        PreparedScan::Native { plans, workers } => {
+            scan_parallel_runs(plans, paranoid_checks, options, workers, &shadowed, visitor)
+        }
         PreparedScan::Sequential => scan_sequential(
             root,
             tables_newest_first,
@@ -521,13 +499,7 @@ where
         return Ok((outcome, vec![partition]));
     }
 
-    match prepare_native_scan(
-        root,
-        tables_newest_first,
-        prefix,
-        paranoid_checks,
-        options,
-    )? {
+    match prepare_native_scan(root, tables_newest_first, prefix, paranoid_checks, options)? {
         PreparedScan::Native { plans, workers } => {
             let mut partitions = (0..workers).map(|_| init()).collect::<Vec<_>>();
             let visitor_ref = &visitor;
@@ -610,9 +582,8 @@ where
                 if sources[index].key.as_slice() != winner_key {
                     break;
                 }
-                same_sources.push(
-                    seq_heap_pop(&mut heap, &sources).expect("equal heap root was checked"),
-                );
+                same_sources
+                    .push(seq_heap_pop(&mut heap, &sources).expect("equal heap root was checked"));
             }
 
             if !shadowed(winner_key) && sources[first].is_value {
@@ -880,16 +851,15 @@ where
             same_lanes.clear();
             same_lanes.push(first);
             {
-                let winner_key = lanes[first]
-                    .current_key()
-                    .ok_or_else(|| LevelDbError::corruption("parallel table lane lost current key"))?;
+                let winner_key = lanes[first].current_key().ok_or_else(|| {
+                    LevelDbError::corruption("parallel table lane lost current key")
+                })?;
                 while let Some(index) = heap.first().copied() {
                     if lanes[index].current_key() != Some(winner_key) {
                         break;
                     }
-                    same_lanes.push(
-                        heap_pop(&mut heap, &lanes).expect("equal heap root was checked"),
-                    );
+                    same_lanes
+                        .push(heap_pop(&mut heap, &lanes).expect("equal heap root was checked"));
                 }
 
                 if !shadowed(winner_key) && lanes[first].current_is_value {
@@ -1295,7 +1265,9 @@ fn decode_index_handles(
         let value_len = usize::try_from(get_varint32(&mut input)?)
             .map_err(|_| LevelDbError::corruption("native index value length overflow"))?;
         if shared > decoder_key.len() || input.len() < non_shared.saturating_add(value_len) {
-            return Err(LevelDbError::corruption("native index block entry is truncated"));
+            return Err(LevelDbError::corruption(
+                "native index block entry is truncated",
+            ));
         }
         decoder_key.truncate(shared);
         decoder_key.extend_from_slice(&input[..non_shared]);
@@ -1336,10 +1308,7 @@ fn plan_block_runs(blocks: &[BlockHandle]) -> Result<Vec<BlockRun>> {
         let end = block_end(handle)?;
         let contiguous = handle.offset == run_end;
         let candidate_len = end.saturating_sub(run_offset);
-        if contiguous
-            && candidate_len <= RUN_TARGET_ENCODED_BYTES
-            && block_count < RUN_MAX_BLOCKS
-        {
+        if contiguous && candidate_len <= RUN_TARGET_ENCODED_BYTES && block_count < RUN_MAX_BLOCKS {
             run_end = end;
             block_count = block_count.saturating_add(1);
             continue;
@@ -1382,10 +1351,7 @@ fn partition_for_key(key: &[u8], partitions: usize) -> usize {
     let second = u32::from(key.get(1).copied().unwrap_or(0));
     let last = u32::from(key.last().copied().unwrap_or(0));
     let len = u32::try_from(key.len()).unwrap_or(u32::MAX);
-    let mixed = first
-        | (second << 8)
-        | (last << 16)
-        | ((len & 0xff) << 24);
+    let mixed = first | (second << 8) | (last << 16) | ((len & 0xff) << 24);
     let hash = mixed.wrapping_mul(0x9e37_79b1);
     (hash as usize) % partitions
 }
@@ -1473,7 +1439,11 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 
 fn check_cancelled(options: &ReadOptions, outcome: &mut ScanOutcome) -> Result<()> {
     outcome.cancel_checks = outcome.cancel_checks.saturating_add(1);
-    if options.cancel.as_ref().is_some_and(|cancel| cancel.is_cancelled()) {
+    if options
+        .cancel
+        .as_ref()
+        .is_some_and(|cancel| cancel.is_cancelled())
+    {
         return Err(LevelDbError::cancelled("parallel block-range scan"));
     }
     Ok(())
@@ -1544,7 +1514,10 @@ fn read_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LEN]> {
         .map_err(|error| LevelDbError::io_at("stat planned table", path, error))?
         .len();
     if file_len < LEVELDB_FOOTER_LEN as u64 {
-        return Err(LevelDbError::corruption_at(path, "native table is truncated"));
+        return Err(LevelDbError::corruption_at(
+            path,
+            "native table is truncated",
+        ));
     }
     let mut footer = [0_u8; LEVELDB_FOOTER_LEN];
     read_exact_at(
@@ -1564,7 +1537,10 @@ fn validate_footer_magic(footer: &[u8; LEVELDB_FOOTER_LEN], path: &Path) -> Resu
             .map_err(|_| LevelDbError::corruption_at(path, "native footer magic is invalid"))?,
     );
     if magic != LEVELDB_TABLE_MAGIC {
-        return Err(LevelDbError::corruption_at(path, "native table magic mismatch"));
+        return Err(LevelDbError::corruption_at(
+            path,
+            "native table magic mismatch",
+        ));
     }
     Ok(())
 }
@@ -1579,9 +1555,9 @@ fn read_one_block(
 ) -> Result<()> {
     let size = usize::try_from(handle.size)
         .map_err(|_| LevelDbError::corruption_at(path, "native block size overflows usize"))?;
-    let total_size = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
-        LevelDbError::corruption_at(path, "native block trailer range overflow")
-    })?;
+    let total_size = size
+        .checked_add(LEVELDB_BLOCK_TRAILER_LEN)
+        .ok_or_else(|| LevelDbError::corruption_at(path, "native block trailer range overflow"))?;
     encoded.clear();
     encoded.resize(total_size, 0);
     read_exact_at(file, encoded, handle.offset)
@@ -1624,7 +1600,9 @@ fn block_entries_end(block: &[u8]) -> Result<usize> {
         .checked_mul(4)
         .ok_or_else(|| LevelDbError::corruption("native restart array overflow"))?;
     if restart_bytes > count_offset {
-        return Err(LevelDbError::corruption("native restart array is truncated"));
+        return Err(LevelDbError::corruption(
+            "native restart array is truncated",
+        ));
     }
     Ok(count_offset - restart_bytes)
 }
@@ -1698,9 +1676,18 @@ mod tests {
     #[test]
     fn run_planner_coalesces_contiguous_blocks() {
         let blocks = [
-            BlockHandle { offset: 0, size: 100 },
-            BlockHandle { offset: 105, size: 200 },
-            BlockHandle { offset: 310, size: 50 },
+            BlockHandle {
+                offset: 0,
+                size: 100,
+            },
+            BlockHandle {
+                offset: 105,
+                size: 200,
+            },
+            BlockHandle {
+                offset: 310,
+                size: 50,
+            },
         ];
         let runs = plan_block_runs(&blocks).expect("plan runs");
         assert_eq!(runs.len(), 1);
@@ -1711,8 +1698,14 @@ mod tests {
     #[test]
     fn run_planner_splits_non_contiguous_blocks() {
         let blocks = [
-            BlockHandle { offset: 0, size: 100 },
-            BlockHandle { offset: 4096, size: 100 },
+            BlockHandle {
+                offset: 0,
+                size: 100,
+            },
+            BlockHandle {
+                offset: 4096,
+                size: 100,
+            },
         ];
         let runs = plan_block_runs(&blocks).expect("plan runs");
         assert_eq!(runs.len(), 2);

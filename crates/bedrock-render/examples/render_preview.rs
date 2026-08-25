@@ -37,7 +37,7 @@ fn main() -> bedrock_render::Result<()> {
             config.world_path.clone(),
             BedrockWorldOpenOptions::default(),
         )
-            .map_err(bedrock_render::BedrockRenderError::World)?,
+        .map_err(bedrock_render::BedrockRenderError::World)?,
     );
     let palette =
         RenderPalette::default().with_unknown_biome_color(RgbaColor::new(96, 96, 96, 255));

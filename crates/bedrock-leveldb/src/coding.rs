@@ -161,10 +161,7 @@ mod tests {
     #[test]
     fn chunked_crc_matches_contiguous_crc() {
         let chunks: &[&[u8]] = &[b"123", b"456", b"789"];
-        assert_eq!(
-            unmask_crc(masked_crc32c(chunks)),
-            crc32c(b"123456789")
-        );
+        assert_eq!(unmask_crc(masked_crc32c(chunks)), crc32c(b"123456789"));
     }
 
     #[test]

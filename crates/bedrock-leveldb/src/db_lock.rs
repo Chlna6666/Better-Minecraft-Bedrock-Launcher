@@ -21,9 +21,7 @@ impl DatabaseLock {
 
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Self { file }),
-            Err(error) if is_lock_contended(&error) => {
-                Err(LevelDbError::database_locked(path))
-            }
+            Err(error) if is_lock_contended(&error) => Err(LevelDbError::database_locked(path)),
             Err(error) => Err(LevelDbError::io_at(
                 "acquire database writer lock",
                 path,

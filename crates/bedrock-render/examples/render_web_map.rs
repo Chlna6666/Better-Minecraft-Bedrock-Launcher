@@ -89,7 +89,7 @@ fn main() -> bedrock_render::Result<()> {
             config.world_path.clone(),
             BedrockWorldOpenOptions::default(),
         )
-            .map_err(bedrock_render::BedrockRenderError::World)?,
+        .map_err(bedrock_render::BedrockRenderError::World)?,
     );
     let renderer = MapRenderer::new(Arc::clone(&world), palette);
     let discovered_dimensions = discover_dimension_tiles(world.as_ref(), &config)?;

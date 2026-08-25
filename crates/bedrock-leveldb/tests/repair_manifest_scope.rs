@@ -15,7 +15,8 @@ fn repair_ignores_valid_unreferenced_table_files() {
     let target = tempfile::tempdir().expect("create target database directory");
     {
         let db = Db::open(target.path(), LevelDbOpenOptions::default()).expect("open target");
-        db.put("live", "current", WriteOptions::default()).expect("put live");
+        db.put("live", "current", WriteOptions::default())
+            .expect("put live");
         db.flush().expect("flush live");
     }
 
@@ -33,6 +34,9 @@ fn repair_ignores_valid_unreferenced_table_files() {
     assert_eq!(report.recovered_tables, 1);
 
     let db = Db::open(target.path(), LevelDbOpenOptions::default()).expect("open repaired target");
-    assert_eq!(db.get(b"live").expect("read live").as_deref(), Some(b"current".as_slice()));
+    assert_eq!(
+        db.get(b"live").expect("read live").as_deref(),
+        Some(b"current".as_slice())
+    );
     assert_eq!(db.get(b"obsolete").expect("read obsolete"), None);
 }

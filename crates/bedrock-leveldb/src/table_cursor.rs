@@ -87,7 +87,9 @@ impl CustomCursor {
         let version = u32::from_le_bytes(
             bytes[version_offset..version_offset + 4]
                 .try_into()
-                .map_err(|_| LevelDbError::corruption_at(path, "custom table version is invalid"))?,
+                .map_err(|_| {
+                    LevelDbError::corruption_at(path, "custom table version is invalid")
+                })?,
         );
         if version != CUSTOM_TABLE_VERSION {
             return Err(LevelDbError::corruption_at(
@@ -189,13 +191,8 @@ impl NativeCursor {
         let _meta_index = read_block_handle(&mut footer_input)?;
         let index_handle = read_block_handle(&mut footer_input)?;
         let mut scratch = Vec::new();
-        let index_block = read_block_owned(
-            &file,
-            path,
-            index_handle,
-            paranoid_checks,
-            &mut scratch,
-        )?;
+        let index_block =
+            read_block_owned(&file, path, index_handle, paranoid_checks, &mut scratch)?;
         let mut index_decoder = OwnedBlockDecoder::new(index_block)?;
         let mut handles = Vec::new();
         while let Some(entry) = index_decoder.next()? {
@@ -406,7 +403,9 @@ impl BorrowedCustomCursor {
         let version = u32::from_le_bytes(
             bytes[version_offset..version_offset + 4]
                 .try_into()
-                .map_err(|_| LevelDbError::corruption_at(path, "custom table version is invalid"))?,
+                .map_err(|_| {
+                    LevelDbError::corruption_at(path, "custom table version is invalid")
+                })?,
         );
         if version != CUSTOM_TABLE_VERSION {
             return Err(LevelDbError::corruption_at(
@@ -718,7 +717,10 @@ fn read_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LEN]> {
         .map_err(|error| LevelDbError::io_at("stat native table", path, error))?
         .len();
     if file_len < LEVELDB_FOOTER_LEN as u64 {
-        return Err(LevelDbError::corruption_at(path, "native table is truncated"));
+        return Err(LevelDbError::corruption_at(
+            path,
+            "native table is truncated",
+        ));
     }
     let mut footer = [0_u8; LEVELDB_FOOTER_LEN];
     read_exact_at(
@@ -755,9 +757,9 @@ fn read_block_owned(
 ) -> Result<Bytes> {
     let size = usize::try_from(handle.size)
         .map_err(|_| LevelDbError::corruption_at(path, "native block size overflows usize"))?;
-    let total_size = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
-        LevelDbError::corruption_at(path, "native block trailer range overflow")
-    })?;
+    let total_size = size
+        .checked_add(LEVELDB_BLOCK_TRAILER_LEN)
+        .ok_or_else(|| LevelDbError::corruption_at(path, "native block trailer range overflow"))?;
     scratch.clear();
     scratch.resize(total_size, 0);
     read_exact_at(file, scratch, handle.offset)
@@ -795,9 +797,9 @@ fn read_block_reused(
 ) -> Result<()> {
     let size = usize::try_from(handle.size)
         .map_err(|_| LevelDbError::corruption_at(path, "native block size overflows usize"))?;
-    let total_size = size.checked_add(LEVELDB_BLOCK_TRAILER_LEN).ok_or_else(|| {
-        LevelDbError::corruption_at(path, "native block trailer range overflow")
-    })?;
+    let total_size = size
+        .checked_add(LEVELDB_BLOCK_TRAILER_LEN)
+        .ok_or_else(|| LevelDbError::corruption_at(path, "native block trailer range overflow"))?;
     encoded.clear();
     encoded.resize(total_size, 0);
     read_exact_at(file, encoded, handle.offset)

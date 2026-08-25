@@ -3,7 +3,8 @@ use bedrock_leveldb::{Db, ErrorKind, LevelDbOpenOptions};
 #[test]
 fn second_writer_is_rejected_until_first_writer_closes() {
     let directory = tempfile::tempdir().expect("create temporary database directory");
-    let first = Db::open(directory.path(), LevelDbOpenOptions::default()).expect("open first writer");
+    let first =
+        Db::open(directory.path(), LevelDbOpenOptions::default()).expect("open first writer");
 
     let error = match Db::open(directory.path(), LevelDbOpenOptions::default()) {
         Ok(_) => panic!("second writer must not acquire the database lock"),

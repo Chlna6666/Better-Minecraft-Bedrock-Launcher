@@ -86,11 +86,7 @@ impl BloomFilterBlockBuilder {
             return Ok(());
         }
 
-        let bits = self
-            .hashes
-            .len()
-            .saturating_mul(BITS_PER_KEY)
-            .max(64);
+        let bits = self.hashes.len().saturating_mul(BITS_PER_KEY).max(64);
         let bytes = bits.div_ceil(8);
         let bits = bytes.saturating_mul(8);
         let start = self.result.len();
@@ -162,7 +158,10 @@ impl BloomFilterBlock {
         let Some(start_bytes) = self.data.get(offset_position..next_position) else {
             return true;
         };
-        let Some(limit_bytes) = self.data.get(next_position..next_position.saturating_add(4)) else {
+        let Some(limit_bytes) = self
+            .data
+            .get(next_position..next_position.saturating_add(4))
+        else {
             return true;
         };
         let Ok(start) = usize::try_from(u32::from_le_bytes(match start_bytes.try_into() {
@@ -222,7 +221,10 @@ fn bloom_hash(data: &[u8]) -> u32 {
 }
 
 fn leveldb_hash(mut data: &[u8], seed: u32) -> u32 {
-    let mut hash = seed ^ (u32::try_from(data.len()).unwrap_or(u32::MAX).wrapping_mul(BLOOM_HASH_MUL));
+    let mut hash = seed
+        ^ (u32::try_from(data.len())
+            .unwrap_or(u32::MAX)
+            .wrapping_mul(BLOOM_HASH_MUL));
     while data.len() >= 4 {
         let word = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         data = &data[4..];
@@ -263,8 +265,14 @@ mod tests {
         assert_eq!(leveldb_hash(&[], BLOOM_HASH_SEED), 0xbc9f_1d34);
         assert_eq!(leveldb_hash(&[0x62], BLOOM_HASH_SEED), 0xef13_45c4);
         assert_eq!(leveldb_hash(&[0xc3, 0x97], BLOOM_HASH_SEED), 0x5b66_3814);
-        assert_eq!(leveldb_hash(&[0xe2, 0x99, 0xa5], BLOOM_HASH_SEED), 0x323c_078f);
-        assert_eq!(leveldb_hash(&[0xe1, 0x80, 0xb9, 0x32], BLOOM_HASH_SEED), 0xed21_633a);
+        assert_eq!(
+            leveldb_hash(&[0xe2, 0x99, 0xa5], BLOOM_HASH_SEED),
+            0x323c_078f
+        );
+        assert_eq!(
+            leveldb_hash(&[0xe1, 0x80, 0xb9, 0x32], BLOOM_HASH_SEED),
+            0xed21_633a
+        );
     }
 
     #[test]
