@@ -141,15 +141,17 @@ pub(super) fn draw_professional_overlay_canvas(
         }
         if overlays.entities {
             let mut avatar_requests = Vec::with_capacity(overlay_paint.entity_points.len().min(4_096));
-            let canvas_width = bounds.size.width / px(1.0);
-            let canvas_height = bounds.size.height / px(1.0);
+            let canvas_left = bounds.left() / px(1.0);
+            let canvas_top = bounds.top() / px(1.0);
+            let canvas_right = bounds.right() / px(1.0);
+            let canvas_bottom = bounds.bottom() / px(1.0);
             for point in &overlay_paint.entity_points {
                 let screen_x = overlay_marker_screen_x(bounds, viewport, layout, point.block_x);
                 let screen_y = overlay_marker_screen_y(bounds, viewport, layout, point.block_z);
-                if screen_x < -52.0
-                    || screen_y < -52.0
-                    || screen_x > canvas_width + 52.0
-                    || screen_y > canvas_height + 52.0
+                if screen_x < canvas_left - 52.0
+                    || screen_y < canvas_top - 52.0
+                    || screen_x > canvas_right + 52.0
+                    || screen_y > canvas_bottom + 52.0
                 {
                     continue;
                 }
