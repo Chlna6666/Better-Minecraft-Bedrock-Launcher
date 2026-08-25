@@ -1,0 +1,144 @@
+name: Update Java Block Models
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * *"
+  push:
+    branches:
+      - master
+    paths:
+      - scripts/fetch_java_models.py
+      - crates/bedrock-block-model/src/java.rs
+      - crates/bedrock-block-model/src/java_bake.rs
+      - crates/bedrock-block-model/src/bin/block_model_tool.rs
+      - .github/workflows/update-java-models.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: java-block-model-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    name: Fetch and bake latest Java release models
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Resolve latest Java release
+        id: java
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib.request import Request, urlopen
+
+          url = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+          request = Request(url, headers={"User-Agent": "BMCBL java-model-workflow/1.0"})
+          with urlopen(request, timeout=30) as response:
+              manifest = json.load(response)
+          version = manifest["latest"]["release"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+          print(f"Latest Java release: {version}")
+          PY
+
+      - name: Restore Java client cache
+        uses: actions/cache@v4
+        with:
+          path: target/java-model-cache/downloads
+          key: java-model-client-${{ runner.os }}-${{ steps.java.outputs.version }}
+
+      - name: Fetch Java block model JSON
+        shell: bash
+        run: |
+          python scripts/fetch_java_models.py \
+            --version "${{ steps.java.outputs.version }}" \
+            --output target/java-model-cache/current \
+            --cache-dir target/java-model-cache/downloads
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      - name: Test Java model baker
+        shell: bash
+        run: cargo test -p bedrock-block-model --lib java_bake
+
+      - name: Bake packed Java model database
+        shell: bash
+        run: |
+          mkdir -p crates/bedrock-block-model/generated
+          cargo run --release -p bedrock-block-model --bin block_model_tool -- \
+            bake \
+            target/java-model-cache/current \
+            crates/bedrock-block-model/generated/vanilla_models.bin \
+            --json | tee target/java-model-bake-stats.json
+
+      - name: Write model database metadata
+        id: metadata
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = json.loads(Path("target/java-model-cache/current/manifest.json").read_text(encoding="utf-8"))
+          bake = json.loads(Path("target/java-model-bake-stats.json").read_text(encoding="utf-8"))
+          metadata = {
+              "schema": 1,
+              "java_release": source["version"]["id"],
+              "java_release_time": source["version"].get("release_time"),
+              "client_sha1": source["client"]["sha1"],
+              "source_manifest_schema": source["schema"],
+              "database": bake,
+          }
+          output = Path("crates/bedrock-block-model/generated/vanilla_models.meta.json")
+          output.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as github_output:
+              github_output.write(f"version={metadata['java_release']}\n")
+          PY
+
+      - name: Detect database changes
+        id: changes
+        shell: bash
+        run: |
+          git add \
+            crates/bedrock-block-model/generated/vanilla_models.bin \
+            crates/bedrock-block-model/generated/vanilla_models.meta.json
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Java model database is already current."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --cached --stat
+          fi
+
+      - name: Commit updated model database
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(方块模型): 更新 Java ${{ steps.metadata.outputs.version }} 模型数据库"
+          git push origin HEAD:master
