@@ -3,7 +3,82 @@ use super::prelude::*;
 use super::selection::{exact_selection_chunks, selection_chunks_are_rectangular};
 use super::tile_state::MapRenderRange;
 use super::viewport::*;
+use std::cell::RefCell;
 use std::collections::HashSet;
+
+const ENTITY_EXACT_LOD_MIN_CHUNK_PX: f32 = 18.0;
+const ENTITY_CHUNK_LOD_MIN_CHUNK_PX: f32 = 10.0;
+const ENTITY_SCREEN_CLUSTER_CELL_PX: f32 = 24.0;
+const ENTITY_AVATAR_UPLOAD_BUDGET: usize = 32;
+const ENTITY_VISIBILITY_MARGIN_PX: f32 = 52.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntityLodMode {
+    Exact,
+    ChunkType,
+    ScreenCluster,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct EntityChunkClusterKey {
+    chunk_x: i32,
+    chunk_z: i32,
+    image_identity: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EntityChunkClusterAccum {
+    sum_block_x: f64,
+    sum_block_z: f64,
+    count: u32,
+    representative_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EntityScreenClusterCell {
+    generation: u32,
+    sum_block_x: f64,
+    sum_block_z: f64,
+    count: u32,
+    representative_index: usize,
+    representative_has_avatar: bool,
+}
+
+#[derive(Default)]
+struct EntityLodScratch {
+    chunk_clusters: HashMap<EntityChunkClusterKey, EntityChunkClusterAccum>,
+    chunk_cluster_order: Vec<EntityChunkClusterKey>,
+    screen_cells: Vec<EntityScreenClusterCell>,
+    active_screen_cells: Vec<usize>,
+    screen_generation: u32,
+}
+
+impl EntityLodScratch {
+    fn begin_chunk_frame(&mut self) {
+        self.chunk_clusters.clear();
+        self.chunk_cluster_order.clear();
+    }
+
+    fn begin_screen_frame(&mut self, required_cells: usize) -> u32 {
+        self.screen_generation = self.screen_generation.wrapping_add(1);
+        if self.screen_generation == 0 {
+            for cell in &mut self.screen_cells {
+                cell.generation = 0;
+            }
+            self.screen_generation = 1;
+        }
+        if self.screen_cells.len() < required_cells {
+            self.screen_cells
+                .resize(required_cells, EntityScreenClusterCell::default());
+        }
+        self.active_screen_cells.clear();
+        self.screen_generation
+    }
+}
+
+thread_local! {
+    static ENTITY_LOD_SCRATCH: RefCell<EntityLodScratch> = RefCell::new(EntityLodScratch::default());
+}
 
 pub(super) fn draw_map_canvas(
     bounds: Bounds<Pixels>,
@@ -61,6 +136,437 @@ pub(super) fn grid_step_for_block_bounds(
     adjusted_grid_step(base_step, block_bounds.0, block_bounds.2, max_lines).max(
         adjusted_grid_step(base_step, block_bounds.1, block_bounds.3, max_lines),
     )
+}
+
+fn entity_chunk_screen_size_px(viewport: MapViewport, layout: RenderLayout) -> f32 {
+    16.0 * layout.pixels_per_block as f32 / layout.blocks_per_pixel as f32 * viewport.scale
+}
+
+fn entity_lod_mode(viewport: MapViewport, layout: RenderLayout) -> EntityLodMode {
+    let chunk_px = entity_chunk_screen_size_px(viewport, layout);
+    if !chunk_px.is_finite() || chunk_px >= ENTITY_EXACT_LOD_MIN_CHUNK_PX {
+        EntityLodMode::Exact
+    } else if chunk_px >= ENTITY_CHUNK_LOD_MIN_CHUNK_PX {
+        EntityLodMode::ChunkType
+    } else {
+        EntityLodMode::ScreenCluster
+    }
+}
+
+fn entity_avatar_arc<'a>(
+    point: &EntityOverlayPoint,
+    entity_avatar_pool: &'a BTreeMap<String, Arc<RenderImage>>,
+) -> Option<&'a Arc<RenderImage>> {
+    let key = point.avatar_key.as_deref()?;
+    if let Some(image) = entity_avatar_pool.get(key) {
+        return Some(image);
+    }
+    let alias = match key {
+        "experience_orb" => "xp_orb",
+        "experience_bottle" => "xp_bottle",
+        _ => return None,
+    };
+    entity_avatar_pool.get(alias)
+}
+
+fn entity_screen_position(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    point: &EntityOverlayPoint,
+    margin: f32,
+) -> Option<(f32, f32)> {
+    let screen_x = overlay_marker_screen_x(bounds, viewport, layout, point.block_x);
+    let screen_y = overlay_marker_screen_y(bounds, viewport, layout, point.block_z);
+    if !screen_x.is_finite() || !screen_y.is_finite() {
+        return None;
+    }
+    let left = bounds.left() / px(1.0);
+    let top = bounds.top() / px(1.0);
+    let right = bounds.right() / px(1.0);
+    let bottom = bounds.bottom() / px(1.0);
+    if screen_x < left - margin
+        || screen_y < top - margin
+        || screen_x > right + margin
+        || screen_y > bottom + margin
+    {
+        return None;
+    }
+    Some((screen_x, screen_y))
+}
+
+fn paint_entity_overlay_lod(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    overlay_paint: &ProfessionalOverlayPaintCache,
+    entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
+    window: &mut Window,
+) {
+    match entity_lod_mode(viewport, layout) {
+        EntityLodMode::Exact => paint_exact_entity_avatars(
+            bounds,
+            viewport,
+            layout,
+            overlay_paint,
+            entity_avatar_pool,
+            window,
+        ),
+        EntityLodMode::ChunkType => paint_chunk_clustered_entity_avatars(
+            bounds,
+            viewport,
+            layout,
+            overlay_paint,
+            entity_avatar_pool,
+            window,
+        ),
+        EntityLodMode::ScreenCluster => paint_screen_clustered_entity_avatars(
+            bounds,
+            viewport,
+            layout,
+            overlay_paint,
+            entity_avatar_pool,
+            window,
+        ),
+    }
+}
+
+fn paint_exact_entity_avatars(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    overlay_paint: &ProfessionalOverlayPaintCache,
+    entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
+    window: &mut Window,
+) {
+    let mut avatar_requests = Vec::with_capacity(overlay_paint.entity_points.len().min(4_096));
+    for point in &overlay_paint.entity_points {
+        if entity_screen_position(
+            bounds,
+            viewport,
+            layout,
+            point,
+            ENTITY_VISIBILITY_MARGIN_PX,
+        )
+        .is_none()
+        {
+            continue;
+        }
+        let Some(image) = entity_avatar_arc(point, entity_avatar_pool) else {
+            paint_point_marker(
+                bounds,
+                viewport,
+                layout,
+                point.block_x,
+                point.block_z,
+                rgb(0xf97316).into(),
+                window,
+            );
+            continue;
+        };
+        avatar_requests.push(entity_avatar_request(
+            bounds,
+            viewport,
+            layout,
+            point.block_x,
+            point.block_z,
+            image.as_ref(),
+        ));
+    }
+    paint_entity_avatar_requests(avatar_requests, window);
+}
+
+fn paint_chunk_clustered_entity_avatars(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    overlay_paint: &ProfessionalOverlayPaintCache,
+    entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
+    window: &mut Window,
+) {
+    ENTITY_LOD_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        scratch.begin_chunk_frame();
+        for (index, point) in overlay_paint.entity_points.iter().enumerate() {
+            if entity_screen_position(
+                bounds,
+                viewport,
+                layout,
+                point,
+                ENTITY_VISIBILITY_MARGIN_PX,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let image_identity = entity_avatar_arc(point, entity_avatar_pool)
+                .map(|image| Arc::as_ptr(image) as usize)
+                .unwrap_or(0);
+            let key = EntityChunkClusterKey {
+                chunk_x: (point.block_x / 16.0).floor() as i32,
+                chunk_z: (point.block_z / 16.0).floor() as i32,
+                image_identity,
+            };
+            if let Some(cluster) = scratch.chunk_clusters.get_mut(&key) {
+                cluster.sum_block_x += f64::from(point.block_x);
+                cluster.sum_block_z += f64::from(point.block_z);
+                cluster.count = cluster.count.saturating_add(1);
+            } else {
+                scratch.chunk_cluster_order.push(key);
+                scratch.chunk_clusters.insert(
+                    key,
+                    EntityChunkClusterAccum {
+                        sum_block_x: f64::from(point.block_x),
+                        sum_block_z: f64::from(point.block_z),
+                        count: 1,
+                        representative_index: index,
+                    },
+                );
+            }
+        }
+
+        let chunk_px = entity_chunk_screen_size_px(viewport, layout);
+        let icon_size = (chunk_px * 0.85).clamp(11.0, 16.0);
+        let mut avatar_requests = Vec::with_capacity(scratch.chunk_cluster_order.len());
+        for key in scratch.chunk_cluster_order.iter().copied() {
+            let Some(cluster) = scratch.chunk_clusters.get(&key).copied() else {
+                continue;
+            };
+            let count = cluster.count.max(1);
+            let block_x = (cluster.sum_block_x / f64::from(count)) as f32;
+            let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
+            let representative = &overlay_paint.entity_points[cluster.representative_index];
+            paint_entity_cluster_backdrop(
+                bounds,
+                viewport,
+                layout,
+                block_x,
+                block_z,
+                count,
+                icon_size,
+                window,
+            );
+            let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
+                paint_entity_cluster_fallback(
+                    bounds, viewport, layout, block_x, block_z, count, window,
+                );
+                continue;
+            };
+            avatar_requests.push(entity_avatar_request_sized(
+                bounds,
+                viewport,
+                layout,
+                block_x,
+                block_z,
+                icon_size,
+                image.as_ref(),
+            ));
+        }
+        paint_entity_avatar_requests(avatar_requests, window);
+    });
+}
+
+fn paint_screen_clustered_entity_avatars(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    overlay_paint: &ProfessionalOverlayPaintCache,
+    entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
+    window: &mut Window,
+) {
+    let left = bounds.left() / px(1.0);
+    let top = bounds.top() / px(1.0);
+    let width = (bounds.size.width / px(1.0)).max(1.0);
+    let height = (bounds.size.height / px(1.0)).max(1.0);
+    let columns = (width / ENTITY_SCREEN_CLUSTER_CELL_PX).ceil().max(1.0) as usize;
+    let rows = (height / ENTITY_SCREEN_CLUSTER_CELL_PX).ceil().max(1.0) as usize;
+    let required_cells = columns.saturating_mul(rows);
+
+    ENTITY_LOD_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        let generation = scratch.begin_screen_frame(required_cells);
+        for (index, point) in overlay_paint.entity_points.iter().enumerate() {
+            let Some((screen_x, screen_y)) =
+                entity_screen_position(bounds, viewport, layout, point, 0.0)
+            else {
+                continue;
+            };
+            let cell_x = (((screen_x - left) / ENTITY_SCREEN_CLUSTER_CELL_PX).floor() as usize)
+                .min(columns.saturating_sub(1));
+            let cell_y = (((screen_y - top) / ENTITY_SCREEN_CLUSTER_CELL_PX).floor() as usize)
+                .min(rows.saturating_sub(1));
+            let cell_index = cell_y.saturating_mul(columns).saturating_add(cell_x);
+            if cell_index >= required_cells {
+                continue;
+            }
+            let has_avatar = entity_avatar_arc(point, entity_avatar_pool).is_some();
+            let is_new = scratch.screen_cells[cell_index].generation != generation;
+            if is_new {
+                scratch.active_screen_cells.push(cell_index);
+                scratch.screen_cells[cell_index] = EntityScreenClusterCell {
+                    generation,
+                    sum_block_x: f64::from(point.block_x),
+                    sum_block_z: f64::from(point.block_z),
+                    count: 1,
+                    representative_index: index,
+                    representative_has_avatar: has_avatar,
+                };
+                continue;
+            }
+            let cell = &mut scratch.screen_cells[cell_index];
+            cell.sum_block_x += f64::from(point.block_x);
+            cell.sum_block_z += f64::from(point.block_z);
+            cell.count = cell.count.saturating_add(1);
+            if !cell.representative_has_avatar && has_avatar {
+                cell.representative_index = index;
+                cell.representative_has_avatar = true;
+            }
+        }
+
+        let icon_size = 13.0;
+        let mut avatar_requests = Vec::with_capacity(scratch.active_screen_cells.len());
+        for cell_index in scratch.active_screen_cells.iter().copied() {
+            let cell = scratch.screen_cells[cell_index];
+            if cell.generation != generation || cell.count == 0 {
+                continue;
+            }
+            let block_x = (cell.sum_block_x / f64::from(cell.count)) as f32;
+            let block_z = (cell.sum_block_z / f64::from(cell.count)) as f32;
+            let representative = &overlay_paint.entity_points[cell.representative_index];
+            paint_entity_cluster_backdrop(
+                bounds,
+                viewport,
+                layout,
+                block_x,
+                block_z,
+                cell.count,
+                icon_size,
+                window,
+            );
+            let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
+                paint_entity_cluster_fallback(
+                    bounds,
+                    viewport,
+                    layout,
+                    block_x,
+                    block_z,
+                    cell.count,
+                    window,
+                );
+                continue;
+            };
+            avatar_requests.push(entity_avatar_request_sized(
+                bounds,
+                viewport,
+                layout,
+                block_x,
+                block_z,
+                icon_size,
+                image.as_ref(),
+            ));
+        }
+        paint_entity_avatar_requests(avatar_requests, window);
+    });
+}
+
+fn paint_entity_cluster_backdrop(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    block_x: f32,
+    block_z: f32,
+    count: u32,
+    icon_size: f32,
+    window: &mut Window,
+) {
+    if count <= 1 {
+        return;
+    }
+    let x = overlay_marker_screen_x(bounds, viewport, layout, block_x);
+    let y = overlay_marker_screen_y(bounds, viewport, layout, block_z);
+    let density = ((count as f32 + 1.0).log2() * 1.15).clamp(1.5, 7.0);
+    let outer_size = icon_size + density * 2.0;
+    let outer = px(outer_size);
+    window.paint_quad(
+        fill(
+            Bounds {
+                origin: point(px(x) - outer / 2.0, px(y) - outer / 2.0),
+                size: size(outer, outer),
+            },
+            Hsla {
+                a: 0.72,
+                ..rgb(0x0f172a).into()
+            },
+        )
+        .corner_radii(px((outer_size * 0.28).clamp(3.5, 7.0))),
+    );
+    let badge_size = (4.0 + (count as f32 + 1.0).log2()).clamp(5.0, 10.0);
+    let badge = px(badge_size);
+    let icon_half = px(icon_size) / 2.0;
+    window.paint_quad(
+        fill(
+            Bounds {
+                origin: point(
+                    px(x) + icon_half - badge * 0.62,
+                    px(y) + icon_half - badge * 0.62,
+                ),
+                size: size(badge, badge),
+            },
+            Hsla {
+                a: 0.96,
+                ..rgb(0x22c55e).into()
+            },
+        )
+        .corner_radii(badge / 2.0),
+    );
+}
+
+fn paint_entity_cluster_fallback(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    block_x: f32,
+    block_z: f32,
+    count: u32,
+    window: &mut Window,
+) {
+    let x = overlay_marker_screen_x(bounds, viewport, layout, block_x);
+    let y = overlay_marker_screen_y(bounds, viewport, layout, block_z);
+    let marker_size = (7.0 + (count as f32 + 1.0).log2() * 1.4).clamp(7.0, 18.0);
+    let marker = px(marker_size);
+    window.paint_quad(
+        fill(
+            Bounds {
+                origin: point(px(x) - marker / 2.0, px(y) - marker / 2.0),
+                size: size(marker, marker),
+            },
+            Hsla {
+                a: 0.90,
+                ..rgb(0xf97316).into()
+            },
+        )
+        .corner_radii(px((marker_size * 0.28).clamp(2.5, 5.0))),
+    );
+}
+
+fn paint_entity_avatar_requests<'a>(
+    requests: Vec<ImagePaintRequest<'a>>,
+    window: &mut Window,
+) {
+    if requests.is_empty() {
+        return;
+    }
+    match window.paint_images_budgeted(requests, ENTITY_AVATAR_UPLOAD_BUDGET) {
+        Ok(progress) if progress.deferred_requests > 0 => {
+            // 普通 animation frame 可能直接重放 retained absolute subtree，导致本帧
+            // 因上传预算延期的头像永远不再进入实际 paint。强制刷新图片层但保留 atlas。
+            window.refresh_map_image_uploads();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::debug!(?error, "failed to paint entity avatars");
+        }
+    }
 }
 
 pub(super) fn draw_professional_overlay_canvas(
@@ -140,62 +646,14 @@ pub(super) fn draw_professional_overlay_canvas(
             }
         }
         if overlays.entities {
-            let mut avatar_requests = Vec::with_capacity(overlay_paint.entity_points.len().min(4_096));
-            let canvas_left = bounds.left() / px(1.0);
-            let canvas_top = bounds.top() / px(1.0);
-            let canvas_right = bounds.right() / px(1.0);
-            let canvas_bottom = bounds.bottom() / px(1.0);
-            for point in &overlay_paint.entity_points {
-                let screen_x = overlay_marker_screen_x(bounds, viewport, layout, point.block_x);
-                let screen_y = overlay_marker_screen_y(bounds, viewport, layout, point.block_z);
-                if screen_x < canvas_left - 52.0
-                    || screen_y < canvas_top - 52.0
-                    || screen_x > canvas_right + 52.0
-                    || screen_y > canvas_bottom + 52.0
-                {
-                    continue;
-                }
-
-                // 橙色标记只表示实体确实没有可用头像。实体数量和 GPU 上传预算
-                // 不得改变其语义，否则低缩放下同屏实体超过旧的硬上限时，会把
-                // 已支持的实体错误显示成“未知实体”。
-                let Some(image) = point
-                    .avatar_key
-                    .as_ref()
-                    .and_then(|key| entity_avatar_pool.get(key))
-                else {
-                    paint_point_marker(
-                        bounds,
-                        viewport,
-                        layout,
-                        point.block_x,
-                        point.block_z,
-                        rgb(0xf97316).into(),
-                        window,
-                    );
-                    continue;
-                };
-
-                avatar_requests.push(entity_avatar_request(
-                    bounds,
-                    viewport,
-                    layout,
-                    point.block_x,
-                    point.block_z,
-                    image,
-                ));
-            }
-            // 这里只限制每帧新上传到 atlas 的唯一图片数量，不限制同屏实体数量。
-            // 已驻留图片始终可以绘制；未驻留图片会在后续帧逐步补齐。
-            match window.paint_images_budgeted(avatar_requests, 32) {
-                Ok(progress) if progress.deferred_requests > 0 => {
-                    window.request_animation_frame();
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::debug!(?error, "failed to paint entity avatars");
-                }
-            }
+            paint_entity_overlay_lod(
+                bounds,
+                viewport,
+                layout,
+                overlay_paint,
+                entity_avatar_pool,
+                window,
+            );
         }
         if overlays.block_entities {
             for point in &overlay_paint.block_entity_points {
@@ -322,12 +780,7 @@ fn paint_selection_resize_handles(
         layout,
         selection.max_chunk_x.saturating_add(1).saturating_mul(16),
     );
-    let top = screen_y_for_block(
-        bounds,
-        viewport,
-        layout,
-        selection.min_chunk_z.saturating_mul(16),
-    );
+    let top = screen_y_for_block(bounds, viewport, layout, selection.min_chunk_z.saturating_mul(16));
     let bottom = screen_y_for_block(
         bounds,
         viewport,
@@ -714,9 +1167,29 @@ fn entity_avatar_request<'a>(
     block_z: f32,
     image: &'a RenderImage,
 ) -> ImagePaintRequest<'a> {
+    entity_avatar_request_sized(
+        bounds,
+        viewport,
+        layout,
+        block_x,
+        block_z,
+        overlay_icon_size_px(viewport, layout),
+        image,
+    )
+}
+
+fn entity_avatar_request_sized<'a>(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    block_x: f32,
+    block_z: f32,
+    icon_size: f32,
+    image: &'a RenderImage,
+) -> ImagePaintRequest<'a> {
     let x = overlay_marker_screen_x(bounds, viewport, layout, block_x);
     let y = overlay_marker_screen_y(bounds, viewport, layout, block_z);
-    let size_px = px(overlay_icon_size_px(viewport, layout));
+    let size_px = px(icon_size);
     ImagePaintRequest::new(
         Bounds {
             origin: point(px(x) - size_px / 2.0, px(y) - size_px / 2.0),
@@ -727,8 +1200,7 @@ fn entity_avatar_request<'a>(
 }
 
 pub(super) fn overlay_icon_size_px(viewport: MapViewport, layout: RenderLayout) -> f32 {
-    let chunk_screen_size =
-        16.0 * layout.pixels_per_block as f32 / layout.blocks_per_pixel as f32 * viewport.scale;
+    let chunk_screen_size = entity_chunk_screen_size_px(viewport, layout);
     if !chunk_screen_size.is_finite() {
         return 12.0;
     }
