@@ -32,13 +32,13 @@ pub struct GlobalImageAssetCacheSnapshot {
 /// Aggregated GPUI memory diagnostics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GpuiMemorySnapshot {
-    /// Number of entries retained by bounded GPUI image caches.
+    /// Number of entries retained by GPUI image caches.
     pub image_asset_cache_entries: usize,
     /// Encoded bytes retained by compressed image assets.
     pub image_asset_compressed_bytes: usize,
-    /// Number of entries retained by the shared compressed byte cache.
+    /// Number of live entries visible through the shared compressed byte cache.
     pub compressed_cache_entries: usize,
-    /// Resident image bytes retained by global image assets and bounded image caches.
+    /// Resident image bytes retained by global image assets and image caches.
     pub image_asset_resident_bytes: usize,
     /// Bytes retained by reusable bitmap backing buffers.
     pub bitmap_pool_bytes: usize,
@@ -46,8 +46,6 @@ pub struct GpuiMemorySnapshot {
     pub bitmap_pool_buffers: usize,
     /// Decoded animation bytes currently queued ahead of playback.
     pub animation_prefetch_bytes: usize,
-    /// Process-wide limit for decoded animation bytes queued ahead of playback.
-    pub animation_prefetch_byte_limit: usize,
     /// Resident image bytes retained by render images currently visible through GPUI cache metrics.
     pub render_image_cpu_bytes: usize,
     /// Estimated GPU texture bytes retained for render images.
@@ -80,7 +78,6 @@ impl GpuiMemorySnapshot {
         } = crate::assets::global_bitmap_pool().snapshot();
         let AnimationQueueSnapshot {
             queued_bytes: animation_prefetch_bytes,
-            byte_limit: animation_prefetch_byte_limit,
         } = crate::assets::animation_queue_snapshot();
         let (compressed_cache_entries, compressed_cache_bytes) = compressed_cache_snapshot();
         let global_decoded_bytes = global_assets
@@ -104,12 +101,11 @@ impl GpuiMemorySnapshot {
             image_asset_compressed_bytes: metrics
                 .image_asset_compressed_bytes
                 .saturating_add(global_assets.compressed_bytes.max(compressed_cache_bytes)),
-            compressed_cache_entries: compressed_cache_entries,
+            compressed_cache_entries,
             image_asset_resident_bytes: resident_bytes,
             bitmap_pool_bytes: bitmap_pool_retained_bytes,
-            bitmap_pool_buffers: bitmap_pool_buffers,
+            bitmap_pool_buffers,
             animation_prefetch_bytes,
-            animation_prefetch_byte_limit,
             render_image_cpu_bytes: metrics.render_image_cpu_bytes.max(resident_bytes),
             render_image_gpu_texture_bytes: metrics.render_image_gpu_texture_bytes,
             icon_cache_entries: metrics.icon_cache_entries,
