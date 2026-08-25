@@ -1,0 +1,724 @@
+name: Apply Java Runtime Model Integration
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/apply-java-runtime-integration.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-java-runtime-model-integration
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write Java packed-model runtime bridge
+        shell: bash
+        run: |
+          cat > crates/bedrock-block-model/src/java_runtime.rs <<'RS'
+          use std::mem;
+
+          use crate::{
+              BlockFace, BlockStateQuery, JavaModelApplication, JavaModelAxis, JavaModelDatabase,
+              JavaPackedElement, JavaPackedFace, ModelCuboid, ModelPlane, ModelShape,
+              java_block_id_for_bedrock_state, java_properties_for_bedrock_state,
+              vanilla_java_model_database,
+          };
+
+          /// Resolves a Bedrock block state through the embedded Java Edition model database and
+          /// expands the selected packed model applications into renderer-neutral geometry.
+          ///
+          /// The packed database itself stays zero-copy. Allocation only happens for the final
+          /// `ModelShape` that a renderer retains. Callers should cache that shape per palette state.
+          #[must_use]
+          pub fn java_model_shape_for_bedrock_state(
+              state: &BlockStateQuery,
+              seed: u64,
+          ) -> Option<ModelShape> {
+              java_model_shape_for_bedrock_state_in_database(
+                  *vanilla_java_model_database(),
+                  state,
+                  seed,
+              )
+          }
+
+          fn java_model_shape_for_bedrock_state_in_database(
+              database: JavaModelDatabase<'_>,
+              state: &BlockStateQuery,
+              seed: u64,
+          ) -> Option<ModelShape> {
+              let java_block_id = java_block_id_for_bedrock_state(state);
+              let properties = java_properties_for_bedrock_state(state);
+              let mut shape = ModelShape::default();
+              let mut applied = false;
+              let block_exists = database.for_each_model_application(
+                  &java_block_id,
+                  &properties,
+                  seed,
+                  |application| {
+                      let Some(model) = database.model(application.model) else {
+                          return;
+                      };
+                      applied = true;
+                      for element in model.elements() {
+                          push_packed_element(&mut shape, element, application);
+                      }
+                  },
+              );
+              (block_exists && applied && !shape.is_empty()).then_some(shape)
+          }
+
+          fn push_packed_element(
+              shape: &mut ModelShape,
+              element: JavaPackedElement<'_>,
+              application: JavaModelApplication,
+          ) {
+              let (min, max) = ordered_bounds(element.from_block(), element.to_block());
+              let is_axis_aligned = element.rotation_axis.is_none()
+                  || element.rotation_angle_hundredths == 0;
+              let face_count = element.faces().len();
+
+              // Keep complete axis-aligned elements as cuboids. Besides being cheaper, this is
+              // important for the preview's full-cube fast path: vanilla stone must remain one
+              // mergeable cube instead of becoming six detail planes.
+              if is_axis_aligned && face_count == 6 {
+                  let mut cuboid = ModelCuboid::new(min, max);
+                  for face in element.faces() {
+                      cuboid = cuboid
+                          .with_face_material_slot(face.face, face.material_slot)
+                          .with_face_uv(face.face, packed_face_uv(face, min, max));
+                  }
+                  rotate_cuboid_for_application(&mut cuboid, application);
+                  shape.cuboids.push(cuboid);
+                  return;
+              }
+
+              // Partial-face elements and rotated elements are emitted as explicit quads so
+              // missing faces, ±22.5°/±45° rotations, and rescale semantics remain representable.
+              for face in element.faces() {
+                  let Some((corners, normal)) = face_geometry(face.face, min, max) else {
+                      continue;
+                  };
+                  let corners = corners.map(|point| {
+                      transform_model_point(point, element, application)
+                  });
+                  let normal = transform_model_normal(normal, element, application);
+                  shape.planes.push(
+                      ModelPlane::new(corners, nearest_axis_normal(normal))
+                          .with_material_slot(face.material_slot)
+                          .with_uv(packed_face_uv(face, min, max)),
+                  );
+              }
+          }
+
+          fn ordered_bounds(from: [f32; 3], to: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+              (
+                  [
+                      from[0].min(to[0]),
+                      from[1].min(to[1]),
+                      from[2].min(to[2]),
+                  ],
+                  [
+                      from[0].max(to[0]),
+                      from[1].max(to[1]),
+                      from[2].max(to[2]),
+                  ],
+              )
+          }
+
+          fn packed_face_uv(
+              face: JavaPackedFace<'_>,
+              min: [f32; 3],
+              max: [f32; 3],
+          ) -> [[f32; 2]; 4] {
+              let [u0, v0, u1, v1] = face
+                  .uv_normalized()
+                  .unwrap_or_else(|| default_face_uv_rect(face.face, min, max));
+              rotate_uv_quarter_turns(
+                  [[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
+                  face.rotation_quarter_turns,
+              )
+          }
+
+          fn default_face_uv_rect(
+              face: BlockFace,
+              min: [f32; 3],
+              max: [f32; 3],
+          ) -> [f32; 4] {
+              match face {
+                  BlockFace::Up | BlockFace::Down => [min[0], min[2], max[0], max[2]],
+                  BlockFace::North | BlockFace::South => [min[0], min[1], max[0], max[1]],
+                  BlockFace::West | BlockFace::East => [min[2], min[1], max[2], max[1]],
+                  BlockFace::Side | BlockFace::All | BlockFace::Default => [0.0, 0.0, 1.0, 1.0],
+              }
+          }
+
+          fn rotate_uv_quarter_turns(
+              mut uv: [[f32; 2]; 4],
+              turns: u8,
+          ) -> [[f32; 2]; 4] {
+              for _ in 0..turns.rem_euclid(4) {
+                  uv = [uv[3], uv[0], uv[1], uv[2]];
+              }
+              uv
+          }
+
+          fn face_geometry(
+              face: BlockFace,
+              min: [f32; 3],
+              max: [f32; 3],
+          ) -> Option<([[f32; 3]; 4], [f32; 3])> {
+              let [x0, y0, z0] = min;
+              let [x1, y1, z1] = max;
+              match face {
+                  BlockFace::Up => Some((
+                      [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
+                      [0.0, 1.0, 0.0],
+                  )),
+                  BlockFace::Down => Some((
+                      [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
+                      [0.0, -1.0, 0.0],
+                  )),
+                  BlockFace::East => Some((
+                      [[x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0]],
+                      [1.0, 0.0, 0.0],
+                  )),
+                  BlockFace::West => Some((
+                      [[x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1]],
+                      [-1.0, 0.0, 0.0],
+                  )),
+                  BlockFace::South => Some((
+                      [[x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1]],
+                      [0.0, 0.0, 1.0],
+                  )),
+                  BlockFace::North => Some((
+                      [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]],
+                      [0.0, 0.0, -1.0],
+                  )),
+                  BlockFace::Side | BlockFace::All | BlockFace::Default => None,
+              }
+          }
+
+          fn transform_model_point(
+              mut point: [f32; 3],
+              element: JavaPackedElement<'_>,
+              application: JavaModelApplication,
+          ) -> [f32; 3] {
+              if let Some(axis) = element.rotation_axis {
+                  let angle = element.rotation_angle_degrees().to_radians();
+                  if angle.abs() > f32::EPSILON {
+                      let origin = element.rotation_origin_block();
+                      let mut local = sub3(point, origin);
+                      if element.rescale {
+                          let cosine = angle.cos().abs();
+                          if cosine > 0.000_001 {
+                              let factor = cosine.recip();
+                              match axis {
+                                  JavaModelAxis::X => {
+                                      local[1] *= factor;
+                                      local[2] *= factor;
+                                  }
+                                  JavaModelAxis::Y => {
+                                      local[0] *= factor;
+                                      local[2] *= factor;
+                                  }
+                                  JavaModelAxis::Z => {
+                                      local[0] *= factor;
+                                      local[1] *= factor;
+                                  }
+                              }
+                          }
+                      }
+                      point = add3(origin, rotate_vector_axis(local, axis, angle));
+                  }
+              }
+              rotate_point_for_application(point, application)
+          }
+
+          fn transform_model_normal(
+              mut normal: [f32; 3],
+              element: JavaPackedElement<'_>,
+              application: JavaModelApplication,
+          ) -> [f32; 3] {
+              if let Some(axis) = element.rotation_axis {
+                  let angle = element.rotation_angle_degrees().to_radians();
+                  normal = rotate_vector_axis(normal, axis, angle);
+              }
+              rotate_vector_for_application(normal, application)
+          }
+
+          fn rotate_vector_axis(
+              [x, y, z]: [f32; 3],
+              axis: JavaModelAxis,
+              angle: f32,
+          ) -> [f32; 3] {
+              let (sin, cos) = angle.sin_cos();
+              match axis {
+                  JavaModelAxis::X => [x, y * cos - z * sin, y * sin + z * cos],
+                  JavaModelAxis::Y => [x * cos - z * sin, y, x * sin + z * cos],
+                  JavaModelAxis::Z => [x * cos - y * sin, x * sin + y * cos, z],
+              }
+          }
+
+          fn rotate_point_for_application(
+              mut point: [f32; 3],
+              application: JavaModelApplication,
+          ) -> [f32; 3] {
+              for _ in 0..quarter_turns(application.x_degrees) {
+                  point = rotate_point_x_90(point);
+              }
+              for _ in 0..quarter_turns(application.y_degrees) {
+                  point = rotate_point_y_90(point);
+              }
+              point
+          }
+
+          fn rotate_vector_for_application(
+              mut vector: [f32; 3],
+              application: JavaModelApplication,
+          ) -> [f32; 3] {
+              for _ in 0..quarter_turns(application.x_degrees) {
+                  vector = [vector[0], -vector[2], vector[1]];
+              }
+              for _ in 0..quarter_turns(application.y_degrees) {
+                  vector = [-vector[2], vector[1], vector[0]];
+              }
+              vector
+          }
+
+          fn rotate_cuboid_for_application(
+              cuboid: &mut ModelCuboid,
+              application: JavaModelApplication,
+          ) {
+              for _ in 0..quarter_turns(application.x_degrees) {
+                  rotate_cuboid(cuboid, rotate_point_x_90, rotate_face_x_90);
+              }
+              for _ in 0..quarter_turns(application.y_degrees) {
+                  rotate_cuboid(cuboid, rotate_point_y_90, rotate_face_y_90);
+              }
+          }
+
+          fn rotate_cuboid(
+              cuboid: &mut ModelCuboid,
+              rotate_point: fn([f32; 3]) -> [f32; 3],
+              rotate_face: fn(BlockFace) -> BlockFace,
+          ) {
+              let [x0, y0, z0] = cuboid.min;
+              let [x1, y1, z1] = cuboid.max;
+              let corners = [
+                  [x0, y0, z0],
+                  [x0, y0, z1],
+                  [x0, y1, z0],
+                  [x0, y1, z1],
+                  [x1, y0, z0],
+                  [x1, y0, z1],
+                  [x1, y1, z0],
+                  [x1, y1, z1],
+              ]
+              .map(rotate_point);
+              cuboid.min = [f32::INFINITY; 3];
+              cuboid.max = [f32::NEG_INFINITY; 3];
+              for corner in corners {
+                  for axis in 0..3 {
+                      cuboid.min[axis] = cuboid.min[axis].min(corner[axis]);
+                      cuboid.max[axis] = cuboid.max[axis].max(corner[axis]);
+                  }
+              }
+              cuboid.face_material_slots = mem::take(&mut cuboid.face_material_slots)
+                  .into_iter()
+                  .map(|(face, slot)| (rotate_face(face), slot))
+                  .collect();
+              cuboid.face_uvs = mem::take(&mut cuboid.face_uvs)
+                  .into_iter()
+                  .map(|(face, uv)| (rotate_face(face), uv))
+                  .collect();
+          }
+
+          fn quarter_turns(degrees: i16) -> u8 {
+              u8::try_from(i32::from(degrees).rem_euclid(360) / 90)
+                  .expect("validated Java blockstate quarter turn")
+          }
+
+          fn rotate_point_x_90([x, y, z]: [f32; 3]) -> [f32; 3] {
+              [x, 1.0 - z, y]
+          }
+
+          fn rotate_point_y_90([x, y, z]: [f32; 3]) -> [f32; 3] {
+              [1.0 - z, y, x]
+          }
+
+          fn rotate_face_x_90(face: BlockFace) -> BlockFace {
+              match face {
+                  BlockFace::North => BlockFace::Up,
+                  BlockFace::Up => BlockFace::South,
+                  BlockFace::South => BlockFace::Down,
+                  BlockFace::Down => BlockFace::North,
+                  other => other,
+              }
+          }
+
+          fn rotate_face_y_90(face: BlockFace) -> BlockFace {
+              match face {
+                  BlockFace::North => BlockFace::East,
+                  BlockFace::East => BlockFace::South,
+                  BlockFace::South => BlockFace::West,
+                  BlockFace::West => BlockFace::North,
+                  other => other,
+              }
+          }
+
+          fn nearest_axis_normal(normal: [f32; 3]) -> [i32; 3] {
+              let absolute = [normal[0].abs(), normal[1].abs(), normal[2].abs()];
+              let axis = if absolute[1] > absolute[0] && absolute[1] >= absolute[2] {
+                  1
+              } else if absolute[2] > absolute[0] && absolute[2] > absolute[1] {
+                  2
+              } else {
+                  0
+              };
+              let mut result = [0, 0, 0];
+              result[axis] = if normal[axis].is_sign_negative() { -1 } else { 1 };
+              result
+          }
+
+          fn sub3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+              [
+                  left[0] - right[0],
+                  left[1] - right[1],
+                  left[2] - right[2],
+              ]
+          }
+
+          fn add3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+              [
+                  left[0] + right[0],
+                  left[1] + right[1],
+                  left[2] + right[2],
+              ]
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              #[test]
+              fn embedded_stone_stays_on_full_cube_fast_path() {
+                  let shape = java_model_shape_for_bedrock_state(
+                      &BlockStateQuery::new("minecraft:stone"),
+                      0,
+                  )
+                  .expect("Java stone model");
+                  assert_eq!(shape.cuboids.len(), 1);
+                  assert!(shape.planes.is_empty());
+                  assert_eq!(shape.cuboids[0].min, [0.0, 0.0, 0.0]);
+                  assert_eq!(shape.cuboids[0].max, [1.0, 1.0, 1.0]);
+              }
+
+              #[test]
+              fn embedded_trapdoor_resolves_bedrock_direction_state() {
+                  let state = BlockStateQuery::new("minecraft:oak_trapdoor")
+                      .with_state("direction", 0)
+                      .with_state("open_bit", false)
+                      .with_state("upside_down_bit", false);
+                  let shape = java_model_shape_for_bedrock_state(&state, 0x1234)
+                      .expect("Java trapdoor model");
+                  assert!(!shape.is_empty());
+                  assert!(shape.cuboids.iter().all(|cuboid| {
+                      cuboid.min != [0.0, 0.0, 0.0] || cuboid.max != [1.0, 1.0, 1.0]
+                  }));
+              }
+
+              #[test]
+              fn java_y_rotation_keeps_north_to_east_convention() {
+                  assert_eq!(rotate_point_y_90([0.5, 0.5, 0.0]), [1.0, 0.5, 0.5]);
+                  assert_eq!(
+                      nearest_axis_normal(rotate_vector_axis(
+                          [0.0, 0.0, -1.0],
+                          JavaModelAxis::Y,
+                          90.0_f32.to_radians(),
+                      )),
+                      [1, 0, 0],
+                  );
+              }
+
+              #[test]
+              fn face_uv_quarter_turn_rotates_corner_assignment() {
+                  let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+                  assert_eq!(
+                      rotate_uv_quarter_turns(uv, 1),
+                      [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                  );
+              }
+          }
+          RS
+
+      - name: Patch crate exports and preview integration
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          def replace_count(text: str, old: str, new: str, count: int, label: str) -> str:
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f"{label}: expected {count} matches, found {actual}")
+              return text.replace(old, new)
+
+          root = Path("crates/bedrock-block-model/src/bedrock_block_model.rs")
+          source = root.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              "mod java_db;\nmod json;",
+              "mod java_db;\nmod java_runtime;\nmod json;",
+              "crate module declaration",
+          )
+          source = replace_once(
+              source,
+              "    JavaPropertySource, vanilla_java_model_database,\n};\n",
+              "    JavaPropertySource, vanilla_java_model_database,\n};\npub use java_runtime::java_model_shape_for_bedrock_state;\n",
+              "crate runtime export",
+          )
+          root.write_text(source, encoding="utf-8")
+
+          preview = Path("src/ui/window/map_viewer/preview_3d_source.rs")
+          source = preview.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              "    block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,\n    model_family_has_detail_shape, model_shape_for_block_state,\n",
+              "    block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,\n    java_model_shape_for_bedrock_state, model_family_has_detail_shape, model_shape_for_block_state,\n",
+              "preview Java import",
+          )
+          source = replace_once(
+              source,
+              "    shape: Preview3dDetailShape,",
+              "    shape: Arc<Preview3dDetailShape>,",
+              "detail shape Arc field",
+          )
+          cache = r'''
+          #[derive(Default)]
+          struct Preview3dDetailShapeCache {
+              shapes: HashMap<usize, Option<Arc<Preview3dDetailShape>>>,
+          }
+
+          impl Preview3dDetailShapeCache {
+              fn resolve(
+                  &mut self,
+                  state: &BlockState,
+                  block_models: Option<&BlockModelRepository>,
+                  block_class: Preview3dBlockClass,
+              ) -> Option<Arc<Preview3dDetailShape>> {
+                  if matches!(
+                      block_class,
+                      Preview3dBlockClass::Water | Preview3dBlockClass::Lava
+                  ) {
+                      return None;
+                  }
+                  let key = state as *const BlockState as usize;
+                  if let Some(shape) = self.shapes.get(&key) {
+                      return shape.clone();
+                  }
+                  let shape = block_models
+                      .and_then(|models| {
+                          preview_3d_resolved_detail_shape_for_block(models, state, block_class)
+                      })
+                      .or_else(|| preview_3d_detail_shape_for_block(state))
+                      .filter(|shape| !shape.is_empty())
+                      .map(Arc::new);
+                  self.shapes.insert(key, shape.clone());
+                  shape
+              }
+          }
+
+          '''
+          source = replace_once(
+              source,
+              "#[derive(Clone, Debug)]\nstruct Preview3dCuboid {",
+              cache + "#[derive(Clone, Debug)]\nstruct Preview3dCuboid {",
+              "detail shape cache insertion",
+          )
+          source = replace_once(
+              source,
+              "                    let shape = inferred_shape.as_ref().unwrap_or(&block.shape);",
+              "                    let shape = inferred_shape.as_ref().unwrap_or(block.shape.as_ref());",
+              "detail Arc dereference",
+          )
+          source = replace_once(
+              source,
+              "        model_shape_for_block_state(&query).map(preview_3d_detail_shape_from_model_shape)",
+              "        java_model_shape_for_bedrock_state(&query, preview_3d_model_seed(block.key))\n            .or_else(|| model_shape_for_block_state(&query))\n            .map(preview_3d_detail_shape_from_model_shape)\n            .filter(|shape| !preview_3d_shape_is_full_cube(shape))",
+              "neighbor-aware Java detail shape",
+          )
+          source = replace_once(
+              source,
+              "    let mut block_budget = Preview3dBlockBudget::unbounded();\n",
+              "    let mut block_budget = Preview3dBlockBudget::unbounded();\n    let mut detail_shapes = Preview3dDetailShapeCache::default();\n",
+              "chunk detail cache",
+          )
+          source = replace_count(
+              source,
+              "                                block_models,\n                                &palette,",
+              "                                block_models,\n                                &mut detail_shapes,\n                                &palette,",
+              3,
+              "chunk detail cache call arguments",
+          )
+          source = replace_once(
+              source,
+              "    block_models: Option<&BlockModelRepository>,\n    palette: &RenderPalette,",
+              "    block_models: Option<&BlockModelRepository>,\n    detail_shapes: &mut Preview3dDetailShapeCache,\n    palette: &RenderPalette,",
+              "collected block cache parameter",
+          )
+          source = replace_once(
+              source,
+              "    let resolved_shape = block_models\n        .and_then(|models| preview_3d_resolved_detail_shape_for_block(models, state, block_class));",
+              "    let resolved_shape = detail_shapes.resolve(state, block_models, block_class);",
+              "cached shape resolution",
+          )
+          source = replace_count(
+              source,
+              "resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state))",
+              "resolved_shape.clone()",
+              3,
+              "cached shape branch use",
+          )
+          source = replace_once(
+              source,
+              "struct Preview3dStructureChunkBuilder {\n    blocks: Preview3dChunkBlocks,\n    block_budget: Preview3dBlockBudget,\n}",
+              "struct Preview3dStructureChunkBuilder {\n    blocks: Preview3dChunkBlocks,\n    block_budget: Preview3dBlockBudget,\n    detail_shapes: Preview3dDetailShapeCache,\n}",
+              "structure cache field",
+          )
+          source = replace_once(
+              source,
+              "            blocks: Preview3dChunkBlocks::default(),\n            block_budget: Preview3dBlockBudget::unbounded(),",
+              "            blocks: Preview3dChunkBlocks::default(),\n            block_budget: Preview3dBlockBudget::unbounded(),\n            detail_shapes: Preview3dDetailShapeCache::default(),",
+              "structure cache default",
+          )
+          source = replace_once(
+              source,
+              "        None,\n        None,\n        render_palette,",
+              "        None,\n        None,\n        &mut builder.detail_shapes,\n        render_palette,",
+              "structure cache call argument",
+          )
+          old_detail = r'''fn preview_3d_detail_shape_for_block(state: &BlockState) -> Option<Preview3dDetailShape> {
+              let mut shape = model_shape_for_block_state(&preview_3d_block_state_query(state))
+                  .map(preview_3d_detail_shape_from_model_shape)
+                  .filter(|shape| !preview_3d_shape_is_full_cube(shape))?;
+              if preview_3d_uses_full_inventory_texture_uv(state) {
+                  preview_3d_apply_full_texture_uv(&mut shape);
+              }
+              Some(shape)
+          }
+          '''
+          new_detail = r'''fn preview_3d_detail_shape_for_block(state: &BlockState) -> Option<Preview3dDetailShape> {
+              let query = preview_3d_block_state_query(state);
+              let mut shape = java_model_shape_for_bedrock_state(&query, 0)
+                  .or_else(|| model_shape_for_block_state(&query))
+                  .map(preview_3d_detail_shape_from_model_shape)
+                  .filter(|shape| !preview_3d_shape_is_full_cube(shape))?;
+              if preview_3d_uses_full_inventory_texture_uv(state) {
+                  preview_3d_apply_full_texture_uv(&mut shape);
+              }
+              Some(shape)
+          }
+
+          fn preview_3d_model_seed(block: BlockKey) -> u64 {
+              let x = u64::from(u32::from_ne_bytes(block.x.to_ne_bytes()));
+              let y = u64::from(u32::from_ne_bytes(block.y.to_ne_bytes()));
+              let z = u64::from(u32::from_ne_bytes(block.z.to_ne_bytes()));
+              let mut value = x.wrapping_mul(0x9E37_79B1_85EB_CA87)
+                  ^ y.wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+                  ^ z.wrapping_mul(0x1656_67B1_9E37_79F9);
+              value ^= value >> 30;
+              value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+              value ^= value >> 27;
+              value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
+              value ^ (value >> 31)
+          }
+          '''
+          source = replace_once(source, old_detail, new_detail, "Java detail resolver")
+          preview.write_text(source, encoding="utf-8")
+
+          workflow = Path(".github/workflows/update-java-models.yml")
+          source = workflow.read_text(encoding="utf-8")
+          start = source.find("      - name: Apply Java DB reader compatibility fix\n")
+          end = source.find("      - name: Set up Python\n", start)
+          if start < 0 or end < 0:
+              raise SystemExit("Java model update compatibility bootstrap step was not found")
+          source = source[:start] + source[end:]
+          source = replace_once(
+              source,
+              "      - name: Write model database metadata\n",
+              "      - name: Test Java runtime geometry bridge\n        shell: bash\n        run: cargo test -p bedrock-block-model --lib java_runtime\n\n      - name: Write model database metadata\n",
+              "runtime database validation step",
+          )
+          source = source.replace("      - name: Detect source or database changes\n", "      - name: Detect database changes\n", 1)
+          source = source.replace(
+              "          git add \\\n            crates/bedrock-block-model/src/java_db.rs \\\n            crates/bedrock-block-model/generated/vanilla_models.bin \\\n",
+              "          git add \\\n            crates/bedrock-block-model/generated/vanilla_models.bin \\\n",
+              1,
+          )
+          source = source.replace(
+              '            echo "Java model source/database is already current."\n',
+              '            echo "Java model database is already current."\n',
+              1,
+          )
+          source = source.replace(
+              "      - name: Commit validated Java model changes\n",
+              "      - name: Commit updated model database\n",
+              1,
+          )
+          source = source.replace(
+              '          git commit -m "fix(方块模型): 修复 Java 模型数据库读取器"\n',
+              '          git commit -m "chore(方块模型): 更新 Java ${{ steps.metadata.outputs.version }} 模型数据库"\n',
+              1,
+          )
+          workflow.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Set up Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Check formatting
+        shell: bash
+        run: rustfmt --edition 2024 --check crates/bedrock-block-model/src/java_runtime.rs crates/bedrock-block-model/src/bedrock_block_model.rs src/ui/window/map_viewer/preview_3d_source.rs
+
+      - name: Test packed Java runtime bridge
+        shell: bash
+        run: cargo test -p bedrock-block-model --lib java_runtime
+
+      - name: Check diff
+        shell: bash
+        run: git diff --check
+
+      - name: Commit integration
+        shell: bash
+        run: |
+          git rm .github/workflows/apply-java-runtime-integration.yml
+          git add \
+            crates/bedrock-block-model/src/java_runtime.rs \
+            crates/bedrock-block-model/src/bedrock_block_model.rs \
+            src/ui/window/map_viewer/preview_3d_source.rs \
+            .github/workflows/update-java-models.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(方块模型): 接入 Java 模型运行时几何"
+          git push origin HEAD:master
