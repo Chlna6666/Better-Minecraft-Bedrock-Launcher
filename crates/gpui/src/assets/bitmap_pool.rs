@@ -98,20 +98,53 @@ impl BitmapPool {
         buffer
     }
 
+    fn evict_largest_free_buffer(state: &mut BitmapPoolState) -> bool {
+        let Some(largest_capacity) = state.free.last_key_value().map(|(&capacity, _)| capacity)
+        else {
+            return false;
+        };
+        let buffers = state
+            .free
+            .get_mut(&largest_capacity)
+            .expect("the largest bitmap capacity exists");
+        let buffer = buffers
+            .pop()
+            .expect("a retained bitmap capacity has at least one buffer");
+        if buffers.is_empty() {
+            state.free.remove(&largest_capacity);
+        }
+        state.free_buffers = state.free_buffers.saturating_sub(1);
+        state.retained_bytes = state.retained_bytes.saturating_sub(buffer.capacity());
+        true
+    }
+
     fn release(&self, mut buffer: Vec<u8>) {
         let capacity = buffer.capacity();
-        if capacity == 0
-            || capacity > self.max_buffer_bytes.load(Ordering::Relaxed)
-            || capacity > self.max_bytes.load(Ordering::Relaxed)
-        {
+        if capacity == 0 || capacity > self.max_buffer_bytes.load(Ordering::Relaxed) {
             return;
         }
 
         buffer.clear();
+        let max_bytes = self.max_bytes.load(Ordering::Relaxed);
         let mut state = self.state.lock();
-        if state.retained_bytes.saturating_add(capacity) > self.max_bytes.load(Ordering::Relaxed) {
-            return;
+
+        // The retention budget is for idle free-list memory, not an image-size ceiling. Keep one
+        // oversized buffer as a hot reuse slot so fullscreen/4K decode and upload staging does not
+        // repeatedly return a large allocation to the general allocator and immediately allocate
+        // it again on the next frame. Explicit trim still releases this buffer.
+        if capacity > max_bytes {
+            while Self::evict_largest_free_buffer(&mut state) {}
+        } else {
+            // Prefer the newest returned capacity over stale free buffers. This keeps the pool
+            // aligned with the current viewport/image workload instead of dropping the buffer that
+            // is most likely to be requested again after a resize.
+            while state.retained_bytes.saturating_add(capacity) > max_bytes {
+                if !Self::evict_largest_free_buffer(&mut state) {
+                    break;
+                }
+            }
         }
+
         state.retained_bytes = state.retained_bytes.saturating_add(capacity);
         state.free_buffers = state.free_buffers.saturating_add(1);
         state.free.entry(capacity).or_default().push(buffer);
@@ -130,22 +163,9 @@ impl BitmapPool {
             .map(|(capacity, buffers)| capacity.saturating_mul(buffers.len()))
             .sum();
         while state.retained_bytes > max_bytes {
-            let Some(largest_capacity) = state.free.last_key_value().map(|(&capacity, _)| capacity)
-            else {
+            if !Self::evict_largest_free_buffer(&mut state) {
                 break;
-            };
-            let buffers = state
-                .free
-                .get_mut(&largest_capacity)
-                .expect("the largest bitmap capacity exists");
-            let buffer = buffers
-                .pop()
-                .expect("a retained bitmap capacity has at least one buffer");
-            if buffers.is_empty() {
-                state.free.remove(&largest_capacity);
             }
-            state.free_buffers = state.free_buffers.saturating_sub(1);
-            state.retained_bytes = state.retained_bytes.saturating_sub(buffer.capacity());
         }
     }
 
@@ -163,7 +183,7 @@ impl BitmapPool {
 static GLOBAL_BITMAP_POOL: OnceLock<Arc<BitmapPool>> = OnceLock::new();
 
 pub(crate) fn global_bitmap_pool() -> &'static Arc<BitmapPool> {
-    GLOBAL_BITMAP_POOL.get_or_init(|| Arc::new(BitmapPool::new(64 * 1024 * 1024, 16 * 1024 * 1024)))
+    GLOBAL_BITMAP_POOL.get_or_init(|| Arc::new(BitmapPool::new(64 * 1024 * 1024, usize::MAX)))
 }
 
 pub(crate) fn configure_global_bitmap_pool(max_bytes: usize, max_buffer_bytes: usize) {
@@ -251,7 +271,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn reuses_capacity_buckets_and_respects_limits() {
+    fn reuses_capacity_buckets_and_respects_pool_eligibility() {
         let pool = BitmapPool::new(1024, 512);
         let buffer = pool.acquire(200);
         assert!(buffer.capacity() >= 200);
@@ -263,6 +283,8 @@ mod tests {
         assert_eq!(pool.snapshot().free_buffers, 0);
         pool.release(reused);
 
+        // Buffers above the explicit reuse eligibility threshold are still valid allocations,
+        // they just bypass this particular pool.
         pool.release(Vec::with_capacity(2048));
         assert_eq!(pool.snapshot().free_buffers, 1);
         pool.trim_to(0);
@@ -270,8 +292,35 @@ mod tests {
     }
 
     #[test]
+    fn oversized_image_buffer_is_kept_as_single_hot_reuse_slot() {
+        let pool = BitmapPool::new(1024, usize::MAX);
+        pool.release(Vec::with_capacity(4096));
+
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.free_buffers, 1);
+        assert!(snapshot.retained_bytes >= 4096);
+
+        let reused = pool.acquire_capacity(3000);
+        assert!(reused.capacity() >= 4096);
+        assert_eq!(pool.snapshot().free_buffers, 0);
+    }
+
+    #[test]
+    fn newest_buffer_replaces_stale_buffers_when_free_list_budget_is_full() {
+        let pool = BitmapPool::new(1024, usize::MAX);
+        pool.release(Vec::with_capacity(512));
+        pool.release(Vec::with_capacity(512));
+        assert_eq!(pool.snapshot().retained_bytes, 1024);
+
+        pool.release(Vec::with_capacity(768));
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.free_buffers, 1);
+        assert!(snapshot.retained_bytes >= 768);
+    }
+
+    #[test]
     fn large_buffers_use_dense_buckets_to_limit_internal_fragmentation() {
-        let pool = BitmapPool::new(8 * 1024 * 1024, 8 * 1024 * 1024);
+        let pool = BitmapPool::new(8 * 1024 * 1024, usize::MAX);
         let requested = 1024 * 1024 + 1;
         let buffer = pool.acquire_capacity(requested);
 
