@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - scripts/fix_neighbor_dependent_models.py
+      - scripts/bootstrap_neighbor_model_patch.py
       - .github/workflows/fix-neighbor-dependent-models.yml
   workflow_dispatch:
 
@@ -44,7 +45,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Apply neighbor model patch
-        run: python3 scripts/fix_neighbor_dependent_models.py
+        run: |
+          python3 scripts/bootstrap_neighbor_model_patch.py
+          python3 scripts/fix_neighbor_dependent_models.py
 
       - name: Format
         run: |
@@ -76,6 +79,7 @@ jobs:
         shell: bash
         run: |
           rm -f scripts/fix_neighbor_dependent_models.py
+          rm -f scripts/bootstrap_neighbor_model_patch.py
           rm -f .github/workflows/fix-neighbor-dependent-models.yml
           git add -A
           if git diff --cached --quiet; then
