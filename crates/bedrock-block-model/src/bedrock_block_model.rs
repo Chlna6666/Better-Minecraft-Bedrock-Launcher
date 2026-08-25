@@ -7,6 +7,7 @@
 mod error;
 mod geometry;
 mod java;
+mod java_bake;
 mod json;
 mod material;
 mod model_family;
@@ -22,6 +23,9 @@ pub use geometry::{BlockGeometry, GeometryBone, GeometryCube, GeometryLibrary, G
 pub use java::{
     JavaBakedModel, JavaModelRepository, java_block_id_for_bedrock_state,
     java_properties_for_bedrock_state,
+};
+pub use java_bake::{
+    JAVA_MODEL_DB_SCHEMA, JavaModelBakeStats, bake_java_model_database,
 };
 pub use material::{
     BlockComponents, BlockFace, BlockTransformation, MaterialInstance, TextureReference, TextureSet,
