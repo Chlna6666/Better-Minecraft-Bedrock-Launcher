@@ -31,7 +31,9 @@ jobs:
       - name: Apply stair direction fix
         run: python3 scripts/fix_stair_direction_mapping.py
       - name: Format
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all
+          git diff --check
       - name: Test block model and world crates
         run: cargo test -p bedrock-block-model -p bedrock-world
       - name: Check block model and world crates
