@@ -220,6 +220,7 @@ pub fn java_properties_for_bedrock_state(state: &BlockStateQuery) -> BTreeMap<St
     alias_bool(state, &mut properties, "powered_bit", "powered");
     alias_bool(state, &mut properties, "attached_bit", "attached");
     alias_bool(state, &mut properties, "in_wall_bit", "in_wall");
+    alias_neighbor_properties(state, family, &mut properties);
 
     if let Some(axis) = state_string(state, "pillar_axis").or_else(|| state_string(state, "axis")) {
         properties.insert("axis".to_owned(), axis.to_owned());
@@ -232,7 +233,7 @@ pub fn java_properties_for_bedrock_state(state: &BlockStateQuery) -> BTreeMap<St
             } else if let Some(direction) = state_string(state, "direction") {
                 properties.insert("facing".to_owned(), direction.to_owned());
             }
-            let top = state_bool(state, "upside_down_bit").unwrap_or(false);
+            let top = state_top_half(state).unwrap_or(false);
             properties.insert(
                 "half".to_owned(),
                 if top { "top" } else { "bottom" }.to_owned(),
@@ -257,14 +258,16 @@ pub fn java_properties_for_bedrock_state(state: &BlockStateQuery) -> BTreeMap<St
             if let Some(direction) = bedrock_stair_direction(state) {
                 properties.insert("facing".to_owned(), direction.to_owned());
             }
-            let top = state_bool(state, "upside_down_bit").unwrap_or(false);
+            let top = state_top_half(state).unwrap_or(false);
             properties.insert(
                 "half".to_owned(),
                 if top { "top" } else { "bottom" }.to_owned(),
             );
         }
         ModelFamily::Slab => {
-            if let Some(half) = state_string(state, "vertical_half") {
+            if let Some(half) =
+                state_string(state, "vertical_half").or_else(|| state_string(state, "half"))
+            {
                 properties.insert(
                     "type".to_owned(),
                     if half == "top" { "top" } else { "bottom" }.to_owned(),
@@ -543,6 +546,8 @@ fn rotate_face_x_90(face: BlockFace) -> BlockFace {
 fn bedrock_cardinal_direction(state: &BlockStateQuery) -> Option<&'static str> {
     state_string(state, "cardinal_direction")
         .and_then(cardinal_direction_string)
+        .or_else(|| state_string(state, "facing").and_then(cardinal_direction_string))
+        .or_else(|| state_string(state, "direction").and_then(cardinal_direction_string))
         .or_else(|| state_i64(state, "direction").and_then(cardinal_direction_0_3))
         .or_else(|| state_i64(state, "weirdo_direction").and_then(cardinal_direction_0_3))
 }
@@ -610,6 +615,83 @@ fn facing_direction_0_5(value: i64) -> Option<&'static str> {
         5 => Some("east"),
         _ => None,
     }
+}
+
+fn alias_neighbor_properties(
+    state: &BlockStateQuery,
+    family: ModelFamily,
+    properties: &mut BTreeMap<String, String>,
+) {
+    const DIRECTIONS: [&str; 4] = ["north", "south", "east", "west"];
+    match family {
+        ModelFamily::Fence | ModelFamily::Pane => {
+            for direction in DIRECTIONS {
+                let source = format!("connection_{direction}");
+                if let Some(connected) = state_bool(state, &source) {
+                    properties.insert(direction.to_owned(), connected.to_string());
+                }
+            }
+        }
+        ModelFamily::Wall => {
+            for direction in DIRECTIONS {
+                let source = format!("wall_connection_type_{direction}");
+                if let Some(connection) =
+                    state.state(&source).and_then(java_wall_connection_literal)
+                {
+                    properties.insert(direction.to_owned(), connection.to_owned());
+                }
+            }
+            if let Some(up) = state_bool(state, "wall_post_bit") {
+                properties.insert("up".to_owned(), up.to_string());
+            }
+        }
+        ModelFamily::RedstoneWire => {
+            if let Some(power) =
+                state_i64(state, "redstone_signal").or_else(|| state_i64(state, "power"))
+            {
+                properties.insert("power".to_owned(), power.clamp(0, 15).to_string());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn java_wall_connection_literal(value: &BlockStateValue) -> Option<&'static str> {
+    match value {
+        BlockStateValue::Bool(value) => Some(if *value { "low" } else { "none" }),
+        BlockStateValue::Int(value) => Some(match *value {
+            0 => "none",
+            2 => "tall",
+            _ => "low",
+        }),
+        BlockStateValue::String(value) => match value
+            .trim()
+            .strip_prefix("minecraft:")
+            .unwrap_or(value.trim())
+        {
+            "none" | "false" | "0" => Some("none"),
+            "tall" | "high" | "2" => Some("tall"),
+            "short" | "low" | "true" | "1" => Some("low"),
+            _ => None,
+        },
+    }
+}
+
+fn state_top_half(state: &BlockStateQuery) -> Option<bool> {
+    state_string(state, "vertical_half")
+        .or_else(|| state_string(state, "half"))
+        .and_then(|value| {
+            match value
+                .trim()
+                .strip_prefix("minecraft:")
+                .unwrap_or(value.trim())
+            {
+                "top" | "upper" => Some(true),
+                "bottom" | "lower" => Some(false),
+                _ => None,
+            }
+        })
+        .or_else(|| state_bool(state, "upside_down_bit"))
 }
 
 fn alias_bool(
@@ -748,6 +830,61 @@ mod tests {
                 "weirdo_direction={direction}",
             );
         }
+    }
+
+    #[test]
+    fn fence_connections_are_normalized_for_java_multipart() {
+        let state = BlockStateQuery::new("minecraft:oak_fence")
+            .with_state("minecraft:connection_north", true)
+            .with_state("minecraft:connection_south", false)
+            .with_state("minecraft:connection_east", true)
+            .with_state("minecraft:connection_west", false);
+        let properties = java_properties_for_bedrock_state(&state);
+        assert_eq!(properties.get("north").map(String::as_str), Some("true"));
+        assert_eq!(properties.get("south").map(String::as_str), Some("false"));
+        assert_eq!(properties.get("east").map(String::as_str), Some("true"));
+        assert_eq!(properties.get("west").map(String::as_str), Some("false"));
+    }
+
+    #[test]
+    fn wall_connections_are_normalized_to_java_low_tall_and_up() {
+        let state = BlockStateQuery::new("minecraft:cobblestone_wall")
+            .with_state("wall_connection_type_north", "short")
+            .with_state("wall_connection_type_south", "tall")
+            .with_state("wall_connection_type_east", "none")
+            .with_state("wall_connection_type_west", "short")
+            .with_state("wall_post_bit", false);
+        let properties = java_properties_for_bedrock_state(&state);
+        assert_eq!(properties.get("north").map(String::as_str), Some("low"));
+        assert_eq!(properties.get("south").map(String::as_str), Some("tall"));
+        assert_eq!(properties.get("east").map(String::as_str), Some("none"));
+        assert_eq!(properties.get("west").map(String::as_str), Some("low"));
+        assert_eq!(properties.get("up").map(String::as_str), Some("false"));
+    }
+
+    #[test]
+    fn redstone_signal_is_normalized_to_java_power() {
+        let state = BlockStateQuery::new("minecraft:redstone_wire")
+            .with_state("redstone_signal", 11)
+            .with_state("north", "side")
+            .with_state("south", "none")
+            .with_state("east", "up")
+            .with_state("west", "none");
+        let properties = java_properties_for_bedrock_state(&state);
+        assert_eq!(properties.get("power").map(String::as_str), Some("11"));
+        assert_eq!(properties.get("north").map(String::as_str), Some("side"));
+        assert_eq!(properties.get("east").map(String::as_str), Some("up"));
+    }
+
+    #[test]
+    fn modern_half_state_overrides_legacy_bit() {
+        let state = BlockStateQuery::new("minecraft:oak_stairs")
+            .with_state("facing", "east")
+            .with_state("vertical_half", "top")
+            .with_state("upside_down_bit", false);
+        let properties = java_properties_for_bedrock_state(&state);
+        assert_eq!(properties.get("facing").map(String::as_str), Some("east"));
+        assert_eq!(properties.get("half").map(String::as_str), Some("top"));
     }
 
     #[test]

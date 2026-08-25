@@ -1,6 +1,8 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
-use crate::model_family::direction::{CardinalDirection, cardinal_direction, state_i64};
+use crate::model_family::direction::{
+    CardinalDirection, cardinal_direction, state_i64, state_string,
+};
 use crate::model_family::shape::{ModelCuboid, ModelShape, detail_cuboid_with_local_uv, rect_uv};
 use crate::state::BlockStateQuery;
 
@@ -103,10 +105,12 @@ fn chest_shape(state: &BlockStateQuery) -> ModelShape {
     let front_face = block_face_from_direction(direction);
     let back_face = opposite_block_face(front_face);
     let (left_face, right_face) = left_right_faces(direction);
+    let pair_direction = state_string(state, "pair_direction").and_then(cardinal_from_string);
+    let (body_min, body_max) = chest_pair_bounds(pair_direction);
     let mut cuboids = vec![
         chest_box_uv(ModelCuboid::new(
-            [0.0625, 0.0, 0.0625],
-            [0.9375, 0.625, 0.9375],
+            body_min,
+            [body_max[0], 0.625, body_max[2]],
         ))
         .with_face_material_slot(BlockFace::Up, "up")
         .with_face_material_slot(BlockFace::Down, "down")
@@ -115,8 +119,8 @@ fn chest_shape(state: &BlockStateQuery) -> ModelShape {
         .with_face_material_slot(left_face, "side")
         .with_face_material_slot(right_face, "side"),
         chest_lid_uv(ModelCuboid::new(
-            [0.0625, 0.625, 0.0625],
-            [0.9375, 0.875, 0.9375],
+            [body_min[0], 0.625, body_min[2]],
+            [body_max[0], 0.875, body_max[2]],
         ))
         .with_face_material_slot(BlockFace::Up, "up")
         .with_face_material_slot(BlockFace::Down, "down")
@@ -130,6 +134,33 @@ fn chest_shape(state: &BlockStateQuery) -> ModelShape {
         .with_face_material_slot(front_face, "front"),
     ];
     ModelShape::from_cuboids(std::mem::take(&mut cuboids))
+}
+
+fn chest_pair_bounds(pair_direction: Option<CardinalDirection>) -> ([f32; 3], [f32; 3]) {
+    let mut min = [0.0625, 0.0, 0.0625];
+    let mut max = [0.9375, 1.0, 0.9375];
+    match pair_direction {
+        Some(CardinalDirection::North) => min[2] = 0.0,
+        Some(CardinalDirection::South) => max[2] = 1.0,
+        Some(CardinalDirection::East) => max[0] = 1.0,
+        Some(CardinalDirection::West) => min[0] = 0.0,
+        None => {}
+    }
+    (min, max)
+}
+
+fn cardinal_from_string(value: &str) -> Option<CardinalDirection> {
+    match value
+        .trim()
+        .strip_prefix("minecraft:")
+        .unwrap_or(value.trim())
+    {
+        "north" => Some(CardinalDirection::North),
+        "south" => Some(CardinalDirection::South),
+        "east" => Some(CardinalDirection::East),
+        "west" => Some(CardinalDirection::West),
+        _ => None,
+    }
 }
 
 fn block_face_from_direction(direction: CardinalDirection) -> BlockFace {

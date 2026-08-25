@@ -1,10 +1,11 @@
 use super::model::{CopiedChunkData, CopiedChunkSnapshot};
 use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, GeometryBone, GeometryCube,
-    ModelCuboid, ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
+    ModelCuboid, ModelFamily, ModelPlane, ModelShape, ModelWarning,
+    block_export_material_name_for_block,
     block_export_material_name_for_face, block_export_material_name_for_plane,
     block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,
-    model_family_has_detail_shape, model_shape_for_block_state,
+    model_family_for_block_name, model_family_has_detail_shape, model_shape_for_block_state,
 };
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
@@ -419,11 +420,46 @@ impl Preview3dBlockFaceColors {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Preview3dNeighborModel {
+    None,
+    Pane,
+    Fence,
+    Wall,
+    RedstoneWire { power: u8 },
+    Stairs,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Preview3dConnectionKind {
+    Pane,
+    Fence,
+    FenceGate,
+    Wall,
+    RedstoneWire,
+    RedstoneAny,
+    RedstoneAxisX,
+    RedstoneAxisZ,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Preview3dStairState {
+    facing: Preview3dCardinalDirection,
+    top: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Preview3dBlockEntityModelState {
+    chest_pair_direction: Option<Preview3dCardinalDirection>,
+    chest_pair_lead: bool,
+}
+
 #[derive(Clone, Debug)]
 struct Preview3dDetailBlock {
     key: BlockKey,
     normalized_name: Arc<str>,
-    inferred_connections: bool,
+    neighbor_model: Preview3dNeighborModel,
+    stair_state: Option<Preview3dStairState>,
     shape: Preview3dDetailShape,
     color: [f32; 4],
     material: Preview3dMaterialName,
@@ -963,7 +999,8 @@ fn preview_3d_render_chunk_load_options(
         // expanding 4096 `u16` indices for every storage.
         data_request: ChunkDataRequest::new()
             .full_3d_indices()
-            .biome(BiomeDataRequirement::All),
+            .biome(BiomeDataRequirement::All)
+            .block_entities(),
         subchunk_decode: SubChunkDecodeMode::PackedIndices,
         threading: preview_3d_world_threading(total_chunks),
         pipeline: WorldPipelineOptions {
@@ -1175,7 +1212,7 @@ impl Preview3dMeshBuilder {
             self.missing_chunks = self.missing_chunks.saturating_add(1);
             return;
         };
-        blocks.rebuild_detail_connectors();
+        blocks.rebuild_neighbor_indexes();
         self.subchunk_count = self
             .subchunk_count
             .saturating_add(processed_chunk.subchunk_count);
@@ -1570,9 +1607,7 @@ impl Preview3dMeshBuilder {
         &self,
         block: &Preview3dDetailBlock,
     ) -> Option<Preview3dDetailShape> {
-        if !block.inferred_connections
-            || !preview_3d_is_pane_like_block(block.normalized_name.as_ref())
-        {
+        if block.neighbor_model == Preview3dNeighborModel::None {
             return None;
         }
         let block_name = if block.normalized_name.starts_with("minecraft:") {
@@ -1581,12 +1616,67 @@ impl Preview3dMeshBuilder {
             format!("minecraft:{}", block.normalized_name)
         };
         let mut query = BlockStateQuery::new(block_name);
-        for direction in Preview3dCardinalDirection::ALL {
-            if self.preview_3d_pane_neighbor_connects(block.key, direction) {
-                query = query.with_state(direction.state_key(), true);
+        match block.neighbor_model {
+            Preview3dNeighborModel::None => return None,
+            Preview3dNeighborModel::Pane => {
+                for direction in Preview3dCardinalDirection::ALL {
+                    query = query.with_state(
+                        direction.state_key(),
+                        self.preview_3d_pane_neighbor_connects(block.key, direction),
+                    );
+                }
+            }
+            Preview3dNeighborModel::Fence => {
+                for direction in Preview3dCardinalDirection::ALL {
+                    query = query.with_state(
+                        direction.state_key(),
+                        self.preview_3d_fence_neighbor_connects(block.key, direction),
+                    );
+                }
+            }
+            Preview3dNeighborModel::Wall => {
+                let mut connected = Vec::with_capacity(4);
+                for direction in Preview3dCardinalDirection::ALL {
+                    let connects = self.preview_3d_wall_neighbor_connects(block.key, direction);
+                    if connects {
+                        connected.push(direction);
+                    }
+                    query = query.with_state(
+                        direction.state_key(),
+                        if connects { "low" } else { "none" },
+                    );
+                }
+                let straight = connected.len() == 2
+                    && connected[0].opposite() == connected[1]
+                    && self.block_class_at(block.key.above()) != Some(Preview3dBlockClass::Opaque);
+                query = query.with_state("up", !straight);
+            }
+            Preview3dNeighborModel::RedstoneWire { power } => {
+                query = query.with_state("redstone_signal", i32::from(power));
+                query = query.with_state("power", i32::from(power));
+                for direction in Preview3dCardinalDirection::ALL {
+                    query = query.with_state(
+                        direction.state_key(),
+                        self.preview_3d_redstone_connection(block.key, direction),
+                    );
+                }
+            }
+            Preview3dNeighborModel::Stairs => {
+                let current = block.stair_state?;
+                query = query
+                    .with_state("facing", current.facing.as_str())
+                    .with_state("vertical_half", if current.top { "top" } else { "bottom" })
+                    .with_state("half", if current.top { "top" } else { "bottom" })
+                    .with_state("shape", self.preview_3d_stair_shape(block.key, current));
             }
         }
         model_shape_for_block_state(&query).map(preview_3d_detail_shape_from_model_shape)
+    }
+
+    fn preview_3d_connection_kind_at(&self, block: BlockKey) -> Option<Preview3dConnectionKind> {
+        self.block_chunks
+            .get(&ChunkKey::from_block(block))
+            .and_then(|chunk| chunk.connection_kind_at(block))
     }
 
     fn preview_3d_pane_neighbor_connects(
@@ -1595,15 +1685,132 @@ impl Preview3dMeshBuilder {
         direction: Preview3dCardinalDirection,
     ) -> bool {
         let neighbor = block.cardinal_neighbor(direction);
-        if matches!(
+        matches!(
             self.block_class_at(neighbor),
             Some(Preview3dBlockClass::Opaque | Preview3dBlockClass::TransparentGlass)
-        ) {
-            return true;
+        ) || self.preview_3d_connection_kind_at(neighbor) == Some(Preview3dConnectionKind::Pane)
+    }
+
+    fn preview_3d_fence_neighbor_connects(
+        &self,
+        block: BlockKey,
+        direction: Preview3dCardinalDirection,
+    ) -> bool {
+        let neighbor = block.cardinal_neighbor(direction);
+        self.block_class_at(neighbor) == Some(Preview3dBlockClass::Opaque)
+            || matches!(
+                self.preview_3d_connection_kind_at(neighbor),
+                Some(
+                    Preview3dConnectionKind::Fence
+                        | Preview3dConnectionKind::FenceGate
+                        | Preview3dConnectionKind::Wall
+                )
+            )
+    }
+
+    fn preview_3d_wall_neighbor_connects(
+        &self,
+        block: BlockKey,
+        direction: Preview3dCardinalDirection,
+    ) -> bool {
+        let neighbor = block.cardinal_neighbor(direction);
+        self.block_class_at(neighbor) == Some(Preview3dBlockClass::Opaque)
+            || matches!(
+                self.preview_3d_connection_kind_at(neighbor),
+                Some(Preview3dConnectionKind::Wall | Preview3dConnectionKind::FenceGate)
+            )
+    }
+
+    fn preview_3d_redstone_connection(
+        &self,
+        block: BlockKey,
+        direction: Preview3dCardinalDirection,
+    ) -> &'static str {
+        let neighbor = block.cardinal_neighbor(direction);
+        if self.preview_3d_redstone_component_connects(neighbor, direction) {
+            return "side";
         }
+        if self.block_class_at(neighbor) == Some(Preview3dBlockClass::Opaque)
+            && self.block_class_at(block.above()) != Some(Preview3dBlockClass::Opaque)
+            && self.preview_3d_connection_kind_at(neighbor.above())
+                == Some(Preview3dConnectionKind::RedstoneWire)
+        {
+            return "up";
+        }
+        if self.block_class_at(neighbor) != Some(Preview3dBlockClass::Opaque)
+            && self.preview_3d_connection_kind_at(neighbor.below())
+                == Some(Preview3dConnectionKind::RedstoneWire)
+        {
+            return "side";
+        }
+        "none"
+    }
+
+    fn preview_3d_redstone_component_connects(
+        &self,
+        block: BlockKey,
+        direction: Preview3dCardinalDirection,
+    ) -> bool {
+        match self.preview_3d_connection_kind_at(block) {
+            Some(Preview3dConnectionKind::RedstoneWire | Preview3dConnectionKind::RedstoneAny) => {
+                true
+            }
+            Some(Preview3dConnectionKind::RedstoneAxisX) => {
+                matches!(direction, Preview3dCardinalDirection::East | Preview3dCardinalDirection::West)
+            }
+            Some(Preview3dConnectionKind::RedstoneAxisZ) => {
+                matches!(direction, Preview3dCardinalDirection::North | Preview3dCardinalDirection::South)
+            }
+            _ => false,
+        }
+    }
+
+    fn preview_3d_stair_shape(
+        &self,
+        block: BlockKey,
+        current: Preview3dStairState,
+    ) -> &'static str {
+        let front = block.cardinal_neighbor(current.facing);
+        if let Some(neighbor) = self.preview_3d_stair_state_at(front)
+            && neighbor.top == current.top
+            && current.facing.is_perpendicular(neighbor.facing)
+            && self.preview_3d_stair_can_take_shape(block, current, neighbor.facing.opposite())
+        {
+            return if neighbor.facing == current.facing.counter_clockwise() {
+                "outer_left"
+            } else {
+                "outer_right"
+            };
+        }
+        let back = block.cardinal_neighbor(current.facing.opposite());
+        if let Some(neighbor) = self.preview_3d_stair_state_at(back)
+            && neighbor.top == current.top
+            && current.facing.is_perpendicular(neighbor.facing)
+            && self.preview_3d_stair_can_take_shape(block, current, neighbor.facing)
+        {
+            return if neighbor.facing == current.facing.counter_clockwise() {
+                "inner_left"
+            } else {
+                "inner_right"
+            };
+        }
+        "straight"
+    }
+
+    fn preview_3d_stair_can_take_shape(
+        &self,
+        block: BlockKey,
+        current: Preview3dStairState,
+        direction: Preview3dCardinalDirection,
+    ) -> bool {
+        self.preview_3d_stair_state_at(block.cardinal_neighbor(direction))
+            .is_none_or(|neighbor| neighbor.facing != current.facing || neighbor.top != current.top)
+    }
+
+    fn preview_3d_stair_state_at(&self, block: BlockKey) -> Option<Preview3dStairState> {
         self.block_chunks
-            .get(&ChunkKey::from_block(neighbor))
-            .is_some_and(|chunk| chunk.detail_connector_at(neighbor))
+            .get(&ChunkKey::from_block(block))
+            .and_then(|chunk| chunk.stair_state_at(block))
     }
 
     fn is_unprocessed_selected_neighbor(&self, block: BlockKey) -> bool {
@@ -1767,6 +1974,8 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
         initial_block_capacity / 16,
         Default::default(),
     );
+    let mut connection_kinds = HashMap::<BlockKey, Preview3dConnectionKind>::default();
+    let block_entity_states = preview_3d_block_entity_model_states(chunk);
     let mut opaque_blocks = Vec::<Preview3dBlockRecord>::with_capacity(initial_block_capacity);
     let mut glass_blocks = Vec::<Preview3dBlockRecord>::with_capacity(initial_block_capacity / 8);
     let mut detail_blocks = Vec::<Preview3dDetailBlock>::with_capacity(initial_block_capacity / 8);
@@ -1806,9 +2015,11 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
                                 block_class,
                                 false,
                                 biome,
+                                block_entity_states.get(&key).copied(),
                                 block_models,
                                 &palette,
                                 &mut block_budget,
+                                &mut connection_kinds,
                                 &mut occupied,
                                 &mut glass,
                                 &mut water,
@@ -1853,9 +2064,11 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
                                 block_class,
                                 surface_only,
                                 biome,
+                                block_entity_states.get(&key).copied(),
                                 block_models,
                                 &palette,
                                 &mut block_budget,
+                                &mut connection_kinds,
                                 &mut occupied,
                                 &mut glass,
                                 &mut water,
@@ -1890,9 +2103,11 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
                                 block_class,
                                 false,
                                 biome,
+                                block_entity_states.get(&key).copied(),
                                 block_models,
                                 &palette,
                                 &mut block_budget,
+                                &mut connection_kinds,
                                 &mut occupied,
                                 &mut glass,
                                 &mut water,
@@ -1922,7 +2137,8 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
         glass,
         water,
         lava,
-        detail_connectors: HashSet::default(),
+        connection_kinds,
+        stair_states: HashMap::default(),
         opaque_blocks,
         glass_blocks,
         detail_blocks,
@@ -1937,7 +2153,7 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
         max_z,
         internally_culled_blocks: 0,
     };
-    blocks.rebuild_detail_connectors();
+    blocks.rebuild_neighbor_indexes();
     blocks.internally_culled_blocks = preview_3d_filter_internal_block_records(&mut blocks);
     Ok(blocks)
 }
@@ -1949,9 +2165,11 @@ fn preview_3d_push_collected_block(
     block_class: Preview3dBlockClass,
     surface_only: bool,
     biome: Option<Preview3dBiomeSample>,
+    block_entity_state: Option<Preview3dBlockEntityModelState>,
     block_models: Option<&BlockModelRepository>,
     palette: &RenderPalette,
     block_budget: &mut Preview3dBlockBudget,
+    connection_kinds: &mut HashMap<BlockKey, Preview3dConnectionKind>,
     occupied: &mut HashSet<BlockKey>,
     glass: &mut HashSet<BlockKey>,
     water: &mut HashSet<BlockKey>,
@@ -1976,18 +2194,27 @@ fn preview_3d_push_collected_block(
     let material_source = preview_3d_material_block_name_for_state(state, block_class);
     let material = preview_3d_material_name_for_block(material_source.as_ref(), block_class);
     let normalized_name = Arc::<str>::from(preview_3d_normalized_block_name(&state.name));
-    let inferred_connections = preview_3d_should_infer_detail_connections(state);
+    let stair_state = preview_3d_stair_state(state);
+    if let Some(kind) = preview_3d_connection_kind(state) {
+        connection_kinds.insert(key, kind);
+    }
     let resolved_shape = block_models
         .and_then(|models| preview_3d_resolved_detail_shape_for_block(models, state, block_class));
+    let neighbor_model = if resolved_shape.is_none() {
+        preview_3d_neighbor_model(state)
+    } else {
+        Preview3dNeighborModel::None
+    };
     match block_class {
         Preview3dBlockClass::Opaque => {
-            if let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state))
+            if let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
             {
                 if !shape.is_empty() {
                     detail_blocks.push(Preview3dDetailBlock {
                         key,
                         normalized_name: normalized_name.clone(),
-                        inferred_connections,
+                        neighbor_model,
+                        stair_state,
                         shape,
                         color: preview_3d_color_for_block(palette, state, biome),
                         material,
@@ -2003,13 +2230,14 @@ fn preview_3d_push_collected_block(
             ));
         }
         Preview3dBlockClass::TransparentGlass => {
-            if let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state))
+            if let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
             {
                 if !shape.is_empty() {
                     glass_detail_blocks.push(Preview3dDetailBlock {
                         key,
                         normalized_name: normalized_name.clone(),
-                        inferred_connections,
+                        neighbor_model,
+                        stair_state,
                         shape,
                         color: preview_3d_transparent_color_for_block(palette, state, biome),
                         material,
@@ -2043,7 +2271,7 @@ fn preview_3d_push_collected_block(
             });
         }
         Preview3dBlockClass::DetailOpaque | Preview3dBlockClass::DetailGlass => {
-            let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state))
+            let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
             else {
                 return Ok(());
             };
@@ -2058,7 +2286,8 @@ fn preview_3d_push_collected_block(
             let block = Preview3dDetailBlock {
                 key,
                 normalized_name,
-                inferred_connections,
+                neighbor_model,
+                stair_state,
                 shape,
                 color,
                 material,
@@ -2434,6 +2663,22 @@ impl BlockKey {
             z: self.z + z,
         }
     }
+
+    const fn above(self) -> Self {
+        Self {
+            x: self.x,
+            y: self.y + 1,
+            z: self.z,
+        }
+    }
+
+    const fn below(self) -> Self {
+        Self {
+            x: self.x,
+            y: self.y - 1,
+            z: self.z,
+        }
+    }
 }
 
 struct Preview3dChunkBlocks {
@@ -2441,7 +2686,8 @@ struct Preview3dChunkBlocks {
     glass: HashSet<BlockKey>,
     water: HashSet<BlockKey>,
     lava: HashSet<BlockKey>,
-    detail_connectors: HashSet<BlockKey>,
+    connection_kinds: HashMap<BlockKey, Preview3dConnectionKind>,
+    stair_states: HashMap<BlockKey, Preview3dStairState>,
     opaque_blocks: Vec<Preview3dBlockRecord>,
     glass_blocks: Vec<Preview3dBlockRecord>,
     detail_blocks: Vec<Preview3dDetailBlock>,
@@ -2472,7 +2718,8 @@ impl Default for Preview3dChunkBlocks {
             glass: HashSet::default(),
             water: HashSet::default(),
             lava: HashSet::default(),
-            detail_connectors: HashSet::default(),
+            connection_kinds: HashMap::default(),
+            stair_states: HashMap::default(),
             opaque_blocks: Vec::new(),
             glass_blocks: Vec::new(),
             detail_blocks: Vec::new(),
@@ -2491,15 +2738,15 @@ impl Default for Preview3dChunkBlocks {
 }
 
 impl Preview3dChunkBlocks {
-    fn rebuild_detail_connectors(&mut self) {
-        self.detail_connectors.clear();
+    fn rebuild_neighbor_indexes(&mut self) {
+        self.stair_states.clear();
         for block in self
             .detail_blocks
             .iter()
             .chain(self.glass_detail_blocks.iter())
         {
-            if preview_3d_detail_block_connects_to_panes(block.normalized_name.as_ref()) {
-                self.detail_connectors.insert(block.key);
+            if let Some(state) = block.stair_state {
+                self.stair_states.insert(block.key, state);
             }
         }
     }
@@ -2520,8 +2767,12 @@ impl Preview3dChunkBlocks {
         None
     }
 
-    fn detail_connector_at(&self, block: BlockKey) -> bool {
-        self.detail_connectors.contains(&block)
+    fn connection_kind_at(&self, block: BlockKey) -> Option<Preview3dConnectionKind> {
+        self.connection_kinds.get(&block).copied()
+    }
+
+    fn stair_state_at(&self, block: BlockKey) -> Option<Preview3dStairState> {
+        self.stair_states.get(&block).copied()
     }
 }
 
@@ -2646,8 +2897,10 @@ fn preview_3d_push_structure_state(
         surface_only,
         None,
         None,
+        None,
         render_palette,
         &mut builder.block_budget,
+        &mut builder.blocks.connection_kinds,
         &mut builder.blocks.occupied,
         &mut builder.blocks.glass,
         &mut builder.blocks.water,
@@ -2998,8 +3251,72 @@ fn preview_3d_is_glass_block(normalized: &str) -> bool {
         || normalized.contains("stained_glass")
 }
 
-fn preview_3d_detail_shape_for_block(state: &BlockState) -> Option<Preview3dDetailShape> {
-    let mut shape = model_shape_for_block_state(&preview_3d_block_state_query(state))
+fn preview_3d_block_entity_model_states(
+    chunk: &ChunkData,
+) -> HashMap<BlockKey, Preview3dBlockEntityModelState> {
+    let mut states = HashMap::default();
+    for entity in &chunk.block_entities {
+        let Some([x, y, z]) = entity.position else {
+            continue;
+        };
+        let NbtTag::Compound(nbt) = &entity.nbt else {
+            continue;
+        };
+        let Some(pair_x) = preview_3d_nbt_i32(nbt.get("pairx")) else {
+            continue;
+        };
+        let Some(pair_z) = preview_3d_nbt_i32(nbt.get("pairz")) else {
+            continue;
+        };
+        let dx = pair_x.saturating_sub(x);
+        let dz = pair_z.saturating_sub(z);
+        let pair_direction = match (dx, dz) {
+            (1, 0) => Some(Preview3dCardinalDirection::East),
+            (-1, 0) => Some(Preview3dCardinalDirection::West),
+            (0, 1) => Some(Preview3dCardinalDirection::South),
+            (0, -1) => Some(Preview3dCardinalDirection::North),
+            _ => None,
+        };
+        if let Some(chest_pair_direction) = pair_direction {
+            states.insert(
+                BlockKey { x, y, z },
+                Preview3dBlockEntityModelState {
+                    chest_pair_direction: Some(chest_pair_direction),
+                    chest_pair_lead: preview_3d_nbt_bool(nbt.get("pairlead")).unwrap_or(false),
+                },
+            );
+        }
+    }
+    states
+}
+
+fn preview_3d_nbt_i32(value: Option<&NbtTag>) -> Option<i32> {
+    match value? {
+        NbtTag::Byte(value) => Some(i32::from(*value)),
+        NbtTag::Short(value) => Some(i32::from(*value)),
+        NbtTag::Int(value) => Some(*value),
+        NbtTag::Long(value) => i32::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn preview_3d_nbt_bool(value: Option<&NbtTag>) -> Option<bool> {
+    preview_3d_nbt_i32(value).map(|value| value != 0)
+}
+
+fn preview_3d_detail_shape_for_block(
+    state: &BlockState,
+    block_entity_state: Option<Preview3dBlockEntityModelState>,
+) -> Option<Preview3dDetailShape> {
+    let mut query = preview_3d_block_state_query(state);
+    if let Some(block_entity_state) = block_entity_state
+        && let Some(pair_direction) = block_entity_state.chest_pair_direction
+    {
+        query = query
+            .with_state("pair_direction", pair_direction.as_str())
+            .with_state("pair_lead", block_entity_state.chest_pair_lead);
+    }
+    let mut shape = model_shape_for_block_state(&query)
         .map(preview_3d_detail_shape_from_model_shape)
         .filter(|shape| !preview_3d_shape_is_full_cube(shape))?;
     if preview_3d_uses_full_inventory_texture_uv(state) {
@@ -3410,6 +3727,27 @@ impl Preview3dCardinalDirection {
         }
     }
 
+    const fn counter_clockwise(self) -> Self {
+        match self {
+            Self::North => Self::West,
+            Self::West => Self::South,
+            Self::South => Self::East,
+            Self::East => Self::North,
+        }
+    }
+
+    const fn is_perpendicular(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::North | Self::South, Self::East | Self::West)
+                | (Self::East | Self::West, Self::North | Self::South)
+        )
+    }
+
+    const fn as_str(self) -> &'static str {
+        self.state_key()
+    }
+
     const fn normal(self) -> [i32; 3] {
         match self {
             Self::North => [0, 0, -1],
@@ -3464,9 +3802,97 @@ fn preview_3d_block_face<'a>(state: &'a BlockState) -> Option<&'a str> {
         .or_else(|| preview_3d_state_string(state, "torch_facing_direction"))
 }
 
-fn preview_3d_should_infer_detail_connections(state: &BlockState) -> bool {
+fn preview_3d_neighbor_model(state: &BlockState) -> Preview3dNeighborModel {
+    let family = model_family_for_block_name(&state.name);
+    match family {
+        ModelFamily::Pane if !preview_3d_has_direction_connection_state(state) => {
+            Preview3dNeighborModel::Pane
+        }
+        ModelFamily::Fence if !preview_3d_has_direction_connection_state(state) => {
+            Preview3dNeighborModel::Fence
+        }
+        ModelFamily::Wall if !preview_3d_has_direction_connection_state(state) => {
+            Preview3dNeighborModel::Wall
+        }
+        ModelFamily::RedstoneWire => Preview3dNeighborModel::RedstoneWire {
+            power: preview_3d_state_i32(state, "redstone_signal")
+                .or_else(|| preview_3d_state_i32(state, "power"))
+                .unwrap_or(0)
+                .clamp(0, 15) as u8,
+        },
+        ModelFamily::Stairs => Preview3dNeighborModel::Stairs,
+        _ => Preview3dNeighborModel::None,
+    }
+}
+
+fn preview_3d_connection_kind(state: &BlockState) -> Option<Preview3dConnectionKind> {
+    let family = model_family_for_block_name(&state.name);
+    match family {
+        ModelFamily::Pane => Some(Preview3dConnectionKind::Pane),
+        ModelFamily::Fence => Some(Preview3dConnectionKind::Fence),
+        ModelFamily::FenceGate => Some(Preview3dConnectionKind::FenceGate),
+        ModelFamily::Wall => Some(Preview3dConnectionKind::Wall),
+        ModelFamily::RedstoneWire => Some(Preview3dConnectionKind::RedstoneWire),
+        ModelFamily::Button | ModelFamily::PressurePlate => Some(Preview3dConnectionKind::RedstoneAny),
+        ModelFamily::RedstoneDevice => preview_3d_redstone_device_connection_kind(state),
+        _ => {
+            let normalized = preview_3d_normalized_block_name(&state.name);
+            matches!(
+                normalized.as_str(),
+                "redstone_block"
+                    | "target"
+                    | "lever"
+                    | "redstone_torch"
+                    | "unlit_redstone_torch"
+                    | "daylight_detector"
+                    | "daylight_detector_inverted"
+            )
+            .then_some(Preview3dConnectionKind::RedstoneAny)
+        }
+    }
+}
+
+fn preview_3d_redstone_device_connection_kind(
+    state: &BlockState,
+) -> Option<Preview3dConnectionKind> {
     let normalized = preview_3d_normalized_block_name(&state.name);
-    preview_3d_is_pane_like_block(&normalized) && !preview_3d_has_direction_connection_state(state)
+    if normalized.contains("repeater") || normalized.contains("comparator") {
+        return preview_3d_cardinal_direction(state).map(|direction| match direction {
+            Preview3dCardinalDirection::East | Preview3dCardinalDirection::West => {
+                Preview3dConnectionKind::RedstoneAxisX
+            }
+            Preview3dCardinalDirection::North | Preview3dCardinalDirection::South => {
+                Preview3dConnectionKind::RedstoneAxisZ
+            }
+        });
+    }
+    Some(Preview3dConnectionKind::RedstoneAny)
+}
+
+fn preview_3d_stair_state(state: &BlockState) -> Option<Preview3dStairState> {
+    if model_family_for_block_name(&state.name) != ModelFamily::Stairs {
+        return None;
+    }
+    let facing = preview_3d_stair_direction(state)?;
+    let top = preview_3d_state_string(state, "vertical_half")
+        .or_else(|| preview_3d_state_string(state, "half"))
+        .and_then(|value| match value.trim().strip_prefix("minecraft:").unwrap_or(value.trim()) {
+            "top" | "upper" => Some(true),
+            "bottom" | "lower" => Some(false),
+            _ => None,
+        })
+        .or_else(|| preview_3d_state_bool(state, "upside_down_bit"))
+        .unwrap_or(false);
+    Some(Preview3dStairState { facing, top })
+}
+
+fn preview_3d_stair_direction(state: &BlockState) -> Option<Preview3dCardinalDirection> {
+    preview_3d_state_string(state, "minecraft:cardinal_direction")
+        .and_then(preview_3d_cardinal_direction_from_string)
+        .or_else(|| preview_3d_state_string(state, "facing").and_then(preview_3d_cardinal_direction_from_string))
+        .or_else(|| preview_3d_state_string(state, "direction").and_then(preview_3d_cardinal_direction_from_string))
+        .or_else(|| preview_3d_state_i32(state, "weirdo_direction").and_then(preview_3d_stair_direction_from_int))
+        .or_else(|| preview_3d_state_i32(state, "direction").and_then(preview_3d_cardinal_direction_from_int))
 }
 
 fn preview_3d_has_direction_connection_state(state: &BlockState) -> bool {
@@ -3500,16 +3926,22 @@ fn preview_3d_is_pane_like_block(normalized: &str) -> bool {
         || normalized.ends_with("_glass_pane")
 }
 
-fn preview_3d_detail_block_connects_to_panes(normalized: &str) -> bool {
-    preview_3d_is_pane_like_block(normalized) || preview_3d_is_glass_block(normalized)
-}
-
 fn preview_3d_cardinal_direction_from_int(value: i32) -> Option<Preview3dCardinalDirection> {
     match value.rem_euclid(4) {
         0 => Some(Preview3dCardinalDirection::South),
         1 => Some(Preview3dCardinalDirection::West),
         2 => Some(Preview3dCardinalDirection::North),
         3 => Some(Preview3dCardinalDirection::East),
+        _ => None,
+    }
+}
+
+fn preview_3d_stair_direction_from_int(value: i32) -> Option<Preview3dCardinalDirection> {
+    match value.rem_euclid(4) {
+        0 => Some(Preview3dCardinalDirection::East),
+        1 => Some(Preview3dCardinalDirection::West),
+        2 => Some(Preview3dCardinalDirection::South),
+        3 => Some(Preview3dCardinalDirection::North),
         _ => None,
     }
 }

@@ -1,4 +1,7 @@
-use crate::{BlockStateQuery, BlockStateValue, ModelFamily, is_full_opaque_block, model_family_for_block_name};
+use crate::{
+    BlockStateQuery, BlockStateValue, ModelFamily, is_full_opaque_block,
+    model_family_for_block_name,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
@@ -59,7 +62,11 @@ impl HorizontalDirection {
 
     #[must_use]
     pub const fn same_axis(self, other: Self) -> bool {
-        matches!((self, other), (Self::North | Self::South, Self::North | Self::South) | (Self::East | Self::West, Self::East | Self::West))
+        matches!(
+            (self, other),
+            (Self::North | Self::South, Self::North | Self::South)
+                | (Self::East | Self::West, Self::East | Self::West)
+        )
     }
 }
 
@@ -69,8 +76,10 @@ pub struct HorizontalMask(u8);
 impl HorizontalMask {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self(0b1111);
-    pub const NORTH_SOUTH: Self = Self((1 << HorizontalDirection::North.index()) | (1 << HorizontalDirection::South.index()));
-    pub const EAST_WEST: Self = Self((1 << HorizontalDirection::East.index()) | (1 << HorizontalDirection::West.index()));
+    pub const NORTH_SOUTH: Self =
+        Self((1 << HorizontalDirection::North.index()) | (1 << HorizontalDirection::South.index()));
+    pub const EAST_WEST: Self =
+        Self((1 << HorizontalDirection::East.index()) | (1 << HorizontalDirection::West.index()));
 
     #[must_use]
     pub const fn from_direction(direction: HorizontalDirection) -> Self {
@@ -189,7 +198,11 @@ impl NeighborBlockDescriptor {
                 ModelFamily::Stairs => NeighborModelKind::Stairs,
                 _ => NeighborModelKind::None,
             },
-            sturdy_faces: if sturdy { HorizontalMask::ALL } else { HorizontalMask::NONE },
+            sturdy_faces: if sturdy {
+                HorizontalMask::ALL
+            } else {
+                HorizontalMask::NONE
+            },
             redstone_ports: redstone_ports(name, family, facing),
             redstone_conductor: sturdy,
             facing,
@@ -200,7 +213,8 @@ impl NeighborBlockDescriptor {
                 .clamp(0, 15) as u8,
             known_connections: HorizontalMask::NONE,
             connection_bits: 0,
-            wall_up: state_bool_like(state, "wall_post_bit").or_else(|| state_bool_like(state, "up")),
+            wall_up: state_bool_like(state, "wall_post_bit")
+                .or_else(|| state_bool_like(state, "up")),
             stair_shape: state_string(state, "shape")
                 .or_else(|| state_string(state, "minecraft:corner"))
                 .or_else(|| state_string(state, "corner"))
@@ -210,9 +224,15 @@ impl NeighborBlockDescriptor {
 
         for direction in HorizontalDirection::ALL {
             let value = match descriptor.kind {
-                NeighborModelKind::Pane | NeighborModelKind::Fence => persisted_boolean_connection(state, direction).map(u8::from),
-                NeighborModelKind::Wall => persisted_wall_connection(state, direction).map(|value| value as u8),
-                NeighborModelKind::RedstoneWire => persisted_redstone_connection(state, direction).map(|value| value as u8),
+                NeighborModelKind::Pane | NeighborModelKind::Fence => {
+                    persisted_boolean_connection(state, direction).map(u8::from)
+                }
+                NeighborModelKind::Wall => {
+                    persisted_wall_connection(state, direction).map(|value| value as u8)
+                }
+                NeighborModelKind::RedstoneWire => {
+                    persisted_redstone_connection(state, direction).map(|value| value as u8)
+                }
                 NeighborModelKind::None | NeighborModelKind::Stairs => None,
             };
             if let Some(value) = value {
@@ -230,7 +250,8 @@ impl NeighborBlockDescriptor {
 
     const fn set_raw_connection(&mut self, direction: HorizontalDirection, value: u8) {
         let shift = direction.index() * 2;
-        self.connection_bits = (self.connection_bits & !(0b11 << shift)) | ((value & 0b11) << shift);
+        self.connection_bits =
+            (self.connection_bits & !(0b11 << shift)) | ((value & 0b11) << shift);
     }
 }
 
@@ -331,8 +352,8 @@ impl DerivedModelVariant {
     }
 
     const fn from_descriptor(descriptor: NeighborBlockDescriptor) -> Self {
-        let mut bits = u32::from(descriptor.connection_bits) & Self::CONNECTION_MASK;
-        if descriptor.wall_up.unwrap_or(false) {
+        let mut bits = (descriptor.connection_bits as u32) & Self::CONNECTION_MASK;
+        if matches!(descriptor.wall_up, Some(true)) {
             bits |= Self::WALL_UP_BIT;
         }
         if descriptor.top_half {
@@ -341,9 +362,12 @@ impl DerivedModelVariant {
         if let Some(shape) = descriptor.stair_shape {
             bits |= (shape as u32) << Self::STAIR_SHIFT;
         }
-        let facing = descriptor.facing.map_or(4, HorizontalDirection::index);
-        bits |= u32::from(facing) << Self::FACING_SHIFT;
-        bits |= u32::from(descriptor.power & 0xf) << Self::POWER_SHIFT;
+        let facing = match descriptor.facing {
+            Some(direction) => direction.index(),
+            None => 4,
+        };
+        bits |= (facing as u32) << Self::FACING_SHIFT;
+        bits |= ((descriptor.power & 0xf) as u32) << Self::POWER_SHIFT;
         bits |= (descriptor.kind as u32) << Self::KIND_SHIFT;
         Self(bits)
     }
@@ -393,16 +417,24 @@ pub fn derive_model_variant(
                     continue;
                 }
                 let (dx, dz) = direction.offset();
-                let connected = neighbor(dx, 0, dz)
-                    .is_some_and(|other| wall_connects(other, direction));
-                variant.set_raw_connection(direction, if connected { WallConnection::Low as u8 } else { 0 });
+                let connected =
+                    neighbor(dx, 0, dz).is_some_and(|other| wall_connects(other, direction));
+                variant.set_raw_connection(
+                    direction,
+                    if connected {
+                        WallConnection::Low as u8
+                    } else {
+                        0
+                    },
+                );
             }
             if center.wall_up.is_none() {
                 let north = variant.connected(HorizontalDirection::North);
                 let east = variant.connected(HorizontalDirection::East);
                 let south = variant.connected(HorizontalDirection::South);
                 let west = variant.connected(HorizontalDirection::West);
-                let straight = (north && south && !east && !west) || (east && west && !north && !south);
+                let straight =
+                    (north && south && !east && !west) || (east && west && !north && !south);
                 variant.set_wall_up(!straight);
             }
         }
@@ -500,7 +532,9 @@ fn derive_stair_shape(
 }
 
 fn stair_compatible(center: NeighborBlockDescriptor, other: NeighborBlockDescriptor) -> bool {
-    other.kind == NeighborModelKind::Stairs && other.top_half == center.top_half && other.facing.is_some()
+    other.kind == NeighborModelKind::Stairs
+        && other.top_half == center.top_half
+        && other.facing.is_some()
 }
 
 fn different_stair(
@@ -533,7 +567,8 @@ fn derive_redstone_connection(
         {
             return RedstoneConnection::Up;
         }
-    } else if neighbor(dx, -1, dz).is_some_and(|other| redstone_directly_connects(other, direction)) {
+    } else if neighbor(dx, -1, dz).is_some_and(|other| redstone_directly_connects(other, direction))
+    {
         return RedstoneConnection::Side;
     }
     RedstoneConnection::None
@@ -543,7 +578,8 @@ fn redstone_directly_connects(
     other: NeighborBlockDescriptor,
     direction_from_wire: HorizontalDirection,
 ) -> bool {
-    other.kind == NeighborModelKind::RedstoneWire || other.redstone_ports.contains(direction_from_wire)
+    other.kind == NeighborModelKind::RedstoneWire
+        || other.redstone_ports.contains(direction_from_wire)
 }
 
 fn redstone_ports(
@@ -556,8 +592,12 @@ fn redstone_ports(
     }
     if name.contains("repeater") || name.contains("comparator") {
         return match facing {
-            Some(HorizontalDirection::North | HorizontalDirection::South) => HorizontalMask::NORTH_SOUTH,
-            Some(HorizontalDirection::East | HorizontalDirection::West) => HorizontalMask::EAST_WEST,
+            Some(HorizontalDirection::North | HorizontalDirection::South) => {
+                HorizontalMask::NORTH_SOUTH
+            }
+            Some(HorizontalDirection::East | HorizontalDirection::West) => {
+                HorizontalMask::EAST_WEST
+            }
             None => HorizontalMask::NONE,
         };
     }
@@ -586,7 +626,7 @@ fn is_omnidirectional_redstone_source(name: &str, family: ModelFamily) -> bool {
                 | "calibrated_sculk_sensor"
                 | "trapped_chest"
                 | "detector_rail"
-    )
+        )
 }
 
 fn persisted_boolean_connection(
@@ -607,24 +647,69 @@ fn persisted_redstone_connection(
     state: &BlockStateQuery,
     direction: HorizontalDirection,
 ) -> Option<RedstoneConnection> {
-    state_value_by_keys(state, redstone_connection_keys(direction)).and_then(value_as_redstone_connection)
+    state_value_by_keys(state, redstone_connection_keys(direction))
+        .and_then(value_as_redstone_connection)
 }
 
 fn boolean_connection_keys(direction: HorizontalDirection) -> &'static [&'static str] {
     match direction {
-        HorizontalDirection::North => &["minecraft:connection_north", "connection_north", "north_connection", "north_connected", "north_bit"],
-        HorizontalDirection::East => &["minecraft:connection_east", "connection_east", "east_connection", "east_connected", "east_bit"],
-        HorizontalDirection::South => &["minecraft:connection_south", "connection_south", "south_connection", "south_connected", "south_bit"],
-        HorizontalDirection::West => &["minecraft:connection_west", "connection_west", "west_connection", "west_connected", "west_bit"],
+        HorizontalDirection::North => &[
+            "minecraft:connection_north",
+            "connection_north",
+            "north_connection",
+            "north_connected",
+            "north_bit",
+        ],
+        HorizontalDirection::East => &[
+            "minecraft:connection_east",
+            "connection_east",
+            "east_connection",
+            "east_connected",
+            "east_bit",
+        ],
+        HorizontalDirection::South => &[
+            "minecraft:connection_south",
+            "connection_south",
+            "south_connection",
+            "south_connected",
+            "south_bit",
+        ],
+        HorizontalDirection::West => &[
+            "minecraft:connection_west",
+            "connection_west",
+            "west_connection",
+            "west_connected",
+            "west_bit",
+        ],
     }
 }
 
 fn wall_connection_keys(direction: HorizontalDirection) -> &'static [&'static str] {
     match direction {
-        HorizontalDirection::North => &["wall_connection_type_north", "north_connection_type", "north_connection", "north"],
-        HorizontalDirection::East => &["wall_connection_type_east", "east_connection_type", "east_connection", "east"],
-        HorizontalDirection::South => &["wall_connection_type_south", "south_connection_type", "south_connection", "south"],
-        HorizontalDirection::West => &["wall_connection_type_west", "west_connection_type", "west_connection", "west"],
+        HorizontalDirection::North => &[
+            "wall_connection_type_north",
+            "north_connection_type",
+            "north_connection",
+            "north",
+        ],
+        HorizontalDirection::East => &[
+            "wall_connection_type_east",
+            "east_connection_type",
+            "east_connection",
+            "east",
+        ],
+        HorizontalDirection::South => &[
+            "wall_connection_type_south",
+            "south_connection_type",
+            "south_connection",
+            "south",
+        ],
+        HorizontalDirection::West => &[
+            "wall_connection_type_west",
+            "west_connection_type",
+            "west_connection",
+            "west",
+        ],
     }
 }
 
@@ -658,7 +743,11 @@ fn value_as_bool_like(value: &BlockStateValue) -> Option<bool> {
 
 fn value_as_wall_connection(value: &BlockStateValue) -> Option<WallConnection> {
     match value {
-        BlockStateValue::Bool(value) => Some(if *value { WallConnection::Low } else { WallConnection::None }),
+        BlockStateValue::Bool(value) => Some(if *value {
+            WallConnection::Low
+        } else {
+            WallConnection::None
+        }),
         BlockStateValue::Int(value) => Some(match *value {
             0 => WallConnection::None,
             2 => WallConnection::Tall,
@@ -675,7 +764,11 @@ fn value_as_wall_connection(value: &BlockStateValue) -> Option<WallConnection> {
 
 fn value_as_redstone_connection(value: &BlockStateValue) -> Option<RedstoneConnection> {
     match value {
-        BlockStateValue::Bool(value) => Some(if *value { RedstoneConnection::Side } else { RedstoneConnection::None }),
+        BlockStateValue::Bool(value) => Some(if *value {
+            RedstoneConnection::Side
+        } else {
+            RedstoneConnection::None
+        }),
         BlockStateValue::Int(value) => Some(match *value {
             0 => RedstoneConnection::None,
             2 => RedstoneConnection::Up,
@@ -701,11 +794,13 @@ fn state_top_half(state: &BlockStateQuery) -> Option<bool> {
         .or_else(|| state_bool_like(state, "upside_down_bit"))
 }
 
-fn horizontal_facing(
-    state: &BlockStateQuery,
-    family: ModelFamily,
-) -> Option<HorizontalDirection> {
-    for key in ["minecraft:cardinal_direction", "cardinal_direction", "facing", "direction"] {
+fn horizontal_facing(state: &BlockStateQuery, family: ModelFamily) -> Option<HorizontalDirection> {
+    for key in [
+        "minecraft:cardinal_direction",
+        "cardinal_direction",
+        "facing",
+        "direction",
+    ] {
         if let Some(value) = state_string(state, key).and_then(horizontal_direction_from_string) {
             return Some(value);
         }
@@ -790,11 +885,16 @@ fn state_bool_like(state: &BlockStateQuery, key: &str) -> Option<bool> {
 }
 
 fn normalized_name(name: &str) -> &str {
-    name.trim().strip_prefix("minecraft:").unwrap_or(name.trim())
+    name.trim()
+        .strip_prefix("minecraft:")
+        .unwrap_or(name.trim())
 }
 
 fn normalize_literal(value: &str) -> &str {
-    value.trim().strip_prefix("minecraft:").unwrap_or(value.trim())
+    value
+        .trim()
+        .strip_prefix("minecraft:")
+        .unwrap_or(value.trim())
 }
 
 #[cfg(test)]
@@ -815,8 +915,14 @@ mod tests {
             .with_state("wall_post_bit", false);
         let descriptor = NeighborBlockDescriptor::from_state(&state);
         let variant = derive_model_variant(descriptor, |_, _, _| None);
-        assert_eq!(variant.wall_connection(HorizontalDirection::North), WallConnection::Tall);
-        assert_eq!(variant.wall_connection(HorizontalDirection::East), WallConnection::Low);
+        assert_eq!(
+            variant.wall_connection(HorizontalDirection::North),
+            WallConnection::Tall
+        );
+        assert_eq!(
+            variant.wall_connection(HorizontalDirection::East),
+            WallConnection::Low
+        );
         assert!(!variant.wall_up());
     }
 

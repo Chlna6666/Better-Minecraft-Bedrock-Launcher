@@ -71,8 +71,9 @@ pub use obj::{
     obj_vertex_offsets, path_extension_eq, path_starts_with_directory, prefixed_relative_path,
     push_unique_resource_pack_path, read_obj_texture_copy_image, relative_path_string,
     replace_path_extension, resource_pack_manifest_uuid, resource_pack_roots_for_world,
-    vanilla_resource_pack_roots, vanilla_resource_pack_roots_from_packages, world_resource_pack_ids,
-    world_resource_pack_paths, write_obj_export_files, write_obj_texture_copy,
+    vanilla_resource_pack_roots, vanilla_resource_pack_roots_from_packages,
+    world_resource_pack_ids, world_resource_pack_paths, write_obj_export_files,
+    write_obj_texture_copy,
 };
 pub use pack::{BlockDefinition, BlockModelRepository};
 pub use permutation::{BlockPermutation, ConditionEvaluation};
