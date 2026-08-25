@@ -174,7 +174,7 @@ impl Frame {
                 if !set_hover_hitbox_count
                     && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
                 {
-                    hit_test.hover_hitbox_count = hitbox.ids.len();
+                    hit_test.hover_hitbox_count = hit_test.ids.len();
                     set_hover_hitbox_count = true;
                 }
                 if hitbox.behavior == HitboxBehavior::BlockMouse {
@@ -302,27 +302,6 @@ impl Frame {
         capacity
     }
 
-    pub(super) fn take_sized_image_element_releases(
-        &mut self,
-    ) -> Vec<crate::SizedImageElementRelease> {
-        let sized_state_type = TypeId::of::<crate::SizedImageElementState>();
-        let mut releases = Vec::new();
-        for ((_, type_id), state) in &mut self.element_states {
-            if *type_id != sized_state_type {
-                continue;
-            }
-            let Some(state) = state
-                .inner
-                .downcast_mut::<Option<crate::SizedImageElementState>>()
-                .and_then(Option::as_mut)
-            else {
-                continue;
-            };
-            state.drain_sized_image_releases(&mut releases);
-        }
-        releases
-    }
-
     pub(super) fn release_image_element_bitmaps(&mut self) {
         let image_state_type = TypeId::of::<crate::ImageElementState>();
         for ((_, type_id), state) in &mut self.element_states {
@@ -336,6 +315,7 @@ impl Frame {
             else {
                 continue;
             };
+            state.current_image = None;
             state.current_frame = None;
         }
     }
