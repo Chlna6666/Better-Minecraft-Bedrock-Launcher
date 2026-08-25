@@ -86,41 +86,41 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_backdrop_blur_source_pixels: usize,
     pub gpui_backdrop_blur_target_pixels: usize,
     pub gpui_backdrop_blur_level_pixels: [usize; 6],
-    pub gpui_image_decode_compressed_bytes: usize,
-    pub gpui_image_decode_decoded_bytes: usize,
-    pub gpui_image_decode_frames: usize,
-    pub gpui_image_decode_time_ms: f32,
-    pub gpui_image_decode_count: usize,
-    pub gpui_image_decode_total_compressed_bytes: usize,
-    pub gpui_image_decode_total_decoded_bytes: usize,
-    pub gpui_image_decode_total_frames: usize,
-    pub gpui_image_decode_total_time_ms: f32,
-    pub gpui_image_decode_max_time_ms: f32,
-    pub gpui_image_decode_slow_count: usize,
-    pub gpui_image_asset_retained_decoded_bytes: usize,
+    pub gpui_image_processing_compressed_bytes: usize,
+    pub gpui_image_processing_output_bytes: usize,
+    pub gpui_image_processing_frames: usize,
+    pub gpui_image_processing_time_ms: f32,
+    pub gpui_image_processing_count: usize,
+    pub gpui_image_processing_total_compressed_bytes: usize,
+    pub gpui_image_processing_total_decoded_bytes: usize,
+    pub gpui_image_processing_total_frames: usize,
+    pub gpui_image_processing_total_time_ms: f32,
+    pub gpui_image_processing_max_time_ms: f32,
+    pub gpui_image_processing_slow_count: usize,
+    pub image_asset_resident_bytes: usize,
     pub gpui_image_asset_retained_count: usize,
-    pub gpui_image_asset_largest_retained_decoded_bytes: usize,
-    pub gpui_image_asset_cache_entries: usize,
-    pub gpui_image_asset_retained_compressed_bytes: usize,
-    pub gpui_image_asset_total_retained_decoded_bytes: usize,
-    pub gpui_render_image_cpu_bytes: usize,
-    pub gpui_render_image_gpu_texture_bytes: usize,
-    pub gpui_icon_cache_entries: usize,
-    pub gpui_icon_cache_decoded_bytes: usize,
-    pub gpui_atlas_monochrome_bytes: usize,
-    pub gpui_atlas_polychrome_bytes: usize,
-    pub gpui_atlas_live_keys: usize,
-    pub gpui_atlas_unused_bytes: usize,
-    pub gpui_gpu_surface_texture_bytes: usize,
-    pub gpui_gpu_estimated_total_retained_bytes: usize,
-    pub gpui_global_image_resource_decoded_bytes: usize,
+    pub gpui_image_asset_largest_resident_bytes: usize,
+    pub image_asset_cache_entries: usize,
+    pub image_asset_compressed_bytes: usize,
+    pub image_asset_total_resident_bytes: usize,
+    pub render_image_cpu_bytes: usize,
+    pub render_image_gpu_texture_bytes: usize,
+    pub icon_cache_entries: usize,
+    pub icon_cache_resident_bytes: usize,
+    pub atlas_monochrome_bytes: usize,
+    pub atlas_polychrome_bytes: usize,
+    pub atlas_live_keys: usize,
+    pub atlas_unused_bytes: usize,
+    pub gpu_surface_texture_bytes: usize,
+    pub gpu_estimated_total_retained_bytes: usize,
+    pub gpui_global_image_resource_resident_bytes: usize,
     pub gpui_global_image_resource_count: usize,
-    pub gpui_global_image_inline_decoded_bytes: usize,
+    pub gpui_global_image_inline_resident_bytes: usize,
     pub gpui_global_image_inline_count: usize,
     pub gpui_global_image_compressed_bytes: usize,
     pub gpui_global_image_compressed_count: usize,
-    pub gpui_global_image_target_decoded_bytes: usize,
-    pub gpui_global_image_target_count: usize,
+    pub gpui_global_image_sized_resident_bytes: usize,
+    pub gpui_global_image_sized_count: usize,
     pub gpui_global_image_assets_sampled_at: Option<Instant>,
     pub gpui_atlas_upload_bytes: usize,
     pub gpui_atlas_upload_tiles: usize,
@@ -496,38 +496,39 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
     snapshot.gpui_backdrop_blur_source_pixels = gpui_metrics.backdrop_blur_source_pixels;
     snapshot.gpui_backdrop_blur_target_pixels = gpui_metrics.backdrop_blur_target_pixels;
     snapshot.gpui_backdrop_blur_level_pixels = gpui_metrics.backdrop_blur_level_pixels;
-    snapshot.gpui_image_decode_compressed_bytes = gpui_metrics.last_image_decode_compressed_bytes;
-    snapshot.gpui_image_decode_decoded_bytes = gpui_metrics.last_image_decode_decoded_bytes;
-    snapshot.gpui_image_decode_frames = gpui_metrics.last_image_decode_frames;
-    snapshot.gpui_image_decode_time_ms = duration_to_ms(gpui_metrics.last_image_decode_time);
-    snapshot.gpui_image_decode_count = gpui_metrics.image_decode_count;
-    snapshot.gpui_image_decode_total_compressed_bytes = gpui_metrics.image_decode_compressed_bytes;
-    snapshot.gpui_image_decode_total_decoded_bytes = gpui_metrics.image_decode_decoded_bytes;
-    snapshot.gpui_image_decode_total_frames = gpui_metrics.image_decode_frames;
-    snapshot.gpui_image_decode_total_time_ms = duration_to_ms(gpui_metrics.image_decode_total_time);
-    snapshot.gpui_image_decode_max_time_ms = duration_to_ms(gpui_metrics.image_decode_max_time);
-    snapshot.gpui_image_decode_slow_count = gpui_metrics.image_decode_slow_count;
-    snapshot.gpui_image_asset_retained_decoded_bytes =
-        gpui_metrics.image_asset_retained_decoded_bytes;
+    snapshot.gpui_image_processing_compressed_bytes =
+        gpui_metrics.last_image_processing_compressed_bytes;
+    snapshot.gpui_image_processing_output_bytes = gpui_metrics.last_image_processing_output_bytes;
+    snapshot.gpui_image_processing_frames = gpui_metrics.last_image_processing_frames;
+    snapshot.gpui_image_processing_time_ms =
+        duration_to_ms(gpui_metrics.last_image_processing_time);
+    snapshot.gpui_image_processing_count = gpui_metrics.image_processing_count;
+    snapshot.gpui_image_processing_total_compressed_bytes =
+        gpui_metrics.image_processing_compressed_bytes;
+    snapshot.gpui_image_processing_total_decoded_bytes = gpui_metrics.image_processing_output_bytes;
+    snapshot.gpui_image_processing_total_frames = gpui_metrics.image_processing_frames;
+    snapshot.gpui_image_processing_total_time_ms =
+        duration_to_ms(gpui_metrics.image_processing_total_time);
+    snapshot.gpui_image_processing_max_time_ms =
+        duration_to_ms(gpui_metrics.image_processing_max_time);
+    snapshot.gpui_image_processing_slow_count = gpui_metrics.image_processing_slow_count;
+    snapshot.image_asset_resident_bytes = gpui_metrics.image_asset_resident_bytes;
     snapshot.gpui_image_asset_retained_count = gpui_metrics.image_asset_retained_count;
-    snapshot.gpui_image_asset_largest_retained_decoded_bytes =
-        gpui_metrics.image_asset_largest_retained_decoded_bytes;
-    snapshot.gpui_image_asset_cache_entries = gpui_metrics.gpui_image_asset_cache_entries;
-    snapshot.gpui_image_asset_retained_compressed_bytes =
-        gpui_metrics.gpui_image_asset_retained_compressed_bytes;
-    snapshot.gpui_image_asset_total_retained_decoded_bytes =
-        gpui_metrics.gpui_image_asset_total_retained_decoded_bytes;
-    snapshot.gpui_render_image_cpu_bytes = gpui_metrics.gpui_render_image_cpu_bytes;
-    snapshot.gpui_render_image_gpu_texture_bytes = gpui_metrics.gpui_render_image_gpu_texture_bytes;
-    snapshot.gpui_icon_cache_entries = gpui_metrics.gpui_icon_cache_entries;
-    snapshot.gpui_icon_cache_decoded_bytes = gpui_metrics.gpui_icon_cache_decoded_bytes;
-    snapshot.gpui_atlas_monochrome_bytes = gpui_metrics.gpui_atlas_monochrome_bytes;
-    snapshot.gpui_atlas_polychrome_bytes = gpui_metrics.gpui_atlas_polychrome_bytes;
-    snapshot.gpui_atlas_live_keys = gpui_metrics.gpui_atlas_live_keys;
-    snapshot.gpui_atlas_unused_bytes = gpui_metrics.gpui_atlas_unused_bytes;
-    snapshot.gpui_gpu_surface_texture_bytes = gpui_metrics.gpui_gpu_surface_texture_bytes;
-    snapshot.gpui_gpu_estimated_total_retained_bytes =
-        gpui_metrics.gpui_gpu_estimated_total_retained_bytes;
+    snapshot.gpui_image_asset_largest_resident_bytes =
+        gpui_metrics.image_asset_largest_resident_bytes;
+    snapshot.image_asset_cache_entries = gpui_metrics.image_asset_cache_entries;
+    snapshot.image_asset_compressed_bytes = gpui_metrics.image_asset_compressed_bytes;
+    snapshot.image_asset_total_resident_bytes = gpui_metrics.image_asset_total_resident_bytes;
+    snapshot.render_image_cpu_bytes = gpui_metrics.render_image_cpu_bytes;
+    snapshot.render_image_gpu_texture_bytes = gpui_metrics.render_image_gpu_texture_bytes;
+    snapshot.icon_cache_entries = gpui_metrics.icon_cache_entries;
+    snapshot.icon_cache_resident_bytes = gpui_metrics.icon_cache_resident_bytes;
+    snapshot.atlas_monochrome_bytes = gpui_metrics.atlas_monochrome_bytes;
+    snapshot.atlas_polychrome_bytes = gpui_metrics.atlas_polychrome_bytes;
+    snapshot.atlas_live_keys = gpui_metrics.atlas_live_keys;
+    snapshot.atlas_unused_bytes = gpui_metrics.atlas_unused_bytes;
+    snapshot.gpu_surface_texture_bytes = gpui_metrics.gpu_surface_texture_bytes;
+    snapshot.gpu_estimated_total_retained_bytes = gpui_metrics.gpu_estimated_total_retained_bytes;
     snapshot.gpui_atlas_upload_bytes = gpui_metrics.atlas_upload_bytes;
     snapshot.gpui_atlas_upload_tiles = gpui_metrics.atlas_upload_tiles;
     snapshot.gpui_atlas_upload_time_ms = duration_to_ms(gpui_metrics.atlas_upload_time);

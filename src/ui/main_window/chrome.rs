@@ -12,13 +12,13 @@ use lucide_gpui::icons as lucide_icons;
 use std::time::{Duration, Instant};
 
 pub(crate) struct AppChromeState {
-    pub(crate) titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState,
+    pub(crate) titlebar_gesture: crate::ui::window::chrome::TitlebarGesture,
 }
 
 impl Default for AppChromeState {
     fn default() -> Self {
         Self {
-            titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState::default(),
+            titlebar_gesture: crate::ui::window::chrome::TitlebarGesture::default(),
         }
     }
 }
@@ -81,7 +81,7 @@ fn avatar(snapshot: &AuthSnapshot, foreground: Hsla, size: Pixels) -> AnyElement
                     .size(size)
                     .rounded_full()
                     .object_fit(ObjectFit::Cover)
-                    .decode_to_bounds()
+                    .render_to_bounds()
                     .into_any_element()
             },
         )
@@ -109,7 +109,7 @@ fn account_avatar(profile: &XboxProfile, foreground: Hsla, size: Pixels) -> AnyE
                 .size(size)
                 .rounded_full()
                 .object_fit(ObjectFit::Cover)
-                .decode_to_bounds()
+                .render_to_bounds()
                 .into_any_element()
         },
     )

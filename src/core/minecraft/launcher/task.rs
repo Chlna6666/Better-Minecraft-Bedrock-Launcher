@@ -419,8 +419,7 @@ fn is_win32_version(version: &str) -> bool {
 }
 
 fn is_legacy_uwp_runtime_injection_only(version: &str, is_win32: bool) -> bool {
-    !is_win32
-        && compare_versions(version, LEGACY_UWP_RUNTIME_INJECTION_CUTOFF) == Ordering::Less
+    !is_win32 && compare_versions(version, LEGACY_UWP_RUNTIME_INJECTION_CUTOFF) == Ordering::Less
 }
 
 pub fn embedded_dll_version_string() -> Option<String> {
@@ -554,7 +553,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             if delay == 0 {
                 if legacy_uwp_runtime_injection_only {
                     startup_mods_direct_paths.push(path_string);
-                } else if let Some(file_name) = path_buf.file_name().and_then(|name| name.to_str()) {
+                } else if let Some(file_name) = path_buf.file_name().and_then(|name| name.to_str())
+                {
                     startup_mods_relative_paths.push(format!("mods/{file_name}"));
                 }
             } else {
@@ -600,14 +600,12 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 }
                 append_log(
                     task_id,
-                    "已还原历史 BMCBL PE 补丁；后续不再修改 1.21 以下 UWP 的 EXE"
-                        .to_string(),
+                    "已还原历史 BMCBL PE 补丁；后续不再修改 1.21 以下 UWP 的 EXE".to_string(),
                 );
             }
             append_log(
                 task_id,
-                "1.21 以下 UWP 已跳过 BLoader.dll/config.json 部署和 PE 静态导入修补"
-                    .to_string(),
+                "1.21 以下 UWP 已跳过 BLoader.dll/config.json 部署和 PE 静态导入修补".to_string(),
             );
         } else {
             let exe_dir = exe_path.parent().ok_or("无效的游戏目录".to_string())?;

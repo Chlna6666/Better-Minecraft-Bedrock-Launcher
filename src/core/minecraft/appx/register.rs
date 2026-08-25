@@ -40,7 +40,10 @@ fn verify_development_registration(
         let Ok(id) = package.Id() else {
             continue;
         };
-        if id.ResourceId().is_ok_and(|resource_id| !resource_id.is_empty()) {
+        if id
+            .ResourceId()
+            .is_ok_and(|resource_id| !resource_id.is_empty())
+        {
             continue;
         }
         let Ok(name) = id.Name() else {
@@ -98,22 +101,21 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
         manifest_path.pop();
     }
 
-    let identity_name = crate::core::minecraft::appx::utils::get_manifest_identity_from_dir_blocking(
-        Path::new(package_folder),
-    )
-    .map(|(name, _version)| name)
-    .map_err(|error| {
-        WinError::from(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("解析 AppX Identity 失败: {error}"),
+    let identity_name =
+        crate::core::minecraft::appx::utils::get_manifest_identity_from_dir_blocking(Path::new(
+            package_folder,
         ))
-    })?;
+        .map(|(name, _version)| name)
+        .map_err(|error| {
+            WinError::from(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("解析 AppX Identity 失败: {error}"),
+            ))
+        })?;
 
     let manifest_file = format!("{}/AppxManifest.xml", manifest_path);
     let absolute_path = std::fs::canonicalize(&manifest_file).map_err(|e| {
-        windows::core::Error::from(io::Error::other(format!(
-            "获取绝对路径失败: {e}"
-        )))
+        windows::core::Error::from(io::Error::other(format!("获取绝对路径失败: {e}")))
     })?;
 
     let mut uri_path = absolute_path.to_string_lossy().to_string();
@@ -122,7 +124,10 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
     }
 
     let uri_str = format!("file:///{}", uri_path.replace("\\", "/"));
-    info!(identity_name, "注册 APPX (DevelopmentMode)，使用 URI：{}", uri_str);
+    info!(
+        identity_name,
+        "注册 APPX (DevelopmentMode)，使用 URI：{}", uri_str
+    );
 
     let package_manager = PackageManager::new().expect("无法创建 PackageManager");
     let uri = Uri::CreateUri(&HSTRING::from(uri_str))?;
@@ -135,7 +140,10 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
     let error_text = error_text_h.to_string_lossy();
 
     if extended_error == HRESULT(0) {
-        info!(identity_name, "APPX DevelopmentMode 注册调用成功，开始执行注册后校验");
+        info!(
+            identity_name,
+            "APPX DevelopmentMode 注册调用成功，开始执行注册后校验"
+        );
         verify_development_registration(&package_manager, &identity_name, package_folder)?;
 
         match crate::core::minecraft::uwp_migration::restore_pending_backup_for_identity(

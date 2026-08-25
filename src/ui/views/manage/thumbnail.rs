@@ -31,7 +31,7 @@ pub(super) fn rounded_manage_thumbnail(
             .size_full()
             .rounded(radius)
             .object_fit(ObjectFit::Cover)
-            .decode_to_bounds()
+            .render_to_bounds()
             .with_fallback({
                 let colors = colors.clone();
                 let placeholder_icon = placeholder_icon.clone();

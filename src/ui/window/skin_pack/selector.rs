@@ -386,7 +386,7 @@ fn render_skin_image_frame(
                 .size_full()
                 .rounded(radius)
                 .object_fit(ObjectFit::Contain)
-                .decode_to_bounds()
+                .render_to_bounds()
                 .with_fallback({
                     let colors = colors.clone();
                     move || skin_preview_placeholder(&colors).into_any_element()

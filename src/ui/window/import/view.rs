@@ -65,7 +65,7 @@ pub struct ImportWindowView {
     launch_after_import: bool,
     close_after_launch_completion: bool,
     launch_completion_close_scheduled: bool,
-    titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState,
+    titlebar_gesture: crate::ui::window::chrome::TitlebarGesture,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -116,7 +116,7 @@ impl ImportWindowView {
             launch_after_import: false,
             close_after_launch_completion: false,
             launch_completion_close_scheduled: false,
-            titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState::default(),
+            titlebar_gesture: crate::ui::window::chrome::TitlebarGesture::default(),
             _subscriptions: subscriptions,
         };
         this.sync_selected_folder(cx);

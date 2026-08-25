@@ -45,7 +45,7 @@ fn snapshot_active_div_state(
         window.with_inspector_state(
             Some(active_id),
             cx,
-            |state: &mut Option<gpui::DivInspectorState>, _window| {
+            |state: &mut Option<gpui::DivInspection>, _window| {
                 if let Some(state) = state.as_ref() {
                     snapshot.bounds_label = SharedString::from(format!(
                         "{:.0}x{:.0} @ {:.0},{:.0}",
@@ -82,7 +82,7 @@ fn snapshot_active_div_state(
 pub fn configure_devtools(cx: &mut App) {
     #[cfg(debug_assertions)]
     {
-        cx.register_inspector_element::<gpui::DivInspectorState, _>(|_id, state, _window, _cx| {
+        cx.register_inspector_element::<gpui::DivInspection, _>(|_id, state, _window, _cx| {
             let background = state
                 .base_style
                 .background
@@ -189,7 +189,7 @@ pub fn begin_main_window_pick(cx: &mut App) {
 }
 
 #[cfg(debug_assertions)]
-fn with_selected_div_state(cx: &mut App, update: impl FnOnce(&mut gpui::DivInspectorState)) {
+fn with_selected_div_state(cx: &mut App, update: impl FnOnce(&mut gpui::DivInspection)) {
     let (main_window_id, selected_id) = cx.read_global(|debug: &DebugState, _cx| {
         (debug.main_window_id, debug.inspector.selected_id.clone())
     });
@@ -202,7 +202,7 @@ fn with_selected_div_state(cx: &mut App, update: impl FnOnce(&mut gpui::DivInspe
             window.with_inspector_state(
                 Some(&selected_id),
                 cx,
-                |state: &mut Option<gpui::DivInspectorState>, window| {
+                |state: &mut Option<gpui::DivInspection>, window| {
                     if let Some(state) = state.as_mut() {
                         update(state);
                         window.refresh();

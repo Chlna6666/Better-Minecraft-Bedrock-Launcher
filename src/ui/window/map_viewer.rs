@@ -48,6 +48,7 @@ pub(crate) mod bedrock_world_domains {
         StorageScanOutcome, StorageScanProgress, StorageThreadingOptions, StorageVisitorControl,
         WorldStorage,
     };
+    pub(crate) use ::bedrock_world::editor::McStructureWritePhase;
     pub(crate) use ::bedrock_world::entity::{
         ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, ParsedEntity,
     };
@@ -62,7 +63,6 @@ pub(crate) mod bedrock_world_domains {
         McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
         McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
     };
-    pub(crate) use ::bedrock_world::editor::McStructureWritePhase;
     pub(crate) use ::bedrock_world::world::*;
 
     pub(crate) mod biome {
@@ -97,8 +97,8 @@ pub(crate) mod bedrock_world_domains {
     }
     pub(crate) mod parsed {
         pub(crate) use ::bedrock_world::chunk::{
-            ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,
-            parse_chunk_records, parse_chunk_records_with_options,
+            ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue, parse_chunk_records,
+            parse_chunk_records_with_options,
         };
 
         pub(crate) fn parse_chunk_records_ref_with_options(

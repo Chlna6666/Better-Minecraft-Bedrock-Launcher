@@ -26,9 +26,8 @@ pub fn observe(anchor: OnboardingAnchor) -> BoundsObserver {
         } else {
             None
         };
-        let tabs_changed = download_tabs.is_some_and(|tabs| {
-            state.anchor(OnboardingAnchor::DownloadTabs) != Some(tabs)
-        });
+        let tabs_changed = download_tabs
+            .is_some_and(|tabs| state.anchor(OnboardingAnchor::DownloadTabs) != Some(tabs));
 
         if anchor_changed || tabs_changed {
             let state = cx.global_mut::<OnboardingTourState>();
@@ -58,12 +57,17 @@ const fn anchor_is_active(anchor: OnboardingAnchor, scene: OnboardingScene) -> b
         ) | (
             OnboardingAnchor::DownloadTabs,
             OnboardingScene::DownloadNavigation
-        ) | (OnboardingAnchor::DownloadImport, OnboardingScene::ImportPackage)
-            | (OnboardingAnchor::TasksPage, OnboardingScene::TasksOverview)
+        ) | (
+            OnboardingAnchor::DownloadImport,
+            OnboardingScene::ImportPackage
+        ) | (OnboardingAnchor::TasksPage, OnboardingScene::TasksOverview)
             | (
                 OnboardingAnchor::SettingsTabs,
                 OnboardingScene::SettingsOverview | OnboardingScene::PlatformSetup
             )
-            | (OnboardingAnchor::ToolsSidebar, OnboardingScene::ToolsOverview)
+            | (
+                OnboardingAnchor::ToolsSidebar,
+                OnboardingScene::ToolsOverview
+            )
     )
 }

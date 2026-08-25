@@ -442,9 +442,8 @@ impl ProgressiveViewportCompositor {
         }
 
         let estimated_bytes = pixels.len();
-        let image =
-            RenderImage::from_raw_pixels(width, height, RenderImagePixelFormat::Rgba8, pixels)
-                .map_err(|error| format!("视口合成预览图创建失败: {error}"))?;
+        let image = RenderImage::from_raw_pixels(width, height, ImagePixelFormat::Rgba8, pixels)
+            .map_err(|error| format!("视口合成预览图创建失败: {error}"))?;
         self.dirty_tiles = 0;
         self.preview_frames = self.preview_frames.saturating_add(1);
         let inverse_scale = 1.0 / self.output_scale.max(0.001);
@@ -465,13 +464,9 @@ impl ProgressiveViewportCompositor {
         }
         let pixels = std::mem::take(&mut self.pixels);
         let estimated_bytes = pixels.len();
-        let image = RenderImage::from_raw_pixels(
-            self.width,
-            self.height,
-            RenderImagePixelFormat::Rgba8,
-            pixels,
-        )
-        .map_err(|error| format!("视口合成图创建失败: {error}"))?;
+        let image =
+            RenderImage::from_raw_pixels(self.width, self.height, ImagePixelFormat::Rgba8, pixels)
+                .map_err(|error| format!("视口合成图创建失败: {error}"))?;
         Ok(Some(core::ViewportCompositeFrame {
             image: Arc::new(image),
             source_viewport: self.viewport,

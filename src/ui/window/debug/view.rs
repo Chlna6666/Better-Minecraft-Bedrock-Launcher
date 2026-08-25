@@ -113,61 +113,55 @@ impl DebugView {
                     {
                         let global_image_assets = cx.global_image_asset_cache_snapshot();
                         let gpui_memory = cx.gpui_memory_snapshot();
-                        runtime.gpui_image_asset_cache_entries =
-                            gpui_memory.gpui_image_asset_cache_entries;
-                        runtime.gpui_image_asset_retained_compressed_bytes =
-                            gpui_memory.gpui_image_asset_retained_compressed_bytes;
-                        runtime.gpui_image_asset_total_retained_decoded_bytes =
-                            gpui_memory.gpui_image_asset_retained_decoded_bytes;
-                        runtime.gpui_render_image_cpu_bytes =
-                            gpui_memory.gpui_render_image_cpu_bytes;
-                        runtime.gpui_render_image_gpu_texture_bytes =
-                            gpui_memory.gpui_render_image_gpu_texture_bytes;
-                        runtime.gpui_icon_cache_entries = gpui_memory.gpui_icon_cache_entries;
-                        runtime.gpui_icon_cache_decoded_bytes =
-                            gpui_memory.gpui_icon_cache_decoded_bytes;
-                        runtime.gpui_atlas_monochrome_bytes =
-                            gpui_memory.gpui_atlas_monochrome_bytes;
-                        runtime.gpui_atlas_polychrome_bytes =
-                            gpui_memory.gpui_atlas_polychrome_bytes;
-                        runtime.gpui_atlas_live_keys = gpui_memory.gpui_atlas_live_keys;
-                        runtime.gpui_atlas_unused_bytes = gpui_memory.gpui_atlas_unused_bytes;
-                        runtime.gpui_gpu_surface_texture_bytes =
-                            gpui_memory.gpui_gpu_surface_texture_bytes;
-                        runtime.gpui_gpu_estimated_total_retained_bytes =
-                            gpui_memory.gpui_gpu_estimated_total_retained_bytes;
-                        runtime.gpui_global_image_resource_decoded_bytes =
-                            global_image_assets.resource_decoded_bytes;
+                        runtime.image_asset_cache_entries = gpui_memory.image_asset_cache_entries;
+                        runtime.image_asset_compressed_bytes =
+                            gpui_memory.image_asset_compressed_bytes;
+                        runtime.image_asset_total_resident_bytes =
+                            gpui_memory.image_asset_resident_bytes;
+                        runtime.render_image_cpu_bytes = gpui_memory.render_image_cpu_bytes;
+                        runtime.render_image_gpu_texture_bytes =
+                            gpui_memory.render_image_gpu_texture_bytes;
+                        runtime.icon_cache_entries = gpui_memory.icon_cache_entries;
+                        runtime.icon_cache_resident_bytes = gpui_memory.icon_cache_resident_bytes;
+                        runtime.atlas_monochrome_bytes = gpui_memory.atlas_monochrome_bytes;
+                        runtime.atlas_polychrome_bytes = gpui_memory.atlas_polychrome_bytes;
+                        runtime.atlas_live_keys = gpui_memory.atlas_live_keys;
+                        runtime.atlas_unused_bytes = gpui_memory.atlas_unused_bytes;
+                        runtime.gpu_surface_texture_bytes = gpui_memory.gpu_surface_texture_bytes;
+                        runtime.gpu_estimated_total_retained_bytes =
+                            gpui_memory.gpu_estimated_total_retained_bytes;
+                        runtime.gpui_global_image_resource_resident_bytes =
+                            global_image_assets.resource_resident_bytes;
                         runtime.gpui_global_image_resource_count =
                             global_image_assets.resource_count;
-                        runtime.gpui_global_image_inline_decoded_bytes =
-                            global_image_assets.inline_decoded_bytes;
+                        runtime.gpui_global_image_inline_resident_bytes =
+                            global_image_assets.inline_resident_bytes;
                         runtime.gpui_global_image_inline_count = global_image_assets.inline_count;
                         runtime.gpui_global_image_compressed_bytes =
                             global_image_assets.compressed_bytes;
                         runtime.gpui_global_image_compressed_count =
                             global_image_assets.compressed_count;
-                        runtime.gpui_global_image_target_decoded_bytes =
-                            global_image_assets.target_decoded_bytes;
-                        runtime.gpui_global_image_target_count = global_image_assets.target_count;
+                        runtime.gpui_global_image_sized_resident_bytes =
+                            global_image_assets.sized_resident_bytes;
+                        runtime.gpui_global_image_sized_count = global_image_assets.sized_count;
                         runtime.gpui_global_image_assets_sampled_at = Some(now);
                     } else {
-                        runtime.gpui_global_image_resource_decoded_bytes =
-                            this.runtime.gpui_global_image_resource_decoded_bytes;
+                        runtime.gpui_global_image_resource_resident_bytes =
+                            this.runtime.gpui_global_image_resource_resident_bytes;
                         runtime.gpui_global_image_resource_count =
                             this.runtime.gpui_global_image_resource_count;
-                        runtime.gpui_global_image_inline_decoded_bytes =
-                            this.runtime.gpui_global_image_inline_decoded_bytes;
+                        runtime.gpui_global_image_inline_resident_bytes =
+                            this.runtime.gpui_global_image_inline_resident_bytes;
                         runtime.gpui_global_image_inline_count =
                             this.runtime.gpui_global_image_inline_count;
                         runtime.gpui_global_image_compressed_bytes =
                             this.runtime.gpui_global_image_compressed_bytes;
                         runtime.gpui_global_image_compressed_count =
                             this.runtime.gpui_global_image_compressed_count;
-                        runtime.gpui_global_image_target_decoded_bytes =
-                            this.runtime.gpui_global_image_target_decoded_bytes;
-                        runtime.gpui_global_image_target_count =
-                            this.runtime.gpui_global_image_target_count;
+                        runtime.gpui_global_image_sized_resident_bytes =
+                            this.runtime.gpui_global_image_sized_resident_bytes;
+                        runtime.gpui_global_image_sized_count =
+                            this.runtime.gpui_global_image_sized_count;
                         runtime.gpui_global_image_assets_sampled_at =
                             this.runtime.gpui_global_image_assets_sampled_at;
                     }
@@ -417,20 +411,20 @@ fn memory_attribution_summary(runtime: &DebugRuntimeSnapshot) -> String {
         ("GPUI GPU retained", runtime.gpui_gpu_retained_bytes),
         (
             "GPUI image asset retained",
-            runtime.gpui_image_asset_total_retained_decoded_bytes,
+            runtime.image_asset_total_resident_bytes,
         ),
         (
             "GPUI global image assets",
             runtime
-                .gpui_global_image_resource_decoded_bytes
-                .saturating_add(runtime.gpui_global_image_inline_decoded_bytes)
+                .gpui_global_image_resource_resident_bytes
+                .saturating_add(runtime.gpui_global_image_inline_resident_bytes)
                 .saturating_add(runtime.gpui_global_image_compressed_bytes)
-                .saturating_add(runtime.gpui_global_image_target_decoded_bytes),
+                .saturating_add(runtime.gpui_global_image_sized_resident_bytes),
         ),
         ("GPUI atlas retained", runtime.gpui_atlas_retained_bytes),
         (
             "GPUI unified estimate",
-            runtime.gpui_gpu_estimated_total_retained_bytes,
+            runtime.gpu_estimated_total_retained_bytes,
         ),
         (
             "BMCBL map viewer estimate",
@@ -2545,25 +2539,25 @@ impl Render for DebugView {
                                     SharedString::from("图像缓存"),
                                     SharedString::from(format!(
                                         "unified {} entries {} decoded / cpu {} / gpu {} / bounded {} items {} / target metrics {} items {} largest {} / evict {} / drop {} / remove {}",
-                                        runtime.gpui_image_asset_cache_entries,
+                                        runtime.image_asset_cache_entries,
                                         bytes_to_human(
                                             runtime
-                                                .gpui_image_asset_total_retained_decoded_bytes
+                                                .image_asset_total_resident_bytes
                                                 as u64
                                         ),
-                                        bytes_to_human(runtime.gpui_render_image_cpu_bytes as u64),
+                                        bytes_to_human(runtime.render_image_cpu_bytes as u64),
                                         bytes_to_human(
-                                            runtime.gpui_render_image_gpu_texture_bytes as u64
+                                            runtime.render_image_gpu_texture_bytes as u64
                                         ),
                                         runtime.gpui_image_cache_items,
                                         bytes_to_human(runtime.gpui_image_cache_bytes as u64),
                                         runtime.gpui_image_asset_retained_count,
                                         bytes_to_human(
-                                            runtime.gpui_image_asset_retained_decoded_bytes as u64
+                                            runtime.image_asset_resident_bytes as u64
                                         ),
                                         bytes_to_human(
                                             runtime
-                                                .gpui_image_asset_largest_retained_decoded_bytes
+                                                .gpui_image_asset_largest_resident_bytes
                                                 as u64
                                         ),
                                         runtime.gpui_image_cache_evictions,
@@ -2577,19 +2571,19 @@ impl Render for DebugView {
                                         "resource {} items {} / inline {} items {} / compressed {} items {} / target {} items {}",
                                         runtime.gpui_global_image_resource_count,
                                         bytes_to_human(
-                                            runtime.gpui_global_image_resource_decoded_bytes as u64
+                                            runtime.gpui_global_image_resource_resident_bytes as u64
                                         ),
                                         runtime.gpui_global_image_inline_count,
                                         bytes_to_human(
-                                            runtime.gpui_global_image_inline_decoded_bytes as u64
+                                            runtime.gpui_global_image_inline_resident_bytes as u64
                                         ),
                                         runtime.gpui_global_image_compressed_count,
                                         bytes_to_human(
                                             runtime.gpui_global_image_compressed_bytes as u64
                                         ),
-                                        runtime.gpui_global_image_target_count,
+                                        runtime.gpui_global_image_sized_count,
                                         bytes_to_human(
-                                            runtime.gpui_global_image_target_decoded_bytes as u64
+                                            runtime.gpui_global_image_sized_resident_bytes as u64
                                         ),
                                     )),
                                 ),
@@ -2597,16 +2591,16 @@ impl Render for DebugView {
                                     SharedString::from("图像解码"),
                                     SharedString::from(format!(
                                         "{} 次 / {} -> {} / {} 帧 / max {:.2} ms / slow {}",
-                                        runtime.gpui_image_decode_count,
+                                        runtime.gpui_image_processing_count,
                                         bytes_to_human(
-                                            runtime.gpui_image_decode_total_compressed_bytes as u64
+                                            runtime.gpui_image_processing_total_compressed_bytes as u64
                                         ),
                                         bytes_to_human(
-                                            runtime.gpui_image_decode_total_decoded_bytes as u64
+                                            runtime.gpui_image_processing_total_decoded_bytes as u64
                                         ),
-                                        runtime.gpui_image_decode_total_frames,
-                                        runtime.gpui_image_decode_max_time_ms,
-                                        runtime.gpui_image_decode_slow_count
+                                        runtime.gpui_image_processing_total_frames,
+                                        runtime.gpui_image_processing_max_time_ms,
+                                        runtime.gpui_image_processing_slow_count
                                     )),
                                 ),
                                 (
@@ -2672,14 +2666,14 @@ impl Render for DebugView {
                                         runtime.gpui_gpu_cache_misses,
                                         bytes_to_human(runtime.gpui_gpu_retained_bytes as u64),
                                         bytes_to_human(
-                                            runtime.gpui_gpu_surface_texture_bytes as u64
+                                            runtime.gpu_surface_texture_bytes as u64
                                         ),
-                                        bytes_to_human(runtime.gpui_atlas_monochrome_bytes as u64),
-                                        bytes_to_human(runtime.gpui_atlas_polychrome_bytes as u64),
-                                        runtime.gpui_atlas_live_keys,
-                                        bytes_to_human(runtime.gpui_atlas_unused_bytes as u64),
+                                        bytes_to_human(runtime.atlas_monochrome_bytes as u64),
+                                        bytes_to_human(runtime.atlas_polychrome_bytes as u64),
+                                        runtime.atlas_live_keys,
+                                        bytes_to_human(runtime.atlas_unused_bytes as u64),
                                         bytes_to_human(
-                                            runtime.gpui_gpu_estimated_total_retained_bytes as u64
+                                            runtime.gpu_estimated_total_retained_bytes as u64
                                         )
                                     )),
                                 ),

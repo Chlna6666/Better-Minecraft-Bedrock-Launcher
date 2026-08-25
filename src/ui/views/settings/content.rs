@@ -153,8 +153,7 @@ fn animated_settings_panel(
     // AnimationProperty 走 GPU/paint 驱动时，animator 闭包只会用起始采样参与布局。
     // 之前在闭包里写 opacity(0.58 + progress * 0.42)，因此整个页面会永久停在
     // 0.58 alpha。这里只声明可合成的位移动画，让视觉属性由动画引擎连续采样。
-    let translation =
-        AnimationProperty::translation(point(px(10.), px(0.)), point(px(0.), px(0.)));
+    let translation = AnimationProperty::translation(point(px(10.), px(0.)), point(px(0.), px(0.)));
 
     div()
         .w_full()

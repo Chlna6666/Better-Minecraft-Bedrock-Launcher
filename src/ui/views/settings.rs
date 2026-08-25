@@ -34,7 +34,7 @@ pub(crate) fn preload_static_assets(cx: &mut App) -> usize {
             .iter()
             .copied()
             .take(STATIC_ASSET_PRELOAD_LIMIT)
-            .map(|path| Resource::Embedded(SharedString::from(path))),
+            .map(|path| AssetLocation::Embedded(SharedString::from(path))),
     )
     .len()
 }

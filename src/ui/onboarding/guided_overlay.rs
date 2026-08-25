@@ -114,8 +114,7 @@ pub fn render_onboarding_tour(
     let geometry = scene_geometry(state, width, height);
 
     let show_tasks_demo = state.scene == OnboardingScene::TasksOverview
-        && crate::tasks::task_manager::try_snapshots_sorted()
-            .is_some_and(|tasks| tasks.is_empty());
+        && crate::tasks::task_manager::try_snapshots_sorted().is_some_and(|tasks| tasks.is_empty());
     let show_manage_demo = matches!(
         state.scene,
         OnboardingScene::ManageOverview | OnboardingScene::ManageContent
@@ -158,12 +157,16 @@ pub fn render_onboarding_tour(
 
 fn scene_geometry(state: &OnboardingTourState, width: f32, height: f32) -> SceneGeometry {
     let class = ViewportClass::for_size(width, height);
-    let focus = observed_focus(state, width, height)
-        .or_else(|| fallback_focus(state.scene, width, height));
+    let focus =
+        observed_focus(state, width, height).or_else(|| fallback_focus(state.scene, width, height));
     let (panel_w, panel_h) = adaptive_panel_size(state.scene, width, height, class);
     let panel = place_panel(focus, panel_w, panel_h, width, height, class);
 
-    SceneGeometry { panel, focus, class }
+    SceneGeometry {
+        panel,
+        focus,
+        class,
+    }
 }
 
 fn adaptive_panel_size(
@@ -340,13 +343,15 @@ fn fallback_focus(scene: OnboardingScene, width: f32, height: f32) -> Option<Rec
             w: page_w,
             h: 68.0,
         }),
-        OnboardingScene::ImportPackage => Some(RectF {
-            x: width - page_x - 96.0,
-            y: page_y + 14.0,
-            w: 32.0,
-            h: 32.0,
-        }
-        .padded(6.0)),
+        OnboardingScene::ImportPackage => Some(
+            RectF {
+                x: width - page_x - 96.0,
+                y: page_y + 14.0,
+                w: 32.0,
+                h: 32.0,
+            }
+            .padded(6.0),
+        ),
         OnboardingScene::TasksOverview => Some(RectF {
             x: page_x + 12.0,
             y: page_y + 12.0,
@@ -393,7 +398,10 @@ fn render_dim_layer(focus: Option<RectF>, class: ViewportClass) -> AnyElement {
         return div()
             .absolute()
             .inset_0()
-            .bg(Hsla { a: alpha, ..black() })
+            .bg(Hsla {
+                a: alpha,
+                ..black()
+            })
             .occlude()
             .into_any_element();
     };
@@ -404,7 +412,10 @@ fn render_dim_layer(focus: Option<RectF>, class: ViewportClass) -> AnyElement {
             size(px(focus.w), px(focus.h)),
         ),
         px(crate::ui::theme::tokens::radius::MD),
-        Hsla { a: alpha, ..black() },
+        Hsla {
+            a: alpha,
+            ..black()
+        },
     )
     .window_space()
     .absolute()
@@ -446,7 +457,11 @@ fn render_guide_panel(
     colors: &ThemeColors,
     class: ViewportClass,
 ) -> Div {
-    let inner_px = if class == ViewportClass::Tight { 13.0 } else { 15.0 };
+    let inner_px = if class == ViewportClass::Tight {
+        13.0
+    } else {
+        15.0
+    };
     div()
         .size_full()
         .min_h(px(0.0))
@@ -461,10 +476,7 @@ fn render_guide_panel(
             ..colors.bg
         })
         .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.20,
-                ..black()
-            },
+            color: Hsla { a: 0.20, ..black() },
             blur_radius: px(30.0),
             spread_radius: px(-6.0),
             offset: point(px(0.0), px(12.0)),
@@ -486,13 +498,13 @@ fn render_guide_panel(
         .child(render_footer(state, colors))
 }
 
-fn render_header(
-    state: &OnboardingTourState,
-    colors: &ThemeColors,
-    class: ViewportClass,
-) -> Div {
+fn render_header(state: &OnboardingTourState, colors: &ThemeColors, class: ViewportClass) -> Div {
     let (icon, title, subtitle) = scene_header(state.scene);
-    let icon_size = if class == ViewportClass::Tight { 34.0 } else { 38.0 };
+    let icon_size = if class == ViewportClass::Tight {
+        34.0
+    } else {
+        38.0
+    };
     div()
         .px(px(15.0))
         .pt(px(13.0))
@@ -550,7 +562,11 @@ fn render_header(
                 .text_size(px(9.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.accent)
-                .child(format!("{} / {}", state.scene.index(), OnboardingScene::COUNT)),
+                .child(format!(
+                    "{} / {}",
+                    state.scene.index(),
+                    OnboardingScene::COUNT
+                )),
         )
 }
 
@@ -577,10 +593,28 @@ fn render_welcome(colors: &ThemeColors) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(intro(colors, "不用先记所有功能。导览会直接切到真实页面，只解释第一次真正会用到的入口。"))
-        .child(feature(colors, lucide_icons::icon_download(), "获得游戏", "在线下载，或导入已有 APPX / ZIP / MSIXVC。"))
-        .child(feature(colors, lucide_icons::icon_activity(), "看任务", "下载、安装、导入和失败原因都集中在任务页。"))
-        .child(feature(colors, lucide_icons::icon_settings_2(), "管理版本", "启动、模组、资源包、地图等操作都围绕具体实例。"))
+        .child(intro(
+            colors,
+            "不用先记所有功能。导览会直接切到真实页面，只解释第一次真正会用到的入口。",
+        ))
+        .child(feature(
+            colors,
+            lucide_icons::icon_download(),
+            "获得游戏",
+            "在线下载，或导入已有 APPX / ZIP / MSIXVC。",
+        ))
+        .child(feature(
+            colors,
+            lucide_icons::icon_activity(),
+            "看任务",
+            "下载、安装、导入和失败原因都集中在任务页。",
+        ))
+        .child(feature(
+            colors,
+            lucide_icons::icon_settings_2(),
+            "管理版本",
+            "启动、模组、资源包、地图等操作都围绕具体实例。",
+        ))
         .child(tip(colors, "演示数据只在真实页面为空时出现，不写入磁盘。"))
         .into_any_element()
 }
@@ -591,9 +625,24 @@ fn render_download_navigation(colors: &ThemeColors) -> AnyElement {
         .flex_col()
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：下载类型标签"))
-        .child(feature(colors, lucide_icons::icon_box(), "游戏", "Minecraft Bedrock 本体和历史版本。"))
-        .child(feature(colors, lucide_icons::icon_package(), "资源包", "CurseForge 内容，安装到指定实例。"))
-        .child(feature(colors, lucide_icons::icon_layers(), "模组", "LeviLamina / LeviLauncher 客户端模组。"))
+        .child(feature(
+            colors,
+            lucide_icons::icon_box(),
+            "游戏",
+            "Minecraft Bedrock 本体和历史版本。",
+        ))
+        .child(feature(
+            colors,
+            lucide_icons::icon_package(),
+            "资源包",
+            "CurseForge 内容，安装到指定实例。",
+        ))
+        .child(feature(
+            colors,
+            lucide_icons::icon_layers(),
+            "模组",
+            "LeviLamina / LeviLauncher 客户端模组。",
+        ))
         .into_any_element()
 }
 
@@ -603,9 +652,24 @@ fn render_game_download(colors: &ThemeColors) -> AnyElement {
         .flex_col()
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：搜索与版本筛选区"))
-        .child(step(colors, 1, "搜索或筛选", "知道版本号就直接搜；日常使用优先正式版。"))
-        .child(step(colors, 2, "选择加载器", "不需要模组时保持原版最简单。"))
-        .child(step(colors, 3, "点列表右侧按钮", "下载或安装完成后会进入本地版本列表。"))
+        .child(step(
+            colors,
+            1,
+            "搜索或筛选",
+            "知道版本号就直接搜；日常使用优先正式版。",
+        ))
+        .child(step(
+            colors,
+            2,
+            "选择加载器",
+            "不需要模组时保持原版最简单。",
+        ))
+        .child(step(
+            colors,
+            3,
+            "点列表右侧按钮",
+            "下载或安装完成后会进入本地版本列表。",
+        ))
         .child(tip(colors, "第一次不知道怎么选：正式版 + 原版。"))
         .into_any_element()
 }
@@ -617,8 +681,18 @@ fn render_resource_download(colors: &ThemeColors) -> AnyElement {
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：CurseForge 搜索与筛选"))
         .child(step(colors, 1, "找项目", "按分类或关键字找到资源包。"))
-        .child(step(colors, 2, "确认游戏版本", "版本不匹配时不要强行安装。"))
-        .child(step(colors, 3, "选择目标实例", "资源写入指定实例，不会替换 Minecraft 本体。"))
+        .child(step(
+            colors,
+            2,
+            "确认游戏版本",
+            "版本不匹配时不要强行安装。",
+        ))
+        .child(step(
+            colors,
+            3,
+            "选择目标实例",
+            "资源写入指定实例，不会替换 Minecraft 本体。",
+        ))
         .into_any_element()
 }
 
@@ -628,9 +702,24 @@ fn render_mod_download(colors: &ThemeColors) -> AnyElement {
         .flex_col()
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：模组加载器筛选"))
-        .child(step(colors, 1, "先看加载器", "选择 LeviLamina 等加载器类型和版本。"))
-        .child(step(colors, 2, "再看兼容性", "游戏、加载器、模组三者版本需要匹配。"))
-        .child(step(colors, 3, "最后选实例", "安装前确认目标版本，避免放错目录。"))
+        .child(step(
+            colors,
+            1,
+            "先看加载器",
+            "选择 LeviLamina 等加载器类型和版本。",
+        ))
+        .child(step(
+            colors,
+            2,
+            "再看兼容性",
+            "游戏、加载器、模组三者版本需要匹配。",
+        ))
+        .child(step(
+            colors,
+            3,
+            "最后选实例",
+            "安装前确认目标版本，避免放错目录。",
+        ))
         .into_any_element()
 }
 
@@ -642,7 +731,11 @@ fn render_import(colors: &ThemeColors) -> AnyElement {
         .child(route_badge(colors, "当前高光：右上角上传按钮"))
         .child(format_card(colors, "APPX", "常见 UWP 安装包。"))
         .child(format_card(colors, "ZIP", "BMCBL 支持的版本压缩包。"))
-        .child(format_card(colors, "MSIXVC", "部分 GDK 版本使用的容器格式。"))
+        .child(format_card(
+            colors,
+            "MSIXVC",
+            "部分 GDK 版本使用的容器格式。",
+        ))
         .child(tip(colors, "选完文件后去任务页看解析、解包和导入进度。"))
         .into_any_element()
 }
@@ -653,9 +746,19 @@ fn render_tasks_overview(colors: &ThemeColors) -> AnyElement {
         .flex_col()
         .gap(px(8.0))
         .child(route_badge(colors, "任务页：下载以后先看这里"))
-        .child(step(colors, 1, "进度", "百分比、速度、线程和 ETA 会集中显示。"))
+        .child(step(
+            colors,
+            1,
+            "进度",
+            "百分比、速度、线程和 ETA 会集中显示。",
+        ))
         .child(step(colors, 2, "控制", "支持的任务可以暂停、继续或取消。"))
-        .child(step(colors, 3, "错误", "失败原因也会留在任务卡里，方便排查。"))
+        .child(step(
+            colors,
+            3,
+            "错误",
+            "失败原因也会留在任务卡里，方便排查。",
+        ))
         .child(tip(colors, "没有真实任务时才会显示只读演示任务。"))
         .into_any_element()
 }
@@ -667,8 +770,16 @@ fn render_manage_overview(colors: &ThemeColors) -> AnyElement {
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：版本列表"))
         .child(step(colors, 1, "先选实例", "真实版本来自 BMCBL/versions。"))
-        .child(step(colors, 2, "再做实例级操作", "打开目录、设置、删除、启动只作用于当前版本。"))
-        .child(tip(colors, "没有真实版本时才投影只读示例，不创建任何目录。"))
+        .child(step(
+            colors,
+            2,
+            "再做实例级操作",
+            "打开目录、设置、删除、启动只作用于当前版本。",
+        ))
+        .child(tip(
+            colors,
+            "没有真实版本时才投影只读示例，不创建任何目录。",
+        ))
         .into_any_element()
 }
 
@@ -678,9 +789,24 @@ fn render_manage_content(colors: &ThemeColors) -> AnyElement {
         .flex_col()
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：当前实例的内容区域"))
-        .child(step(colors, 1, "按标签管理", "统计、Mod、资源包、皮肤、地图、截图、服务器各自独立。"))
-        .child(step(colors, 2, "所有操作都有实例边界", "启用、禁用、导入和删除都只针对当前版本。"))
-        .child(step(colors, 3, "存档操作要留备份", "地图和 level.dat 会修改真实世界数据。"))
+        .child(step(
+            colors,
+            1,
+            "按标签管理",
+            "统计、Mod、资源包、皮肤、地图、截图、服务器各自独立。",
+        ))
+        .child(step(
+            colors,
+            2,
+            "所有操作都有实例边界",
+            "启用、禁用、导入和删除都只针对当前版本。",
+        ))
+        .child(step(
+            colors,
+            3,
+            "存档操作要留备份",
+            "地图和 level.dat 会修改真实世界数据。",
+        ))
         .into_any_element()
 }
 
@@ -690,9 +816,24 @@ fn render_settings_overview(colors: &ThemeColors) -> AnyElement {
         .flex_col()
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：设置分类"))
-        .child(step(colors, 1, "保持默认也能用", "第一次不需要把所有设置检查一遍。"))
-        .child(step(colors, 2, "下载或网络有问题", "回启动器设置检查下载线程、代理和 API。"))
-        .child(step(colors, 3, "外观 / 插件 / 关于", "主题、WASM 插件和重新打开导览都在这里。"))
+        .child(step(
+            colors,
+            1,
+            "保持默认也能用",
+            "第一次不需要把所有设置检查一遍。",
+        ))
+        .child(step(
+            colors,
+            2,
+            "下载或网络有问题",
+            "回启动器设置检查下载线程、代理和 API。",
+        ))
+        .child(step(
+            colors,
+            3,
+            "外观 / 插件 / 关于",
+            "主题、WASM 插件和重新打开导览都在这里。",
+        ))
         .into_any_element()
 }
 
@@ -702,9 +843,24 @@ fn render_tools_overview(colors: &ThemeColors) -> AnyElement {
         .flex_col()
         .gap(px(8.0))
         .child(route_badge(colors, "当前高光：工具列表"))
-        .child(step(colors, 1, "按需使用", "工具不是启动 Minecraft 的必经步骤。"))
-        .child(step(colors, 2, "当前主要是联机大厅", "通过 EasyTier 创建或加入跨网络房间。"))
-        .child(step(colors, 3, "联机异常再看高级项", "NAT、节点、P2P 和 bootstrap 用于排障。"))
+        .child(step(
+            colors,
+            1,
+            "按需使用",
+            "工具不是启动 Minecraft 的必经步骤。",
+        ))
+        .child(step(
+            colors,
+            2,
+            "当前主要是联机大厅",
+            "通过 EasyTier 创建或加入跨网络房间。",
+        ))
+        .child(step(
+            colors,
+            3,
+            "联机异常再看高级项",
+            "NAT、节点、P2P 和 bootstrap 用于排障。",
+        ))
         .into_any_element()
 }
 
@@ -715,16 +871,36 @@ fn render_platform(state: &OnboardingTourState, colors: &ThemeColors) -> AnyElem
     {
         body = body
             .child(route_badge(colors, "Windows：UWP 注册与数据保护"))
-            .child(step(colors, 1, "BMCBL 散装 UWP", "切换版本时重新指向目标版本目录。"))
-            .child(step(colors, 2, "Store / 外部注册", "存在世界数据时先备份并校验，失败就停止替换。"));
+            .child(step(
+                colors,
+                1,
+                "BMCBL 散装 UWP",
+                "切换版本时重新指向目标版本目录。",
+            ))
+            .child(step(
+                colors,
+                2,
+                "Store / 外部注册",
+                "存在世界数据时先备份并校验，失败就停止替换。",
+            ));
     }
 
     #[cfg(target_os = "linux")]
     {
         body = body
             .child(route_badge(colors, "Linux：Proton-GDK / UMU"))
-            .child(step(colors, 1, "Linux 不执行 UWP 检查", "不会处理 Microsoft Store 注册或 Windows LocalState。"))
-            .child(step(colors, 2, "检查兼容运行环境", "重点确认 Proton-GDK / UMU runner 和系统依赖。"));
+            .child(step(
+                colors,
+                1,
+                "Linux 不执行 UWP 检查",
+                "不会处理 Microsoft Store 注册或 Windows LocalState。",
+            ))
+            .child(step(
+                colors,
+                2,
+                "检查兼容运行环境",
+                "重点确认 Proton-GDK / UMU runner 和系统依赖。",
+            ));
     }
 
     if state.platform_scanning {
@@ -787,8 +963,18 @@ fn render_finish(colors: &ThemeColors) -> AnyElement {
                         .child("现在知道下一步去哪了"),
                 ),
         )
-        .child(feature(colors, lucide_icons::icon_download(), "没有游戏", "去下载页选正式版，或导入已有安装包。"))
-        .child(feature(colors, lucide_icons::icon_settings_2(), "已经有版本", "去管理页选择实例并启动或管理内容。"))
+        .child(feature(
+            colors,
+            lucide_icons::icon_download(),
+            "没有游戏",
+            "去下载页选正式版，或导入已有安装包。",
+        ))
+        .child(feature(
+            colors,
+            lucide_icons::icon_settings_2(),
+            "已经有版本",
+            "去管理页选择实例并启动或管理内容。",
+        ))
         .child(tip(colors, "以后可在“设置 → 关于”重新打开完整导览。"))
         .into_any_element()
 }
@@ -800,16 +986,14 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
     } else {
         "上一步"
     };
-    let left = secondary_button(colors, left_label).on_mouse_down(
-        MouseButton::Left,
-        move |_, _, cx| {
+    let left =
+        secondary_button(colors, left_label).on_mouse_down(MouseButton::Left, move |_, _, cx| {
             if scene == OnboardingScene::Welcome {
                 crate::ui::onboarding::skip(cx);
             } else {
                 crate::ui::onboarding::back(cx);
             }
-        },
-    );
+        });
 
     let next_enabled = scene != OnboardingScene::PlatformSetup || !state.platform_scanning;
     let next_label = if scene == OnboardingScene::Finish {
@@ -841,28 +1025,84 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
 
 fn scene_header(scene: OnboardingScene) -> (&'static str, &'static str, &'static str) {
     match scene {
-        OnboardingScene::Welcome => (lucide_icons::icon_route(), "欢迎使用 BMCBL", "跟着真实页面走一遍，不用先学所有设置。"),
-        OnboardingScene::DownloadNavigation => (lucide_icons::icon_download(), "先认识下载页", "高光会直接指向当前要看的区域。"),
-        OnboardingScene::GameDownload => (lucide_icons::icon_box(), "下载 Minecraft", "搜索、筛选，然后从列表开始下载。"),
-        OnboardingScene::ResourcePackDownload => (lucide_icons::icon_package(), "CurseForge 资源包", "找项目、确认版本、选择安装目标。"),
-        OnboardingScene::ModDownload => (lucide_icons::icon_layers(), "客户端模组", "先确认加载器与兼容关系。"),
-        OnboardingScene::ImportPackage => (lucide_icons::icon_upload(), "导入已有安装包", "已有文件就不必重新下载。"),
-        OnboardingScene::TasksOverview => (lucide_icons::icon_activity(), "任务去哪里看？", "下载、安装、导入和错误都集中在这里。"),
-        OnboardingScene::ManageOverview => (lucide_icons::icon_settings_2(), "管理一个版本", "先选实例，再做启动与实例级操作。"),
-        OnboardingScene::ManageContent => (lucide_icons::icon_package(), "管理实例内容", "Mod、资源包、地图等都属于当前版本。"),
-        OnboardingScene::SettingsOverview => (lucide_icons::icon_settings(), "设置在哪里？", "大多数配置保持默认即可。"),
-        OnboardingScene::ToolsOverview => (lucide_icons::icon_wrench(), "工具在哪里？", "高级能力按需使用。"),
+        OnboardingScene::Welcome => (
+            lucide_icons::icon_route(),
+            "欢迎使用 BMCBL",
+            "跟着真实页面走一遍，不用先学所有设置。",
+        ),
+        OnboardingScene::DownloadNavigation => (
+            lucide_icons::icon_download(),
+            "先认识下载页",
+            "高光会直接指向当前要看的区域。",
+        ),
+        OnboardingScene::GameDownload => (
+            lucide_icons::icon_box(),
+            "下载 Minecraft",
+            "搜索、筛选，然后从列表开始下载。",
+        ),
+        OnboardingScene::ResourcePackDownload => (
+            lucide_icons::icon_package(),
+            "CurseForge 资源包",
+            "找项目、确认版本、选择安装目标。",
+        ),
+        OnboardingScene::ModDownload => (
+            lucide_icons::icon_layers(),
+            "客户端模组",
+            "先确认加载器与兼容关系。",
+        ),
+        OnboardingScene::ImportPackage => (
+            lucide_icons::icon_upload(),
+            "导入已有安装包",
+            "已有文件就不必重新下载。",
+        ),
+        OnboardingScene::TasksOverview => (
+            lucide_icons::icon_activity(),
+            "任务去哪里看？",
+            "下载、安装、导入和错误都集中在这里。",
+        ),
+        OnboardingScene::ManageOverview => (
+            lucide_icons::icon_settings_2(),
+            "管理一个版本",
+            "先选实例，再做启动与实例级操作。",
+        ),
+        OnboardingScene::ManageContent => (
+            lucide_icons::icon_package(),
+            "管理实例内容",
+            "Mod、资源包、地图等都属于当前版本。",
+        ),
+        OnboardingScene::SettingsOverview => (
+            lucide_icons::icon_settings(),
+            "设置在哪里？",
+            "大多数配置保持默认即可。",
+        ),
+        OnboardingScene::ToolsOverview => (
+            lucide_icons::icon_wrench(),
+            "工具在哪里？",
+            "高级能力按需使用。",
+        ),
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "windows")]
             {
-                (lucide_icons::icon_shield_check(), "Windows 数据安全", "替换 UWP 注册前先保护已有世界数据。")
+                (
+                    lucide_icons::icon_shield_check(),
+                    "Windows 数据安全",
+                    "替换 UWP 注册前先保护已有世界数据。",
+                )
             }
             #[cfg(target_os = "linux")]
             {
-                (lucide_icons::icon_box(), "Linux 运行环境", "确认 Proton-GDK / UMU，不做 Windows UWP。")
+                (
+                    lucide_icons::icon_box(),
+                    "Linux 运行环境",
+                    "确认 Proton-GDK / UMU，不做 Windows UWP。",
+                )
             }
         }
-        OnboardingScene::Finish => (lucide_icons::icon_circle_check(), "导览完成", "现在可以按自己的情况开始。"),
+        OnboardingScene::Finish => (
+            lucide_icons::icon_circle_check(),
+            "导览完成",
+            "现在可以按自己的情况开始。",
+        ),
     }
 }
 
@@ -903,10 +1143,38 @@ fn render_tasks_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> Any
                 )
                 .child(demo_badge(colors, "只读演示 · 无网络请求")),
         )
-        .child(demo_task_card(colors, "Minecraft 1.21.100", "下载中", 0.68, "18.4 MB/s · 12 线程 · ETA 00:42", false))
-        .child(demo_task_card(colors, "Faithful 32x", "安装中", 0.88, "正在写入目标实例", false))
-        .child(demo_task_card(colors, "LeviLamina 模组依赖", "完成", 1.0, "已安装到演示版本", false))
-        .child(demo_task_card(colors, "旧版 APPX 导入", "失败", 0.37, "示例：安装包不完整", true))
+        .child(demo_task_card(
+            colors,
+            "Minecraft 1.21.100",
+            "下载中",
+            0.68,
+            "18.4 MB/s · 12 线程 · ETA 00:42",
+            false,
+        ))
+        .child(demo_task_card(
+            colors,
+            "Faithful 32x",
+            "安装中",
+            0.88,
+            "正在写入目标实例",
+            false,
+        ))
+        .child(demo_task_card(
+            colors,
+            "LeviLamina 模组依赖",
+            "完成",
+            1.0,
+            "已安装到演示版本",
+            false,
+        ))
+        .child(demo_task_card(
+            colors,
+            "旧版 APPX 导入",
+            "失败",
+            0.37,
+            "示例：安装包不完整",
+            true,
+        ))
         .into_any_element()
 }
 
@@ -979,7 +1247,11 @@ fn demo_task_card(
                 .child(
                     div()
                         .text_size(px(9.0))
-                        .text_color(if danger { colors.danger } else { colors.text_muted })
+                        .text_color(if danger {
+                            colors.danger
+                        } else {
+                            colors.text_muted
+                        })
                         .child(detail),
                 ),
         )
@@ -1021,8 +1293,18 @@ fn render_manage_demo_layer(
                 .flex_col()
                 .gap(px(8.0))
                 .child(demo_badge(colors, "空页面示例"))
-                .child(demo_version(colors, "Minecraft 1.21.100", "UWP · 正式版", true))
-                .child(demo_version(colors, "LeviLamina 1.21.93", "UWP · LeviLamina", false))
+                .child(demo_version(
+                    colors,
+                    "Minecraft 1.21.100",
+                    "UWP · 正式版",
+                    true,
+                ))
+                .child(demo_version(
+                    colors,
+                    "LeviLamina 1.21.93",
+                    "UWP · LeviLamina",
+                    false,
+                ))
                 .child(demo_version(colors, "Preview", "GDK · Preview", false)),
         )
         .child(
@@ -1066,7 +1348,12 @@ fn render_manage_demo_layer(
         .into_any_element()
 }
 
-fn demo_version(colors: &ThemeColors, name: &'static str, detail: &'static str, selected: bool) -> Div {
+fn demo_version(
+    colors: &ThemeColors,
+    name: &'static str,
+    detail: &'static str,
+    selected: bool,
+) -> Div {
     div()
         .w_full()
         .p(px(9.0))
@@ -1108,7 +1395,11 @@ fn render_demo_tabs(colors: &ThemeColors, resource_active: bool) -> Div {
         .gap(px(5.0))
         .flex_wrap()
         .children(tabs.into_iter().enumerate().map(|(index, label)| {
-            let active = if resource_active { index == 2 } else { index == 0 };
+            let active = if resource_active {
+                index == 2
+            } else {
+                index == 0
+            };
             div()
                 .px(px(7.0))
                 .py(px(5.0))
@@ -1189,9 +1480,24 @@ fn render_demo_resource_list(colors: &ThemeColors) -> Div {
         .flex()
         .flex_col()
         .gap(px(7.0))
-        .child(demo_asset_row(colors, "Faithful 32x Bedrock", "资源包 · 已启用", "1.21.x"))
-        .child(demo_asset_row(colors, "UI Tweaks", "资源包 · 已启用", "1.21.x"))
-        .child(demo_asset_row(colors, "Better Animations", "行为包 · 已禁用", "1.21.100"))
+        .child(demo_asset_row(
+            colors,
+            "Faithful 32x Bedrock",
+            "资源包 · 已启用",
+            "1.21.x",
+        ))
+        .child(demo_asset_row(
+            colors,
+            "UI Tweaks",
+            "资源包 · 已启用",
+            "1.21.x",
+        ))
+        .child(demo_asset_row(
+            colors,
+            "Better Animations",
+            "行为包 · 已禁用",
+            "1.21.100",
+        ))
 }
 
 fn demo_asset_row(
@@ -1257,7 +1563,12 @@ fn demo_badge(colors: &ThemeColors, label: &'static str) -> Div {
         .child(label)
 }
 
-fn feature(colors: &ThemeColors, icon: &'static str, title: &'static str, detail: &'static str) -> Div {
+fn feature(
+    colors: &ThemeColors,
+    icon: &'static str,
+    title: &'static str,
+    detail: &'static str,
+) -> Div {
     div()
         .w_full()
         .px(px(8.0))
@@ -1440,10 +1751,7 @@ fn dynamic_status(colors: &ThemeColors, icon: &'static str, text: &str, danger: 
         .px(px(8.0))
         .py(px(7.0))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(Hsla {
-            a: 0.055,
-            ..color
-        })
+        .bg(Hsla { a: 0.055, ..color })
         .flex()
         .items_start()
         .gap(px(7.0))
@@ -1537,7 +1845,9 @@ fn platform_summary(
 
 fn primary_button(colors: &ThemeColors, label: &'static str, enabled: bool) -> Stateful<Div> {
     let mut button = div()
-        .id(SharedString::from(format!("onboarding-guided-primary-{label}")))
+        .id(SharedString::from(format!(
+            "onboarding-guided-primary-{label}"
+        )))
         .min_h(px(32.0))
         .px(px(12.0))
         .py(px(6.0))
@@ -1562,7 +1872,9 @@ fn primary_button(colors: &ThemeColors, label: &'static str, enabled: bool) -> S
 
 fn secondary_button(colors: &ThemeColors, label: &'static str) -> Stateful<Div> {
     div()
-        .id(SharedString::from(format!("onboarding-guided-secondary-{label}")))
+        .id(SharedString::from(format!(
+            "onboarding-guided-secondary-{label}"
+        )))
         .min_h(px(32.0))
         .px(px(11.0))
         .py(px(6.0))

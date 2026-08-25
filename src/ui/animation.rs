@@ -1,5 +1,5 @@
 use gpui::{
-    Animation, AnimationDriver, AnimationSpec, Easing, PhysicsConfig, RepeatMode, Spring, Window,
+    Animation, AnimationDriver, AnimationSpec, Easing, RepeatMode, Spring, SpringPhysics, Window,
 };
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ pub fn apple_spring(response: f32, damping_fraction: f32) -> Spring {
     let stiffness = (std::f32::consts::TAU / response).powi(2);
     let damping = 2.0 * damping_fraction.max(0.0) * stiffness.sqrt();
     Spring {
-        physics: PhysicsConfig {
+        physics: SpringPhysics {
             stiffness,
             damping,
             mass: 1.0,

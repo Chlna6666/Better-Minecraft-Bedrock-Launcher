@@ -37,10 +37,8 @@ impl SettingsLayout {
 
         // 设置页仍可自适应内部间距，但页面级外框必须与其他路由共用同一组 inset。
         // 这样切换页面时背景面板不会上下跳动，也不会因设置页单独压缩高度而显得更大。
-        let available_width = (width_px
-            - 2.0 * (PAGE_INSET_X / px(1.0))
-            - 2.0 * (page_padding / px(1.0)))
-            .max(320.0);
+        let available_width =
+            (width_px - 2.0 * (PAGE_INSET_X / px(1.0)) - 2.0 * (page_padding / px(1.0))).max(320.0);
         let plugin_max_width = px(if width_px >= 1600.0 {
             available_width.min(1480.0)
         } else {

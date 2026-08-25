@@ -475,7 +475,9 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                                     ..colors.text_secondary
                                 })
                                 .on_click(|_, window, cx| {
-                                    super::version_import::pick_and_import_local_version(window, cx);
+                                    super::version_import::pick_and_import_local_version(
+                                        window, cx,
+                                    );
                                 }),
                         )
                         .child(crate::ui::onboarding::anchor::observe(

@@ -40,7 +40,10 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
 
         for package in packages {
             let Ok(id) = package.Id() else { continue };
-            if id.ResourceId().is_ok_and(|resource_id| !resource_id.is_empty()) {
+            if id
+                .ResourceId()
+                .is_ok_and(|resource_id| !resource_id.is_empty())
+            {
                 debug!(
                     family_name = package_family_name,
                     "跳过同包家族资源包，注册替换仅处理主包"
@@ -48,7 +51,9 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
                 continue;
             }
 
-            let Ok(full_name) = id.FullName() else { continue };
+            let Ok(full_name) = id.FullName() else {
+                continue;
+            };
             let installed_path = package
                 .InstalledLocation()
                 .ok()
@@ -56,9 +61,9 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
                 .map(|path| PathBuf::from(path.to_string_lossy().to_string()));
             let development_mode = package.IsDevelopmentMode().unwrap_or(false);
             let bmcbl_managed = development_mode
-                && installed_path
-                    .as_deref()
-                    .is_some_and(crate::core::minecraft::uwp_migration::is_bmcbl_managed_registration);
+                && installed_path.as_deref().is_some_and(
+                    crate::core::minecraft::uwp_migration::is_bmcbl_managed_registration,
+                );
             targets.push(RemovalTarget {
                 full_name,
                 installed_path,
@@ -69,7 +74,10 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
     }
 
     if targets.is_empty() {
-        info!("未找到当前用户已安装的主包实例 ({})，跳过移除。", package_family_name);
+        info!(
+            "未找到当前用户已安装的主包实例 ({})，跳过移除。",
+            package_family_name
+        );
         return Ok(());
     }
 
@@ -110,8 +118,8 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
             "准备按当前用户模式移除 UWP 主包注册"
         );
 
-        let async_op = package_manager
-            .RemovePackageWithOptionsAsync(&target.full_name, removal_options)?;
+        let async_op =
+            package_manager.RemovePackageWithOptionsAsync(&target.full_name, removal_options)?;
         let result: DeploymentResult = async_op.await?;
         let extended_hr: HRESULT = result.ExtendedErrorCode()?;
         let error_text = result

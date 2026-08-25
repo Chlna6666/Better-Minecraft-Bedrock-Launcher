@@ -29,9 +29,9 @@ pub(super) struct AppBackgroundView {
     cached_display_background: Option<BackgroundSource>,
     animation_suppressed: bool,
     startup_first_paint_logged: bool,
-    preloaded_background_resource: Option<Resource>,
-    preloaded_background_target: Option<TargetSizeImageSource>,
-    preloaded_background_task: Option<TargetSizeImageLoadingTask>,
+    preloaded_background_resource: Option<AssetLocation>,
+    preloaded_background_target: Option<ImageRenderRequest>,
+    preloaded_background_task: Option<SizedImageTask>,
 }
 
 impl AppBackgroundView {
@@ -203,7 +203,7 @@ impl AppBackgroundView {
     ) {
         let next_resource = source.and_then(background_resource);
         let next_target = next_resource.clone().and_then(|resource| {
-            cx.target_size_image_source(
+            cx.image_render_request(
                 resource,
                 window.viewport_size(),
                 window.scale_factor(),
@@ -219,7 +219,7 @@ impl AppBackgroundView {
         if let Some(previous_resource) = self.preloaded_background_resource.take() {
             self.preloaded_background_task.take();
             if let Some(previous_target) = self.preloaded_background_target.take() {
-                cx.remove_target_size_image_source_in(&previous_target, Some(window));
+                cx.remove_image_render_request_in(&previous_target, Some(window));
                 if next_resource.as_ref() != Some(&previous_resource) {
                     cx.remove_compressed_image_resource(&previous_resource);
                 }
@@ -227,7 +227,7 @@ impl AppBackgroundView {
         }
 
         if let (Some(resource), Some(target)) = (next_resource, next_target) {
-            let task = cx.preload_target_size_image(target.clone());
+            let task = cx.preload_sized_image(target.clone());
             self.preloaded_background_resource = Some(resource);
             self.preloaded_background_target = Some(target);
             self.preloaded_background_task = Some(task);

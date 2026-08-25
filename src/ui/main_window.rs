@@ -82,7 +82,7 @@ pub(crate) fn preload_startup_background_target_from_values(
 
     background_resource(&source)
         .and_then(|resource| {
-            cx.target_size_image_source(
+            cx.image_render_request(
                 resource,
                 window.viewport_size(),
                 window.scale_factor(),
@@ -91,7 +91,7 @@ pub(crate) fn preload_startup_background_target_from_values(
         })
         .map(|target| {
             let resource = target.resource().clone();
-            let _task = cx.preload_target_size_image(target);
+            let _task = cx.preload_sized_image(target);
             cx.remove_compressed_image_resource(&resource);
             1
         })

@@ -99,68 +99,64 @@ impl Render for DebugView {
             .flex_col()
             .bg(colors.bg)
             .child(
-                div()
-                    .flex_none()
-                    .px(px(14.))
-                    .pt(px(12.))
-                    .child(
-                        div()
-                            .w_full()
-                            .rounded(px(crate::ui::theme::tokens::radius::SM))
-                            .border_1()
-                            .border_color(Hsla {
-                                a: 0.22,
-                                ..colors.border
-                            })
-                            .bg(Hsla {
-                                a: 0.86,
-                                ..colors.settings_card_bg
-                            })
-                            .p(px(10.))
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(10.))
-                            .child(
-                                div()
-                                    .min_w(px(160.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(colors.text_primary)
-                                            .child(copy.title),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(10.))
-                                            .line_height(px(14.))
-                                            .text_color(colors.text_muted)
-                                            .child(copy.subtitle),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(360.))
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap(px(8.))
-                                    .child(flash_toggle)
-                                    .child(layout_toggle),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(px(9.))
-                                    .line_height(px(13.))
-                                    .text_color(colors.text_muted)
-                                    .child(copy.legend),
-                            ),
-                    ),
+                div().flex_none().px(px(14.)).pt(px(12.)).child(
+                    div()
+                        .w_full()
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
+                        .border_1()
+                        .border_color(Hsla {
+                            a: 0.22,
+                            ..colors.border
+                        })
+                        .bg(Hsla {
+                            a: 0.86,
+                            ..colors.settings_card_bg
+                        })
+                        .p(px(10.))
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .min_w(px(160.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(colors.text_primary)
+                                        .child(copy.title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .line_height(px(14.))
+                                        .text_color(colors.text_muted)
+                                        .child(copy.subtitle),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(360.))
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(8.))
+                                .child(flash_toggle)
+                                .child(layout_toggle),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(9.))
+                                .line_height(px(13.))
+                                .text_color(colors.text_muted)
+                                .child(copy.legend),
+                        ),
+                ),
             )
             .child(
                 div()
@@ -241,7 +237,11 @@ fn debug_toggle(
         .border_1()
         .border_color(Hsla {
             a: if enabled { 0.34 } else { 0.14 },
-            ..if enabled { colors.accent } else { colors.border }
+            ..if enabled {
+                colors.accent
+            } else {
+                colors.border
+            }
         })
         .bg(if enabled {
             Hsla {

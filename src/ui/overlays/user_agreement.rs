@@ -104,7 +104,10 @@ fn scroll_action_button(
             lucide_icons::icon_chevron_down()
         }
     };
-    let has_edge_line = matches!(action, AgreementScrollAction::Top | AgreementScrollAction::Bottom);
+    let has_edge_line = matches!(
+        action,
+        AgreementScrollAction::Top | AgreementScrollAction::Bottom
+    );
     let edge_line_before = action == AgreementScrollAction::Top;
 
     div()

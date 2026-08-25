@@ -1867,7 +1867,7 @@ fn render_curseforge_results_list(
         .saturating_add(CURSEFORGE_RESULT_LOGO_RENDER_BUDGET)
         .clamp(4, this.cached_page_card_props.len().max(4));
     this.result_logo_cache.update(cx, |cache, cx| {
-        cache.set_config(
+        cache.update_limits(
             BoundedImageCacheConfig {
                 max_items: logo_cache_items,
                 max_bytes: logo_cache_items.saturating_mul(results::RESULT_LOGO_BYTES_PER_ITEM),

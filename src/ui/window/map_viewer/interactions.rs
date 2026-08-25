@@ -4317,7 +4317,7 @@ fn render_image_from_rgba_pixels(
     height: u32,
     pixels: Vec<u8>,
 ) -> Option<Arc<RenderImage>> {
-    RenderImage::from_raw_pixels(width, height, RenderImagePixelFormat::Rgba8, pixels)
+    RenderImage::from_raw_pixels(width, height, ImagePixelFormat::Rgba8, pixels)
         .ok()
         .map(Arc::new)
 }

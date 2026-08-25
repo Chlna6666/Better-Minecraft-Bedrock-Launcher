@@ -190,7 +190,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     configure_platform_app_identity();
     let io_handle = crate::tasks::runtime::io_handle().map_err(anyhow::Error::msg)?;
 
-    let app = Application::new_with_renderer_options(gpui::RendererOptions {
+    let app = Application::with_renderer_options(gpui::RendererOptions {
         backend: bootstrap.renderer_backend,
         adapter_name: bootstrap.gpu_adapter_name.clone(),
         power_preference: gpu_power_preference_for_adapter(bootstrap.gpu_adapter_name.as_deref()),
@@ -200,26 +200,28 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         animated: gpui::AnimatedImageConfig {
             play: true,
             max_gpu_frame_slots: 3,
-            max_fps: 60.0,
+            max_fps: 90.0,
             inactive_max_fps: 1.0,
-            decode_ahead_frames: 4,
+            prefetch_frames: 4,
+            prefetch_byte_limit: 16 * 1024 * 1024,
             max_resident_frames: 16,
             max_resident_bytes: 4 * 1024 * 1024,
             ..gpui::AnimatedImageConfig::default()
         },
-        max_decoded_bytes: image_pipeline_decoded_budget_bytes(),
+        max_resident_image_bytes: image_pipeline_decoded_budget_bytes(),
         max_compressed_bytes: 32 * 1024 * 1024,
+        animation_prefetch_byte_limit: 48 * 1024 * 1024,
         bitmap_pool_bytes: 32 * 1024 * 1024,
         bitmap_pool_max_buffer_bytes: 8 * 1024 * 1024,
         max_atlas_bytes: 128 * 1024 * 1024,
         max_atlas_textures: 24,
-        decode_policy: gpui::ImageDecodePolicy::Visible,
+        bounds_policy: gpui::ImageBoundsPolicy::Visible,
         trim_memory_on_hidden: true,
-        slow_decode_threshold: Duration::from_millis(16),
+        slow_image_threshold: Duration::from_millis(16),
         slow_upload_bytes: 8 * 1024 * 1024,
         slow_upload_threshold: Duration::from_millis(4),
     })
-    .with_default_font_or_platform_default(application_default_font(&bootstrap))
+    .with_platform_default_font(application_default_font(&bootstrap))
     .with_assets(crate::assets::asset_source::AppAssets);
     app.run(move |cx| {
         gpui_tokio::init_from_handle(cx, io_handle);

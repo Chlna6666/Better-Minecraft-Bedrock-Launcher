@@ -158,7 +158,11 @@ pub fn grant_all_application_packages_access(path: &Path) -> Result<()> {
             path.display(),
             output.status,
             stderr,
-            if !stderr.is_empty() && !stdout.is_empty() { " | " } else { "" },
+            if !stderr.is_empty() && !stdout.is_empty() {
+                " | "
+            } else {
+                ""
+            },
             stdout
         ));
     }
@@ -166,15 +170,12 @@ pub fn grant_all_application_packages_access(path: &Path) -> Result<()> {
     Ok(())
 }
 
-unsafe fn configure_remote_console(
-    process: HANDLE,
-    pid: u32,
-    log: &dyn Fn(&str),
-) -> Result<()> {
+unsafe fn configure_remote_console(process: HANDLE, pid: u32, log: &dyn Fn(&str)) -> Result<()> {
     let kernel = unsafe { GetModuleHandleW(windows::core::w!("kernel32.dll")) }
         .map_err(|error| classify_windows_error("GetModuleHandleW(kernel32)", pid, error))?;
 
-    if let Some(free_console) = unsafe { GetProcAddress(kernel, PCSTR(b"FreeConsole\0".as_ptr())) } {
+    if let Some(free_console) = unsafe { GetProcAddress(kernel, PCSTR(b"FreeConsole\0".as_ptr())) }
+    {
         match unsafe {
             CreateRemoteThread(
                 process,
@@ -199,7 +200,9 @@ unsafe fn configure_remote_console(
         }
     }
 
-    if let Some(alloc_console) = unsafe { GetProcAddress(kernel, PCSTR(b"AllocConsole\0".as_ptr())) } {
+    if let Some(alloc_console) =
+        unsafe { GetProcAddress(kernel, PCSTR(b"AllocConsole\0".as_ptr())) }
+    {
         match unsafe {
             CreateRemoteThread(
                 process,

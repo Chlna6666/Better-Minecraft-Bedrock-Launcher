@@ -51,17 +51,18 @@ pub fn render_onboarding_tour(
         .into_any_element();
 
     if let Some(pulse) = render_anchor_pulse(state, &colors) {
-        root = div().absolute().inset_0().child(root).child(pulse).into_any_element();
+        root = div()
+            .absolute()
+            .inset_0()
+            .child(root)
+            .child(pulse)
+            .into_any_element();
     }
 
     root
 }
 
-fn render_welcome(
-    state: &OnboardingTourState,
-    window: &mut Window,
-    cx: &App,
-) -> AnyElement {
+fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) -> AnyElement {
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
@@ -190,10 +191,7 @@ fn render_welcome(
         .absolute()
         .inset_0()
         .occlude()
-        .bg(Hsla {
-            a: 0.13,
-            ..black()
-        })
+        .bg(Hsla { a: 0.13, ..black() })
         .flex()
         .items_center()
         .justify_center()
@@ -289,7 +287,11 @@ fn render_welcome_header(state: &OnboardingTourState, colors: &ThemeColors) -> D
                 .text_size(px(10.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.accent)
-                .child(format!("{} / {}", state.scene.index(), OnboardingScene::COUNT)),
+                .child(format!(
+                    "{} / {}",
+                    state.scene.index(),
+                    OnboardingScene::COUNT
+                )),
         )
 }
 

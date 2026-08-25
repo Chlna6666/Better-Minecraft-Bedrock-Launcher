@@ -43,17 +43,17 @@ fn system_registration_for_family(
 ) -> Option<SystemUwpRegistration> {
     let manager = PackageManager::new().ok()?;
     let packages = manager
-        .FindPackagesByUserSecurityIdPackageFamilyName(
-            &HSTRING::new(),
-            &HSTRING::from(family_name),
-        )
+        .FindPackagesByUserSecurityIdPackageFamilyName(&HSTRING::new(), &HSTRING::from(family_name))
         .ok()?;
 
     for package in packages {
         let Ok(id) = package.Id() else {
             continue;
         };
-        if id.ResourceId().is_ok_and(|resource_id| !resource_id.is_empty()) {
+        if id
+            .ResourceId()
+            .is_ok_and(|resource_id| !resource_id.is_empty())
+        {
             continue;
         }
         if package.IsDevelopmentMode().unwrap_or(false) {

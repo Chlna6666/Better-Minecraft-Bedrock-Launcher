@@ -102,10 +102,7 @@ fn decoded_rgba_tile_wraps_without_channel_swap() {
 
     assert_eq!(estimated_bytes, pixels.len());
     assert_eq!(image.as_bytes(0).expect("resident image bytes"), pixels);
-    assert_eq!(
-        image.pixel_format(0),
-        Some(gpui::RenderImagePixelFormat::Rgba8)
-    );
+    assert_eq!(image.pixel_format(0), Some(gpui::ImagePixelFormat::Rgba8));
 }
 
 #[::core::prelude::v1::test]
@@ -151,7 +148,7 @@ fn empty_viewport_composite_frame_is_transparent_rgba() {
     assert_eq!(frame.source_viewport, viewport);
     assert_eq!(
         frame.image.pixel_format(0),
-        Some(gpui::RenderImagePixelFormat::Rgba8)
+        Some(gpui::ImagePixelFormat::Rgba8)
     );
     assert!(
         frame

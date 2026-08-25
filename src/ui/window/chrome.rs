@@ -1,1 +1,1 @@
-pub use gpui::TitlebarGestureState;
+pub use gpui::TitlebarGesture;

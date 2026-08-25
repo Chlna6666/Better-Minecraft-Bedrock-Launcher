@@ -892,7 +892,7 @@ fn render_node(
                         .size_full()
                         .rounded(radius)
                         .object_fit(object_fit)
-                        .decode_to_bounds()
+                        .render_to_bounds()
                         .with_loading({
                             let loading_label = loading_label.clone();
                             let colors = colors;

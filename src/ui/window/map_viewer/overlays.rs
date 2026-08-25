@@ -23,7 +23,7 @@ impl MapViewerWindowView {
                     match RenderImage::from_raw_pixels(
                         width,
                         height,
-                        RenderImagePixelFormat::Rgba8,
+                        ImagePixelFormat::Rgba8,
                         pixels,
                     ) {
                         Ok(image) => {

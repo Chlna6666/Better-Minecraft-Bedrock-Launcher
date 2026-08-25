@@ -447,7 +447,7 @@ pub(super) fn empty_viewport_composite_frame(
     let image = RenderImage::from_raw_pixels(
         image_width,
         image_height,
-        RenderImagePixelFormat::Rgba8,
+        ImagePixelFormat::Rgba8,
         vec![0; byte_len],
     )
     .map_err(|error| format!("视口合成空图创建失败: {error}"))?;
@@ -766,13 +766,9 @@ impl ViewportTileCompositor {
         }
         let pixels = std::mem::take(&mut self.pixels);
         let estimated_bytes = pixels.len();
-        let image = RenderImage::from_raw_pixels(
-            self.width,
-            self.height,
-            RenderImagePixelFormat::Rgba8,
-            pixels,
-        )
-        .map_err(|error| format!("视口合成图创建失败: {error}"))?;
+        let image =
+            RenderImage::from_raw_pixels(self.width, self.height, ImagePixelFormat::Rgba8, pixels)
+                .map_err(|error| format!("视口合成图创建失败: {error}"))?;
         Ok(Some(ViewportCompositeFrame {
             image: Arc::new(image),
             source_viewport: self.viewport,

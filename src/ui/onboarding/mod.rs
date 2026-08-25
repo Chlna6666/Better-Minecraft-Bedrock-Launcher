@@ -9,9 +9,9 @@ pub mod uwp_safety;
 
 use gpui::{App, AppContext as _, BorrowAppContext as _, SharedString};
 
-use state::{OnboardingScene, OnboardingTourState};
 #[cfg(target_os = "linux")]
 use state::{OnboardingPlatformSummary, OnboardingSummaryItem};
+use state::{OnboardingScene, OnboardingTourState};
 
 pub use presentation::render_onboarding_tour;
 
@@ -21,8 +21,7 @@ pub fn reopen(cx: &mut App) {
 }
 
 pub fn advance(cx: &mut App) {
-    let next = cx
-        .read_global(|state: &OnboardingTourState, _cx| state.scene.next());
+    let next = cx.read_global(|state: &OnboardingTourState, _cx| state.scene.next());
     cx.update_global(|state: &mut OnboardingTourState, _cx| state.set_scene(next));
     apply_scene_route(next, cx);
     #[cfg(target_os = "linux")]
@@ -32,8 +31,7 @@ pub fn advance(cx: &mut App) {
 }
 
 pub fn back(cx: &mut App) {
-    let previous = cx
-        .read_global(|state: &OnboardingTourState, _cx| state.scene.previous());
+    let previous = cx.read_global(|state: &OnboardingTourState, _cx| state.scene.previous());
     cx.update_global(|state: &mut OnboardingTourState, _cx| {
         state.set_scene(previous);
     });
@@ -179,14 +177,17 @@ fn prepare_download(tab: crate::ui::views::download::state::DownloadTab, cx: &mu
             match tab {
                 crate::ui::views::download::state::DownloadTab::Game => {
                     state.page_index = 0;
-                    state.game_rows_scroll
+                    state
+                        .game_rows_scroll
                         .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
                 }
                 crate::ui::views::download::state::DownloadTab::ResourcePack => {
                     state.curseforge_page_index = 0;
-                    state.curseforge_results_scroll
+                    state
+                        .curseforge_results_scroll
                         .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
-                    state.curseforge_sidebar_scroll
+                    state
+                        .curseforge_sidebar_scroll
                         .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
                 }
                 crate::ui::views::download::state::DownloadTab::Mod => {
@@ -202,9 +203,8 @@ fn prepare_download(tab: crate::ui::views::download::state::DownloadTab, cx: &mu
 
 #[cfg(target_os = "linux")]
 fn start_platform_scan(cx: &mut App) {
-    let request_id = cx.update_global(|state: &mut OnboardingTourState, _cx| {
-        state.begin_platform_scan()
-    });
+    let request_id =
+        cx.update_global(|state: &mut OnboardingTourState, _cx| state.begin_platform_scan());
 
     cx.spawn(async move |cx| {
         let result = crate::tasks::runtime::run_io_blocking(build_platform_summary).await;
@@ -230,7 +230,12 @@ fn build_platform_summary() -> OnboardingPlatformSummary {
     let check = crate::core::linux_runtime::check_linux_runtime();
     let versions = crate::utils::file_ops::bmcbl_subdir("versions");
     let local_versions = std::fs::read_dir(versions)
-        .map(|entries| entries.flatten().filter(|entry| entry.path().is_dir()).count())
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .count()
+        })
         .unwrap_or(0);
     let runner = check.runner.as_ref().map_or_else(
         || "未检测到可用 Proton/UMU runner".to_string(),

@@ -17,8 +17,8 @@ pub(super) fn render_image_from_decoded_tile_parts(
         .and_then(|pixels| pixels.checked_mul(4))
         .unwrap_or(pixel_len);
     let image_pixel_format = match pixel_format {
-        TilePixelFormat::Rgba8 => gpui::RenderImagePixelFormat::Rgba8,
-        TilePixelFormat::Bgra8 => gpui::RenderImagePixelFormat::Bgra8,
+        TilePixelFormat::Rgba8 => gpui::ImagePixelFormat::Rgba8,
+        TilePixelFormat::Bgra8 => gpui::ImagePixelFormat::Bgra8,
     };
     let image = RenderImage::from_raw_pixel_bytes(width, height, image_pixel_format, pixels)
         .map_err(|error| format!("瓦片图像尺寸无效: {width}x{height}: {error}"))?;

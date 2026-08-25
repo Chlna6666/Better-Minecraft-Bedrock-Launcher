@@ -121,9 +121,9 @@ pub fn export_user_data_backup(
         for entry in WalkDir::new(&source) {
             let entry = entry.map_err(|error| format!("遍历 UWP 数据失败: {error}"))?;
             let path = entry.path();
-            let relative = path.strip_prefix(&source).map_err(|error| {
-                format!("生成备份相对路径失败 {}: {error}", path.display())
-            })?;
+            let relative = path
+                .strip_prefix(&source)
+                .map_err(|error| format!("生成备份相对路径失败 {}: {error}", path.display()))?;
             if relative.as_os_str().is_empty() {
                 continue;
             }

@@ -232,7 +232,7 @@ fn preview_pixels_from_chunk_columns(columns: &[Option<ImportPreviewColumn>]) ->
 }
 
 fn render_image_from_preview_pixels(pixels: Vec<u8>) -> Result<Arc<RenderImage>, String> {
-    RenderImage::from_raw_pixels(16, 16, RenderImagePixelFormat::Rgba8, pixels)
+    RenderImage::from_raw_pixels(16, 16, ImagePixelFormat::Rgba8, pixels)
         .map(Arc::new)
         .map_err(|error| format!("导入预览图片无效：{error}"))
 }

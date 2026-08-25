@@ -65,18 +65,18 @@ pub(super) fn network_background_cache_key(url: &str) -> String {
 #[derive(Clone)]
 pub(super) enum BackgroundSource {
     None,
-    FetchedImage(Arc<Image>),
+    FetchedImage(Arc<ClipboardImage>),
     Embedded(SharedString),
     LocalPath(PathBuf),
     NetworkUrl(SharedString),
 }
 
-pub(super) fn background_resource(source: &BackgroundSource) -> Option<Resource> {
+pub(super) fn background_resource(source: &BackgroundSource) -> Option<AssetLocation> {
     match source {
         BackgroundSource::None => None,
-        BackgroundSource::Embedded(path) => Some(Resource::Embedded(path.clone())),
-        BackgroundSource::LocalPath(path) => Some(Resource::Path(path.clone().into())),
-        BackgroundSource::NetworkUrl(url) => Some(Resource::Uri(url.clone().into())),
+        BackgroundSource::Embedded(path) => Some(AssetLocation::Embedded(path.clone())),
+        BackgroundSource::LocalPath(path) => Some(AssetLocation::Path(path.clone().into())),
+        BackgroundSource::NetworkUrl(url) => Some(AssetLocation::Uri(url.clone().into())),
         BackgroundSource::FetchedImage(_) => None,
     }
 }

@@ -10,8 +10,7 @@ use windows::core::HSTRING;
 const RELEASE_FAMILY: &str = "Microsoft.MinecraftUWP_8wekyb3d8bbwe";
 const PREVIEW_FAMILY: &str = "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe";
 const EDUCATION_FAMILY: &str = "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe";
-const EDUCATION_PREVIEW_FAMILY: &str =
-    "Microsoft.MinecraftEducationEditionBeta_8wekyb3d8bbwe";
+const EDUCATION_PREVIEW_FAMILY: &str = "Microsoft.MinecraftEducationEditionBeta_8wekyb3d8bbwe";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MinecraftDataSummary {
@@ -84,7 +83,10 @@ fn read_registration(family_name: &str) -> RegistrationSummary {
     // 的版本或安装路径误当成 Minecraft 主包。
     for package in packages {
         let Ok(id) = package.Id() else { continue };
-        if id.ResourceId().is_ok_and(|resource_id| !resource_id.is_empty()) {
+        if id
+            .ResourceId()
+            .is_ok_and(|resource_id| !resource_id.is_empty())
+        {
             continue;
         }
 
@@ -262,9 +264,8 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(u64, u64), String> {
             if metadata.is_dir() {
                 stack.push((src, dst));
             } else if metadata.is_file() {
-                let copied = fs::copy(&src, &dst).map_err(|e| {
-                    format!("复制失败 {} -> {}: {e}", src.display(), dst.display())
-                })?;
+                let copied = fs::copy(&src, &dst)
+                    .map_err(|e| format!("复制失败 {} -> {}: {e}", src.display(), dst.display()))?;
                 files = files.saturating_add(1);
                 bytes = bytes.saturating_add(copied);
             }
@@ -300,8 +301,7 @@ pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<
     ));
     let partial = root.with_extension("partial");
     if partial.exists() {
-        fs::remove_dir_all(&partial)
-            .map_err(|e| format!("清理旧迁移临时目录失败: {e}"))?;
+        fs::remove_dir_all(&partial).map_err(|e| format!("清理旧迁移临时目录失败: {e}"))?;
     }
 
     let backup_local_state = partial.join("LocalState");
@@ -319,12 +319,7 @@ pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<
     if copied != source_after || backup_after != source_after {
         return Err(format!(
             "UWP 数据备份校验失败：源 {} 个文件/{} 字节，复制统计 {} 个文件/{} 字节，备份复核 {} 个文件/{} 字节；已阻止卸载原版 Minecraft",
-            source_after.0,
-            source_after.1,
-            copied.0,
-            copied.1,
-            backup_after.0,
-            backup_after.1
+            source_after.0, source_after.1, copied.0, copied.1, backup_after.0, backup_after.1
         ));
     }
 
@@ -382,9 +377,7 @@ fn read_pending_root_for_family(family_name: &str) -> Result<Option<(PathBuf, Pa
 ///
 /// 恢复动作必须与刚注册的 Minecraft Identity 匹配。不同包家族使用独立 pending 标记，
 /// Release/Preview 可各自保留待恢复迁移；同时拒绝覆盖已经出现新文件的目标 com.mojang。
-pub fn restore_pending_backup_for_identity(
-    identity_name: &str,
-) -> Result<Option<PathBuf>, String> {
+pub fn restore_pending_backup_for_identity(identity_name: &str) -> Result<Option<PathBuf>, String> {
     let Some(expected_family) = package_family_for_identity(identity_name) else {
         return Ok(None);
     };
@@ -417,10 +410,7 @@ pub fn restore_pending_backup_for_identity(
     let Some(target_local_state) = local_state_for_family(&manifest.family_name) else {
         return Err("无法定位新注册 UWP 的 LocalState".to_string());
     };
-    let source = manifest
-        .backup_local_state
-        .join("games")
-        .join("com.mojang");
+    let source = manifest.backup_local_state.join("games").join("com.mojang");
     let source_stats = walk_stats(&source);
     if source_stats != (manifest.file_count, manifest.total_size) {
         return Err(format!(
@@ -448,12 +438,7 @@ pub fn restore_pending_backup_for_identity(
     if restored != expected || target_after != expected {
         return Err(format!(
             "UWP 数据恢复校验失败：期望 {} 个文件/{} 字节，复制统计 {} 个文件/{} 字节，目标复核 {} 个文件/{} 字节",
-            expected.0,
-            expected.1,
-            restored.0,
-            restored.1,
-            target_after.0,
-            target_after.1
+            expected.0, expected.1, restored.0, restored.1, target_after.0, target_after.1
         ));
     }
 

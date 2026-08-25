@@ -28,9 +28,11 @@ impl RootView {
             #[cfg(target_os = "windows")]
             {
                 cx.default_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
-                subscriptions.push(cx.observe_global::<
-                    crate::ui::onboarding::uwp_safety::UwpSafetyGuideState,
-                >(|_this, cx| cx.notify()));
+                subscriptions.push(
+                    cx.observe_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>(
+                        |_this, cx| cx.notify(),
+                    ),
+                );
                 subscriptions.push(cx.observe_global::<
                     crate::ui::views::download::state::DownloadPageState,
                 >(|_this, cx| {
@@ -78,29 +80,31 @@ impl RootView {
                     );
                 }
 
-                subscriptions.push(cx.observe_global::<
-                    crate::ui::state::linux_runtime::LinuxRuntimeState,
-                >(|_this, cx| {
-                    let tour_visible = cx
-                        .global::<crate::ui::onboarding::state::OnboardingTourState>()
-                        .visible;
-                    let should_dismiss = tour_visible && {
-                        let runtime =
-                            cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
-                        runtime.visible
+                subscriptions.push(
+                    cx.observe_global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(
+                        |_this, cx| {
+                            let tour_visible = cx
+                                .global::<crate::ui::onboarding::state::OnboardingTourState>()
+                                .visible;
+                            let should_dismiss = tour_visible && {
+                                let runtime = cx
+                                    .global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
+                                runtime.visible
                             && runtime.status
                                 != crate::ui::state::linux_runtime::LinuxRuntimeStatus::Installing
-                    };
-                    if should_dismiss {
-                        cx.update_global(
+                            };
+                            if should_dismiss {
+                                cx.update_global(
                             |runtime: &mut crate::ui::state::linux_runtime::LinuxRuntimeState,
                              _cx| {
                                 runtime.dismiss();
                             },
                         );
-                    }
-                    cx.notify();
-                }));
+                            }
+                            cx.notify();
+                        },
+                    ),
+                );
             }
 
             subscriptions
@@ -122,7 +126,9 @@ impl Render for RootView {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             let current_window_id = window.window_handle().window_id().as_u64();
-            let main_window_id = cx.global::<crate::ui::window::debug::DebugState>().main_window_id;
+            let main_window_id = cx
+                .global::<crate::ui::window::debug::DebugState>()
+                .main_window_id;
             let agreement_visible = cx
                 .global::<crate::ui::state::agreement::AgreementState>()
                 .is_visible();
@@ -168,13 +174,10 @@ impl Render for RootView {
                     .global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>()
                     .visible
             {
-                let guide =
-                    cx.global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
-                root = root.child(
-                    crate::ui::onboarding::uwp_safety::render_uwp_safety_guide(
-                        guide, window, cx,
-                    ),
-                );
+                let guide = cx.global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
+                root = root.child(crate::ui::onboarding::uwp_safety::render_uwp_safety_guide(
+                    guide, window, cx,
+                ));
             }
         }
 

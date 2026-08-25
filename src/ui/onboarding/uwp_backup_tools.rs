@@ -171,7 +171,8 @@ fn start_export(window: &mut Window, cx: &mut App) {
         return;
     }
 
-    let Some(destination) = crate::utils::file_picker::pick_directory_path_for_window(window) else {
+    let Some(destination) = crate::utils::file_picker::pick_directory_path_for_window(window)
+    else {
         return;
     };
     let destination = PathBuf::from(destination);
@@ -189,7 +190,10 @@ fn start_export(window: &mut Window, cx: &mut App) {
             cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
                 state.exporting = false;
                 state.export_status = Some(SharedString::from(match result {
-                    Ok(Ok(ManualUwpBackupResult { archive_path, summary })) => format!(
+                    Ok(Ok(ManualUwpBackupResult {
+                        archive_path,
+                        summary,
+                    })) => format!(
                         "备份完成：{} · {} 个文件 · {}",
                         archive_path.display(),
                         summary.file_count,
@@ -229,7 +233,9 @@ fn open_migration_backups(cx: &mut App) {
         .and_then(|_| open_directory(&path));
     cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
         state.export_status = Some(SharedString::from(
-            result.err().unwrap_or_else(|| format!("已打开：{}", path.display())),
+            result
+                .err()
+                .unwrap_or_else(|| format!("已打开：{}", path.display())),
         ));
     });
 }
@@ -256,7 +262,11 @@ fn action_button(
         .gap(px(6.0))
         .text_size(px(11.0))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(if enabled { colors.text_primary } else { colors.text_muted })
+        .text_color(if enabled {
+            colors.text_primary
+        } else {
+            colors.text_muted
+        })
         .child(svg().path(icon).size(px(14.0)).text_color(colors.accent))
         .child(label);
     if enabled {
@@ -288,12 +298,11 @@ fn compact_action_button(
         .flex()
         .items_center()
         .justify_center()
-        .child(
-            svg()
-                .path(icon)
-                .size(px(15.0))
-                .text_color(if enabled { colors.accent } else { colors.text_muted }),
-        );
+        .child(svg().path(icon).size(px(15.0)).text_color(if enabled {
+            colors.accent
+        } else {
+            colors.text_muted
+        }));
     if enabled {
         button
             .cursor_pointer()
@@ -384,8 +393,14 @@ pub fn render_uwp_backup_tools(
             .px(px(7.0))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .border_1()
-            .border_color(Hsla { a: 0.32, ..colors.border })
-            .bg(Hsla { a: 0.985, ..colors.bg })
+            .border_color(Hsla {
+                a: 0.32,
+                ..colors.border
+            })
+            .bg(Hsla {
+                a: 0.985,
+                ..colors.bg
+            })
             .shadow(vec![BoxShadow {
                 color: Hsla { a: 0.16, ..black() },
                 blur_radius: px(20.0),
@@ -438,7 +453,11 @@ pub fn render_uwp_backup_tools(
         .gap(px(6.0))
         .child(action_button(
             "uwp-manual-backup-export",
-            if state.exporting { "正在导出" } else { "导出备份" },
+            if state.exporting {
+                "正在导出"
+            } else {
+                "导出备份"
+            },
             lucide_icons::icon_download(),
             colors,
             can_export,
@@ -470,8 +489,14 @@ pub fn render_uwp_backup_tools(
         .overflow_y_scrollbar()
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
-        .border_color(Hsla { a: 0.32, ..colors.border })
-        .bg(Hsla { a: 0.985, ..colors.bg })
+        .border_color(Hsla {
+            a: 0.32,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.985,
+            ..colors.bg
+        })
         .shadow(vec![BoxShadow {
             color: Hsla { a: 0.14, ..black() },
             blur_radius: px(20.0),
@@ -492,7 +517,10 @@ pub fn render_uwp_backup_tools(
                     div()
                         .size(px(30.0))
                         .rounded(px(crate::ui::theme::tokens::radius::SM))
-                        .bg(Hsla { a: 0.12, ..colors.accent })
+                        .bg(Hsla {
+                            a: 0.12,
+                            ..colors.accent
+                        })
                         .flex()
                         .items_center()
                         .justify_center()
@@ -531,7 +559,10 @@ pub fn render_uwp_backup_tools(
                 .px(px(10.0))
                 .py(px(9.0))
                 .rounded(px(crate::ui::theme::tokens::radius::SM))
-                .bg(Hsla { a: 0.07, ..colors.accent })
+                .bg(Hsla {
+                    a: 0.07,
+                    ..colors.accent
+                })
                 .text_size(px(10.0))
                 .line_height(px(15.0))
                 .whitespace_normal()
