@@ -1,0 +1,52 @@
+name: Apply stair neighbor inference
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - scripts/apply_stair_neighbor_inference.py
+      - .github/workflows/apply-stair-neighbor-inference.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-stair-neighbor-inference
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply patch
+        run: python3 scripts/apply_stair_neighbor_inference.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Test block model crate
+        run: cargo test -p bedrock-block-model
+      - name: Check BMCBL library
+        run: cargo check --lib
+      - name: Commit verified changes
+        shell: bash
+        run: |
+          rm -f scripts/apply_stair_neighbor_inference.py
+          rm -f .github/workflows/apply-stair-neighbor-inference.yml
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(方块模型): 修复楼梯邻接形状与单面模型"
+          git push origin HEAD:master
