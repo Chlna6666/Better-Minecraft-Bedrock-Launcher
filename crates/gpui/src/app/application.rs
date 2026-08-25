@@ -213,6 +213,11 @@ impl Application {
         Ok(())
     }
 
+    /// Sets the application-wide default font family without registering font data.
+    pub fn try_with_default_font_family(self, family: impl Into<SharedString>) -> Result<Self> {
+        self.try_with_default_font(DefaultFontConfig::system_family(family))
+    }
+
     /// Sets the application-wide image pipeline behavior.
     ///
     /// Active image memory is lifecycle-managed by GPUI rather than rejected by fixed byte
