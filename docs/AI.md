@@ -13,6 +13,12 @@ separate from BMCBL product behavior.
 - Keep UI components small, composable, and testable.
 - Ship a Windows-tested desktop executable with embedded assets.
 
+Framework module and public API names must follow
+Project-wide Rust naming and refactoring rules are defined in
+[`RUST_NAMING_CONVENTIONS.md`](RUST_NAMING_CONVENTIONS.md). GPUI-specific examples
+are defined in [`GPUI_NAMING_CONVENTIONS.md`](GPUI_NAMING_CONVENTIONS.md). The ordered cleanup
+inventory is tracked in [`GPUI_NAMING_AUDIT.md`](GPUI_NAMING_AUDIT.md).
+
 ### Primary Docs
 
 - `docs/BMCBL_PROJECT_STRUCTURE.md`: current workspace and module structure.

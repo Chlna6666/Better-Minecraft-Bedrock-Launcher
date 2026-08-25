@@ -106,8 +106,8 @@ flowchart TD
     "paint" --> "Scene + FrameRenderPlan"
     "Scene + FrameRenderPlan" --> "platform_window.draw"
     "platform_window.draw" --> "NovaRenderer::draw"
-    "NovaRenderer::draw" --> "NovaFrameUpload::encode"
-    "NovaFrameUpload::encode" --> "GPU buffers and atlas upload"
+    "NovaRenderer::draw" --> "FrameUpload::encode"
+    "FrameUpload::encode" --> "GPU buffers and atlas upload"
     "GPU buffers and atlas upload" --> "GPU render steps"
     "GPU render steps" --> "swapchain present"
     "swapchain present" --> "Window::complete_frame"
@@ -328,14 +328,14 @@ Major modules:
 
 | Path | Responsibility |
 | --- | --- |
-| `nova_renderer.rs` | Renderer state, draw entry point, retained resources, memory trim, and backend-independent orchestration. |
-| `nova_renderer/init.rs` | Device, surface, swapchain, resource, and pipeline initialization. |
-| `nova_renderer/draw_steps.rs` | Conversion from frame upload data to render step descriptors. |
-| `nova_renderer/present.rs` | Buffer upload, atlas upload, offscreen passes, direct swapchain rendering, and submission. |
-| `nova_renderer/submission.rs` | GPU submission and pending submission handling. |
-| `nova_renderer/surface_lifecycle.rs` | Resize and surface lifecycle behavior. |
-| `nova_renderer/custom_mesh_pipeline.rs` | Custom 3D mesh pipeline management. |
-| `nova_renderer/mesh_cache.rs` | Retained custom mesh buffer cache. |
+| `renderer.rs` | Renderer state, draw entry point, retained resources, memory trim, and backend-independent orchestration. |
+| `renderer/init.rs` | Device, surface, swapchain, resource, and pipeline initialization. |
+| `renderer/draw_steps.rs` | Conversion from frame upload data to render step descriptors. |
+| `renderer/present.rs` | Buffer upload, atlas upload, offscreen passes, direct swapchain rendering, and submission. |
+| `renderer/submission.rs` | GPU submission and pending submission handling. |
+| `renderer/surface_lifecycle.rs` | Resize and surface lifecycle behavior. |
+| `renderer/custom_mesh_pipeline.rs` | Custom 3D mesh pipeline management. |
+| `renderer/mesh_cache.rs` | Retained custom mesh buffer cache. |
 | `frame_upload` | CPU packing of scene primitives into GPU upload buffers. |
 | `resources` | Buffer, texture, depth, shader, pipeline, and resource set creation. |
 | `shader.rs`, `shaders/*.wgsl` | Shader module loading and WGSL shader sources. |
@@ -350,7 +350,7 @@ Major modules:
 1. Observe the render plan for metrics.
 2. Resolve full redraw or partial surface plan.
 3. Determine backdrop blur quality.
-4. Encode the GPUI scene into `NovaFrameUpload`.
+4. Encode the GPUI scene into `FrameUpload`.
 5. Ensure backdrop blur targets if needed.
 6. Ensure custom 3D mesh pipelines for the current backend.
 7. Call `draw_present(upload, render_plan)`.
@@ -372,7 +372,7 @@ Major modules:
 
 ## Frame Upload Buckets
 
-`NovaFrameUpload::encode` groups scene data into upload buckets:
+`FrameUpload::encode` groups scene data into upload buckets:
 
 - globals;
 - text raster parameters;
@@ -412,13 +412,15 @@ render pass. DX12 uses `Present1` dirty rectangles for DirectComposition
 device advertises it. Unsupported swapchains keep the same direct-render path
 and perform a regular full present.
 
-Backdrop blur remains a source, downsample, blur, upsample, and composite render
-pipeline. Those render-target passes are distinct from texture upload copies.
-GPUI conservatively expands source damage across the complete multi-level
-Dual-Kawase sampling footprint before passing the region to native presentation.
-Nova retains the filtered blur pyramid across frames. A titlebar or list animation
-painted above the first blur primitive reuses that pyramid; source scene changes,
-blur parameter or quality changes, atlas pixel uploads, resize, alpha-mode changes,
+Backdrop blur remains a source, horizontal filter, vertical filter, and composite
+render pipeline. Those render-target passes are distinct from texture upload copies.
+Nova uses a two-pass separable Gaussian filter; the CPU precomputes the weights and
+axis-specific offsets once per active configuration in the retained frame upload.
+GPUI conservatively expands source damage across the complete sampling footprint
+before passing the region to native presentation. Nova retains filtered blur targets
+across frames. A titlebar or list animation painted above the first blur primitive
+reuses those targets; source scene changes, blur parameter or quality changes, atlas
+pixel uploads, resize, alpha-mode changes,
 and target recreation invalidate it. This preserves the same blur shader and
 quality while avoiding repeated source/downsample/upsample passes for unrelated
 foreground animation.
@@ -508,8 +510,8 @@ Implementation entry points:
 - `crates/gpui/src/window/paint.rs`
 - `crates/gpui/src/scene.rs`
 - `crates/gpui/src/platform/nova.rs`
-- `crates/gpui/src/platform/nova/nova_renderer.rs`
-- `crates/gpui/src/platform/nova/nova_renderer/present.rs`
+- `crates/gpui/src/platform/nova/renderer.rs`
+- `crates/gpui/src/platform/nova/renderer/present.rs`
 - `crates/gpui/src/platform/nova/frame_upload`
 
 ## Review Checklist

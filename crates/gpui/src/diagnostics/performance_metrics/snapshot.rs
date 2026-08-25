@@ -1,561 +1,460 @@
 use crate::RendererBackend;
-use std::sync::atomic::Ordering;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use super::state::shared_metrics;
-use super::{AllocatorBucketMetricsSnapshot, PerformanceMetricsSnapshot, WindowMetricsSnapshot};
+/// Per-process GPUI rendering and resource metrics.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PerformanceMetricsSnapshot {
+    /// Preferred renderer backend after builder/environment resolution.
+    pub renderer_backend: RendererBackend,
+    /// Number of images currently retained by GPUI image caches that report metrics.
+    pub image_cache_items: usize,
+    /// Estimated decoded image bytes retained by those caches.
+    pub image_cache_bytes: usize,
+    /// Number of GPUI atlas textures known to platform renderers that report metrics.
+    pub atlas_textures: usize,
+    /// Last reported platform draw time, when a backend reports it.
+    pub last_draw_time: Option<Duration>,
+    /// Exponentially-smoothed rate of platform presents reported by active renderers.
+    pub present_fps: f32,
+    /// Bytes uploaded into platform atlases during the latest reported frame.
+    pub atlas_upload_bytes: usize,
+    /// Number of atlas tiles uploaded during the latest reported frame.
+    pub atlas_upload_tiles: usize,
+    /// Number of prepared draw items in the latest renderer submission.
+    pub prepared_command_count: usize,
+    /// Active GPU surface format name.
+    pub gpu_surface_format: String,
+    /// Active GPU surface alpha mode.
+    pub gpu_surface_alpha_mode: String,
+    /// Active GPU surface present mode.
+    pub gpu_surface_present_mode: String,
+    /// Bytes uploaded during the latest renderer submission.
+    pub upload_bytes: usize,
+    /// Scene primitives encoded by the latest Nova renderer submission.
+    pub encoded_scene_primitives: usize,
+    /// Prepared scene batches encoded by the latest Nova renderer submission.
+    pub encoded_scene_batches: usize,
+    /// Bytes uploaded for quad instances by the latest Nova renderer submission.
+    pub quad_upload_bytes: usize,
+    /// Bytes uploaded for shadow instances by the latest Nova renderer submission.
+    pub shadow_upload_bytes: usize,
+    /// Bytes uploaded for path geometry and sprites by the latest Nova submission.
+    pub path_upload_bytes: usize,
+    /// Bytes uploaded for monochrome sprites by the latest Nova renderer submission.
+    pub mono_sprite_upload_bytes: usize,
+    /// Bytes uploaded for polychrome sprites by the latest Nova renderer submission.
+    pub poly_sprite_upload_bytes: usize,
+    /// Bytes uploaded for underline instances by the latest Nova renderer submission.
+    pub underline_upload_bytes: usize,
+    /// Bytes uploaded for backdrop blur descriptors by the latest Nova submission.
+    pub backdrop_blur_upload_bytes: usize,
+    /// Bytes uploaded for animation bindings and values by the latest Nova submission.
+    pub animation_upload_bytes: usize,
+    /// Bytes uploaded for custom mesh parameters by the latest Nova submission.
+    pub custom_mesh_parameter_upload_bytes: usize,
+    /// Number of mask passes submitted by the latest reported frame.
+    pub mask_pass_count: usize,
+    /// Number of main 2D passes submitted by the latest reported frame.
+    pub main_pass_count: usize,
+    /// Number of composite passes submitted by the latest reported frame.
+    pub composite_pass_count: usize,
+    /// Number of GPU surface reconfigure attempts performed by the latest active renderer.
+    pub gpu_surface_reconfigure_count: usize,
+    /// Number of GPU surface acquire/present errors observed by the latest active renderer.
+    pub gpu_surface_error_count: usize,
+    /// Number of presents that sampled the retained full-window target since process start.
+    pub retained_present_count: usize,
+    /// Number of frames presented directly to the swapchain since process start.
+    pub direct_present_count: usize,
+    /// Number of frames that submitted backdrop blur work since process start.
+    pub backdrop_blur_frame_count: usize,
+    /// Full-window pixels sampled by the latest retained present copy.
+    pub retained_copy_pixels: usize,
+    /// Estimated bytes read and written by the latest retained present copy.
+    pub retained_copy_estimated_bytes: usize,
+    /// Full drawable pixels captured by the latest backdrop blur source pass.
+    pub backdrop_blur_source_pixels: usize,
+    /// Aggregate pixels across active backdrop blur target levels in the latest frame.
+    pub backdrop_blur_target_pixels: usize,
+    /// Pixels in each active backdrop blur target level in the latest frame.
+    pub backdrop_blur_level_pixels: [usize; 6],
+    /// Backdrop blur primitives encoded by the latest renderer submission.
+    pub backdrop_blur_primitives: usize,
+    /// Time spent waiting for a GPU submission during the latest blocking wait.
+    pub gpu_submission_wait_time: Option<Duration>,
+    /// Number of blocking waits for GPU submissions since process start.
+    pub gpu_submission_wait_count: usize,
+    /// Aggregate time spent waiting for GPU submissions since process start.
+    pub gpu_submission_wait_total_time: Option<Duration>,
+    /// Longest GPU submission wait observed since process start.
+    pub gpu_submission_wait_max_time: Option<Duration>,
+    /// Number of GPU submission waits that exceeded the frame-time threshold.
+    pub gpu_submission_slow_wait_count: usize,
+    /// Time spent queueing platform atlas upload commands during the latest reported frame.
+    pub atlas_upload_time: Option<Duration>,
+    /// Compressed bytes in the most recently decoded image.
+    pub last_image_decode_compressed_bytes: usize,
+    /// Decoded BGRA bytes in the most recently decoded image.
+    pub last_image_decode_decoded_bytes: usize,
+    /// Frame count in the most recently decoded image.
+    pub last_image_decode_frames: usize,
+    /// Decode time for the most recently decoded image.
+    pub last_image_decode_time: Option<Duration>,
+    /// Number of completed image decodes recorded by GPUI and app decode helpers.
+    pub image_decode_count: usize,
+    /// Total compressed bytes processed by recorded image decodes.
+    pub image_decode_compressed_bytes: usize,
+    /// Total decoded BGRA bytes produced by recorded image decodes.
+    pub image_decode_decoded_bytes: usize,
+    /// Total decoded image frames produced by recorded image decodes.
+    pub image_decode_frames: usize,
+    /// Total time spent in recorded image decodes.
+    pub image_decode_total_time: Option<Duration>,
+    /// Maximum single recorded image decode time.
+    pub image_decode_max_time: Option<Duration>,
+    /// Number of recorded image decodes that exceeded the supplied slow threshold.
+    pub image_decode_slow_count: usize,
+    /// Decoded bytes currently retained by size-aware image assets.
+    pub image_asset_retained_decoded_bytes: usize,
+    /// Number of currently retained size-aware image asset variants.
+    pub image_asset_retained_count: usize,
+    /// Largest decoded image currently retained by size-aware image assets.
+    pub image_asset_largest_retained_decoded_bytes: usize,
+    /// Number of entries retained by GPUI image asset caches that are visible globally.
+    pub gpui_image_asset_cache_entries: usize,
+    /// Compressed bytes retained by GPUI image assets.
+    pub gpui_image_asset_retained_compressed_bytes: usize,
+    /// Decoded bytes retained by GPUI image assets and bounded image caches.
+    pub gpui_image_asset_total_retained_decoded_bytes: usize,
+    /// Estimated decoded bytes retained by render images in GPUI caches.
+    pub gpui_render_image_cpu_bytes: usize,
+    /// Estimated GPU texture bytes retained for render images.
+    pub gpui_render_image_gpu_texture_bytes: usize,
+    /// Number of entries retained by framework icon caches.
+    pub gpui_icon_cache_entries: usize,
+    /// Estimated decoded bytes retained by framework icon caches.
+    pub gpui_icon_cache_decoded_bytes: usize,
+    /// Estimated bytes retained by monochrome atlas textures.
+    pub gpui_atlas_monochrome_bytes: usize,
+    /// Estimated bytes retained by color atlas textures.
+    pub gpui_atlas_polychrome_bytes: usize,
+    /// Number of live atlas keys known to renderer metrics.
+    pub gpui_atlas_live_keys: usize,
+    /// Estimated unused bytes inside retained atlas textures.
+    pub gpui_atlas_unused_bytes: usize,
+    /// Estimated bytes retained by window surface and retained-frame resources.
+    pub gpui_gpu_surface_texture_bytes: usize,
+    /// Aggregate GPUI-owned retained bytes visible to diagnostics.
+    pub gpui_gpu_estimated_total_retained_bytes: usize,
+    /// Recent size-aware image decode records.
+    pub recent_image_decodes: Vec<ImageDecodeRecord>,
+    /// Total foreground time spent building the first frame.
+    pub first_frame_build_time: Option<Duration>,
+    /// Time spent in root layout for the first frame.
+    pub first_frame_layout_time: Option<Duration>,
+    /// Time spent in prepaint for the first frame.
+    pub first_frame_prepaint_time: Option<Duration>,
+    /// Time spent in paint for the first frame.
+    pub first_frame_paint_time: Option<Duration>,
+    /// Time spent finishing scene batches for the first frame.
+    pub first_frame_scene_finish_time: Option<Duration>,
+    /// Time spent in the backend draw call for the first frame.
+    pub first_frame_backend_draw_time: Option<Duration>,
+    /// Total foreground time spent building the latest profiled frame.
+    pub frame_build_time: Option<Duration>,
+    /// Time spent in root and overlay layout for the latest profiled frame.
+    pub frame_layout_time: Option<Duration>,
+    /// Time spent in prepaint for the latest profiled frame.
+    pub frame_prepaint_time: Option<Duration>,
+    /// Time spent in paint for the latest profiled frame.
+    pub frame_paint_time: Option<Duration>,
+    /// Time spent finishing scene batches for the latest profiled frame.
+    pub frame_scene_finish_time: Option<Duration>,
+    /// Time spent in the backend draw call for the latest profiled frame.
+    pub frame_backend_draw_time: Option<Duration>,
+    /// Number of layout nodes requested in the latest profiled frame.
+    pub layout_nodes: usize,
+    /// Number of element nodes requested during layout in the latest profiled frame.
+    pub element_count: usize,
+    /// Number of measured layout nodes requested in the latest profiled frame.
+    pub measured_layout_nodes: usize,
+    /// Number of layout roots computed in the latest profiled frame.
+    pub layout_roots: usize,
+    /// Number of layout bounds cache hits in the latest profiled frame.
+    pub layout_bounds_cache_hits: usize,
+    /// Number of layout bounds cache misses in the latest profiled frame.
+    pub layout_bounds_cache_misses: usize,
+    /// Number of scene primitives emitted in the latest profiled frame.
+    pub scene_primitives: usize,
+    /// Number of prepared scene batches in the latest profiled frame.
+    pub scene_batches: usize,
+    /// Number of retained scene segments produced by scene finish.
+    pub scene_segments: usize,
+    /// Number of paint operations replayed from a prior frame.
+    pub scene_replayed_primitives: usize,
+    /// Number of retained segments rebuilt for dirty fibers in the latest profiled frame.
+    pub scene_segment_rebuild_count: usize,
+    /// Number of retained segments reused by clean fibers in the latest profiled frame.
+    pub scene_segment_reuse_count: usize,
+    /// Number of dirty transforms written in the latest profiled frame.
+    pub dirty_transform_count: usize,
+    /// Number of clean platform frame requests skipped by retained rendering.
+    pub retained_frame_skips: usize,
+    /// Number of pointer-move frames skipped before dispatch because hover state did not change.
+    pub skipped_pointer_frame_count: usize,
+    /// Dirty rectangles submitted by the latest frame render plan.
+    pub dirty_rect_count: usize,
+    /// Dirty rectangle area submitted by the latest frame render plan.
+    pub dirty_rect_area: usize,
+    /// Number of GPU partial redraw submissions since process start.
+    pub partial_redraw_count: usize,
+    /// Number of frames that fell back to full redraw since process start.
+    pub full_redraw_fallback_count: usize,
+    /// Estimated bytes retained by GPU window-sized targets and scratch resources.
+    pub gpu_retained_bytes: usize,
+    /// Estimated bytes retained by atlas textures.
+    pub atlas_retained_bytes: usize,
+    /// Whether a retained frame target currently exists.
+    pub has_retained_frame_target: bool,
+    /// Whether path intermediate textures currently exist.
+    pub has_path_textures: bool,
+    /// Whether backdrop source textures currently exist.
+    pub has_backdrop_texture: bool,
+    /// Whether depth textures currently exist.
+    pub has_depth_texture: bool,
+    /// Number of retained backdrop blur target groups.
+    pub backdrop_blur_target_groups: usize,
+    /// Number of retained GPU mesh buffers.
+    pub gpu_mesh_buffers: usize,
+    /// The resolved GPU adapter name reported by the active renderer.
+    pub gpu_adapter_name: String,
+    /// The resolved GPU adapter type reported by the active renderer.
+    pub gpu_adapter_type: String,
+    /// Number of redundant refresh requests coalesced before the next frame.
+    pub coalesced_refresh_count: usize,
+    /// Number of duplicate all-window refresh effects coalesced in an app update cycle.
+    pub coalesced_refresh_effect_count: usize,
+    /// Number of inactive frame callbacks that skipped presenting a retained scene.
+    pub inactive_present_skip_count: usize,
+    /// Number of retained layout cache hits in the latest profiled frame.
+    pub layout_cache_hits: usize,
+    /// Number of retained layout cache misses in the latest profiled frame.
+    pub layout_cache_misses: usize,
+    /// Number of retained layout roots directly reused in the latest profiled frame.
+    pub layout_cache_reused_roots: usize,
+    /// Number of layout roots whose retained traversal avoided rebuilding child roots.
+    pub layout_cache_saved_roots: usize,
+    /// Number of same-frame text layout cache hits in the latest profiled frame.
+    pub text_layout_hits: usize,
+    /// Number of previous-frame text layouts reused in the latest profiled frame.
+    pub text_layout_reuses: usize,
+    /// Number of text layout misses in the latest profiled frame.
+    pub text_layout_misses: usize,
+    /// Number of style refinement applications performed since process start.
+    pub style_refine_count: usize,
+    /// Number of Style/LayoutStyle to Taffy style conversions performed since process start.
+    pub layout_conversion_count: usize,
+    /// Number of times the GPUI arena had to allocate a new chunk.
+    pub arena_chunk_expansion_count: usize,
+    /// Number of image cache entries evicted or explicitly dropped.
+    pub image_cache_evictions: usize,
+    /// Number of render images dropped from window atlases.
+    pub image_drop_count: usize,
+    /// Number of atlas keys removed from platform atlases.
+    pub atlas_remove_count: usize,
+    /// Bytes uploaded through explicit POD/bytemuck upload paths during the latest submission.
+    pub pod_upload_bytes: usize,
+    /// Number of platform scheduler wakeups since process start.
+    pub scheduler_wakeups: usize,
+    /// Time spent with the on-demand platform scheduler asleep since process start.
+    pub idle_sleep_time: Option<Duration>,
+    /// Number of frame requests that reached window scheduling since process start.
+    pub frame_request_count: usize,
+    /// Number of frame decisions that drew a scene since process start.
+    pub draw_count: usize,
+    /// Number of frame decisions that presented an already prepared scene since process start.
+    pub present_count: usize,
+    /// Number of frame decisions skipped because no work was needed since process start.
+    pub skip_count: usize,
+    /// Number of gpu bind groups created during the latest renderer submission.
+    pub bind_group_creations: usize,
+    /// Number of gpu bind group cache hits during the latest renderer submission.
+    pub bind_group_cache_hits: usize,
+    /// Number of gpu bind group cache misses during the latest renderer submission.
+    pub bind_group_cache_misses: usize,
+    /// Current uniform upload arena capacity in bytes.
+    pub upload_arena_uniform_capacity: usize,
+    /// Current storage upload arena capacity in bytes.
+    pub upload_arena_storage_capacity: usize,
+    /// Uniform upload arena bytes consumed by the latest renderer submission.
+    pub upload_arena_uniform_used: usize,
+    /// Storage upload arena bytes consumed by the latest renderer submission.
+    pub upload_arena_storage_used: usize,
+    /// Number of high-level GPU resource cache hits during the latest renderer submission.
+    pub gpu_cache_hits: usize,
+    /// Number of high-level GPU resource cache misses during the latest renderer submission.
+    pub gpu_cache_misses: usize,
+    /// Aggregate retained scene-side capacity after the latest profiled frame.
+    pub scene_retained_capacity: usize,
+    /// Aggregate retained frame-side capacity after the latest profiled frame.
+    pub frame_retained_capacity: usize,
+    /// Total bytes currently allocated through the backend allocator.
+    pub allocator_allocated_bytes: usize,
+    /// Total bytes currently reserved by allocator blocks.
+    pub allocator_reserved_bytes: usize,
+    /// Number of allocator memory blocks currently reserved.
+    pub allocator_block_count: usize,
+    /// Number of live allocator-tracked allocations.
+    pub allocator_allocation_count: usize,
+    /// Detailed bytes reserved and allocated for GPU-only allocator heaps.
+    pub allocator_gpu_only: AllocatorBucketMetricsSnapshot,
+    /// Detailed bytes reserved and allocated for CPU-to-GPU allocator heaps.
+    pub allocator_cpu_to_gpu: AllocatorBucketMetricsSnapshot,
+    /// Detailed bytes reserved and allocated for GPU-to-CPU allocator heaps.
+    pub allocator_gpu_to_cpu: AllocatorBucketMetricsSnapshot,
+    /// HAL-reported bytes attributed to buffers.
+    pub hal_buffer_memory_bytes: usize,
+    /// HAL-reported bytes attributed to textures.
+    pub hal_texture_memory_bytes: usize,
+    /// HAL-reported bytes attributed to acceleration structures.
+    pub hal_acceleration_structure_memory_bytes: usize,
+    /// HAL-reported number of memory allocations.
+    pub hal_memory_allocation_count: usize,
+    /// Live bytes currently retained by flushed gpu-core staging buffers.
+    pub core_staging_buffer_live_bytes: usize,
+    /// Peak live bytes retained by flushed gpu-core staging buffers.
+    pub core_staging_buffer_peak_live_bytes: usize,
+    /// Cumulative bytes created through gpu-core staging buffers.
+    pub core_staging_buffer_created_bytes: usize,
+    /// Bytes currently pending in gpu-core `PendingWrites` staging resources.
+    pub core_staging_buffer_pending_bytes: usize,
+    /// Peak pending bytes observed in gpu-core `PendingWrites`.
+    pub core_staging_buffer_peak_pending_bytes: usize,
+    /// Current live flushed staging buffer count.
+    pub core_staging_buffer_live_count: usize,
+    /// Peak live flushed staging buffer count.
+    pub core_staging_buffer_peak_live_count: usize,
+    /// Current pending staging buffer count.
+    pub core_staging_buffer_pending_count: usize,
+    /// Peak pending staging buffer count.
+    pub core_staging_buffer_peak_pending_count: usize,
+    /// Window-scoped metrics captured by the latest updates.
+    pub window_metrics: Vec<WindowMetricsSnapshot>,
+}
 
-/// Returns a point-in-time snapshot of GPUI performance metrics.
-pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
-    let renderer_backend = shared_metrics()
-        .renderer_backend
-        .lock()
-        .map_or(RendererBackend::Auto, |backend| *backend);
-    let gpu_adapter_name = shared_metrics()
-        .gpu_adapter_name
-        .lock()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let gpu_adapter_type = shared_metrics()
-        .gpu_adapter_type
-        .lock()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let (image_cache_items, image_cache_bytes) = shared_metrics()
-        .image_caches
-        .lock()
-        .map(|image_caches| {
-            image_caches.values().copied().fold(
-                (0usize, 0usize),
-                |(total_items, total_bytes), (items, bytes)| {
-                    (
-                        total_items.saturating_add(items),
-                        total_bytes.saturating_add(bytes),
-                    )
-                },
-            )
-        })
-        .unwrap_or_default();
-    let last_draw_micros = shared_metrics().last_draw_micros.load(Ordering::Relaxed);
-    let gpu_submission_wait_micros = shared_metrics()
-        .gpu_submission_wait_micros
-        .load(Ordering::Relaxed);
-    let gpu_submission_wait_total_micros = shared_metrics()
-        .gpu_submission_wait_total_micros
-        .load(Ordering::Relaxed);
-    let gpu_submission_wait_max_micros = shared_metrics()
-        .gpu_submission_wait_max_micros
-        .load(Ordering::Relaxed);
-    let atlas_upload_micros = shared_metrics().atlas_upload_micros.load(Ordering::Relaxed);
-    let image_decode_micros = shared_metrics().image_decode_micros.load(Ordering::Relaxed);
-    let image_decode_total_micros = shared_metrics()
-        .image_decode_total_micros
-        .load(Ordering::Relaxed);
-    let image_decode_max_micros = shared_metrics()
-        .image_decode_max_micros
-        .load(Ordering::Relaxed);
-    let (
-        image_asset_retained_decoded_bytes,
-        image_asset_retained_count,
-        image_asset_largest_retained_decoded_bytes,
-    ) = shared_metrics()
-        .image_asset_retained
-        .lock()
-        .map(|retained| {
-            retained.values().fold(
-                (0usize, 0usize, 0usize),
-                |(total, count, largest), record| {
-                    (
-                        total.saturating_add(record.retained_decoded_bytes),
-                        count.saturating_add(1),
-                        largest.max(record.retained_decoded_bytes),
-                    )
-                },
-            )
-        })
-        .unwrap_or_default();
-    let recent_image_decodes = shared_metrics()
-        .recent_image_decodes
-        .lock()
-        .map(|records| records.iter().cloned().collect())
-        .unwrap_or_default();
-    let first_frame_build_micros = shared_metrics()
-        .first_frame_build_micros
-        .load(Ordering::Relaxed);
-    let first_frame_layout_micros = shared_metrics()
-        .first_frame_layout_micros
-        .load(Ordering::Relaxed);
-    let first_frame_prepaint_micros = shared_metrics()
-        .first_frame_prepaint_micros
-        .load(Ordering::Relaxed);
-    let first_frame_paint_micros = shared_metrics()
-        .first_frame_paint_micros
-        .load(Ordering::Relaxed);
-    let first_frame_scene_finish_micros = shared_metrics()
-        .first_frame_scene_finish_micros
-        .load(Ordering::Relaxed);
-    let first_frame_backend_draw_micros = shared_metrics()
-        .first_frame_backend_draw_micros
-        .load(Ordering::Relaxed);
-    let frame_build_micros = shared_metrics().frame_build_micros.load(Ordering::Relaxed);
-    let frame_layout_micros = shared_metrics().frame_layout_micros.load(Ordering::Relaxed);
-    let frame_prepaint_micros = shared_metrics()
-        .frame_prepaint_micros
-        .load(Ordering::Relaxed);
-    let frame_paint_micros = shared_metrics().frame_paint_micros.load(Ordering::Relaxed);
-    let frame_scene_finish_micros = shared_metrics()
-        .frame_scene_finish_micros
-        .load(Ordering::Relaxed);
-    let frame_backend_draw_micros = shared_metrics()
-        .frame_backend_draw_micros
-        .load(Ordering::Relaxed);
-    let idle_sleep_micros = shared_metrics().idle_sleep_micros.load(Ordering::Relaxed);
-    let gpu_surface_format = shared_metrics()
-        .gpu_surface_format
-        .lock()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let gpu_surface_alpha_mode = shared_metrics()
-        .gpu_surface_alpha_mode
-        .lock()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let gpu_surface_present_mode = shared_metrics()
-        .gpu_surface_present_mode
-        .lock()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let window_metrics = shared_metrics()
-        .window_metrics
-        .lock()
-        .map(|window_metrics| {
-            window_metrics
-                .iter()
-                .map(|(&window_id, metrics)| WindowMetricsSnapshot {
-                    window_id,
-                    request_redraw_count: metrics.request_redraw_count as usize,
-                    draw_count: metrics.draw_count as usize,
-                    present_count: metrics.present_count as usize,
-                    skip_count: metrics.skip_count as usize,
-                    skipped_frame_count: metrics.skipped_frame_count as usize,
-                    gpu_surface_reconfigure_count: metrics.gpu_surface_reconfigure_count as usize,
-                    gpu_surface_error_count: metrics.gpu_surface_error_count as usize,
-                    layout_recompute_count: metrics.layout_recompute_count as usize,
-                    upload_bytes: metrics.upload_bytes as usize,
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+/// Diagnostics for one size-aware image decode.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageDecodeRecord {
+    /// Stable source label used for diagnostics.
+    pub source: String,
+    /// Original source width, when available.
+    pub original_width: u32,
+    /// Original source height, when available.
+    pub original_height: u32,
+    /// Requested decode width in device pixels.
+    pub target_width: u32,
+    /// Requested decode height in device pixels.
+    pub target_height: u32,
+    /// Retained decoded bytes produced by the decode.
+    pub retained_decoded_bytes: usize,
+    /// Decode implementation used for this record.
+    pub decode_mode: String,
+}
 
-    PerformanceMetricsSnapshot {
-        renderer_backend,
-        image_cache_items,
-        image_cache_bytes,
-        atlas_textures: shared_metrics().atlas_textures.load(Ordering::Relaxed) as usize,
-        last_draw_time: (last_draw_micros > 0).then(|| Duration::from_micros(last_draw_micros)),
-        present_fps: shared_metrics().present_fps_milli.load(Ordering::Relaxed) as f32 / 1000.0,
-        atlas_upload_bytes: shared_metrics().atlas_upload_bytes.load(Ordering::Relaxed) as usize,
-        atlas_upload_tiles: shared_metrics().atlas_upload_tiles.load(Ordering::Relaxed) as usize,
-        prepared_command_count: shared_metrics()
-            .prepared_command_count
-            .load(Ordering::Relaxed) as usize,
-        gpu_surface_format: gpu_surface_format,
-        gpu_surface_alpha_mode: gpu_surface_alpha_mode,
-        gpu_surface_present_mode: gpu_surface_present_mode,
-        upload_bytes: shared_metrics().upload_bytes.load(Ordering::Relaxed) as usize,
-        encoded_scene_primitives: shared_metrics()
-            .encoded_scene_primitives
-            .load(Ordering::Relaxed) as usize,
-        encoded_scene_batches: shared_metrics()
-            .encoded_scene_batches
-            .load(Ordering::Relaxed) as usize,
-        quad_upload_bytes: shared_metrics().quad_upload_bytes.load(Ordering::Relaxed) as usize,
-        shadow_upload_bytes: shared_metrics().shadow_upload_bytes.load(Ordering::Relaxed) as usize,
-        path_upload_bytes: shared_metrics().path_upload_bytes.load(Ordering::Relaxed) as usize,
-        mono_sprite_upload_bytes: shared_metrics()
-            .mono_sprite_upload_bytes
-            .load(Ordering::Relaxed) as usize,
-        poly_sprite_upload_bytes: shared_metrics()
-            .poly_sprite_upload_bytes
-            .load(Ordering::Relaxed) as usize,
-        underline_upload_bytes: shared_metrics()
-            .underline_upload_bytes
-            .load(Ordering::Relaxed) as usize,
-        backdrop_blur_upload_bytes: shared_metrics()
-            .backdrop_blur_upload_bytes
-            .load(Ordering::Relaxed) as usize,
-        animation_upload_bytes: shared_metrics()
-            .animation_upload_bytes
-            .load(Ordering::Relaxed) as usize,
-        custom_mesh_parameter_upload_bytes: shared_metrics()
-            .custom_mesh_parameter_upload_bytes
-            .load(Ordering::Relaxed) as usize,
-        mask_pass_count: shared_metrics().mask_pass_count.load(Ordering::Relaxed) as usize,
-        main_pass_count: shared_metrics().main_pass_count.load(Ordering::Relaxed) as usize,
-        composite_pass_count: shared_metrics()
-            .composite_pass_count
-            .load(Ordering::Relaxed) as usize,
-        gpu_surface_reconfigure_count: shared_metrics()
-            .gpu_surface_reconfigure_count
-            .load(Ordering::Relaxed) as usize,
-        gpu_surface_error_count: shared_metrics()
-            .gpu_surface_error_count
-            .load(Ordering::Relaxed) as usize,
-        retained_present_count: shared_metrics()
-            .retained_present_count
-            .load(Ordering::Relaxed) as usize,
-        direct_present_count: shared_metrics()
-            .direct_present_count
-            .load(Ordering::Relaxed) as usize,
-        backdrop_blur_frame_count: shared_metrics()
-            .backdrop_blur_frame_count
-            .load(Ordering::Relaxed) as usize,
-        retained_copy_pixels: shared_metrics()
-            .retained_copy_pixels
-            .load(Ordering::Relaxed) as usize,
-        retained_copy_estimated_bytes: shared_metrics()
-            .retained_copy_estimated_bytes
-            .load(Ordering::Relaxed) as usize,
-        backdrop_blur_source_pixels: shared_metrics()
-            .backdrop_blur_source_pixels
-            .load(Ordering::Relaxed) as usize,
-        backdrop_blur_target_pixels: shared_metrics()
-            .backdrop_blur_target_pixels
-            .load(Ordering::Relaxed) as usize,
-        backdrop_blur_level_pixels: std::array::from_fn(|index| {
-            shared_metrics().backdrop_blur_level_pixels[index].load(Ordering::Relaxed) as usize
-        }),
-        backdrop_blur_primitives: shared_metrics()
-            .backdrop_blur_primitives
-            .load(Ordering::Relaxed) as usize,
-        gpu_submission_wait_time: (gpu_submission_wait_micros > 0)
-            .then(|| Duration::from_micros(gpu_submission_wait_micros)),
-        gpu_submission_wait_count: shared_metrics()
-            .gpu_submission_wait_count
-            .load(Ordering::Relaxed) as usize,
-        gpu_submission_wait_total_time: (gpu_submission_wait_total_micros > 0)
-            .then(|| Duration::from_micros(gpu_submission_wait_total_micros)),
-        gpu_submission_wait_max_time: (gpu_submission_wait_max_micros > 0)
-            .then(|| Duration::from_micros(gpu_submission_wait_max_micros)),
-        gpu_submission_slow_wait_count: shared_metrics()
-            .gpu_submission_slow_wait_count
-            .load(Ordering::Relaxed) as usize,
-        atlas_upload_time: (atlas_upload_micros > 0)
-            .then(|| Duration::from_micros(atlas_upload_micros)),
-        last_image_decode_compressed_bytes: shared_metrics()
-            .image_decode_compressed_bytes
-            .load(Ordering::Relaxed) as usize,
-        last_image_decode_decoded_bytes: shared_metrics()
-            .image_decode_decoded_bytes
-            .load(Ordering::Relaxed) as usize,
-        last_image_decode_frames: shared_metrics().image_decode_frames.load(Ordering::Relaxed)
-            as usize,
-        last_image_decode_time: (image_decode_micros > 0)
-            .then(|| Duration::from_micros(image_decode_micros)),
-        image_decode_count: shared_metrics().image_decode_count.load(Ordering::Relaxed) as usize,
-        image_decode_compressed_bytes: shared_metrics()
-            .image_decode_total_compressed_bytes
-            .load(Ordering::Relaxed) as usize,
-        image_decode_decoded_bytes: shared_metrics()
-            .image_decode_total_decoded_bytes
-            .load(Ordering::Relaxed) as usize,
-        image_decode_frames: shared_metrics()
-            .image_decode_total_frames
-            .load(Ordering::Relaxed) as usize,
-        image_decode_total_time: (image_decode_total_micros > 0)
-            .then(|| Duration::from_micros(image_decode_total_micros)),
-        image_decode_max_time: (image_decode_max_micros > 0)
-            .then(|| Duration::from_micros(image_decode_max_micros)),
-        image_decode_slow_count: shared_metrics()
-            .image_decode_slow_count
-            .load(Ordering::Relaxed) as usize,
-        image_asset_retained_decoded_bytes,
-        image_asset_retained_count,
-        image_asset_largest_retained_decoded_bytes,
-        gpui_image_asset_cache_entries: image_cache_items
-            .saturating_add(image_asset_retained_count),
-        gpui_image_asset_retained_compressed_bytes: 0,
-        gpui_image_asset_total_retained_decoded_bytes: image_cache_bytes
-            .saturating_add(image_asset_retained_decoded_bytes),
-        gpui_render_image_cpu_bytes: image_cache_bytes,
-        gpui_render_image_gpu_texture_bytes: shared_metrics()
-            .atlas_retained_bytes
-            .load(Ordering::Relaxed) as usize,
-        gpui_icon_cache_entries: 0,
-        gpui_icon_cache_decoded_bytes: 0,
-        gpui_atlas_monochrome_bytes: 0,
-        gpui_atlas_polychrome_bytes: shared_metrics()
-            .atlas_retained_bytes
-            .load(Ordering::Relaxed) as usize,
-        gpui_atlas_live_keys: 0,
-        gpui_atlas_unused_bytes: 0,
-        gpui_gpu_surface_texture_bytes: shared_metrics()
-            .gpu_retained_bytes
-            .load(Ordering::Relaxed)
-            .saturating_sub(
-                shared_metrics()
-                    .atlas_retained_bytes
-                    .load(Ordering::Relaxed),
-            ) as usize,
-        gpui_gpu_estimated_total_retained_bytes: image_cache_bytes
-            .saturating_add(image_asset_retained_decoded_bytes)
-            .saturating_add(shared_metrics().gpu_retained_bytes.load(Ordering::Relaxed) as usize),
-        recent_image_decodes,
-        first_frame_build_time: (first_frame_build_micros > 0)
-            .then(|| Duration::from_micros(first_frame_build_micros)),
-        first_frame_layout_time: (first_frame_layout_micros > 0)
-            .then(|| Duration::from_micros(first_frame_layout_micros)),
-        first_frame_prepaint_time: (first_frame_prepaint_micros > 0)
-            .then(|| Duration::from_micros(first_frame_prepaint_micros)),
-        first_frame_paint_time: (first_frame_paint_micros > 0)
-            .then(|| Duration::from_micros(first_frame_paint_micros)),
-        first_frame_scene_finish_time: (first_frame_scene_finish_micros > 0)
-            .then(|| Duration::from_micros(first_frame_scene_finish_micros)),
-        first_frame_backend_draw_time: (first_frame_backend_draw_micros > 0)
-            .then(|| Duration::from_micros(first_frame_backend_draw_micros)),
-        frame_build_time: (frame_build_micros > 0)
-            .then(|| Duration::from_micros(frame_build_micros)),
-        frame_layout_time: (frame_layout_micros > 0)
-            .then(|| Duration::from_micros(frame_layout_micros)),
-        frame_prepaint_time: (frame_prepaint_micros > 0)
-            .then(|| Duration::from_micros(frame_prepaint_micros)),
-        frame_paint_time: (frame_paint_micros > 0)
-            .then(|| Duration::from_micros(frame_paint_micros)),
-        frame_scene_finish_time: (frame_scene_finish_micros > 0)
-            .then(|| Duration::from_micros(frame_scene_finish_micros)),
-        frame_backend_draw_time: (frame_backend_draw_micros > 0)
-            .then(|| Duration::from_micros(frame_backend_draw_micros)),
-        layout_nodes: shared_metrics().layout_nodes.load(Ordering::Relaxed) as usize,
-        element_count: shared_metrics().layout_nodes.load(Ordering::Relaxed) as usize,
-        measured_layout_nodes: shared_metrics()
-            .measured_layout_nodes
-            .load(Ordering::Relaxed) as usize,
-        layout_roots: shared_metrics().layout_roots.load(Ordering::Relaxed) as usize,
-        layout_bounds_cache_hits: shared_metrics()
-            .layout_bounds_cache_hits
-            .load(Ordering::Relaxed) as usize,
-        layout_bounds_cache_misses: shared_metrics()
-            .layout_bounds_cache_misses
-            .load(Ordering::Relaxed) as usize,
-        scene_primitives: shared_metrics().scene_primitives.load(Ordering::Relaxed) as usize,
-        scene_batches: shared_metrics().scene_batches.load(Ordering::Relaxed) as usize,
-        scene_segments: shared_metrics().scene_segments.load(Ordering::Relaxed) as usize,
-        scene_replayed_primitives: shared_metrics()
-            .scene_replayed_primitives
-            .load(Ordering::Relaxed) as usize,
-        scene_segment_rebuild_count: shared_metrics()
-            .scene_segment_rebuild_count
-            .load(Ordering::Relaxed) as usize,
-        scene_segment_reuse_count: shared_metrics()
-            .scene_segment_reuse_count
-            .load(Ordering::Relaxed) as usize,
-        dirty_transform_count: shared_metrics()
-            .dirty_transform_count
-            .load(Ordering::Relaxed) as usize,
-        retained_frame_skips: shared_metrics()
-            .retained_frame_skips
-            .load(Ordering::Relaxed) as usize,
-        skipped_pointer_frame_count: shared_metrics()
-            .skipped_pointer_frame_count
-            .load(Ordering::Relaxed) as usize,
-        dirty_rect_count: shared_metrics().dirty_rect_count.load(Ordering::Relaxed) as usize,
-        dirty_rect_area: shared_metrics().dirty_rect_area.load(Ordering::Relaxed) as usize,
-        partial_redraw_count: shared_metrics()
-            .partial_redraw_count
-            .load(Ordering::Relaxed) as usize,
-        full_redraw_fallback_count: shared_metrics()
-            .full_redraw_fallback_count
-            .load(Ordering::Relaxed) as usize,
-        gpu_retained_bytes: shared_metrics().gpu_retained_bytes.load(Ordering::Relaxed) as usize,
-        atlas_retained_bytes: shared_metrics()
-            .atlas_retained_bytes
-            .load(Ordering::Relaxed) as usize,
-        has_retained_frame_target: shared_metrics()
-            .has_retained_frame_target
-            .load(Ordering::Relaxed)
-            != 0,
-        has_path_textures: shared_metrics().has_path_textures.load(Ordering::Relaxed) != 0,
-        has_backdrop_texture: shared_metrics()
-            .has_backdrop_texture
-            .load(Ordering::Relaxed)
-            != 0,
-        has_depth_texture: shared_metrics().has_depth_texture.load(Ordering::Relaxed) != 0,
-        backdrop_blur_target_groups: shared_metrics()
-            .backdrop_blur_target_groups
-            .load(Ordering::Relaxed) as usize,
-        gpu_mesh_buffers: shared_metrics().gpu_mesh_buffers.load(Ordering::Relaxed) as usize,
-        gpu_adapter_name,
-        gpu_adapter_type,
-        coalesced_refresh_count: shared_metrics()
-            .coalesced_refresh_count
-            .load(Ordering::Relaxed) as usize,
-        coalesced_refresh_effect_count: shared_metrics()
-            .coalesced_refresh_effect_count
-            .load(Ordering::Relaxed) as usize,
-        inactive_present_skip_count: shared_metrics()
-            .inactive_present_skip_count
-            .load(Ordering::Relaxed) as usize,
-        layout_cache_hits: shared_metrics().layout_cache_hits.load(Ordering::Relaxed) as usize,
-        layout_cache_misses: shared_metrics().layout_cache_misses.load(Ordering::Relaxed) as usize,
-        layout_cache_reused_roots: shared_metrics()
-            .layout_cache_reused_roots
-            .load(Ordering::Relaxed) as usize,
-        layout_cache_saved_roots: shared_metrics()
-            .layout_cache_saved_roots
-            .load(Ordering::Relaxed) as usize,
-        text_layout_hits: shared_metrics().text_layout_hits.load(Ordering::Relaxed) as usize,
-        text_layout_reuses: shared_metrics().text_layout_reuses.load(Ordering::Relaxed) as usize,
-        text_layout_misses: shared_metrics().text_layout_misses.load(Ordering::Relaxed) as usize,
-        style_refine_count: shared_metrics().style_refine_count.load(Ordering::Relaxed) as usize,
-        layout_conversion_count: shared_metrics()
-            .layout_conversion_count
-            .load(Ordering::Relaxed) as usize,
-        arena_chunk_expansion_count: shared_metrics()
-            .arena_chunk_expansion_count
-            .load(Ordering::Relaxed) as usize,
-        image_cache_evictions: shared_metrics()
-            .image_cache_evictions
-            .load(Ordering::Relaxed) as usize,
-        image_drop_count: shared_metrics().image_drop_count.load(Ordering::Relaxed) as usize,
-        atlas_remove_count: shared_metrics().atlas_remove_count.load(Ordering::Relaxed) as usize,
-        pod_upload_bytes: shared_metrics().pod_upload_bytes.load(Ordering::Relaxed) as usize,
-        scheduler_wakeups: shared_metrics().scheduler_wakeups.load(Ordering::Relaxed) as usize,
-        idle_sleep_time: (idle_sleep_micros > 0).then(|| Duration::from_micros(idle_sleep_micros)),
-        frame_request_count: shared_metrics().frame_request_count.load(Ordering::Relaxed) as usize,
-        draw_count: shared_metrics().draw_count.load(Ordering::Relaxed) as usize,
-        present_count: shared_metrics().present_count.load(Ordering::Relaxed) as usize,
-        skip_count: shared_metrics().skip_count.load(Ordering::Relaxed) as usize,
-        bind_group_creations: shared_metrics()
-            .bind_group_creations
-            .load(Ordering::Relaxed) as usize,
-        bind_group_cache_hits: shared_metrics()
-            .bind_group_cache_hits
-            .load(Ordering::Relaxed) as usize,
-        bind_group_cache_misses: shared_metrics()
-            .bind_group_cache_misses
-            .load(Ordering::Relaxed) as usize,
-        upload_arena_uniform_capacity: shared_metrics()
-            .upload_arena_uniform_capacity
-            .load(Ordering::Relaxed) as usize,
-        upload_arena_storage_capacity: shared_metrics()
-            .upload_arena_storage_capacity
-            .load(Ordering::Relaxed) as usize,
-        upload_arena_uniform_used: shared_metrics()
-            .upload_arena_uniform_used
-            .load(Ordering::Relaxed) as usize,
-        upload_arena_storage_used: shared_metrics()
-            .upload_arena_storage_used
-            .load(Ordering::Relaxed) as usize,
-        gpu_cache_hits: shared_metrics().gpu_cache_hits.load(Ordering::Relaxed) as usize,
-        gpu_cache_misses: shared_metrics().gpu_cache_misses.load(Ordering::Relaxed) as usize,
-        scene_retained_capacity: shared_metrics()
-            .scene_retained_capacity
-            .load(Ordering::Relaxed) as usize,
-        frame_retained_capacity: shared_metrics()
-            .frame_retained_capacity
-            .load(Ordering::Relaxed) as usize,
-        allocator_allocated_bytes: shared_metrics()
-            .allocator_allocated_bytes
-            .load(Ordering::Relaxed) as usize,
-        allocator_reserved_bytes: shared_metrics()
-            .allocator_reserved_bytes
-            .load(Ordering::Relaxed) as usize,
-        allocator_block_count: shared_metrics()
-            .allocator_block_count
-            .load(Ordering::Relaxed) as usize,
-        allocator_allocation_count: shared_metrics()
-            .allocator_allocation_count
-            .load(Ordering::Relaxed) as usize,
-        allocator_gpu_only: AllocatorBucketMetricsSnapshot {
-            allocated_bytes: shared_metrics()
-                .allocator_gpu_only_allocated_bytes
-                .load(Ordering::Relaxed) as usize,
-            reserved_bytes: shared_metrics()
-                .allocator_gpu_only_reserved_bytes
-                .load(Ordering::Relaxed) as usize,
-            block_count: shared_metrics()
-                .allocator_gpu_only_block_count
-                .load(Ordering::Relaxed) as usize,
-            committed_allocated_bytes: shared_metrics()
-                .allocator_gpu_only_committed_allocated_bytes
-                .load(Ordering::Relaxed) as usize,
-            committed_allocation_count: shared_metrics()
-                .allocator_gpu_only_committed_allocation_count
-                .load(Ordering::Relaxed) as usize,
-        },
-        allocator_cpu_to_gpu: AllocatorBucketMetricsSnapshot {
-            allocated_bytes: shared_metrics()
-                .allocator_cpu_to_gpu_allocated_bytes
-                .load(Ordering::Relaxed) as usize,
-            reserved_bytes: shared_metrics()
-                .allocator_cpu_to_gpu_reserved_bytes
-                .load(Ordering::Relaxed) as usize,
-            block_count: shared_metrics()
-                .allocator_cpu_to_gpu_block_count
-                .load(Ordering::Relaxed) as usize,
-            committed_allocated_bytes: shared_metrics()
-                .allocator_cpu_to_gpu_committed_allocated_bytes
-                .load(Ordering::Relaxed) as usize,
-            committed_allocation_count: shared_metrics()
-                .allocator_cpu_to_gpu_committed_allocation_count
-                .load(Ordering::Relaxed) as usize,
-        },
-        allocator_gpu_to_cpu: AllocatorBucketMetricsSnapshot {
-            allocated_bytes: shared_metrics()
-                .allocator_gpu_to_cpu_allocated_bytes
-                .load(Ordering::Relaxed) as usize,
-            reserved_bytes: shared_metrics()
-                .allocator_gpu_to_cpu_reserved_bytes
-                .load(Ordering::Relaxed) as usize,
-            block_count: shared_metrics()
-                .allocator_gpu_to_cpu_block_count
-                .load(Ordering::Relaxed) as usize,
-            committed_allocated_bytes: shared_metrics()
-                .allocator_gpu_to_cpu_committed_allocated_bytes
-                .load(Ordering::Relaxed) as usize,
-            committed_allocation_count: shared_metrics()
-                .allocator_gpu_to_cpu_committed_allocation_count
-                .load(Ordering::Relaxed) as usize,
-        },
-        hal_buffer_memory_bytes: shared_metrics()
-            .hal_buffer_memory_bytes
-            .load(Ordering::Relaxed) as usize,
-        hal_texture_memory_bytes: shared_metrics()
-            .hal_texture_memory_bytes
-            .load(Ordering::Relaxed) as usize,
-        hal_acceleration_structure_memory_bytes: shared_metrics()
-            .hal_acceleration_structure_memory_bytes
-            .load(Ordering::Relaxed) as usize,
-        hal_memory_allocation_count: shared_metrics()
-            .hal_memory_allocation_count
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_live_bytes: shared_metrics()
-            .core_staging_buffer_live_bytes
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_peak_live_bytes: shared_metrics()
-            .core_staging_buffer_peak_live_bytes
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_created_bytes: shared_metrics()
-            .core_staging_buffer_created_bytes
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_pending_bytes: shared_metrics()
-            .core_staging_buffer_pending_bytes
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_peak_pending_bytes: shared_metrics()
-            .core_staging_buffer_peak_pending_bytes
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_live_count: shared_metrics()
-            .core_staging_buffer_live_count
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_peak_live_count: shared_metrics()
-            .core_staging_buffer_peak_live_count
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_pending_count: shared_metrics()
-            .core_staging_buffer_pending_count
-            .load(Ordering::Relaxed) as usize,
-        core_staging_buffer_peak_pending_count: shared_metrics()
-            .core_staging_buffer_peak_pending_count
-            .load(Ordering::Relaxed) as usize,
-        window_metrics,
-    }
+/// Per-window GPUI rendering and scheduling metrics.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowMetricsSnapshot {
+    /// Stable platform window id.
+    pub window_id: u64,
+    /// Number of frame requests queued for this window.
+    pub request_redraw_count: usize,
+    /// Number of frames that drew for this window.
+    pub draw_count: usize,
+    /// Number of frames that presented for this window.
+    pub present_count: usize,
+    /// Number of frame decisions skipped for this window.
+    pub skip_count: usize,
+    /// Number of skipped frame opportunities observed for this window.
+    pub skipped_frame_count: usize,
+    /// Number of GPU surface reconfigures for this window.
+    pub gpu_surface_reconfigure_count: usize,
+    /// Number of GPU surface acquire/present errors for this window.
+    pub gpu_surface_error_count: usize,
+    /// Number of layout recomputes for this window.
+    pub layout_recompute_count: usize,
+    /// Bytes uploaded on behalf of this window during the latest renderer submission.
+    pub upload_bytes: usize,
+}
+
+/// Per-memory-location allocator metrics for one backend bucket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllocatorBucketMetricsSnapshot {
+    /// Bytes currently allocated from this allocator bucket.
+    pub allocated_bytes: usize,
+    /// Bytes currently reserved by blocks in this allocator bucket.
+    pub reserved_bytes: usize,
+    /// Number of live blocks in this allocator bucket.
+    pub block_count: usize,
+    /// Bytes attributed to committed allocations in this allocator bucket.
+    pub committed_allocated_bytes: usize,
+    /// Number of committed allocations in this allocator bucket.
+    pub committed_allocation_count: usize,
+}
+
+/// Global wrapper for [`PerformanceMetricsSnapshot`].
+#[derive(Clone, Debug, Default)]
+pub struct PerformanceMetrics(pub PerformanceMetricsSnapshot);
+
+/// Per-frame foreground timings recorded when frame profiling is enabled.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FramePhaseMetrics {
+    /// Total foreground frame build duration.
+    pub build: Duration,
+    /// Root and overlay layout duration.
+    pub layout: Duration,
+    /// Prepaint duration.
+    pub prepaint: Duration,
+    /// Paint duration.
+    pub paint: Duration,
+    /// Scene finish duration.
+    pub scene_finish: Duration,
+}
+
+/// Per-frame layout counters recorded when frame profiling is enabled.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayoutFrameMetrics {
+    /// Number of layout nodes requested this frame.
+    pub nodes: usize,
+    /// Number of measured layout nodes requested this frame.
+    pub measured_nodes: usize,
+    /// Number of layout roots computed this frame.
+    pub roots: usize,
+    /// Number of layout bounds cache hits this frame.
+    pub bounds_cache_hits: usize,
+    /// Number of layout bounds cache misses this frame.
+    pub bounds_cache_misses: usize,
+    /// Number of retained layout roots reused this frame.
+    pub cache_reused_roots: usize,
+    /// Number of child roots saved by retained layout reuse this frame.
+    pub cache_saved_roots: usize,
+}
+
+/// Per-frame scene counters recorded when frame profiling is enabled.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SceneFrameMetrics {
+    /// Number of primitives emitted into the scene.
+    pub primitives: usize,
+    /// Number of prepared batches produced by scene finish.
+    pub batches: usize,
+    /// Number of retained scene segments produced by scene finish.
+    pub segments: usize,
+    /// Number of paint operations replayed from a prior frame.
+    pub replayed_primitives: usize,
+    /// Number of retained segments rebuilt for dirty fibers this frame.
+    pub segment_rebuild_count: usize,
+    /// Number of retained segments reused by clean fibers this frame.
+    pub segment_reuse_count: usize,
+    /// Aggregate retained scene-side capacity after finish.
+    pub retained_capacity: usize,
 }

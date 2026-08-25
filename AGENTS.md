@@ -177,12 +177,19 @@ Rayon pool 或额外全局 executor：
 alias、兼容 re-export、deprecated wrapper、隐藏转发函数或双入口。公开 re-export 只能
 保留一条权威路径，不能让旧名和新名同时可用。
 
-公开类型、函数、文件和模块名称必须表达“操作的 Minecraft 对象是什么”，不能只使用
-`Options`、`Manager`、`Service`、`Data` 等缺少对象的泛化软件命名。例如世界打开参数
-使用 `BedrockWorldOpenOptions`；玩家、区块、SubChunk、实体、Biome、世界版本等上层
-接口优先采用 Minecraft Bedrock 术语。底层存储驱动可使用其真实技术对象名称，例如
-`LevelDbOpenOptions`、WAL、manifest、table 和 batch，但不得把 Minecraft 世界语义下沉
-到 `bedrock-leveldb`。
+Rust 命名整改必须遵循 [`docs/RUST_NAMING_CONVENTIONS.md`](docs/RUST_NAMING_CONVENTIONS.md)。
+判断名称时把完整模块路径、receiver、参数类型和可见性一起考虑，优先采用 Rust 标准库、
+成熟生态和上游项目的既有术语，并选择在该边界内最短且无歧义的名称。父模块已有上下文时
+不得在叶模块重复前缀，例如使用 `app::events`、`app::windows`、`img::loader`，不扩写为
+`event_observers`、`window_registry`、`image_asset_loader`。`State`、`Context`、`Options`、
+`Config`、`Error` 等 Rust 惯用角色名在职责明确时允许使用，不能机械禁用或替换为另一种
+泛词。命名需要增加单词时，新增部分必须表达真实、稳定且无法由路径或类型推断的区别。
+
+Minecraft 领域 API 仍应表达真实 Bedrock 对象。例如世界打开参数使用
+`BedrockWorldOpenOptions`；玩家、区块、SubChunk、实体、Biome、世界版本等上层接口优先
+采用 Minecraft Bedrock 术语。底层存储驱动使用其真实技术对象名称，例如
+`LevelDbOpenOptions`、WAL、manifest、table 和 batch，不得把 Minecraft 世界语义下沉到
+`bedrock-leveldb`。
 
 API 删除、重命名或职责移动完成前，必须使用 `rg` 检查并同步更新以下位置，不能只让
 library target 通过：
