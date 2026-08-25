@@ -48,7 +48,6 @@ fn is_cross_plant_family(name: &str) -> bool {
             | "fern"
             | "firefly_bush"
             | "golden_dandelion"
-            | "grass"
             | "kelp"
             | "large_fern"
             | "lilac"
@@ -208,4 +207,16 @@ fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
         ));
     }
     shape
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_grass_id_is_not_a_cross_plant() {
+        assert_eq!(family_for("grass"), None);
+        assert_eq!(family_for("short_grass"), Some(ModelFamily::CrossPlant));
+        assert_eq!(family_for("tallgrass"), Some(ModelFamily::CrossPlant));
+    }
 }
