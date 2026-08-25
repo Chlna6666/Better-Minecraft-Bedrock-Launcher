@@ -19,4 +19,6 @@ pub use source::*;
 pub use style::*;
 
 #[cfg(test)]
+mod lifecycle_tests;
+#[cfg(test)]
 mod tests;
