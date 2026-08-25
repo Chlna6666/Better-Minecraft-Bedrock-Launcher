@@ -687,7 +687,7 @@ impl<'a> JavaPackedModel<'a> {
     }
 }
 
-impl JavaPackedElement<'_> {
+impl<'a> JavaPackedElement<'a> {
     #[must_use]
     pub fn from_block(self) -> [f32; 3] {
         self.from.map(|value| f32::from(value) / PACKED_UNIT_PER_BLOCK)
@@ -710,7 +710,7 @@ impl JavaPackedElement<'_> {
     }
 
     #[must_use]
-    pub fn faces(self) -> JavaPackedFaceIter<'_> {
+    pub fn faces(self) -> JavaPackedFaceIter<'a> {
         JavaPackedFaceIter {
             database: self.database,
             bytes: self.faces,
@@ -728,7 +728,7 @@ impl JavaPackedFace<'_> {
     }
 
     #[must_use]
-    pub const fn rotation_degrees(self) -> u16 {
+    pub fn rotation_degrees(self) -> u16 {
         u16::from(self.rotation_quarter_turns) * 90
     }
 }
