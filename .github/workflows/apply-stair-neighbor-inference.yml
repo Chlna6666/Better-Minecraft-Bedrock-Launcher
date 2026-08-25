@@ -34,9 +34,7 @@ jobs:
         run: |
           python3 scripts/apply_stair_neighbor_inference.py
           python3 scripts/fix_stair_modern_precedence.py
-          if [ -f scripts/fix_stair_preview_compile.py ]; then
-            python3 scripts/fix_stair_preview_compile.py
-          fi
+          python3 scripts/fix_stair_preview_compile.py
       - name: Format
         run: cargo fmt --all
       - name: Test block model crate
@@ -60,7 +58,10 @@ jobs:
           rm -f scripts/apply_stair_neighbor_inference.py
           rm -f scripts/fix_stair_modern_precedence.py
           rm -f scripts/fix_stair_preview_compile.py
+          rm -f scripts/apply_model_plane_sidedness.py
           rm -f .github/workflows/apply-stair-neighbor-inference.yml
+          rm -f .github/workflows/apply-model-plane-sidedness.yml
+          rm -f .github/workflows/diagnose-stair-preview.yml
           git add -A
           if git diff --cached --quiet; then
             echo "No changes to commit"
