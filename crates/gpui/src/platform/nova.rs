@@ -38,6 +38,7 @@ mod targets;
 mod upload_metrics;
 mod upload_packing;
 
+use crate::ImageId;
 use atlas::*;
 use atlas_resources::*;
 use backend::*;
