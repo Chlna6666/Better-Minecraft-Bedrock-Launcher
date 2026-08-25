@@ -227,6 +227,7 @@ impl Element for Img {
         window.with_optional_element_state(global_id, |state, window| {
             let mut state = state.map(|state| {
                 state.unwrap_or(ImageElementState {
+                    current_image: None,
                     current_frame: None,
                     next_frame_at: None,
                     started_loading: None,
@@ -466,6 +467,7 @@ impl Element for Img {
                                 global_id,
                                 |state: Option<ImageElementState>, window| {
                                     let mut state = state.unwrap_or(ImageElementState {
+                                        current_image: None,
                                         current_frame: layout_state.frame.clone(),
                                         next_frame_at: None,
                                         started_loading: None,
