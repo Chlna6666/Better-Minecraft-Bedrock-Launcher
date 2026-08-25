@@ -197,7 +197,12 @@ impl App {
         sized_image_owner_state(self).retain(asset_id);
     }
 
-    pub(crate) fn release_sized_image_element_request(&mut self, request: &ImageRenderRequest) {
+    pub(crate) fn release_sized_image_element_request(
+        &mut self,
+        request: &ImageRenderRequest,
+        fallback_image: Option<Arc<RenderImage>>,
+        current_window: Option<&mut Window>,
+    ) {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
         let became_unowned = {
             let state = sized_image_owner_state(self);
@@ -207,15 +212,16 @@ impl App {
             return;
         }
 
-        let task = self
+        let cached_image = self
             .loading_assets
             .remove(&asset_id)
             .and_then(|task| task.downcast::<SizedImageTask>().ok())
-            .map(|task| *task);
-        if let Some(task) = task
-            && let Some(Ok(image)) = task.clone().now_or_never()
-        {
-            self.drop_image(image, None);
+            .map(|task| *task)
+            .and_then(|task| task.now_or_never())
+            .and_then(Result::ok);
+
+        if let Some(image) = fallback_image.or(cached_image) {
+            self.drop_image(image, current_window);
         }
         drop_image_asset_retained(asset_id.1);
     }
