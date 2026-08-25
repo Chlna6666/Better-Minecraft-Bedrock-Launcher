@@ -25,14 +25,8 @@ pub struct AnimatedImageConfig {
     pub inactive_max_fps: f32,
     /// Number of frames queued ahead of playback.
     pub prefetch_frames: usize,
-    /// Internal byte sentinel retained while the streaming implementation transitions to
-    /// frame-count-only scheduling. This is intentionally not part of the public API.
-    pub(crate) prefetch_byte_limit: usize,
-    /// Maximum frames retained fully resident for small images.
+    /// Maximum frames retained fully resident before switching to streaming decode.
     pub max_resident_frames: usize,
-    /// Internal byte sentinel retained while resident-frame selection transitions to
-    /// frame-count-only policy. This is intentionally not part of the public API.
-    pub(crate) max_resident_bytes: usize,
 }
 
 impl Default for AnimatedImageConfig {
@@ -43,9 +37,7 @@ impl Default for AnimatedImageConfig {
             max_fps: DEFAULT_ANIMATED_IMAGE_MAX_FPS,
             inactive_max_fps: DEFAULT_INACTIVE_ANIMATED_IMAGE_MAX_FPS,
             prefetch_frames: 12,
-            prefetch_byte_limit: usize::MAX,
             max_resident_frames: 512,
-            max_resident_bytes: usize::MAX,
         }
     }
 }
@@ -68,9 +60,7 @@ impl AnimatedImageConfig {
                 DEFAULT_INACTIVE_ANIMATED_IMAGE_MAX_FPS,
             ),
             prefetch_frames: self.prefetch_frames.clamp(2, 64),
-            prefetch_byte_limit: usize::MAX,
             max_resident_frames: self.max_resident_frames.max(1),
-            max_resident_bytes: usize::MAX,
         }
     }
 
@@ -212,19 +202,14 @@ pub(crate) struct AnimatedImageFrames {
 pub(super) fn initial_frames(
     source: &EncodedImage,
     max_resident_frames: usize,
-    max_resident_bytes: usize,
 ) -> Result<AnimatedImageFrames> {
     match source.format {
         ImageFormat::Gif => {
             let decoder = GifDecoder::new(Cursor::new(source.bytes.as_ref()))?;
-            resident_frames(
-                decoder.into_frames(),
-                max_resident_frames,
-                max_resident_bytes,
-            )
+            resident_frames(decoder.into_frames(), max_resident_frames)
         }
-        ImageFormat::Png => png_initial_frames(source, max_resident_frames, max_resident_bytes),
-        ImageFormat::WebP => webp_initial_frames(source, max_resident_frames, max_resident_bytes),
+        ImageFormat::Png => png_initial_frames(source, max_resident_frames),
+        ImageFormat::WebP => webp_initial_frames(source, max_resident_frames),
         ImageFormat::Jpeg => Ok(from_single_frame(jpeg::frame(source.bytes.as_ref())?)),
         ImageFormat::Bmp => Ok(from_single_frame(bmp::frame(source.bytes.as_ref())?)),
         format => anyhow::bail!("unsupported GPUI image asset format: {format:?}"),
@@ -234,15 +219,10 @@ pub(super) fn initial_frames(
 fn png_initial_frames(
     source: &EncodedImage,
     max_resident_frames: usize,
-    max_resident_bytes: usize,
 ) -> Result<AnimatedImageFrames> {
     let decoder = PngDecoder::new(Cursor::new(source.bytes.as_ref()))?;
     if decoder.is_apng()? {
-        let decoded = resident_frames(
-            decoder.apng()?.into_frames(),
-            max_resident_frames,
-            max_resident_bytes,
-        )?;
+        let decoded = resident_frames(decoder.apng()?.into_frames(), max_resident_frames)?;
         if decoded.first_frame.byte_len() > 0 {
             return Ok(decoded);
         }
@@ -254,16 +234,11 @@ fn png_initial_frames(
 fn webp_initial_frames(
     source: &EncodedImage,
     max_resident_frames: usize,
-    max_resident_bytes: usize,
 ) -> Result<AnimatedImageFrames> {
     let mut decoder = WebPDecoder::new(Cursor::new(source.bytes.as_ref()))?;
     if decoder.has_animation() {
         let _ = decoder.set_background_color(Rgba([0, 0, 0, 0]));
-        return resident_frames(
-            decoder.into_frames(),
-            max_resident_frames,
-            max_resident_bytes,
-        );
+        return resident_frames(decoder.into_frames(), max_resident_frames);
     }
 
     Ok(from_single_frame(webp::frame(source.bytes.as_ref())?))
@@ -280,37 +255,23 @@ fn from_single_frame(first_frame: AnimatedFrame) -> AnimatedImageFrames {
 fn resident_frames(
     frames: image::Frames<'_>,
     max_resident_frames: usize,
-    max_resident_bytes: usize,
 ) -> Result<AnimatedImageFrames> {
     let mut frames = frames.enumerate();
     let Some((_, first_frame)) = frames.next() else {
         return Err(anyhow::anyhow!("animated image did not contain any frames"));
     };
     let first_frame = AnimatedFrame::from_rgba_frame(0, first_frame?);
-    let mut resident_byte_len = first_frame.byte_len();
     let mut remaining_frames = SmallVec::<[AnimatedFrame; 8]>::new();
 
     for (sequence, frame) in frames {
-        if remaining_frames.len() + 1 >= max_resident_frames
-            || resident_byte_len >= max_resident_bytes
-        {
+        if remaining_frames.len() + 1 >= max_resident_frames {
             return Ok(AnimatedImageFrames {
                 first_frame,
                 remaining_frames,
                 is_complete: false,
             });
         }
-
-        let frame = AnimatedFrame::from_rgba_frame(sequence, frame?);
-        resident_byte_len = resident_byte_len.saturating_add(frame.byte_len());
-        if resident_byte_len > max_resident_bytes {
-            return Ok(AnimatedImageFrames {
-                first_frame,
-                remaining_frames,
-                is_complete: false,
-            });
-        }
-        remaining_frames.push(frame);
+        remaining_frames.push(AnimatedFrame::from_rgba_frame(sequence, frame?));
     }
 
     Ok(AnimatedImageFrames {
