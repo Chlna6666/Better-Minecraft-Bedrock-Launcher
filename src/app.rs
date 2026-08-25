@@ -213,7 +213,11 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         animation_prefetch_byte_limit: 48 * 1024 * 1024,
         bitmap_pool_bytes: 32 * 1024 * 1024,
         bitmap_pool_max_buffer_bytes: 8 * 1024 * 1024,
-        max_atlas_bytes: 128 * 1024 * 1024,
+        // Resize handoff intentionally keeps the currently visible image resident until the new
+        // sized target has uploaded. A fullscreen animated background can need a 4096² atlas page,
+        // so 128 MiB could deadlock the old/new handoff and leave the window black. This is only a
+        // ceiling: committed old pages are released after the replacement becomes drawable.
+        max_atlas_bytes: 256 * 1024 * 1024,
         max_atlas_textures: 24,
         bounds_policy: gpui::ImageBoundsPolicy::Visible,
         trim_memory_on_hidden: true,
