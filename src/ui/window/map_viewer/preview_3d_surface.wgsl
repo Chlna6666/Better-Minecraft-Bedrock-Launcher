@@ -118,9 +118,14 @@ fn fs_preview_3d_opaque(input: Preview3dVarying) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_preview_3d_cutout(input: Preview3dVarying) -> @location(0) vec4<f32> {
-    if (!preview_3d_fragment_inside(input) || input.color.a < 0.5) {
+    if (!preview_3d_fragment_inside(input)) {
         discard;
     }
+    // The live GPUI preview currently carries material/UV metadata on CPU but
+    // does not bind an albedo texture to this shader. Treating the flat vertex
+    // alpha as a texture alpha test can therefore discard an entire visible
+    // quad and expose geometry behind it. Keep the geometry opaque until the
+    // texture sampler path is wired, rather than creating false see-through holes.
     return vec4<f32>(input.color.rgb, 1.0);
 }
 
