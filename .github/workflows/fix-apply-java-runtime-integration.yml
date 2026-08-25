@@ -51,12 +51,17 @@ jobs:
               raise SystemExit('Rust setup/format block did not match exactly once')
           source = source.replace(old, new, 1)
 
-          # The outer workflow parser expands ${{ ... }} even inside the Python heredoc.
-          # Build the literal expression dynamically so update-java-models.yml retains it.
-          bad = '''              '          git commit -m "chore(方块模型): 更新 Java ${{ steps.metadata.outputs.version }} 模型数据库"\\n',
-'''
-          replacement = '''              '          git commit -m "chore(方块模型): 更新 Java ' + '${' + '{ steps.metadata.outputs.version }}' + ' 模型数据库"\\n',
-'''
+          expression = '$' + '{{ steps.metadata.outputs.version }}'
+          bad = (
+              '              \'          git commit -m "chore(方块模型): 更新 Java '
+              + expression
+              + ' 模型数据库"\\n\',\n'
+          )
+          replacement = (
+              '              \'          git commit -m "chore(方块模型): 更新 Java \' '
+              "+ '$' + '{{ steps.metadata.outputs.version }}' + "
+              '\' 模型数据库"\\n\',\n'
+          )
           if source.count(bad) != 1:
               raise SystemExit('metadata commit expression did not match exactly once')
           source = source.replace(bad, replacement, 1)
