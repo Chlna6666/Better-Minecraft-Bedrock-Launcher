@@ -32,6 +32,40 @@ impl TransientAssetGenerations {
     }
 }
 
+#[derive(Default)]
+struct SizedImageElementOwners {
+    current: FxHashMap<AssetId, usize>,
+}
+
+impl SizedImageElementOwners {
+    fn retain(&mut self, asset_id: AssetId) {
+        let references = self.current.entry(asset_id).or_default();
+        *references = references
+            .checked_add(1)
+            .expect("sized image element reference count overflow");
+    }
+
+    fn release(&mut self, asset_id: AssetId) -> bool {
+        let Some(references) = self.current.get_mut(&asset_id) else {
+            debug_assert!(false, "sized image element reference released without owner");
+            return false;
+        };
+
+        debug_assert!(*references > 0);
+        *references = references.saturating_sub(1);
+        if *references == 0 {
+            self.current.remove(&asset_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn count(&self, asset_id: AssetId) -> usize {
+        self.current.get(&asset_id).copied().unwrap_or(0)
+    }
+}
+
 fn transient_asset_state(cx: &mut App) -> &mut TransientAssetGenerations {
     cx.globals_by_type
         .entry(TypeId::of::<TransientAssetGenerations>())
@@ -60,6 +94,21 @@ fn clear_transient_asset_generation(cx: &mut App, asset_id: AssetId) {
         return;
     };
     state.current.remove(&asset_id);
+}
+
+fn sized_image_owner_state(cx: &mut App) -> &mut SizedImageElementOwners {
+    cx.globals_by_type
+        .entry(TypeId::of::<SizedImageElementOwners>())
+        .or_insert_with(|| Box::new(SizedImageElementOwners::default()))
+        .downcast_mut::<SizedImageElementOwners>()
+        .expect("sized image element owner state type mismatch")
+}
+
+fn sized_image_element_ref_count(cx: &App, asset_id: AssetId) -> usize {
+    cx.globals_by_type
+        .get(&TypeId::of::<SizedImageElementOwners>())
+        .and_then(|state| state.downcast_ref::<SizedImageElementOwners>())
+        .map_or(0, |state| state.count(asset_id))
 }
 
 #[cfg(test)]
@@ -118,7 +167,7 @@ impl App {
                     || id == inline_bytes_type
                     || id == target_type
             );
-            if !is_image {
+            if !is_image || sized_image_element_ref_count(self, *asset_id) != 0 {
                 continue;
             }
             let Some(task) =
@@ -137,7 +186,47 @@ impl App {
         for (asset_id, image) in evicted {
             self.loading_assets.remove(&asset_id);
             self.drop_image(image, None);
+            if asset_id.0 == target_type {
+                drop_image_asset_retained(asset_id.1);
+            }
         }
+    }
+
+    pub(crate) fn retain_sized_image_element_request(&mut self, request: &ImageRenderRequest) {
+        let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
+        sized_image_owner_state(self).retain(asset_id);
+    }
+
+    pub(crate) fn release_sized_image_element_request(&mut self, request: &ImageRenderRequest) {
+        let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
+        let became_unowned = {
+            let state = sized_image_owner_state(self);
+            state.release(asset_id)
+        };
+        if !became_unowned {
+            return;
+        }
+
+        let task = self
+            .loading_assets
+            .remove(&asset_id)
+            .and_then(|task| task.downcast::<SizedImageTask>().ok())
+            .map(|task| *task);
+        if let Some(task) = task
+            && let Some(Ok(image)) = task.clone().now_or_never()
+        {
+            self.drop_image(image, None);
+        }
+        drop_image_asset_retained(asset_id.1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sized_image_element_ref_count_for_test(
+        &self,
+        request: &ImageRenderRequest,
+    ) -> usize {
+        let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
+        sized_image_element_ref_count(self, asset_id)
     }
 
     /// Remove an asset from GPUI's cache.
@@ -146,10 +235,23 @@ impl App {
     }
 
     /// Remove an asset from GPUI's cache and return its task if it exists.
+    ///
+    /// Size-aware image tasks remain registered while one or more live image elements still own
+    /// the same request. In that case this returns a clone of the task instead of invalidating a
+    /// resource another element is currently displaying.
     pub fn take_asset<A: Asset>(&mut self, source: &A::Source) -> Option<Shared<Task<A::Output>>> {
         let asset_id = (TypeId::of::<A>(), hash(source));
         if TypeId::of::<A>() == TypeId::of::<crate::CompressedImageLoader>() {
             clear_transient_asset_generation(self, asset_id);
+        }
+        if TypeId::of::<A>() == TypeId::of::<crate::SizedImageLoader>()
+            && sized_image_element_ref_count(self, asset_id) != 0
+        {
+            return self
+                .loading_assets
+                .get(&asset_id)
+                .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
+                .cloned();
         }
         self.loading_assets
             .remove(&asset_id)
@@ -296,6 +398,9 @@ impl App {
 
     /// Removes a target-size image processing previously requested through
     /// [`preload_sized_image`](Self::preload_sized_image).
+    ///
+    /// If a live image element owns the same target this returns the shared task but defers physical
+    /// eviction until the last element lease is released.
     pub fn remove_image_render_request(
         &mut self,
         target_source: &ImageRenderRequest,
@@ -318,16 +423,23 @@ impl App {
     }
 
     /// Removes a target-size image processing and drops its completed render image from window atlases.
+    ///
+    /// Active element owners take precedence over explicit cache removal: their GPU resource stays
+    /// drawable until the final element releases the request.
     pub fn remove_image_render_request_in(
         &mut self,
         target_source: &ImageRenderRequest,
         current_window: Option<&mut Window>,
     ) -> Option<SizedImageTask> {
+        let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(target_source));
+        let has_element_owners = sized_image_element_ref_count(self, asset_id) != 0;
         let task = self.remove_image_render_request(target_source)?;
 
-        if let Some(Ok(image)) = task.clone().now_or_never() {
-            self.drop_image(image, current_window);
-            drop_image_asset_retained(hash(target_source));
+        if !has_element_owners {
+            if let Some(Ok(image)) = task.clone().now_or_never() {
+                self.drop_image(image, current_window);
+            }
+            drop_image_asset_retained(asset_id.1);
         }
 
         Some(task)
