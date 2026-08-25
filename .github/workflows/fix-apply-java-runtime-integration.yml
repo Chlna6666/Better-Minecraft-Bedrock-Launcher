@@ -24,31 +24,18 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-
           path = Path('.github/workflows/apply-java-runtime-integration.yml')
           source = path.read_text(encoding='utf-8')
-          old = '''      - name: Set up Rust 1.95
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.95.0
-
-      - name: Check formatting
-        shell: bash
-        run: rustfmt --edition 2024 --check crates/bedrock-block-model/src/java_runtime.rs crates/bedrock-block-model/src/bedrock_block_model.rs src/ui/window/map_viewer/preview_3d_source.rs
-'''
-          new = '''      - name: Set up Rust 1.95
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.95.0
-          components: rustfmt
-
-      - name: Format integration
-        shell: bash
-        run: rustfmt --edition 2024 crates/bedrock-block-model/src/java_runtime.rs crates/bedrock-block-model/src/bedrock_block_model.rs src/ui/window/map_viewer/preview_3d_source.rs
-'''
-          if source.count(old) != 1:
-              raise SystemExit('Rust setup/format block did not match exactly once')
-          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          old_setup = "          toolchain: 1.95.0\n\n      - name: Check formatting\n"
+          new_setup = "          toolchain: 1.95.0\n          components: rustfmt\n\n      - name: Format integration\n"
+          if source.count(old_setup) != 1:
+              raise SystemExit('Rust setup block did not match exactly once')
+          source = source.replace(old_setup, new_setup, 1)
+          old_command = "run: rustfmt --edition 2024 --check crates/bedrock-block-model/src/java_runtime.rs"
+          new_command = "run: rustfmt --edition 2024 crates/bedrock-block-model/src/java_runtime.rs"
+          if source.count(old_command) != 1:
+              raise SystemExit('rustfmt command did not match exactly once')
+          path.write_text(source.replace(old_command, new_command, 1), encoding='utf-8')
           PY
 
       - name: Commit bootstrap fix
