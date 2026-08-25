@@ -35,6 +35,7 @@ fn select_animation_frame_advances_resident_frames() {
     )));
     let now = executor.now();
     let mut state = ImageElementState {
+        current_image: None,
         current_frame: Some(image.frame(0).unwrap()),
         next_frame_at: Some(now - Duration::from_millis(1)),
         started_loading: None,
@@ -76,6 +77,7 @@ fn select_animation_frame_catches_up_ready_resident_frames() {
     )));
     let now = executor.now();
     let mut state = ImageElementState {
+        current_image: None,
         current_frame: Some(image.frame(0).unwrap()),
         next_frame_at: Some(now - Duration::from_millis(80)),
         started_loading: None,
