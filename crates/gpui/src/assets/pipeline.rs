@@ -18,28 +18,37 @@ pub enum ImageMemoryTrimLevel {
     /// Release unused decoded bitmaps while keeping compressed bytes.
     #[default]
     Moderate,
-    /// Release all unused resident image state while keeping the bounded byte cache.
+    /// Release all unused resident image state while keeping reusable source data.
     Aggressive,
 }
 
-/// Application-wide image pipeline resource limits and diagnostics thresholds.
+/// Application-wide image pipeline policy and diagnostics thresholds.
+///
+/// GPUI does not impose finite byte ceilings on active decoded images, compressed image sources,
+/// animation prefetch, or GPU atlas residency by default. Image lifetime is controlled by resource
+/// ownership and explicit trimming instead. The bitmap pool budget only bounds *idle reusable*
+/// buffers, so it can reduce allocator churn and fragmentation without rejecting an active image.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImagePipelineConfig {
     /// Controls animated image playback and GPU frame residency.
     pub animated: AnimatedImageConfig,
-    /// Approximate maximum decoded image bytes retained by bounded caches by default.
+    /// Optional decoded-image cache budget. `usize::MAX` means lifecycle-managed/unbounded.
     pub max_resident_image_bytes: usize,
-    /// Maximum compressed image bytes retained by the shared in-memory cache.
+    /// Optional compressed source cache budget. `usize::MAX` means lifecycle-managed/unbounded.
     pub max_compressed_bytes: usize,
-    /// Maximum decoded animation bytes queued across all image streams.
+    /// Optional aggregate animation-prefetch byte budget. `usize::MAX` disables byte backpressure.
     pub animation_prefetch_byte_limit: usize,
-    /// Maximum bytes retained by the reusable decoded bitmap pool.
+    /// Maximum bytes retained only by the reusable *free* decoded bitmap pool.
+    ///
+    /// This does not limit active image allocations: buffers larger than the retained pool are
+    /// still allocated normally and are simply released when no longer reusable.
     pub bitmap_pool_bytes: usize,
-    /// Maximum capacity of one reusable bitmap buffer.
+    /// Maximum capacity eligible for bitmap-pool reuse. `usize::MAX` allows full-size image
+    /// buffers to participate in reuse; `bitmap_pool_bytes` still bounds idle retained memory.
     pub bitmap_pool_max_buffer_bytes: usize,
-    /// Maximum aggregate GPU atlas bytes allocated for image tiles.
+    /// Optional aggregate GPU atlas byte budget. `usize::MAX` means lifecycle-managed/unbounded.
     pub max_atlas_bytes: usize,
-    /// Maximum number of GPU atlas textures allocated for image tiles.
+    /// Optional GPU atlas texture-count budget. `usize::MAX` means lifecycle-managed/unbounded.
     pub max_atlas_textures: usize,
     /// Controls whether bounds-aware decode is gated by visibility.
     pub bounds_policy: ImageBoundsPolicy,
@@ -55,15 +64,23 @@ pub struct ImagePipelineConfig {
 
 impl Default for ImagePipelineConfig {
     fn default() -> Self {
+        let mut animated = AnimatedImageConfig::default();
+        // Frame counts remain bounded for scheduling/streaming, but byte size is not used as a
+        // validity limit. A large frame must not become unrenderable just because it crosses an
+        // arbitrary MiB threshold.
+        animated.prefetch_byte_limit = usize::MAX;
+        animated.max_resident_bytes = usize::MAX;
+
         Self {
-            animated: AnimatedImageConfig::default(),
-            max_resident_image_bytes: 128 * 1024 * 1024,
-            max_compressed_bytes: 64 * 1024 * 1024,
-            animation_prefetch_byte_limit: 96 * 1024 * 1024,
+            animated,
+            max_resident_image_bytes: usize::MAX,
+            max_compressed_bytes: usize::MAX,
+            animation_prefetch_byte_limit: usize::MAX,
+            // This is intentionally a free-buffer retention budget, not an image memory limit.
             bitmap_pool_bytes: 64 * 1024 * 1024,
-            bitmap_pool_max_buffer_bytes: 16 * 1024 * 1024,
-            max_atlas_bytes: 256 * 1024 * 1024,
-            max_atlas_textures: 32,
+            bitmap_pool_max_buffer_bytes: usize::MAX,
+            max_atlas_bytes: usize::MAX,
+            max_atlas_textures: usize::MAX,
             bounds_policy: ImageBoundsPolicy::Explicit,
             trim_memory_on_hidden: false,
             slow_image_threshold: std::time::Duration::from_millis(16),
