@@ -34,6 +34,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Apply Java DB reader compatibility fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/bedrock-block-model/src/java_db.rs")
+          source = path.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  "impl JavaPackedElement<'_> {",
+                  "impl<'a> JavaPackedElement<'a> {",
+              ),
+              (
+                  "pub fn faces(self) -> JavaPackedFaceIter<'_> {",
+                  "pub fn faces(self) -> JavaPackedFaceIter<'a> {",
+              ),
+              (
+                  "pub const fn rotation_degrees(self) -> u16 {",
+                  "pub fn rotation_degrees(self) -> u16 {",
+              ),
+          ]
+          for old, new in replacements:
+              if new in source:
+                  continue
+              if old not in source:
+                  raise SystemExit(f"expected source pattern is missing: {old!r}")
+              source = source.replace(old, new, 1)
+          path.write_text(source, encoding="utf-8")
+          PY
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -124,26 +155,27 @@ jobs:
               github_output.write(f"version={metadata['java_release']}\n")
           PY
 
-      - name: Detect database changes
+      - name: Detect source or database changes
         id: changes
         shell: bash
         run: |
           git add \
+            crates/bedrock-block-model/src/java_db.rs \
             crates/bedrock-block-model/generated/vanilla_models.bin \
             crates/bedrock-block-model/generated/vanilla_models.meta.json
           if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Java model database is already current."
+            echo "Java model source/database is already current."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             git diff --cached --stat
           fi
 
-      - name: Commit updated model database
+      - name: Commit validated Java model changes
         if: steps.changes.outputs.changed == 'true'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore(方块模型): 更新 Java ${{ steps.metadata.outputs.version }} 模型数据库"
+          git commit -m "fix(方块模型): 修复 Java 模型数据库读取器"
           git push origin HEAD:master
