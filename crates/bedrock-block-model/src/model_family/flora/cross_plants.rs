@@ -177,28 +177,24 @@ fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
     let inset = thickness.min(0.2);
     let (offset_x, offset_z) = (0.0625, -0.0625);
     let mut shape = ModelShape::default().with_planes([
-        ModelPlane {
-            corners: [
+        ModelPlane::new(
+            [
                 [offset_x, 0.0, offset_z],
                 [1.0 + offset_x, 0.0, 1.0 + offset_z],
                 [1.0 + offset_x, height, 1.0 + offset_z],
                 [offset_x, height, offset_z],
             ],
-            normal: [-1, 0, 1],
-            material_slot: None,
-            uv: None,
-        },
-        ModelPlane {
-            corners: [
+            [-1, 0, 1],
+        ),
+        ModelPlane::new(
+            [
                 [1.0 + offset_x, 0.0, offset_z],
                 [offset_x, 0.0, 1.0 + offset_z],
                 [offset_x, height, 1.0 + offset_z],
                 [1.0 + offset_x, height, offset_z],
             ],
-            normal: [1, 0, 1],
-            material_slot: None,
-            uv: None,
-        },
+            [1, 0, 1],
+        ),
     ]);
     if inset > 0.0 {
         shape.cuboids.push(ModelCuboid::new(
