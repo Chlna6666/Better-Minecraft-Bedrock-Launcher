@@ -104,7 +104,9 @@ impl App {
     /// Asynchronously load an asset, if the asset hasn't finished loading this will return None.
     ///
     /// Multiple calls only result in one `Asset::load` call at a time, and the result is shared
-    /// through the normal GPUI asset task cache.
+    /// through the normal GPUI asset task cache. Compressed image byte tasks are transient: GPUI
+    /// keeps them only while I/O is in flight, then retires its internal strong task reference so
+    /// completed bytes follow the lifetime of active decodes and explicit preload handles.
     pub fn fetch_asset<A: Asset>(&mut self, source: &A::Source) -> (Shared<Task<A::Output>>, bool) {
         let asset_id = (TypeId::of::<A>(), hash(source));
         // Fast path: clone an already registered task without removing and re-boxing it.
@@ -114,13 +116,42 @@ impl App {
             .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
             .cloned();
         let mut is_first = false;
+        let mut transient_identity = None;
         let task = existing.unwrap_or_else(|| {
             is_first = true;
             let future = A::load(source.clone(), self);
             let task = self.background_executor().spawn(future).shared();
+            if TypeId::of::<A>() == TypeId::of::<crate::CompressedImageLoader>() {
+                transient_identity = task.downgrade();
+            }
             self.loading_assets.insert(asset_id, Box::new(task.clone()));
             task
         });
+
+        if let Some(transient_identity) = transient_identity {
+            let completion = task.clone();
+            self.spawn(async move |cx| {
+                let _ = completion.await;
+                let Some(completed_task) = transient_identity.upgrade() else {
+                    return;
+                };
+
+                // The same source may have been explicitly removed and requested again before the
+                // old load completed. Only retire the exact Shared future that scheduled this
+                // cleanup; never let an old completion evict a replacement task with the same key.
+                let _ = cx.update(|cx| {
+                    let should_remove = cx
+                        .loading_assets
+                        .get(&asset_id)
+                        .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
+                        .is_some_and(|task| task.ptr_eq(&completed_task));
+                    if should_remove {
+                        cx.loading_assets.remove(&asset_id);
+                    }
+                });
+            })
+            .detach();
+        }
 
         (task, is_first)
     }
@@ -142,6 +173,8 @@ impl App {
     /// [`StyledImage::render_to_bounds`](crate::StyledImage::render_to_bounds). The final decode
     /// still happens after layout determines the target size, but file/network I/O can begin
     /// earlier and the task output is shared with target-size decodes while it remains owned.
+    /// Holding the returned task keeps completed compressed bytes strongly resident; GPUI's own
+    /// task-cache reference is released automatically when the load settles.
     pub fn preload_compressed_image_resources(
         &mut self,
         sources: impl IntoIterator<Item = AssetLocation>,
