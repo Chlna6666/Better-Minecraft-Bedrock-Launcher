@@ -30,8 +30,7 @@ pub(super) struct AppBackgroundView {
     animation_suppressed: bool,
     startup_first_paint_logged: bool,
     preloaded_background_resource: Option<AssetLocation>,
-    preloaded_background_target: Option<ImageRenderRequest>,
-    preloaded_background_task: Option<SizedImageTask>,
+    preloaded_background_task: Option<CompressedImageTask>,
 }
 
 impl AppBackgroundView {
@@ -63,7 +62,6 @@ impl AppBackgroundView {
             animation_suppressed: false,
             startup_first_paint_logged: false,
             preloaded_background_resource: None,
-            preloaded_background_target: None,
             preloaded_background_task: None,
         }
     }
@@ -198,39 +196,27 @@ impl AppBackgroundView {
     fn sync_preloaded_background_resource(
         &mut self,
         source: Option<&BackgroundSource>,
-        window: &mut Window,
         cx: &mut App,
     ) {
         let next_resource = source.and_then(background_resource);
-        let next_target = next_resource.clone().and_then(|resource| {
-            cx.image_render_request(
-                resource,
-                window.viewport_size(),
-                window.scale_factor(),
-                ObjectFit::Cover,
-            )
-        });
-        if self.preloaded_background_resource == next_resource
-            && self.preloaded_background_target == next_target
-        {
+        if self.preloaded_background_resource == next_resource {
             return;
         }
 
         if let Some(previous_resource) = self.preloaded_background_resource.take() {
             self.preloaded_background_task.take();
-            if let Some(previous_target) = self.preloaded_background_target.take() {
-                cx.remove_image_render_request_in(&previous_target, Some(window));
-                if next_resource.as_ref() != Some(&previous_resource) {
-                    cx.remove_compressed_image_resource(&previous_resource);
-                }
+            if next_resource.as_ref() != Some(&previous_resource) {
+                cx.remove_compressed_image_resource(&previous_resource);
             }
         }
 
-        if let (Some(resource), Some(target)) = (next_resource, next_target) {
-            let task = cx.preload_sized_image(target.clone());
+        if let Some(resource) = next_resource {
+            let task = cx
+                .preload_compressed_image_resources([resource.clone()])
+                .into_iter()
+                .next();
             self.preloaded_background_resource = Some(resource);
-            self.preloaded_background_target = Some(target);
-            self.preloaded_background_task = Some(task);
+            self.preloaded_background_task = task;
         }
     }
 }
@@ -301,7 +287,7 @@ impl Render for AppBackgroundView {
         }
 
         let display_background = self.cached_display_background.clone();
-        self.sync_preloaded_background_resource(display_background.as_ref(), window, cx);
+        self.sync_preloaded_background_resource(display_background.as_ref(), cx);
         self.last_background_settings = Some(settings.clone());
 
         self.render_background_container(
