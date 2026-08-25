@@ -126,6 +126,7 @@ pub(super) use bedrock_render::{
 pub(super) use bytes::Bytes;
 pub(super) use futures::channel::mpsc::{UnboundedSender, unbounded};
 pub(super) use futures_util::StreamExt as _;
+pub(super) use gpui::ImagePaintRequest;
 pub(super) use gpui::prelude::FluentBuilder as _;
 pub(super) use gpui::*;
 pub(super) use rustc_hash::FxHashMap as HashMap;
