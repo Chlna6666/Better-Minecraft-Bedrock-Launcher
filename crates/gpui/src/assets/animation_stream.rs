@@ -17,99 +17,32 @@ use std::{
 };
 
 const UNASSIGNED_WORKER: usize = usize::MAX;
-const DEFAULT_GLOBAL_PREFETCH_BYTE_LIMIT: usize = 96 * 1024 * 1024;
 static ANIMATION_WORKERS: OnceLock<AnimationWorkers> = OnceLock::new();
-
-struct AnimationQueueBudget {
-    queued_bytes: AtomicUsize,
-    byte_limit: AtomicUsize,
-    // Releases only broadcast when at least one worker observed global backpressure.
-    capacity_waiting: AtomicBool,
-}
+static ANIMATION_QUEUED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AnimationQueueSnapshot {
     pub(crate) queued_bytes: usize,
-    pub(crate) byte_limit: usize,
-}
-
-fn animation_queue_budget() -> &'static AnimationQueueBudget {
-    static BUDGET: OnceLock<AnimationQueueBudget> = OnceLock::new();
-    BUDGET.get_or_init(|| AnimationQueueBudget {
-        queued_bytes: AtomicUsize::new(0),
-        byte_limit: AtomicUsize::new(DEFAULT_GLOBAL_PREFETCH_BYTE_LIMIT),
-        capacity_waiting: AtomicBool::new(false),
-    })
 }
 
 pub(crate) fn animation_queue_snapshot() -> AnimationQueueSnapshot {
-    let budget = animation_queue_budget();
     AnimationQueueSnapshot {
-        queued_bytes: budget.queued_bytes.load(Ordering::Acquire),
-        byte_limit: budget.byte_limit.load(Ordering::Acquire),
+        queued_bytes: ANIMATION_QUEUED_BYTES.load(Ordering::Acquire),
     }
 }
 
-pub(crate) fn configure_animation_queue(byte_limit: usize) {
-    animation_queue_budget()
-        .byte_limit
-        .store(byte_limit.max(4), Ordering::Release);
+fn atomic_saturating_sub(value: &AtomicUsize, amount: usize) {
+    let _ = value.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        Some(current.saturating_sub(amount))
+    });
 }
 
-pub(in crate::assets) fn reserve_animation_queue_bytes(byte_len: usize) -> bool {
-    let budget = animation_queue_budget();
-    loop {
-        let queued = budget.queued_bytes.load(Ordering::Acquire);
-        let limit = budget.byte_limit.load(Ordering::Acquire);
-        if queued != 0 && queued.saturating_add(byte_len) > limit {
-            budget.capacity_waiting.store(true, Ordering::Release);
-            // Close the race with a release between the failed capacity check and waiter marking.
-            if budget.queued_bytes.load(Ordering::Acquire) == queued {
-                return false;
-            }
-            continue;
-        }
-        if budget
-            .queued_bytes
-            .compare_exchange_weak(
-                queued,
-                queued.saturating_add(byte_len),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            return true;
-        }
-    }
-}
-
-fn animation_queue_has_capacity(byte_len: usize) -> bool {
-    let budget = animation_queue_budget();
-    loop {
-        let queued = budget.queued_bytes.load(Ordering::Acquire);
-        let limit = budget.byte_limit.load(Ordering::Acquire);
-        if queued == 0 || queued.saturating_add(byte_len) <= limit {
-            return true;
-        }
-        budget.capacity_waiting.store(true, Ordering::Release);
-        // A concurrent release may already have made this frame admissible.
-        if budget.queued_bytes.load(Ordering::Acquire) == queued {
-            return false;
-        }
-    }
+pub(in crate::assets) fn record_animation_queue_bytes(byte_len: usize) {
+    ANIMATION_QUEUED_BYTES.fetch_add(byte_len, Ordering::AcqRel);
 }
 
 pub(in crate::assets) fn release_animation_queue_bytes(byte_len: usize) {
-    let budget = animation_queue_budget();
-    budget.queued_bytes.fetch_sub(byte_len, Ordering::AcqRel);
-    if !budget.capacity_waiting.swap(false, Ordering::AcqRel) {
-        return;
-    }
-    if let Some(workers) = ANIMATION_WORKERS.get() {
-        crate::diagnostics::performance_metrics::record_animation_worker_pool_wake();
-        workers.wake_all();
-    }
+    atomic_saturating_sub(&ANIMATION_QUEUED_BYTES, byte_len);
 }
 
 pub(in crate::assets) struct AnimationStream {
@@ -121,7 +54,6 @@ pub(in crate::assets) struct AnimationStream {
     pub(super) next_sequence: usize,
     pub(super) next_source_index: usize,
     pub(super) prefetch_frames: usize,
-    pub(super) prefetch_byte_limit: usize,
     pub(super) queued_frame_count: AtomicUsize,
     pub(super) queued_byte_len: AtomicUsize,
     pub(super) delivered_byte_len: AtomicUsize,
@@ -156,43 +88,28 @@ impl AnimationStream {
         }
     }
 
-    pub(super) fn can_queue(&self, byte_len: usize) -> bool {
-        if self.queued_frame_count.load(Ordering::Acquire) >= self.prefetch_frames {
-            return false;
-        }
-        let queued = self.queued_byte_len.load(Ordering::Acquire);
-        (queued == 0 || queued.saturating_add(byte_len) <= self.prefetch_byte_limit)
-            && animation_queue_has_capacity(byte_len)
+    pub(super) fn can_queue(&self) -> bool {
+        self.queued_frame_count.load(Ordering::Acquire) < self.prefetch_frames
     }
 
-    fn reserve_queue_bytes(&self, byte_len: usize) -> bool {
-        loop {
-            let queued = self.queued_byte_len.load(Ordering::Acquire);
-            if queued != 0 && queued.saturating_add(byte_len) > self.prefetch_byte_limit {
-                return false;
-            }
-            if self
-                .queued_byte_len
-                .compare_exchange_weak(
-                    queued,
-                    queued.saturating_add(byte_len),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                if reserve_animation_queue_bytes(byte_len) {
-                    return true;
-                }
-                self.queued_byte_len.fetch_sub(byte_len, Ordering::AcqRel);
-                return false;
-            }
+    fn reserve_queued_frame(&self, byte_len: usize) -> bool {
+        if self
+            .queued_frame_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                (queued < self.prefetch_frames).then_some(queued.saturating_add(1))
+            })
+            .is_err()
+        {
+            return false;
         }
+        self.queued_byte_len.fetch_add(byte_len, Ordering::AcqRel);
+        record_animation_queue_bytes(byte_len);
+        true
     }
 
     pub(super) fn release_queued_frame(&self, byte_len: usize) {
-        self.queued_frame_count.fetch_sub(1, Ordering::AcqRel);
-        self.queued_byte_len.fetch_sub(byte_len, Ordering::AcqRel);
+        atomic_saturating_sub(&self.queued_frame_count, 1);
+        atomic_saturating_sub(&self.queued_byte_len, byte_len);
         release_animation_queue_bytes(byte_len);
     }
 }
@@ -256,12 +173,6 @@ impl AnimationWorkers {
             worker.thread.unpark();
         }
     }
-
-    fn wake_all(&self) {
-        for worker in &self.workers {
-            worker.thread.unpark();
-        }
-    }
 }
 
 fn animation_workers() -> &'static AnimationWorkers {
@@ -305,26 +216,21 @@ impl AnimationWork {
                 return Err(error);
             }
         };
-        let work = Self {
+        Ok(Some(Self {
             frames,
             source_index: 0,
             skip_before: shared_state.next_source_index,
             next_sequence: shared_state.next_sequence,
             pending_frame: None,
             state,
-        };
-        Ok(Some(work))
+        }))
     }
 
     fn advance(&mut self) -> WorkProgress {
         let Some(state) = self.state.upgrade() else {
             return WorkProgress::Remove;
         };
-        let expected_byte_len = self
-            .pending_frame
-            .as_ref()
-            .map_or_else(|| state.first_frame.byte_len(), AnimatedFrame::byte_len);
-        if !state.can_queue(expected_byte_len) {
+        if !state.can_queue() {
             crate::diagnostics::performance_metrics::record_animation_queue_backpressure();
             return WorkProgress::Backpressured;
         }
@@ -388,13 +294,13 @@ impl AnimationWork {
                 break frame;
             }
         };
+
         let frame_byte_len = frame.byte_len();
-        if !state.reserve_queue_bytes(frame_byte_len) {
+        if !state.reserve_queued_frame(frame_byte_len) {
             crate::diagnostics::performance_metrics::record_animation_queue_backpressure();
             self.pending_frame = Some(frame);
             return WorkProgress::Backpressured;
         }
-        state.queued_frame_count.fetch_add(1, Ordering::AcqRel);
 
         match state.queue_sender.try_send(frame) {
             Ok(()) => {
@@ -403,20 +309,12 @@ impl AnimationWork {
             }
             Err(TrySendError::Full(frame)) => {
                 crate::diagnostics::performance_metrics::record_animation_queue_backpressure();
-                state.queued_frame_count.fetch_sub(1, Ordering::AcqRel);
-                state
-                    .queued_byte_len
-                    .fetch_sub(frame_byte_len, Ordering::AcqRel);
-                release_animation_queue_bytes(frame_byte_len);
+                state.release_queued_frame(frame_byte_len);
                 self.pending_frame = Some(frame);
                 WorkProgress::Backpressured
             }
             Err(TrySendError::Disconnected(_)) => {
-                state.queued_frame_count.fetch_sub(1, Ordering::AcqRel);
-                state
-                    .queued_byte_len
-                    .fetch_sub(frame_byte_len, Ordering::AcqRel);
-                release_animation_queue_bytes(frame_byte_len);
+                state.release_queued_frame(frame_byte_len);
                 state.completed.store(true, Ordering::Release);
                 state.stream_task_running.store(false, Ordering::Release);
                 WorkProgress::Remove
