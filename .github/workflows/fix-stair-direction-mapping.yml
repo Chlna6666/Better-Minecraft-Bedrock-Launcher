@@ -1,0 +1,52 @@
+name: Fix stair direction mapping
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - scripts/fix_stair_direction_mapping.py
+      - .github/workflows/fix-stair-direction-mapping.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-stair-direction-mapping
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply stair direction fix
+        run: python3 scripts/fix_stair_direction_mapping.py
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Test block model and world crates
+        run: cargo test -p bedrock-block-model -p bedrock-world
+      - name: Check block model and world crates
+        run: cargo check -p bedrock-block-model -p bedrock-world --all-features
+      - name: Commit verified source changes
+        shell: bash
+        run: |
+          rm -f scripts/fix_stair_direction_mapping.py
+          rm -f .github/workflows/fix-stair-direction-mapping.yml
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(方块模型): 修复基岩版楼梯方向映射"
+          git push origin HEAD:master
