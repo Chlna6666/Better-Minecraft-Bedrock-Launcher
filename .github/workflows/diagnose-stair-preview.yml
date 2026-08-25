@@ -1,0 +1,43 @@
+name: Diagnose stair preview compile
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/diagnose-stair-preview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply current stair patch
+        run: |
+          python3 scripts/apply_stair_neighbor_inference.py
+          python3 scripts/fix_stair_modern_precedence.py
+          if [ -f scripts/fix_stair_preview_compile.py ]; then
+            python3 scripts/fix_stair_preview_compile.py
+          fi
+          cargo fmt --all
+      - name: Check BMCBL library
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --lib 2>&1 | tee cargo-check.log
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stair-preview-cargo-check
+          path: cargo-check.log
+          if-no-files-found: ignore
+          retention-days: 1
