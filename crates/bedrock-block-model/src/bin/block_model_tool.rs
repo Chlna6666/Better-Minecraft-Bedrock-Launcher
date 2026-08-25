@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use bedrock_block_model::{
     BlockStateQuery, BlockStateValue, JavaBakedModel, JavaModelRepository,
-    java_block_id_for_bedrock_state, java_properties_for_bedrock_state,
+    bake_java_model_database, java_block_id_for_bedrock_state,
+    java_properties_for_bedrock_state,
 };
 use serde_json::json;
 
@@ -52,6 +53,49 @@ fn run() -> Result<(), String> {
             print_model(&model, json_output);
             Ok(())
         }
+        "bake" => {
+            let Some(root) = args.next() else {
+                return Err(usage("bake requires an extracted Java assets root"));
+            };
+            let Some(output) = args.next() else {
+                return Err(usage("bake requires an output .bin path"));
+            };
+            let mut json_output = false;
+            for arg in args {
+                match arg.as_str() {
+                    "--json" => json_output = true,
+                    _ => return Err(usage(&format!("unknown bake option: {arg}"))),
+                }
+            }
+            let stats = bake_java_model_database(PathBuf::from(root), PathBuf::from(&output))
+                .map_err(|error| error.to_string())?;
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&stats)
+                        .map_err(|error| format!("failed to serialize bake stats: {error}"))?
+                );
+            } else {
+                println!("Java release: {}", stats.source_version);
+                println!(
+                    "Baked {} blocks, {} variants, {} multipart parts, {} applies",
+                    stats.blocks, stats.variants, stats.multipart_parts, stats.applies
+                );
+                println!(
+                    "Models: {} referenced ids -> {} unique geometries",
+                    stats.referenced_model_ids, stats.unique_models
+                );
+                println!(
+                    "Database: {} bytes (geometry {}, strings {}), warnings {}",
+                    stats.database_bytes,
+                    stats.model_data_bytes,
+                    stats.string_data_bytes,
+                    stats.warnings
+                );
+                println!("Output: {output}");
+            }
+            Ok(())
+        }
         "-h" | "--help" | "help" => {
             println!("{}", usage(""));
             Ok(())
@@ -67,7 +111,7 @@ fn usage(message: &str) -> String {
         format!("{message}\n\n")
     };
     format!(
-        "{prefix}usage:\n  cargo run -p bedrock-block-model --bin block_model_tool -- map <bedrock-id> [state=value ...] [--json]\n  cargo run -p bedrock-block-model --bin block_model_tool -- java <extracted-java-root> <bedrock-id> [state=value ...] [--json]\n\nThe Java root may be the directory containing assets/, assets/ itself, or assets/minecraft/."
+        "{prefix}usage:\n  cargo run -p bedrock-block-model --bin block_model_tool -- map <bedrock-id> [state=value ...] [--json]\n  cargo run -p bedrock-block-model --bin block_model_tool -- java <extracted-java-root> <bedrock-id> [state=value ...] [--json]\n  cargo run -p bedrock-block-model --bin block_model_tool -- bake <extracted-java-root> <output.bin> [--json]\n\nThe Java root may be the directory containing assets/, assets/ itself, or assets/minecraft/."
     )
 }
 
