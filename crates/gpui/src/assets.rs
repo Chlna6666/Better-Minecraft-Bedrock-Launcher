@@ -16,9 +16,7 @@ mod webp;
 pub(crate) use animated_image::AnimatedFrame;
 pub use animated_image::AnimatedImageConfig;
 pub(in crate::assets) use animation_stream::AnimationStream;
-pub(crate) use animation_stream::{
-    AnimationQueueSnapshot, animation_queue_snapshot, configure_animation_queue,
-};
+pub(crate) use animation_stream::{AnimationQueueSnapshot, animation_queue_snapshot};
 pub(crate) use bitmap_pool::{
     BitmapBytes, BitmapPoolSnapshot, acquire_bitmap_buffer, acquire_bitmap_buffer_capacity,
     configure_global_bitmap_pool, global_bitmap_pool, release_bitmap_buffer,
