@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -265,6 +264,8 @@ def download_client(
 
 
 def safe_asset_path(name: str) -> Path:
+    if "\\" in name:
+        raise FetchError(f"unsafe path in client JAR: {name!r}")
     path = PurePosixPath(name)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise FetchError(f"unsafe path in client JAR: {name!r}")
