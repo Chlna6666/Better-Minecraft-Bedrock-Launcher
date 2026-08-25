@@ -211,13 +211,10 @@ fn initial_frames_from_iter(
     let source_size = first_frame.size().map(|dimension| u32::from(dimension));
     let fitted_target = target.fit(source_size, object_fit);
     let first_frame = resample_bgra_frame(first_frame, fitted_target)?;
-    let mut resident_byte_len = first_frame.byte_len();
     let mut remaining_frames = SmallVec::<[AnimatedFrame; 8]>::new();
 
     for (sequence, frame) in frames {
-        if remaining_frames.len() + 1 >= config.max_resident_frames
-            || resident_byte_len >= config.max_resident_bytes
-        {
+        if remaining_frames.len() + 1 >= config.max_resident_frames {
             return Ok(ImageFrames {
                 first_frame,
                 remaining_frames,
@@ -228,20 +225,7 @@ fn initial_frames_from_iter(
         }
 
         let frame = AnimatedFrame::from_rgba_frame(sequence, frame?);
-        let frame = resample_bgra_frame(frame, fitted_target)?;
-        let next_resident_byte_len = resident_byte_len.saturating_add(frame.byte_len());
-        if next_resident_byte_len > config.max_resident_bytes {
-            return Ok(ImageFrames {
-                first_frame,
-                remaining_frames,
-                is_complete: false,
-                source_size,
-                size: fitted_target,
-            });
-        }
-
-        resident_byte_len = next_resident_byte_len;
-        remaining_frames.push(frame);
+        remaining_frames.push(resample_bgra_frame(frame, fitted_target)?);
     }
 
     Ok(ImageFrames {
