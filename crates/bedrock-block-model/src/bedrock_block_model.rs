@@ -13,6 +13,7 @@ mod java_runtime;
 mod json;
 mod material;
 mod model_family;
+mod neighbor;
 mod obj;
 mod pack;
 mod permutation;
@@ -41,6 +42,10 @@ pub use model_family::{
     detail_material_block_name_for_state, is_full_opaque_block, model_family_for_block_name,
     model_family_has_detail_shape,
 };
+pub use neighbor::{
+    DerivedModelVariant, HorizontalDirection, HorizontalMask, NeighborBlockDescriptor,
+    NeighborModelKind, RedstoneConnection, StairShape, WallConnection, derive_model_variant,
+};
 pub use obj::{
     FALLBACK_MATERIAL_NAME, MATERIAL_SLOT_SEPARATOR, NamedObjMaterial, ObjExport,
     ObjExportMaterial, ObjExportTarget, ObjExportWriteSummary, ObjFace, ObjMaterial,
@@ -66,9 +71,8 @@ pub use obj::{
     obj_vertex_offsets, path_extension_eq, path_starts_with_directory, prefixed_relative_path,
     push_unique_resource_pack_path, read_obj_texture_copy_image, relative_path_string,
     replace_path_extension, resource_pack_manifest_uuid, resource_pack_roots_for_world,
-    texture_candidate_relatives, tint_obj_texture_image, vanilla_resource_pack_roots,
-    vanilla_resource_pack_roots_from_packages, world_resource_pack_ids, world_resource_pack_paths,
-    write_obj_export_files, write_obj_texture_copy,
+    vanilla_resource_pack_roots, vanilla_resource_pack_roots_from_packages, world_resource_pack_ids,
+    world_resource_pack_paths, write_obj_export_files, write_obj_texture_copy,
 };
 pub use pack::{BlockDefinition, BlockModelRepository};
 pub use permutation::{BlockPermutation, ConditionEvaluation};
