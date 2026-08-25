@@ -156,9 +156,10 @@ impl Frame {
             .iter()
             .rev()
             .fold_while(None, |style, request| match request.hitbox_id {
-                None => Done(Some(style.unwrap_or(request.style))),
-                Some(hitbox_id) if hitbox_id.is_hovered(window) => Done(Some(request.style)),
-                _ => Continue(style),
+                None => Done(Some(request.style)),
+                Some(hitbox_id) => Continue(
+                    style.or_else(|| hitbox_id.is_hovered(window).then_some(request.style)),
+                ),
             })
             .into_inner()
     }
@@ -173,7 +174,7 @@ impl Frame {
                 if !set_hover_hitbox_count
                     && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
                 {
-                    hit_test.hover_hitbox_count = hit_test.ids.len();
+                    hit_test.hover_hitbox_count = hitbox.ids.len();
                     set_hover_hitbox_count = true;
                 }
                 if hitbox.behavior == HitboxBehavior::BlockMouse {
