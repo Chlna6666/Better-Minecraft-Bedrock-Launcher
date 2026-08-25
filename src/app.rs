@@ -157,6 +157,25 @@ fn gpu_power_preference_for_adapter(gpu_adapter_name: Option<&str>) -> gpui::Gpu
     }
 }
 
+fn image_pipeline_config() -> gpui::ImagePipelineConfig {
+    let mut animated = gpui::AnimatedImageConfig::default();
+    animated.play = true;
+    animated.max_gpu_frame_slots = 3;
+    animated.max_fps = 90.0;
+    animated.inactive_max_fps = 1.0;
+    animated.prefetch_frames = 4;
+    animated.max_resident_frames = 16;
+
+    let mut config = gpui::ImagePipelineConfig::default();
+    config.animated = animated;
+    config.bounds_policy = gpui::ImageBoundsPolicy::Visible;
+    config.trim_memory_on_hidden = true;
+    config.slow_image_threshold = Duration::from_millis(16);
+    config.slow_upload_bytes = 8 * 1024 * 1024;
+    config.slow_upload_threshold = Duration::from_millis(4);
+    config
+}
+
 #[derive(Default)]
 pub(crate) struct AppSubscriptions {
     window_close: Option<Subscription>,
@@ -196,35 +215,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         power_preference: gpu_power_preference_for_adapter(bootstrap.gpu_adapter_name.as_deref()),
         ..gpui::RendererOptions::default()
     })
-    .with_image_pipeline_config(gpui::ImagePipelineConfig {
-        animated: gpui::AnimatedImageConfig {
-            play: true,
-            max_gpu_frame_slots: 3,
-            max_fps: 90.0,
-            inactive_max_fps: 1.0,
-            prefetch_frames: 4,
-            prefetch_byte_limit: 16 * 1024 * 1024,
-            max_resident_frames: 16,
-            max_resident_bytes: 4 * 1024 * 1024,
-            ..gpui::AnimatedImageConfig::default()
-        },
-        max_resident_image_bytes: image_pipeline_decoded_budget_bytes(),
-        max_compressed_bytes: 32 * 1024 * 1024,
-        animation_prefetch_byte_limit: 48 * 1024 * 1024,
-        bitmap_pool_bytes: 32 * 1024 * 1024,
-        bitmap_pool_max_buffer_bytes: 8 * 1024 * 1024,
-        // Resize handoff intentionally keeps the currently visible image resident until the new
-        // sized target has uploaded. A fullscreen animated background can need a 4096² atlas page,
-        // so 128 MiB could deadlock the old/new handoff and leave the window black. This is only a
-        // ceiling: committed old pages are released after the replacement becomes drawable.
-        max_atlas_bytes: 256 * 1024 * 1024,
-        max_atlas_textures: 24,
-        bounds_policy: gpui::ImageBoundsPolicy::Visible,
-        trim_memory_on_hidden: true,
-        slow_image_threshold: Duration::from_millis(16),
-        slow_upload_bytes: 8 * 1024 * 1024,
-        slow_upload_threshold: Duration::from_millis(4),
-    })
+    .with_image_pipeline_config(image_pipeline_config())
     .with_platform_default_font(application_default_font(&bootstrap))
     .with_assets(crate::assets::asset_source::AppAssets);
     app.run(move |cx| {
@@ -285,15 +276,6 @@ fn start_domain_event_bridges(cx: &mut App) {
         },
     )
     .detach();
-}
-
-fn image_pipeline_decoded_budget_bytes() -> usize {
-    let mut system = sysinfo::System::new();
-    system.refresh_memory();
-    let total_memory_bytes = system.total_memory();
-    let system_budget = usize::try_from(total_memory_bytes / 64).unwrap_or(16 * 1024 * 1024);
-
-    system_budget.clamp(16 * 1024 * 1024, 64 * 1024 * 1024)
 }
 
 fn configure_runtime(cx: &mut App, launch_mode: &LaunchMode) {
@@ -424,7 +406,7 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
                     tracing::warn!(?error, "failed to load pending diagnostics report");
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "pending diagnostics report load task failed");
+                    tracing::warn!(%error, "pending diagnostics report load task failed: {error}");
                 }
             })?;
             Ok::<(), anyhow::Error>(())
@@ -572,7 +554,7 @@ fn open_debug_window(cx: &mut App) {
                 cx,
                 "调试窗口打开失败",
                 "open_debug_window",
-                format!("Failed to open debug window: {error:#?}"),
+                format!("Failed to open window: {error:#?}"),
             );
         }
     }
