@@ -9,6 +9,7 @@ mod geometry;
 mod java;
 mod java_bake;
 mod java_db;
+mod java_runtime;
 mod json;
 mod material;
 mod model_family;
@@ -33,13 +34,14 @@ pub use java_db::{
     JavaPackedElementIter, JavaPackedFace, JavaPackedFaceIter, JavaPackedModel,
     JavaPropertySource, vanilla_java_model_database,
 };
+pub use java_runtime::java_model_shape_for_bedrock_state;
 pub use material::{
     BlockComponents, BlockFace, BlockTransformation, MaterialInstance, TextureReference, TextureSet,
 };
 pub use model_family::{
     ModelCuboid, ModelFamily, ModelPlane, ModelShape, canonical_block_name_for_state,
     detail_material_block_name_for_state, is_full_opaque_block, model_family_for_block_name,
-    model_family_has_detail_shape, model_shape_for_block_state,
+    model_family_has_detail_shape,
 };
 pub use obj::{
     FALLBACK_MATERIAL_NAME, MATERIAL_SLOT_SEPARATOR, NamedObjMaterial, ObjExport,
@@ -75,3 +77,20 @@ pub use permutation::{BlockPermutation, ConditionEvaluation};
 pub use resolver::{ModelWarning, ResolvedBlockModel, ResolvedMaterialInstance, ResolvedTexture};
 pub use state::{BlockStateQuery, BlockStateValue};
 pub use texture::{TerrainTexture, TerrainTextureAtlas};
+
+/// Resolves a renderer-neutral model for a Bedrock block state.
+///
+/// Vanilla detail families prefer the baked Java Edition geometry database because it contains
+/// the authoritative vanilla element layout and blockstate rotations. Bedrock-specific/custom
+/// states that do not map to Java, plus full blocks, keep the existing family implementation as a
+/// fallback. Resource-pack `minecraft:geometry` remains a higher-level resolver concern and is
+/// therefore still authoritative in BMCBL before this function is called.
+#[must_use]
+pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape> {
+    if model_family::model_family_has_detail_shape(&state.name) {
+        if let Some(shape) = java_runtime::java_model_shape_for_bedrock_state(state, 0) {
+            return Some(shape);
+        }
+    }
+    model_family::model_shape_for_block_state(state)
+}
