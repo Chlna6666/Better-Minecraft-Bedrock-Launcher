@@ -8,6 +8,7 @@ on:
       - scripts/bootstrap_neighbor_model_patch.py
       - scripts/fix_neighbor_model_precedence.py
       - scripts/fix_neighbor_preview_compile.py
+      - scripts/fix_neighbor_const_rust195.py
       - .github/workflows/fix-neighbor-dependent-models.yml
   workflow_dispatch:
 
@@ -40,6 +41,7 @@ jobs:
           python3 scripts/fix_neighbor_dependent_models.py
           python3 scripts/fix_neighbor_model_precedence.py
           python3 scripts/fix_neighbor_preview_compile.py
+          python3 scripts/fix_neighbor_const_rust195.py
 
       - name: Format
         run: |
@@ -75,6 +77,7 @@ jobs:
           python scripts/fix_neighbor_dependent_models.py
           python scripts/fix_neighbor_model_precedence.py
           python scripts/fix_neighbor_preview_compile.py
+          python scripts/fix_neighbor_const_rust195.py
 
       - name: Format
         shell: pwsh
@@ -114,6 +117,7 @@ jobs:
           Remove-Item -Force scripts/bootstrap_neighbor_model_patch.py -ErrorAction SilentlyContinue
           Remove-Item -Force scripts/fix_neighbor_model_precedence.py -ErrorAction SilentlyContinue
           Remove-Item -Force scripts/fix_neighbor_preview_compile.py -ErrorAction SilentlyContinue
+          Remove-Item -Force scripts/fix_neighbor_const_rust195.py -ErrorAction SilentlyContinue
           Remove-Item -Force .github/workflows/fix-neighbor-dependent-models.yml -ErrorAction SilentlyContinue
           git add -A
           git diff --cached --quiet
