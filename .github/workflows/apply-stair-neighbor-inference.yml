@@ -20,11 +20,22 @@ concurrency:
 jobs:
   apply-and-verify:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake libclang-dev llvm-dev ninja-build pkg-config \
+            libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev \
+            libfreetype6-dev libgl1-mesa-dev libpipewire-0.3-dev libssl-dev \
+            libudev-dev libvulkan-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
+            libxcursor-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxrandr-dev nasm yasm
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
