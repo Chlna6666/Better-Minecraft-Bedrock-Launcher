@@ -1,0 +1,74 @@
+name: Fix Java Runtime Integration Bootstrap
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix-apply-java-runtime-integration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch bootstrap workflow
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/apply-java-runtime-integration.yml')
+          source = path.read_text(encoding='utf-8')
+
+          old = '''      - name: Set up Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Check formatting
+        shell: bash
+        run: rustfmt --edition 2024 --check crates/bedrock-block-model/src/java_runtime.rs crates/bedrock-block-model/src/bedrock_block_model.rs src/ui/window/map_viewer/preview_3d_source.rs
+'''
+          new = '''      - name: Set up Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Format integration
+        shell: bash
+        run: rustfmt --edition 2024 crates/bedrock-block-model/src/java_runtime.rs crates/bedrock-block-model/src/bedrock_block_model.rs src/ui/window/map_viewer/preview_3d_source.rs
+'''
+          if source.count(old) != 1:
+              raise SystemExit('Rust setup/format block did not match exactly once')
+          source = source.replace(old, new, 1)
+
+          # The outer workflow parser expands ${{ ... }} even inside the Python heredoc.
+          # Build the literal expression dynamically so update-java-models.yml retains it.
+          bad = '''              '          git commit -m "chore(方块模型): 更新 Java ${{ steps.metadata.outputs.version }} 模型数据库"\\n',
+'''
+          replacement = '''              '          git commit -m "chore(方块模型): 更新 Java ' + '${' + '{ steps.metadata.outputs.version }}' + ' 模型数据库"\\n',
+'''
+          if source.count(bad) != 1:
+              raise SystemExit('metadata commit expression did not match exactly once')
+          source = source.replace(bad, replacement, 1)
+          path.write_text(source, encoding='utf-8')
+          PY
+
+      - name: Commit bootstrap fix
+        shell: bash
+        run: |
+          git rm .github/workflows/fix-apply-java-runtime-integration.yml
+          git add .github/workflows/apply-java-runtime-integration.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci(方块模型): 修复 Java 运行时接入自举"
+          git push origin HEAD:master
