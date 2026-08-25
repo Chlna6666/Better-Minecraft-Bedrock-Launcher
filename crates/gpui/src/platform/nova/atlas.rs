@@ -426,7 +426,7 @@ fn preferred_atlas_axis_size(content_axis: i32) -> Option<u32> {
     let padded = u32::try_from(content_axis.max(1))
         .ok()?
         .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2));
-    let floor = if padded > NOVA_DEFAULT_ATLAS_SIZE / 2 {
+    let floor = if padded > NOVA_DEFAULT_ATLAS_SIZE {
         NOVA_LARGE_IMAGE_ATLAS_SIZE
     } else {
         NOVA_DEFAULT_ATLAS_SIZE
@@ -684,6 +684,19 @@ mod tests {
         let state = atlas.state.lock().expect("nova atlas lock poisoned");
         assert_eq!(state.max_atlas_bytes, 256 * 1024 * 1024);
         assert_eq!(state.max_atlas_textures, 32);
+    }
+
+    #[test]
+    fn medium_axis_uses_default_atlas_size() {
+        assert_eq!(preferred_atlas_axis_size(1296), Some(NOVA_DEFAULT_ATLAS_SIZE));
+    }
+
+    #[test]
+    fn axis_larger_than_default_atlas_uses_large_atlas_size() {
+        assert_eq!(
+            preferred_atlas_axis_size(2304),
+            Some(NOVA_LARGE_IMAGE_ATLAS_SIZE)
+        );
     }
 
     #[test]
