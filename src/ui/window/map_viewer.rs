@@ -4,7 +4,7 @@ mod canvas;
 mod editor;
 #[cfg(debug_assertions)]
 mod entity_debug_paint;
-mod exact_selection_ops;
+mod exact_selection_ops_v2;
 mod helpers;
 mod history_panel;
 mod import_preview;
@@ -128,14 +128,16 @@ pub(crate) mod bedrock_world_domains {
 mod preview_3d {
     use super::bedrock_world_domains as bedrock_world;
     include!("map_viewer/preview_3d.rs");
+    include!("map_viewer/preview_3d_patch.rs");
 }
 mod preview_3d_obj;
 mod preview_3d_source {
     use super::bedrock_world_domains as bedrock_world;
     include!("map_viewer/preview_3d_source.rs");
 }
+mod preview_detached;
 mod preview_panel;
-mod preview_panel_render;
+mod preview_panel_render_v2;
 mod professional_panel;
 mod query_cache;
 mod region_package;
