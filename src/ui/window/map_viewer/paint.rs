@@ -140,33 +140,10 @@ pub(super) fn draw_professional_overlay_canvas(
             }
         }
         if overlays.entities {
-            let mut avatar_requests = Vec::new();
-            const MAX_ENTITY_AVATAR_REQUESTS: usize = 2_048;
+            let mut avatar_requests = Vec::with_capacity(overlay_paint.entity_points.len().min(4_096));
             let canvas_width = bounds.size.width / px(1.0);
             let canvas_height = bounds.size.height / px(1.0);
             for point in &overlay_paint.entity_points {
-                // BedrockMap uses either the entity image or its unknown fallback. Do not
-                // unconditionally paint our orange fallback underneath a known transparent
-                // avatar: transparent pixels (for example shulker.png) otherwise expose the
-                // orange square and make a valid icon look like the fallback marker.
-                let avatar = point
-                    .avatar_key
-                    .as_ref()
-                    .and_then(|key| entity_avatar_pool.get(key));
-                if avatar.is_none() || avatar_requests.len() >= MAX_ENTITY_AVATAR_REQUESTS {
-                    paint_point_marker(
-                        bounds,
-                        viewport,
-                        layout,
-                        point.block_x,
-                        point.block_z,
-                        rgb(0xf97316).into(),
-                        window,
-                    );
-                }
-                if avatar_requests.len() >= MAX_ENTITY_AVATAR_REQUESTS {
-                    continue;
-                }
                 let screen_x = overlay_marker_screen_x(bounds, viewport, layout, point.block_x);
                 let screen_y = overlay_marker_screen_y(bounds, viewport, layout, point.block_z);
                 if screen_x < -52.0
@@ -176,17 +153,38 @@ pub(super) fn draw_professional_overlay_canvas(
                 {
                     continue;
                 }
-                if let Some(image) = avatar {
-                    avatar_requests.push(entity_avatar_request(
+
+                // 橙色标记只表示实体确实没有可用头像。实体数量和 GPU 上传预算
+                // 不得改变其语义，否则低缩放下同屏实体超过旧的硬上限时，会把
+                // 已支持的实体错误显示成“未知实体”。
+                let Some(image) = point
+                    .avatar_key
+                    .as_ref()
+                    .and_then(|key| entity_avatar_pool.get(key))
+                else {
+                    paint_point_marker(
                         bounds,
                         viewport,
                         layout,
                         point.block_x,
                         point.block_z,
-                        image,
-                    ));
-                }
+                        rgb(0xf97316).into(),
+                        window,
+                    );
+                    continue;
+                };
+
+                avatar_requests.push(entity_avatar_request(
+                    bounds,
+                    viewport,
+                    layout,
+                    point.block_x,
+                    point.block_z,
+                    image,
+                ));
             }
+            // 这里只限制每帧新上传到 atlas 的唯一图片数量，不限制同屏实体数量。
+            // 已驻留图片始终可以绘制；未驻留图片会在后续帧逐步补齐。
             match window.paint_images_budgeted(avatar_requests, 32) {
                 Ok(progress) if progress.deferred_requests > 0 => {
                     window.request_animation_frame();
