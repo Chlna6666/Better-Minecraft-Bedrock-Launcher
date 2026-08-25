@@ -33,6 +33,39 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Apply baker source compatibility fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              Path("crates/bedrock-block-model/src/java_bake.rs"): [
+                  (
+                      "fn semantic_material_slot(texture: &str, face: &str) -> &str {",
+                      "fn semantic_material_slot<'a>(texture: &str, face: &'a str) -> &'a str {",
+                  ),
+                  (
+                      "    if let Some(parent) = path.parent() {\n        fs::create_dir_all(parent)",
+                      "    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {\n        fs::create_dir_all(parent)",
+                  ),
+              ],
+              Path("crates/bedrock-block-model/src/model_family.rs"): [
+                  ("mod shape;", "pub(crate) mod shape;"),
+              ],
+          }
+
+          for path, changes in replacements.items():
+              source = path.read_text(encoding="utf-8")
+              for old, new in changes:
+                  if new in source:
+                      continue
+                  if old not in source:
+                      raise SystemExit(f"expected source pattern is missing in {path}: {old!r}")
+                  source = source.replace(old, new, 1)
+              path.write_text(source, encoding="utf-8")
+          PY
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -124,6 +157,8 @@ jobs:
         shell: bash
         run: |
           git add \
+            crates/bedrock-block-model/src/java_bake.rs \
+            crates/bedrock-block-model/src/model_family.rs \
             crates/bedrock-block-model/generated/vanilla_models.bin \
             crates/bedrock-block-model/generated/vanilla_models.meta.json
           if git diff --cached --quiet; then
