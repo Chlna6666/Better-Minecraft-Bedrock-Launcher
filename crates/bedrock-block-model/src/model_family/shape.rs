@@ -107,12 +107,22 @@ impl ModelCuboid {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ModelPlaneSidedness {
+    /// Thin/decal geometry such as vines and crossed plants is visible from both directions.
+    #[default]
+    DoubleSided,
+    /// One physical surface of a solid or rotated element. Renderers must not synthesize a back face.
+    FrontOnly,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelPlane {
     pub corners: [[f32; 3]; 4],
     pub normal: [i32; 3],
     pub material_slot: Option<String>,
     pub uv: Option<[[f32; 2]; 4]>,
+    pub sidedness: ModelPlaneSidedness,
 }
 
 impl ModelPlane {
@@ -123,7 +133,15 @@ impl ModelPlane {
             normal,
             material_slot: None,
             uv: None,
+            sidedness: ModelPlaneSidedness::DoubleSided,
         }
+    }
+
+    /// Marks this quad as one physical face rather than a thin two-sided plane.
+    #[must_use]
+    pub const fn front_only(mut self) -> Self {
+        self.sidedness = ModelPlaneSidedness::FrontOnly;
+        self
     }
 
     #[must_use]
@@ -268,5 +286,15 @@ mod tests {
                 .face_material_slots
                 .contains_key(&BlockFace::Down)
         );
+    }
+
+    #[test]
+    fn model_planes_are_double_sided_by_default_but_can_be_front_only() {
+        let plane = ModelPlane::new(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            [0, 0, -1],
+        );
+        assert_eq!(plane.sidedness, ModelPlaneSidedness::DoubleSided);
+        assert_eq!(plane.front_only().sidedness, ModelPlaneSidedness::FrontOnly);
     }
 }
