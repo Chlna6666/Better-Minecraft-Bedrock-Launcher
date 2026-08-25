@@ -56,7 +56,7 @@ jobs:
           exit 0
 
       - name: Upload BMCBL check diagnostics
-        if: steps.bmcbl_check.outputs.status != '0'
+        if: ${{ steps.bmcbl_check.outputs.status != '0' }}
         uses: actions/upload-artifact@v4
         with:
           name: model-plane-bmcbl-check
@@ -65,7 +65,7 @@ jobs:
           retention-days: 1
 
       - name: Fail on BMCBL check error
-        if: steps.bmcbl_check.outputs.status != '0'
+        if: ${{ steps.bmcbl_check.outputs.status != '0' }}
         run: exit 1
 
       - name: Validate diff
