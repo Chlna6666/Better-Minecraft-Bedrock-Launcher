@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::material::BlockFace;
-use crate::model_family::shape::{detail_cuboid_with_local_uv, ModelCuboid, ModelPlane, ModelShape};
+use crate::model_family::shape::{
+    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv,
+};
 use crate::{
-    canonical_block_name_for_state, BlockModelError, BlockStateQuery, BlockStateValue, ModelFamily,
-    Result, model_family_for_block_name,
+    BlockModelError, BlockStateQuery, BlockStateValue, ModelFamily, Result,
+    canonical_block_name_for_state, model_family_for_block_name,
 };
 
 /// Java Edition resource-pack model repository used as an offline conversion source.
@@ -60,9 +62,9 @@ impl JavaModelRepository {
         } else if root.file_name().is_some_and(|name| name == "assets") && root.is_dir() {
             root.to_path_buf()
         } else if root.file_name().is_some_and(|name| name == "minecraft")
-            && root.parent().is_some_and(|parent| {
-                parent.file_name().is_some_and(|name| name == "assets")
-            })
+            && root
+                .parent()
+                .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "assets"))
         {
             root.parent().expect("checked parent").to_path_buf()
         } else {
@@ -155,7 +157,10 @@ impl JavaModelRepository {
         let path = self.model_path(id);
         let value = read_json(&path)?;
         let object = value.as_object().ok_or_else(|| {
-            BlockModelError::Message(format!("Java model is not a JSON object: {}", path.display()))
+            BlockModelError::Message(format!(
+                "Java model is not a JSON object: {}",
+                path.display()
+            ))
         })?;
 
         let mut resolved = if let Some(parent) = object.get("parent").and_then(Value::as_str) {
@@ -228,14 +233,20 @@ pub fn java_properties_for_bedrock_state(state: &BlockStateQuery) -> BTreeMap<St
                 properties.insert("facing".to_owned(), direction.to_owned());
             }
             let top = state_bool(state, "upside_down_bit").unwrap_or(false);
-            properties.insert("half".to_owned(), if top { "top" } else { "bottom" }.to_owned());
+            properties.insert(
+                "half".to_owned(),
+                if top { "top" } else { "bottom" }.to_owned(),
+            );
         }
         ModelFamily::Door => {
             if let Some(direction) = bedrock_cardinal_direction(state) {
                 properties.insert("facing".to_owned(), direction.to_owned());
             }
             let upper = state_bool(state, "upper_block_bit").unwrap_or(false);
-            properties.insert("half".to_owned(), if upper { "upper" } else { "lower" }.to_owned());
+            properties.insert(
+                "half".to_owned(),
+                if upper { "upper" } else { "lower" }.to_owned(),
+            );
             let hinge_right = state_bool(state, "door_hinge_bit").unwrap_or(false);
             properties.insert(
                 "hinge".to_owned(),
@@ -243,14 +254,14 @@ pub fn java_properties_for_bedrock_state(state: &BlockStateQuery) -> BTreeMap<St
             );
         }
         ModelFamily::Stairs => {
-            if let Some(direction) = state_i64(state, "weirdo_direction")
-                .and_then(cardinal_direction_0_3)
-                .or_else(|| bedrock_cardinal_direction(state))
-            {
+            if let Some(direction) = bedrock_stair_direction(state) {
                 properties.insert("facing".to_owned(), direction.to_owned());
             }
             let top = state_bool(state, "upside_down_bit").unwrap_or(false);
-            properties.insert("half".to_owned(), if top { "top" } else { "bottom" }.to_owned());
+            properties.insert(
+                "half".to_owned(),
+                if top { "top" } else { "bottom" }.to_owned(),
+            );
         }
         ModelFamily::Slab => {
             if let Some(half) = state_string(state, "vertical_half") {
@@ -273,14 +284,19 @@ pub fn java_properties_for_bedrock_state(state: &BlockStateQuery) -> BTreeMap<St
 
     // Java variants frequently include these properties even when the corresponding Bedrock
     // state is implicit rather than persisted.
-    properties.entry("powered".to_owned()).or_insert_with(|| "false".to_owned());
+    properties
+        .entry("powered".to_owned())
+        .or_insert_with(|| "false".to_owned());
     properties
         .entry("waterlogged".to_owned())
         .or_insert_with(|| "false".to_owned());
     properties
 }
 
-fn matching_applies(blockstate: &Value, properties: &BTreeMap<String, String>) -> Vec<JavaVariantApply> {
+fn matching_applies(
+    blockstate: &Value,
+    properties: &BTreeMap<String, String>,
+) -> Vec<JavaVariantApply> {
     let mut applies = Vec::new();
     if let Some(variants) = blockstate.get("variants").and_then(Value::as_object) {
         for (selector, apply) in variants {
@@ -298,9 +314,7 @@ fn matching_applies(blockstate: &Value, properties: &BTreeMap<String, String>) -
             let when_matches = part
                 .get("when")
                 .is_none_or(|when| multipart_when_matches(when, properties));
-            if when_matches
-                && let Some(apply) = part.get("apply").and_then(parse_apply)
-            {
+            if when_matches && let Some(apply) = part.get("apply").and_then(parse_apply) {
                 applies.push(apply);
             }
         }
@@ -318,7 +332,10 @@ fn parse_apply(value: &Value) -> Option<JavaVariantApply> {
         model: object.get("model")?.as_str()?.to_owned(),
         x: object.get("x").and_then(Value::as_i64).unwrap_or(0) as i32,
         y: object.get("y").and_then(Value::as_i64).unwrap_or(0) as i32,
-        uvlock: object.get("uvlock").and_then(Value::as_bool).unwrap_or(false),
+        uvlock: object
+            .get("uvlock")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -330,9 +347,9 @@ fn variant_selector_matches(selector: &str, properties: &BTreeMap<String, String
         let Some((key, values)) = term.split_once('=') else {
             return false;
         };
-        properties.get(key.trim()).is_some_and(|actual| {
-            values.split('|').any(|expected| actual == expected.trim())
-        })
+        properties
+            .get(key.trim())
+            .is_some_and(|actual| values.split('|').any(|expected| actual == expected.trim()))
     })
 }
 
@@ -341,10 +358,14 @@ fn multipart_when_matches(when: &Value, properties: &BTreeMap<String, String>) -
         return false;
     };
     if let Some(or) = object.get("OR").and_then(Value::as_array) {
-        return or.iter().any(|item| multipart_when_matches(item, properties));
+        return or
+            .iter()
+            .any(|item| multipart_when_matches(item, properties));
     }
     if let Some(and) = object.get("AND").and_then(Value::as_array) {
-        return and.iter().all(|item| multipart_when_matches(item, properties));
+        return and
+            .iter()
+            .all(|item| multipart_when_matches(item, properties));
     }
     object.iter().all(|(key, expected)| {
         let Some(actual) = properties.get(key) else {
@@ -455,10 +476,16 @@ fn rotate_cuboid(
     let [min_x, min_y, min_z] = cuboid.min;
     let [max_x, max_y, max_z] = cuboid.max;
     let corners = [
-        [min_x, min_y, min_z], [min_x, min_y, max_z], [min_x, max_y, min_z],
-        [min_x, max_y, max_z], [max_x, min_y, min_z], [max_x, min_y, max_z],
-        [max_x, max_y, min_z], [max_x, max_y, max_z],
-    ].map(rotate_point);
+        [min_x, min_y, min_z],
+        [min_x, min_y, max_z],
+        [min_x, max_y, min_z],
+        [min_x, max_y, max_z],
+        [max_x, min_y, min_z],
+        [max_x, min_y, max_z],
+        [max_x, max_y, min_z],
+        [max_x, max_y, max_z],
+    ]
+    .map(rotate_point);
     cuboid.min = [f32::INFINITY; 3];
     cuboid.max = [f32::NEG_INFINITY; 3];
     for corner in corners {
@@ -520,8 +547,21 @@ fn bedrock_cardinal_direction(state: &BlockStateQuery) -> Option<&'static str> {
         .or_else(|| state_i64(state, "weirdo_direction").and_then(cardinal_direction_0_3))
 }
 
+fn bedrock_stair_direction(state: &BlockStateQuery) -> Option<&'static str> {
+    state_string(state, "cardinal_direction")
+        .and_then(cardinal_direction_string)
+        .or_else(|| state_string(state, "facing").and_then(cardinal_direction_string))
+        .or_else(|| state_string(state, "direction").and_then(cardinal_direction_string))
+        .or_else(|| state_i64(state, "weirdo_direction").and_then(stair_direction_0_3))
+        .or_else(|| state_i64(state, "direction").and_then(cardinal_direction_0_3))
+}
+
 fn cardinal_direction_string(value: &str) -> Option<&'static str> {
-    match value.trim().strip_prefix("minecraft:").unwrap_or(value.trim()) {
+    match value
+        .trim()
+        .strip_prefix("minecraft:")
+        .unwrap_or(value.trim())
+    {
         "north" => Some("north"),
         "south" => Some("south"),
         "east" => Some("east"),
@@ -536,6 +576,16 @@ fn cardinal_direction_0_3(value: i64) -> Option<&'static str> {
         1 => Some("west"),
         2 => Some("north"),
         3 => Some("east"),
+        _ => None,
+    }
+}
+
+fn stair_direction_0_3(value: i64) -> Option<&'static str> {
+    match value.rem_euclid(4) {
+        0 => Some("east"),
+        1 => Some("west"),
+        2 => Some("south"),
+        3 => Some("north"),
         _ => None,
     }
 }
@@ -618,7 +668,10 @@ fn vector3(value: &Value) -> Option<[f32; 3]> {
 }
 
 fn number_f32(value: &Value) -> Option<f32> {
-    #[expect(clippy::cast_possible_truncation, reason = "Java model coordinates are renderer f32 values")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Java model coordinates are renderer f32 values"
+    )]
     value.as_f64().map(|value| value as f32)
 }
 
@@ -648,7 +701,10 @@ mod tests {
     #[test]
     fn legacy_bedrock_grass_maps_to_java_grass_block() {
         let state = BlockStateQuery::new("minecraft:grass");
-        assert_eq!(java_block_id_for_bedrock_state(&state), "minecraft:grass_block");
+        assert_eq!(
+            java_block_id_for_bedrock_state(&state),
+            "minecraft:grass_block"
+        );
     }
 
     #[test]
@@ -663,8 +719,35 @@ mod tests {
             .with_state("upper_block_bit", false)
             .with_state("door_hinge_bit", false);
 
-        assert_eq!(java_properties_for_bedrock_state(&trapdoor).get("facing").map(String::as_str), Some("west"));
-        assert_eq!(java_properties_for_bedrock_state(&door).get("facing").map(String::as_str), Some("south"));
+        assert_eq!(
+            java_properties_for_bedrock_state(&trapdoor)
+                .get("facing")
+                .map(String::as_str),
+            Some("west")
+        );
+        assert_eq!(
+            java_properties_for_bedrock_state(&door)
+                .get("facing")
+                .map(String::as_str),
+            Some("south")
+        );
+    }
+
+    #[test]
+    fn stairs_weirdo_direction_matches_bedrock_encoding() {
+        let cases = [(0, "east"), (1, "west"), (2, "south"), (3, "north")];
+        for (direction, expected) in cases {
+            let stairs = BlockStateQuery::new("minecraft:oak_stairs")
+                .with_state("weirdo_direction", direction)
+                .with_state("upside_down_bit", false);
+            assert_eq!(
+                java_properties_for_bedrock_state(&stairs)
+                    .get("facing")
+                    .map(String::as_str),
+                Some(expected),
+                "weirdo_direction={direction}",
+            );
+        }
     }
 
     #[test]
@@ -674,16 +757,20 @@ mod tests {
             ("half".to_owned(), "top".to_owned()),
             ("open".to_owned(), "true".to_owned()),
         ]);
-        assert!(variant_selector_matches("facing=east,half=top,open=true", &properties));
-        assert!(!variant_selector_matches("facing=north,half=top,open=true", &properties));
+        assert!(variant_selector_matches(
+            "facing=east,half=top,open=true",
+            &properties
+        ));
+        assert!(!variant_selector_matches(
+            "facing=north,half=top,open=true",
+            &properties
+        ));
     }
 
     #[test]
     fn positive_java_y_rotation_moves_north_model_to_east() {
-        let mut shape = ModelShape::from_cuboids([ModelCuboid::new(
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 0.25],
-        )]);
+        let mut shape =
+            ModelShape::from_cuboids([ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, 0.25])]);
         rotate_shape_quarter_turns(&mut shape, 0, 90).unwrap();
         assert_eq!(shape.cuboids[0].min, [0.75, 0.0, 0.0]);
         assert_eq!(shape.cuboids[0].max, [1.0, 1.0, 1.0]);

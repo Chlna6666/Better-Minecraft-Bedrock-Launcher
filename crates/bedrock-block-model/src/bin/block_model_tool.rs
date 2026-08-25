@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use bedrock_block_model::{
     BlockStateQuery, BlockStateValue, JavaBakedModel, JavaModelRepository,
-    bake_java_model_database, java_block_id_for_bedrock_state,
-    java_properties_for_bedrock_state,
+    bake_java_model_database, java_block_id_for_bedrock_state, java_properties_for_bedrock_state,
 };
 use serde_json::json;
 
@@ -132,7 +131,9 @@ fn parse_state(
         let Some((key, value)) = arg.split_once('=') else {
             return Err(usage(&format!("state must use key=value syntax: {arg}")));
         };
-        state.states.insert(key.to_owned(), parse_state_value(value));
+        state
+            .states
+            .insert(key.to_owned(), parse_state_value(value));
     }
     Ok((state, json_output))
 }

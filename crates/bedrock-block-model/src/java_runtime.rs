@@ -30,11 +30,8 @@ fn java_model_shape_for_bedrock_state_in_database(
     let mut shape = ModelShape::default();
     let mut applied = false;
 
-    let block_exists = database.for_each_model_application(
-        &java_block_id,
-        &properties,
-        seed,
-        |application| {
+    let block_exists =
+        database.for_each_model_application(&java_block_id, &properties, seed, |application| {
             let Some(model) = database.model(application.model) else {
                 return;
             };
@@ -42,8 +39,7 @@ fn java_model_shape_for_bedrock_state_in_database(
             for element in model.elements() {
                 push_packed_element(&mut shape, element, application);
             }
-        },
-    );
+        });
 
     (block_exists && applied && !shape.is_empty()).then_some(shape)
 }
@@ -89,24 +85,12 @@ fn push_packed_element(
 
 fn ordered_bounds(from: [f32; 3], to: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     (
-        [
-            from[0].min(to[0]),
-            from[1].min(to[1]),
-            from[2].min(to[2]),
-        ],
-        [
-            from[0].max(to[0]),
-            from[1].max(to[1]),
-            from[2].max(to[2]),
-        ],
+        [from[0].min(to[0]), from[1].min(to[1]), from[2].min(to[2])],
+        [from[0].max(to[0]), from[1].max(to[1]), from[2].max(to[2])],
     )
 }
 
-fn packed_face_uv(
-    face: JavaPackedFace<'_>,
-    min: [f32; 3],
-    max: [f32; 3],
-) -> [[f32; 2]; 4] {
+fn packed_face_uv(face: JavaPackedFace<'_>, min: [f32; 3], max: [f32; 3]) -> [[f32; 2]; 4] {
     let [u0, v0, u1, v1] = face
         .uv_normalized()
         .unwrap_or_else(|| default_face_uv_rect(face.face, min, max));
@@ -340,7 +324,11 @@ fn nearest_axis_normal(normal: [f32; 3]) -> [i32; 3] {
         0
     };
     let mut result = [0, 0, 0];
-    result[axis] = if normal[axis].is_sign_negative() { -1 } else { 1 };
+    result[axis] = if normal[axis].is_sign_negative() {
+        -1
+    } else {
+        1
+    };
     result
 }
 
@@ -372,12 +360,15 @@ mod tests {
             .with_state("direction", 0)
             .with_state("open_bit", false)
             .with_state("upside_down_bit", false);
-        let shape = java_model_shape_for_bedrock_state(&state, 0x1234)
-            .expect("Java trapdoor model");
+        let shape =
+            java_model_shape_for_bedrock_state(&state, 0x1234).expect("Java trapdoor model");
         assert!(!shape.is_empty());
-        assert!(shape.cuboids.iter().all(|cuboid| {
-            cuboid.min != [0.0, 0.0, 0.0] || cuboid.max != [1.0, 1.0, 1.0]
-        }));
+        assert!(
+            shape
+                .cuboids
+                .iter()
+                .all(|cuboid| { cuboid.min != [0.0, 0.0, 0.0] || cuboid.max != [1.0, 1.0, 1.0] })
+        );
     }
 
     #[test]

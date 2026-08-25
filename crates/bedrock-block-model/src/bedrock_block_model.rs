@@ -26,13 +26,11 @@ pub use java::{
     JavaBakedModel, JavaModelRepository, java_block_id_for_bedrock_state,
     java_properties_for_bedrock_state,
 };
-pub use java_bake::{
-    JAVA_MODEL_DB_SCHEMA, JavaModelBakeStats, bake_java_model_database,
-};
+pub use java_bake::{JAVA_MODEL_DB_SCHEMA, JavaModelBakeStats, bake_java_model_database};
 pub use java_db::{
     JavaModelApplication, JavaModelAxis, JavaModelDatabase, JavaModelId, JavaPackedElement,
-    JavaPackedElementIter, JavaPackedFace, JavaPackedFaceIter, JavaPackedModel,
-    JavaPropertySource, vanilla_java_model_database,
+    JavaPackedElementIter, JavaPackedFace, JavaPackedFaceIter, JavaPackedModel, JavaPropertySource,
+    vanilla_java_model_database,
 };
 pub use java_runtime::java_model_shape_for_bedrock_state;
 pub use material::{

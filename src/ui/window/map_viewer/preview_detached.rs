@@ -77,13 +77,11 @@ impl DetachedPreview3dView {
             }
             cx.notify();
         }));
-        subscriptions.push(cx.observe_release_in(
-            &owner,
-            window,
-            |_this, _owner, window, _cx| {
+        subscriptions.push(
+            cx.observe_release_in(&owner, window, |_this, _owner, window, _cx| {
                 window.remove_window();
-            },
-        ));
+            }),
+        );
         subscriptions.push(cx.observe_global::<ThemeState>(|_this, cx| cx.notify()));
 
         Self {
@@ -157,14 +155,15 @@ impl Render for DetachedPreview3dView {
             )
         });
 
-        let (mesh, camera, model_rotation, selection_bounds, loading, stats) = snapshot.unwrap_or((
-            None,
-            Preview3dCamera::default(),
-            Preview3dModelRotation::default(),
-            None,
-            false,
-            SharedString::from(""),
-        ));
+        let (mesh, camera, model_rotation, selection_bounds, loading, stats) =
+            snapshot.unwrap_or((
+                None,
+                Preview3dCamera::default(),
+                Preview3dModelRotation::default(),
+                None,
+                false,
+                SharedString::from(""),
+            ));
 
         let owner_for_refresh = self.owner.clone();
         let owner_for_reset = self.owner.clone();
@@ -269,16 +268,14 @@ impl Render for DetachedPreview3dView {
                             cx.stop_propagation();
                         }),
                     )
-                    .on_mouse_move(cx.listener(
-                        |this, event: &MouseMoveEvent, _window, cx| {
-                            if event.pressed_button.is_some() && this.drag.is_some() {
-                                this.update_drag(event.position, cx);
-                                cx.stop_propagation();
-                            } else if event.pressed_button.is_none() {
-                                this.drag = None;
-                            }
-                        },
-                    ))
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                        if event.pressed_button.is_some() && this.drag.is_some() {
+                            this.update_drag(event.position, cx);
+                            cx.stop_propagation();
+                        } else if event.pressed_button.is_none() {
+                            this.drag = None;
+                        }
+                    }))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
@@ -295,14 +292,12 @@ impl Render for DetachedPreview3dView {
                             cx.stop_propagation();
                         }),
                     )
-                    .on_scroll_wheel(cx.listener(
-                        |this, event: &ScrollWheelEvent, _window, cx| {
-                            let delta = event.delta.pixel_delta(px(48.0));
-                            let factor = if delta.y > px(0.0) { 1.12 } else { 0.90 };
-                            this.with_owner(cx, |main, cx| main.preview_3d_zoom_by(factor, cx));
-                            cx.stop_propagation();
-                        },
-                    ))
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                        let delta = event.delta.pixel_delta(px(48.0));
+                        let factor = if delta.y > px(0.0) { 1.12 } else { 0.90 };
+                        this.with_owner(cx, |main, cx| main.preview_3d_zoom_by(factor, cx));
+                        cx.stop_propagation();
+                    }))
                     .when_some(mesh, |this, mesh| {
                         let frame = detached_preview_world_frame(mesh.as_ref(), selection_bounds);
                         this.child(
@@ -325,7 +320,8 @@ impl Render for DetachedPreview3dView {
                                             &world_parameters,
                                             chunk_mesh.world_origin,
                                         );
-                                        if preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters) {
+                                        if preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters)
+                                        {
                                             window.paint_gpu_mesh_3d(bounds, gpu_mesh, parameters);
                                         }
                                     }
@@ -401,9 +397,8 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         let owner_id = cx.entity_id().as_u64();
-        let existing = DETACHED_PREVIEW_WINDOWS.with(|windows| {
-            windows.borrow().get(&owner_id).copied()
-        });
+        let existing =
+            DETACHED_PREVIEW_WINDOWS.with(|windows| windows.borrow().get(&owner_id).copied());
         if let Some(handle) = existing {
             if handle
                 .update(cx, |_view, window, _cx| window.activate_window())

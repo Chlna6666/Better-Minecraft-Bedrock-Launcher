@@ -406,9 +406,7 @@ impl PlatformAtlas for NovaAtlas {
         let keys = state
             .tiles
             .keys()
-            .filter(|key| {
-                matches!(key, AtlasKey::Image(params) if params.image_id == image_id)
-            })
+            .filter(|key| matches!(key, AtlasKey::Image(params) if params.image_id == image_id))
             .cloned()
             .collect::<Vec<_>>();
         let mut queued_removal = false;
@@ -417,7 +415,9 @@ impl PlatformAtlas for NovaAtlas {
                 if state.is_fallback_tile(tile) {
                     continue;
                 }
-                state.pending_removals.push(PendingAtlasRemoval { key, tile });
+                state
+                    .pending_removals
+                    .push(PendingAtlasRemoval { key, tile });
                 queued_removal = true;
             }
         }
@@ -453,8 +453,8 @@ fn image_prefers_dedicated_texture(content_size: Size<DevicePixels>) -> bool {
     let width = u32::try_from(content_size.width.0.max(1)).unwrap_or(u32::MAX);
     let height = u32::try_from(content_size.height.0.max(1)).unwrap_or(u32::MAX);
     let area = u64::from(width).saturating_mul(u64::from(height));
-    let shared_page_area = u64::from(NOVA_DEFAULT_ATLAS_SIZE)
-        .saturating_mul(u64::from(NOVA_DEFAULT_ATLAS_SIZE));
+    let shared_page_area =
+        u64::from(NOVA_DEFAULT_ATLAS_SIZE).saturating_mul(u64::from(NOVA_DEFAULT_ATLAS_SIZE));
     area >= shared_page_area / NOVA_DEDICATED_IMAGE_AREA_DIVISOR
         || width > NOVA_DEDICATED_IMAGE_AXIS_THRESHOLD
         || height > NOVA_DEDICATED_IMAGE_AXIS_THRESHOLD
@@ -531,8 +531,8 @@ impl NovaAtlasState {
             i32::try_from(padded_width).ok()?,
             i32::try_from(padded_height).ok()?,
         );
-        let (texture_id, allocation_id, allocation_min_x, allocation_min_y) = self
-            .allocate_in_texture(texture_kind, size, allocation_size, dedicated)?;
+        let (texture_id, allocation_id, allocation_min_x, allocation_min_y) =
+            self.allocate_in_texture(texture_kind, size, allocation_size, dedicated)?;
 
         let origin = Point {
             x: DevicePixels(
@@ -696,7 +696,10 @@ mod tests {
 
     #[test]
     fn medium_axis_uses_default_atlas_size() {
-        assert_eq!(preferred_atlas_axis_size(1296), Some(NOVA_DEFAULT_ATLAS_SIZE));
+        assert_eq!(
+            preferred_atlas_axis_size(1296),
+            Some(NOVA_DEFAULT_ATLAS_SIZE)
+        );
     }
 
     #[test]
@@ -838,9 +841,11 @@ mod tests {
 
         atlas.remove_image(image_id);
         let state = atlas.state.lock().expect("nova atlas lock poisoned");
-        assert!(state.tiles.keys().all(|key| {
-            !matches!(key, AtlasKey::Image(params) if params.image_id == image_id)
-        }));
+        assert!(
+            state.tiles.keys().all(|key| {
+                !matches!(key, AtlasKey::Image(params) if params.image_id == image_id)
+            })
+        );
         assert_eq!(state.pending_removals.len(), 2);
     }
 

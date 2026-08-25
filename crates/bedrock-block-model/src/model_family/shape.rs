@@ -291,7 +291,12 @@ mod tests {
     #[test]
     fn model_planes_are_double_sided_by_default_but_can_be_front_only() {
         let plane = ModelPlane::new(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
             [0, 0, -1],
         );
         assert_eq!(plane.sidedness, ModelPlaneSidedness::DoubleSided);

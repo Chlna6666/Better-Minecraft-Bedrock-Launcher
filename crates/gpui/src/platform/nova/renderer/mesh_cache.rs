@@ -254,8 +254,8 @@ impl SurfaceMeshPageAllocator {
     }
 }
 
-fn surface_mesh_allocators(
-) -> &'static Mutex<FxHashMap<SurfaceMeshAllocatorKey, SurfaceMeshPageAllocator>> {
+fn surface_mesh_allocators()
+-> &'static Mutex<FxHashMap<SurfaceMeshAllocatorKey, SurfaceMeshPageAllocator>> {
     static ALLOCATORS: OnceLock<
         Mutex<FxHashMap<SurfaceMeshAllocatorKey, SurfaceMeshPageAllocator>>,
     > = OnceLock::new();

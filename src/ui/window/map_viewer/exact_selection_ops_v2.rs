@@ -177,10 +177,8 @@ impl MapViewerWindowView {
                             this.preview_3d.signature = Some(signature);
                             this.preview_3d.mesh = Some(mesh);
                             this.preview_3d.status = Preview3dStatus::Loading(status.clone());
-                            this.status = SharedString::from(format!(
-                                "3D 预览流式拼接 · {}",
-                                status.detail
-                            ));
+                            this.status =
+                                SharedString::from(format!("3D 预览流式拼接 · {}", status.detail));
                         }
                         Preview3dLoadEvent::Complete(result) => {
                             this.preview_3d.signature = Some(signature);
@@ -351,7 +349,8 @@ fn load_preview_3d_mesh_exact_impl(
         let completed_parts = parts.clone();
         let chunks_for_update = chunks.clone();
         let update_for_part = update.clone();
-        let emit_partial = move |partial: Arc<Preview3dMesh>, _inner_status: Preview3dBuildStatus| {
+        let emit_partial = move |partial: Arc<Preview3dMesh>,
+                                 _inner_status: Preview3dBuildStatus| {
             let mut visible_parts = completed_parts.clone();
             visible_parts.push(partial.as_ref().clone());
             let merged = merge_exact_preview_meshes(&visible_parts, chunks_for_update.as_slice());

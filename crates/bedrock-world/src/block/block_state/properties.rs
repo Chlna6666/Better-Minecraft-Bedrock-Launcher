@@ -239,7 +239,7 @@ impl BlockState {
             return Ok(None);
         }
         Ok(Some(StairBlockStates {
-            direction: parse_cardinal_integer(
+            direction: parse_stair_integer(
                 "weirdo_direction",
                 required_state(self, "weirdo_direction")?,
             )?,
@@ -375,6 +375,16 @@ fn parse_cardinal_integer(key: &'static str, value: &NbtTag) -> Result<Horizonta
         Some(2) => Ok(HorizontalDirection::North),
         Some(3) => Ok(HorizontalDirection::East),
         _ => Err(invalid_state(key, "expected door direction 0..=3")),
+    }
+}
+
+fn parse_stair_integer(key: &'static str, value: &NbtTag) -> Result<HorizontalDirection> {
+    match integer(value) {
+        Some(0) => Ok(HorizontalDirection::East),
+        Some(1) => Ok(HorizontalDirection::West),
+        Some(2) => Ok(HorizontalDirection::South),
+        Some(3) => Ok(HorizontalDirection::North),
+        _ => Err(invalid_state(key, "expected stair direction 0..=3")),
     }
 }
 
@@ -534,6 +544,30 @@ mod tests {
     }
 
     #[test]
+    fn legacy_stair_direction_uses_weirdo_direction_encoding() {
+        let cases = [
+            (0, HorizontalDirection::East),
+            (1, HorizontalDirection::West),
+            (2, HorizontalDirection::South),
+            (3, HorizontalDirection::North),
+        ];
+        for (direction, expected) in cases {
+            let stairs = block(
+                "minecraft:oak_stairs",
+                [
+                    ("weirdo_direction", NbtTag::Int(direction)),
+                    ("upside_down_bit", NbtTag::Byte(0)),
+                ],
+            );
+            assert_eq!(
+                stairs.stair_states().unwrap().unwrap().direction,
+                expected,
+                "weirdo_direction={direction}",
+            );
+        }
+    }
+
+    #[test]
     fn reads_stair_slab_and_arbitrary_future_states() {
         let stairs = block(
             "minecraft:deepslate_tile_stairs",
@@ -547,7 +581,7 @@ mod tests {
         assert_eq!(
             stairs.stair_states().unwrap(),
             Some(StairBlockStates {
-                direction: HorizontalDirection::North,
+                direction: HorizontalDirection::South,
                 upside_down: true,
                 corner: Some(StairCorner::InnerLeft),
             })

@@ -86,6 +86,18 @@ pub(super) fn cardinal_direction(state: &BlockStateQuery) -> Option<CardinalDire
         .or_else(|| state_i64(state, "direction").and_then(cardinal_direction_from_int))
 }
 
+pub(super) fn stair_direction(state: &BlockStateQuery) -> Option<CardinalDirection> {
+    state_string(state, "minecraft:cardinal_direction")
+        .and_then(cardinal_direction_from_string)
+        .or_else(|| {
+            state_string(state, "cardinal_direction").and_then(cardinal_direction_from_string)
+        })
+        .or_else(|| state_string(state, "facing").and_then(cardinal_direction_from_string))
+        .or_else(|| state_string(state, "direction").and_then(cardinal_direction_from_string))
+        .or_else(|| state_i64(state, "weirdo_direction").and_then(stair_direction_from_int))
+        .or_else(|| state_i64(state, "direction").and_then(cardinal_direction_from_int))
+}
+
 pub(super) fn block_face(state: &BlockStateQuery) -> Option<&str> {
     state_string(state, "minecraft:block_face")
         .or_else(|| state_string(state, "block_face"))
@@ -152,6 +164,16 @@ fn cardinal_direction_from_int(value: i64) -> Option<CardinalDirection> {
         1 => Some(CardinalDirection::West),
         2 => Some(CardinalDirection::North),
         3 => Some(CardinalDirection::East),
+        _ => None,
+    }
+}
+
+fn stair_direction_from_int(value: i64) -> Option<CardinalDirection> {
+    match value.rem_euclid(4) {
+        0 => Some(CardinalDirection::East),
+        1 => Some(CardinalDirection::West),
+        2 => Some(CardinalDirection::South),
+        3 => Some(CardinalDirection::North),
         _ => None,
     }
 }

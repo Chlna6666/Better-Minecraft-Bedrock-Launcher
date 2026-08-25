@@ -155,7 +155,10 @@ impl BakeBuilder {
                 source,
             })?;
             if entry.file_type().is_file()
-                && entry.path().extension().is_some_and(|extension| extension == "json")
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
             {
                 files.push(entry.into_path());
             }
@@ -183,7 +186,10 @@ impl BakeBuilder {
                 path.display()
             ))
         })?;
-        let mut block_path = relative.with_extension("").to_string_lossy().replace('\\', "/");
+        let mut block_path = relative
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/");
         if block_path.starts_with('/') {
             block_path.remove(0);
         }
@@ -194,7 +200,9 @@ impl BakeBuilder {
             let mut selectors = variants.keys().cloned().collect::<Vec<_>>();
             selectors.sort();
             for selector in selectors {
-                let apply = variants.get(&selector).expect("selector came from variants");
+                let apply = variants
+                    .get(&selector)
+                    .expect("selector came from variants");
                 let condition = variant_selector_dnf(&selector)?;
                 let (clause_start, clause_count) = self.compile_condition(&condition)?;
                 let (apply_start, apply_count) = self.compile_applies(apply)?;
@@ -331,7 +339,11 @@ impl BakeBuilder {
             )));
         }
         let mut flags = 0_u16;
-        if object.get("uvlock").and_then(Value::as_bool).unwrap_or(false) {
+        if object
+            .get("uvlock")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             flags |= 1;
         }
         self.applies.push(ApplyRecord {
@@ -451,7 +463,11 @@ impl BakeBuilder {
                 }
                 None => 0,
             };
-            if rotation.get("rescale").and_then(Value::as_bool).unwrap_or(false) {
+            if rotation
+                .get("rescale")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 rotation_flags |= 1;
             }
             if let Some(angle) = rotation.get("angle").and_then(Value::as_f64) {
@@ -469,7 +485,9 @@ impl BakeBuilder {
         for value in rotation_origin {
             push_i16(&mut bytes, value);
         }
-        bytes.push(u8::from(object.get("shade").and_then(Value::as_bool).unwrap_or(true)));
+        bytes.push(u8::from(
+            object.get("shade").and_then(Value::as_bool).unwrap_or(true),
+        ));
 
         let mut packed_faces = Vec::new();
         if let Some(faces) = object.get("faces").and_then(Value::as_object) {
@@ -477,7 +495,10 @@ impl BakeBuilder {
                 let Some(face) = faces.get(*face_name).and_then(Value::as_object) else {
                     continue;
                 };
-                let texture = face.get("texture").and_then(Value::as_str).unwrap_or_default();
+                let texture = face
+                    .get("texture")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 let slot = semantic_material_slot(texture, face_name);
                 let slot_id = self.strings.intern(slot)?;
                 let mut face_bytes = Vec::new();
@@ -508,8 +529,8 @@ impl BakeBuilder {
                         "Java face rotation is not a multiple of 90: {rotation}"
                     )));
                 }
-                let turns = u8::try_from(rotation.rem_euclid(360) / 90)
-                    .expect("quarter turns fit in u8");
+                let turns =
+                    u8::try_from(rotation.rem_euclid(360) / 90).expect("quarter turns fit in u8");
                 face_bytes.push(turns);
                 face_bytes.push(cull_face.unwrap_or(u8::MAX));
                 let tint = match tint_index {
@@ -566,9 +587,11 @@ impl BakeBuilder {
         let mut offset = header_size;
         let blocks_offset = take_offset(&mut offset, block_section.len(), "block section")?;
         let variants_offset = take_offset(&mut offset, variant_section.len(), "variant section")?;
-        let multipart_offset = take_offset(&mut offset, multipart_section.len(), "multipart section")?;
+        let multipart_offset =
+            take_offset(&mut offset, multipart_section.len(), "multipart section")?;
         let clauses_offset = take_offset(&mut offset, clause_section.len(), "clause section")?;
-        let predicates_offset = take_offset(&mut offset, predicate_section.len(), "predicate section")?;
+        let predicates_offset =
+            take_offset(&mut offset, predicate_section.len(), "predicate section")?;
         let applies_offset = take_offset(&mut offset, apply_section.len(), "apply section")?;
         let model_index_offset = take_offset(&mut offset, model_index.len(), "model index")?;
         let model_data_offset = take_offset(&mut offset, model_data.len(), "model data")?;
@@ -606,7 +629,10 @@ impl BakeBuilder {
         ] {
             push_u32(&mut bytes, value);
         }
-        debug_assert_eq!(bytes.len(), usize::try_from(header_size).unwrap_or_default());
+        debug_assert_eq!(
+            bytes.len(),
+            usize::try_from(header_size).unwrap_or_default()
+        );
         bytes.extend_from_slice(&block_section);
         bytes.extend_from_slice(&variant_section);
         bytes.extend_from_slice(&multipart_section);
@@ -858,7 +884,10 @@ fn quantize_i16(value: f64, label: &str) -> Result<i16> {
             "Java {label} is outside packed i16 range: {value}"
         )));
     }
-    #[expect(clippy::cast_possible_truncation, reason = "range checked immediately above")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "range checked immediately above"
+    )]
     Ok(rounded as i16)
 }
 
@@ -866,9 +895,9 @@ fn i16_json(value: Option<&Value>, default: i16, label: &str) -> Result<i16> {
     let Some(value) = value else {
         return Ok(default);
     };
-    let value = value.as_i64().ok_or_else(|| {
-        BlockModelError::Message(format!("Java {label} must be an integer"))
-    })?;
+    let value = value
+        .as_i64()
+        .ok_or_else(|| BlockModelError::Message(format!("Java {label} must be an integer")))?;
     i16::try_from(value).map_err(|_| {
         BlockModelError::Message(format!("Java {label} is outside i16 range: {value}"))
     })
@@ -996,7 +1025,10 @@ fn read_json(path: &Path) -> Result<Value> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).map_err(|source| BlockModelError::Write {
             path: parent.to_path_buf(),
             source,

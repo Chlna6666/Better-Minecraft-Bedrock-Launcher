@@ -47,7 +47,10 @@ impl SizedImageElementOwners {
 
     fn release(&mut self, asset_id: AssetId) -> bool {
         let Some(references) = self.current.get_mut(&asset_id) else {
-            debug_assert!(false, "sized image element reference released without owner");
+            debug_assert!(
+                false,
+                "sized image element reference released without owner"
+            );
             return false;
         };
 
@@ -119,7 +122,12 @@ impl App {
     /// Trims idle image state without applying byte ceilings to active images.
     pub fn trim_image_memory(&mut self, level: ImageMemoryTrimLevel) {
         let bitmap_pool_limit = match level {
-            ImageMemoryTrimLevel::Light => self.image_pipeline_config.bitmap_pool_bytes.saturating_mul(3) / 4,
+            ImageMemoryTrimLevel::Light => {
+                self.image_pipeline_config
+                    .bitmap_pool_bytes
+                    .saturating_mul(3)
+                    / 4
+            }
             ImageMemoryTrimLevel::Moderate | ImageMemoryTrimLevel::Aggressive => 0,
         };
         crate::assets::trim_global_bitmap_pool_to(bitmap_pool_limit);

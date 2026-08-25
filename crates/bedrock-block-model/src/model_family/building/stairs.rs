@@ -1,7 +1,7 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
-    CardinalDirection, cardinal_direction, state_bool, state_string,
+    CardinalDirection, cardinal_direction, stair_direction, state_bool, state_string,
 };
 use crate::model_family::shape::{
     ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv, ground_plane,
@@ -146,7 +146,7 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
         .map(is_top_half)
         .or_else(|| state_bool(state, "upside_down_bit"))
         .unwrap_or(false);
-    let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
+    let direction = stair_direction(state).unwrap_or(CardinalDirection::North);
     let shape_name = stairs_shape_name(state).unwrap_or("straight");
     let mut cuboids = Vec::with_capacity(3);
     if top {
@@ -263,4 +263,29 @@ fn back_half_cuboid(direction: CardinalDirection, min_y: f32, max_y: f32) -> Mod
         CardinalDirection::West => ModelCuboid::new([0.0, min_y, 0.0], [0.5, max_y, 1.0]),
     };
     stair_cuboid_with_slots(cuboid.min, cuboid.max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_weirdo_direction_matches_bedrock_stairs_encoding() {
+        let cases = [
+            (0, [0.5, 0.5, 0.0], [1.0, 1.0, 1.0]),
+            (1, [0.0, 0.5, 0.0], [0.5, 1.0, 1.0]),
+            (2, [0.0, 0.5, 0.5], [1.0, 1.0, 1.0]),
+            (3, [0.0, 0.5, 0.0], [1.0, 1.0, 0.5]),
+        ];
+
+        for (direction, expected_min, expected_max) in cases {
+            let state = BlockStateQuery::new("minecraft:oak_stairs")
+                .with_state("weirdo_direction", direction)
+                .with_state("upside_down_bit", false);
+            let shape = shape(&state);
+            assert_eq!(shape.cuboids.len(), 2);
+            assert_eq!(shape.cuboids[1].min, expected_min, "direction={direction}");
+            assert_eq!(shape.cuboids[1].max, expected_max, "direction={direction}");
+        }
+    }
 }

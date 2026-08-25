@@ -203,9 +203,8 @@ fn images(criterion: &mut Criterion) {
         bencher.iter_batched(
             || EncodedImage::new(ImageFormat::WebP, Arc::clone(&animated_bytes)),
             |source| {
-                let mut stream =
-                    AnimationStreamBenchmark::new(source, streamed_animation_config())
-                        .expect("the benchmark animation is valid");
+                let mut stream = AnimationStreamBenchmark::new(source, streamed_animation_config())
+                    .expect("the benchmark animation is valid");
                 black_box(stream.consume(usize::try_from(ANIMATION_FRAME_COUNT - 1).unwrap()));
             },
             BatchSize::SmallInput,
@@ -215,9 +214,8 @@ fn images(criterion: &mut Criterion) {
         bencher.iter_batched(
             || EncodedImage::new(ImageFormat::WebP, Arc::clone(&animated_bytes)),
             |source| {
-                let mut stream =
-                    AnimationStreamBenchmark::new(source, streamed_animation_config())
-                        .expect("the benchmark animation is valid");
+                let mut stream = AnimationStreamBenchmark::new(source, streamed_animation_config())
+                    .expect("the benchmark animation is valid");
                 black_box(stream.consume(ANIMATION_FRAME_COUNT as usize));
             },
             BatchSize::SmallInput,

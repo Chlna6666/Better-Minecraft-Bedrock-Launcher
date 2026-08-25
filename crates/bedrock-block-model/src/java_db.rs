@@ -378,7 +378,9 @@ impl<'a> JavaModelDatabase<'a> {
                 self.header.multipart_count,
                 "block multipart range",
             )?;
-            let block_id = self.string(block.block_id).expect("string id validated above");
+            let block_id = self
+                .string(block.block_id)
+                .expect("string id validated above");
             if let Some(previous) = previous_block {
                 if previous >= block_id {
                     return invalid_database("block index is not strictly sorted");
@@ -415,9 +417,7 @@ impl<'a> JavaModelDatabase<'a> {
             if apply.weight == 0 {
                 return invalid_database("model application has zero weight");
             }
-            if i32::from(apply.x).rem_euclid(90) != 0
-                || i32::from(apply.y).rem_euclid(90) != 0
-            {
+            if i32::from(apply.x).rem_euclid(90) != 0 || i32::from(apply.y).rem_euclid(90) != 0 {
                 return invalid_database("model application rotation is not a multiple of 90");
             }
         }
@@ -552,8 +552,9 @@ impl Header {
             return invalid_database("invalid or truncated magic/header");
         }
         let field = |index: usize| -> Result<u32> {
-            read_u32(bytes, 8 + index * 4)
-                .ok_or_else(|| BlockModelError::Message("truncated Java model DB header".to_owned()))
+            read_u32(bytes, 8 + index * 4).ok_or_else(|| {
+                BlockModelError::Message("truncated Java model DB header".to_owned())
+            })
         };
         let schema = field(0)?;
         if schema != JAVA_MODEL_DB_SCHEMA {
@@ -690,12 +691,14 @@ impl<'a> JavaPackedModel<'a> {
 impl<'a> JavaPackedElement<'a> {
     #[must_use]
     pub fn from_block(self) -> [f32; 3] {
-        self.from.map(|value| f32::from(value) / PACKED_UNIT_PER_BLOCK)
+        self.from
+            .map(|value| f32::from(value) / PACKED_UNIT_PER_BLOCK)
     }
 
     #[must_use]
     pub fn to_block(self) -> [f32; 3] {
-        self.to.map(|value| f32::from(value) / PACKED_UNIT_PER_BLOCK)
+        self.to
+            .map(|value| f32::from(value) / PACKED_UNIT_PER_BLOCK)
     }
 
     #[must_use]
@@ -975,18 +978,27 @@ fn section_end(offset: usize, count: u32, record_size: usize, label: &str) -> Re
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(offset..offset + 2)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset + 2)?.try_into().ok()?,
+    ))
 }
 
 fn read_i16(bytes: &[u8], offset: usize) -> Option<i16> {
-    Some(i16::from_le_bytes(bytes.get(offset..offset + 2)?.try_into().ok()?))
+    Some(i16::from_le_bytes(
+        bytes.get(offset..offset + 2)?.try_into().ok()?,
+    ))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
-#[expect(clippy::cast_possible_truncation, reason = "u32 always fits usize on supported 32/64-bit targets")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "u32 always fits usize on supported 32/64-bit targets"
+)]
 const fn as_usize(value: u32) -> usize {
     value as usize
 }

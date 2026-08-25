@@ -241,14 +241,8 @@ fn paint_exact_entity_avatars(
 ) {
     let mut avatar_requests = Vec::with_capacity(overlay_paint.entity_points.len().min(4_096));
     for point in &overlay_paint.entity_points {
-        if entity_screen_position(
-            bounds,
-            viewport,
-            layout,
-            point,
-            ENTITY_VISIBILITY_MARGIN_PX,
-        )
-        .is_none()
+        if entity_screen_position(bounds, viewport, layout, point, ENTITY_VISIBILITY_MARGIN_PX)
+            .is_none()
         {
             continue;
         }
@@ -288,14 +282,8 @@ fn paint_chunk_clustered_entity_avatars(
         let mut scratch = scratch.borrow_mut();
         scratch.begin_chunk_frame();
         for (index, point) in overlay_paint.entity_points.iter().enumerate() {
-            if entity_screen_position(
-                bounds,
-                viewport,
-                layout,
-                point,
-                ENTITY_VISIBILITY_MARGIN_PX,
-            )
-            .is_none()
+            if entity_screen_position(bounds, viewport, layout, point, ENTITY_VISIBILITY_MARGIN_PX)
+                .is_none()
             {
                 continue;
             }
@@ -337,14 +325,7 @@ fn paint_chunk_clustered_entity_avatars(
             let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
             let representative = &overlay_paint.entity_points[cluster.representative_index];
             paint_entity_cluster_backdrop(
-                bounds,
-                viewport,
-                layout,
-                block_x,
-                block_z,
-                count,
-                icon_size,
-                window,
+                bounds, viewport, layout, block_x, block_z, count, icon_size, window,
             );
             let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
                 paint_entity_cluster_fallback(
@@ -434,24 +415,11 @@ fn paint_screen_clustered_entity_avatars(
             let block_z = (cell.sum_block_z / f64::from(cell.count)) as f32;
             let representative = &overlay_paint.entity_points[cell.representative_index];
             paint_entity_cluster_backdrop(
-                bounds,
-                viewport,
-                layout,
-                block_x,
-                block_z,
-                cell.count,
-                icon_size,
-                window,
+                bounds, viewport, layout, block_x, block_z, cell.count, icon_size, window,
             );
             let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
                 paint_entity_cluster_fallback(
-                    bounds,
-                    viewport,
-                    layout,
-                    block_x,
-                    block_z,
-                    cell.count,
-                    window,
+                    bounds, viewport, layout, block_x, block_z, cell.count, window,
                 );
                 continue;
             };
@@ -549,10 +517,7 @@ fn paint_entity_cluster_fallback(
     );
 }
 
-fn paint_entity_avatar_requests<'a>(
-    requests: Vec<ImagePaintRequest<'a>>,
-    window: &mut Window,
-) {
+fn paint_entity_avatar_requests<'a>(requests: Vec<ImagePaintRequest<'a>>, window: &mut Window) {
     if requests.is_empty() {
         return;
     }
@@ -780,7 +745,12 @@ fn paint_selection_resize_handles(
         layout,
         selection.max_chunk_x.saturating_add(1).saturating_mul(16),
     );
-    let top = screen_y_for_block(bounds, viewport, layout, selection.min_chunk_z.saturating_mul(16));
+    let top = screen_y_for_block(
+        bounds,
+        viewport,
+        layout,
+        selection.min_chunk_z.saturating_mul(16),
+    );
     let bottom = screen_y_for_block(
         bounds,
         viewport,

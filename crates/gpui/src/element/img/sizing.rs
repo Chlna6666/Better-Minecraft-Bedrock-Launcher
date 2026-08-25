@@ -1,4 +1,5 @@
 use super::element::SizedImageLoader;
+use super::layout::ImageLayout;
 use super::loader::{ImageRenderRequest, image_size_for_window};
 use super::playback::{
     request_next_image_animation_frame, select_animation_frame,
@@ -7,7 +8,6 @@ use super::playback::{
 use super::retained::{SizedImageElementState, SizedImageRequestLease};
 use super::source::ImageSource;
 use super::style::ImageAnimationPolicy;
-use super::layout::ImageLayout;
 use crate::{
     AnimatedFrame, App, Bounds, GlobalElementId, ImageBoundsPolicy, ObjectFit, Pixels, RenderImage,
     Window,
@@ -123,12 +123,7 @@ pub(super) fn render_sized_image(
                         } else {
                             state.playback.current_frame = previous_frame;
                             state.playback.next_frame_at = previous_next_frame_at;
-                            render_current_sized_image(
-                                &mut state,
-                                animation_config,
-                                window,
-                                cx,
-                            )
+                            render_current_sized_image(&mut state, animation_config, window, cx)
                         }
                     }
                     Some(Err(_)) | None => {
@@ -239,9 +234,7 @@ mod tests {
             let mut current = Some(SizedImageRequestLease::acquire(&request_a, cx));
             let mut pending = None;
 
-            assert!(
-                update_pending_sized_request(false, &mut pending, &request_b, cx).is_none()
-            );
+            assert!(update_pending_sized_request(false, &mut pending, &request_b, cx).is_none());
             assert_eq!(
                 pending.as_ref().map(SizedImageRequestLease::request),
                 Some(&request_b)
