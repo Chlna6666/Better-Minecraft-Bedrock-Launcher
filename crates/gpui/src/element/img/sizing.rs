@@ -51,50 +51,97 @@ pub(super) fn render_sized_image(
                 pending_sized_image_drop: None,
             });
 
-            if state.sized_image_request.as_ref() != Some(&requested) {
-                if let Some(previous) = state.sized_image_request.replace(requested.clone())
-                    && previous != requested
-                {
-                    if let Some(stale) = state.pending_sized_image_drop.replace(previous) {
-                        drop_stale_sized_image(&stale, window, cx);
-                    }
-                }
-                state.next_frame_at = None;
+            // `sized_image_request` owns the image currently committed to the screen. The second
+            // slot is the newest not-yet-committed request. Never evict the committed request just
+            // because another resize arrived: it remains the visual fallback until the replacement
+            // has produced a drawable frame.
+            let current_matches_requested = state.sized_image_request.as_ref() == Some(&requested);
+            if let Some(stale_pending) = update_pending_sized_request(
+                current_matches_requested,
+                &mut state.pending_sized_image_drop,
+                &requested,
+            ) {
+                cancel_pending_sized_image(&stale_pending, window, cx);
+            }
+
+            if current_matches_requested {
+                let loaded = render_current_sized_image(
+                    &mut state,
+                    animation_config,
+                    window,
+                    cx,
+                );
+                return (loaded, state);
             }
 
             let result = window.use_asset::<SizedImageLoader>(&requested, cx);
             let loaded = match result {
                 Some(Ok(render_image)) => {
-                    let frame =
-                        if should_request_image_animation_frame(&render_image, animation_config) {
-                            let frame = select_animation_frame(
-                                &mut state,
-                                &render_image,
-                                animation_config,
-                                cx.background_executor(),
-                            );
-                            request_next_image_animation_frame(
-                                &state,
+                    let previous_frame = state.current_frame.clone();
+                    let previous_next_frame_at = state.next_frame_at;
+                    state.current_frame = render_image.frame(0);
+                    state.next_frame_at = None;
+
+                    let frame = if should_request_image_animation_frame(
+                        &render_image,
+                        animation_config,
+                    ) {
+                        let frame = select_animation_frame(
+                            &mut state,
+                            &render_image,
+                            animation_config,
+                            cx.background_executor(),
+                        );
+                        request_next_image_animation_frame(
+                            &state,
+                            window,
+                            cx,
+                            animation_config,
+                        );
+                        frame
+                    } else {
+                        render_image.frame(0)
+                    };
+
+                    if let Some(frame) = frame {
+                        let previous_request = commit_sized_image_request(
+                            &mut state.sized_image_request,
+                            &mut state.pending_sized_image_drop,
+                            &requested,
+                        );
+                        let previous_image = state.current_image.replace(render_image.clone());
+                        state.current_frame = Some(frame.clone());
+                        if !render_image.is_animated() || !animation_config.play {
+                            state.next_frame_at = None;
+                        }
+
+                        if let Some(previous_request) = previous_request {
+                            release_committed_sized_image(
+                                &previous_request,
+                                previous_image,
                                 window,
                                 cx,
-                                animation_config,
                             );
-                            frame
-                        } else {
-                            render_image.frame(0)
-                        };
-                    if let Some(frame) = frame {
-                        state.current_image = Some(render_image.clone());
-                        state.current_frame = Some(frame.clone());
-                        if let Some(stale) = state.pending_sized_image_drop.take() {
-                            drop_stale_sized_image(&stale, window, cx);
                         }
+
                         Some((render_image, frame))
                     } else {
-                        None
+                        state.current_frame = previous_frame;
+                        state.next_frame_at = previous_next_frame_at;
+                        render_current_sized_image(
+                            &mut state,
+                            animation_config,
+                            window,
+                            cx,
+                        )
                     }
                 }
-                Some(Err(_)) | None => state.current_image.clone().zip(state.current_frame.clone()),
+                Some(Err(_)) | None => render_current_sized_image(
+                    &mut state,
+                    animation_config,
+                    window,
+                    cx,
+                ),
             };
 
             (loaded, state)
@@ -106,11 +153,140 @@ pub(super) fn render_sized_image(
     Some((render_image, frame))
 }
 
-fn drop_stale_sized_image(previous: &ImageRenderRequest, window: &mut Window, cx: &mut App) {
-    if let Some(task) = cx.take_asset::<SizedImageLoader>(previous)
+fn update_pending_sized_request(
+    current_matches_requested: bool,
+    pending: &mut Option<ImageRenderRequest>,
+    requested: &ImageRenderRequest,
+) -> Option<ImageRenderRequest> {
+    if current_matches_requested {
+        return pending
+            .take()
+            .filter(|pending_request| pending_request != requested);
+    }
+
+    if pending.as_ref() == Some(requested) {
+        return None;
+    }
+
+    pending.replace(requested.clone())
+}
+
+fn commit_sized_image_request(
+    current: &mut Option<ImageRenderRequest>,
+    pending: &mut Option<ImageRenderRequest>,
+    requested: &ImageRenderRequest,
+) -> Option<ImageRenderRequest> {
+    debug_assert!(pending.as_ref().is_none_or(|pending| pending == requested));
+    pending.take();
+    current
+        .replace(requested.clone())
+        .filter(|previous| previous != requested)
+}
+
+fn render_current_sized_image(
+    state: &mut ImageElementState,
+    animation_config: crate::AnimatedImageConfig,
+    window: &mut Window,
+    cx: &App,
+) -> Option<(Arc<RenderImage>, AnimatedFrame)> {
+    let render_image = state.current_image.clone()?;
+    let frame = if should_request_image_animation_frame(&render_image, animation_config) {
+        let frame = select_animation_frame(
+            state,
+            &render_image,
+            animation_config,
+            cx.background_executor(),
+        );
+        request_next_image_animation_frame(state, window, cx, animation_config);
+        frame?
+    } else {
+        let frame = render_image.frame(0)?;
+        state.current_frame = Some(frame.clone());
+        state.next_frame_at = None;
+        frame
+    };
+
+    Some((render_image, frame))
+}
+
+fn cancel_pending_sized_image(request: &ImageRenderRequest, window: &mut Window, cx: &mut App) {
+    if let Some(task) = cx.take_asset::<SizedImageLoader>(request)
         && let Some(Ok(image)) = task.now_or_never()
     {
         cx.drop_image(image, Some(window));
-        drop_image_asset_retained(hash(previous));
+        drop_image_asset_retained(hash(request));
+    }
+}
+
+fn release_committed_sized_image(
+    request: &ImageRenderRequest,
+    current_image: Option<Arc<RenderImage>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let cached_image = cx
+        .take_asset::<SizedImageLoader>(request)
+        .and_then(|task| task.now_or_never())
+        .and_then(Result::ok);
+
+    if let Some(image) = current_image.or(cached_image) {
+        cx.drop_image(image, Some(window));
+    }
+    drop_image_asset_retained(hash(request));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(label: &'static str, size: u32) -> ImageRenderRequest {
+        ImageRenderRequest::new(
+            crate::AssetLocation::Embedded(label.into()),
+            crate::ImageRenderSize::new(size, size).unwrap(),
+            1.0,
+            ObjectFit::Cover,
+        )
+    }
+
+    #[test]
+    fn rapid_resize_keeps_committed_request_until_latest_is_ready() {
+        let request_a = request("a", 256);
+        let request_b = request("b", 320);
+        let request_c = request("c", 384);
+        let mut current = Some(request_a.clone());
+        let mut pending = None;
+
+        assert_eq!(
+            update_pending_sized_request(false, &mut pending, &request_b),
+            None
+        );
+        assert_eq!(pending.as_ref(), Some(&request_b));
+
+        assert_eq!(
+            update_pending_sized_request(false, &mut pending, &request_c),
+            Some(request_b)
+        );
+        assert_eq!(current.as_ref(), Some(&request_a));
+        assert_eq!(pending.as_ref(), Some(&request_c));
+
+        assert_eq!(
+            commit_sized_image_request(&mut current, &mut pending, &request_c),
+            Some(request_a)
+        );
+        assert_eq!(current.as_ref(), Some(&request_c));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn returning_to_committed_size_cancels_pending_request() {
+        let request_a = request("a", 256);
+        let request_b = request("b", 320);
+        let mut pending = Some(request_b.clone());
+
+        assert_eq!(
+            update_pending_sized_request(true, &mut pending, &request_a),
+            Some(request_b)
+        );
+        assert!(pending.is_none());
     }
 }
