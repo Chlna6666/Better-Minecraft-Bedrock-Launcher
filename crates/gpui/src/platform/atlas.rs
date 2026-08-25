@@ -61,9 +61,6 @@ impl From<RenderImageParams> for AtlasKey {
 }
 
 pub(crate) trait PlatformAtlas: Send + Sync {
-    /// Applies the application image atlas budget to this window's atlas.
-    fn configure_image_budget(&self, _max_bytes: usize, _max_textures: usize) {}
-
     fn ensure_tile_with<'a>(
         &self,
         key: &AtlasKey,
