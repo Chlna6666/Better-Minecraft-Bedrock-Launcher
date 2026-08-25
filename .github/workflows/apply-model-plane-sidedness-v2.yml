@@ -1,0 +1,67 @@
+name: Apply Model Plane Sidedness V2
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/apply-model-plane-sidedness-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-model-plane-sidedness-v2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply sidedness integration
+        run: python scripts/apply_model_plane_sidedness.py
+
+      - name: Set up Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Format changed Rust
+        run: |
+          rustfmt --edition 2024 \
+            crates/bedrock-block-model/src/model_family.rs \
+            crates/bedrock-block-model/src/bedrock_block_model.rs \
+            crates/bedrock-block-model/src/java_runtime.rs \
+            src/ui/window/map_viewer/preview_3d_source.rs
+
+      - name: Test block model crate
+        run: cargo test -p bedrock-block-model --lib
+
+      - name: Check BMCBL library
+        run: cargo check --lib
+
+      - name: Validate diff
+        run: git diff --check
+
+      - name: Commit validated integration
+        run: |
+          git rm \
+            .github/workflows/apply-model-plane-sidedness.yml \
+            .github/workflows/apply-model-plane-sidedness-v2.yml \
+            scripts/apply_model_plane_sidedness.py
+          git add \
+            crates/bedrock-block-model/src/model_family.rs \
+            crates/bedrock-block-model/src/bedrock_block_model.rs \
+            crates/bedrock-block-model/src/java_runtime.rs \
+            src/ui/window/map_viewer/preview_3d_source.rs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(方块模型): 区分实体面与双面薄片"
+          git push origin HEAD:master
