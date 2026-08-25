@@ -3,7 +3,7 @@ mod decorations;
 mod direction;
 mod flora;
 mod redstone;
-mod shape;
+pub(crate) mod shape;
 mod utility;
 
 use std::borrow::Cow;

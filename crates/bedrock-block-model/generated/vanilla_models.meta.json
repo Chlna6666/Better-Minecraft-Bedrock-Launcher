@@ -1,0 +1,25 @@
+{
+  "client_sha1": "2dc72797acbc1b63fc16a11c4ac393605f453754",
+  "database": {
+    "applies": 8661,
+    "blocks": 1198,
+    "clauses": 8436,
+    "client_sha1": "2dc72797acbc1b63fc16a11c4ac393605f453754",
+    "database_bytes": 627408,
+    "model_data_bytes": 96616,
+    "multipart_parts": 1132,
+    "predicates": 19330,
+    "referenced_model_ids": 2380,
+    "schema": 1,
+    "source_version": "26.2",
+    "string_data_bytes": 32156,
+    "strings": 1380,
+    "unique_models": 328,
+    "variants": 7296,
+    "warnings": 0
+  },
+  "java_release": "26.2",
+  "java_release_time": "2026-06-16T12:03:33+00:00",
+  "schema": 1,
+  "source_manifest_schema": 1
+}

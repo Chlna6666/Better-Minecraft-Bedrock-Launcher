@@ -795,7 +795,7 @@ fn split_resource_id(id: &str) -> (&str, &str) {
     id.split_once(':').unwrap_or(("minecraft", id))
 }
 
-fn semantic_material_slot(texture: &str, face: &str) -> &str {
+fn semantic_material_slot<'a>(texture: &str, face: &'a str) -> &'a str {
     let token = texture.trim_start_matches('#');
     match token {
         "top" | "up" | "end" => "up",
@@ -996,7 +996,7 @@ fn read_json(path: &Path) -> Result<Value> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|source| BlockModelError::Write {
             path: parent.to_path_buf(),
             source,
