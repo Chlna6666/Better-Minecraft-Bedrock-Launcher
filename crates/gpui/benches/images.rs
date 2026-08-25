@@ -16,6 +16,19 @@ const ANIMATION_WIDTH: u32 = 320;
 const ANIMATION_HEIGHT: u32 = 180;
 const ANIMATION_FRAME_COUNT: u32 = 24;
 
+fn resident_animation_config(max_resident_frames: usize) -> AnimatedImageConfig {
+    let mut config = AnimatedImageConfig::default();
+    config.max_resident_frames = max_resident_frames;
+    config
+}
+
+fn streamed_animation_config() -> AnimatedImageConfig {
+    let mut config = AnimatedImageConfig::default();
+    config.prefetch_frames = 4;
+    config.max_resident_frames = 1;
+    config
+}
+
 fn fixture(format: ImageFormat) -> Arc<[u8]> {
     let pixels = RgbaImage::from_fn(SOURCE_WIDTH, SOURCE_HEIGHT, |x, y| {
         let mixed = x.wrapping_mul(1_664_525) ^ y.wrapping_mul(1_013_904_223);
@@ -179,11 +192,7 @@ fn images(criterion: &mut Criterion) {
             |source| {
                 black_box(
                     source
-                        .render(AnimatedImageConfig {
-                            max_resident_frames: ANIMATION_FRAME_COUNT as usize,
-                            max_resident_bytes: usize::MAX,
-                            ..AnimatedImageConfig::default()
-                        })
+                        .render(resident_animation_config(ANIMATION_FRAME_COUNT as usize))
                         .expect("the benchmark animation is valid"),
                 );
             },
@@ -194,19 +203,9 @@ fn images(criterion: &mut Criterion) {
         bencher.iter_batched(
             || EncodedImage::new(ImageFormat::WebP, Arc::clone(&animated_bytes)),
             |source| {
-                let mut stream = AnimationStreamBenchmark::new(
-                    source,
-                    AnimatedImageConfig {
-                        prefetch_frames: 4,
-                        max_resident_frames: 1,
-                        max_resident_bytes: usize::try_from(
-                            u64::from(ANIMATION_WIDTH) * u64::from(ANIMATION_HEIGHT) * 4,
-                        )
-                        .expect("the benchmark frame byte count fits usize"),
-                        ..AnimatedImageConfig::default()
-                    },
-                )
-                .expect("the benchmark animation is valid");
+                let mut stream =
+                    AnimationStreamBenchmark::new(source, streamed_animation_config())
+                        .expect("the benchmark animation is valid");
                 black_box(stream.consume(usize::try_from(ANIMATION_FRAME_COUNT - 1).unwrap()));
             },
             BatchSize::SmallInput,
@@ -216,19 +215,9 @@ fn images(criterion: &mut Criterion) {
         bencher.iter_batched(
             || EncodedImage::new(ImageFormat::WebP, Arc::clone(&animated_bytes)),
             |source| {
-                let mut stream = AnimationStreamBenchmark::new(
-                    source,
-                    AnimatedImageConfig {
-                        prefetch_frames: 4,
-                        max_resident_frames: 1,
-                        max_resident_bytes: usize::try_from(
-                            u64::from(ANIMATION_WIDTH) * u64::from(ANIMATION_HEIGHT) * 4,
-                        )
-                        .expect("the benchmark frame byte count fits usize"),
-                        ..AnimatedImageConfig::default()
-                    },
-                )
-                .expect("the benchmark animation is valid");
+                let mut stream =
+                    AnimationStreamBenchmark::new(source, streamed_animation_config())
+                        .expect("the benchmark animation is valid");
                 black_box(stream.consume(ANIMATION_FRAME_COUNT as usize));
             },
             BatchSize::SmallInput,
@@ -238,15 +227,7 @@ fn images(criterion: &mut Criterion) {
         bencher.iter_batched(
             || EncodedImage::new(ImageFormat::WebP, Arc::clone(&animated_bytes)),
             |source| {
-                let config = AnimatedImageConfig {
-                    prefetch_frames: 4,
-                    max_resident_frames: 1,
-                    max_resident_bytes: usize::try_from(
-                        u64::from(ANIMATION_WIDTH) * u64::from(ANIMATION_HEIGHT) * 4,
-                    )
-                    .expect("the benchmark frame byte count fits usize"),
-                    ..AnimatedImageConfig::default()
-                };
+                let config = streamed_animation_config();
                 let mut streams = (0..8)
                     .map(|_| AnimationStreamBenchmark::new(source.clone(), config))
                     .collect::<gpui::Result<Vec<_>>>()
