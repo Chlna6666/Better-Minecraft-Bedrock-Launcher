@@ -46,7 +46,7 @@ type NewEntityListener = Box<dyn FnMut(AnyEntity, &mut Option<&mut Window>, &mut
 
 /// Contains the state of the full application, and passed as a reference to a variety of callbacks.
 /// Other [Context] derefs to this type.
-/// You need a reference to an [App] to access the state of a [Entity].
+/// You need a reference to an `App` to access the state of a [Entity].
 pub struct App {
     pub(crate) this: Weak<AppCell>,
     pub(crate) platform: Rc<dyn Platform>,
@@ -62,10 +62,6 @@ pub struct App {
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) foreground_executor: ForegroundExecutor,
     pub(crate) loading_assets: FxHashMap<(TypeId, u64), Box<dyn Any>>,
-    /// Generation tokens for transient asset tasks whose cache entries retire on completion.
-    /// The token prevents an older completion from deleting a newer task that reused the same key.
-    pub(crate) transient_asset_generations: FxHashMap<(TypeId, u64), u64>,
-    pub(crate) next_transient_asset_generation: u64,
     pub(in crate::app) asset_source: Arc<dyn AssetSource>,
     pub(crate) svg_renderer: SvgRenderer,
     pub(in crate::app) http_client: Arc<dyn HttpClient>,
@@ -151,8 +147,6 @@ impl App {
                 foreground_executor,
                 svg_renderer: SvgRenderer::new(asset_source.clone()),
                 loading_assets: Default::default(),
-                transient_asset_generations: Default::default(),
-                next_transient_asset_generation: 0,
                 asset_source,
                 http_client,
                 globals_by_type: FxHashMap::default(),
@@ -169,8 +163,8 @@ impl App {
                 pending_effects: VecDeque::new(),
                 pending_notifications: FxHashSet::default(),
                 pending_global_notifications: FxHashSet::default(),
-                global_notification_counts: FxHashMap::default(),
                 notifying_global_observers: FxHashSet::default(),
+                global_notification_counts: FxHashMap::default(),
                 observers: SubscriberSet::new(),
                 tracked_entities: FxHashMap::default(),
                 window_invalidators_by_entity: FxHashMap::default(),
@@ -225,13 +219,114 @@ impl App {
         app
     }
 
-    /// Accessor for the application's background executor.
+    /// Quit the application gracefully. Handlers registered with [`Context::on_app_quit`]
+    /// will be given 100ms to complete before exiting.
+    pub fn shutdown(&mut self) {
+        let mut futures = Vec::new();
+
+        for observer in self.quit_observers.remove(&()) {
+            futures.push(observer(self));
+        }
+
+        self.windows.clear();
+        self.window_handles.clear();
+        self.flush_effects();
+        self.quitting = true;
+
+        let futures = futures::future::join_all(futures);
+        if self
+            .background_executor
+            .block_with_timeout(SHUTDOWN_TIMEOUT, futures)
+            .is_err()
+        {
+            log::error!("timed out waiting on app_will_quit");
+        }
+
+        self.quitting = false;
+    }
+
+    /// Get the id of the current keyboard layout
+    pub fn keyboard_layout(&self) -> &dyn PlatformKeyboardLayout {
+        self.keyboard_layout.as_ref()
+    }
+
+    /// Get the current keyboard mapper.
+    pub fn keyboard_mapper(&self) -> &Rc<dyn PlatformKeyboardMapper> {
+        &self.keyboard_mapper
+    }
+
+    /// Invokes a handler when the current keyboard layout changes
+    pub fn on_keyboard_layout_change<F>(&self, mut callback: F) -> Subscription
+    where
+        F: 'static + FnMut(&mut App),
+    {
+        let (subscription, activate) = self.keyboard_layout_observers.insert(
+            (),
+            Box::new(move |cx| {
+                callback(cx);
+                true
+            }),
+        );
+        activate();
+        subscription
+    }
+
+    /// Gracefully quit the application via the platform's standard routine.
+    pub fn quit(&self) {
+        self.platform.quit();
+    }
+
+    /// Schedules all windows in the application to be redrawn. This can be called
+    /// multiple times in an update cycle and still result in a single redraw.
+    pub fn refresh_windows(&mut self) {
+        if self.pending_refresh_windows {
+            record_coalesced_refresh_effect();
+            return;
+        }
+        self.pending_refresh_windows = true;
+        self.pending_effects.push_back(Effect::RefreshWindows);
+    }
+
+    pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
+        self.start_update();
+        let result = update(self);
+        self.finish_update();
+        result
+    }
+
+    pub(crate) fn start_update(&mut self) {
+        self.pending_updates += 1;
+    }
+
+    pub(crate) fn finish_update(&mut self) {
+        if !self.flushing_effects && self.pending_updates == 1 {
+            self.flushing_effects = true;
+            self.flush_effects();
+            self.flushing_effects = false;
+        }
+        self.pending_updates -= 1;
+    }
+
+    /// Creates an `AsyncApp`, which can be cloned and has a static lifetime
+    /// so it can be held across `await` points.
+    pub fn to_async(&self) -> AsyncApp {
+        AsyncApp {
+            app: self.this.clone(),
+            background_executor: self.background_executor.clone(),
+            foreground_executor: self.foreground_executor.clone(),
+        }
+    }
+
+    /// Obtains a reference to the executor, which can be used to spawn futures.
     pub fn background_executor(&self) -> &BackgroundExecutor {
         &self.background_executor
     }
 
-    /// Accessor for the application's foreground executor.
+    /// Obtains a reference to the executor, which can be used to spawn futures.
     pub fn foreground_executor(&self) -> &ForegroundExecutor {
+        if self.quitting {
+            panic!("Can't spawn on main thread after on_app_quit")
+        };
         &self.foreground_executor
     }
 
@@ -303,6 +398,7 @@ impl App {
     pub fn set_default_font(&mut self, config: DefaultFontConfig) -> Result<()> {
         let loaded = load_default_font_config(&self.text_system, config)?;
         self.default_text_style.font_family = loaded.family;
+        self.default_text_style.font_fallbacks = loaded.fallbacks;
         self.synchronize_default_text_style();
         Ok(())
     }
@@ -332,126 +428,87 @@ impl App {
     }
 
     fn synchronize_default_text_style(&mut self) {
-        self.text_system
-            .set_default_font(self.default_text_style.font());
+        let default_text_style = self.default_text_style.clone();
         for window in self.windows.values_mut().flatten() {
-            window.set_default_text_style(self.default_text_style.clone());
-            window.refresh();
+            window.set_default_text_style(default_text_style.clone());
         }
+        self.refresh_windows();
     }
 
-    /// Get the entity pointed to by this entity. Panics if the entity has been released
-    #[track_caller]
-    pub fn read_entity<T, R>(&self, handle: &Entity<T>, read: impl FnOnce(&T, &App) -> R) -> R
+    /// Register a callback to be invoked when the application is about to quit.
+    /// It is not possible to cancel the quit event at this point.
+    pub fn on_app_quit<Fut>(
+        &self,
+        mut on_quit: impl FnMut(&mut App) -> Fut + 'static,
+    ) -> Subscription
     where
-        T: 'static,
+        Fut: 'static + Future<Output = ()>,
     {
-        handle.read(self, read)
+        let (subscription, activate) = self.quit_observers.insert(
+            (),
+            Box::new(move |cx| {
+                let future = on_quit(cx);
+                future.boxed_local()
+            }),
+        );
+        activate();
+        subscription
     }
 
-    /// Get mutable access to the entity pointed to by this entity. Panics if the entity has been released
-    #[track_caller]
-    pub fn update_entity<T, R>(
+    /// Register a callback to be invoked when the application is about to restart.
+    ///
+    /// These callbacks are called before any `on_app_quit` callbacks.
+    pub fn on_app_restart(&self, mut on_restart: impl 'static + FnMut(&mut App)) -> Subscription {
+        let (subscription, activate) = self.restart_observers.insert(
+            (),
+            Box::new(move |cx| {
+                on_restart(cx);
+                true
+            }),
+        );
+        activate();
+        subscription
+    }
+
+    /// Register a callback to be invoked when a window is closed
+    /// The window is no longer accessible at the point this callback is invoked.
+    pub fn on_window_closed(&self, mut on_closed: impl FnMut(&mut App) + 'static) -> Subscription {
+        let (subscription, activate) = self.window_closed_observers.insert((), Box::new(on_closed));
+        activate();
+        subscription
+    }
+
+    pub(crate) fn entity_type_name(&self, entity_id: EntityId) -> &'static str {
+        self.entities
+            .type_name_for_id(entity_id)
+            .unwrap_or("(dropped)")
+    }
+
+    /// Returns the name for this [`App`].
+    #[cfg(any(test, feature = "test-support", debug_assertions))]
+    pub fn name(&self) -> Option<&'static str> {
+        self.name
+    }
+
+    /// Sets the renderer for the inspector.
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub fn set_inspector_renderer(&mut self, f: crate::InspectorRenderer) {
+        self.inspector_renderer = Some(f);
+    }
+
+    /// Registers a renderer specific to an inspector state.
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub fn register_inspector_element<T: 'static, R: crate::IntoElement>(
         &mut self,
-        handle: &Entity<T>,
-        update: impl FnOnce(&mut T, &mut Context<T>) -> R,
-    ) -> R
-    where
-        T: 'static,
-    {
-        handle.update(self, update)
+        f: impl 'static + Fn(crate::InspectorElementId, &T, &mut Window, &mut App) -> R,
+    ) {
+        self.inspector_element_registry.register(f);
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn clear_entities(&mut self) {
-        self.entities.clear();
-    }
-
-    pub(crate) fn release_all(&mut self) {
-        self.entities.release_all();
-        for callback in mem::take(&mut self.release_listeners).consume() {
-            let entity_id = callback.0;
-            if let Some((entity, _)) = self.entities.get(entity_id) {
-                callback.1(entity.downgrade().as_mut(), self);
-            }
-        }
-    }
-
-    fn has_pending_tasks(&self) -> bool {
-        self.background_executor.has_pending_tasks() || self.foreground_executor.has_pending_tasks()
-    }
-
-    fn shutdown(&mut self) {
-        self.quitting = true;
-        self.platform.quit();
-    }
-
-    fn activate(&mut self, active: bool) {
-        for window in self.windows.values_mut().flatten() {
-            window.activate(active);
-        }
-    }
-
-    pub(crate) fn update(&mut self, f: impl FnOnce(&mut Self)) {
-        self.pending_updates += 1;
-        f(self);
-        self.pending_updates -= 1;
-        if self.pending_updates == 0 {
-            self.flush_effects();
-        }
-    }
-
-    pub(crate) fn push_effect(&mut self, effect: Effect) {
-        self.pending_effects.push_back(effect);
-    }
-
-    fn flush_effects(&mut self) {
-        if self.flushing_effects {
-            return;
-        }
-        self.flushing_effects = true;
-        while let Some(effect) = self.pending_effects.pop_front() {
-            match effect {
-                Effect::Notify { entity_id } => {
-                    self.pending_notifications.insert(entity_id);
-                }
-                Effect::NotifyGlobal { global_type } => {
-                    self.pending_global_notifications.insert(global_type);
-                }
-                Effect::RefreshWindows => {
-                    self.pending_refresh_windows = false;
-                    for window in self.windows.values_mut().flatten() {
-                        window.refresh();
-                    }
-                }
-                Effect::Defer { callback } => callback(self),
-            }
-        }
-        self.flushing_effects = false;
-
-        self.notify_observers();
-    }
-
-    fn notify_observers(&mut self) {
-        self.notify_global_observers();
-
-        let mut pending_notifications = mem::take(&mut self.pending_notifications);
-        let subscribers = self.observers.clone();
-        pending_notifications.retain(|entity_id| {
-            subscribers.retain(entity_id, |callback| callback(self));
-            self.entities.refresh(entity_id);
-            false
-        });
-        self.pending_notifications = pending_notifications;
-    }
-
-    fn notify_global_observers(&mut self) {
-        let mut pending_notifications = mem::take(&mut self.pending_global_notifications);
-        let subscribers = self.global_observers.clone();
-        pending_notifications.retain(|global_type| {
-            subscribers.retain(global_type, |callback| callback(self));
-            false
-        });
-        self.pending_global_notifications = pending_notifications;
+    /// Initializes gpui's default colors for the application.
+    ///
+    /// These colors can be accessed through `cx.default_colors()`.
+    pub fn init_colors(&mut self) {
+        self.set_global(GlobalColors(Arc::new(Colors::default())));
     }
 }
