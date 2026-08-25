@@ -41,8 +41,6 @@ pub struct ImagePipelineConfig {
     /// This does not limit active image allocations. It only bounds idle allocator reuse memory.
     pub bitmap_pool_bytes: usize,
     pub(crate) bitmap_pool_max_buffer_bytes: usize,
-    pub(crate) max_atlas_bytes: usize,
-    pub(crate) max_atlas_textures: usize,
     /// Controls whether bounds-aware decode is gated by visibility.
     pub bounds_policy: ImageBoundsPolicy,
     /// Trim image staging and bitmap pool when a window loses activation.
@@ -64,8 +62,6 @@ impl ImagePipelineConfig {
         self.max_compressed_bytes = usize::MAX;
         self.animation_prefetch_byte_limit = usize::MAX;
         self.bitmap_pool_max_buffer_bytes = usize::MAX;
-        self.max_atlas_bytes = usize::MAX;
-        self.max_atlas_textures = usize::MAX;
         self
     }
 }
@@ -80,8 +76,6 @@ impl Default for ImagePipelineConfig {
             // This is intentionally a free-buffer retention budget, not an image memory limit.
             bitmap_pool_bytes: 64 * 1024 * 1024,
             bitmap_pool_max_buffer_bytes: usize::MAX,
-            max_atlas_bytes: usize::MAX,
-            max_atlas_textures: usize::MAX,
             bounds_policy: ImageBoundsPolicy::Explicit,
             trim_memory_on_hidden: false,
             slow_image_threshold: std::time::Duration::from_millis(16),
@@ -106,7 +100,5 @@ mod tests {
         assert_eq!(runtime.max_compressed_bytes, usize::MAX);
         assert_eq!(runtime.animation_prefetch_byte_limit, usize::MAX);
         assert_eq!(runtime.bitmap_pool_max_buffer_bytes, usize::MAX);
-        assert_eq!(runtime.max_atlas_bytes, usize::MAX);
-        assert_eq!(runtime.max_atlas_textures, usize::MAX);
     }
 }
