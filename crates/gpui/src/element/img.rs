@@ -14,9 +14,7 @@ pub use loader::*;
 pub(crate) use loader::{compressed_cache_snapshot, trim_compressed_cache};
 #[cfg(test)]
 use playback::{select_animation_frame, should_request_image_animation_frame};
-pub(crate) use retained::{
-    ImageElementState, SizedImageElementRelease, SizedImageElementState,
-};
+pub(crate) use retained::{ImageElementState, SizedImageElementState};
 pub use source::*;
 pub use style::*;
 
