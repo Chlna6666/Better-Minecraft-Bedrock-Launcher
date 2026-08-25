@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use crate::{AnimatedFrame, App, RenderImage, Task};
+use crate::{AnimatedFrame, App, AsyncApp, RenderImage, Task};
 
 use super::loader::ImageRenderRequest;
 
@@ -15,10 +15,12 @@ pub(crate) struct ImageElementState {
 /// One element-owned reference to a concrete bounds-aware image request.
 ///
 /// The token itself is intentionally not `Clone`: moving it between pending/current slots transfers
-/// ownership without changing the application-wide owner count. Frame retirement performs the final
-/// release while it still has access to `App` and the current `Window`.
+/// ownership without changing the application-wide owner count. If the whole element state leaves
+/// the frame, release work is posted to the foreground executor so it runs after the current window
+/// update has returned the window to `App.windows`.
 pub(super) struct SizedImageRequestLease {
     request: ImageRenderRequest,
+    app: AsyncApp,
 }
 
 impl SizedImageRequestLease {
@@ -26,6 +28,7 @@ impl SizedImageRequestLease {
         cx.retain_sized_image_element_request(request);
         Self {
             request: request.clone(),
+            app: cx.to_async(),
         }
     }
 
@@ -36,12 +39,16 @@ impl SizedImageRequestLease {
     pub(crate) fn into_request(self) -> ImageRenderRequest {
         self.request
     }
-}
 
-/// Deferred release produced when a bounds-aware element state leaves the rendered frame.
-pub(crate) struct SizedImageElementRelease {
-    pub(crate) request: ImageRenderRequest,
-    pub(crate) image: Option<Arc<RenderImage>>,
+    fn defer_release(self, image: Option<Arc<RenderImage>>) {
+        let Self { request, app } = self;
+        app.spawn(async move |cx| {
+            let _ = cx.update(|cx| {
+                cx.release_sized_image_element_request(&request, image, None);
+            });
+        })
+        .detach();
+    }
 }
 
 /// Bounds-aware image state is kept separate from ordinary image playback state so switching
@@ -67,26 +74,18 @@ impl SizedImageElementState {
             pending_sized_image_drop: None,
         }
     }
+}
 
-    /// Moves every live request lease out of this state before the frame storage is cleared.
-    pub(crate) fn drain_sized_image_releases(
-        &mut self,
-        releases: &mut Vec<SizedImageElementRelease>,
-    ) {
+impl Drop for SizedImageElementState {
+    fn drop(&mut self) {
         if let Some(current) = self.sized_image_request.take() {
-            releases.push(SizedImageElementRelease {
-                request: current.into_request(),
-                image: self.current_image.take(),
-            });
+            current.defer_release(self.current_image.take());
         } else {
             self.current_image = None;
         }
 
         if let Some(pending) = self.pending_sized_image_drop.take() {
-            releases.push(SizedImageElementRelease {
-                request: pending.into_request(),
-                image: None,
-            });
+            pending.defer_release(None);
         }
     }
 }
