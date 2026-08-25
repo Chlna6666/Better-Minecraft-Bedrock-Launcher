@@ -180,12 +180,21 @@ backend-specific device, queue, or surface handle.
 
 ## Upstream GPUI Architecture Comparison
 
+The comparison baseline is Zed commit
+`6805d952f9f3d702f760aa11b1547df8a625fa16`, recorded in `Cargo.toml`. It is a
+review baseline, not a source or build dependency.
+
 | Area | Upstream GPUI direction | This independent fork |
 | --- | --- | --- |
 | Windows platform | DirectX-oriented Windows renderer path | winit platform path with nova-gfx backends |
 | Windows backend selection | Platform-specific renderer implementation | `RendererBackend` can select `NovaDx12` or `NovaVulkan` |
 | Renderer default | Platform renderer chosen internally | Nova DX12 on Windows when available, Nova Vulkan on Linux/FreeBSD, Nova Metal on macOS |
 | Frame scheduling | Redraw behavior tied closely to platform renderer loops | Event-driven composition with presentation-only frame support |
+| Layout | Upstream Taffy-based layout semantics | Taffy semantics plus retained layout fingerprints and explicit cold/retained Criterion baselines |
+| Damage | Platform renderer owns redraw decisions | Bounded, transitively merged dirty regions with conservative full-redraw fallback |
+| Animated images | Upstream image elements and format support | Fixed animation worker pool with per-stream and process-wide decoded-byte backpressure |
+| Image memory | Application/cache lifetime conventions | Bounded decoded/compressed/atlas/prefetch budgets, cancellable cache loads, and capacity-bucketed bitmap reuse |
+| Performance evidence | Upstream project-wide profiling infrastructure | Fork-owned Criterion layout/path/image/memory suites plus runtime frame/resource metrics |
 | Shader model | Built-in renderer shaders owned by platform paths | Built-in WGSL validation plus runtime WGSL helpers for custom mesh shaders |
 | Custom GPU content | Framework rendering primitives are the main extension point | Scene primitives, images, SVG, runtime shader helpers, and custom mesh primitives |
 | Example API style | Older examples may use previous context and view terminology | Examples use `App`, `Context<T>`, explicit `Window`, and `Entity<T>` |

@@ -1,11 +1,15 @@
+#![expect(
+    unsafe_code,
+    reason = "the test harness exercises type-erased GPUI state under controlled lifetimes"
+)]
+
 use crate::{
     Action, AnyView, AnyWindowHandle, App, AppCell, AppContext, AsyncApp, AvailableSpace,
     BackgroundExecutor, BorrowAppContext, Bounds, Capslock, ClipboardItem, DrawPhase, Drawable,
     Element, Empty, EventEmitter, ForegroundExecutor, Global, InputEvent, Keystroke, Modifiers,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Platform, Point, Render, Result, Size, Task, TestDispatcher, TestPlatform,
-    TestScreenCaptureSource, TestWindow, TextSystem, VisualContext, Window, WindowBounds,
-    WindowHandle, WindowOptions,
+    Platform, Point, Render, Result, Size, Task, TestDispatcher, TestPlatform, TestWindow,
+    TextSystem, VisualContext, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use anyhow::{anyhow, bail};
 use futures::{Stream, StreamExt, channel::oneshot};
@@ -331,12 +335,6 @@ impl TestAppContext {
         self.test_window(window_handle).simulate_resize(size);
     }
 
-    /// Causes the given sources to be returned if the application queries for screen
-    /// capture sources.
-    pub fn set_screen_capture_sources(&self, sources: Vec<TestScreenCaptureSource>) {
-        self.test_platform.set_screen_capture_sources(sources);
-    }
-
     /// Returns all windows open in the test.
     pub fn windows(&self) -> Vec<AnyWindowHandle> {
         self.app.borrow().windows()
@@ -586,7 +584,7 @@ impl<V: 'static> Entity<V> {
         cx.executor().advance_clock(advance_clock_by);
 
         async move {
-            let notification = crate::foundation::util::smol_timeout(duration, rx.recv())
+            let notification = crate::smol_timeout(duration, rx.recv())
                 .await
                 .expect("next notification timed out");
             drop(subscription);
@@ -630,7 +628,7 @@ impl<V> Entity<V> {
         let handle = self.downgrade();
 
         async move {
-            crate::foundation::util::smol_timeout(Duration::from_secs(1), async move {
+            crate::smol_timeout(Duration::from_secs(1), async move {
                 loop {
                     {
                         let cx = cx.borrow();

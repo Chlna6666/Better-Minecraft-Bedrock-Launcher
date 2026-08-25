@@ -7,17 +7,17 @@
 //!
 //! If all of your elements are the same height, see [`crate::UniformList`] for a simpler API
 
+mod configuration;
 mod element;
 mod layout;
 mod state;
 #[cfg(test)]
 mod tests;
 mod tree;
-mod types;
 
-pub use element::{List, list};
-pub use state::ListState;
-pub use types::{
+pub use configuration::{
     ListAlignment, ListHorizontalSizingBehavior, ListMeasuringBehavior, ListOffset,
     ListScrollEvent, ListSizingBehavior,
 };
+pub use element::{List, list};
+pub use state::ListState;

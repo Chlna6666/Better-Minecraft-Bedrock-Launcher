@@ -8,7 +8,7 @@ fn test_tab_handles() {
     let focus_map = Arc::new(FocusMap::default());
     let mut tab_index_map = TabStopMap::default();
 
-    let focus_handles = vec![
+    let focus_handles = [
         FocusHandle::new(&focus_map).tab_stop(true).tab_index(0),
         FocusHandle::new(&focus_map).tab_stop(true).tab_index(1),
         FocusHandle::new(&focus_map).tab_stop(true).tab_index(1),

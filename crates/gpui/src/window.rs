@@ -6,20 +6,19 @@ use crate::{
     BackdropBlurStyle, Background, BorderStyle, Bounds, BoxShadow, Capslock, Context, Corners,
     CursorStyle, DevicePixels, DirtyRegion, DispatchActionListener, DispatchNodeId, DispatchTree,
     DisplayId, Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, FontId,
-    FrameRenderPlan, FrameVisualEffectQuality, Global, GlobalElementId, GlyphId, GpuMesh3d,
-    GpuMesh3dDrawParameters, GpuSpecs, GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel,
-    ImagePipelineConfig, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
+    FrameRenderPlan, Global, GlobalElementId, GlyphId, GpuMesh3d, GpuMesh3dDrawParameters,
+    GpuSpecs, GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel, ImagePipelineConfig,
+    ImagePixelFormat, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
     Keystroke, KeystrokeEvent, LayoutFrameMetrics, LayoutId, LineLayoutFrameMetrics,
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MonochromeSpriteSampling,
     MouseButton, MouseDownEvent, MouseEvent, MouseMoveEvent, MouseUpEvent, PartialPresentMode,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformWindow, Point, PolychromeSprite, Quad, Render, RenderGlyphParams, RenderImage,
-    RenderImageParams, RenderImagePixelFormat, RenderSvgParams, Replay, RequestFrameOptions,
-    RetainedResourceTrimPolicy, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene,
-    SceneFrameMetrics, Shadow, SharedString, Size, StrikethroughStyle, Style, SubscriberSet,
-    Subscription, SystemWindowTab, SystemWindowTabController, TaffyLayoutEngine, Task, TextStyle,
-    TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle, WindowFrameDisposition,
-    WindowTextSystem,
+    RenderImageParams, RenderSvgParams, Replay, RequestFrameOptions, RetainedResourceTrimPolicy,
+    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow,
+    SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine,
+    Task, TextStyle, TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle,
+    WindowFrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem,
     animation::{
         AnimationDriver, AnimationEngine, AnimationGroupId, AnimationGroupSample,
         AnimationParallel, AnimationSequence, AnimationStagger, merge_requested_drivers,
@@ -74,13 +73,14 @@ mod draw;
 mod draw_reuse;
 mod element_context;
 mod element_id;
-mod element_state;
+mod elements;
 mod focus;
 mod frame;
 mod frame_lifecycle;
 mod frame_scheduling;
 mod handle;
 mod hitbox;
+mod id;
 mod input;
 #[cfg(any(feature = "inspector", debug_assertions))]
 mod inspector;
@@ -102,7 +102,6 @@ mod tab_stop;
 #[cfg(test)]
 mod tests;
 mod titlebar;
-mod window_id;
 
 pub use content_mask::ContentMask;
 pub use debug_visualization::WindowDebugVisualization;
@@ -125,6 +124,7 @@ pub(crate) use hitbox::{
     CursorStyleRequest, HitTest, MouseListener, TooltipBounds, TooltipRequest,
 };
 pub use hitbox::{Hitbox, HitboxBehavior, HitboxId, TooltipId, WindowControlArea};
+pub use id::WindowId;
 pub use lifecycle::DispatchPhase;
 pub(crate) use lifecycle::{
     AnyObserver, FrameCallback, WindowInvalidator, ignore_window_not_found,
@@ -141,10 +141,10 @@ use state::{
 };
 pub(crate) use state::{DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame};
 pub(crate) use tab_stop::*;
-pub use titlebar::TitlebarGestureState;
+pub use titlebar::TitlebarGesture;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use titlebar::rasterize_platform_title;
 use titlebar::{
     glyph_device_origin, resize_edge_cursor_style, resize_edge_hit_test,
     svg_paint_bounds_for_requested_bounds, svg_raster_size_for_paint_bounds,
 };
-pub use window_id::WindowId;

@@ -9,8 +9,8 @@ use util::ResultExt;
 
 use super::drag_drop::{DragMoveEvent, GroupStyle};
 use super::element::Stateful;
+use super::interactivity::Interactivity;
 use super::scroll::{ScrollAnchor, ScrollHandle};
-use super::state::Interactivity;
 
 /// A trait for elements that want to use the standard GPUI event handlers that don't
 /// require any state.

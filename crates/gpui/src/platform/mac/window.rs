@@ -4,8 +4,8 @@ use crate::{
     ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
-    SharedString, Size, SystemWindowTab, Timer, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControlArea, WindowKind, WindowParams, dispatch_get_main_queue,
+    SharedString, Size, Timer, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowKind, WindowParams, WindowTab, dispatch_get_main_queue,
     dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point, px, size,
 };
 use block::ConcreteBlock;
@@ -1439,7 +1439,7 @@ impl PlatformWindow for MacWindow {
         self.0.lock().appearance_changed_callback = Some(callback);
     }
 
-    fn tabbed_windows(&self) -> Option<Vec<SystemWindowTab>> {
+    fn tabbed_windows(&self) -> Option<Vec<WindowTab>> {
         unsafe {
             let windows: id = msg_send![self.0.lock().native_window, tabbedWindows];
             if windows.is_null() {
@@ -1455,7 +1455,7 @@ impl PlatformWindow for MacWindow {
                     let title: id = msg_send![window, title];
                     let title = SharedString::from(title.to_str().to_string());
 
-                    result.push(SystemWindowTab::new(title, handle));
+                    result.push(WindowTab::new(title, handle));
                 }
             }
 

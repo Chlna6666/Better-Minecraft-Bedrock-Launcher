@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "LayoutId is transparently represented by Taffy NodeId"
+)]
+
 use crate::{LayoutFrameMetrics, Pixels, Size};
 use std::hash::Hash;
 use taffy::{TraversePartialTree as _, style::AvailableSpace as TaffyAvailableSpace, tree::NodeId};

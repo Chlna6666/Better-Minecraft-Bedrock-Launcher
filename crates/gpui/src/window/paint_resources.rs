@@ -575,6 +575,9 @@ impl Window {
         }
         self.rendered_frame.trim_retained_capacity_for_level(level);
         self.next_frame.trim_retained_capacity_for_level(level);
+        if let Some(layout_engine) = self.layout_engine.as_mut() {
+            layout_engine.trim_retained_capacity(level);
+        }
         self.text_system.trim_retained_capacity_for_level(level);
         self.platform_window.trim_gpui_memory(level);
         crate::assets::trim_global_bitmap_pool(level);

@@ -408,7 +408,7 @@ impl AnimationSequence {
 
     /// Sample the active segment at `elapsed`.
     pub fn sample_elapsed(&self, elapsed: Duration) -> SequencedTimelineSample {
-        let Some((last_index, last_spec)) = self.specs.iter().enumerate().last() else {
+        let Some((last_index, last_spec)) = self.specs.iter().enumerate().next_back() else {
             return SequencedTimelineSample {
                 animation_index: 0,
                 sample: completed_sample(),

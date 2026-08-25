@@ -1,8 +1,8 @@
 use futures::FutureExt;
 use gpui::{
-    App, Application, Asset as _, AssetLogger, Bounds, ClickEvent, Context, ElementId, Entity,
-    ImageAssetLoader, ImageCache, ImageCacheProvider, KeyBinding, Menu, MenuItem,
-    RetainAllImageCache, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    App, Application, Asset as _, AssetLogger, BoundedImageCache, BoundedImageCacheConfig, Bounds,
+    ClickEvent, Context, ElementId, Entity, ImageAssetLoader, ImageCache, ImageCacheProvider,
+    KeyBinding, Menu, MenuItem, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
     actions, div, hash, image_cache, img, prelude::*, px, rgb, size,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -13,7 +13,7 @@ struct ImageGallery {
     image_key: String,
     items_count: usize,
     total_count: usize,
-    image_cache: Entity<RetainAllImageCache>,
+    image_cache: Entity<BoundedImageCache>,
 }
 
 impl ImageGallery {
@@ -187,7 +187,7 @@ impl SimpleLruCache {
 impl ImageCache for SimpleLruCache {
     fn load(
         &mut self,
-        resource: &gpui::Resource,
+        resource: &gpui::AssetLocation,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Result<Arc<gpui::RenderImage>, gpui::ImageCacheError>> {
@@ -277,7 +277,7 @@ fn main() {
                 image_key: "".into(),
                 items_count: IMAGES_IN_GALLERY,
                 total_count: 0,
-                image_cache: RetainAllImageCache::new(ctx),
+                image_cache: BoundedImageCache::new(BoundedImageCacheConfig::default(), ctx),
             })
         }) {
             eprintln!("failed to open image gallery window: {error:#}");

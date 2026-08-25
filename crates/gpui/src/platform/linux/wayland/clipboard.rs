@@ -11,7 +11,9 @@ use strum::IntoEnumIterator;
 use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
-use crate::{ClipboardEntry, ClipboardItem, Image, ImageFormat, WaylandClientStatePtr, hash};
+use crate::{
+    ClipboardEntry, ClipboardImage, ClipboardItem, ImageFormat, WaylandClientStatePtr, hash,
+};
 
 /// Text mime types that we'll offer to other programs.
 pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
@@ -172,7 +174,7 @@ impl<T: ReceiveData> DataOffer<T> {
             if let Some(bytes) = self.read_bytes(connection, mime_type) {
                 let id = hash(&bytes);
                 return Some(ClipboardItem {
-                    entries: vec![ClipboardEntry::Image(Image { format, bytes, id })],
+                    entries: vec![ClipboardEntry::Image(ClipboardImage { format, bytes, id })],
                 });
             }
         }

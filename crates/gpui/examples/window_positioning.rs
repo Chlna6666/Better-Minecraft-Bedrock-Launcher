@@ -15,6 +15,7 @@ impl Render for WindowContent {
         let window_bounds = window.bounds();
 
         div()
+            .id("window-positioning-root")
             .flex()
             .flex_col()
             .bg(self.bg)

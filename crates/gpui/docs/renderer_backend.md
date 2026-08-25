@@ -18,8 +18,8 @@ hard-coding platform policy into framework defaults.
 - `render_policy`: event-driven, continuous, or on-demand composition;
 - `frame_metrics`: extra metrics collection for debugging and profiling.
 
-Use `Application::new_with_renderer_options(options)` or
-`Application::new_with_renderer_backend(backend)` at startup.
+Use `Application::with_renderer_options(options)` or
+`Application::with_renderer_backend(backend)` at startup.
 
 ## Environment Override
 

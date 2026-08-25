@@ -73,7 +73,7 @@ pub(super) const NOVA_BACKDROP_BLUR_SHADER_SOURCE: &str = concat!(
 );
 
 #[derive(Clone)]
-pub(super) struct NovaShaderBinaries {
+pub(super) struct ShaderBinaries {
     pub(super) solid_vertex: gfx_core::ShaderBinary,
     pub(super) solid_fragment: gfx_core::ShaderBinary,
     pub(super) quad_vertex: gfx_core::ShaderBinary,
@@ -101,16 +101,16 @@ pub(super) struct NovaShaderBinaries {
     pub(super) backdrop_blur_fragment: gfx_core::ShaderBinary,
 }
 
-type NovaShaderCacheEntry = std::result::Result<NovaShaderBinaries, Arc<str>>;
+type ShaderCacheEntry = std::result::Result<ShaderBinaries, Arc<str>>;
 
 fn cached_nova_shader_binaries(
-    cache: &'static std::sync::OnceLock<NovaShaderCacheEntry>,
+    cache: &'static std::sync::OnceLock<ShaderCacheEntry>,
     compile: fn(
         &str,
         ShaderStage,
         &str,
     ) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError>,
-) -> Result<NovaShaderBinaries> {
+) -> Result<ShaderBinaries> {
     match cache.get_or_init(|| {
         compile_nova_shader_binaries(compile).map_err(|error| format!("{error:#}").into())
     }) {
@@ -120,14 +120,14 @@ fn cached_nova_shader_binaries(
 }
 
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-pub(super) fn cached_nova_dx12_shader_binaries() -> Result<NovaShaderBinaries> {
-    static CACHE: std::sync::OnceLock<NovaShaderCacheEntry> = std::sync::OnceLock::new();
+pub(super) fn cached_nova_dx12_shader_binaries() -> Result<ShaderBinaries> {
+    static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     cached_nova_shader_binaries(&CACHE, compile_wgsl_to_hlsl)
 }
 
 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-pub(super) fn cached_nova_metal_shader_binaries() -> Result<NovaShaderBinaries> {
-    static CACHE: std::sync::OnceLock<NovaShaderCacheEntry> = std::sync::OnceLock::new();
+pub(super) fn cached_nova_metal_shader_binaries() -> Result<ShaderBinaries> {
+    static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     cached_nova_shader_binaries(&CACHE, compile_wgsl_to_msl)
 }
 
@@ -135,12 +135,12 @@ pub(super) fn cached_nova_metal_shader_binaries() -> Result<NovaShaderBinaries> 
     feature = "nova-gfx-vulkan",
     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
 ))]
-pub(super) fn cached_nova_vulkan_shader_binaries() -> Result<NovaShaderBinaries> {
-    static CACHE: std::sync::OnceLock<NovaShaderCacheEntry> = std::sync::OnceLock::new();
+pub(super) fn cached_nova_vulkan_shader_binaries() -> Result<ShaderBinaries> {
+    static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     cached_nova_shader_binaries(&CACHE, compile_wgsl_to_spirv)
 }
 
-pub(super) struct NovaBlendPipelineDescriptor<'a> {
+pub(super) struct BlendPipelineDescriptor<'a> {
     pub(super) label: &'a str,
     pub(super) suffix: &'a str,
     pub(super) blend_mode: BlendMode,
@@ -179,8 +179,8 @@ pub(super) fn compile_nova_shader_binaries(
         ShaderStage,
         &str,
     ) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError>,
-) -> Result<NovaShaderBinaries> {
-    Ok(NovaShaderBinaries {
+) -> Result<ShaderBinaries> {
+    Ok(ShaderBinaries {
         solid_vertex: compile(
             NOVA_SOLID_QUAD_SHADER_SOURCE,
             ShaderStage::Vertex,

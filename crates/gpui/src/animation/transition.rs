@@ -210,13 +210,6 @@ impl From<TransitionStyle> for Transition {
     }
 }
 
-pub(crate) fn resolve_driver(
-    requested: AnimationDriver,
-    properties: impl IntoIterator<Item = TransitionProperty>,
-) -> AnimationDriver {
-    resolve_driver_with_cpu_policy(requested, properties, false)
-}
-
 pub(crate) fn resolve_driver_with_cpu_policy(
     requested: AnimationDriver,
     properties: impl IntoIterator<Item = TransitionProperty>,

@@ -1,13 +1,13 @@
 use crate::{ObjectFit, Result, size};
 use image::RgbaImage;
 use smallvec::SmallVec;
-use std::io::{BufReader, Cursor};
+use std::io::Cursor;
 
-use super::target::{fitted_target_size, resize_rgba_to_target};
-use crate::assets::render_image::{AnimatedFrame, RenderImage};
-use crate::assets::types::{ImageDecodeTarget, TargetImageDecodeMetadata};
+use super::resample::resize_rgba_frame;
+use crate::assets::{AnimatedFrame, RenderImage};
+use crate::assets::{ImageRenderInfo, ImageRenderSize};
 
-pub(super) fn decode_static_jpeg_frame(bytes: &[u8]) -> Result<AnimatedFrame> {
+pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     let pixels = decoder.decode()?;
     let info = decoder
@@ -17,51 +17,11 @@ pub(super) fn decode_static_jpeg_frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     Ok(AnimatedFrame::from_rgba_image(0, rgba))
 }
 
-pub(super) fn decode_jpeg_path_to_target(
-    path: &std::path::Path,
-    target: ImageDecodeTarget,
-    object_fit: ObjectFit,
-) -> Result<(RenderImage, TargetImageDecodeMetadata)> {
-    let file = std::fs::File::open(path)?;
-    let mut decoder = jpeg_decoder::Decoder::new(BufReader::new(file));
-    decoder.read_info()?;
-    let original_info = decoder
-        .info()
-        .ok_or_else(|| anyhow::anyhow!("JPEG decoder did not report image dimensions"))?;
-    let original_size = size(
-        u32::from(original_info.width),
-        u32::from(original_info.height),
-    );
-    let fitted_target = fitted_target_size(original_size, target, object_fit);
-
-    let requested_width = u16::try_from(fitted_target.width.min(u32::from(u16::MAX)))?;
-    let requested_height = u16::try_from(fitted_target.height.min(u32::from(u16::MAX)))?;
-    decoder.scale(requested_width.max(1), requested_height.max(1))?;
-    let pixels = decoder.decode()?;
-    let scaled_info = decoder
-        .info()
-        .ok_or_else(|| anyhow::anyhow!("JPEG decoder did not report scaled dimensions"))?;
-    let rgba = jpeg_pixels_to_rgba_image(&pixels, scaled_info)?;
-    let (rgba, decode_mode) = resize_rgba_to_target(rgba, fitted_target, "jpeg_scaled_decode")?;
-    let frame = AnimatedFrame::from_rgba_image(0, rgba);
-    let image = RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1));
-
-    Ok((
-        image,
-        TargetImageDecodeMetadata {
-            original_width: original_size.width,
-            original_height: original_size.height,
-            target: fitted_target,
-            decode_mode,
-        },
-    ))
-}
-
-pub(super) fn decode_jpeg_to_target(
+pub(super) fn render_sized(
     bytes: &[u8],
-    target: ImageDecodeTarget,
+    target: ImageRenderSize,
     object_fit: ObjectFit,
-) -> Result<(RenderImage, TargetImageDecodeMetadata)> {
+) -> Result<(RenderImage, ImageRenderInfo)> {
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     decoder.read_info()?;
     let original_info = decoder
@@ -71,7 +31,7 @@ pub(super) fn decode_jpeg_to_target(
         u32::from(original_info.width),
         u32::from(original_info.height),
     );
-    let fitted_target = fitted_target_size(original_size, target, object_fit);
+    let fitted_target = target.fit(original_size, object_fit);
 
     let requested_width = u16::try_from(fitted_target.width.min(u32::from(u16::MAX)))?;
     let requested_height = u16::try_from(fitted_target.height.min(u32::from(u16::MAX)))?;
@@ -81,17 +41,17 @@ pub(super) fn decode_jpeg_to_target(
         .info()
         .ok_or_else(|| anyhow::anyhow!("JPEG decoder did not report scaled dimensions"))?;
     let rgba = jpeg_pixels_to_rgba_image(&pixels, scaled_info)?;
-    let (rgba, decode_mode) = resize_rgba_to_target(rgba, fitted_target, "jpeg_scaled_decode")?;
+    let (rgba, render_path) = resize_rgba_frame(rgba, fitted_target, "jpeg_scaled")?;
     let frame = AnimatedFrame::from_rgba_image(0, rgba);
     let image = RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1));
 
     Ok((
         image,
-        TargetImageDecodeMetadata {
+        ImageRenderInfo {
             original_width: original_size.width,
             original_height: original_size.height,
-            target: fitted_target,
-            decode_mode,
+            size: fitted_target,
+            render_path,
         },
     ))
 }

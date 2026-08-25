@@ -7,7 +7,7 @@ use std::{
     rc::Rc,
 };
 
-use super::state::Interactivity;
+use super::interactivity::Interactivity;
 pub(crate) type MouseDownListener = Box<
     dyn Fn(&MouseDownEvent, crate::DispatchPhase, &crate::Hitbox, &mut Window, &mut App) + 'static,
 >;

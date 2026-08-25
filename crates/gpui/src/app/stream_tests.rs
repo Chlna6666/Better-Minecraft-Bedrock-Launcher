@@ -67,7 +67,6 @@ fn context_spawn_stream_yields_between_ready_items(cx: &mut TestAppContext) {
         }
     });
     let other_task = cx.update({
-        let applied_count = applied_count.clone();
         let count_observed_by_other_task = count_observed_by_other_task.clone();
         move |cx| {
             cx.spawn(async move |_cx| {

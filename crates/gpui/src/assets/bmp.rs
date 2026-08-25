@@ -1,16 +1,15 @@
 use crate::{ObjectFit, Result, size};
 use image::{ColorType, ImageDecoder as _, ImageDecoderRect as _, codecs::bmp::BmpDecoder};
 use smallvec::SmallVec;
-use std::io::{BufReader, Cursor};
+use std::io::Cursor;
 
-use super::target::{
-    bgra_bytes_to_rgba_image, bgra_len, fitted_target_size, high_quality_intermediate_target,
-    resize_rgba_to_target, source_axis_for_target,
+use super::resample::{
+    bgra_byte_len, intermediate_sample_size, resize_rgba_frame, rgba_image_from_bgra, scaled_axis,
 };
-use crate::assets::render_image::{AnimatedFrame, RenderImage};
-use crate::assets::types::{ImageDecodeTarget, TargetImageDecodeMetadata};
+use crate::assets::{AnimatedFrame, RenderImage};
+use crate::assets::{ImageRenderInfo, ImageRenderSize};
 
-pub(super) fn decode_static_bmp_frame(bytes: &[u8]) -> Result<AnimatedFrame> {
+pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     let decoder = BmpDecoder::new(Cursor::new(bytes))?;
     let (width, height) = decoder.dimensions();
     let color_type = decoder.color_type();
@@ -26,17 +25,17 @@ pub(super) fn decode_static_bmp_frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     ))
 }
 
-pub(super) fn decode_bmp_to_target(
+pub(super) fn render_sized(
     bytes: &[u8],
-    target: ImageDecodeTarget,
+    target: ImageRenderSize,
     object_fit: ObjectFit,
-) -> Result<(RenderImage, TargetImageDecodeMetadata)> {
+) -> Result<(RenderImage, ImageRenderInfo)> {
     let mut decoder = BmpDecoder::new(Cursor::new(bytes))?;
     let (original_width, original_height) = decoder.dimensions();
     let color_type = decoder.color_type();
     let original_size = size(original_width, original_height);
-    let fitted_target = fitted_target_size(original_size, target, object_fit);
-    let sample_target = high_quality_intermediate_target(original_size, fitted_target);
+    let fitted_target = target.fit(original_size, object_fit);
+    let sample_target = intermediate_sample_size(original_size, fitted_target);
     let output = sample_bmp_rows_to_bgra(
         &mut decoder,
         original_width,
@@ -44,75 +43,28 @@ pub(super) fn decode_bmp_to_target(
         color_type,
         sample_target,
     )?;
-    let (image, decode_mode) = if sample_target == fitted_target {
+    let (image, render_path) = if sample_target == fitted_target {
         let frame = AnimatedFrame::from_bgra_bytes(0, sample_target.size(), output);
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            "bmp_rect_sample_decode",
+            "bmp_rect_sample",
         )
     } else {
-        let rgba = bgra_bytes_to_rgba_image(output, sample_target)?;
-        let (rgba, decode_mode) =
-            resize_rgba_to_target(rgba, fitted_target, "bmp_rect_sample_decode")?;
+        let rgba = rgba_image_from_bgra(output, sample_target)?;
+        let (rgba, render_path) = resize_rgba_frame(rgba, fitted_target, "bmp_rect_sample")?;
         let frame = AnimatedFrame::from_rgba_image(0, rgba);
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            decode_mode,
+            render_path,
         )
     };
     Ok((
         image,
-        TargetImageDecodeMetadata {
+        ImageRenderInfo {
             original_width,
             original_height,
-            target: fitted_target,
-            decode_mode,
-        },
-    ))
-}
-
-pub(super) fn decode_bmp_path_to_target(
-    path: &std::path::Path,
-    target: ImageDecodeTarget,
-    object_fit: ObjectFit,
-) -> Result<(RenderImage, TargetImageDecodeMetadata)> {
-    let file = std::fs::File::open(path)?;
-    let mut decoder = BmpDecoder::new(BufReader::new(file))?;
-    let (original_width, original_height) = decoder.dimensions();
-    let color_type = decoder.color_type();
-    let original_size = size(original_width, original_height);
-    let fitted_target = fitted_target_size(original_size, target, object_fit);
-    let sample_target = high_quality_intermediate_target(original_size, fitted_target);
-    let output = sample_bmp_rows_to_bgra(
-        &mut decoder,
-        original_width,
-        original_height,
-        color_type,
-        sample_target,
-    )?;
-    let (image, decode_mode) = if sample_target == fitted_target {
-        let frame = AnimatedFrame::from_bgra_bytes(0, sample_target.size(), output);
-        (
-            RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            "bmp_rect_sample_decode",
-        )
-    } else {
-        let rgba = bgra_bytes_to_rgba_image(output, sample_target)?;
-        let (rgba, decode_mode) =
-            resize_rgba_to_target(rgba, fitted_target, "bmp_rect_sample_decode")?;
-        let frame = AnimatedFrame::from_rgba_image(0, rgba);
-        (
-            RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            decode_mode,
-        )
-    };
-    Ok((
-        image,
-        TargetImageDecodeMetadata {
-            original_width,
-            original_height,
-            target: fitted_target,
-            decode_mode,
+            size: fitted_target,
+            render_path,
         },
     ))
 }
@@ -122,13 +74,13 @@ fn sample_bmp_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
     source_width: u32,
     source_height: u32,
     color_type: ColorType,
-    sample_target: ImageDecodeTarget,
+    sample_target: ImageRenderSize,
 ) -> Result<Vec<u8>> {
     let source_row_len = usize::from(color_type.bytes_per_pixel())
         .checked_mul(source_width as usize)
         .ok_or_else(|| anyhow::anyhow!("BMP source row size overflowed"))?;
     let mut source_row = vec![0; source_row_len];
-    let output_len = bgra_len(sample_target)?;
+    let output_len = bgra_byte_len(sample_target)?;
     let mut output = vec![0; output_len];
     let mut next_target_y = 0u32;
 
@@ -143,8 +95,7 @@ fn sample_bmp_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
         )?;
 
         while next_target_y < sample_target.height
-            && source_axis_for_target(next_target_y, source_height, sample_target.height)
-                == source_y
+            && scaled_axis(next_target_y, source_height, sample_target.height) == source_y
         {
             write_sampled_image_row(
                 &source_row,
@@ -178,7 +129,7 @@ fn write_sampled_image_row(
     let output_row = &mut output[output_row_start..output_row_start + target_width as usize * 4];
 
     for target_x in 0..target_width {
-        let source_x = source_axis_for_target(target_x, source_width, target_width) as usize;
+        let source_x = scaled_axis(target_x, source_width, target_width) as usize;
         let out = &mut output_row[target_x as usize * 4..target_x as usize * 4 + 4];
         match color_type {
             ColorType::L8 => {

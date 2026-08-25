@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the arena encapsulates raw allocation and pointer lifetime invariants"
+)]
+
 use std::{
     alloc::{self, handle_alloc_error},
     cell::Cell,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::foundation::util::atomic_incr_if_not_zero;
+use crate::foundation::atomic_incr_if_not_zero;
 
 pub(crate) type AnyWindowFocusListener =
     Box<dyn FnMut(&WindowFocusEvent, &mut Window, &mut App) -> bool + 'static>;
@@ -53,14 +53,6 @@ impl Drop for ArenaClearNeeded {
             element_arena.clear();
         });
     }
-}
-
-pub(crate) fn trim_element_arena(max_capacity: usize) -> bool {
-    let _ = max_capacity;
-    ELEMENT_ARENA.with_borrow_mut(|element_arena| {
-        element_arena.clear();
-    });
-    true
 }
 
 impl Window {

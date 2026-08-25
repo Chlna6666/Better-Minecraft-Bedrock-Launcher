@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! # fn build_shader() -> Result<gpui::WgslShaderSource, gpui::WgslShaderError> {
-//! let shader = gpui::compile_wgsl_shader_module_from_path("viewer.wgsl")?;
+//! let shader = gpui::WgslShaderSource::from_path("viewer.wgsl")?;
 //! # Ok(shader)
 //! # }
 //! ```
@@ -59,8 +59,8 @@ impl std::error::Error for WgslShaderError {
 ///
 /// Use this type when the same shader source needs to be cross-compiled or
 /// passed to a backend more than once, or when callers need access to the
-/// validated source text for logging or pipeline setup. For one-shot loading, use
-/// [`compile_wgsl_shader_module`] or [`compile_wgsl_shader_module_from_path`].
+/// validated source text for logging or pipeline setup. Construct it with
+/// [`WgslShaderSource::from_source`] or [`WgslShaderSource::from_path`].
 #[derive(Clone, Debug)]
 pub struct WgslShaderSource {
     label: String,
@@ -105,27 +105,6 @@ impl WgslShaderSource {
     pub fn source(&self) -> &str {
         &self.source
     }
-}
-
-/// Loads and validates an in-memory WGSL shader source.
-///
-/// This is the shortest path for generated shader source or small examples.
-/// The `label` appears in validation diagnostics.
-pub fn compile_wgsl_shader_module(
-    label: impl Into<String>,
-    source: impl Into<String>,
-) -> Result<WgslShaderSource, WgslShaderError> {
-    WgslShaderSource::from_source(label, source)
-}
-
-/// Loads and validates a WGSL shader file.
-///
-/// This is intended for applications that ship editable `.wgsl` files next to
-/// custom GPU rendering code. The file path is used as the shader label.
-pub fn compile_wgsl_shader_module_from_path(
-    path: impl AsRef<Path>,
-) -> Result<WgslShaderSource, WgslShaderError> {
-    WgslShaderSource::from_path(path)
 }
 
 fn validate_wgsl(label: &str, source: &str) -> Result<(), WgslShaderError> {

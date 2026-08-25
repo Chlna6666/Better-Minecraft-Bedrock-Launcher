@@ -26,6 +26,7 @@ repository = "https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher"
 [package.metadata.upstream]
 project = "GPUI"
 repository = "https://github.com/zed-industries/zed"
+revision = "6805d952f9f3d702f760aa11b1547df8a625fa16"
 license = "Apache-2.0"
 maintainer = "Zed Industries, Inc."
 
@@ -40,6 +41,7 @@ default = [
     "nova-gfx-dx12",
     "build-shader-validation",
 ]
+bench = ["test-support", "dep:criterion"]
 build-shader-validation = []
 inspector = ["gpui_macros/inspector"]
 dhat-heap = []
@@ -55,7 +57,6 @@ macos-blade = [
     "objc2-metal",
 ]
 runtime_shaders = []
-screen-capture = ["scap"]
 nova-gfx = []
 nova-gfx-vulkan = ["nova-gfx", "dep:gfx-vulkan"]
 nova-gfx-dx12 = ["nova-gfx", "dep:gfx-dx12"]
@@ -98,13 +99,42 @@ x11 = [
     "x11-clipboard",
     "filedescriptor",
     "open",
-    "scap?/x11",
 ]
 
 [lib]
 name = "gpui"
 path = "src/gpui.rs"
 doctest = false
+
+[[bench]]
+name = "images"
+path = "benches/images.rs"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "frame_upload"
+path = "benches/frame_upload.rs"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "layouts"
+path = "benches/layouts.rs"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "memory"
+path = "benches/memory.rs"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "paths"
+path = "benches/paths.rs"
+harness = false
+required-features = ["bench"]
 
 [[example]]
 name = "animation"
@@ -171,8 +201,8 @@ name = "painting"
 path = "examples/painting.rs"
 
 [[example]]
-name = "paths_bench"
-path = "examples/paths_bench.rs"
+name = "path_stress"
+path = "examples/path_stress.rs"
 
 [[example]]
 name = "pattern"
@@ -272,6 +302,10 @@ version = "0.10.0"
 
 [dependencies.crossbeam-queue]
 version = "0.3.12"
+
+[dependencies.criterion]
+version = "0.5"
+optional = true
 
 [dependencies.linked-hash-map]
 version = "0.5.6"
@@ -665,12 +699,6 @@ features = ["wgsl-in"]
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))'.dependencies.pathfinder_geometry]
 version = "0.5"
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies.scap]
-version = "0.0.8-zed"
-optional = true
-default-features = false
-package = "zed-scap"
-
 [target.'cfg(target_os = "macos")'.dependencies.block]
 version = "0.1"
 
@@ -838,7 +866,11 @@ version = "29.0.1"
 features = ["wgsl-in"]
 
 [lints.rust]
-unsafe_code = "warn"
+missing_unsafe_on_extern = "deny"
+unsafe_attr_outside_unsafe = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_unsafe = "deny"
 
 [lints.clippy]
 dbg_macro = "deny"

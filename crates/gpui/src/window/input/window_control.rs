@@ -35,6 +35,7 @@ impl Window {
             .then_some(WindowControlArea::Drag)
     }
 
+    #[cfg(test)]
     pub(in crate::window) fn observe_caption_height(&mut self) {
         self.observed_caption_height = self
             .rendered_frame

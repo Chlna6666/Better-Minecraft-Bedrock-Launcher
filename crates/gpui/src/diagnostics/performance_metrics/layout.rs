@@ -1,7 +1,14 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::sync::atomic::Ordering;
 
-use super::super::LayoutFrameMetrics;
-use super::super::state::shared_metrics;
+use super::LayoutFrameMetrics;
+use super::store::shared_metrics;
+
+#[cfg(test)]
+thread_local! {
+    static THREAD_STYLE_REFINE_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 /// Records layout counters for diagnostics.
 pub fn record_layout_frame_metrics(metrics: LayoutFrameMetrics) {
@@ -56,9 +63,16 @@ pub fn record_text_layout_cache_metrics(hits: usize, reuses: usize, misses: usiz
 
 /// Records style refinement applications on hot paths.
 pub fn record_style_refine(count: usize) {
+    #[cfg(test)]
+    THREAD_STYLE_REFINE_COUNT.set(THREAD_STYLE_REFINE_COUNT.get().saturating_add(count));
     shared_metrics()
         .style_refine_count
         .fetch_add(count as u64, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn current_thread_style_refine_count() -> usize {
+    THREAD_STYLE_REFINE_COUNT.get()
 }
 
 /// Records style/layout-to-Taffy conversions on hot paths.

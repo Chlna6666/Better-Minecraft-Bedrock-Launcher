@@ -1,11 +1,12 @@
-use super::{frame::AnimatedFrame, source::AnimatedImageSource, streaming::StreamingImageState};
-use crate::{BackgroundExecutor, DevicePixels, Result, Size, size};
+use super::animation_stream::{release_animation_queue_bytes, reserve_animation_queue_bytes};
+use super::{AnimatedFrame, AnimatedImageConfig, AnimationStream, EncodedImage, ImageRenderSize};
+use crate::{DevicePixels, Result, Size, size};
 use image::{Delay, Frame};
+use linked_hash_map::LinkedHashMap;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
     any::TypeId,
-    collections::HashMap,
     fmt,
     sync::{
         Arc, OnceLock,
@@ -15,7 +16,35 @@ use std::{
     time::Duration,
 };
 
-use super::super::types::*;
+const MAX_INTERNED_IMAGE_IDS: usize = 8_192;
+
+/// A unique identifier for the image cache.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ImageId(pub usize);
+
+/// Pixel format used by image frames uploaded to the renderer.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum ImagePixelFormat {
+    /// Blue, green, red, alpha byte order.
+    Bgra8,
+    /// Red, green, blue, alpha byte order.
+    Rgba8,
+}
+
+impl ImagePixelFormat {
+    pub(crate) const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Bgra8 | Self::Rgba8 => 4,
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Hash, Clone)]
+pub(crate) struct RenderImageParams {
+    pub(crate) image_id: ImageId,
+    pub(crate) frame_slot: usize,
+    pub(crate) pixel_format: ImagePixelFormat,
+}
 
 /// A cached and processed image.
 pub struct RenderImage {
@@ -24,13 +53,13 @@ pub struct RenderImage {
     /// The scale factor of this image on render.
     pub(crate) scale_factor: f32,
     compressed_byte_len: usize,
-    decode_duration: Option<std::time::Duration>,
-    pub(in crate::assets) data: RenderImageData,
+    processing_duration: Option<std::time::Duration>,
+    pub(in crate::assets) storage: RenderImageStorage,
 }
 
-pub(in crate::assets) enum RenderImageData {
+pub(in crate::assets) enum RenderImageStorage {
     Resident(SmallVec<[AnimatedFrame; 1]>),
-    Streaming(Arc<StreamingImageState>),
+    Streaming(Arc<AnimationStream>),
 }
 
 impl PartialEq for RenderImage {
@@ -57,29 +86,37 @@ fn next_render_image_id() -> ImageId {
 /// image (which is pixel-identical, since the source and decode parameters match) hit the
 /// existing tile instead.
 ///
-/// Entries are never evicted: each is a `(TypeId, u64) -> ImageId` pair, so the retained set is
-/// tiny and bounded by the number of distinct image sources the application ever loads.
-/// Manually constructed [`RenderImage`]s keep their unique auto-incremented ids.
+/// The least recently used mappings are evicted after a fixed limit. Atlas residency is already
+/// independently bounded, so an evicted source may receive a new id without making this CPU-side
+/// metadata table unbounded. Manually constructed [`RenderImage`]s keep unique auto-incremented
+/// ids.
 pub(crate) fn interned_render_image_id(loader: TypeId, source_hash: u64) -> ImageId {
-    static INTERNED: OnceLock<Mutex<HashMap<(TypeId, u64), ImageId>>> = OnceLock::new();
+    static INTERNED: OnceLock<Mutex<LinkedHashMap<(TypeId, u64), ImageId>>> = OnceLock::new();
 
-    *INTERNED
-        .get_or_init(Default::default)
-        .lock()
-        .entry((loader, source_hash))
-        .or_insert_with(next_render_image_id)
+    let key = (loader, source_hash);
+    let mut interned = INTERNED.get_or_init(Default::default).lock();
+    if let Some(image_id) = interned.get_refresh(&key).copied() {
+        return image_id;
+    }
+    if interned.len() >= MAX_INTERNED_IMAGE_IDS {
+        interned.pop_front();
+    }
+    let image_id = next_render_image_id();
+    interned.insert(key, image_id);
+    image_id
 }
 
 impl RenderImage {
     /// Create a new image from the given data.
-    pub fn new(data: impl Into<SmallVec<[Frame; 1]>>) -> Self {
+    pub fn new(frames: impl Into<SmallVec<[Frame; 1]>>) -> Self {
         Self {
             id: next_render_image_id(),
             scale_factor: 1.0,
             compressed_byte_len: 0,
-            decode_duration: None,
-            data: RenderImageData::Resident(
-                data.into()
+            processing_duration: None,
+            storage: RenderImageStorage::Resident(
+                frames
+                    .into()
                     .into_iter()
                     .enumerate()
                     .map(|(sequence, frame)| AnimatedFrame::from_bgra_frame(sequence, frame))
@@ -89,14 +126,15 @@ impl RenderImage {
     }
 
     /// Create a new image from RGBA frames without converting them to BGRA.
-    pub fn from_rgba_frames(data: impl Into<SmallVec<[Frame; 1]>>) -> Self {
+    pub fn from_rgba_frames(frames: impl Into<SmallVec<[Frame; 1]>>) -> Self {
         Self {
             id: next_render_image_id(),
             scale_factor: 1.0,
             compressed_byte_len: 0,
-            decode_duration: None,
-            data: RenderImageData::Resident(
-                data.into()
+            processing_duration: None,
+            storage: RenderImageStorage::Resident(
+                frames
+                    .into()
                     .into_iter()
                     .enumerate()
                     .map(|(sequence, frame)| {
@@ -111,7 +149,7 @@ impl RenderImage {
     pub fn from_raw_pixels(
         width: u32,
         height: u32,
-        pixel_format: RenderImagePixelFormat,
+        pixel_format: ImagePixelFormat,
         bytes: Vec<u8>,
     ) -> Result<Self> {
         Self::from_raw_pixel_bytes(width, height, pixel_format, bytes)
@@ -124,7 +162,7 @@ impl RenderImage {
     pub fn from_raw_pixel_bytes(
         width: u32,
         height: u32,
-        pixel_format: RenderImagePixelFormat,
+        pixel_format: ImagePixelFormat,
         bytes: impl Into<Arc<[u8]>>,
     ) -> Result<Self> {
         let bytes = bytes.into();
@@ -150,18 +188,18 @@ impl RenderImage {
         Ok(Self::from_resident_frames(SmallVec::from_elem(frame, 1)))
     }
 
-    pub(crate) fn from_resident_frames(data: impl Into<SmallVec<[AnimatedFrame; 1]>>) -> Self {
+    pub(crate) fn from_resident_frames(frames: impl Into<SmallVec<[AnimatedFrame; 1]>>) -> Self {
         Self {
             id: next_render_image_id(),
             scale_factor: 1.0,
             compressed_byte_len: 0,
-            decode_duration: None,
-            data: RenderImageData::Resident(data.into()),
+            processing_duration: None,
+            storage: RenderImageStorage::Resident(frames.into()),
         }
     }
 
     pub(crate) fn streaming(
-        source: AnimatedImageSource,
+        source: EncodedImage,
         first_frame: AnimatedFrame,
         queued_frames: SmallVec<[AnimatedFrame; 8]>,
         config: AnimatedImageConfig,
@@ -170,26 +208,37 @@ impl RenderImage {
     }
 
     pub(in crate::assets) fn streaming_with_target(
-        source: AnimatedImageSource,
-        target: Option<ImageDecodeTarget>,
+        source: EncodedImage,
+        target: Option<ImageRenderSize>,
         first_frame: AnimatedFrame,
         queued_frames: SmallVec<[AnimatedFrame; 8]>,
         config: AnimatedImageConfig,
     ) -> Self {
         let config = config.clamped();
-        let (queue_sender, queue_receiver) = sync_channel(config.decode_ahead_frames);
+        let (queue_sender, queue_receiver) = sync_channel(config.prefetch_frames);
         let mut next_source_index = first_frame.sequence().saturating_add(1);
         let mut queued_byte_len = 0usize;
+        let mut queued_frame_count = 0usize;
         for frame in queued_frames {
             let next_frame_index = frame.sequence().saturating_add(1);
             let frame_byte_len = frame.byte_len();
+            if queued_byte_len != 0
+                && queued_byte_len.saturating_add(frame_byte_len) > config.prefetch_byte_limit
+            {
+                break;
+            }
+            if !reserve_animation_queue_bytes(frame_byte_len) {
+                break;
+            }
             if queue_sender.try_send(frame).is_err() {
+                release_animation_queue_bytes(frame_byte_len);
                 break;
             }
             next_source_index = next_source_index.max(next_frame_index);
             queued_byte_len = queued_byte_len.saturating_add(frame_byte_len);
+            queued_frame_count = queued_frame_count.saturating_add(1);
         }
-        let state = StreamingImageState {
+        let state = AnimationStream {
             source,
             target,
             first_frame,
@@ -197,29 +246,33 @@ impl RenderImage {
             queue_receiver: Mutex::new(queue_receiver),
             next_sequence: next_source_index,
             next_source_index,
-            queued_byte_len: Arc::new(AtomicUsize::new(queued_byte_len)),
+            prefetch_frames: config.prefetch_frames,
+            prefetch_byte_limit: config.prefetch_byte_limit,
+            queued_frame_count: AtomicUsize::new(queued_frame_count),
+            queued_byte_len: AtomicUsize::new(queued_byte_len),
             delivered_byte_len: AtomicUsize::new(0),
-            decode_task_running: AtomicBool::new(false),
+            stream_task_running: AtomicBool::new(false),
             completed: AtomicBool::new(false),
+            worker_index: AtomicUsize::new(usize::MAX),
         };
 
         Self {
             id: next_render_image_id(),
             scale_factor: 1.0,
             compressed_byte_len: 0,
-            decode_duration: None,
-            data: RenderImageData::Streaming(Arc::new(state)),
+            processing_duration: None,
+            storage: RenderImageStorage::Streaming(Arc::new(state)),
         }
     }
 
     /// Set diagnostic metadata collected while loading this image.
-    pub fn with_pipeline_metadata(
+    pub fn with_processing_metrics(
         mut self,
         compressed_byte_len: usize,
-        decode_duration: std::time::Duration,
+        processing_duration: std::time::Duration,
     ) -> Self {
         self.compressed_byte_len = compressed_byte_len;
-        self.decode_duration = Some(decode_duration);
+        self.processing_duration = Some(processing_duration);
         self
     }
 
@@ -234,16 +287,18 @@ impl RenderImage {
 
     /// Convert this image into a byte slice.
     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
-        match &self.data {
-            RenderImageData::Resident(frames) => frames.get(frame_index).map(AnimatedFrame::bytes),
-            RenderImageData::Streaming(state) => {
+        match &self.storage {
+            RenderImageStorage::Resident(frames) => {
+                frames.get(frame_index).map(AnimatedFrame::bytes)
+            }
+            RenderImageStorage::Streaming(state) => {
                 (frame_index == 0).then(|| state.first_frame.bytes())
             }
         }
     }
 
     /// Return the pixel format of the retained frame.
-    pub fn pixel_format(&self, frame_index: usize) -> Option<RenderImagePixelFormat> {
+    pub fn pixel_format(&self, frame_index: usize) -> Option<ImagePixelFormat> {
         self.frame(frame_index).map(|frame| frame.pixel_format)
     }
 
@@ -263,29 +318,41 @@ impl RenderImage {
 
     /// Get the number of frames for this image.
     pub fn frame_count(&self) -> usize {
-        match &self.data {
-            RenderImageData::Resident(frames) => frames.len(),
-            RenderImageData::Streaming(_) => usize::MAX,
+        match &self.storage {
+            RenderImageStorage::Resident(frames) => frames.len(),
+            RenderImageStorage::Streaming(_) => usize::MAX,
         }
     }
 
     /// Returns true when this image has more than one decoded frame.
     pub fn is_animated(&self) -> bool {
-        match &self.data {
-            RenderImageData::Resident(frames) => frames.len() > 1,
-            RenderImageData::Streaming(_) => true,
+        match &self.storage {
+            RenderImageStorage::Resident(frames) => frames.len() > 1,
+            RenderImageStorage::Streaming(_) => true,
         }
     }
 
     /// Estimated decoded bytes for all retained frames.
-    pub fn decoded_byte_len(&self) -> usize {
-        match &self.data {
-            RenderImageData::Resident(frames) => frames.iter().map(AnimatedFrame::byte_len).sum(),
-            RenderImageData::Streaming(state) => state
+    pub fn resident_byte_len(&self) -> usize {
+        match &self.storage {
+            RenderImageStorage::Resident(frames) => {
+                frames.iter().map(AnimatedFrame::byte_len).sum()
+            }
+            RenderImageStorage::Streaming(state) => state
                 .first_frame
                 .byte_len()
                 .saturating_add(state.queued_byte_len.load(Ordering::Relaxed))
                 .saturating_add(state.delivered_byte_len.load(Ordering::Relaxed)),
+        }
+    }
+
+    pub(crate) fn cache_cost_byte_len(&self) -> usize {
+        let decoded_bytes = self.resident_byte_len();
+        match &self.storage {
+            RenderImageStorage::Resident(_) => decoded_bytes,
+            RenderImageStorage::Streaming(state) => {
+                decoded_bytes.saturating_add(state.source.bytes.len())
+            }
         }
     }
 
@@ -303,8 +370,8 @@ impl RenderImage {
     }
 
     /// Time spent decoding this image, when known.
-    pub fn decode_duration(&self) -> Option<std::time::Duration> {
-        self.decode_duration
+    pub fn processing_duration(&self) -> Option<std::time::Duration> {
+        self.processing_duration
     }
 
     pub(crate) fn gpu_frame_slot_for_frame(
@@ -320,56 +387,56 @@ impl RenderImage {
     }
 
     pub(crate) fn frame(&self, frame_index: usize) -> Option<AnimatedFrame> {
-        match &self.data {
-            RenderImageData::Resident(frames) => frames.get(frame_index).cloned(),
-            RenderImageData::Streaming(state) => {
+        match &self.storage {
+            RenderImageStorage::Resident(frames) => frames.get(frame_index).cloned(),
+            RenderImageStorage::Streaming(state) => {
                 (frame_index == 0).then(|| state.first_frame.clone())
             }
         }
     }
 
-    pub(crate) fn next_streaming_frame(
-        &self,
-        current_sequence: usize,
-        executor: &BackgroundExecutor,
-    ) -> Option<AnimatedFrame> {
-        let RenderImageData::Streaming(state) = &self.data else {
+    pub(crate) fn next_streaming_frame(&self, current_sequence: usize) -> Option<AnimatedFrame> {
+        let RenderImageStorage::Streaming(state) = &self.storage else {
             return None;
         };
         let mut next_frame = None;
-        loop {
-            match state.queue_receiver.lock().try_recv() {
-                Ok(frame) if frame.sequence > current_sequence => {
-                    let frame_byte_len = frame.byte_len();
-                    state
-                        .queued_byte_len
-                        .fetch_sub(frame_byte_len, Ordering::Relaxed);
-                    state
-                        .delivered_byte_len
-                        .store(frame_byte_len, Ordering::Relaxed);
-                    next_frame = Some(frame);
-                    break;
-                }
-                Ok(frame) => {
-                    state
-                        .queued_byte_len
-                        .fetch_sub(frame.byte_len(), Ordering::Relaxed);
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    state.completed.store(true, SeqCst);
-                    break;
+        let mut stale_frame_count = 0usize;
+        {
+            let queue_receiver = state.queue_receiver.lock();
+            loop {
+                match queue_receiver.try_recv() {
+                    Ok(frame) if frame.sequence > current_sequence => {
+                        let frame_byte_len = frame.byte_len();
+                        state.release_queued_frame(frame_byte_len);
+                        state
+                            .delivered_byte_len
+                            .store(frame_byte_len, Ordering::Relaxed);
+                        next_frame = Some(frame);
+                        break;
+                    }
+                    Ok(frame) => {
+                        state.release_queued_frame(frame.byte_len());
+                        stale_frame_count = stale_frame_count.saturating_add(1);
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        state.completed.store(true, SeqCst);
+                        break;
+                    }
                 }
             }
         }
-        state.ensure_decode_task(executor);
+        crate::diagnostics::performance_metrics::record_animation_stale_frame_count(
+            stale_frame_count,
+        );
+        state.ensure_stream_task();
         next_frame
     }
 }
 
 impl fmt::Debug for RenderImage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ImageData")
+        f.debug_struct("RenderImage")
             .field("id", &self.id)
             .field("size", &self.size(0))
             .finish()

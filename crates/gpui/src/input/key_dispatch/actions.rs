@@ -1,5 +1,15 @@
-use super::types::{DispatchActionListener, DispatchNodeId, DispatchTree};
-use crate::{Action, KeyBinding, KeyContext, Keymap};
+use super::{DispatchNodeId, DispatchTree};
+use crate::{Action, App, DispatchPhase, KeyBinding, KeyContext, Keymap, Window};
+use std::{
+    any::{Any, TypeId},
+    rc::Rc,
+};
+
+#[derive(Clone)]
+pub(crate) struct DispatchActionListener {
+    pub(crate) action_type: TypeId,
+    pub(crate) listener: Rc<dyn Fn(&dyn Any, DispatchPhase, &mut Window, &mut App)>,
+}
 
 impl DispatchTree {
     pub fn available_actions(&self, target: DispatchNodeId) -> Vec<Box<dyn Action>> {
@@ -59,7 +69,7 @@ impl DispatchTree {
 
     /// Returns the highest precedence binding for the given action and context stack. This is the
     /// same as the last result of `bindings_for_action`, but more efficient than getting all bindings.
-    pub fn highest_precedence_binding_for_action(
+    pub fn binding_for_action(
         &self,
         action: &dyn Action,
         context_stack: &[KeyContext],

@@ -5,10 +5,10 @@ use super::{
     renderer,
 };
 use crate::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardEntry, ClipboardItem, ClipboardString,
-    CursorStyle, ForegroundExecutor, Image, ImageFormat, KeyContext, Keymap, MacDispatcher,
-    MacDisplay, MacWindow, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    Action, AnyWindowHandle, BackgroundExecutor, ClipboardEntry, ClipboardImage, ClipboardItem,
+    ClipboardString, CursorStyle, ForegroundExecutor, ImageFormat, KeyContext, Keymap,
+    MacDispatcher, MacDisplay, MacWindow, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions,
+    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Result, SemanticVersion, SystemMenuType, Task, WindowAppearance, WindowParams,
     hash,
 };
@@ -580,19 +580,6 @@ impl Platform for MacPlatform {
         MacDisplay::all()
             .map(|screen| Rc::new(screen) as Rc<_>)
             .collect()
-    }
-
-    #[cfg(feature = "screen-capture")]
-    fn is_screen_capture_supported(&self) -> bool {
-        let min_version = cocoa::foundation::NSOperatingSystemVersion::new(12, 3, 0);
-        super::is_macos_version_at_least(min_version)
-    }
-
-    #[cfg(feature = "screen-capture")]
-    fn screen_capture_sources(
-        &self,
-    ) -> oneshot::Receiver<Result<Vec<Rc<dyn crate::ScreenCaptureSource>>>> {
-        super::screen_capture::sources()
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
@@ -1291,7 +1278,7 @@ impl MacPlatform {
         }
     }
 
-    unsafe fn write_image_to_clipboard(&self, image: &Image) {
+    unsafe fn write_image_to_clipboard(&self, image: &ClipboardImage) {
         unsafe {
             let state = self.0.lock();
             state.pasteboard.clearContents();
@@ -1326,7 +1313,7 @@ fn try_clipboard_image(pasteboard: id, format: ImageFormat) -> Option<ClipboardI
                 let id = hash(&bytes);
 
                 Some(ClipboardItem {
-                    entries: vec![ClipboardEntry::Image(Image { format, bytes, id })],
+                    entries: vec![ClipboardEntry::Image(ClipboardImage { format, bytes, id })],
                 })
             }
         } else {
@@ -1348,11 +1335,11 @@ fn default_key_context() -> &'static Vec<KeyContext> {
         return context;
     }
 
-    let mut workspace_context = KeyContext::new_with_defaults();
+    let mut workspace_context = KeyContext::with_default_context();
     workspace_context.add("Workspace");
-    let mut pane_context = KeyContext::new_with_defaults();
+    let mut pane_context = KeyContext::with_default_context();
     pane_context.add("Pane");
-    let mut editor_context = KeyContext::new_with_defaults();
+    let mut editor_context = KeyContext::with_default_context();
     editor_context.add("Editor");
 
     pane_context.extend(&editor_context);

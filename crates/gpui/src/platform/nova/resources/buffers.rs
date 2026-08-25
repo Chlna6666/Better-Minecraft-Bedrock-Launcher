@@ -3,7 +3,7 @@ use anyhow::Result;
 use super::super::*;
 
 #[derive(Clone, Copy)]
-pub(in crate::platform::nova) struct NovaFrameResourceBuffers {
+pub(in crate::platform::nova) struct FrameResourceBuffers {
     pub(in crate::platform::nova) global_buffer: BufferId,
     pub(in crate::platform::nova) text_raster_buffer: BufferId,
     pub(in crate::platform::nova) quad_buffer: BufferId,
@@ -21,18 +21,18 @@ pub(in crate::platform::nova) struct NovaFrameResourceBuffers {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct NovaSharedResourceBuffers {
+pub(super) struct SharedResourceBuffers {
     pub(super) custom_mesh_3d_vertices_buffer: BufferId,
     pub(super) custom_mesh_3d_indices_buffer: BufferId,
     pub(super) atlas_sampler: SamplerId,
 }
 
-pub(super) struct NovaResourceBuffers {
-    pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
-    pub(super) shared: NovaSharedResourceBuffers,
+pub(super) struct ResourceBuffers {
+    pub(super) frame_buffers: Vec<FrameResourceBuffers>,
+    pub(super) shared: SharedResourceBuffers,
 }
 
-pub(super) fn create_resource_buffers<D>(device: &mut D, label: &str) -> Result<NovaResourceBuffers>
+pub(super) fn create_resource_buffers<D>(device: &mut D, label: &str) -> Result<ResourceBuffers>
 where
     D: BackendResources,
 {
@@ -57,9 +57,9 @@ where
         address_mode_v: AddressMode::ClampToEdge,
     })?;
 
-    Ok(NovaResourceBuffers {
+    Ok(ResourceBuffers {
         frame_buffers,
-        shared: NovaSharedResourceBuffers {
+        shared: SharedResourceBuffers {
             custom_mesh_3d_vertices_buffer,
             custom_mesh_3d_indices_buffer,
             atlas_sampler,
@@ -99,7 +99,7 @@ where
     })?)
 }
 
-fn create_frame_resource_buffers<D>(device: &mut D, label: &str) -> Result<NovaFrameResourceBuffers>
+fn create_frame_resource_buffers<D>(device: &mut D, label: &str) -> Result<FrameResourceBuffers>
 where
     D: BackendResources,
 {
@@ -189,7 +189,7 @@ where
         memory_location: MemoryLocation::CpuToGpu,
     })?;
 
-    Ok(NovaFrameResourceBuffers {
+    Ok(FrameResourceBuffers {
         global_buffer,
         text_raster_buffer,
         quad_buffer,

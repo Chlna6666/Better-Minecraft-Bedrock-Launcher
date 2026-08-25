@@ -274,7 +274,7 @@ impl KeybindingKeystroke {
     }
 
     /// Create a new keybinding keystroke from the given keystroke using the given keyboard mapper.
-    pub fn new_with_mapper(
+    pub fn with_mapper(
         inner: Keystroke,
         use_key_equivalents: bool,
         keyboard_mapper: &dyn PlatformKeyboardMapper,

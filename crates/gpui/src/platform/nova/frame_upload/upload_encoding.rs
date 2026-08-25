@@ -3,6 +3,72 @@ use super::*;
 const NOVA_ATLAS_TRANSPARENT_COVERAGE: [u8; 1] = [0];
 const NOVA_ATLAS_TRANSPARENT_COLOR: [u8; 4] = [0, 0, 0, 0];
 
+#[cfg(feature = "bench")]
+pub(crate) struct AtlasPixelEncodingBenchmarkCore {
+    destination: Vec<u8>,
+    source: Vec<u8>,
+    size: Size<DevicePixels>,
+    texture_kind: AtlasTextureKind,
+    padding: u32,
+}
+
+#[cfg(feature = "bench")]
+impl AtlasPixelEncodingBenchmarkCore {
+    pub(crate) fn rgba(width: u32, height: u32, padding: u32) -> Self {
+        Self::new(width, height, padding, AtlasTextureKind::Rgba)
+    }
+
+    pub(crate) fn bgra(width: u32, height: u32, padding: u32) -> Self {
+        Self::new(width, height, padding, AtlasTextureKind::Bgra)
+    }
+
+    pub(crate) fn monochrome(width: u32, height: u32, padding: u32) -> Self {
+        Self::new(width, height, padding, AtlasTextureKind::Monochrome)
+    }
+
+    pub(crate) fn subpixel(width: u32, height: u32, padding: u32) -> Self {
+        Self::new(width, height, padding, AtlasTextureKind::Subpixel)
+    }
+
+    fn new(width: u32, height: u32, padding: u32, texture_kind: AtlasTextureKind) -> Self {
+        let upload_width = width.saturating_add(padding.saturating_mul(2));
+        let upload_height = height.saturating_add(padding.saturating_mul(2));
+        let source_bytes_per_pixel = match texture_kind {
+            AtlasTextureKind::Monochrome => 1,
+            AtlasTextureKind::Bgra | AtlasTextureKind::Rgba | AtlasTextureKind::Subpixel => {
+                NOVA_ATLAS_BYTES_PER_PIXEL
+            }
+        };
+        let source_byte_len = width as usize * height as usize * source_bytes_per_pixel;
+        let destination_byte_len =
+            upload_width as usize * upload_height as usize * NOVA_ATLAS_BYTES_PER_PIXEL;
+        Self {
+            destination: vec![0; destination_byte_len],
+            source: (0..source_byte_len)
+                .map(|index| u8::try_from(index % 251).expect("modulo 251 must fit u8"))
+                .collect(),
+            size: crate::size(
+                DevicePixels(i32::try_from(width).expect("benchmark width must fit i32")),
+                DevicePixels(i32::try_from(height).expect("benchmark height must fit i32")),
+            ),
+            texture_kind,
+            padding,
+        }
+    }
+
+    pub(crate) fn encode(&mut self) -> usize {
+        encode_bgra_upload_with_padding(
+            &mut self.destination,
+            self.size,
+            &self.source,
+            self.texture_kind,
+            self.padding,
+        )
+        .expect("benchmark atlas dimensions and buffers must agree");
+        std::hint::black_box(self.destination.as_slice()).len()
+    }
+}
+
 #[cfg(test)]
 pub(in crate::platform::nova) fn encode_bgra_upload(
     pixels: &mut [u8],
@@ -125,19 +191,70 @@ fn encode_bgra_upload_kind(
         return Some(());
     }
 
-    for upload_y in 0..upload_height {
-        let y = upload_y
-            .saturating_sub(padding)
-            .min(height.saturating_sub(1));
-        for upload_x in 0..upload_width {
-            let x = upload_x
-                .saturating_sub(padding)
-                .min(width.saturating_sub(1));
-            let source_index = (y * width + x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            let atlas_index = (upload_y * upload_width + upload_x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            destination[atlas_index..atlas_index + 4]
-                .copy_from_slice(&source[source_index..source_index + 4]);
-        }
+    let source_row_bytes = width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let upload_row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    for (source_row, destination_row) in source
+        .chunks_exact(source_row_bytes)
+        .zip(destination[padding * upload_row_bytes..].chunks_exact_mut(upload_row_bytes))
+        .take(height)
+    {
+        let center_start = padding * NOVA_ATLAS_BYTES_PER_PIXEL;
+        destination_row[center_start..center_start + source_row_bytes].copy_from_slice(source_row);
+        replicate_horizontal_padding(destination_row, width, padding)?;
+    }
+    replicate_vertical_padding(destination, upload_width, height, padding)?;
+    Some(())
+}
+
+fn replicate_horizontal_padding(row: &mut [u8], width: usize, padding: usize) -> Option<()> {
+    if padding == 0 {
+        return Some(());
+    }
+    let center_start = padding.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let center_end = center_start.checked_add(width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?)?;
+    let first_pixel: [u8; NOVA_ATLAS_BYTES_PER_PIXEL] = row
+        .get(center_start..center_start + NOVA_ATLAS_BYTES_PER_PIXEL)?
+        .try_into()
+        .ok()?;
+    let last_pixel: [u8; NOVA_ATLAS_BYTES_PER_PIXEL] = row
+        .get(center_end - NOVA_ATLAS_BYTES_PER_PIXEL..center_end)?
+        .try_into()
+        .ok()?;
+    for pixel in row
+        .get_mut(..center_start)?
+        .chunks_exact_mut(NOVA_ATLAS_BYTES_PER_PIXEL)
+    {
+        pixel.copy_from_slice(&first_pixel);
+    }
+    for pixel in row
+        .get_mut(center_end..)?
+        .chunks_exact_mut(NOVA_ATLAS_BYTES_PER_PIXEL)
+    {
+        pixel.copy_from_slice(&last_pixel);
+    }
+    Some(())
+}
+
+fn replicate_vertical_padding(
+    destination: &mut [u8],
+    upload_width: usize,
+    height: usize,
+    padding: usize,
+) -> Option<()> {
+    if padding == 0 {
+        return Some(());
+    }
+    let row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let first_row = padding.checked_mul(row_bytes)?;
+    let last_row = padding
+        .checked_add(height)?
+        .checked_sub(1)?
+        .checked_mul(row_bytes)?;
+    for row in 0..padding {
+        destination.copy_within(first_row..first_row + row_bytes, row * row_bytes);
+    }
+    for row in padding + height..padding + height + padding {
+        destination.copy_within(last_row..last_row + row_bytes, row * row_bytes);
     }
     Some(())
 }
@@ -159,24 +276,30 @@ fn encode_rgba_upload(
         .checked_mul(upload_height)?
         .checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
     let destination = pixels.get_mut(..upload_len)?;
+    let source_row_bytes = width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let upload_row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
 
-    for upload_y in 0..upload_height {
-        let y = upload_y
-            .saturating_sub(padding)
-            .min(height.saturating_sub(1));
-        for upload_x in 0..upload_width {
-            let x = upload_x
-                .saturating_sub(padding)
-                .min(width.saturating_sub(1));
-            let source_index = (y * width + x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            let atlas_index = (upload_y * upload_width + upload_x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            let source = &source[source_index..source_index + 4];
-            destination[atlas_index] = source[2];
-            destination[atlas_index + 1] = source[1];
-            destination[atlas_index + 2] = source[0];
-            destination[atlas_index + 3] = source[3];
+    for (source_row, destination_row) in source
+        .chunks_exact(source_row_bytes)
+        .zip(destination[padding * upload_row_bytes..].chunks_exact_mut(upload_row_bytes))
+        .take(height)
+    {
+        let center_start = padding * NOVA_ATLAS_BYTES_PER_PIXEL;
+        let center = &mut destination_row[center_start..center_start + source_row_bytes];
+        for (source_pixel, destination_pixel) in source_row
+            .chunks_exact(NOVA_ATLAS_BYTES_PER_PIXEL)
+            .zip(center.chunks_exact_mut(NOVA_ATLAS_BYTES_PER_PIXEL))
+        {
+            destination_pixel.copy_from_slice(&[
+                source_pixel[2],
+                source_pixel[1],
+                source_pixel[0],
+                source_pixel[3],
+            ]);
         }
+        replicate_horizontal_padding(destination_row, width, padding)?;
     }
+    replicate_vertical_padding(destination, upload_width, height, padding)?;
     Some(())
 }
 
@@ -195,25 +318,26 @@ fn encode_monochrome_upload(
         .checked_mul(upload_height)?
         .checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
     let destination = pixels.get_mut(..upload_len)?;
+    let center_byte_len = width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let upload_row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
 
-    for upload_y in 0..upload_height {
-        let y = upload_y
-            .saturating_sub(padding)
-            .min(height.saturating_sub(1));
-        for upload_x in 0..upload_width {
-            let x = upload_x
-                .saturating_sub(padding)
-                .min(width.saturating_sub(1));
-            let coverage = source[y * width + x];
-            let atlas_index = (upload_y * upload_width + upload_x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            // Keep the atlas representation compatible with the Windows dual-source text
-            // pipeline: grayscale masks are represented as equal R/G/B coverage values.
-            destination[atlas_index] = coverage;
-            destination[atlas_index + 1] = coverage;
-            destination[atlas_index + 2] = coverage;
-            destination[atlas_index + 3] = 255;
+    for (source_row, destination_row) in source
+        .chunks_exact(width)
+        .zip(destination[padding * upload_row_bytes..].chunks_exact_mut(upload_row_bytes))
+        .take(height)
+    {
+        let center_start = padding * NOVA_ATLAS_BYTES_PER_PIXEL;
+        let center = &mut destination_row[center_start..center_start + center_byte_len];
+        for (&coverage, destination_pixel) in source_row
+            .iter()
+            .zip(center.chunks_exact_mut(NOVA_ATLAS_BYTES_PER_PIXEL))
+        {
+            // Monochrome shaders sample only the logical red channel of the BGRA atlas.
+            destination_pixel.copy_from_slice(&[0, 0, coverage, 255]);
         }
+        replicate_horizontal_padding(destination_row, width, padding)?;
     }
+    replicate_vertical_padding(destination, upload_width, height, padding)?;
     Some(())
 }
 
@@ -234,29 +358,36 @@ fn encode_subpixel_upload(
         .checked_mul(upload_height)?
         .checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
     let destination = pixels.get_mut(..upload_len)?;
+    let source_row_bytes = width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let upload_row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
 
-    for upload_y in 0..upload_height {
-        let y = upload_y
-            .saturating_sub(padding)
-            .min(height.saturating_sub(1));
-        for upload_x in 0..upload_width {
-            let x = upload_x
-                .saturating_sub(padding)
-                .min(width.saturating_sub(1));
-            let source_index = (y * width + x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            let alpha = u16::from(source[source_index + 3]);
-            let red = u16::from(source[source_index]).saturating_mul(alpha) / 255;
-            let green = u16::from(source[source_index + 1]).saturating_mul(alpha) / 255;
-            let blue = u16::from(source[source_index + 2]).saturating_mul(alpha) / 255;
-            let atlas_index = (upload_y * upload_width + upload_x) * NOVA_ATLAS_BYTES_PER_PIXEL;
+    for (source_row, destination_row) in source
+        .chunks_exact(source_row_bytes)
+        .zip(destination[padding * upload_row_bytes..].chunks_exact_mut(upload_row_bytes))
+        .take(height)
+    {
+        let center_start = padding * NOVA_ATLAS_BYTES_PER_PIXEL;
+        let center = &mut destination_row[center_start..center_start + source_row_bytes];
+        for (source_pixel, destination_pixel) in source_row
+            .chunks_exact(NOVA_ATLAS_BYTES_PER_PIXEL)
+            .zip(center.chunks_exact_mut(NOVA_ATLAS_BYTES_PER_PIXEL))
+        {
+            let alpha = u16::from(source_pixel[3]);
+            let red = u16::from(source_pixel[0]).saturating_mul(alpha) / 255;
+            let green = u16::from(source_pixel[1]).saturating_mul(alpha) / 255;
+            let blue = u16::from(source_pixel[2]).saturating_mul(alpha) / 255;
 
             // The GPU atlas uses BGRA8 memory layout. Preserve DirectWrite's independent
             // R/G/B coverage values instead of collapsing them into one grayscale channel.
-            destination[atlas_index] = u8::try_from(blue).unwrap_or(u8::MAX);
-            destination[atlas_index + 1] = u8::try_from(green).unwrap_or(u8::MAX);
-            destination[atlas_index + 2] = u8::try_from(red).unwrap_or(u8::MAX);
-            destination[atlas_index + 3] = 255;
+            destination_pixel.copy_from_slice(&[
+                u8::try_from(blue).unwrap_or(u8::MAX),
+                u8::try_from(green).unwrap_or(u8::MAX),
+                u8::try_from(red).unwrap_or(u8::MAX),
+                255,
+            ]);
         }
+        replicate_horizontal_padding(destination_row, width, padding)?;
     }
+    replicate_vertical_padding(destination, upload_width, height, padding)?;
     Some(())
 }

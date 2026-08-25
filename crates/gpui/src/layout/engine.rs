@@ -1,6 +1,6 @@
 use crate::{
-    App, Bounds, DefiniteLength, LayoutStyle, Length, Pixels, Size, Style, Window, point, relative,
-    size,
+    App, Bounds, DefiniteLength, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels, Size, Style,
+    Window, point, relative, size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
 use smallvec::SmallVec;
@@ -86,6 +86,8 @@ fn promote_percentage_axis(wrapper: &mut Length, child: &mut Length) -> bool {
 }
 
 impl TaffyLayoutEngine {
+    const MIN_RETAINED_CAPACITY: usize = 32;
+
     pub fn new() -> Self {
         // Taffy's rounded sizes use cumulative coordinates, while its rounded locations remain
         // parent-relative. GPUI needs both values from the same absolute coordinate system.
@@ -133,6 +135,38 @@ impl TaffyLayoutEngine {
         self.layout_cache_misses = 0;
         self.layout_cache_reused_roots = 0;
         self.layout_cache_saved_roots = 0;
+    }
+
+    pub(crate) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
+        let floor = match level {
+            GpuiMemoryTrimLevel::Light => Self::MIN_RETAINED_CAPACITY,
+            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive => 0,
+        };
+        self.absolute_layout_bounds
+            .shrink_to(floor.max(self.absolute_layout_bounds.len()));
+        self.unrounded_layout_origins
+            .shrink_to(floor.max(self.unrounded_layout_origins.len()));
+        self.computed_layouts
+            .shrink_to(floor.max(self.computed_layouts.len()));
+        self.node_fingerprints
+            .shrink_to(floor.max(self.node_fingerprints.len()));
+        self.node_layout_metadata
+            .shrink_to(floor.max(self.node_layout_metadata.len()));
+        self.measured_subtrees
+            .shrink_to(floor.max(self.measured_subtrees.len()));
+        self.computed_root_keys
+            .shrink_to(floor.max(self.computed_root_keys.len()));
+        self.subtree_scratch
+            .shrink_to(floor.max(self.subtree_scratch.len()));
+        if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            self.previous_layout_roots.clear();
+        } else {
+            for retained_nodes in self.previous_layout_roots.values_mut() {
+                retained_nodes.shrink_to(retained_nodes.len());
+            }
+        }
+        self.previous_layout_roots
+            .shrink_to(floor.max(self.previous_layout_roots.len()));
     }
 
     pub fn request_layout(
@@ -401,7 +435,7 @@ impl TaffyLayoutEngine {
         }
         self.bounds_cache_misses = self.bounds_cache_misses.saturating_add(1);
 
-        let layout = self.taffy.layout(id.into()).expect(EXPECT_MESSAGE).clone();
+        let layout = *self.taffy.layout(id.into()).expect(EXPECT_MESSAGE);
         let (origin_x, origin_y) = self.unrounded_layout_origin(id);
         let right = origin_x + layout.size.width;
         let bottom = origin_y + layout.size.height;
@@ -540,5 +574,27 @@ impl TaffyLayoutEngine {
             .hash(hasher);
         rem_size.hash(hasher);
         scale_factor.to_bits().hash(hasher);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggressive_trim_releases_layout_high_watermark_capacity() {
+        let mut engine = TaffyLayoutEngine::new();
+        engine.computed_root_keys.reserve(4096);
+        engine.subtree_scratch.reserve(4096);
+        engine.absolute_layout_bounds.reserve(4096);
+        let roots_capacity = engine.computed_root_keys.capacity();
+        let scratch_capacity = engine.subtree_scratch.capacity();
+        let bounds_capacity = engine.absolute_layout_bounds.capacity();
+
+        engine.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
+
+        assert!(engine.computed_root_keys.capacity() < roots_capacity);
+        assert!(engine.subtree_scratch.capacity() < scratch_capacity);
+        assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
     }
 }

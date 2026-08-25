@@ -1,8 +1,13 @@
 use parking_lot::Mutex;
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+
+const LARGE_BITMAP_BUCKET_GRANULARITY: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BitmapPoolSnapshot {
@@ -13,7 +18,8 @@ pub(crate) struct BitmapPoolSnapshot {
 }
 
 struct BitmapPoolState {
-    free: Vec<Vec<u8>>,
+    free: BTreeMap<usize, Vec<Vec<u8>>>,
+    free_buffers: usize,
     retained_bytes: usize,
 }
 
@@ -27,7 +33,8 @@ impl BitmapPool {
     pub(crate) fn new(max_bytes: usize, max_buffer_bytes: usize) -> Self {
         Self {
             state: Mutex::new(BitmapPoolState {
-                free: Vec::new(),
+                free: BTreeMap::new(),
+                free_buffers: 0,
                 retained_bytes: 0,
             }),
             max_bytes: AtomicUsize::new(max_bytes),
@@ -36,10 +43,15 @@ impl BitmapPool {
     }
 
     fn bucket_capacity(&self, requested: usize) -> usize {
-        requested
-            .max(1)
-            .next_power_of_two()
-            .min(self.max_buffer_bytes.load(Ordering::Relaxed))
+        let requested = requested.max(1);
+        let capacity = if requested <= LARGE_BITMAP_BUCKET_GRANULARITY {
+            requested.next_power_of_two()
+        } else {
+            requested
+                .div_ceil(LARGE_BITMAP_BUCKET_GRANULARITY)
+                .saturating_mul(LARGE_BITMAP_BUCKET_GRANULARITY)
+        };
+        capacity.min(self.max_buffer_bytes.load(Ordering::Relaxed))
     }
 
     /// Returns an empty buffer with at least `capacity` spare capacity, without zero-filling.
@@ -54,17 +66,28 @@ impl BitmapPool {
 
         let bucket = self.bucket_capacity(capacity);
         let mut state = self.state.lock();
-        let index = state
+        let available_capacity = state
             .free
-            .iter()
-            .position(|buffer| buffer.capacity() >= bucket);
-        let mut buffer = index
-            .map(|index| {
-                let buffer = state.free.swap_remove(index);
-                state.retained_bytes = state.retained_bytes.saturating_sub(buffer.capacity());
-                buffer
-            })
-            .unwrap_or_else(|| Vec::with_capacity(bucket));
+            .range(bucket..)
+            .next()
+            .map(|(&available_capacity, _)| available_capacity);
+        let mut buffer = if let Some(available_capacity) = available_capacity {
+            let buffers = state
+                .free
+                .get_mut(&available_capacity)
+                .expect("the selected bitmap capacity exists");
+            let buffer = buffers
+                .pop()
+                .expect("a retained bitmap capacity has at least one buffer");
+            if buffers.is_empty() {
+                state.free.remove(&available_capacity);
+            }
+            state.free_buffers = state.free_buffers.saturating_sub(1);
+            state.retained_bytes = state.retained_bytes.saturating_sub(buffer.capacity());
+            buffer
+        } else {
+            Vec::with_capacity(bucket)
+        };
         buffer.clear();
         buffer
     }
@@ -90,7 +113,8 @@ impl BitmapPool {
             return;
         }
         state.retained_bytes = state.retained_bytes.saturating_add(capacity);
-        state.free.push(buffer);
+        state.free_buffers = state.free_buffers.saturating_add(1);
+        state.free.entry(capacity).or_default().push(buffer);
     }
 
     pub(crate) fn trim_to(&self, max_bytes: usize) {
@@ -98,12 +122,29 @@ impl BitmapPool {
         let max_buffer_bytes = self.max_buffer_bytes.load(Ordering::Relaxed);
         state
             .free
-            .retain(|buffer| buffer.capacity() <= max_buffer_bytes);
-        state.retained_bytes = state.free.iter().map(Vec::capacity).sum();
+            .retain(|capacity, _| *capacity <= max_buffer_bytes);
+        state.free_buffers = state.free.values().map(Vec::len).sum();
+        state.retained_bytes = state
+            .free
+            .iter()
+            .map(|(capacity, buffers)| capacity.saturating_mul(buffers.len()))
+            .sum();
         while state.retained_bytes > max_bytes {
-            let Some(buffer) = state.free.pop() else {
+            let Some(largest_capacity) = state.free.last_key_value().map(|(&capacity, _)| capacity)
+            else {
                 break;
             };
+            let buffers = state
+                .free
+                .get_mut(&largest_capacity)
+                .expect("the largest bitmap capacity exists");
+            let buffer = buffers
+                .pop()
+                .expect("a retained bitmap capacity has at least one buffer");
+            if buffers.is_empty() {
+                state.free.remove(&largest_capacity);
+            }
+            state.free_buffers = state.free_buffers.saturating_sub(1);
             state.retained_bytes = state.retained_bytes.saturating_sub(buffer.capacity());
         }
     }
@@ -112,7 +153,7 @@ impl BitmapPool {
         let state = self.state.lock();
         BitmapPoolSnapshot {
             retained_bytes: state.retained_bytes,
-            free_buffers: state.free.len(),
+            free_buffers: state.free_buffers,
             max_bytes: self.max_bytes.load(Ordering::Relaxed),
             max_buffer_bytes: self.max_buffer_bytes.load(Ordering::Relaxed),
         }
@@ -206,7 +247,7 @@ impl Drop for BitmapBytes {
 
 #[cfg(test)]
 mod tests {
-    use super::BitmapPool;
+    use super::{BitmapPool, LARGE_BITMAP_BUCKET_GRANULARITY};
     use std::sync::Arc;
 
     #[test]
@@ -226,6 +267,17 @@ mod tests {
         assert_eq!(pool.snapshot().free_buffers, 1);
         pool.trim_to(0);
         assert_eq!(pool.snapshot().retained_bytes, 0);
+    }
+
+    #[test]
+    fn large_buffers_use_dense_buckets_to_limit_internal_fragmentation() {
+        let pool = BitmapPool::new(8 * 1024 * 1024, 8 * 1024 * 1024);
+        let requested = 1024 * 1024 + 1;
+        let buffer = pool.acquire_capacity(requested);
+
+        assert!(buffer.capacity() >= requested);
+        assert!(buffer.capacity() <= requested + LARGE_BITMAP_BUCKET_GRANULARITY);
+        assert!(buffer.capacity() < requested.next_power_of_two());
     }
 
     #[test]

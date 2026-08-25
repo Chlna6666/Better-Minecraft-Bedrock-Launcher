@@ -47,7 +47,7 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-use crate::{ClipboardItem, Image, ImageFormat, hash};
+use crate::{ClipboardImage, ClipboardItem, ImageFormat, hash};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -991,7 +991,7 @@ impl Clipboard {
     #[allow(unused)]
     pub(crate) fn set_image(
         &self,
-        image: Image,
+        image: ClipboardImage,
         selection: ClipboardKind,
         wait: WaitConfig,
     ) -> Result<()> {
@@ -1065,7 +1065,7 @@ impl Clipboard {
             if result.format == format_atom {
                 let bytes = result.bytes;
                 let id = hash(&bytes);
-                return Ok(ClipboardItem::new_image(&Image {
+                return Ok(ClipboardItem::new_image(&ClipboardImage {
                     id,
                     format: image_format,
                     bytes,

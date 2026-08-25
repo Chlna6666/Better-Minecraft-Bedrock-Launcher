@@ -4,8 +4,8 @@ use crate::{
 };
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
-use super::frame_state::InteractiveElementState;
-use super::state::Interactivity;
+use super::interactivity::Interactivity;
+use super::state::InteractiveElementState;
 
 const TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
 const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);

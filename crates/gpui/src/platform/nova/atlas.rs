@@ -16,8 +16,11 @@ pub(super) const NOVA_ATLAS_SIZE: u32 = NOVA_DEFAULT_ATLAS_SIZE;
 pub(super) const NOVA_ATLAS_BYTES_PER_PIXEL: usize = 4;
 pub(super) const NOVA_ATLAS_TILE_PADDING: u32 = 1;
 pub(super) const NOVA_ATLAS_KIND_COUNT: usize = 4;
-const NOVA_MIN_IMAGE_ATLAS_BYTES: usize = 512 * 1024 * 1024;
-const NOVA_MIN_IMAGE_ATLAS_TEXTURES: usize = 128;
+const NOVA_FALLBACK_ATLAS_BYTES: usize = NOVA_ATLAS_KIND_COUNT
+    * NOVA_DEFAULT_ATLAS_SIZE as usize
+    * NOVA_DEFAULT_ATLAS_SIZE as usize
+    * NOVA_ATLAS_BYTES_PER_PIXEL;
+const NOVA_FALLBACK_ATLAS_TEXTURES: usize = NOVA_ATLAS_KIND_COUNT;
 pub(super) const NOVA_ATLAS_TEXTURE_KINDS: [AtlasTextureKind; NOVA_ATLAS_KIND_COUNT] = [
     AtlasTextureKind::Monochrome,
     AtlasTextureKind::Bgra,
@@ -70,8 +73,8 @@ impl Default for NovaAtlasState {
             disabled_kinds: FxHashSet::default(),
             upload_bytes: Vec::new(),
             pending_uploads: Vec::new(),
-            max_atlas_bytes: NOVA_MIN_IMAGE_ATLAS_BYTES,
-            max_atlas_textures: NOVA_MIN_IMAGE_ATLAS_TEXTURES,
+            max_atlas_bytes: NOVA_FALLBACK_ATLAS_BYTES,
+            max_atlas_textures: NOVA_FALLBACK_ATLAS_TEXTURES,
             texture_set_generation: 0,
             content_generation: 0,
         }
@@ -193,8 +196,8 @@ impl NovaAtlas {
 impl PlatformAtlas for NovaAtlas {
     fn configure_image_budget(&self, max_bytes: usize, max_textures: usize) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        state.max_atlas_bytes = max_bytes.max(NOVA_MIN_IMAGE_ATLAS_BYTES);
-        state.max_atlas_textures = max_textures.max(NOVA_MIN_IMAGE_ATLAS_TEXTURES);
+        state.max_atlas_bytes = max_bytes.max(NOVA_FALLBACK_ATLAS_BYTES);
+        state.max_atlas_textures = max_textures.max(NOVA_FALLBACK_ATLAS_TEXTURES);
         log::info!(
             "nova atlas image budget configured: bytes={} textures={} texture_size={}x{}",
             state.max_atlas_bytes,
@@ -243,16 +246,17 @@ impl PlatformAtlas for NovaAtlas {
             if state.full_kinds_logged.insert(texture_kind) {
                 log::warn!(
                     concat!(
-                        "nova atlas allocation deferred; atlas is full and no fallback image ",
-                        "will be reported as resident: kind={:?} size={}x{}"
+                        "nova atlas allocation deferred; atlas is full and the shared fallback ",
+                        "tile will be used: kind={:?} size={}x{}"
                     ),
                     texture_kind,
                     size.width.0.max(1),
                     size.height.0.max(1)
                 );
             }
+            let fallback = state.fallback_tile(texture_kind);
             self.publish_state_flags(&state);
-            return Ok(None);
+            return Ok(fallback);
         };
         state.tiles.insert(key.clone(), tile);
         self.publish_state_flags(&state);
@@ -671,7 +675,16 @@ impl NovaAtlasState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ImageId, RenderImageParams, RenderImagePixelFormat, size};
+    use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
+
+    #[test]
+    fn configured_budget_is_not_raised_above_fallback_resources() {
+        let atlas = NovaAtlas::new();
+        atlas.configure_image_budget(256 * 1024 * 1024, 32);
+        let state = atlas.state.lock().expect("nova atlas lock poisoned");
+        assert_eq!(state.max_atlas_bytes, 256 * 1024 * 1024);
+        assert_eq!(state.max_atlas_textures, 32);
+    }
 
     #[test]
     fn queued_tile_upload_advances_atlas_content_generation() {
@@ -729,12 +742,12 @@ mod tests {
         let first_key = AtlasKey::Image(RenderImageParams {
             image_id: ImageId(1),
             frame_slot: 0,
-            pixel_format: RenderImagePixelFormat::Rgba8,
+            pixel_format: ImagePixelFormat::Rgba8,
         });
         let second_key = AtlasKey::Image(RenderImageParams {
             image_id: ImageId(2),
             frame_slot: 0,
-            pixel_format: RenderImagePixelFormat::Rgba8,
+            pixel_format: ImagePixelFormat::Rgba8,
         });
         let pixels = vec![255; 64 * 64 * NOVA_ATLAS_BYTES_PER_PIXEL];
         let first_tile = atlas
@@ -771,7 +784,7 @@ mod tests {
         let key = AtlasKey::Image(RenderImageParams {
             image_id: ImageId(3),
             frame_slot: 0,
-            pixel_format: RenderImagePixelFormat::Rgba8,
+            pixel_format: ImagePixelFormat::Rgba8,
         });
         let original_tile = atlas
             .ensure_tile_with(&key, &mut || {
@@ -830,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn full_image_atlas_returns_none_instead_of_fallback() {
+    fn full_image_atlas_returns_shared_fallback() {
         let atlas = NovaAtlas::new();
         atlas.clear_pending_uploads_for_test();
         atlas
@@ -841,7 +854,7 @@ mod tests {
         let key = AtlasKey::Image(RenderImageParams {
             image_id: ImageId(9),
             frame_slot: 0,
-            pixel_format: RenderImagePixelFormat::Rgba8,
+            pixel_format: ImagePixelFormat::Rgba8,
         });
         let tile = atlas
             .ensure_tile_with(&key, &mut || {
@@ -851,6 +864,11 @@ mod tests {
                 )))
             })
             .expect("allocation failure should not become an error");
-        assert!(tile.is_none());
+        let fallback = atlas
+            .state
+            .lock()
+            .expect("nova atlas lock poisoned")
+            .fallback_tile(AtlasTextureKind::Rgba);
+        assert_eq!(tile, fallback);
     }
 }

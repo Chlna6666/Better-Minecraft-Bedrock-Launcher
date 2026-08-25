@@ -1,8 +1,8 @@
-use super::types::{
-    DispatchActionListener, DispatchNode, DispatchNodeId, DispatchTree, KeyListener,
-    ModifiersChangedListener, ReusedSubtree,
+use super::DispatchActionListener;
+use crate::{
+    ActionRegistry, App, DispatchPhase, EntityId, FocusId, KeyContext, Keymap,
+    ModifiersChangedEvent, Window,
 };
-use crate::{ActionRegistry, App, DispatchPhase, EntityId, FocusId, KeyContext, Keymap, Window};
 use collections::FxHashMap;
 use smallvec::SmallVec;
 use std::{
@@ -13,7 +13,55 @@ use std::{
     rc::Rc,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct DispatchNodeId(pub(super) usize);
+
+pub(crate) struct DispatchTree {
+    pub(super) node_stack: Vec<DispatchNodeId>,
+    pub(crate) context_stack: Vec<KeyContext>,
+    pub(super) view_stack: Vec<EntityId>,
+    pub(super) nodes: Vec<DispatchNode>,
+    pub(super) focusable_node_ids: FxHashMap<FocusId, DispatchNodeId>,
+    pub(super) view_node_ids: FxHashMap<EntityId, DispatchNodeId>,
+    pub(super) keymap: Rc<RefCell<Keymap>>,
+    pub(super) action_registry: Rc<ActionRegistry>,
+}
+
+#[derive(Default)]
+pub(crate) struct DispatchNode {
+    pub(crate) key_listeners: Vec<KeyListener>,
+    pub(crate) action_listeners: Vec<DispatchActionListener>,
+    pub(crate) modifiers_changed_listeners: Vec<ModifiersChangedListener>,
+    pub(crate) context: Option<KeyContext>,
+    pub(super) focus_id: Option<FocusId>,
+    pub(super) view_id: Option<EntityId>,
+    pub(super) parent: Option<DispatchNodeId>,
+}
+
+pub(crate) struct ReusedSubtree {
+    pub(super) old_range: Range<usize>,
+    pub(super) new_range: Range<usize>,
+    pub(super) contains_focus: bool,
+}
+
+impl ReusedSubtree {
+    pub fn refresh_node_id(&self, node_id: DispatchNodeId) -> DispatchNodeId {
+        debug_assert!(self.old_range.contains(&node_id.0));
+        DispatchNodeId((node_id.0 - self.old_range.start) + self.new_range.start)
+    }
+
+    pub fn contains_focus(&self) -> bool {
+        self.contains_focus
+    }
+}
+
+pub(crate) type KeyListener = Rc<dyn Fn(&dyn Any, DispatchPhase, &mut Window, &mut App)>;
+pub(crate) type ModifiersChangedListener =
+    Rc<dyn Fn(&ModifiersChangedEvent, &mut Window, &mut App)>;
+
 impl DispatchTree {
+    const MIN_RETAINED_CAPACITY: usize = 32;
+
     pub fn new(keymap: Rc<RefCell<Keymap>>, action_registry: Rc<ActionRegistry>) -> Self {
         Self {
             node_stack: Vec::new(),
@@ -34,6 +82,32 @@ impl DispatchTree {
         self.nodes.clear();
         self.focusable_node_ids.clear();
         self.view_node_ids.clear();
+    }
+
+    pub(crate) fn retained_capacity(&self) -> usize {
+        self.node_stack.capacity()
+            + self.context_stack.capacity()
+            + self.view_stack.capacity()
+            + self.nodes.capacity()
+            + self.focusable_node_ids.capacity()
+            + self.view_node_ids.capacity()
+    }
+
+    pub(crate) fn trim_retained_capacity(&mut self, aggressive: bool) {
+        let floor = if aggressive {
+            0
+        } else {
+            Self::MIN_RETAINED_CAPACITY
+        };
+        self.node_stack.shrink_to(floor.max(self.node_stack.len()));
+        self.context_stack
+            .shrink_to(floor.max(self.context_stack.len()));
+        self.view_stack.shrink_to(floor.max(self.view_stack.len()));
+        self.nodes.shrink_to(floor.max(self.nodes.len()));
+        self.focusable_node_ids
+            .shrink_to(floor.max(self.focusable_node_ids.len()));
+        self.view_node_ids
+            .shrink_to(floor.max(self.view_node_ids.len()));
     }
 
     pub fn len(&self) -> usize {

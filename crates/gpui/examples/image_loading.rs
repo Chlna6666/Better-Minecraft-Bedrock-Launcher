@@ -1,10 +1,10 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, App, Application, Asset, AssetLogger, AssetSource, Bounds, Context,
-    Hsla, ImageAssetLoader, ImageCacheError, ImgResourceLoader, LOADING_DELAY, Length, RenderImage,
-    Resource, SharedString, Window, WindowBounds, WindowOptions, black, div, img, prelude::*,
-    pulsating_between, px, red, size,
+    Animation, AnimationExt, App, Application, Asset, AssetLocation, AssetLogger, AssetSource,
+    Bounds, Context, Hsla, ImageAssetLoader, ImageCacheError, LOADING_DELAY, Length, RenderImage,
+    ResourceImageLoader, SharedString, Window, WindowBounds, WindowOptions, black, div, img,
+    prelude::*, pulsating_between, px, red, size,
 };
 
 struct Assets {}
@@ -49,7 +49,7 @@ impl Asset for LoadImageWithParameters {
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let timer = cx.background_executor().timer(parameters.timeout);
         let data = AssetLogger::<ImageAssetLoader>::load(
-            Resource::Path(Path::new(IMAGE).to_path_buf().into()),
+            AssetLocation::Path(Path::new(IMAGE).to_path_buf().into()),
             cx,
         );
         async move {
@@ -183,7 +183,9 @@ impl Render for ImageLoadingExample {
                             .border_color(red())
                             .with_loading(|| Self::loading_element().into_any_element())
                             .on_click(move |_, _, cx| {
-                                cx.remove_asset::<ImgResourceLoader>(&image_source.clone().into());
+                                cx.remove_asset::<ResourceImageLoader>(
+                                    &image_source.clone().into(),
+                                );
                             })
                     }),
             ),

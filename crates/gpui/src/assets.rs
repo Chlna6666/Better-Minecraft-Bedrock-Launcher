@@ -1,23 +1,34 @@
+mod animated_image;
+mod animation_stream;
 mod bitmap_pool;
-mod decode;
+mod bmp;
+mod encoded_image;
+mod jpeg;
+mod pipeline;
+mod png;
 mod render_image;
+mod resample;
 mod source;
 #[cfg(test)]
 mod tests;
-mod types;
+mod webp;
 
+pub(crate) use animated_image::AnimatedFrame;
+pub use animated_image::AnimatedImageConfig;
+pub(in crate::assets) use animation_stream::AnimationStream;
+pub(crate) use animation_stream::{
+    AnimationQueueSnapshot, animation_queue_snapshot, configure_animation_queue,
+};
 pub(crate) use bitmap_pool::{
     BitmapBytes, BitmapPoolSnapshot, acquire_bitmap_buffer, acquire_bitmap_buffer_capacity,
     configure_global_bitmap_pool, global_bitmap_pool, release_bitmap_buffer,
     trim_global_bitmap_pool, trim_global_bitmap_pool_to,
 };
-pub(crate) use decode::{decode_image_bytes, decode_image_source, fitted_target_size};
-pub use decode::{decode_image_bytes_to_target, decode_image_path_to_target};
+pub use encoded_image::EncodedImage;
+pub use pipeline::{ImageBoundsPolicy, ImageMemoryTrimLevel, ImagePipelineConfig};
 pub use render_image::RenderImage;
-pub(crate) use render_image::{AnimatedFrame, AnimatedImageSource, interned_render_image_id};
+pub(crate) use render_image::RenderImageParams;
+pub(crate) use render_image::interned_render_image_id;
+pub use render_image::{ImageId, ImagePixelFormat};
+pub use resample::{ImageRenderInfo, ImageRenderSize};
 pub use source::AssetSource;
-pub(crate) use types::RenderImageParams;
-pub use types::{
-    AnimatedImageConfig, AnimatedMediaSource, ImageDecodePolicy, ImageDecodeTarget, ImageId,
-    ImageMemoryTrimLevel, ImagePipelineConfig, RenderImagePixelFormat, TargetImageDecodeMetadata,
-};

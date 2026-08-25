@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "task polling bridges erased futures through pinned executor state"
+)]
+
 use crate::App;
 use ::util::TryFutureExt;
 use smol::prelude::*;

@@ -52,10 +52,11 @@
 mod actions;
 mod dispatch;
 mod tree;
-mod types;
 
 #[cfg(test)]
 #[path = "key_dispatch_tests.rs"]
 mod key_dispatch_tests;
 
-pub(crate) use types::{DispatchActionListener, DispatchNodeId, DispatchTree, Replay};
+pub(crate) use actions::DispatchActionListener;
+pub(crate) use dispatch::Replay;
+pub(crate) use tree::{DispatchNodeId, DispatchTree};

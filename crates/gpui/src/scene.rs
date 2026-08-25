@@ -3,21 +3,22 @@
 
 mod batch;
 mod bounds_tree;
+mod display_list;
+mod geometry;
 mod mesh;
 mod path;
 mod path_builder;
 mod prepared;
 mod primitive;
-mod scene_model;
 #[cfg(test)]
 mod tests;
 mod transform;
-mod util;
 
 pub(crate) type DrawOrder = u32;
 
 pub(crate) use batch::*;
 pub(crate) use bounds_tree::BoundsTree;
+pub(crate) use display_list::*;
 pub(crate) use mesh::PaintGpuMesh3d;
 pub use mesh::{
     GpuMesh3d, GpuMesh3dDrawParameters, GpuMesh3dDrawRanges, GpuMesh3dId, GpuMesh3dRange,
@@ -29,5 +30,4 @@ pub use path_builder::*;
 pub(crate) use prepared::*;
 pub(crate) use primitive::*;
 pub use primitive::{BackdropBlurOverlapMode, BackdropBlurStyle, BorderStyle};
-pub(crate) use scene_model::*;
 pub use transform::TransformationMatrix;

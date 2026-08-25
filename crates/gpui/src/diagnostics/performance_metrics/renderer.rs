@@ -2,7 +2,7 @@ use crate::RendererBackend;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::super::state::shared_metrics;
+use super::store::shared_metrics;
 
 const SLOW_GPU_SUBMISSION_WAIT_THRESHOLD: Duration = Duration::from_millis(4);
 

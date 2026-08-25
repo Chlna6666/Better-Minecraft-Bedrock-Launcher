@@ -1,6 +1,20 @@
-use super::types::{DispatchNodeId, DispatchResult, DispatchTree, Replay};
+use super::{DispatchNodeId, DispatchTree};
 use crate::{KeyBinding, KeyContext, Keystroke};
 use smallvec::SmallVec;
+
+#[derive(Default, Debug)]
+pub(crate) struct Replay {
+    pub(crate) keystroke: Keystroke,
+    pub(crate) bindings: SmallVec<[KeyBinding; 1]>,
+}
+
+#[derive(Default, Debug)]
+pub(crate) struct DispatchResult {
+    pub(crate) pending: SmallVec<[Keystroke; 1]>,
+    pub(crate) bindings: SmallVec<[KeyBinding; 1]>,
+    pub(crate) to_replay: SmallVec<[Replay; 1]>,
+    pub(crate) context_stack: Vec<KeyContext>,
+}
 
 impl DispatchTree {
     fn bindings_for_input(

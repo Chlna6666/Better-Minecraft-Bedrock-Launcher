@@ -6,15 +6,11 @@ mod display_link;
 mod events;
 mod keyboard;
 
-#[cfg(feature = "screen-capture")]
-mod screen_capture;
-
 #[cfg(not(feature = "macos-blade"))]
 mod metal_atlas;
 #[cfg(not(feature = "macos-blade"))]
 mod metal_renderer;
 
-use core_video::image_buffer::CVImageBuffer;
 #[cfg(not(feature = "macos-blade"))]
 use metal_renderer as renderer;
 
@@ -50,9 +46,6 @@ pub(crate) use keyboard::*;
 pub(crate) use platform::*;
 pub(crate) use text_system::*;
 pub(crate) use window::*;
-
-/// A frame of video captured from a screen.
-pub(crate) type PlatformScreenCaptureFrame = CVImageBuffer;
 
 trait BoolExt {
     fn to_objc(self) -> BOOL;

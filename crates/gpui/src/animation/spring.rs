@@ -1,4 +1,4 @@
-use super::physics::PhysicsConfig;
+use super::physics::SpringPhysics;
 
 /// Sampled spring state.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -17,7 +17,7 @@ pub struct SpringSample {
 )]
 pub struct Spring {
     /// Physics parameters.
-    pub physics: PhysicsConfig,
+    pub physics: SpringPhysics,
     /// Position delta threshold used to mark the spring settled.
     pub settle_position: f32,
     /// Velocity threshold used to mark the spring settled.
@@ -27,7 +27,7 @@ pub struct Spring {
 impl Default for Spring {
     fn default() -> Self {
         Self {
-            physics: PhysicsConfig::default(),
+            physics: SpringPhysics::default(),
             settle_position: 0.001,
             settle_velocity: 0.001,
         }

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "local task scheduling enforces thread affinity around async-task internals"
+)]
+
 use async_task::Runnable;
 use std::{
     future::Future,

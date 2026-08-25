@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc};
 /// A handle for controlling the scroll position of a uniform list.
 /// This should be stored in your view and passed to the uniform list on each frame.
 #[derive(Clone, Debug, Default)]
-pub struct UniformListScrollHandle(pub Rc<RefCell<UniformListScrollState>>);
+pub struct UniformListScrollHandle(pub Rc<RefCell<UniformListScroll>>);
 
 /// Where to place the element scrolled to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +35,7 @@ pub struct DeferredScrollToItem {
 
 #[derive(Clone, Debug, Default)]
 #[allow(missing_docs)]
-pub struct UniformListScrollState {
+pub struct UniformListScroll {
     pub base_handle: ScrollHandle,
     pub deferred_scroll_to_item: Option<DeferredScrollToItem>,
     /// Size of the item, captured during last layout.
@@ -57,7 +57,7 @@ pub struct ItemSize {
 impl UniformListScrollHandle {
     /// Create a new scroll handle to bind to a uniform list.
     pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(UniformListScrollState {
+        Self(Rc::new(RefCell::new(UniformListScroll {
             base_handle: ScrollHandle::new(),
             deferred_scroll_to_item: None,
             last_item_size: None,
@@ -121,12 +121,7 @@ impl UniformListScrollHandle {
     /// - `ScrollStrategy::Top`: Shrinks from top, positions item at the new top
     /// - `ScrollStrategy::Center`: Shrinks from top, centers item in the reduced viewport
     /// - `ScrollStrategy::Bottom`: Shrinks from bottom, positions item at the new bottom
-    pub fn scroll_to_item_strict_with_offset(
-        &self,
-        ix: usize,
-        strategy: ScrollStrategy,
-        offset: usize,
-    ) {
+    pub fn scroll_to_item_exact(&self, ix: usize, strategy: ScrollStrategy, offset: usize) {
         self.0.borrow_mut().deferred_scroll_to_item = Some(DeferredScrollToItem {
             item_index: ix,
             strategy,

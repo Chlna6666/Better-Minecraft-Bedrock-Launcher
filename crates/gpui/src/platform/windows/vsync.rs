@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the vsync scheduler owns native wait handles and callbacks"
+)]
+
 use std::{
     mem,
     sync::{

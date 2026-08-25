@@ -1,7 +1,7 @@
 use crate::{AnyElement, Hitbox, Pixels, Size};
 use collections::VecDeque;
 
-use super::types::ListOffset;
+use super::configuration::ListOffset;
 
 pub(super) struct LayoutItemsResponse {
     pub(super) max_item_width: Pixels,
@@ -16,7 +16,7 @@ pub(super) struct ItemLayout {
 }
 
 /// Frame state used by the [List] element after layout.
-pub struct ListPrepaintState {
+pub struct ListPrepaintLayout {
     pub(super) hitbox: Hitbox,
     pub(super) layout: LayoutItemsResponse,
 }

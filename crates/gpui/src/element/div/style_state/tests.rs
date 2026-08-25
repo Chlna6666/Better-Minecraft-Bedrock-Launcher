@@ -1,5 +1,5 @@
 use super::*;
-use crate::{StyleRefinement, TestAppContext, performance_metrics_snapshot};
+use crate::{StyleRefinement, TestAppContext, current_thread_style_refine_count};
 
 #[gpui::test]
 fn computed_style_cache_reuses_same_frame_style(cx: &mut TestAppContext) {
@@ -12,11 +12,11 @@ fn computed_style_cache_reuses_same_frame_style(cx: &mut TestAppContext) {
             ..Default::default()
         }));
 
-        let before = performance_metrics_snapshot().style_refine_count;
+        let before = current_thread_style_refine_count();
         let _ = interactivity.compute_style_internal(None, None, window, cx);
-        let after_first = performance_metrics_snapshot().style_refine_count;
+        let after_first = current_thread_style_refine_count();
         let _ = interactivity.compute_style_internal(None, None, window, cx);
-        let after_second = performance_metrics_snapshot().style_refine_count;
+        let after_second = current_thread_style_refine_count();
 
         assert!(after_first > before);
         assert_eq!(after_second, after_first);

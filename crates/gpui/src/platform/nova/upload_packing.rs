@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn write_animation_binding(
     bytes: &mut Vec<u8>,
     animation_id: crate::SceneAnimationId,
-    primitive_kind: NovaAnimatedPrimitiveKind,
+    primitive_kind: AnimatedPrimitiveKind,
     primitive_index: u32,
 ) {
     write_u32_vec(bytes, animation_id.0);
@@ -15,7 +15,7 @@ pub(super) fn write_animation_binding(
 pub(super) fn write_animation_value(
     bytes: &mut Vec<u8>,
     animation_id: crate::SceneAnimationId,
-    property: NovaAnimationProperty,
+    property: AnimationProperty,
     progress: f32,
     from: [f32; 4],
     to: [f32; 4],
@@ -98,9 +98,7 @@ pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
     };
     let sigma = (radius / 3.0).max(1.0 / 4096.0);
     let tap_step = radius / 8.0;
-    let gaussian = |distance: f32| {
-        (-(distance * distance) / (2.0 * sigma * sigma).max(1e-8)).exp()
-    };
+    let gaussian = |distance: f32| (-(distance * distance) / (2.0 * sigma * sigma).max(1e-8)).exp();
 
     let center_weight = gaussian(0.0);
     let mut offsets = [0.0_f32; 4];
@@ -156,17 +154,6 @@ pub(super) fn write_backdrop_blur(
     write_f32_vec(bytes, drawable_size.height as f32);
     write_u32_vec(bytes, 0);
     write_u32_vec(bytes, 0);
-}
-
-pub(super) fn backdrop_blur_offset(radius: f32, downsample: u8, levels: u8) -> f32 {
-    if !radius.is_finite() || radius <= 0.0 {
-        return 0.0;
-    }
-
-    let downsample = f32::from(downsample.max(1));
-    let levels = f32::from(levels.clamp(1, 6));
-    let offset = radius / downsample / levels;
-    offset.clamp(1.0 / 256.0, 6.0)
 }
 
 pub(super) fn write_quad(bytes: &mut Vec<u8>, quad: &Quad) {

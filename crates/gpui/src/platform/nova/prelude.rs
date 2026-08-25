@@ -1,7 +1,7 @@
 pub(super) use std::{
     borrow::Cow,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 pub(super) use anyhow::{Context as _, Result};
@@ -9,11 +9,10 @@ pub(super) use collections::{FxHashMap, FxHashSet};
 
 pub(super) use crate::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels, FrameRenderPlan,
-    FrameVisualEffectQuality, GlyphRasterization, GpuMesh3d, GpuMesh3dId, GpuMesh3dRange,
-    GpuMesh3dShader, GpuMesh3dShaderId, GpuSpecs, GpuSubmissionMode, GpuiMemoryTrimLevel,
-    MonochromeSprite, PartialPresentMode, PlatformAtlas, Point, PolychromeSprite,
-    PreparedSceneBatch, PresentModePreference, Quad, RenderGlyphParams, RendererBackend,
-    RendererOptions, Shadow, Size, Underline,
+    GlyphRasterization, GpuMesh3d, GpuMesh3dId, GpuMesh3dRange, GpuMesh3dShader, GpuMesh3dShaderId,
+    GpuSpecs, GpuSubmissionMode, GpuiMemoryTrimLevel, MonochromeSprite, PartialPresentMode,
+    PlatformAtlas, Point, PolychromeSprite, PreparedSceneBatch, PresentModePreference, Quad,
+    RenderGlyphParams, RendererBackend, RendererOptions, Shadow, Size, Underline,
 };
 
 pub(super) use gfx_core::{

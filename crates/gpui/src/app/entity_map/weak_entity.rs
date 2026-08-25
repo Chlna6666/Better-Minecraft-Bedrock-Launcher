@@ -15,7 +15,7 @@ use std::{
 };
 
 use super::{AnyEntity, Entity, EntityId, EntityRefCounts};
-use crate::foundation::util::atomic_incr_if_not_zero;
+use crate::foundation::atomic_incr_if_not_zero;
 
 /// A type erased, weak reference to a entity.
 #[derive(Clone)]

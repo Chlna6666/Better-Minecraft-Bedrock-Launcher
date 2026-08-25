@@ -16,16 +16,16 @@ GPUI 会在构建时校验并嵌入内置渲染器 WGSL。拥有自定义 Nova G
 let source = gpui::WgslShaderSource::from_path("examples/viewer.wgsl")?;
 ```
 
-一次性编译可以使用 helper：
+通过关联构造器加载文件：
 
 ```rust
-let shader = gpui::compile_wgsl_shader_module_from_path("examples/viewer.wgsl")?;
+let shader = gpui::WgslShaderSource::from_path("examples/viewer.wgsl")?;
 ```
 
 生成的或内嵌的 shader 字符串可以使用 source label：
 
 ```rust
-let shader = gpui::compile_wgsl_shader_module(
+let shader = gpui::WgslShaderSource::from_source(
     "generated-material-shader",
     generated_wgsl,
 )?;

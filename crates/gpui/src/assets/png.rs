@@ -1,30 +1,29 @@
-use super::target::{
-    bgra_bytes_to_rgba_image, bgra_len, decode_image_bytes_to_target_via_full_decode,
-    fitted_target_size, high_quality_intermediate_target, resize_rgba_to_target,
-    source_axis_for_target,
+use super::resample::{
+    bgra_byte_len, intermediate_sample_size, render_sized as render_animated_image,
+    resize_rgba_frame, rgba_image_from_bgra, scaled_axis,
 };
-use crate::assets::render_image::{AnimatedFrame, RenderImage};
-use crate::assets::types::{AnimatedImageConfig, ImageDecodeTarget, TargetImageDecodeMetadata};
+use crate::assets::{AnimatedFrame, EncodedImage, RenderImage};
+use crate::assets::{AnimatedImageConfig, ImageRenderInfo, ImageRenderSize};
 use crate::{ObjectFit, Result, size};
 use image::ImageFormat;
 use smallvec::SmallVec;
-use std::io::{BufReader, Cursor};
+use std::io::Cursor;
+use std::sync::Arc;
 
-pub(super) fn decode_png_to_target(
+pub(super) fn render_sized(
     bytes: &[u8],
     config: AnimatedImageConfig,
-    target: ImageDecodeTarget,
+    target: ImageRenderSize,
     object_fit: ObjectFit,
-) -> Result<(RenderImage, TargetImageDecodeMetadata)> {
+) -> Result<(RenderImage, ImageRenderInfo)> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info()?;
     let info = reader.info().clone();
 
     if info.animation_control.is_some() || info.interlaced {
-        return decode_image_bytes_to_target_via_full_decode(
-            bytes,
-            ImageFormat::Png,
+        return render_animated_image(
+            EncodedImage::new(ImageFormat::Png, Arc::<[u8]>::from(bytes)),
             config,
             target,
             object_fit,
@@ -32,8 +31,8 @@ pub(super) fn decode_png_to_target(
     }
 
     let original_size = size(info.width, info.height);
-    let fitted_target = fitted_target_size(original_size, target, object_fit);
-    let sample_target = high_quality_intermediate_target(original_size, fitted_target);
+    let fitted_target = target.fit(original_size, object_fit);
+    let sample_target = intermediate_sample_size(original_size, fitted_target);
     let (color_type, bit_depth) = reader.output_color_type();
     anyhow::ensure!(
         bit_depth == png::BitDepth::Eight,
@@ -47,95 +46,28 @@ pub(super) fn decode_png_to_target(
         color_type,
         sample_target,
     )?;
-    let (image, decode_mode) = if sample_target == fitted_target {
+    let (image, render_path) = if sample_target == fitted_target {
         let frame = AnimatedFrame::from_bgra_bytes(0, sample_target.size(), output);
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            "png_row_sample_decode",
+            "png_row_sample",
         )
     } else {
-        let rgba = bgra_bytes_to_rgba_image(output, sample_target)?;
-        let (rgba, decode_mode) =
-            resize_rgba_to_target(rgba, fitted_target, "png_row_sample_decode")?;
+        let rgba = rgba_image_from_bgra(output, sample_target)?;
+        let (rgba, render_path) = resize_rgba_frame(rgba, fitted_target, "png_row_sample")?;
         let frame = AnimatedFrame::from_rgba_image(0, rgba);
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            decode_mode,
+            render_path,
         )
     };
     Ok((
         image,
-        TargetImageDecodeMetadata {
+        ImageRenderInfo {
             original_width: original_size.width,
             original_height: original_size.height,
-            target: fitted_target,
-            decode_mode,
-        },
-    ))
-}
-
-pub(super) fn decode_png_path_to_target(
-    path: &std::path::Path,
-    config: AnimatedImageConfig,
-    target: ImageDecodeTarget,
-    object_fit: ObjectFit,
-) -> Result<(RenderImage, TargetImageDecodeMetadata)> {
-    let file = std::fs::File::open(path)?;
-    let mut decoder = png::Decoder::new(BufReader::new(file));
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info()?;
-    let info = reader.info().clone();
-
-    if info.animation_control.is_some() || info.interlaced {
-        let bytes = std::fs::read(path)?;
-        return decode_image_bytes_to_target_via_full_decode(
-            &bytes,
-            ImageFormat::Png,
-            config,
-            target,
-            object_fit,
-        );
-    }
-
-    let original_size = size(info.width, info.height);
-    let fitted_target = fitted_target_size(original_size, target, object_fit);
-    let sample_target = high_quality_intermediate_target(original_size, fitted_target);
-    let (color_type, bit_depth) = reader.output_color_type();
-    anyhow::ensure!(
-        bit_depth == png::BitDepth::Eight,
-        "target-size PNG row decode expected 8-bit output, got {bit_depth:?}"
-    );
-
-    let output = sample_png_rows_to_bgra(
-        &mut reader,
-        info.width,
-        info.height,
-        color_type,
-        sample_target,
-    )?;
-    let (image, decode_mode) = if sample_target == fitted_target {
-        let frame = AnimatedFrame::from_bgra_bytes(0, sample_target.size(), output);
-        (
-            RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            "png_row_sample_decode",
-        )
-    } else {
-        let rgba = bgra_bytes_to_rgba_image(output, sample_target)?;
-        let (rgba, decode_mode) =
-            resize_rgba_to_target(rgba, fitted_target, "png_row_sample_decode")?;
-        let frame = AnimatedFrame::from_rgba_image(0, rgba);
-        (
-            RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            decode_mode,
-        )
-    };
-    Ok((
-        image,
-        TargetImageDecodeMetadata {
-            original_width: original_size.width,
-            original_height: original_size.height,
-            target: fitted_target,
-            decode_mode,
+            size: fitted_target,
+            render_path,
         },
     ))
 }
@@ -145,12 +77,12 @@ fn sample_png_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
     source_width: u32,
     source_height: u32,
     color_type: png::ColorType,
-    sample_target: ImageDecodeTarget,
+    sample_target: ImageRenderSize,
 ) -> Result<Vec<u8>> {
     let source_row_len = reader
         .output_line_size(source_width)
         .ok_or_else(|| anyhow::anyhow!("PNG row size overflowed"))?;
-    let output_len = bgra_len(sample_target)?;
+    let output_len = bgra_byte_len(sample_target)?;
     let mut source_row = vec![0; source_row_len];
     let mut output = vec![0; output_len];
     let mut next_target_y = 0u32;
@@ -161,8 +93,7 @@ fn sample_png_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
         }
 
         while next_target_y < sample_target.height
-            && source_axis_for_target(next_target_y, source_height, sample_target.height)
-                == source_y
+            && scaled_axis(next_target_y, source_height, sample_target.height) == source_y
         {
             write_sampled_png_row(
                 &source_row,
@@ -196,7 +127,7 @@ fn write_sampled_png_row(
     let output_row = &mut output[output_row_start..output_row_start + target_width as usize * 4];
 
     for target_x in 0..target_width {
-        let source_x = source_axis_for_target(target_x, source_width, target_width) as usize;
+        let source_x = scaled_axis(target_x, source_width, target_width) as usize;
         let out = &mut output_row[target_x as usize * 4..target_x as usize * 4 + 4];
         match color_type {
             png::ColorType::Grayscale => {
@@ -235,7 +166,7 @@ fn write_sampled_png_row(
     Ok(())
 }
 
-pub(super) fn decode_static_png_frame(bytes: &[u8]) -> Result<AnimatedFrame> {
+pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info()?;

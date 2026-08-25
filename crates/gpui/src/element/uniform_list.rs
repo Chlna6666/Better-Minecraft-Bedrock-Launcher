@@ -18,7 +18,7 @@ use std::{cmp, ops::Range};
 
 pub use decoration::UniformListDecoration;
 pub use scroll::{
-    DeferredScrollToItem, ItemSize, ScrollStrategy, UniformListScrollHandle, UniformListScrollState,
+    DeferredScrollToItem, ItemSize, ScrollStrategy, UniformListScroll, UniformListScrollHandle,
 };
 
 use super::ListHorizontalSizingBehavior;
@@ -77,7 +77,7 @@ pub struct UniformList {
 }
 
 /// Frame state used by the [UniformList].
-pub struct UniformListFrameState {
+pub struct UniformListLayout {
     item_size: Size<Pixels>,
     items: SmallVec<[AnyElement; 32]>,
     decorations: SmallVec<[AnyElement; 2]>,
@@ -90,7 +90,7 @@ impl Styled for UniformList {
 }
 
 impl Element for UniformList {
-    type RequestLayoutState = UniformListFrameState;
+    type RequestLayoutState = UniformListLayout;
     type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
@@ -150,7 +150,7 @@ impl Element for UniformList {
 
         (
             layout_id,
-            UniformListFrameState {
+            UniformListLayout {
                 item_size,
                 items: SmallVec::new(),
                 decorations: SmallVec::new(),

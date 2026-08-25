@@ -1,13 +1,13 @@
 use super::*;
 
-impl NovaFrameUpload {
+impl FrameUpload {
     pub(in crate::platform::nova) fn encode(
         &mut self,
         scene: &crate::Scene,
         drawable_size: DrawableSize,
-        rendering_parameters: &NovaRenderingParameters,
+        rendering_parameters: &RenderingParameters,
         premultiplied_alpha: bool,
-        backdrop_blur_quality: NovaBackdropBlurQuality,
+        backdrop_blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
         self.globals.clear();
         self.text_raster_params.clear();
@@ -20,14 +20,15 @@ impl NovaFrameUpload {
         self.underlines.clear();
         self.backdrop_blur_passes.clear();
         self.backdrop_blurs.clear();
+        self.backdrop_blur_configs.clear();
         self.animation_bindings.clear();
         self.animation_values.clear();
         self.custom_mesh_3d_parameters.clear();
         self.custom_mesh_3d_meshes.clear();
         self.custom_mesh_3d_shaders.clear();
+        self.custom_mesh_3d_ids.clear();
+        self.custom_mesh_3d_shader_ids.clear();
         self.batches.clear();
-        self.backdrop_blur_downsample = DEFAULT_BACKDROP_BLUR_DOWNSAMPLE;
-        self.backdrop_blur_levels = 1;
         self.globals.reserve(GLOBAL_UPLOAD_BYTES);
         self.text_raster_params.reserve(TEXT_RASTER_UPLOAD_BYTES);
         self.path_rasterization_vertices
@@ -40,7 +41,6 @@ impl NovaFrameUpload {
         self.animation_values.reserve(PACKED_ANIMATION_VALUE_BYTES);
         self.custom_mesh_3d_parameters
             .reserve(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES);
-        write_backdrop_blur_pass(&mut self.backdrop_blur_passes, 1.0);
         write_f32_vec(&mut self.globals, drawable_size.width as f32);
         write_f32_vec(&mut self.globals, drawable_size.height as f32);
         write_u32_vec(&mut self.globals, u32::from(premultiplied_alpha));
@@ -84,16 +84,16 @@ impl NovaFrameUpload {
                             self,
                             &mut summary,
                             quad.animation_id,
-                            NovaAnimatedPrimitiveKind::Quad,
+                            AnimatedPrimitiveKind::Quad,
                             primitive_index,
                         );
                         count = count.saturating_add(1);
                     }
                     if count > 0 {
                         self.batches.push(if quad_run.is_solid {
-                            NovaUploadedBatch::SolidQuads { first, count }
+                            UploadedBatch::SolidQuads { first, count }
                         } else {
-                            NovaUploadedBatch::Quads { first, count }
+                            UploadedBatch::Quads { first, count }
                         });
                         summary.quad_count = summary.quad_count.saturating_add(count);
                     }
@@ -111,14 +111,13 @@ impl NovaFrameUpload {
                             self,
                             &mut summary,
                             shadow.animation_id,
-                            NovaAnimatedPrimitiveKind::Shadow,
+                            AnimatedPrimitiveKind::Shadow,
                             primitive_index,
                         );
                         count = count.saturating_add(1);
                     }
                     if count > 0 {
-                        self.batches
-                            .push(NovaUploadedBatch::Shadows { first, count });
+                        self.batches.push(UploadedBatch::Shadows { first, count });
                         summary.shadow_count = summary.shadow_count.saturating_add(count);
                     }
                 }
@@ -138,13 +137,13 @@ impl NovaFrameUpload {
                             self,
                             &mut summary,
                             sprite.animation_id,
-                            NovaAnimatedPrimitiveKind::MonochromeSprite,
+                            AnimatedPrimitiveKind::MonochromeSprite,
                             primitive_index,
                         );
                         count = count.saturating_add(1);
                     }
                     if count > 0 {
-                        self.batches.push(NovaUploadedBatch::MonoSprites {
+                        self.batches.push(UploadedBatch::MonoSprites {
                             texture_id: *texture_id,
                             first,
                             count,
@@ -166,13 +165,13 @@ impl NovaFrameUpload {
                             self,
                             &mut summary,
                             sprite.animation_id,
-                            NovaAnimatedPrimitiveKind::PolychromeSprite,
+                            AnimatedPrimitiveKind::PolychromeSprite,
                             primitive_index,
                         );
                         count = count.saturating_add(1);
                     }
                     if count > 0 {
-                        self.batches.push(NovaUploadedBatch::PolySprites {
+                        self.batches.push(UploadedBatch::PolySprites {
                             texture_id: *texture_id,
                             first,
                             count,
@@ -192,7 +191,7 @@ impl NovaFrameUpload {
                     }
                     if count > 0 {
                         self.batches
-                            .push(NovaUploadedBatch::Underlines { first, count });
+                            .push(UploadedBatch::Underlines { first, count });
                         summary.underline_count = summary.underline_count.saturating_add(count);
                     }
                 }
@@ -219,7 +218,7 @@ impl NovaFrameUpload {
                         vertex_count = vertex_count.saturating_add(encoded.vertex_count);
                     }
                     if vertex_count > 0 {
-                        self.batches.push(NovaUploadedBatch::PathRasterization {
+                        self.batches.push(UploadedBatch::PathRasterization {
                             first_vertex,
                             vertex_count,
                         });
@@ -256,7 +255,7 @@ impl NovaFrameUpload {
                         }
                     }
                     if count > 0 {
-                        self.batches.push(NovaUploadedBatch::Paths { first, count });
+                        self.batches.push(UploadedBatch::Paths { first, count });
                         summary.path_sprite_count = summary.path_sprite_count.saturating_add(count);
                     }
                 }
@@ -265,7 +264,7 @@ impl NovaFrameUpload {
                         summary.unsupported_batches.surfaces.saturating_add(1);
                 }
                 PreparedSceneBatch::BackdropBlurs(group) => {
-                    if backdrop_blur_quality == NovaBackdropBlurQuality::Disabled {
+                    if backdrop_blur_quality == BackdropBlurQuality::Disabled {
                         let first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
                         let mut count = 0_u32;
                         for blur in &scene.backdrop_blurs[group.range.clone()] {
@@ -292,13 +291,13 @@ impl NovaFrameUpload {
                                 self,
                                 &mut summary,
                                 quad.animation_id,
-                                NovaAnimatedPrimitiveKind::Quad,
+                                AnimatedPrimitiveKind::Quad,
                                 primitive_index,
                             );
                             count = count.saturating_add(1);
                         }
                         if count > 0 {
-                            self.batches.push(NovaUploadedBatch::Quads { first, count });
+                            self.batches.push(UploadedBatch::Quads { first, count });
                             summary.quad_count = summary.quad_count.saturating_add(count);
                         }
                         continue;
@@ -317,29 +316,19 @@ impl NovaFrameUpload {
                         let blur = blur.as_ref();
                         let primitive_index =
                             (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
-                        if count == 0 {
-                            self.backdrop_blur_passes.clear();
-                            self.backdrop_blur_downsample = blur.downsample.max(1);
-                            self.backdrop_blur_levels =
-                                blur.levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS);
-                            write_backdrop_blur_pass(
-                                &mut self.backdrop_blur_passes,
-                                backdrop_blur_offset(blur.radius.0, blur.downsample, blur.levels),
-                            );
-                        }
                         write_backdrop_blur(&mut self.backdrop_blurs, blur, drawable_size);
                         write_scene_animation_binding(
                             self,
                             &mut summary,
                             blur.animation_id,
-                            NovaAnimatedPrimitiveKind::BackdropBlur,
+                            AnimatedPrimitiveKind::BackdropBlur,
                             primitive_index,
                         );
                         count = count.saturating_add(1);
                     }
                     if count > 0 {
                         self.batches
-                            .push(NovaUploadedBatch::BackdropBlurs { first, count });
+                            .push(UploadedBatch::BackdropBlurs { first, count });
                         summary.backdrop_blur_count =
                             summary.backdrop_blur_count.saturating_add(count);
                     }
@@ -405,11 +394,7 @@ impl NovaFrameUpload {
                             summary.unsupported_batches.gpu_meshes_3d =
                                 summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
                         }
-                        let mesh_already_listed = self
-                            .custom_mesh_3d_meshes
-                            .iter()
-                            .any(|mesh| mesh.id == painted.mesh.id);
-                        if !mesh_already_listed {
+                        if !self.custom_mesh_3d_ids.contains(&painted.mesh.id) {
                             let Some(next_vertex_count) =
                                 custom_mesh_vertex_count.checked_add(painted.mesh.vertices.len())
                             else {
@@ -433,12 +418,12 @@ impl NovaFrameUpload {
                             }
                             custom_mesh_vertex_count = next_vertex_count;
                             custom_mesh_index_count = next_index_count;
+                            self.custom_mesh_3d_ids.insert(painted.mesh.id);
                             self.custom_mesh_3d_meshes.push(painted.mesh.clone());
                         }
-                        if !self
-                            .custom_mesh_3d_shaders
-                            .iter()
-                            .any(|shader| shader.id == painted.mesh.shader.id)
+                        if self
+                            .custom_mesh_3d_shader_ids
+                            .insert(painted.mesh.shader.id)
                         {
                             self.custom_mesh_3d_shaders
                                 .push(painted.mesh.shader.clone());
@@ -451,7 +436,7 @@ impl NovaFrameUpload {
                             painted,
                         );
                         for range in validated_ranges.into_iter().flatten() {
-                            self.batches.push(NovaUploadedBatch::CustomMesh3d {
+                            self.batches.push(UploadedBatch::CustomMesh3d {
                                 mesh_id: painted.mesh.id,
                                 generation: painted.mesh.generation,
                                 shader_id: painted.mesh.shader.id,
@@ -463,13 +448,15 @@ impl NovaFrameUpload {
                 }
             }
         }
+        self.refresh_backdrop_blur_configs();
+        self.rebuild_backdrop_blur_passes_for_current_frame();
         summary
     }
 
     fn encoded_path_rasterization(
         &mut self,
         path: &crate::Path<crate::ScaledPixels>,
-    ) -> Option<NovaPathRasterizationCacheEntry> {
+    ) -> Option<PathRasterizationCacheEntry> {
         let vertex_count = u32::try_from(path.vertices.len()).ok()?;
         if vertex_count == 0 {
             return None;
@@ -492,7 +479,7 @@ impl NovaFrameUpload {
         write_background(&mut self.path_paint_key_scratch, &path.color);
         let paint_hash = fnv1a_bytes(&self.path_paint_key_scratch);
 
-        let key = NovaPathRasterizationCacheKey {
+        let key = PathRasterizationCacheKey {
             path_id: path.cache_id,
             generation: path.geometry_generation,
             vertex_count: path.vertices.len(),
@@ -510,7 +497,7 @@ impl NovaFrameUpload {
         for vertex in &path.vertices {
             write_path_rasterization_vertex(&mut bytes, vertex, &path.color, &content_mask);
         }
-        let entry = NovaPathRasterizationCacheEntry {
+        let entry = PathRasterizationCacheEntry {
             bytes: Arc::<[u8]>::from(bytes.into_boxed_slice()),
             vertex_count,
         };
@@ -562,7 +549,7 @@ impl NovaFrameUpload {
         let geometry_hash = path_geometry_hash(&path.vertices);
         self.path_geometry_hash_memo.insert(
             path.cache_id,
-            NovaPathGeometryHashMemo {
+            PathGeometryHashMemo {
                 generation: path.geometry_generation,
                 vertex_count: path.vertices.len(),
                 first_xy_bits,
@@ -632,10 +619,10 @@ fn mesh_range_within_vertices(
 }
 
 fn write_scene_animation_binding(
-    upload: &mut NovaFrameUpload,
+    upload: &mut FrameUpload,
     summary: &mut FrameUploadSummary,
     animation_id: Option<crate::SceneAnimationId>,
-    primitive_kind: NovaAnimatedPrimitiveKind,
+    primitive_kind: AnimatedPrimitiveKind,
     primitive_index: u32,
 ) {
     let Some(animation_id) = animation_id else {
@@ -654,11 +641,11 @@ fn write_scene_animation_binding(
 }
 
 fn write_scene_animation_value(
-    upload: &mut NovaFrameUpload,
+    upload: &mut FrameUpload,
     summary: &mut FrameUploadSummary,
     value: &crate::SceneAnimationValue,
 ) {
-    let Some(property) = NovaAnimationProperty::from_transition_property(value.property) else {
+    let Some(property) = AnimationProperty::from_transition_property(value.property) else {
         return;
     };
     if upload.animation_values.len() / PACKED_ANIMATION_VALUE_BYTES >= MAX_ANIMATION_VALUES {

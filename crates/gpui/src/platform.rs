@@ -11,8 +11,7 @@ mod gpu;
 mod input_handler;
 mod interaction;
 mod keyboard;
-mod platform_traits;
-mod screen_capture;
+mod traits;
 mod winit;
 
 #[cfg(any(
@@ -38,27 +37,15 @@ mod test;
 #[cfg(target_os = "windows")]
 mod windows;
 
-#[cfg(all(
-    feature = "screen-capture",
-    any(
-        target_os = "windows",
-        all(
-            any(target_os = "linux", target_os = "freebsd"),
-            any(feature = "wayland", feature = "x11"),
-        )
-    )
-))]
-pub(crate) mod scap_screen_capture;
-
 pub use app_menu::*;
 pub(crate) use atlas::*;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use bootstrap::TestDispatcher;
 pub(crate) use bootstrap::current_platform;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub use bootstrap::guess_compositor;
 #[cfg(target_os = "windows")]
 pub use bootstrap::windows_manifest_path;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use bootstrap::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream};
 pub use bootstrap::{background_executor, enumerate_gpu_adapters};
 pub use clipboard::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -81,10 +68,9 @@ pub(crate) use mac::*;
     target_os = "freebsd"
 ))]
 pub(crate) use nova::*;
-pub use platform_traits::*;
-pub use screen_capture::*;
 pub use semantic_version::SemanticVersion;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
+pub use traits::*;
 #[cfg(target_os = "windows")]
 pub(crate) use windows::*;

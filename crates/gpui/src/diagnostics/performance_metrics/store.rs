@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, atomic::AtomicU64};
 use std::time::Instant;
 
-use super::ImageDecodeRecord;
+use super::ImageRenderRecord;
 
 #[derive(Default)]
 pub(super) struct SharedMetrics {
@@ -52,20 +52,28 @@ pub(super) struct SharedMetrics {
     pub(super) gpu_submission_wait_total_micros: AtomicU64,
     pub(super) gpu_submission_wait_max_micros: AtomicU64,
     pub(super) gpu_submission_slow_wait_count: AtomicU64,
+    pub(super) scene_pack_micros: AtomicU64,
     pub(super) atlas_upload_micros: AtomicU64,
-    pub(super) image_decode_compressed_bytes: AtomicU64,
-    pub(super) image_decode_decoded_bytes: AtomicU64,
-    pub(super) image_decode_frames: AtomicU64,
-    pub(super) image_decode_micros: AtomicU64,
-    pub(super) image_decode_count: AtomicU64,
-    pub(super) image_decode_total_compressed_bytes: AtomicU64,
-    pub(super) image_decode_total_decoded_bytes: AtomicU64,
-    pub(super) image_decode_total_frames: AtomicU64,
-    pub(super) image_decode_total_micros: AtomicU64,
-    pub(super) image_decode_max_micros: AtomicU64,
-    pub(super) image_decode_slow_count: AtomicU64,
-    pub(super) image_asset_retained: Mutex<HashMap<u64, ImageDecodeRecord>>,
-    pub(super) recent_image_decodes: Mutex<VecDeque<ImageDecodeRecord>>,
+    pub(super) image_processing_compressed_bytes: AtomicU64,
+    pub(super) image_processing_output_bytes: AtomicU64,
+    pub(super) image_processing_frames: AtomicU64,
+    pub(super) image_processing_micros: AtomicU64,
+    pub(super) image_processing_count: AtomicU64,
+    pub(super) image_processing_total_compressed_bytes: AtomicU64,
+    pub(super) image_processing_total_decoded_bytes: AtomicU64,
+    pub(super) image_processing_total_frames: AtomicU64,
+    pub(super) image_processing_total_micros: AtomicU64,
+    pub(super) image_processing_max_micros: AtomicU64,
+    pub(super) image_processing_slow_count: AtomicU64,
+    pub(super) animation_loop_restart_count: AtomicU64,
+    pub(super) animation_loop_restart_failure_count: AtomicU64,
+    pub(super) animation_loop_restart_total_micros: AtomicU64,
+    pub(super) animation_loop_restart_max_micros: AtomicU64,
+    pub(super) animation_queue_backpressure_count: AtomicU64,
+    pub(super) animation_stale_frame_count: AtomicU64,
+    pub(super) animation_worker_pool_wake_count: AtomicU64,
+    pub(super) image_asset_retained: Mutex<HashMap<u64, ImageRenderRecord>>,
+    pub(super) recent_image_processings: Mutex<VecDeque<ImageRenderRecord>>,
     pub(super) first_frame_build_micros: AtomicU64,
     pub(super) first_frame_layout_micros: AtomicU64,
     pub(super) first_frame_prepaint_micros: AtomicU64,

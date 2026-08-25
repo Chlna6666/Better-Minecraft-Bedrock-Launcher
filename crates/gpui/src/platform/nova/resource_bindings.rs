@@ -1,9 +1,9 @@
 use super::*;
 
-pub(super) struct NovaAtlasResourceDescriptor {
+pub(super) struct AtlasResourceDescriptor {
     pub(super) mono_sprite_resource_set_layout: ResourceSetLayoutId,
     pub(super) poly_sprite_resource_set_layout: ResourceSetLayoutId,
-    pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
+    pub(super) frame_buffers: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
 

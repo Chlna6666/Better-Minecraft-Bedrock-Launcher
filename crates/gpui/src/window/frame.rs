@@ -207,12 +207,18 @@ impl Frame {
     }
 
     pub(super) fn retained_capacity(&self) -> usize {
-        self.mouse_listeners.capacity()
+        self.element_states.capacity()
+            + self.accessed_element_states.capacity()
+            + self.dispatch_tree.retained_capacity()
+            + self.mouse_listeners.capacity()
             + self.hitboxes.capacity()
             + self.window_control_hitboxes.capacity()
             + self.deferred_draws.capacity()
+            + self.input_handlers.capacity()
+            + self.tooltip_requests.capacity()
             + self.cursor_styles.capacity()
             + self.retained_scene_segments.capacity()
+            + self.debug_container_capacity()
     }
 
     fn trim_retained_capacity(&mut self) {
@@ -252,29 +258,59 @@ impl Frame {
         match level {
             GpuiMemoryTrimLevel::Light => self.trim_retained_capacity(),
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive => {
-                self.mouse_listeners.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-                self.hitboxes.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-                self.window_control_hitboxes
-                    .shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-                self.deferred_draws.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-                self.input_handlers.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-                self.tooltip_requests.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-                self.cursor_styles.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-                self.retained_scene_segments
-                    .shrink_to(FRAME_MIN_RETAINED_CAPACITY);
+                let floor = if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+                    0
+                } else {
+                    FRAME_MIN_RETAINED_CAPACITY
+                };
+                self.element_states
+                    .shrink_to(floor.max(self.element_states.len()));
+                self.accessed_element_states
+                    .shrink_to(floor.max(self.accessed_element_states.len()));
+                self.dispatch_tree
+                    .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
+                self.mouse_listeners.shrink_to(floor);
+                self.hitboxes.shrink_to(floor);
+                self.window_control_hitboxes.shrink_to(floor);
+                self.deferred_draws.shrink_to(floor);
+                self.input_handlers.shrink_to(floor);
+                self.tooltip_requests.shrink_to(floor);
+                self.cursor_styles.shrink_to(floor);
+                self.retained_scene_segments.shrink_to(floor);
+                #[cfg(any(test, feature = "test-support"))]
+                self.debug_bounds
+                    .shrink_to(floor.max(self.debug_bounds.len()));
+                #[cfg(any(feature = "inspector", debug_assertions))]
+                {
+                    self.next_inspector_instance_ids
+                        .shrink_to(floor.max(self.next_inspector_instance_ids.len()));
+                    self.inspector_hitboxes
+                        .shrink_to(floor.max(self.inspector_hitboxes.len()));
+                }
             }
         }
     }
 
+    fn debug_container_capacity(&self) -> usize {
+        let capacity = 0;
+        #[cfg(any(test, feature = "test-support"))]
+        let capacity = capacity + self.debug_bounds.capacity();
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        let capacity = capacity
+            + self.next_inspector_instance_ids.capacity()
+            + self.inspector_hitboxes.capacity();
+        capacity
+    }
+
     pub(super) fn release_image_element_bitmaps(&mut self) {
-        let image_state_type = TypeId::of::<crate::ImgState>();
+        let image_state_type = TypeId::of::<crate::ImageElementState>();
         for ((_, type_id), state) in &mut self.element_states {
             if *type_id != image_state_type {
                 continue;
             }
             let Some(state) = state
                 .inner
-                .downcast_mut::<Option<crate::ImgState>>()
+                .downcast_mut::<Option<crate::ImageElementState>>()
                 .and_then(Option::as_mut)
             else {
                 continue;

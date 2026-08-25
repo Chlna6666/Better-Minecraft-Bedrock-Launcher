@@ -7,9 +7,9 @@ use refineable::Refineable as _;
 use sum_tree::SumTree;
 
 use super::{
-    layout::ListPrepaintState,
+    configuration::{ListSizingBehavior, RenderItemFn},
+    layout::ListPrepaintLayout,
     state::{ListItem, ListState},
-    types::{ListSizingBehavior, RenderItemFn},
 };
 
 /// Construct a new list element
@@ -43,7 +43,7 @@ impl List {
 
 impl Element for List {
     type RequestLayoutState = ();
-    type PrepaintState = ListPrepaintState;
+    type PrepaintState = ListPrepaintLayout;
 
     fn id(&self) -> Option<crate::ElementId> {
         None
@@ -136,7 +136,7 @@ impl Element for List {
         _: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) -> ListPrepaintState {
+    ) -> ListPrepaintLayout {
         let state = &mut *self.state.0.borrow_mut();
         state.reset = false;
 
@@ -176,7 +176,7 @@ impl Element for List {
 
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
-        ListPrepaintState { hitbox, layout }
+        ListPrepaintLayout { hitbox, layout }
     }
 
     fn paint(

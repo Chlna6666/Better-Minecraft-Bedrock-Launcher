@@ -1,6 +1,6 @@
 use crate::{GridLocation, Styled};
 
-use super::model::StyleRefinement;
+use super::values::StyleRefinement;
 
 impl Styled for StyleRefinement {
     fn style(&mut self) -> &mut StyleRefinement {

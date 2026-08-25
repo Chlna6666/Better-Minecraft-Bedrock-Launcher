@@ -1,4 +1,31 @@
-use super::super::state::shared_metrics;
+use serde::{Deserialize, Serialize};
+
+use super::store::shared_metrics;
+
+/// Metrics for one window.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowMetricsSnapshot {
+    /// Platform window identifier.
+    pub window_id: u64,
+    /// Redraw requests.
+    pub request_redraw_count: usize,
+    /// Drawn frames.
+    pub draw_count: usize,
+    /// Presented frames.
+    pub present_count: usize,
+    /// Skipped frame decisions.
+    pub skip_count: usize,
+    /// Skipped frame opportunities.
+    pub skipped_frame_count: usize,
+    /// Surface reconfigurations.
+    pub gpu_surface_reconfigure_count: usize,
+    /// Surface errors.
+    pub gpu_surface_error_count: usize,
+    /// Layout recomputes.
+    pub layout_recompute_count: usize,
+    /// Uploaded bytes.
+    pub upload_bytes: usize,
+}
 
 /// Per-window frame accounting for one frame decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
-use super::super::SceneFrameMetrics;
-use super::super::state::shared_metrics;
+use super::SceneFrameMetrics;
+use super::store::shared_metrics;
 
 /// Records platform atlas key removals.
 pub fn record_atlas_remove(count: usize) {

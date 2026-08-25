@@ -1,6 +1,29 @@
 use super::*;
 
-impl NovaFrameUpload {
+impl FrameUpload {
+    #[cfg(feature = "bench")]
+    pub(in crate::platform::nova) fn retained_byte_capacity(&self) -> usize {
+        [
+            self.globals.capacity(),
+            self.text_raster_params.capacity(),
+            self.quads.capacity(),
+            self.shadows.capacity(),
+            self.path_rasterization_vertices.capacity(),
+            self.path_sprites.capacity(),
+            self.mono_sprites.capacity(),
+            self.poly_sprites.capacity(),
+            self.underlines.capacity(),
+            self.backdrop_blur_passes.capacity(),
+            self.backdrop_blurs.capacity(),
+            self.animation_bindings.capacity(),
+            self.animation_values.capacity(),
+            self.custom_mesh_3d_parameters.capacity(),
+            self.path_paint_key_scratch.capacity(),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
+    }
+
     pub(in crate::platform::nova) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
         let multiplier = match level {
             GpuiMemoryTrimLevel::Light => 16,
@@ -50,6 +73,7 @@ impl NovaFrameUpload {
             PACKED_BACKDROP_BLUR_BYTES,
             multiplier,
         );
+        trim_upload_vec(&mut self.backdrop_blur_configs, 8, multiplier);
         trim_upload_vec(
             &mut self.animation_bindings,
             64 * PACKED_ANIMATION_BINDING_BYTES,
@@ -67,18 +91,12 @@ impl NovaFrameUpload {
         );
         trim_upload_vec(&mut self.custom_mesh_3d_meshes, 8, multiplier);
         trim_upload_vec(&mut self.custom_mesh_3d_shaders, 8, multiplier);
+        self.custom_mesh_3d_ids.shrink_to(8 * multiplier);
+        self.custom_mesh_3d_shader_ids.shrink_to(8 * multiplier);
         trim_upload_vec(&mut self.batches, 64, multiplier);
         self.path_rasterization_cache.clear();
         self.path_geometry_hash_memo.clear();
         self.path_paint_key_scratch = Vec::new();
-    }
-
-    pub(in crate::platform::nova) fn backdrop_blur_downsample(&self) -> NovaBackdropBlurConfigSet {
-        self.backdrop_blur_config_set()
-    }
-
-    pub(in crate::platform::nova) fn backdrop_blur_levels(&self) -> usize {
-        usize::from(self.backdrop_blur_levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS))
     }
 
     /// Atlas textures that can contribute pixels to at least one backdrop source.
@@ -92,7 +110,7 @@ impl NovaFrameUpload {
         let Some(last_blur_batch) = self
             .batches
             .iter()
-            .rposition(|batch| matches!(batch, NovaUploadedBatch::BackdropBlurs { .. }))
+            .rposition(|batch| matches!(batch, UploadedBatch::BackdropBlurs { .. }))
         else {
             return FxHashSet::default();
         };
@@ -100,18 +118,18 @@ impl NovaFrameUpload {
         let mut textures = FxHashSet::default();
         for batch in &self.batches[..last_blur_batch] {
             match *batch {
-                NovaUploadedBatch::MonoSprites { texture_id, .. }
-                | NovaUploadedBatch::PolySprites { texture_id, .. } => {
+                UploadedBatch::MonoSprites { texture_id, .. }
+                | UploadedBatch::PolySprites { texture_id, .. } => {
                     textures.insert(texture_id);
                 }
-                NovaUploadedBatch::SolidQuads { .. }
-                | NovaUploadedBatch::Quads { .. }
-                | NovaUploadedBatch::Shadows { .. }
-                | NovaUploadedBatch::PathRasterization { .. }
-                | NovaUploadedBatch::Paths { .. }
-                | NovaUploadedBatch::Underlines { .. }
-                | NovaUploadedBatch::BackdropBlurs { .. }
-                | NovaUploadedBatch::CustomMesh3d { .. } => {}
+                UploadedBatch::SolidQuads { .. }
+                | UploadedBatch::Quads { .. }
+                | UploadedBatch::Shadows { .. }
+                | UploadedBatch::PathRasterization { .. }
+                | UploadedBatch::Paths { .. }
+                | UploadedBatch::Underlines { .. }
+                | UploadedBatch::BackdropBlurs { .. }
+                | UploadedBatch::CustomMesh3d { .. } => {}
             }
         }
         textures

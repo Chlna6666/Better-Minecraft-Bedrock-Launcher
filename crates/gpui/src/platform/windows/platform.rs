@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the Windows platform boundary calls Win32 and COM APIs"
+)]
+
 use std::{
     cell::RefCell,
     ffi::OsStr,
@@ -588,18 +593,6 @@ impl Platform for WindowsPlatform {
             .find(|display| display.id() == primary_id)
             .cloned()
             .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
-    }
-
-    #[cfg(feature = "screen-capture")]
-    fn is_screen_capture_supported(&self) -> bool {
-        true
-    }
-
-    #[cfg(feature = "screen-capture")]
-    fn screen_capture_sources(
-        &self,
-    ) -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
-        crate::platform::scap_screen_capture::scap_screen_sources(&self.foreground_executor)
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
@@ -1251,7 +1244,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 let position = window.0.state.borrow().mouse_position.get();
                 let entry = self.pending_file_drops.entry(window_id).or_default();
                 if !entry.paths.iter().any(|existing| existing == &path) {
-                    entry.paths.push(path.clone());
+                    entry.paths.push(path);
                 }
                 let paths = ExternalPaths(entry.paths.clone());
                 self.pending_file_drops.remove(&window_id);
@@ -1449,7 +1442,7 @@ pub(crate) struct WindowCreationInfo {
     pub(crate) disable_direct_composition: bool,
     pub(crate) renderer_backend: RendererBackend,
     pub(crate) renderer_options: RendererOptions,
-    pub(crate) vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
+    pub(in crate::platform::windows) vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
 }
 
 fn open_target(target: impl AsRef<OsStr>) -> Result<()> {

@@ -1,5 +1,3 @@
-use super::*;
-
 pub(super) const MAX_QUADS: usize = 8192;
 pub(super) const MAX_SHADOWS: usize = 4096;
 pub(super) const MAX_PATH_VERTICES: usize = 65_536;
@@ -46,5 +44,4 @@ pub(super) const MAX_CUSTOM_MESH_3D_INDICES: usize =
 /// the first time a frame actually carries custom 3D meshes.
 pub(super) const CUSTOM_MESH_3D_PLACEHOLDER_VERTICES: usize = 64;
 pub(super) const CUSTOM_MESH_3D_PLACEHOLDER_INDICES: usize = 64;
-pub(super) const DEFAULT_BACKDROP_BLUR_DOWNSAMPLE: u8 = 2;
 pub(super) const MAX_BACKDROP_BLUR_LEVELS: u8 = 6;

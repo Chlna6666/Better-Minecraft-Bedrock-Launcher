@@ -4,8 +4,8 @@ use crate::{
 };
 use std::{cell::RefCell, cmp::Ordering, mem, rc::Rc};
 
-use super::frame_state::InteractiveElementState;
-use super::state::Interactivity;
+use super::interactivity::Interactivity;
+use super::state::InteractiveElementState;
 
 /// Represents an element that can be scrolled *to* in its parent element.
 /// Unlike [`ScrollHandle::scroll_to_active_item`], an anchored element does not

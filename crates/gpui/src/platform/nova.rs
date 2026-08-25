@@ -20,18 +20,12 @@ mod atlas;
 mod atlas_resources;
 mod backend;
 mod diagnostics;
-#[path = "nova/draw_paged.rs"]
 mod draw;
-#[path = "nova/draw.rs"]
-mod draw_legacy;
 mod frame_upload;
 mod limits;
-mod nova_renderer;
-#[path = "nova/pipeline_material.rs"]
 mod pipeline;
-#[path = "nova/pipeline.rs"]
-mod pipeline_legacy;
 mod prelude;
+mod renderer;
 mod rendering_parameters;
 mod resource_bindings;
 mod resource_layouts;
@@ -51,10 +45,12 @@ use diagnostics::*;
 use draw::*;
 use frame_upload::*;
 use limits::*;
-use nova_renderer::{DrawableSize, NovaMeshCacheEntry, nova_present_mode_for_backend};
-pub(crate) use nova_renderer::{NovaRenderer, NovaRendererAtlas};
 use pipeline::*;
 use prelude::*;
+#[cfg(test)]
+use renderer::nova_present_mode_for_backend;
+use renderer::{DrawableSize, MeshCacheEntry};
+pub(crate) use renderer::{NovaRenderer, NovaRendererAtlas};
 use rendering_parameters::*;
 use resource_bindings::*;
 use resource_layouts::*;
@@ -66,6 +62,51 @@ use swapchain::*;
 use targets::*;
 use upload_metrics::*;
 use upload_packing::*;
+
+#[cfg(feature = "bench")]
+pub(crate) use frame_upload::{
+    upload_encoding::AtlasPixelEncodingBenchmarkCore, upload_queue::AtlasUploadBenchmarkCore,
+};
+
+#[cfg(feature = "bench")]
+pub(crate) struct FrameUploadBenchmarkCore {
+    scene: crate::Scene,
+    upload: FrameUpload,
+    rendering_parameters: RenderingParameters,
+}
+
+#[cfg(feature = "bench")]
+impl FrameUploadBenchmarkCore {
+    pub(crate) fn new(scene: crate::Scene) -> Self {
+        Self {
+            scene,
+            upload: FrameUpload::default(),
+            rendering_parameters: RenderingParameters::from_env(),
+        }
+    }
+
+    pub(crate) fn next_frame(&mut self) -> (usize, usize, usize, usize, usize) {
+        let summary = self.upload.encode(
+            &self.scene,
+            DrawableSize {
+                width: 1_920,
+                height: 1_080,
+            },
+            &self.rendering_parameters,
+            true,
+            BackdropBlurQuality::Full,
+        );
+        (
+            usize::try_from(summary.quad_count)
+                .unwrap_or(usize::MAX)
+                .saturating_add(usize::try_from(summary.backdrop_blur_count).unwrap_or(usize::MAX)),
+            self.upload.batches.len(),
+            self.upload.uploaded_bytes(),
+            self.upload.retained_byte_capacity(),
+            self.upload.backdrop_blur_configs().len(),
+        )
+    }
+}
 
 #[cfg(test)]
 mod tests;

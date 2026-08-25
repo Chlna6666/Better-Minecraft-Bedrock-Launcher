@@ -169,12 +169,21 @@ device、queue 或 surface handle。
 
 ## 上游 GPUI 架构对比
 
+比较 baseline 是 `Cargo.toml` 记录的 Zed commit
+`6805d952f9f3d702f760aa11b1547df8a625fa16`。它只用于 review，不是 source 或 build
+dependency。
+
 | 领域 | 上游 GPUI 方向 | 当前独立 fork |
 | --- | --- | --- |
 | Windows platform | DirectX-oriented Windows renderer path | winit platform path with nova-gfx backends |
 | Windows backend selection | Platform-specific renderer implementation | `RendererBackend` 可选择 `NovaDx12` 或 `NovaVulkan` |
 | Renderer default | Platform renderer chosen internally | Windows 可用时默认 Nova DX12，Linux/FreeBSD 默认 Nova Vulkan，macOS 默认 Nova Metal |
 | Frame scheduling | Redraw behavior tied closely to platform renderer loops | 事件驱动 composition，并支持 presentation-only frames |
+| Layout | 上游 Taffy-based layout semantics | Taffy semantics 加 retained layout fingerprint，并提供 cold/retained Criterion baseline |
+| Damage | platform renderer 决定 redraw | 有界、传递合并的 dirty regions，并保留 conservative full-redraw fallback |
+| Animated images | 上游 image elements 和 format support | 固定 animation worker pool，同时按每个 stream 和全进程 decoded bytes 背压 |
+| Image memory | application/cache lifetime conventions | decoded/compressed/atlas/prefetch 有界预算、可取消 cache load 和 capacity-bucketed bitmap reuse |
+| Performance evidence | 上游 project-wide profiling infrastructure | fork 自有 layout/path/image/memory Criterion suites 与 runtime frame/resource metrics |
 | Shader model | Built-in renderer shaders owned by platform paths | 内置 WGSL validation，并提供 runtime WGSL helpers 给 custom mesh shader |
 | Custom GPU content | 主要通过 framework rendering primitives 扩展 | Scene primitives、图片、SVG、runtime shader helpers 和 custom mesh primitives |
 | Example API style | 旧示例可能使用 previous context 和 view terminology | 示例使用 `App`、`Context<T>`、显式 `Window` 和 `Entity<T>` |

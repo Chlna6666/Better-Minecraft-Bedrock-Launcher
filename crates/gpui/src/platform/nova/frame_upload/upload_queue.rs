@@ -1,5 +1,9 @@
 use super::upload_encoding::{atlas_source_byte_len, encode_bgra_upload_with_padding};
 use super::*;
+#[cfg(feature = "bench")]
+use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
+#[cfg(feature = "bench")]
+use std::borrow::Cow;
 
 const NOVA_ATLAS_RETAINED_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
 const NOVA_ATLAS_RETAINED_UPLOAD_COUNT: usize = 4096;
@@ -26,6 +30,54 @@ pub(in crate::platform::nova) struct PendingAtlasUpload {
 struct AtlasUploadBatch {
     bytes: Vec<u8>,
     uploads: Vec<PendingAtlasUpload>,
+}
+
+#[cfg(feature = "bench")]
+pub(crate) struct AtlasUploadBenchmarkCore {
+    atlas: NovaAtlas,
+}
+
+#[cfg(feature = "bench")]
+impl AtlasUploadBenchmarkCore {
+    pub(crate) fn rgba_tiles(upload_count: usize, tile_size: u32) -> Self {
+        let atlas = NovaAtlas::new();
+        atlas
+            .upload_pending_rgba_pixels(|_| Ok(TextureId::from_parts(0, 0)), |_| Ok(()))
+            .expect("fallback atlas uploads must be valid");
+
+        let tile_extent = i32::try_from(tile_size).expect("benchmark tile size must fit i32");
+        let tile_size = usize::try_from(tile_size).expect("benchmark tile size must fit usize");
+        let tile_byte_len = tile_size
+            .checked_mul(tile_size)
+            .and_then(|pixel_count| pixel_count.checked_mul(4))
+            .expect("benchmark tile byte length must fit usize");
+        for image_id in 0..upload_count {
+            let pixels = vec![255; tile_byte_len];
+            let key = AtlasKey::Image(RenderImageParams {
+                image_id: ImageId(image_id),
+                frame_slot: 0,
+                pixel_format: ImagePixelFormat::Rgba8,
+            });
+            atlas
+                .ensure_tile_with(&key, &mut || {
+                    Ok(Some((
+                        size(DevicePixels(tile_extent), DevicePixels(tile_extent)),
+                        Cow::Borrowed(&pixels),
+                    )))
+                })
+                .expect("benchmark atlas insertion must succeed")
+                .expect("benchmark atlas must retain every image");
+        }
+        Self { atlas }
+    }
+
+    pub(crate) fn upload(&self) -> (usize, usize) {
+        let stats = self
+            .atlas
+            .upload_pending_rgba_pixels(|_| Ok(TextureId::from_parts(0, 0)), |_| Ok(()))
+            .expect("benchmark atlas upload must succeed");
+        (stats.upload_count, stats.uploaded_bytes)
+    }
 }
 
 impl NovaAtlas {

@@ -1,16 +1,33 @@
 use super::*;
-use crate::assets::render_image::RenderImageData;
-use crate::{BackgroundExecutor, ObjectFit, size};
+use crate::assets::render_image::RenderImageStorage;
+use crate::{ObjectFit, Result, performance_metrics_snapshot, size};
 use image::{
     Delay, ExtendedColorType, Frame, ImageBuffer, ImageEncoder as _, ImageFormat, RgbaImage,
     codecs::gif::{GifEncoder, Repeat},
 };
-use rand::SeedableRng as _;
 use std::io::Cursor;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
 mod webp_tests;
+
+fn render_image(
+    bytes: &[u8],
+    format: ImageFormat,
+    config: AnimatedImageConfig,
+) -> Result<RenderImage> {
+    EncodedImage::new(format, Arc::<[u8]>::from(bytes)).render(config)
+}
+
+fn render_image_at(
+    bytes: &[u8],
+    format: ImageFormat,
+    config: AnimatedImageConfig,
+    target: ImageRenderSize,
+    object_fit: ObjectFit,
+) -> Result<(RenderImage, ImageRenderInfo)> {
+    EncodedImage::new(format, Arc::<[u8]>::from(bytes)).render_sized(target, object_fit, config)
+}
 
 fn frame(width: u32, height: u32) -> Frame {
     let image: RgbaImage = ImageBuffer::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
@@ -41,36 +58,35 @@ fn animated_frame_slots_are_bounded() {
 }
 
 #[test]
-fn decoded_byte_len_counts_all_frames() {
+fn resident_byte_len_counts_all_frames() {
     let image = RenderImage::new(vec![frame(2, 3), frame(4, 5)]);
 
     assert_eq!(image.frame_byte_len(0), 2 * 3 * 4);
     assert_eq!(image.frame_byte_len(1), 4 * 5 * 4);
-    assert_eq!(image.decoded_byte_len(), (2 * 3 * 4) + (4 * 5 * 4));
+    assert_eq!(image.resident_byte_len(), (2 * 3 * 4) + (4 * 5 * 4));
 }
 
 #[test]
 fn raw_rgba_image_retains_rgba_bytes() {
     let pixels = vec![1, 2, 3, 255];
     let image =
-        RenderImage::from_raw_pixels(1, 1, RenderImagePixelFormat::Rgba8, pixels.clone()).unwrap();
+        RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, pixels.clone()).unwrap();
 
     assert_eq!(image.as_bytes(0).unwrap(), pixels);
-    assert_eq!(image.pixel_format(0), Some(RenderImagePixelFormat::Rgba8));
+    assert_eq!(image.pixel_format(0), Some(ImagePixelFormat::Rgba8));
 }
 
 #[test]
 fn raw_pixel_bytes_reuses_shared_storage() {
     let pixels: Arc<[u8]> = Arc::<[u8]>::from([1, 2, 3, 255]);
     let image =
-        RenderImage::from_raw_pixel_bytes(1, 1, RenderImagePixelFormat::Rgba8, pixels.clone())
-            .unwrap();
+        RenderImage::from_raw_pixel_bytes(1, 1, ImagePixelFormat::Rgba8, pixels.clone()).unwrap();
 
     assert!(std::ptr::eq(
         image.as_bytes(0).unwrap().as_ptr(),
         pixels.as_ptr()
     ));
-    assert_eq!(image.pixel_format(0), Some(RenderImagePixelFormat::Rgba8));
+    assert_eq!(image.pixel_format(0), Some(ImagePixelFormat::Rgba8));
 }
 
 #[test]
@@ -78,7 +94,7 @@ fn new_image_keeps_existing_bgra_semantics() {
     let image = RenderImage::new(vec![rgba_frame([1, 2, 3, 255])]);
 
     assert_eq!(image.as_bytes(0).unwrap(), &[1, 2, 3, 255]);
-    assert_eq!(image.pixel_format(0), Some(RenderImagePixelFormat::Bgra8));
+    assert_eq!(image.pixel_format(0), Some(ImagePixelFormat::Bgra8));
 }
 
 #[test]
@@ -88,7 +104,8 @@ fn animated_config_clamps_runtime_values() {
         max_gpu_frame_slots: 0,
         max_fps: 999.0,
         inactive_max_fps: 999.0,
-        decode_ahead_frames: 1,
+        prefetch_frames: 1,
+        prefetch_byte_limit: 0,
         max_resident_frames: 0,
         max_resident_bytes: 0,
     }
@@ -96,17 +113,31 @@ fn animated_config_clamps_runtime_values() {
 
     assert!(!config.play);
     assert_eq!(config.max_gpu_frame_slots, 1);
-    assert_eq!(config.max_fps, 60.0);
-    assert_eq!(config.inactive_max_fps, 30.0);
-    assert_eq!(config.decode_ahead_frames, 2);
+    assert_eq!(config.max_fps, 999.0);
+    assert_eq!(config.inactive_max_fps, 240.0);
+    assert_eq!(config.prefetch_frames, 2);
+    assert_eq!(config.prefetch_byte_limit, 4);
     assert_eq!(config.max_resident_frames, 1);
     assert_eq!(config.max_resident_bytes, 4);
 }
 
 #[test]
+fn animated_config_uses_safe_defaults_for_non_finite_frame_rates() {
+    let config = AnimatedImageConfig {
+        max_fps: f32::NAN,
+        inactive_max_fps: f32::INFINITY,
+        ..AnimatedImageConfig::default()
+    }
+    .clamped();
+
+    assert_eq!(config.max_fps, 90.0);
+    assert_eq!(config.inactive_max_fps, 4.0);
+}
+
+#[test]
 fn cover_target_preserves_aspect_ratio() {
-    let target = ImageDecodeTarget::new(800, 600).unwrap();
-    let fitted = fitted_target_size(size(3840, 2160), target, ObjectFit::Cover);
+    let target = ImageRenderSize::new(800, 600).unwrap();
+    let fitted = target.fit(size(3840, 2160), ObjectFit::Cover);
 
     assert_eq!(fitted.width, 1067);
     assert_eq!(fitted.height, 600);
@@ -114,15 +145,15 @@ fn cover_target_preserves_aspect_ratio() {
 
 #[test]
 fn contain_target_preserves_aspect_ratio() {
-    let target = ImageDecodeTarget::new(44, 44).unwrap();
-    let fitted = fitted_target_size(size(1465, 1496), target, ObjectFit::Contain);
+    let target = ImageRenderSize::new(44, 44).unwrap();
+    let fitted = target.fit(size(1465, 1496), ObjectFit::Contain);
 
     assert_eq!(fitted.width, 44);
     assert_eq!(fitted.height, 44);
 }
 
 #[test]
-fn gif_decode_helper_keeps_multiple_bgra_frames() {
+fn gif_render_keeps_multiple_bgra_frames() {
     let mut bytes = Vec::new();
     {
         let mut encoder = GifEncoder::new(&mut bytes);
@@ -132,13 +163,7 @@ fn gif_decode_helper_keeps_multiple_bgra_frames() {
             .unwrap();
     }
 
-    let image = decode_image_bytes(
-        &bytes,
-        ImageFormat::Gif,
-        AnimatedImageConfig::default(),
-        None,
-    )
-    .unwrap();
+    let image = render_image(&bytes, ImageFormat::Gif, AnimatedImageConfig::default()).unwrap();
 
     assert!(image.is_animated());
     assert_eq!(image.frame_count(), 2);
@@ -146,15 +171,9 @@ fn gif_decode_helper_keeps_multiple_bgra_frames() {
 }
 
 #[test]
-fn apng_decode_helper_keeps_multiple_frames() {
+fn apng_render_keeps_multiple_frames() {
     let bytes = animated_png_bytes();
-    let image = decode_image_bytes(
-        &bytes,
-        ImageFormat::Png,
-        AnimatedImageConfig::default(),
-        None,
-    )
-    .unwrap();
+    let image = render_image(&bytes, ImageFormat::Png, AnimatedImageConfig::default()).unwrap();
 
     assert!(image.is_animated());
     assert_eq!(image.frame_count(), 2);
@@ -167,20 +186,14 @@ fn static_png_is_not_treated_as_animation() {
         .write_image(&[255, 0, 0, 255], 1, 1, ExtendedColorType::Rgba8)
         .unwrap();
 
-    let image = decode_image_bytes(
-        &bytes,
-        ImageFormat::Png,
-        AnimatedImageConfig::default(),
-        None,
-    )
-    .unwrap();
+    let image = render_image(&bytes, ImageFormat::Png, AnimatedImageConfig::default()).unwrap();
 
     assert!(!image.is_animated());
     assert_eq!(image.frame_count(), 1);
 }
 
 #[test]
-fn png_target_decode_uses_element_sized_resident_buffer() {
+fn png_target_render_uses_element_sized_resident_buffer() {
     let bytes = encoded_rgba_image(128, 96, |writer| {
         image::codecs::png::PngEncoder::new(writer).write_image(
             &solid_rgba_pixels(128, 96),
@@ -189,8 +202,8 @@ fn png_target_decode_uses_element_sized_resident_buffer() {
             ExtendedColorType::Rgba8,
         )
     });
-    let target = ImageDecodeTarget::new(32, 24).unwrap();
-    let (image, metadata) = decode_image_bytes_to_target(
+    let target = ImageRenderSize::new(32, 24).unwrap();
+    let (image, metadata) = render_image_at(
         &bytes,
         ImageFormat::Png,
         AnimatedImageConfig::default(),
@@ -200,15 +213,14 @@ fn png_target_decode_uses_element_sized_resident_buffer() {
     .unwrap();
 
     assert_eq!(image.size(0), target.size());
-    assert_eq!(image.decoded_byte_len(), 32 * 24 * 4);
+    assert_eq!(image.resident_byte_len(), 32 * 24 * 4);
     assert!(
-        metadata.decode_mode == "png_row_sample_decode"
-            || metadata.decode_mode == "decoder_scaled_then_resized"
+        metadata.render_path == "png_row_sample" || metadata.render_path == "scaled_then_resized"
     );
 }
 
 #[test]
-fn jpeg_target_decode_uses_scaled_decoder_before_resizing() {
+fn jpeg_target_render_scales_before_resizing() {
     let bytes = encoded_rgba_image(128, 96, |writer| {
         image::codecs::jpeg::JpegEncoder::new_with_quality(writer, 90).write_image(
             &solid_rgb_pixels(128, 96),
@@ -217,8 +229,8 @@ fn jpeg_target_decode_uses_scaled_decoder_before_resizing() {
             ExtendedColorType::Rgb8,
         )
     });
-    let target = ImageDecodeTarget::new(32, 24).unwrap();
-    let (image, metadata) = decode_image_bytes_to_target(
+    let target = ImageRenderSize::new(32, 24).unwrap();
+    let (image, metadata) = render_image_at(
         &bytes,
         ImageFormat::Jpeg,
         AnimatedImageConfig::default(),
@@ -228,15 +240,12 @@ fn jpeg_target_decode_uses_scaled_decoder_before_resizing() {
     .unwrap();
 
     assert_eq!(image.size(0), target.size());
-    assert_eq!(image.decoded_byte_len(), 32 * 24 * 4);
-    assert!(
-        metadata.decode_mode == "jpeg_scaled_decode"
-            || metadata.decode_mode == "decoder_scaled_then_resized"
-    );
+    assert_eq!(image.resident_byte_len(), 32 * 24 * 4);
+    assert!(metadata.render_path == "jpeg_scaled" || metadata.render_path == "scaled_then_resized");
 }
 
 #[test]
-fn bmp_target_decode_samples_rows_without_retaining_original_size() {
+fn bmp_target_render_samples_rows_without_retaining_original_size() {
     let bytes = encoded_rgba_image(128, 96, |writer| {
         image::codecs::bmp::BmpEncoder::new(writer).write_image(
             &solid_rgba_pixels(128, 96),
@@ -245,8 +254,8 @@ fn bmp_target_decode_samples_rows_without_retaining_original_size() {
             ExtendedColorType::Rgba8,
         )
     });
-    let target = ImageDecodeTarget::new(32, 24).unwrap();
-    let (image, metadata) = decode_image_bytes_to_target(
+    let target = ImageRenderSize::new(32, 24).unwrap();
+    let (image, metadata) = render_image_at(
         &bytes,
         ImageFormat::Bmp,
         AnimatedImageConfig::default(),
@@ -256,47 +265,44 @@ fn bmp_target_decode_samples_rows_without_retaining_original_size() {
     .unwrap();
 
     assert_eq!(image.size(0), target.size());
-    assert_eq!(image.decoded_byte_len(), 32 * 24 * 4);
+    assert_eq!(image.resident_byte_len(), 32 * 24 * 4);
     assert!(
-        metadata.decode_mode == "bmp_rect_sample_decode"
-            || metadata.decode_mode == "decoder_scaled_then_resized"
+        metadata.render_path == "bmp_rect_sample" || metadata.render_path == "scaled_then_resized"
     );
 }
 
 #[test]
-fn target_decode_keeps_animated_png_playable_after_resize() {
+fn target_render_keeps_animated_png_playable_after_resize() {
     let bytes = animated_png_bytes_with_size(64, 64);
     let config = AnimatedImageConfig {
         max_resident_bytes: 4 * 4 * 4 * 2,
         ..AnimatedImageConfig::default()
     };
-    let target = ImageDecodeTarget::new(4, 4).unwrap();
+    let target = ImageRenderSize::new(4, 4).unwrap();
     let (image, metadata) =
-        decode_image_bytes_to_target(&bytes, ImageFormat::Png, config, target, ObjectFit::Fill)
-            .unwrap();
+        render_image_at(&bytes, ImageFormat::Png, config, target, ObjectFit::Fill).unwrap();
 
     assert!(image.is_animated());
     assert_eq!(image.frame_count(), 2);
     assert_eq!(image.size(0), target.size());
     assert_eq!(image.size(1), target.size());
-    assert_eq!(image.decoded_byte_len(), 4 * 4 * 4 * 2);
-    assert_eq!(metadata.decode_mode, "animated_frame_sample_decode");
+    assert_eq!(image.resident_byte_len(), 4 * 4 * 4 * 2);
+    assert_eq!(metadata.render_path, "animated_frame_sample");
 }
 
 #[test]
-fn target_decode_streams_large_animation_after_resize() {
+fn target_render_streams_large_animation_after_resize() {
     let bytes = animated_png_bytes_with_size(64, 64);
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
         max_resident_bytes: 4 * 4 * 4,
         ..AnimatedImageConfig::default()
     };
-    let target = ImageDecodeTarget::new(4, 4).unwrap();
+    let target = ImageRenderSize::new(4, 4).unwrap();
     let (image, _) =
-        decode_image_bytes_to_target(&bytes, ImageFormat::Png, config, target, ObjectFit::Fill)
-            .unwrap();
+        render_image_at(&bytes, ImageFormat::Png, config, target, ObjectFit::Fill).unwrap();
 
-    assert!(matches!(image.data, RenderImageData::Streaming(_)));
+    assert!(matches!(image.storage, RenderImageStorage::Streaming(_)));
     assert!(image.is_animated());
     assert_eq!(image.frame_count(), usize::MAX);
     assert_eq!(image.size(0), target.size());
@@ -310,72 +316,94 @@ fn large_animation_enters_streaming_mode() {
         max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
-    let image = decode_image_bytes(&bytes, ImageFormat::Png, config, None).unwrap();
+    let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
 
-    assert!(matches!(image.data, RenderImageData::Resident(_)));
-
-    let image = decode_image_bytes(
-        &bytes,
-        ImageFormat::Png,
-        config,
-        Some(BackgroundExecutor::new(std::sync::Arc::new(
-            crate::TestDispatcher::new(rand::rngs::StdRng::seed_from_u64(1)),
-        ))),
-    )
-    .unwrap();
-
-    assert!(matches!(image.data, RenderImageData::Streaming(_)));
+    assert!(matches!(image.storage, RenderImageStorage::Streaming(_)));
 }
 
 #[test]
-fn streaming_animation_decoded_byte_len_counts_queued_frames() {
+fn streaming_animation_releases_stale_frames() {
     let bytes = animated_png_bytes();
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
         max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
-    let image = decode_image_bytes(
-        &bytes,
-        ImageFormat::Png,
-        config,
-        Some(BackgroundExecutor::new(std::sync::Arc::new(
-            crate::TestDispatcher::new(rand::rngs::StdRng::seed_from_u64(2)),
-        ))),
-    )
-    .unwrap();
+    let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
 
-    assert!(matches!(image.data, RenderImageData::Streaming(_)));
+    assert!(matches!(image.storage, RenderImageStorage::Streaming(_)));
     assert_eq!(image.frame_count(), usize::MAX);
     let first_frame_bytes = image.frame_byte_len(0);
     let deadline = Instant::now() + Duration::from_secs(2);
-    while image.decoded_byte_len() == first_frame_bytes && Instant::now() < deadline {
+    while image.resident_byte_len() == first_frame_bytes && Instant::now() < deadline {
         std::thread::yield_now();
     }
-    assert!(image.decoded_byte_len() > first_frame_bytes);
+    assert!(image.resident_byte_len() > first_frame_bytes);
+    let stale_frames = performance_metrics_snapshot().animation.stale_frame_count;
+    assert!(image.next_streaming_frame(usize::MAX).is_none());
+    assert!(performance_metrics_snapshot().animation.stale_frame_count > stale_frames);
 }
 
 #[test]
-fn streaming_animation_keeps_decoder_running_while_queue_is_full() {
-    let bytes = animated_png_bytes_with_frame_count(4);
+fn streaming_animation_prefetch_bytes_are_bounded() {
+    let bytes = animated_png_bytes_with_frame_count(8);
     let config = AnimatedImageConfig {
-        decode_ahead_frames: 2,
+        prefetch_frames: 64,
+        prefetch_byte_limit: 4,
         max_resident_frames: 1,
         max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
-    let executor = BackgroundExecutor::new(std::sync::Arc::new(crate::TestDispatcher::new(
-        rand::rngs::StdRng::seed_from_u64(3),
-    )));
-    let image =
-        decode_image_bytes(&bytes, ImageFormat::Png, config, Some(executor.clone())).unwrap();
+    let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
+    let first_frame_bytes = image.frame_byte_len(0);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while image.resident_byte_len() == first_frame_bytes && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
 
-    executor.run_until_parked();
-    let RenderImageData::Streaming(state) = &image.data else {
+    assert_eq!(image.resident_byte_len(), first_frame_bytes * 2);
+}
+
+#[test]
+fn streaming_animation_keeps_worker_running_while_queue_is_full() {
+    let bytes = animated_png_bytes_with_frame_count(4);
+    let config = AnimatedImageConfig {
+        prefetch_frames: 2,
+        max_resident_frames: 1,
+        max_resident_bytes: 4,
+        ..AnimatedImageConfig::default()
+    };
+    let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
+    let RenderImageStorage::Streaming(state) = &image.storage else {
         panic!("large animation should use streaming decode");
     };
 
-    assert!(state.decode_task_running.load(Ordering::Acquire));
+    assert!(state.stream_task_running.load(Ordering::Acquire));
+}
+
+#[test]
+fn streaming_animation_records_loop_restart() {
+    let before = performance_metrics_snapshot().animation.loop_restarts;
+    let bytes = animated_png_bytes();
+    let config = AnimatedImageConfig {
+        prefetch_frames: 2,
+        max_resident_frames: 1,
+        max_resident_bytes: 4,
+        ..AnimatedImageConfig::default()
+    };
+    let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut sequence = 0usize;
+    while sequence < 2 && Instant::now() < deadline {
+        if let Some(frame) = image.next_streaming_frame(sequence) {
+            sequence = frame.sequence();
+        } else {
+            std::thread::yield_now();
+        }
+    }
+
+    assert_eq!(sequence, 2);
+    assert!(performance_metrics_snapshot().animation.loop_restarts > before);
 }
 
 fn animated_png_bytes() -> Vec<u8> {
@@ -397,9 +425,9 @@ fn animated_png_bytes_with_size_and_frame_count(
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     {
-        let mut encoder = png::Encoder::new(Cursor::new(&mut bytes), width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
+        let mut encoder = ::png::Encoder::new(Cursor::new(&mut bytes), width, height);
+        encoder.set_color(::png::ColorType::Rgba);
+        encoder.set_depth(::png::BitDepth::Eight);
         encoder.set_animated(frame_count, 0).unwrap();
         encoder.set_frame_delay(20, 1000).unwrap();
         let mut writer = encoder.write_header().unwrap();

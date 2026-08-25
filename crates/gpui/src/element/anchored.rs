@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// The state that the anchored element element uses to track its children.
-pub struct AnchoredState {
+pub struct AnchoredLayout {
     child_layout_ids: SmallVec<[LayoutId; 4]>,
 }
 
@@ -84,7 +84,7 @@ impl ParentElement for Anchored {
 }
 
 impl Element for Anchored {
-    type RequestLayoutState = AnchoredState;
+    type RequestLayoutState = AnchoredLayout;
     type PrepaintState = ();
 
     fn id(&self) -> Option<crate::ElementId> {
@@ -116,7 +116,7 @@ impl Element for Anchored {
 
         let layout_id = window.request_layout(anchored_style, child_layout_ids.iter().copied(), cx);
 
-        (layout_id, AnchoredState { child_layout_ids })
+        (layout_id, AnchoredLayout { child_layout_ids })
     }
 
     fn prepaint(

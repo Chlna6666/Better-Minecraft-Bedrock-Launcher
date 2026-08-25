@@ -81,9 +81,9 @@ impl Window {
         )?;
 
         let tab_bar_visible = platform_window.tab_bar_visible();
-        SystemWindowTabController::init_visible(cx, tab_bar_visible);
+        WindowTabRegistry::init_visible(cx, tab_bar_visible);
         if let Some(tabs) = platform_window.tabbed_windows() {
-            SystemWindowTabController::add_tab(cx, handle.window_id(), tabs);
+            WindowTabRegistry::add_tab(cx, handle.window_id(), tabs);
         }
 
         let display_id = platform_window.display().map(|display| display.id());
@@ -139,7 +139,7 @@ impl Window {
             move || {
                 let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
                 let _ = cx.update(|cx| {
-                    SystemWindowTabController::remove_tab(cx, window_id);
+                    WindowTabRegistry::remove_tab(cx, window_id);
                 });
             }
         }));
@@ -205,7 +205,7 @@ impl Window {
                         window.rearm_platform_frame_watchdog_on_activation();
                     }
 
-                    SystemWindowTabController::update_last_active(cx, window.handle.id);
+                    WindowTabRegistry::update_last_active(cx, window.handle.id);
                 }));
             }
         }));
@@ -246,7 +246,7 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move || {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, _window, cx| {
-                    SystemWindowTabController::move_tab_to_new_window(cx, handle.window_id());
+                    WindowTabRegistry::move_tab_to_new_window(cx, handle.window_id());
                 }));
             })
         });
@@ -254,7 +254,7 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move || {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, _window, cx| {
-                    SystemWindowTabController::merge_all_windows(cx, handle.window_id());
+                    WindowTabRegistry::merge_all_windows(cx, handle.window_id());
                 }));
             })
         });
@@ -262,7 +262,7 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move || {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, _window, cx| {
-                    SystemWindowTabController::select_next_tab(cx, handle.window_id());
+                    WindowTabRegistry::select_next_tab(cx, handle.window_id());
                 }));
             })
         });
@@ -270,7 +270,7 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move || {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, _window, cx| {
-                    SystemWindowTabController::select_previous_tab(cx, handle.window_id())
+                    WindowTabRegistry::select_previous_tab(cx, handle.window_id())
                 }));
             })
         });
@@ -279,7 +279,7 @@ impl Window {
             Box::new(move || {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
                     let tab_bar_visible = window.platform_window.tab_bar_visible();
-                    SystemWindowTabController::set_visible(cx, tab_bar_visible);
+                    WindowTabRegistry::set_visible(cx, tab_bar_visible);
                 }));
             })
         });
@@ -395,7 +395,7 @@ impl Window {
             pending_input_observers: SubscriberSet::new(),
             prompt: None,
             client_inset,
-            window_control_drag_gesture: TitlebarGestureState::default(),
+            window_control_drag_gesture: TitlebarGesture::default(),
             transparent_caption_enabled: transparent_caption_height.is_some(),
             transparent_caption_height,
             observed_caption_height: None,

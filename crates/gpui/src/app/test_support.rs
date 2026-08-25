@@ -54,7 +54,7 @@ pub fn run_test(
                 eprintln!("seed = {seed}");
             }
             let result = panic::catch_unwind(|| {
-                let dispatcher = TestDispatcher::new_with_seed(StdRng::seed_from_u64(seed), seed);
+                let dispatcher = TestDispatcher::with_seed(StdRng::seed_from_u64(seed), seed);
                 test_fn(dispatcher, seed);
             });
 

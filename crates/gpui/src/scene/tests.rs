@@ -166,7 +166,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
 }
 
 #[test]
-fn backdrop_blur_does_not_force_scene_full_redraw_fallback() {
+fn backdrop_blur_damage_uses_gaussian_support_without_full_redraw() {
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(1000.0))).scale(1.0);
     let mut scene = Scene::default();
 
@@ -195,8 +195,8 @@ fn backdrop_blur_does_not_force_scene_full_redraw_fallback() {
     assert_eq!(
         scene.backdrop_blur_damage(damage).collect::<Vec<_>>(),
         vec![Bounds::new(
-            point(ScaledPixels(337.0), ScaledPixels(337.0)),
-            size(ScaledPixels(136.0), ScaledPixels(136.0)),
+            point(ScaledPixels(391.0), ScaledPixels(391.0)),
+            size(ScaledPixels(28.0), ScaledPixels(28.0)),
         )]
     );
     assert!(!scene.requires_full_redraw_fallback());

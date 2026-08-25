@@ -9,7 +9,7 @@ use super::MacPlatform;
 use super::WaylandClient;
 #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11"))]
 use super::X11Client;
-use super::platform_traits::Platform;
+use super::traits::Platform;
 #[cfg(target_os = "windows")]
 use super::{WindowsPlatform, show_error};
 
@@ -148,7 +148,7 @@ pub fn enumerate_gpu_adapters(_backend: RendererBackend) -> Vec<crate::GpuAdapte
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub use super::test::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream};
+pub use super::test::TestDispatcher;
 
 /// Returns a background executor for the current platform.
 pub fn background_executor() -> BackgroundExecutor {

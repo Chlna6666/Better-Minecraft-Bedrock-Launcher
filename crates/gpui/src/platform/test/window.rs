@@ -135,18 +135,22 @@ impl TestWindow {
         !result.propagate
     }
 
+    #[cfg(test)]
     pub(crate) fn requested_frame_count(&self) -> usize {
         self.0.lock().request_frame_count.get()
     }
 
+    #[cfg(test)]
     pub(crate) fn last_requested_frame(&self) -> Option<RequestFrameOptions> {
         self.0.lock().last_requested_frame.get()
     }
 
+    #[cfg(test)]
     pub(crate) fn start_window_move_count(&self) -> usize {
         self.0.lock().start_window_move_count.get()
     }
 
+    #[cfg(test)]
     pub(crate) fn simulate_request_frame(&self, options: RequestFrameOptions) {
         let mut lock = self.0.lock();
         let Some(mut callback) = lock.request_frame_callback.take() else {
@@ -157,24 +161,24 @@ impl TestWindow {
         self.0.lock().request_frame_callback = Some(callback);
     }
 
+    #[cfg(test)]
     pub(crate) fn present_framebuffer_only_count(&self) -> usize {
         self.0.lock().present_framebuffer_only_count.get()
     }
 
+    #[cfg(test)]
     pub(crate) fn draw_count(&self) -> usize {
         self.0.lock().draw_count.get()
     }
 
+    #[cfg(test)]
     pub(crate) fn set_draw_delay(&self, delay: Duration) {
         self.0.lock().draw_delay = delay;
     }
 
+    #[cfg(test)]
     pub(crate) fn is_shown(&self) -> bool {
         self.0.lock().shown
-    }
-
-    pub(crate) fn focus_on_map(&self) -> bool {
-        self.0.lock().focus_on_map
     }
 }
 
@@ -450,7 +454,7 @@ impl PlatformAtlas for TestAtlas {
     ) -> anyhow::Result<Option<crate::AtlasTile>> {
         let mut state = self.0.lock();
         if let Some(tile) = state.tiles.get(key) {
-            return Ok(Some(tile.clone()));
+            return Ok(Some(*tile));
         }
         drop(state);
 
@@ -480,7 +484,7 @@ impl PlatformAtlas for TestAtlas {
             },
         );
 
-        Ok(Some(state.tiles[key].clone()))
+        Ok(Some(state.tiles[key]))
     }
 
     fn refresh_tile_with<'a>(
@@ -497,7 +501,7 @@ impl PlatformAtlas for TestAtlas {
         if let Some(tile) = state.tiles.get_mut(key)
             && tile.bounds.size == size
         {
-            return Ok(Some(tile.clone()));
+            return Ok(Some(*tile));
         }
         drop(state);
         self.remove(key);

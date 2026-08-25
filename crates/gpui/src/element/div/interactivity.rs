@@ -33,8 +33,8 @@ use super::event_handlers::{
     ActionListener, ClickListener, KeyDownListener, KeyUpListener, ModifiersChangedListener,
     MouseDownListener, MouseMoveListener, MouseUpListener, ScrollWheelListener,
 };
-use super::frame_state::{ElementClickedState, InteractiveElementState};
 use super::scroll::{ScrollAnchor, ScrollHandle};
+use super::state::{ElementClickedState, InteractiveElementState};
 use super::style_state::{ComputedStyleCache, GroupHitboxes};
 use super::tooltip::TooltipBuilder;
 

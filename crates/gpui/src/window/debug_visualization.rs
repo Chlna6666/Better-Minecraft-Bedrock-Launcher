@@ -35,31 +35,24 @@ impl Window {
     /// Enables or disables visual diagnostics for this window.
     ///
     /// Passing [`WindowDebugVisualization::default`] removes all diagnostic state for the window.
-    pub fn set_debug_visualization(
-        &mut self,
-        options: WindowDebugVisualization,
-        cx: &mut App,
-    ) {
+    pub fn set_debug_visualization(&mut self, options: WindowDebugVisualization, cx: &mut App) {
         cx.default_global::<WindowDebugVisualizationRegistry>();
         let window_id = self.handle.window_id().as_u64();
-        cx.update_global(
-            |registry: &mut WindowDebugVisualizationRegistry, _cx| {
-                if options == WindowDebugVisualization::default() {
-                    registry.windows.remove(&window_id);
-                    return;
-                }
+        cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+            if options == WindowDebugVisualization::default() {
+                registry.windows.remove(&window_id);
+                return;
+            }
 
-                let runtime = registry.windows.entry(window_id).or_default();
-                if runtime.options != options {
-                    runtime.options = options;
-                    runtime.surface_flash_generation =
-                        runtime.surface_flash_generation.wrapping_add(1);
-                    runtime.flash_this_frame = false;
-                    runtime.cleanup_pending = false;
-                    runtime.cleanup_this_frame = false;
-                }
-            },
-        );
+            let runtime = registry.windows.entry(window_id).or_default();
+            if runtime.options != options {
+                runtime.options = options;
+                runtime.surface_flash_generation = runtime.surface_flash_generation.wrapping_add(1);
+                runtime.flash_this_frame = false;
+                runtime.cleanup_pending = false;
+                runtime.cleanup_this_frame = false;
+            }
+        });
 
         // Turning an overlay on or off must also clear pixels produced by the previous state.
         self.force_full_redraw.set(true);
@@ -89,26 +82,23 @@ impl Window {
         }
 
         let mut requires_full_redraw = false;
-        cx.update_global(
-            |registry: &mut WindowDebugVisualizationRegistry, _cx| {
-                let Some(runtime) = registry.windows.get_mut(&window_id) else {
-                    return;
-                };
+        cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+            let Some(runtime) = registry.windows.get_mut(&window_id) else {
+                return;
+            };
 
-                runtime.cleanup_this_frame = runtime.cleanup_pending;
-                runtime.cleanup_pending = false;
-                runtime.flash_this_frame =
-                    runtime.options.flash_surface_updates && !runtime.cleanup_this_frame;
-                if runtime.flash_this_frame {
-                    runtime.surface_flash_generation =
-                        runtime.surface_flash_generation.wrapping_add(1);
-                }
+            runtime.cleanup_this_frame = runtime.cleanup_pending;
+            runtime.cleanup_pending = false;
+            runtime.flash_this_frame =
+                runtime.options.flash_surface_updates && !runtime.cleanup_this_frame;
+            if runtime.flash_this_frame {
+                runtime.surface_flash_generation = runtime.surface_flash_generation.wrapping_add(1);
+            }
 
-                requires_full_redraw = runtime.options.show_layout_bounds
-                    || runtime.flash_this_frame
-                    || runtime.cleanup_this_frame;
-            },
-        );
+            requires_full_redraw = runtime.options.show_layout_bounds
+                || runtime.flash_this_frame
+                || runtime.cleanup_this_frame;
+        });
         requires_full_redraw
     }
 
@@ -174,19 +164,17 @@ impl Window {
                 }
 
                 let mut should_refresh = false;
-                cx.update_global(
-                    |registry: &mut WindowDebugVisualizationRegistry, _cx| {
-                        let Some(runtime) = registry.windows.get_mut(&window_id) else {
-                            return;
-                        };
-                        if runtime.options.flash_surface_updates
-                            && runtime.surface_flash_generation == generation
-                        {
-                            runtime.cleanup_pending = true;
-                            should_refresh = true;
-                        }
-                    },
-                );
+                cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+                    let Some(runtime) = registry.windows.get_mut(&window_id) else {
+                        return;
+                    };
+                    if runtime.options.flash_surface_updates
+                        && runtime.surface_flash_generation == generation
+                    {
+                        runtime.cleanup_pending = true;
+                        should_refresh = true;
+                    }
+                });
 
                 if should_refresh {
                     let _ = ignore_window_not_found(handle.update(cx, |_root, window, _cx| {

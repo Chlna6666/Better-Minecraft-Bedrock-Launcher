@@ -1,9 +1,61 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use super::super::FramePhaseMetrics;
-use super::super::state::shared_metrics;
-use super::super::timing::{duration_micros, record_once_micros};
+use super::store::shared_metrics;
+use super::timing::{duration_micros, record_once_micros};
+
+/// Per-frame foreground timings.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FramePhaseMetrics {
+    /// Total frame build duration.
+    pub build: Duration,
+    /// Layout duration.
+    pub layout: Duration,
+    /// Prepaint duration.
+    pub prepaint: Duration,
+    /// Paint duration.
+    pub paint: Duration,
+    /// Scene finalization duration.
+    pub scene_finish: Duration,
+}
+
+/// Per-frame layout counters.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayoutFrameMetrics {
+    /// Requested layout nodes.
+    pub nodes: usize,
+    /// Requested measured nodes.
+    pub measured_nodes: usize,
+    /// Computed layout roots.
+    pub roots: usize,
+    /// Bounds-cache hits.
+    pub bounds_cache_hits: usize,
+    /// Bounds-cache misses.
+    pub bounds_cache_misses: usize,
+    /// Reused retained roots.
+    pub cache_reused_roots: usize,
+    /// Child roots saved by reuse.
+    pub cache_saved_roots: usize,
+}
+
+/// Per-frame scene counters.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SceneFrameMetrics {
+    /// Emitted primitives.
+    pub primitives: usize,
+    /// Prepared batches.
+    pub batches: usize,
+    /// Retained segments.
+    pub segments: usize,
+    /// Replayed primitives.
+    pub replayed_primitives: usize,
+    /// Rebuilt segments.
+    pub segment_rebuild_count: usize,
+    /// Reused segments.
+    pub segment_reuse_count: usize,
+    /// Aggregate retained capacity.
+    pub retained_capacity: usize,
+}
 
 /// Records the platform renderer draw duration.
 pub fn record_draw_time(duration: Duration) {

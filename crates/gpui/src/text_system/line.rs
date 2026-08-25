@@ -1,6 +1,10 @@
 mod alignment;
 mod background;
+mod decoration;
 mod paint;
-mod types;
+mod shaped;
+mod wrapped;
 
-pub use types::{DecorationRun, ShapedLine, WrappedLine};
+pub use decoration::DecorationRun;
+pub use shaped::ShapedLine;
+pub use wrapped::WrappedLine;

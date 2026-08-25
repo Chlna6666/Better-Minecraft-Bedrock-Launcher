@@ -1,10 +1,10 @@
 use anyhow::Result;
 
 use super::super::*;
-use super::buffers::NovaFrameResourceBuffers;
+use super::buffers::FrameResourceBuffers;
 
 #[derive(Clone, Copy)]
-pub(in crate::platform::nova) struct NovaFrameResourceSets {
+pub(in crate::platform::nova) struct FrameResourceSets {
     pub(in crate::platform::nova) quad_resource_set: ResourceSetId,
     pub(in crate::platform::nova) shadow_resource_set: ResourceSetId,
     pub(in crate::platform::nova) path_rasterization_resource_set: ResourceSetId,
@@ -39,11 +39,11 @@ where
 pub(super) fn create_renderer_resource_sets<D>(
     device: &mut D,
     label: &str,
-    layouts: &NovaResourceLayouts,
-    buffers: &NovaFrameResourceBuffers,
+    layouts: &ResourceLayouts,
+    buffers: &FrameResourceBuffers,
     custom_mesh_3d_vertices_buffer: BufferId,
     custom_mesh_3d_vertex_capacity: usize,
-) -> Result<NovaFrameResourceSets>
+) -> Result<FrameResourceSets>
 where
     D: BackendResources,
 {
@@ -153,7 +153,7 @@ where
         custom_mesh_3d_vertex_capacity,
     )?;
 
-    Ok(NovaFrameResourceSets {
+    Ok(FrameResourceSets {
         quad_resource_set,
         shadow_resource_set,
         path_rasterization_resource_set,

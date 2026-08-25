@@ -26,11 +26,21 @@ Remote `img(...)` sources 使用 app HTTP client。通过
 当 image lifetime 需要 scoped 管理时，使用 image cache elements 和 providers：
 
 - `image_cache(provider).child(...)` 把 provider 限定到 element subtree。
-- `RetainAllImageCache` 会保留 images，直到 clear 或 drop。
+- `BoundedImageCache` 限制保留的 item 数量和 decoded bytes。
 - 自定义 `ImageCacheProvider` 可以从 window-local element state 构建 caches。
 
 cache evict image 时，如果有 current window，通过 `cx.drop_image(image,
 Some(window))` drop；release cleanup 中使用 `cx.drop_image(image, None)`。
+
+## 动态图片
+
+GIF、APNG 和动画 WebP 共用同一套播放调度。GPUI 保留文件内部的 frame delay，仅在
+帧间隔短于配置的播放上限时延长它。默认上限为 90 FPS；应用可在显示设备和工作负载
+允许时显式设置更高的有限 `AnimatedImageConfig::max_fps`。零值或无效时序使用配置的
+最小帧间隔。
+
+流式动画同时限制预取 frame 数和 bytes。队列为空时允许首个大帧超过 byte limit，确保
+大尺寸动画仍可前进；后续预取保持有界。
 
 ## Guidelines
 

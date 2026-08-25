@@ -132,12 +132,12 @@ impl Application {
     /// Builds an app with the given asset source.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self::new_with_renderer_options(RendererOptions::default())
+        Self::with_renderer_options(RendererOptions::default())
     }
 
     /// Builds an app with the requested renderer options in a single platform
     /// initialization pass.
-    pub fn new_with_renderer_options(options: RendererOptions) -> Self {
+    pub fn with_renderer_options(options: RendererOptions) -> Self {
         #[cfg(any(test, feature = "test-support"))]
         log::info!("GPUI was compiled in test mode");
 
@@ -152,8 +152,8 @@ impl Application {
 
     /// Builds an app with the requested renderer backend in a single platform
     /// initialization pass.
-    pub fn new_with_renderer_backend(backend: RendererBackend) -> Self {
-        Self::new_with_renderer_options(RendererOptions::with_backend(backend))
+    pub fn with_renderer_backend(backend: RendererBackend) -> Self {
+        Self::with_renderer_options(RendererOptions::with_backend(backend))
     }
 
     /// Build an app in headless mode. This prevents opening windows,
@@ -168,22 +168,6 @@ impl Application {
         ))
     }
 
-    /// Sets the preferred renderer backend before the application is launched.
-    ///
-    /// `GPUI_RENDERER` takes precedence when it is set so local debugging and
-    /// release diagnostics can override builder configuration without code changes.
-    pub fn with_renderer_backend(self, backend: RendererBackend) -> Self {
-        self.with_renderer_options(RendererOptions::with_backend(backend))
-    }
-
-    /// Sets renderer options before the application is launched.
-    pub fn with_renderer_options(self, options: RendererOptions) -> Self {
-        let options = options.resolve();
-        record_renderer_backend(options.backend);
-        self.0.borrow_mut().platform = current_platform(false, options);
-        self
-    }
-
     /// Sets the application-wide default font family and registers any provided font sources.
     pub fn try_with_default_font(self, config: DefaultFontConfig) -> Result<Self> {
         let family = config.family.clone();
@@ -196,7 +180,7 @@ impl Application {
     }
 
     /// Sets the application-wide default font family, falling back to the platform font on error.
-    pub fn with_default_font_or_platform_default(self, config: DefaultFontConfig) -> Self {
+    pub fn with_platform_default_font(self, config: DefaultFontConfig) -> Self {
         let family = config.family.clone();
         if let Err(error) = self.apply_default_font(config) {
             self.0
@@ -240,6 +224,7 @@ impl Application {
             config.bitmap_pool_bytes,
             config.bitmap_pool_max_buffer_bytes,
         );
+        crate::assets::configure_animation_queue(config.animation_prefetch_byte_limit);
         crate::configure_compressed_cache(config.max_compressed_bytes);
         self.0.borrow_mut().image_pipeline_config = config;
         self

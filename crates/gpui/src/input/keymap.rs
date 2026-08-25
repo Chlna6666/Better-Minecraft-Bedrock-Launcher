@@ -1,11 +1,16 @@
 mod binding;
-mod context;
+#[cfg(test)]
+mod context_tests;
+mod key_context;
+mod parser;
+mod predicate;
 
 #[cfg(test)]
 mod tests;
 
 pub use binding::*;
-pub use context::*;
+pub use key_context::*;
+pub use predicate::*;
 
 use crate::{Action, AsKeystroke, Keystroke, is_no_action};
 use collections::{HashMap, HashSet};

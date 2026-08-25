@@ -4,7 +4,7 @@ use collections::FxHashSet;
 use super::BoundsTree;
 use std::ops::Range;
 
-use super::util::{is_solid_quad, slice_range, trim_vec_capacity};
+use super::geometry::{is_solid_quad, slice_range, trim_vec_capacity};
 use super::{
     BatchIterator, DrawOrder, MonochromeSprite, PaintBackdropBlur, PaintGpuMesh3d, PaintOperation,
     PaintSurface, Path, PathId, PolychromeSprite, PreparedBackdropBlurGroup, PreparedGpuMesh3dPass,
@@ -772,9 +772,7 @@ impl Scene {
     }
 }
 
-fn backdrop_blur_operations(
-    operations: &[PaintOperation],
-) -> Vec<(usize, &PaintBackdropBlur)> {
+fn backdrop_blur_operations(operations: &[PaintOperation]) -> Vec<(usize, &PaintBackdropBlur)> {
     operations
         .iter()
         .enumerate()
@@ -840,8 +838,8 @@ fn backdrop_blur_influence_radius(blur: &PaintBackdropBlur) -> ScaledPixels {
     }
 
     // The separable Gaussian kernel samples exactly through ±radius. Add half of the source texel
-    // footprint to account for linear filtering and downsampled sources without carrying over the
-    // old Dual-Kawase pyramid's exponentially growing support.
+    // footprint to account for linear filtering and downsampled sources. No additional pyramid
+    // expansion is needed because the separable Gaussian filter has finite sampling support.
     let linear_footprint = 0.5 * f32::from(blur.downsample.max(1));
     ScaledPixels(radius + linear_footprint)
 }

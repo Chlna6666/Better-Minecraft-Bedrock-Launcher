@@ -3,23 +3,28 @@ mod asset_cache;
 mod color;
 /// The default colors used by GPUI.
 pub mod colors;
+mod counter;
 mod executor;
+mod fluent;
 mod global;
 pub mod prelude;
 mod shared_string;
 mod shared_uri;
 mod subscription;
-pub(crate) mod util;
+mod timeout;
 
+pub use ::util::arc_cow::ArcCow;
 pub(crate) use arena::*;
 pub use asset_cache::*;
 pub use color::*;
 pub use colors::*;
+pub(crate) use counter::atomic_incr_if_not_zero;
 pub use executor::*;
+pub use fluent::FluentBuilder;
 pub use global::*;
 pub use shared_string::*;
 pub use shared_uri::*;
 pub use subscription::*;
 #[cfg(any(test, feature = "test-support"))]
-pub use util::smol_timeout;
-pub use util::{FutureExt, Timeout, arc_cow::ArcCow};
+pub use timeout::smol_timeout;
+pub use timeout::{FutureExt, Timeout};

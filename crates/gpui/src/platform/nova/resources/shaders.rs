@@ -4,7 +4,7 @@ use gfx_core::ShaderModuleId;
 use super::super::*;
 
 #[derive(Clone, Copy)]
-pub(super) struct NovaRendererShaders {
+pub(super) struct RendererShaders {
     pub(super) solid_vertex: ShaderModuleId,
     pub(super) solid_fragment: ShaderModuleId,
     pub(super) quad_vertex: ShaderModuleId,
@@ -35,8 +35,8 @@ pub(super) struct NovaRendererShaders {
 pub(super) fn create_renderer_shaders<D>(
     device: &mut D,
     label: &str,
-    shader_binaries: NovaShaderBinaries,
-) -> Result<NovaRendererShaders>
+    shader_binaries: ShaderBinaries,
+) -> Result<RendererShaders>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -181,7 +181,7 @@ where
         })
         .context("creating nova backdrop blur fragment shader module")?;
 
-    Ok(NovaRendererShaders {
+    Ok(RendererShaders {
         solid_vertex,
         solid_fragment,
         quad_vertex,

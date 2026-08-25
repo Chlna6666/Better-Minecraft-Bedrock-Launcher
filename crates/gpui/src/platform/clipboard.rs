@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use strum::EnumIter;
 
 use crate::{
-    AnimatedImageConfig, AnimatedImageSource, App, BackgroundExecutor, ImageSource, RenderImage,
-    SvgRenderer, SvgSize, Window, decode_image_source, hash,
+    AnimatedImageConfig, App, EncodedImage, ImageSource, RenderImage, SvgRenderer, SvgSize, Window,
+    hash,
 };
 
 /// A clipboard item that should be copied to the clipboard
@@ -28,7 +28,7 @@ pub enum ClipboardEntry {
     /// A string entry
     String(ClipboardString),
     /// An image entry
-    Image(Image),
+    Image(ClipboardImage),
 }
 
 impl ClipboardItem {
@@ -58,8 +58,8 @@ impl ClipboardItem {
         }
     }
 
-    /// Create a new ClipboardItem::Image with the given image with no associated metadata
-    pub fn new_image(image: &Image) -> Self {
+    /// Creates an image clipboard item with no associated metadata.
+    pub fn new_image(image: &ClipboardImage) -> Self {
         Self {
             entries: vec![ClipboardEntry::Image(image.clone())],
         }
@@ -115,8 +115,8 @@ impl From<String> for ClipboardEntry {
     }
 }
 
-impl From<Image> for ClipboardEntry {
-    fn from(value: Image) -> Self {
+impl From<ClipboardImage> for ClipboardEntry {
+    fn from(value: ClipboardImage) -> Self {
         Self::Image(value)
     }
 }
@@ -135,8 +135,8 @@ impl From<String> for ClipboardItem {
     }
 }
 
-impl From<Image> for ClipboardItem {
-    fn from(value: Image) -> Self {
+impl From<ClipboardImage> for ClipboardItem {
+    fn from(value: ClipboardImage) -> Self {
         Self::from(ClipboardEntry::from(value))
     }
 }
@@ -205,9 +205,9 @@ impl ImageFormat {
     }
 }
 
-/// An image, with a format and certain bytes
+/// Encoded image bytes exchanged through the system clipboard.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Image {
+pub struct ClipboardImage {
     /// The image format the bytes represent (e.g. PNG)
     pub format: ImageFormat,
     /// The raw image bytes
@@ -216,13 +216,13 @@ pub struct Image {
     pub(in crate::platform) id: u64,
 }
 
-impl Hash for Image {
+impl Hash for ClipboardImage {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_u64(self.id);
     }
 }
 
-impl Image {
+impl ClipboardImage {
     /// An empty image containing no data
     pub fn empty() -> Self {
         Self::from_bytes(ImageFormat::Png, Vec::new())
@@ -238,7 +238,7 @@ impl Image {
     }
 
     /// Create an image by detecting the format from its bytes.
-    pub fn from_bytes_auto(bytes: Vec<u8>) -> Option<Self> {
+    pub fn from_detected_bytes(bytes: Vec<u8>) -> Option<Self> {
         let format = image::guess_format(&bytes).ok()?;
         Some(Self::from_bytes(
             ImageFormat::from_image_format(format)?,
@@ -257,8 +257,8 @@ impl Image {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Arc<RenderImage>> {
-        ImageSource::Image(self)
-            .use_data(None, window, cx)
+        ImageSource::Clipboard(self)
+            .use_render_image(None, window, cx)
             .and_then(|result| result.ok())
     }
 
@@ -268,28 +268,27 @@ impl Image {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Arc<RenderImage>> {
-        ImageSource::Image(self)
-            .data(None, window, cx)
+        ImageSource::Clipboard(self)
+            .render_image(None, window, cx)
             .and_then(|result| result.ok())
     }
 
     /// Use the GPUI `remove_asset` API to drop this image, if possible.
     pub fn remove_asset(self: Arc<Self>, cx: &mut App) {
-        ImageSource::Image(self).remove_asset(cx);
+        ImageSource::Clipboard(self).remove_asset(cx);
     }
 
-    /// Convert the clipboard image to an `ImageData` object.
-    pub fn to_image_data(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>> {
-        self.to_image_data_with_config(svg_renderer, AnimatedImageConfig::default(), None)
+    /// Decode the clipboard image into a renderable image.
+    pub fn to_render_image(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>> {
+        self.to_render_image_with_config(svg_renderer, AnimatedImageConfig::default())
     }
 
-    pub(crate) fn to_image_data_with_config(
+    pub(crate) fn to_render_image_with_config(
         &self,
         svg_renderer: SvgRenderer,
         config: AnimatedImageConfig,
-        executor: Option<BackgroundExecutor>,
     ) -> Result<Arc<RenderImage>> {
-        let decode_started = Instant::now();
+        let processing_started = Instant::now();
 
         let mut image = match self.format {
             ImageFormat::Svg => {
@@ -301,64 +300,29 @@ impl Image {
 
                 RenderImage::new(SmallVec::from_elem(Frame::new(buffer), 1))
             }
-            ImageFormat::Png => decode_image_source(
-                AnimatedImageSource {
-                    bytes: Arc::from(self.bytes.as_slice()),
-                    format: image::ImageFormat::Png,
+            format => EncodedImage::new(
+                match format {
+                    ImageFormat::Png => image::ImageFormat::Png,
+                    ImageFormat::Jpeg => image::ImageFormat::Jpeg,
+                    ImageFormat::Webp => image::ImageFormat::WebP,
+                    ImageFormat::Gif => image::ImageFormat::Gif,
+                    ImageFormat::Bmp => image::ImageFormat::Bmp,
+                    ImageFormat::Tiff => image::ImageFormat::Tiff,
+                    ImageFormat::Svg => unreachable!("SVG is handled by the preceding match arm"),
                 },
-                config,
-                executor,
-            )?,
-            ImageFormat::Jpeg => decode_image_source(
-                AnimatedImageSource {
-                    bytes: Arc::from(self.bytes.as_slice()),
-                    format: image::ImageFormat::Jpeg,
-                },
-                config,
-                executor,
-            )?,
-            ImageFormat::Webp => decode_image_source(
-                AnimatedImageSource {
-                    bytes: Arc::from(self.bytes.as_slice()),
-                    format: image::ImageFormat::WebP,
-                },
-                config,
-                executor,
-            )?,
-            ImageFormat::Gif => decode_image_source(
-                AnimatedImageSource {
-                    bytes: Arc::from(self.bytes.as_slice()),
-                    format: image::ImageFormat::Gif,
-                },
-                config,
-                executor,
-            )?,
-            ImageFormat::Bmp => decode_image_source(
-                AnimatedImageSource {
-                    bytes: Arc::from(self.bytes.as_slice()),
-                    format: image::ImageFormat::Bmp,
-                },
-                config,
-                executor,
-            )?,
-            ImageFormat::Tiff => decode_image_source(
-                AnimatedImageSource {
-                    bytes: Arc::from(self.bytes.as_slice()),
-                    format: image::ImageFormat::Tiff,
-                },
-                config,
-                executor,
-            )?,
+                Arc::<[u8]>::from(self.bytes.as_slice()),
+            )
+            .render(config)?,
         };
 
-        let decode_duration = decode_started.elapsed();
-        image = image.with_pipeline_metadata(self.bytes.len(), decode_duration);
-        crate::record_image_decode_metrics_with_threshold(
+        let processing_duration = processing_started.elapsed();
+        image = image.with_processing_metrics(self.bytes.len(), processing_duration);
+        crate::record_image_processing_metrics_with_threshold(
             self.bytes.len(),
-            image.decoded_byte_len(),
+            image.resident_byte_len(),
             image.frame_count(),
-            decode_duration,
-            crate::ImagePipelineConfig::default().slow_decode_threshold,
+            processing_duration,
+            crate::ImagePipelineConfig::default().slow_image_threshold,
         );
         Ok(Arc::new(image))
     }

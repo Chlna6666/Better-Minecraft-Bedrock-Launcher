@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "DirectWrite COM calls require raw interface and buffer access"
+)]
+
 use std::{
     borrow::Cow,
     ffi::{c_uint, c_void},
@@ -542,7 +547,8 @@ impl DirectWriteState {
                 text_layout.SetFontCollection(collection, text_range)?;
                 text_layout.SetFontFamilyName(&font_info.font_family_h, text_range)?;
                 let font_size = if break_ligatures {
-                    font_size.0.next_up()
+                    debug_assert!(font_size.0.is_sign_positive() && font_size.0.is_finite());
+                    f32::from_bits(font_size.0.to_bits().saturating_add(1))
                 } else {
                     font_size.0
                 };

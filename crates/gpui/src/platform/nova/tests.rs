@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     FontId, GlyphId, GpuMesh3dDrawParameters, GpuMesh3dDrawRanges, GpuMesh3dVertex, ImageId,
-    PaintGpuMesh3d, RenderGlyphParams, RenderImageParams, RenderImagePixelFormat, TileId,
+    ImagePixelFormat, PaintGpuMesh3d, RenderGlyphParams, RenderImageParams, TileId,
     WgslShaderSource, px, size,
 };
 use gfx_core::{DrawIndexedStepDescriptor, IndexBufferBinding, IndexFormat, RenderStepDescriptor};
@@ -208,7 +208,7 @@ fn image_atlas_preserves_existing_tiles_when_full() {
     let existing_key = AtlasKey::Image(RenderImageParams {
         image_id: ImageId(11),
         frame_slot: 0,
-        pixel_format: RenderImagePixelFormat::Rgba8,
+        pixel_format: ImagePixelFormat::Rgba8,
     });
     atlas
         .ensure_tile_with(&existing_key, &mut || {
@@ -225,7 +225,7 @@ fn image_atlas_preserves_existing_tiles_when_full() {
     let small_key = AtlasKey::Image(RenderImageParams {
         image_id: ImageId(12),
         frame_slot: 0,
-        pixel_format: RenderImagePixelFormat::Rgba8,
+        pixel_format: ImagePixelFormat::Rgba8,
     });
     let missing = atlas
         .ensure_tile_with(&small_key, &mut || {
@@ -274,7 +274,7 @@ fn atlas_fallback_tiles_are_not_deallocated_through_cached_keys() {
     };
     let second_params = RenderGlyphParams {
         glyph_id: GlyphId(11),
-        ..first_parameters.clone()
+        ..first_parameters
     };
     let first_key = AtlasKey::from(first_parameters.clone());
     let second_key = AtlasKey::from(second_params.clone());
@@ -356,7 +356,7 @@ fn monochrome_atlas_upload_uses_red_channel_coverage() {
 }
 
 #[test]
-fn subpixel_atlas_fallback_upload_uses_grayscale_red_channel_coverage() {
+fn subpixel_atlas_upload_preserves_premultiplied_rgb_coverage() {
     let mut pixels = [0_u8; 8];
 
     encode_bgra_upload(
@@ -367,7 +367,7 @@ fn subpixel_atlas_fallback_upload_uses_grayscale_red_channel_coverage() {
     )
     .expect("subpixel fallback upload should encode");
 
-    assert_eq!(pixels, [0, 0, 85, 255, 0, 0, 85, 255]);
+    assert_eq!(pixels, [0, 0, 255, 255, 128, 128, 0, 255]);
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn image_atlas_insert_returns_tile_for_rgba_and_bgra() {
     let rgba_key = AtlasKey::Image(RenderImageParams {
         image_id: ImageId(1),
         frame_slot: 0,
-        pixel_format: RenderImagePixelFormat::Rgba8,
+        pixel_format: ImagePixelFormat::Rgba8,
     });
     let rgba_tile = atlas
         .ensure_tile_with(&rgba_key, &mut || {
@@ -421,7 +421,7 @@ fn image_atlas_insert_returns_tile_for_rgba_and_bgra() {
     let bgra_key = AtlasKey::Image(RenderImageParams {
         image_id: ImageId(2),
         frame_slot: 0,
-        pixel_format: RenderImagePixelFormat::Bgra8,
+        pixel_format: ImagePixelFormat::Bgra8,
     });
     let bgra_tile = atlas
         .ensure_tile_with(&bgra_key, &mut || {
@@ -458,7 +458,7 @@ fn image_atlas_packs_large_tile_images_into_one_default_page() {
         let key = AtlasKey::Image(RenderImageParams {
             image_id: ImageId(100 + image_id),
             frame_slot: 0,
-            pixel_format: RenderImagePixelFormat::Rgba8,
+            pixel_format: ImagePixelFormat::Rgba8,
         });
         let tile = atlas
             .ensure_tile_with(&key, &mut || {
@@ -488,7 +488,7 @@ fn pending_atlas_upload_borrows_pixels_without_repeating_clean_upload() {
     let key = AtlasKey::Image(RenderImageParams {
         image_id: ImageId(3),
         frame_slot: 0,
-        pixel_format: RenderImagePixelFormat::Rgba8,
+        pixel_format: ImagePixelFormat::Rgba8,
     });
     let tile = atlas
         .ensure_tile_with(&key, &mut || {
@@ -554,7 +554,7 @@ fn pending_atlas_upload_updates_existing_tile_in_place() {
     let key = AtlasKey::Image(RenderImageParams {
         image_id: ImageId(7),
         frame_slot: 0,
-        pixel_format: RenderImagePixelFormat::Rgba8,
+        pixel_format: ImagePixelFormat::Rgba8,
     });
     atlas
         .ensure_tile_with(&key, &mut || {
@@ -623,7 +623,7 @@ fn animation_binding_packer_matches_shader_storage_stride() {
     write_animation_binding(
         &mut bytes,
         crate::SceneAnimationId(7),
-        NovaAnimatedPrimitiveKind::Quad,
+        AnimatedPrimitiveKind::Quad,
         3,
     );
 
@@ -637,7 +637,7 @@ fn animation_value_packer_matches_shader_storage_stride() {
     write_animation_value(
         &mut bytes,
         crate::SceneAnimationId(7),
-        NovaAnimationProperty::Opacity,
+        AnimationProperty::Opacity,
         1.25,
         [0.0, 1.0, 2.0, 3.0],
         [4.0, 5.0, 6.0, 7.0],
@@ -645,10 +645,7 @@ fn animation_value_packer_matches_shader_storage_stride() {
 
     assert_eq!(bytes.len(), PACKED_ANIMATION_VALUE_BYTES);
     assert_eq!(read_u32_at(&bytes, 0), 7);
-    assert_eq!(
-        read_u32_at(&bytes, 4),
-        NovaAnimationProperty::Opacity as u32
-    );
+    assert_eq!(read_u32_at(&bytes, 4), AnimationProperty::Opacity as u32);
     assert_eq!(read_f32_at(&bytes, 8), 1.0);
     assert_eq!(read_f32_at(&bytes, 16), 0.0);
     assert_eq!(read_f32_at(&bytes, 28), 3.0);
@@ -660,19 +657,19 @@ fn animation_value_packer_matches_shader_storage_stride() {
 #[test]
 fn nova_animation_property_maps_only_gpu_eligible_transitions() {
     assert_eq!(
-        NovaAnimationProperty::from_transition_property(crate::TransitionProperty::Opacity),
-        Some(NovaAnimationProperty::Opacity)
+        AnimationProperty::from_transition_property(crate::TransitionProperty::Opacity),
+        Some(AnimationProperty::Opacity)
     );
     assert_eq!(
-        NovaAnimationProperty::from_transition_property(crate::TransitionProperty::Transform),
-        Some(NovaAnimationProperty::Transform)
+        AnimationProperty::from_transition_property(crate::TransitionProperty::Transform),
+        Some(AnimationProperty::Transform)
     );
     assert_eq!(
-        NovaAnimationProperty::from_transition_property(crate::TransitionProperty::Color),
-        Some(NovaAnimationProperty::SolidColor)
+        AnimationProperty::from_transition_property(crate::TransitionProperty::Color),
+        Some(AnimationProperty::SolidColor)
     );
     assert_eq!(
-        NovaAnimationProperty::from_transition_property(crate::TransitionProperty::Width),
+        AnimationProperty::from_transition_property(crate::TransitionProperty::Width),
         None
     );
 }
@@ -803,8 +800,8 @@ fn unsupported_batch_summary_counts_each_advanced_batch_kind() {
 #[test]
 fn frame_upload_globals_follow_surface_alpha_mode() {
     let scene = crate::Scene::default();
-    let mut upload = NovaFrameUpload::default();
-    let rendering_parameters = NovaRenderingParameters::from_env();
+    let mut upload = FrameUpload::default();
+    let rendering_parameters = RenderingParameters::from_env();
     let drawable_size = DrawableSize {
         width: 640,
         height: 480,
@@ -815,7 +812,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
         drawable_size,
         &rendering_parameters,
         false,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
     assert_eq!(read_u32_at(&upload.globals, 8), 0);
 
@@ -824,7 +821,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
         drawable_size,
         &rendering_parameters,
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
     assert_eq!(read_u32_at(&upload.globals, 8), 1);
 }
@@ -856,16 +853,16 @@ fn frame_upload_records_scene_animation_bindings() {
     );
     scene.finish();
 
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
         DrawableSize {
             width: 64,
             height: 64,
         },
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
 
     assert_eq!(summary.quad_count, 1);
@@ -877,7 +874,7 @@ fn frame_upload_records_scene_animation_bindings() {
     assert_eq!(read_u32_at(&upload.animation_bindings, 0), animation_id.0);
     assert_eq!(
         read_u32_at(&upload.animation_bindings, 4),
-        NovaAnimatedPrimitiveKind::Quad as u32
+        AnimatedPrimitiveKind::Quad as u32
     );
     assert_eq!(read_u32_at(&upload.animation_bindings, 8), 0);
 }
@@ -894,16 +891,16 @@ fn frame_upload_records_scene_animation_values() {
         to: [1.0, 0.0, 0.0, 0.0],
     });
 
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
         DrawableSize {
             width: 64,
             height: 64,
         },
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
 
     assert_eq!(summary.animation_value_count, 1);
@@ -955,7 +952,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     scene.insert_primitive(path.scale(1.0));
     scene.finish();
 
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
     let drawable_size = DrawableSize {
         width: 64,
         height: 64,
@@ -964,9 +961,9 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     let first = upload.encode(
         &scene,
         drawable_size,
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
     assert_eq!(first.path_vertex_count, 3);
     assert_eq!(upload.path_rasterization_cache_hits, 0);
@@ -975,9 +972,9 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     let second = upload.encode(
         &scene,
         drawable_size,
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
     assert_eq!(second.path_vertex_count, 3);
     assert_eq!(upload.path_rasterization_cache_hits, 1);
@@ -986,14 +983,14 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
 
 #[test]
 fn transparent_window_uses_premultiplied_surface_alpha_like_gpu() {
-    let transparent = NovaSurfaceAlphaState::for_window_transparency(true);
+    let transparent = SurfaceAlphaState::for_window_transparency(true);
     assert_eq!(
         transparent.swapchain_mode,
         CompositeAlphaMode::Premultiplied
     );
     assert!(transparent.outputs_premultiplied_alpha());
 
-    let opaque = NovaSurfaceAlphaState::for_window_transparency(false);
+    let opaque = SurfaceAlphaState::for_window_transparency(false);
     assert_eq!(opaque.swapchain_mode, CompositeAlphaMode::Opaque);
     assert!(!opaque.outputs_premultiplied_alpha());
 }
@@ -1009,26 +1006,23 @@ fn dx12_transparent_window_uses_premultiplied_swapchain_alpha() {
         transparent.swapchain_mode,
         CompositeAlphaMode::Premultiplied
     );
-    assert_eq!(
-        transparent.output_mode,
-        NovaSurfaceOutputMode::Premultiplied
-    );
+    assert_eq!(transparent.output_mode, SurfaceOutputMode::Premultiplied);
     assert!(transparent.outputs_premultiplied_alpha());
 }
 
 #[test]
 fn auto_surface_alpha_uses_straight_output_like_gpu() {
-    let alpha = NovaSurfaceAlphaState::new(CompositeAlphaMode::Auto);
+    let alpha = SurfaceAlphaState::new(CompositeAlphaMode::Auto);
     assert_eq!(alpha.swapchain_mode, CompositeAlphaMode::Auto);
-    assert_eq!(alpha.output_mode, NovaSurfaceOutputMode::Straight);
+    assert_eq!(alpha.output_mode, SurfaceOutputMode::Straight);
     assert!(!alpha.outputs_premultiplied_alpha());
 }
 
 #[test]
 fn inherited_transparent_surface_uses_premultiplied_output() {
-    let alpha = NovaSurfaceAlphaState::new(CompositeAlphaMode::Inherit);
+    let alpha = SurfaceAlphaState::new(CompositeAlphaMode::Inherit);
     assert_eq!(alpha.swapchain_mode, CompositeAlphaMode::Inherit);
-    assert_eq!(alpha.output_mode, NovaSurfaceOutputMode::Premultiplied);
+    assert_eq!(alpha.output_mode, SurfaceOutputMode::Premultiplied);
     assert!(alpha.outputs_premultiplied_alpha());
 }
 
@@ -1040,7 +1034,7 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
         l: 1.0,
         a: 0.5,
     }));
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
 
     let summary = upload.encode(
         &scene,
@@ -1048,9 +1042,9 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
             width: 640,
             height: 480,
         },
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
 
     assert_eq!(summary.unsupported_batches.backdrop_blurs, 0);
@@ -1058,45 +1052,22 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
     assert_eq!(summary.quad_count, 0);
     assert_eq!(summary.backdrop_blur_count, 1);
     assert_eq!(upload.quads.len(), 0);
-    assert_eq!(upload.backdrop_blur_passes.len(), BACKDROP_BLUR_PASS_BYTES);
+    assert_eq!(
+        upload.backdrop_blur_passes.len(),
+        BACKDROP_BLUR_PASS_BYTES * 2
+    );
     assert_eq!(upload.backdrop_blurs.len(), PACKED_BACKDROP_BLUR_BYTES);
     assert!(matches!(
         upload.batches.as_slice(),
-        [NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 }]
+        [UploadedBatch::BackdropBlurs { first: 0, count: 1 }]
     ));
     let breakdown = upload.upload_breakdown();
     assert_eq!(breakdown.encoded_primitives, 1);
     assert_eq!(breakdown.encoded_batches, 1);
     assert_eq!(
         breakdown.backdrop_blur_bytes,
-        BACKDROP_BLUR_PASS_BYTES + PACKED_BACKDROP_BLUR_BYTES
+        BACKDROP_BLUR_PASS_BYTES * 2 + PACKED_BACKDROP_BLUR_BYTES
     );
-}
-
-#[test]
-fn reduced_backdrop_blur_quality_lowers_uploaded_blur_parameters() {
-    let scene = backdrop_blur_scene(Some(crate::Hsla {
-        h: 0.0,
-        s: 0.0,
-        l: 1.0,
-        a: 0.5,
-    }));
-    let mut upload = NovaFrameUpload::default();
-
-    upload.encode(
-        &scene,
-        DrawableSize {
-            width: 640,
-            height: 480,
-        },
-        &NovaRenderingParameters::from_env(),
-        true,
-        NovaBackdropBlurQuality::Reduced,
-    );
-
-    assert_eq!(upload.backdrop_blur_downsample(), 4);
-    assert_eq!(upload.backdrop_blur_levels(), 1);
-    assert_eq!(read_f32_at(&upload.backdrop_blurs, 112), 6.0);
 }
 
 #[test]
@@ -1107,7 +1078,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
         l: 1.0,
         a: 0.5,
     }));
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
 
     let summary = upload.encode(
         &scene,
@@ -1115,16 +1086,16 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
             width: 640,
             height: 480,
         },
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Disabled,
+        BackdropBlurQuality::Disabled,
     );
 
     assert_eq!(summary.quad_count, 1);
     assert_eq!(upload.backdrop_blurs.len(), 0);
     assert!(matches!(
         upload.batches.as_slice(),
-        [NovaUploadedBatch::Quads { first: 0, count: 1 }]
+        [UploadedBatch::Quads { first: 0, count: 1 }]
     ));
 }
 
@@ -1179,16 +1150,16 @@ fn frame_upload_lists_repeated_custom_gpu_mesh_once() {
     }
     scene.finish();
 
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
         DrawableSize {
             width: 640,
             height: 480,
         },
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
 
     assert_eq!(summary.unsupported_batches.gpu_meshes_3d, 0);
@@ -1202,7 +1173,7 @@ fn frame_upload_lists_repeated_custom_gpu_mesh_once() {
         upload
             .batches
             .iter()
-            .filter(|batch| matches!(batch, NovaUploadedBatch::CustomMesh3d { .. }))
+            .filter(|batch| matches!(batch, UploadedBatch::CustomMesh3d { .. }))
             .count(),
         2
     );
@@ -1256,16 +1227,16 @@ fn frame_upload_skips_custom_gpu_mesh_with_out_of_bounds_index() {
     });
     scene.finish();
 
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
         DrawableSize {
             width: 640,
             height: 480,
         },
-        &NovaRenderingParameters::from_env(),
+        &RenderingParameters::from_env(),
         true,
-        NovaBackdropBlurQuality::Full,
+        BackdropBlurQuality::Full,
     );
 
     assert_eq!(summary.unsupported_batches.gpu_meshes_3d, 1);
@@ -1275,30 +1246,31 @@ fn frame_upload_skips_custom_gpu_mesh_with_out_of_bounds_index() {
         !upload
             .batches
             .iter()
-            .any(|batch| matches!(batch, NovaUploadedBatch::CustomMesh3d { .. }))
+            .any(|batch| matches!(batch, UploadedBatch::CustomMesh3d { .. }))
     );
 }
 
 #[test]
 fn draw_steps_preserve_supported_batch_order_and_resources() {
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
+    append_test_backdrop_blur(&mut upload);
     upload
         .batches
-        .push(NovaUploadedBatch::SolidQuads { first: 0, count: 2 });
+        .push(UploadedBatch::SolidQuads { first: 0, count: 2 });
     upload
         .batches
-        .push(NovaUploadedBatch::Quads { first: 2, count: 3 });
+        .push(UploadedBatch::Quads { first: 2, count: 3 });
     upload
         .batches
-        .push(NovaUploadedBatch::Shadows { first: 0, count: 6 });
-    upload.batches.push(NovaUploadedBatch::PathRasterization {
+        .push(UploadedBatch::Shadows { first: 0, count: 6 });
+    upload.batches.push(UploadedBatch::PathRasterization {
         first_vertex: 9,
         vertex_count: 12,
     });
     upload
         .batches
-        .push(NovaUploadedBatch::Paths { first: 1, count: 2 });
-    upload.batches.push(NovaUploadedBatch::MonoSprites {
+        .push(UploadedBatch::Paths { first: 1, count: 2 });
+    upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: AtlasTextureId {
             index: 0,
             kind: AtlasTextureKind::Monochrome,
@@ -1306,7 +1278,7 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         first: 0,
         count: 4,
     });
-    upload.batches.push(NovaUploadedBatch::PolySprites {
+    upload.batches.push(UploadedBatch::PolySprites {
         texture_id: AtlasTextureId {
             index: 0,
             kind: AtlasTextureKind::Rgba,
@@ -1316,10 +1288,10 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
     });
     upload
         .batches
-        .push(NovaUploadedBatch::Underlines { first: 0, count: 7 });
+        .push(UploadedBatch::Underlines { first: 0, count: 7 });
     upload
         .batches
-        .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 });
+        .push(UploadedBatch::BackdropBlurs { first: 0, count: 1 });
     let pipelines = test_pipelines();
     let blend_pipelines = pipelines.alpha;
     let quad_set = test_resource_set_id(10);
@@ -1346,7 +1318,7 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         backdrop_blur_set,
         gpu_mesh_set,
         gpu_mesh_indices_buffer,
-        NovaDrawStepMode::Present,
+        DrawStepMode::Present,
     );
 
     assert_eq!(
@@ -1444,16 +1416,16 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
 
 #[test]
 fn path_mask_draw_steps_merge_adjacent_contiguous_vertices() {
-    let mut upload = NovaFrameUpload::default();
-    upload.batches.push(NovaUploadedBatch::PathRasterization {
+    let mut upload = FrameUpload::default();
+    upload.batches.push(UploadedBatch::PathRasterization {
         first_vertex: 0,
         vertex_count: 6,
     });
-    upload.batches.push(NovaUploadedBatch::PathRasterization {
+    upload.batches.push(UploadedBatch::PathRasterization {
         first_vertex: 6,
         vertex_count: 9,
     });
-    upload.batches.push(NovaUploadedBatch::PathRasterization {
+    upload.batches.push(UploadedBatch::PathRasterization {
         first_vertex: 18,
         vertex_count: 3,
     });
@@ -1493,21 +1465,21 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
         index: 0,
         kind: AtlasTextureKind::Monochrome,
     };
-    let mut upload = NovaFrameUpload::default();
-    upload.batches.push(NovaUploadedBatch::MonoSprites {
+    let mut upload = FrameUpload::default();
+    upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: mono_texture_id,
         first: 0,
         count: 2,
     });
-    upload.batches.push(NovaUploadedBatch::MonoSprites {
+    upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: mono_texture_id,
         first: 2,
         count: 3,
     });
     upload
         .batches
-        .push(NovaUploadedBatch::Quads { first: 0, count: 1 });
-    upload.batches.push(NovaUploadedBatch::MonoSprites {
+        .push(UploadedBatch::Quads { first: 0, count: 1 });
+    upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: mono_texture_id,
         first: 5,
         count: 1,
@@ -1532,7 +1504,7 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
         test_resource_set_id(16),
         test_resource_set_id(17),
         test_buffer_id(18),
-        NovaDrawStepMode::Present,
+        DrawStepMode::Present,
     );
 
     assert_eq!(
@@ -1571,7 +1543,7 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
 
 #[test]
 fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
-    let upload = NovaFrameUpload::default();
+    let upload = FrameUpload::default();
     let pipelines = test_pipelines();
     let blend_pipelines = pipelines.premultiplied;
     let quad_set = test_resource_set_id(10);
@@ -1596,7 +1568,7 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
         test_resource_set_id(14),
         test_resource_set_id(15),
         test_buffer_id(16),
-        NovaDrawStepMode::Present,
+        DrawStepMode::Present,
     );
 
     assert_eq!(
@@ -1615,14 +1587,14 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
 
 #[test]
 fn draw_steps_emit_custom_gpu_mesh_3d_step() {
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
     let shader_id = GpuMesh3dShaderId(3);
     let mesh_pipeline = test_render_pipeline_id(90);
     let mesh_set = test_resource_set_id(91);
     let mesh_indices_buffer = test_buffer_id(92);
     let mesh_id = GpuMesh3dId(5);
     let generation = 7;
-    upload.batches.push(NovaUploadedBatch::CustomMesh3d {
+    upload.batches.push(UploadedBatch::CustomMesh3d {
         mesh_id,
         generation,
         shader_id,
@@ -1645,7 +1617,7 @@ fn draw_steps_emit_custom_gpu_mesh_3d_step() {
         |_| None,
         |id| (id == shader_id).then_some(mesh_pipeline),
         |id, generation| {
-            (id == mesh_id && generation == 7).then_some(NovaMeshCacheEntry {
+            (id == mesh_id && generation == 7).then_some(MeshCacheEntry {
                 generation,
                 vertex_offset: 3,
                 vertex_count: 20,
@@ -1657,7 +1629,7 @@ fn draw_steps_emit_custom_gpu_mesh_3d_step() {
         test_resource_set_id(14),
         mesh_set,
         mesh_indices_buffer,
-        NovaDrawStepMode::Present,
+        DrawStepMode::Present,
     );
 
     assert_eq!(
@@ -1669,10 +1641,10 @@ fn draw_steps_emit_custom_gpu_mesh_3d_step() {
                 index_buffer: IndexBufferBinding {
                     buffer: mesh_indices_buffer,
                     format: IndexFormat::Uint32,
-                    offset: 0,
+                    offset: 100,
                 },
                 index_count: 12,
-                first_index: 107,
+                first_index: 7,
                 base_vertex: 3,
                 instance_count: 1,
                 first_instance: 2,
@@ -1684,14 +1656,14 @@ fn draw_steps_emit_custom_gpu_mesh_3d_step() {
 
 #[test]
 fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
     upload
         .batches
-        .push(NovaUploadedBatch::Quads { first: 0, count: 1 });
+        .push(UploadedBatch::Quads { first: 0, count: 1 });
     upload
         .batches
-        .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 });
-    upload.batches.push(NovaUploadedBatch::MonoSprites {
+        .push(UploadedBatch::BackdropBlurs { first: 0, count: 1 });
+    upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: AtlasTextureId {
             index: 0,
             kind: AtlasTextureKind::Monochrome,
@@ -1723,7 +1695,7 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
         test_resource_set_id(16),
         test_resource_set_id(17),
         test_buffer_id(18),
-        NovaDrawStepMode::BackdropSegment {
+        DrawStepMode::BackdropSegment {
             batch_start: 0,
             batch_end: 1,
         },
@@ -1745,14 +1717,15 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
 
 #[test]
 fn present_draw_steps_continue_after_backdrop_blur_batch() {
-    let mut upload = NovaFrameUpload::default();
+    let mut upload = FrameUpload::default();
+    append_test_backdrop_blur(&mut upload);
     upload
         .batches
-        .push(NovaUploadedBatch::Quads { first: 0, count: 1 });
+        .push(UploadedBatch::Quads { first: 0, count: 1 });
     upload
         .batches
-        .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 });
-    upload.batches.push(NovaUploadedBatch::MonoSprites {
+        .push(UploadedBatch::BackdropBlurs { first: 0, count: 1 });
+    upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: AtlasTextureId {
             index: 0,
             kind: AtlasTextureKind::Monochrome,
@@ -1783,7 +1756,7 @@ fn present_draw_steps_continue_after_backdrop_blur_batch() {
         test_resource_set_id(16),
         test_resource_set_id(17),
         test_buffer_id(18),
-        NovaDrawStepMode::Present,
+        DrawStepMode::Present,
     );
 
     assert_eq!(
@@ -1812,7 +1785,6 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
         dirty_region: &dirty_region,
         partial_present_mode: PartialPresentMode::Partial,
         trim_policy: Default::default(),
-        visual_effect_quality: FrameVisualEffectQuality::Disabled,
         backdrop_blur_refresh_required: false,
     };
 
@@ -1825,32 +1797,27 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
         PartialPresentMode::FullRedraw
     );
     assert!(resolve_surface_render_plan(partial_plan, true).backdrop_blur_refresh_required);
-    assert_eq!(
-        resolve_surface_render_plan(partial_plan, false).visual_effect_quality,
-        FrameVisualEffectQuality::Disabled
-    );
 }
 
 #[test]
 fn backdrop_blur_render_passes_blur_each_axis() {
     let pipelines = test_pipelines();
     let config = test_backdrop_blur_config(2, 3);
-    let targets = NovaBackdropBlurTargets {
-        downsample: NovaBackdropBlurConfigSet::new(vec![config], 2),
-        source: NovaTextureTarget {
+    let targets = BackdropBlurTargets {
+        source: TextureTarget {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },
         source_pass_resource_sets: vec![test_resource_set_id(11)],
-        variants: vec![NovaBackdropBlurVariantTargets {
+        variants: vec![BackdropBlurVariantTargets {
             config,
             levels: vec![
-                NovaBackdropBlurLevelTarget {
+                BackdropBlurLevelTarget {
                     texture: test_texture_id(2),
                     texture_view: test_texture_view_id(2),
                     pass_resource_sets: vec![test_resource_set_id(12)],
                 },
-                NovaBackdropBlurLevelTarget {
+                BackdropBlurLevelTarget {
                     texture: test_texture_id(3),
                     texture_view: test_texture_view_id(3),
                     pass_resource_sets: vec![test_resource_set_id(13)],
@@ -1896,9 +1863,8 @@ fn backdrop_blur_render_passes_blur_each_axis() {
 #[test]
 fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
-    let targets = NovaBackdropBlurTargets {
-        downsample: NovaBackdropBlurConfigSet::new(Vec::new(), 2),
-        source: NovaTextureTarget {
+    let targets = BackdropBlurTargets {
+        source: TextureTarget {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },
@@ -2093,7 +2059,7 @@ fn nova_fragment_shaders_skip_work_before_sampling_transparent_pixels() {
         "fs_mono_sprite",
         &[
             "if (any(input.clip_distances < vec4<f32>(0.0)))",
-            "if (input.color.a <= 0.0)",
+            "if (clip_coverage <= 0.0 || input.color.a <= 0.0)",
             "let sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0).r",
             "if (sample <= 0.0)",
             "let alpha_corrected = apply_contrast_and_gamma_correction(",
@@ -2109,7 +2075,10 @@ fn nova_fragment_shaders_skip_work_before_sampling_transparent_pixels() {
             "quad_sdf_from_packed(input.position.xy, input.bounds, input.corner_radii)",
             "let coverage = saturate(SDF_ANTIALIAS_THRESHOLD - distance)",
             "if (coverage <= 0.0)",
-            "let sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0)",
+            "var sample: vec4<f32>",
+            "if (input.texture_kind == 2u)",
+            "sample = textureLoad(t_sprite, texel, 0)",
+            "sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0)",
             "if (sample.a <= 0.0)",
             "let grayscale = dot(sample.rgb, GRAYSCALE_FACTORS)",
         ],
@@ -2119,7 +2088,7 @@ fn nova_fragment_shaders_skip_work_before_sampling_transparent_pixels() {
         include_str!("shaders/backdrop_blur.wgsl"),
         "fs_backdrop_blur",
         &[
-            "if (any(input.clip_distances < vec4<f32>(0.0)))",
+            "if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0)",
             "let alpha = saturate(SDF_ANTIALIAS_THRESHOLD - distance)",
             "if (alpha <= 0.0)",
             "var color = sample_backdrop_blur_texture(input.texture_coords)",
@@ -2308,6 +2277,9 @@ fn nova_shader_divisions_are_guarded_or_constant() {
         "/ max(length(gradient), SHADER_EPSILON)",
         "pattern_width / pattern_height",
         "1.0 / source_size",
+        "axis / source_size",
+        "/ GAUSSIAN_PAIR0_CENTROID_IN_TAPS",
+        "/ (1.0 + ratio)",
         "/ max(blur.blurred_size, vec2<f32>(1.0))",
         "/ 2.0",
         "1.0 / input.blur_radius",
@@ -2767,7 +2739,7 @@ fn nova_runtime_source() -> String {
         include_str!("draw.rs"),
         include_str!("limits.rs"),
         include_str!("pipeline.rs"),
-        include_str!("nova_renderer.rs"),
+        include_str!("renderer.rs"),
         include_str!("rendering_parameters.rs"),
         include_str!("resource_bindings.rs"),
         include_str!("resource_layouts.rs"),
@@ -2783,7 +2755,7 @@ fn nova_runtime_source() -> String {
     .join("\n")
 }
 
-fn nova_shader_sources() -> [(&'static str, &'static str); 13] {
+fn nova_shader_sources() -> [(&'static str, &'static str); 15] {
     [
         (
             "backdrop_blur.wgsl",
@@ -2798,6 +2770,14 @@ fn nova_shader_sources() -> [(&'static str, &'static str); 13] {
         ("shadow.wgsl", include_str!("shaders/shadow.wgsl")),
         ("shape.wgsl", include_str!("shaders/shape.wgsl")),
         ("solid_quad.wgsl", include_str!("shaders/solid_quad.wgsl")),
+        (
+            "sprite_common.wgsl",
+            include_str!("shaders/sprite_common.wgsl"),
+        ),
+        (
+            "subpixel_sprite.wgsl",
+            include_str!("shaders/subpixel_sprite.wgsl"),
+        ),
         ("surface.wgsl", include_str!("shaders/surface.wgsl")),
         ("text.wgsl", include_str!("shaders/text.wgsl")),
         ("underline.wgsl", include_str!("shaders/underline.wgsl")),
@@ -2890,11 +2870,7 @@ fn shader_function_source<'a>(shader_name: &str, source: &'a str, function_name:
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
 #[test]
 fn nova_sprite_hlsl_bindings_match_dx12_resource_sets() {
-    let mono_source = concat!(
-        include_str!("shaders/core.wgsl"),
-        include_str!("shaders/text.wgsl"),
-        include_str!("shaders/mono_sprite.wgsl"),
-    );
+    let mono_source = NOVA_MONO_SPRITE_SHADER_SOURCE;
     let gfx_core::ShaderCode::Hlsl(mono_hlsl) =
         compile_wgsl_to_hlsl(mono_source, ShaderStage::Fragment, "fs_mono_sprite")
             .expect("mono sprite fragment shader should compile to HLSL")
@@ -2971,8 +2947,8 @@ fn test_render_pipeline_id(index: u32) -> RenderPipelineId {
     RenderPipelineId::from_parts(index, 1)
 }
 
-fn test_blend_pipelines(base: u32) -> NovaBlendPipelines {
-    NovaBlendPipelines {
+fn test_blend_pipelines(base: u32) -> BlendPipelines {
+    BlendPipelines {
         solid_quads: test_render_pipeline_id(base + 1),
         quads: test_render_pipeline_id(base + 2),
         shadows: test_render_pipeline_id(base + 3),
@@ -2985,8 +2961,8 @@ fn test_blend_pipelines(base: u32) -> NovaBlendPipelines {
     }
 }
 
-fn test_pipelines() -> NovaPipelines {
-    NovaPipelines {
+fn test_pipelines() -> Pipelines {
+    Pipelines {
         alpha: test_blend_pipelines(0),
         premultiplied: test_blend_pipelines(100),
         path_rasterization: test_render_pipeline_id(4),
@@ -3021,6 +2997,12 @@ fn test_texture_view_id(index: u32) -> TextureViewId {
 
 fn backdrop_blur_scene(tint: Option<crate::Hsla>) -> crate::Scene {
     let mut scene = crate::Scene::default();
+    scene.insert_primitive(test_backdrop_blur(tint));
+    scene.finish();
+    scene
+}
+
+fn test_backdrop_blur(tint: Option<crate::Hsla>) -> crate::PaintBackdropBlur {
     let bounds = Bounds {
         origin: Point {
             x: crate::ScaledPixels(0.0),
@@ -3028,7 +3010,7 @@ fn backdrop_blur_scene(tint: Option<crate::Hsla>) -> crate::Scene {
         },
         size: size(crate::ScaledPixels(64.0), crate::ScaledPixels(32.0)),
     };
-    scene.insert_primitive(crate::PaintBackdropBlur {
+    crate::PaintBackdropBlur {
         order: 0,
         animation_id: None,
         bounds,
@@ -3043,9 +3025,18 @@ fn backdrop_blur_scene(tint: Option<crate::Hsla>) -> crate::Scene {
         recompute_overlap: false,
         saturation: 1.0,
         tint,
-    });
-    scene.finish();
-    scene
+    }
+}
+
+fn append_test_backdrop_blur(upload: &mut FrameUpload) {
+    write_backdrop_blur(
+        &mut upload.backdrop_blurs,
+        &test_backdrop_blur(None),
+        DrawableSize {
+            width: 640,
+            height: 480,
+        },
+    );
 }
 
 fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
@@ -3060,22 +3051,4 @@ fn read_f32_at(bytes: &[u8], offset: usize) -> f32 {
         .get(offset..offset + std::mem::size_of::<f32>())
         .expect("test offset should be in bounds");
     f32::from_ne_bytes(chunk.try_into().expect("f32 chunk should have exact size"))
-}
-
-#[test]
-fn backdrop_blur_subpixel_offset_is_preserved() {
-    let quarter = backdrop_blur_offset(0.25, 1, 1);
-    let half = backdrop_blur_offset(0.5, 1, 1);
-
-    assert!(quarter > 0.0);
-    assert!(quarter < half);
-    assert!((quarter - 0.25).abs() < f32::EPSILON);
-    assert!((half - 0.5).abs() < f32::EPSILON);
-}
-
-#[test]
-fn backdrop_blur_invalid_offset_is_zero() {
-    assert_eq!(backdrop_blur_offset(0.0, 1, 1), 0.0);
-    assert_eq!(backdrop_blur_offset(-1.0, 1, 1), 0.0);
-    assert_eq!(backdrop_blur_offset(f32::NAN, 1, 1), 0.0);
 }

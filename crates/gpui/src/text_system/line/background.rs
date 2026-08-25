@@ -3,8 +3,8 @@ use crate::{
     Window, WrapBoundary, fill, point, px, size,
 };
 
+use super::DecorationRun;
 use super::alignment::aligned_origin_x;
-use super::types::DecorationRun;
 
 pub(super) fn paint_line_background(
     origin: Point<Pixels>,

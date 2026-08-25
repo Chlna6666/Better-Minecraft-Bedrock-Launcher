@@ -28,7 +28,7 @@ impl<'a> TryFrom<&'a str> for KeyContext {
 
 impl KeyContext {
     /// Initialize a new [`KeyContext`] that contains an `os` key set to either `macos`, `linux`, `windows` or `unknown`.
-    pub fn new_with_defaults() -> Self {
+    pub fn with_default_context() -> Self {
         let mut context = Self::default();
         #[cfg(target_os = "macos")]
         context.set("os", "macos");

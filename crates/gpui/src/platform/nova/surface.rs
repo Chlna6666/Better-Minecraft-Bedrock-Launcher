@@ -1,13 +1,13 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct NovaSurfaceAlphaState {
+pub(super) struct SurfaceAlphaState {
     pub(super) swapchain_mode: CompositeAlphaMode,
-    pub(super) output_mode: NovaSurfaceOutputMode,
+    pub(super) output_mode: SurfaceOutputMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum NovaSurfaceOutputMode {
+pub(super) enum SurfaceOutputMode {
     Straight,
     Premultiplied,
 }
@@ -21,15 +21,16 @@ pub(super) fn clear_color() -> ClearColor {
     }
 }
 
-impl NovaSurfaceAlphaState {
+impl SurfaceAlphaState {
+    #[cfg(any(test, feature = "nova-gfx-vulkan", target_os = "macos"))]
     pub(super) fn new(swapchain_mode: CompositeAlphaMode) -> Self {
         let output_mode = if matches!(
             swapchain_mode,
             CompositeAlphaMode::Premultiplied | CompositeAlphaMode::Inherit
         ) {
-            NovaSurfaceOutputMode::Premultiplied
+            SurfaceOutputMode::Premultiplied
         } else {
-            NovaSurfaceOutputMode::Straight
+            SurfaceOutputMode::Straight
         };
         Self {
             swapchain_mode,
@@ -41,17 +42,17 @@ impl NovaSurfaceAlphaState {
         if is_transparent {
             Self {
                 swapchain_mode: CompositeAlphaMode::Premultiplied,
-                output_mode: NovaSurfaceOutputMode::Premultiplied,
+                output_mode: SurfaceOutputMode::Premultiplied,
             }
         } else {
             Self {
                 swapchain_mode: CompositeAlphaMode::Opaque,
-                output_mode: NovaSurfaceOutputMode::Straight,
+                output_mode: SurfaceOutputMode::Straight,
             }
         }
     }
 
     pub(super) fn outputs_premultiplied_alpha(self) -> bool {
-        matches!(self.output_mode, NovaSurfaceOutputMode::Premultiplied)
+        matches!(self.output_mode, SurfaceOutputMode::Premultiplied)
     }
 }

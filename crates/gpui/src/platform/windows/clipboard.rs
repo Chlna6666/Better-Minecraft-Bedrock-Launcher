@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows clipboard integration owns raw OLE and global-memory handles"
+)]
+
 use std::{sync::LazyLock, thread, time::Duration};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -21,7 +26,7 @@ use windows::Win32::{
 };
 use windows_core::{Free as _, PCWSTR};
 
-use crate::{ClipboardEntry, ClipboardItem, ClipboardString, Image, ImageFormat, hash};
+use crate::{ClipboardEntry, ClipboardImage, ClipboardItem, ClipboardString, ImageFormat, hash};
 
 // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew
 const DRAGDROP_GET_FILES_COUNT: u32 = 0xFFFFFFFF;
@@ -45,10 +50,10 @@ static CLIPBOARD_JPG_FORMAT: LazyLock<u32> =
 static FORMATS_MAP: LazyLock<FxHashMap<u32, ClipboardFormatType>> = LazyLock::new(|| {
     let mut formats_map = FxHashMap::default();
     formats_map.insert(CF_UNICODETEXT.0 as u32, ClipboardFormatType::Text);
-    formats_map.insert(*CLIPBOARD_PNG_FORMAT, ClipboardFormatType::Image);
-    formats_map.insert(*CLIPBOARD_GIF_FORMAT, ClipboardFormatType::Image);
-    formats_map.insert(*CLIPBOARD_JPG_FORMAT, ClipboardFormatType::Image);
-    formats_map.insert(*CLIPBOARD_SVG_FORMAT, ClipboardFormatType::Image);
+    formats_map.insert(*CLIPBOARD_PNG_FORMAT, ClipboardFormatType::ClipboardImage);
+    formats_map.insert(*CLIPBOARD_GIF_FORMAT, ClipboardFormatType::ClipboardImage);
+    formats_map.insert(*CLIPBOARD_JPG_FORMAT, ClipboardFormatType::ClipboardImage);
+    formats_map.insert(*CLIPBOARD_SVG_FORMAT, ClipboardFormatType::ClipboardImage);
     formats_map.insert(CF_HDROP.0 as u32, ClipboardFormatType::Files);
     formats_map
 });
@@ -74,7 +79,7 @@ static IMAGE_FORMATS_MAP: LazyLock<FxHashMap<u32, ImageFormat>> = LazyLock::new(
 #[derive(Debug, Clone, Copy)]
 enum ClipboardFormatType {
     Text,
-    Image,
+    ClipboardImage,
     Files,
 }
 
@@ -86,7 +91,7 @@ pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
     match with_clipboard(|| {
         with_best_match_format(|item_format| match format_to_type(item_format) {
             ClipboardFormatType::Text => read_string_from_clipboard(),
-            ClipboardFormatType::Image => read_image_from_clipboard(item_format),
+            ClipboardFormatType::ClipboardImage => read_image_from_clipboard(item_format),
             ClipboardFormatType::Files => read_files_from_clipboard(),
         })
     }) {
@@ -247,7 +252,7 @@ fn free_global_memory(mut global: HGLOBAL) {
 
 // Here writing PNG to the clipboard to better support other apps. For more info, please ref to
 // the PR.
-fn write_image_to_clipboard(item: &Image) -> Result<()> {
+fn write_image_to_clipboard(item: &ClipboardImage) -> Result<()> {
     match item.format {
         ImageFormat::Svg => set_data_to_clipboard(item.bytes(), *CLIPBOARD_SVG_FORMAT)?,
         ImageFormat::Gif => {
@@ -397,7 +402,7 @@ fn read_image_for_type(format_number: u32, format: ImageFormat) -> Option<Clipbo
         let id = hash(&bytes);
         (bytes, id)
     })?;
-    Some(ClipboardEntry::Image(Image { format, bytes, id }))
+    Some(ClipboardEntry::Image(ClipboardImage { format, bytes, id }))
 }
 
 fn read_files_from_clipboard() -> Option<ClipboardEntry> {

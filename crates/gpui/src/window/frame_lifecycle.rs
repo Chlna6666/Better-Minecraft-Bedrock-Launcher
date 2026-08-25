@@ -11,7 +11,6 @@ const MINIMIZED_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_secs(1);
 const FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(100);
 const RECENT_INPUT_DIRTY_FRAME_GRACE: Duration = Duration::from_millis(500);
 pub(super) const DIRTY_FRAME_BACKPRESSURE_BUDGET: Duration = TARGET_FRAME_GENERATION_BUDGET;
-pub(super) const DIRTY_FRAME_BACKPRESSURE_DEFERRED_DELAY: Duration = Duration::from_millis(8);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FrameCompletion {
@@ -740,23 +739,6 @@ impl Window {
 
     pub(crate) fn force_view_cache_refresh(&self) -> bool {
         self.force_view_cache_refresh
-    }
-
-    pub(crate) fn mark_animation_dirty(&mut self, bounds: Bounds<Pixels>) {
-        self.invalidator.debug_assert_paint_or_prepaint();
-        self.record_animation_dirty_bounds_for_next_draw(bounds, self.content_mask().bounds);
-    }
-
-    fn record_animation_dirty_bounds_for_next_draw(
-        &mut self,
-        bounds: Bounds<Pixels>,
-        clip_bounds: Bounds<Pixels>,
-    ) {
-        let clipped_bounds = bounds.intersect(&clip_bounds);
-        if !clipped_bounds.is_empty() {
-            self.animation_dirty_region
-                .push(clipped_bounds.scale(self.scale_factor));
-        }
     }
 
     fn record_animation_tick_dirty_bounds(

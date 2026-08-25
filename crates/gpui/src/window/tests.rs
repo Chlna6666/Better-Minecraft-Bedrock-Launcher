@@ -170,7 +170,7 @@ fn repeated_refresh_requests_are_coalesced(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    assert!(performance_metrics_snapshot().coalesced_refresh_count >= before + 1);
+    assert!(performance_metrics_snapshot().coalesced_refresh_count > before);
 }
 
 #[gpui::test]
@@ -180,8 +180,7 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
             .unwrap()
     });
     let image = Arc::new(
-        RenderImage::from_raw_pixels(1, 1, RenderImagePixelFormat::Rgba8, vec![255, 0, 0, 255])
-            .unwrap(),
+        RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, vec![255, 0, 0, 255]).unwrap(),
     );
 
     window
@@ -207,7 +206,7 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
             let atlas_key = crate::AtlasKey::from(RenderImageParams {
                 image_id: image.id,
                 frame_slot: 0,
-                pixel_format: RenderImagePixelFormat::Rgba8,
+                pixel_format: ImagePixelFormat::Rgba8,
             });
             window.drop_image(image).unwrap();
             assert!(window.image_paint_tile_cache.is_empty());
@@ -236,8 +235,7 @@ fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
             .unwrap()
     });
     let image = Arc::new(
-        RenderImage::from_raw_pixels(1, 1, RenderImagePixelFormat::Rgba8, vec![255, 0, 0, 255])
-            .unwrap(),
+        RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, vec![255, 0, 0, 255]).unwrap(),
     );
 
     window
@@ -268,12 +266,10 @@ fn paint_images_budgeted_defers_uncached_images_after_the_frame_budget(cx: &mut 
             .unwrap()
     });
     let first_image = Arc::new(
-        RenderImage::from_raw_pixels(1, 1, RenderImagePixelFormat::Rgba8, vec![255, 0, 0, 255])
-            .unwrap(),
+        RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, vec![255, 0, 0, 255]).unwrap(),
     );
     let second_image = Arc::new(
-        RenderImage::from_raw_pixels(1, 1, RenderImagePixelFormat::Rgba8, vec![0, 255, 0, 255])
-            .unwrap(),
+        RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, vec![0, 255, 0, 255]).unwrap(),
     );
 
     window
@@ -309,7 +305,7 @@ fn repeated_refresh_windows_effects_are_coalesced(cx: &mut TestAppContext) {
         cx.refresh_windows();
     });
 
-    assert!(performance_metrics_snapshot().coalesced_refresh_effect_count >= before + 1);
+    assert!(performance_metrics_snapshot().coalesced_refresh_effect_count > before);
 }
 
 #[gpui::test]

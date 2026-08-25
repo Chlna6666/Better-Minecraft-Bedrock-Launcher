@@ -1,9 +1,28 @@
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::super::ImageDecodeRecord;
-use super::super::state::shared_metrics;
-use super::super::timing::duration_micros;
+use super::store::shared_metrics;
+use super::timing::duration_micros;
+
+/// Metrics for one rendered image.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageRenderRecord {
+    /// Stable source label.
+    pub source: String,
+    /// Original width.
+    pub original_width: u32,
+    /// Original height.
+    pub original_height: u32,
+    /// Requested width.
+    pub target_width: u32,
+    /// Requested height.
+    pub target_height: u32,
+    /// Resident pixel bytes.
+    pub resident_bytes: usize,
+    /// Rendering path.
+    pub render_path: String,
+}
 
 /// Records aggregate image cache occupancy.
 pub fn record_image_cache_metrics(cache_id: u64, items: usize, bytes: usize) {
@@ -19,14 +38,14 @@ pub fn drop_image_cache_metrics(cache_id: u64) {
     }
 }
 
-/// Records the latest completed image decode.
-pub fn record_image_decode_metrics(
+/// Records the latest completed image processing.
+pub fn record_image_processing_metrics(
     compressed_bytes: usize,
     decoded_bytes: usize,
     frames: usize,
     duration: Duration,
 ) {
-    record_image_decode_metrics_with_threshold(
+    record_image_processing_metrics_with_threshold(
         compressed_bytes,
         decoded_bytes,
         frames,
@@ -35,8 +54,8 @@ pub fn record_image_decode_metrics(
     );
 }
 
-/// Records a completed image decode and marks it slow when it exceeds `slow_threshold`.
-pub fn record_image_decode_metrics_with_threshold(
+/// Records a completed image processing and marks it slow when it exceeds `slow_threshold`.
+pub fn record_image_processing_metrics_with_threshold(
     compressed_bytes: usize,
     decoded_bytes: usize,
     frames: usize,
@@ -46,47 +65,49 @@ pub fn record_image_decode_metrics_with_threshold(
     let metrics = shared_metrics();
     let duration_micros = duration_micros(duration);
     metrics
-        .image_decode_compressed_bytes
+        .image_processing_compressed_bytes
         .store(compressed_bytes as u64, Ordering::Relaxed);
     metrics
-        .image_decode_decoded_bytes
+        .image_processing_output_bytes
         .store(decoded_bytes as u64, Ordering::Relaxed);
     metrics
-        .image_decode_frames
+        .image_processing_frames
         .store(frames as u64, Ordering::Relaxed);
     metrics
-        .image_decode_micros
+        .image_processing_micros
         .store(duration_micros, Ordering::Relaxed);
-    metrics.image_decode_count.fetch_add(1, Ordering::Relaxed);
     metrics
-        .image_decode_total_compressed_bytes
+        .image_processing_count
+        .fetch_add(1, Ordering::Relaxed);
+    metrics
+        .image_processing_total_compressed_bytes
         .fetch_add(compressed_bytes as u64, Ordering::Relaxed);
     metrics
-        .image_decode_total_decoded_bytes
+        .image_processing_total_decoded_bytes
         .fetch_add(decoded_bytes as u64, Ordering::Relaxed);
     metrics
-        .image_decode_total_frames
+        .image_processing_total_frames
         .fetch_add(frames as u64, Ordering::Relaxed);
     metrics
-        .image_decode_total_micros
+        .image_processing_total_micros
         .fetch_add(duration_micros, Ordering::Relaxed);
     metrics
-        .image_decode_max_micros
+        .image_processing_max_micros
         .fetch_max(duration_micros, Ordering::Relaxed);
     if duration >= slow_threshold {
         metrics
-            .image_decode_slow_count
+            .image_processing_slow_count
             .fetch_add(1, Ordering::Relaxed);
     }
 }
 
 /// Records a currently retained size-aware image asset.
-pub fn record_image_asset_retained(asset_key: u64, record: ImageDecodeRecord) {
+pub fn record_image_asset_retained(asset_key: u64, record: ImageRenderRecord) {
     let metrics = shared_metrics();
     if let Ok(mut retained) = metrics.image_asset_retained.lock() {
         retained.insert(asset_key, record.clone());
     }
-    if let Ok(mut recent) = metrics.recent_image_decodes.lock() {
+    if let Ok(mut recent) = metrics.recent_image_processings.lock() {
         recent.push_back(record);
         while recent.len() > 12 {
             recent.pop_front();

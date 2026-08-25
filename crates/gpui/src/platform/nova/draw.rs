@@ -1,7 +1,10 @@
 use super::*;
 
+const INDEX_FORMAT_U16_FLAG: u32 = 1 << 31;
+const INDEX_OFFSET_MASK: u32 = !INDEX_FORMAT_U16_FLAG;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum NovaDrawStepMode {
+pub(super) enum DrawStepMode {
     Present,
     /// Draw only batches in `[batch_start, batch_end)`. Backdrop groups use this mode to advance
     /// one shared scene-color target between draw-order barriers without rebuilding old prefixes.
@@ -11,7 +14,7 @@ pub(super) enum NovaDrawStepMode {
     },
 }
 
-impl NovaDrawStepMode {
+impl DrawStepMode {
     fn is_past_end(self, batch_index: usize) -> bool {
         matches!(
             self,
@@ -30,21 +33,22 @@ impl NovaDrawStepMode {
     }
 }
 
+#[cfg(test)]
 pub(super) fn draw_steps_for_upload(
-    upload: &NovaFrameUpload,
-    pipelines: &NovaPipelines,
-    blend_pipelines: NovaBlendPipelines,
+    upload: &FrameUpload,
+    pipelines: &Pipelines,
+    blend_pipelines: BlendPipelines,
     quad_resource_set: ResourceSetId,
     shadow_resource_set: ResourceSetId,
     path_resource_set: ResourceSetId,
     sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
     custom_mesh_3d_pipeline: impl FnMut(GpuMesh3dShaderId) -> Option<RenderPipelineId>,
-    custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<NovaMeshCacheEntry>,
+    custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<MeshCacheEntry>,
     underline_resource_set: ResourceSetId,
     backdrop_blur_resource_set: ResourceSetId,
     custom_mesh_3d_resource_set: ResourceSetId,
     custom_mesh_3d_indices_buffer: BufferId,
-    mode: NovaDrawStepMode,
+    mode: DrawStepMode,
 ) -> Vec<RenderStepDescriptor> {
     let mut steps = Vec::new();
     draw_steps_for_upload_into(
@@ -68,20 +72,20 @@ pub(super) fn draw_steps_for_upload(
 }
 
 pub(super) fn draw_steps_for_upload_into(
-    upload: &NovaFrameUpload,
-    pipelines: &NovaPipelines,
-    blend_pipelines: NovaBlendPipelines,
+    upload: &FrameUpload,
+    pipelines: &Pipelines,
+    blend_pipelines: BlendPipelines,
     quad_resource_set: ResourceSetId,
     shadow_resource_set: ResourceSetId,
     path_resource_set: ResourceSetId,
     mut sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
     mut custom_mesh_3d_pipeline: impl FnMut(GpuMesh3dShaderId) -> Option<RenderPipelineId>,
-    mut custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<NovaMeshCacheEntry>,
+    mut custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<MeshCacheEntry>,
     underline_resource_set: ResourceSetId,
-    mut backdrop_blur_resource_set: impl FnMut(NovaBackdropBlurConfig) -> Option<ResourceSetId>,
+    mut backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
     custom_mesh_3d_resource_set: ResourceSetId,
     custom_mesh_3d_indices_buffer: BufferId,
-    mode: NovaDrawStepMode,
+    mode: DrawStepMode,
     steps: &mut Vec<RenderStepDescriptor>,
 ) {
     steps.clear();
@@ -94,7 +98,7 @@ pub(super) fn draw_steps_for_upload_into(
             continue;
         }
         match *batch {
-            NovaUploadedBatch::SolidQuads { first, count } => push_draw_step(
+            UploadedBatch::SolidQuads { first, count } => push_draw_step(
                 steps,
                 DrawStepDescriptor {
                     pipeline: blend_pipelines.solid_quads,
@@ -106,7 +110,7 @@ pub(super) fn draw_steps_for_upload_into(
                     scissor: None,
                 },
             ),
-            NovaUploadedBatch::Quads { first, count } => push_draw_step(
+            UploadedBatch::Quads { first, count } => push_draw_step(
                 steps,
                 DrawStepDescriptor {
                     pipeline: blend_pipelines.quads,
@@ -118,7 +122,7 @@ pub(super) fn draw_steps_for_upload_into(
                     scissor: None,
                 },
             ),
-            NovaUploadedBatch::Shadows { first, count } => push_draw_step(
+            UploadedBatch::Shadows { first, count } => push_draw_step(
                 steps,
                 DrawStepDescriptor {
                     pipeline: blend_pipelines.shadows,
@@ -130,8 +134,8 @@ pub(super) fn draw_steps_for_upload_into(
                     scissor: None,
                 },
             ),
-            NovaUploadedBatch::PathRasterization { .. } => {}
-            NovaUploadedBatch::Paths { first, count } => push_draw_step(
+            UploadedBatch::PathRasterization { .. } => {}
+            UploadedBatch::Paths { first, count } => push_draw_step(
                 steps,
                 DrawStepDescriptor {
                     pipeline: pipelines.paths,
@@ -143,7 +147,7 @@ pub(super) fn draw_steps_for_upload_into(
                     scissor: None,
                 },
             ),
-            NovaUploadedBatch::MonoSprites {
+            UploadedBatch::MonoSprites {
                 texture_id,
                 first,
                 count,
@@ -171,7 +175,7 @@ pub(super) fn draw_steps_for_upload_into(
                     );
                 }
             }
-            NovaUploadedBatch::PolySprites {
+            UploadedBatch::PolySprites {
                 texture_id,
                 first,
                 count,
@@ -191,7 +195,7 @@ pub(super) fn draw_steps_for_upload_into(
                     );
                 }
             }
-            NovaUploadedBatch::Underlines { first, count } => push_draw_step(
+            UploadedBatch::Underlines { first, count } => push_draw_step(
                 steps,
                 DrawStepDescriptor {
                     pipeline: blend_pipelines.underlines,
@@ -203,7 +207,7 @@ pub(super) fn draw_steps_for_upload_into(
                     scissor: None,
                 },
             ),
-            NovaUploadedBatch::BackdropBlurs { first, count } => {
+            UploadedBatch::BackdropBlurs { first, count } => {
                 upload.for_each_backdrop_blur_run(first, count, |run| {
                     let Some(resource_set) = backdrop_blur_resource_set(run.config) else {
                         return;
@@ -222,7 +226,7 @@ pub(super) fn draw_steps_for_upload_into(
                     );
                 });
             }
-            NovaUploadedBatch::CustomMesh3d {
+            UploadedBatch::CustomMesh3d {
                 mesh_id,
                 generation,
                 shader_id,
@@ -238,28 +242,27 @@ pub(super) fn draw_steps_for_upload_into(
                 if range.count == 0 || range_end > mesh.index_count || mesh.vertex_count == 0 {
                     continue;
                 }
-                let Some(first_index) = mesh.index_offset.checked_add(range.start) else {
-                    continue;
-                };
                 let Ok(base_vertex) = i32::try_from(mesh.vertex_offset) else {
                     continue;
                 };
                 if let Some(pipeline) = custom_mesh_3d_pipeline(shader_id) {
-                    steps.push(RenderStepDescriptor::DrawIndexed(DrawIndexedStepDescriptor {
-                        pipeline,
-                        resource_sets: resource_set_list([custom_mesh_3d_resource_set]),
-                        index_buffer: IndexBufferBinding {
-                            buffer: custom_mesh_3d_indices_buffer,
-                            format: IndexFormat::Uint32,
-                            offset: 0,
+                    steps.push(RenderStepDescriptor::DrawIndexed(
+                        DrawIndexedStepDescriptor {
+                            pipeline,
+                            resource_sets: resource_set_list([custom_mesh_3d_resource_set]),
+                            index_buffer: IndexBufferBinding {
+                                buffer: custom_mesh_3d_indices_buffer,
+                                format: custom_mesh_3d_index_format(mesh),
+                                offset: u64::from(custom_mesh_3d_index_byte_offset(mesh)),
+                            },
+                            index_count: range.count,
+                            first_index: range.start,
+                            base_vertex,
+                            instance_count: 1,
+                            first_instance: first_parameter_index,
+                            scissor: None,
                         },
-                        index_count: range.count,
-                        first_index,
-                        base_vertex,
-                        instance_count: 1,
-                        first_instance: first_parameter_index,
-                        scissor: None,
-                    }));
+                    ));
                 }
             }
         }
@@ -274,6 +277,18 @@ pub(super) fn draw_steps_for_upload_into(
             first_instance: 0,
             scissor: None,
         }));
+    }
+}
+
+fn custom_mesh_3d_index_byte_offset(entry: MeshCacheEntry) -> u32 {
+    entry.index_offset & INDEX_OFFSET_MASK
+}
+
+fn custom_mesh_3d_index_format(entry: MeshCacheEntry) -> IndexFormat {
+    if entry.index_offset & INDEX_FORMAT_U16_FLAG != 0 {
+        IndexFormat::Uint16
+    } else {
+        IndexFormat::Uint32
     }
 }
 
@@ -354,18 +369,23 @@ pub(super) fn scaled_pixels_ceil_u32(value: crate::ScaledPixels) -> u32 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct NovaBackdropBlurRenderPass {
+pub(super) struct BackdropBlurRenderPass {
     pub(super) target_texture_view: TextureViewId,
     pub(super) step: DrawStepDescriptor,
 }
 
+#[cfg(test)]
 pub(super) fn backdrop_blur_render_passes_for_targets_into(
-    pipelines: &NovaPipelines,
-    targets: &NovaBackdropBlurTargets,
+    pipelines: &Pipelines,
+    targets: &BackdropBlurTargets,
     frame_resource_index: usize,
-    passes: &mut Vec<NovaBackdropBlurRenderPass>,
+    passes: &mut Vec<BackdropBlurRenderPass>,
 ) {
-    let configs: Vec<_> = targets.variants.iter().map(|variant| variant.config).collect();
+    let configs: Vec<_> = targets
+        .variants
+        .iter()
+        .map(|variant| variant.config)
+        .collect();
     backdrop_blur_render_passes_for_configs_into(
         pipelines,
         targets,
@@ -376,11 +396,11 @@ pub(super) fn backdrop_blur_render_passes_for_targets_into(
 }
 
 pub(super) fn backdrop_blur_render_passes_for_configs_into(
-    pipelines: &NovaPipelines,
-    targets: &NovaBackdropBlurTargets,
+    pipelines: &Pipelines,
+    targets: &BackdropBlurTargets,
     frame_resource_index: usize,
-    configs: &[NovaBackdropBlurConfig],
-    passes: &mut Vec<NovaBackdropBlurRenderPass>,
+    configs: &[BackdropBlurConfig],
+    passes: &mut Vec<BackdropBlurRenderPass>,
 ) {
     passes.clear();
     passes.reserve(configs.len().saturating_mul(2));
@@ -415,7 +435,7 @@ pub(super) fn backdrop_blur_render_passes_for_configs_into(
             continue;
         };
 
-        passes.push(NovaBackdropBlurRenderPass {
+        passes.push(BackdropBlurRenderPass {
             target_texture_view: horizontal.texture_view,
             step: DrawStepDescriptor {
                 pipeline: pipelines.backdrop_blur_downsample,
@@ -427,7 +447,7 @@ pub(super) fn backdrop_blur_render_passes_for_configs_into(
                 scissor: None,
             },
         });
-        passes.push(NovaBackdropBlurRenderPass {
+        passes.push(BackdropBlurRenderPass {
             target_texture_view: vertical.texture_view,
             step: DrawStepDescriptor {
                 pipeline: pipelines.backdrop_blur_upsample,
@@ -442,9 +462,10 @@ pub(super) fn backdrop_blur_render_passes_for_configs_into(
     }
 }
 
+#[cfg(test)]
 pub(super) fn path_mask_draw_steps_for_upload(
-    upload: &NovaFrameUpload,
-    pipelines: &NovaPipelines,
+    upload: &FrameUpload,
+    pipelines: &Pipelines,
     path_rasterization_resource_set: ResourceSetId,
 ) -> Vec<DrawStepDescriptor> {
     let mut steps = Vec::new();
@@ -458,8 +479,8 @@ pub(super) fn path_mask_draw_steps_for_upload(
 }
 
 pub(super) fn path_mask_draw_steps_for_upload_into(
-    upload: &NovaFrameUpload,
-    pipelines: &NovaPipelines,
+    upload: &FrameUpload,
+    pipelines: &Pipelines,
     path_rasterization_resource_set: ResourceSetId,
     steps: &mut Vec<DrawStepDescriptor>,
 ) {
@@ -467,7 +488,7 @@ pub(super) fn path_mask_draw_steps_for_upload_into(
     steps.reserve(upload.batches.len());
     for batch in &upload.batches {
         match *batch {
-            NovaUploadedBatch::PathRasterization {
+            UploadedBatch::PathRasterization {
                 first_vertex,
                 vertex_count,
             } => push_path_mask_draw_step(
@@ -482,15 +503,15 @@ pub(super) fn path_mask_draw_steps_for_upload_into(
                     scissor: None,
                 },
             ),
-            NovaUploadedBatch::SolidQuads { .. }
-            | NovaUploadedBatch::Quads { .. }
-            | NovaUploadedBatch::Shadows { .. }
-            | NovaUploadedBatch::Paths { .. }
-            | NovaUploadedBatch::MonoSprites { .. }
-            | NovaUploadedBatch::PolySprites { .. }
-            | NovaUploadedBatch::Underlines { .. }
-            | NovaUploadedBatch::BackdropBlurs { .. }
-            | NovaUploadedBatch::CustomMesh3d { .. } => {}
+            UploadedBatch::SolidQuads { .. }
+            | UploadedBatch::Quads { .. }
+            | UploadedBatch::Shadows { .. }
+            | UploadedBatch::Paths { .. }
+            | UploadedBatch::MonoSprites { .. }
+            | UploadedBatch::PolySprites { .. }
+            | UploadedBatch::Underlines { .. }
+            | UploadedBatch::BackdropBlurs { .. }
+            | UploadedBatch::CustomMesh3d { .. } => {}
         }
     }
 }

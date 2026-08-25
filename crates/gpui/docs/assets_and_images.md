@@ -28,13 +28,23 @@ dependency surface remains explicit.
 Use image cache elements and providers when image lifetime needs to be scoped:
 
 - `image_cache(provider).child(...)` scopes a provider to an element subtree.
-- `RetainAllImageCache` keeps images until it is cleared or dropped.
+- `BoundedImageCache` limits retained item count and decoded bytes.
 - Custom `ImageCacheProvider` implementations can build caches from window-local
   element state.
 
 When a cache evicts an image, drop it through `cx.drop_image(image,
 Some(window))` when a current window is available, or `cx.drop_image(image,
 None)` during release cleanup.
+
+## Animated Images
+
+GIF, APNG, and animated WebP use the same playback scheduler. GPUI preserves each file's frame
+delays and only lengthens delays that exceed the configured playback ceiling. The default ceiling
+is 90 FPS; applications may set a higher finite `AnimatedImageConfig::max_fps` when the display
+and workload justify it. Zero and malformed timing values use the configured minimum interval.
+
+Streaming animations use bounded frame and byte queues. The first decoded frame may exceed the
+byte limit so a large animation can still make progress, but subsequent prefetch remains bounded.
 
 ## Guidelines
 

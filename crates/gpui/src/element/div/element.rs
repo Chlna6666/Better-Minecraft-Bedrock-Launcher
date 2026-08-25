@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
 
 use super::event::{InteractiveElement, StatefulInteractiveElement};
-use super::state::Interactivity;
+use super::interactivity::Interactivity;
 
 /// Construct a new [`Div`] element.
 #[track_caller]
@@ -60,7 +60,7 @@ impl Div {
 /// during the UI update cycle. It holds a small vector of `LayoutId` values, each corresponding to
 /// a child element of the `Div`. These IDs are used to query the layout engine for the computed
 /// bounds of the children after the layout phase is complete.
-pub struct DivFrameState {
+pub struct DivLayout {
     pub(crate) child_layout_ids: SmallVec<[LayoutId; 2]>,
 }
 
@@ -84,7 +84,7 @@ impl ParentElement for Div {
 }
 
 impl Element for Div {
-    type RequestLayoutState = DivFrameState;
+    type RequestLayoutState = DivLayout;
     type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
@@ -128,7 +128,7 @@ impl Element for Div {
             )
         });
 
-        (layout_id, DivFrameState { child_layout_ids })
+        (layout_id, DivLayout { child_layout_ids })
     }
 
     #[stacksafe]

@@ -1,13 +1,16 @@
-use super::*;
+#![expect(
+    unsafe_code,
+    reason = "system text rendering parameters are read through platform FFI"
+)]
 
-pub(super) struct NovaRenderingParameters {
+pub(super) struct RenderingParameters {
     pub(super) gamma_ratios: [f32; 4],
     pub(super) grayscale_enhanced_contrast: f32,
     pub(super) subpixel_enhanced_contrast: f32,
     pub(super) is_bgr: bool,
 }
 
-impl NovaRenderingParameters {
+impl RenderingParameters {
     pub(super) fn from_env() -> Self {
         let system = system_rendering_parameters();
         let gamma = std::env::var("ZED_FONTS_GAMMA")

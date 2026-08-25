@@ -1,4 +1,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
+#![expect(
+    unsafe_code,
+    reason = "the native window boundary calls Win32 APIs with HWND-owned state"
+)]
 
 use std::{
     cell::{Cell, OnceCell, RefCell},
@@ -370,7 +374,7 @@ impl WindowsRenderer {
         let mut last_error = None;
 
         for (candidate_index, candidate) in renderer_backend_candidates.into_iter().enumerate() {
-            match NovaRenderer::new_with_atlas(
+            match NovaRenderer::with_atlas(
                 &window,
                 candidate,
                 &renderer_options,
@@ -440,6 +444,12 @@ impl WindowsRenderer {
     pub fn gpu_specs(&self) -> Result<GpuSpecs> {
         match self {
             Self::Nova(renderer) => Ok(renderer.gpu_specs()),
+        }
+    }
+
+    pub fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
+        match self {
+            Self::Nova(renderer) => renderer.trim_gpui_memory(level),
         }
     }
 }
@@ -1394,6 +1404,14 @@ impl PlatformWindow for WindowsWindow {
             return None;
         };
         renderer.gpu_specs().log_err()
+    }
+
+    fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {
+        let mut renderer = self.0.renderer.borrow_mut();
+        let WindowsRendererState::Ready(renderer) = &mut *renderer else {
+            return;
+        };
+        renderer.trim_gpui_memory(level);
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {

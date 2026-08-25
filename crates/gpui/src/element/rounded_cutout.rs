@@ -181,7 +181,11 @@ fn resolve_cutout(
 }
 
 fn clamp_radius(cutout: Bounds<Pixels>, radius: Pixels) -> Pixels {
-    px(radius.0.max(0.0).min(cutout.size.width.0 * 0.5).min(cutout.size.height.0 * 0.5))
+    px(radius
+        .0
+        .max(0.0)
+        .min(cutout.size.width.0 * 0.5)
+        .min(cutout.size.height.0 * 0.5))
 }
 
 fn build_cutout_path(
@@ -339,10 +343,7 @@ fn insert_rounded_corner_hitboxes(
         ] {
             insert_hitbox_if_nonempty(
                 window,
-                Bounds::new(
-                    point(px(x), px(y)),
-                    size(px(outside_width), px(height)),
-                ),
+                Bounds::new(point(px(x), px(y)), size(px(outside_width), px(height))),
                 behavior,
             );
         }

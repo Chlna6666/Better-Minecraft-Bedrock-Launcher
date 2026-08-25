@@ -1,17 +1,11 @@
 use super::*;
-use image::{ExtendedColorType, ImageEncoder as _, codecs::webp::WebPEncoder};
+use image::{ExtendedColorType, codecs::webp::WebPEncoder};
 use std::{thread, time::Instant};
 
 #[test]
-fn animated_webp_decode_keeps_multiple_frames() {
+fn animated_webp_render_keeps_multiple_frames() {
     let bytes = animated_webp_bytes(8, 6);
-    let image = decode_image_bytes(
-        &bytes,
-        ImageFormat::WebP,
-        AnimatedImageConfig::default(),
-        None,
-    )
-    .unwrap();
+    let image = render_image(&bytes, ImageFormat::WebP, AnimatedImageConfig::default()).unwrap();
 
     assert!(image.is_animated());
     assert_eq!(image.frame_count(), 2);
@@ -19,19 +13,18 @@ fn animated_webp_decode_keeps_multiple_frames() {
 }
 
 #[test]
-fn animated_webp_target_decode_resizes_streamed_frames() {
+fn animated_webp_target_render_resizes_streamed_frames() {
     let bytes = animated_webp_bytes(8, 6);
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
         max_resident_bytes: 4 * 3 * 4,
         ..AnimatedImageConfig::default()
     };
-    let target = ImageDecodeTarget::new(4, 3).unwrap();
+    let target = ImageRenderSize::new(4, 3).unwrap();
     let (image, _) =
-        decode_image_bytes_to_target(&bytes, ImageFormat::WebP, config, target, ObjectFit::Fill)
-            .unwrap();
+        render_image_at(&bytes, ImageFormat::WebP, config, target, ObjectFit::Fill).unwrap();
 
-    assert!(matches!(image.data, RenderImageData::Streaming(_)));
+    assert!(matches!(image.storage, RenderImageStorage::Streaming(_)));
     assert_eq!(image.size(0), target.size());
 }
 
@@ -39,23 +32,19 @@ fn animated_webp_target_decode_resizes_streamed_frames() {
 fn animated_webp_streaming_sequences_remain_monotonic_across_cycles() {
     let bytes = animated_webp_bytes(1, 1);
     let config = AnimatedImageConfig {
-        decode_ahead_frames: 2,
+        prefetch_frames: 2,
         max_resident_frames: 1,
         max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
-    let executor = BackgroundExecutor::new(Arc::new(crate::TestDispatcher::new(
-        rand::rngs::StdRng::seed_from_u64(4),
-    )));
-    let image =
-        decode_image_bytes(&bytes, ImageFormat::WebP, config, Some(executor.clone())).unwrap();
+    let image = render_image(&bytes, ImageFormat::WebP, config).unwrap();
 
     let mut current_sequence = 0;
     for expected_sequence in 1..=4 {
-        current_sequence = wait_for_streaming_sequence(&image, current_sequence, &executor);
+        current_sequence = wait_for_streaming_sequence(&image, current_sequence);
         assert_eq!(current_sequence, expected_sequence);
         assert!(
-            image.decoded_byte_len()
+            image.resident_byte_len()
                 >= image
                     .frame_byte_len(0)
                     .saturating_add(image.frame_byte_len(current_sequence))
@@ -63,14 +52,26 @@ fn animated_webp_streaming_sequences_remain_monotonic_across_cycles() {
     }
 }
 
-fn wait_for_streaming_sequence(
-    image: &RenderImage,
-    current_sequence: usize,
-    executor: &BackgroundExecutor,
-) -> usize {
+#[test]
+fn truncated_animated_webp_is_rejected() {
+    let mut bytes = animated_webp_bytes(8, 6);
+    bytes.truncate(20);
+
+    assert!(render_image(&bytes, ImageFormat::WebP, AnimatedImageConfig::default()).is_err());
+}
+
+#[test]
+fn animated_webp_with_a_complete_first_frame_can_degrade_after_tail_truncation() {
+    let mut bytes = animated_webp_bytes(8, 6);
+    bytes.truncate(bytes.len() / 2);
+
+    assert!(render_image(&bytes, ImageFormat::WebP, AnimatedImageConfig::default()).is_ok());
+}
+
+fn wait_for_streaming_sequence(image: &RenderImage, current_sequence: usize) -> usize {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if let Some(frame) = image.next_streaming_frame(current_sequence, executor) {
+        if let Some(frame) = image.next_streaming_frame(current_sequence) {
             return frame.sequence();
         }
         assert!(

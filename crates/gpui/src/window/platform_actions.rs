@@ -199,7 +199,7 @@ impl Window {
 
     /// Returns a list of all tabbed windows and their titles.
     /// This is macOS specific.
-    pub fn tabbed_windows(&self) -> Option<Vec<SystemWindowTab>> {
+    pub fn tabbed_windows(&self) -> Option<Vec<WindowTab>> {
         self.platform_window.tabbed_windows()
     }
 

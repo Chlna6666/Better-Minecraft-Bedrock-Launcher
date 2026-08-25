@@ -3,9 +3,9 @@ use crate::{
     UnderlineStyle, Window, WrapBoundary, black, point, px, size,
 };
 
+use super::DecorationRun;
 use super::alignment::{aligned_origin_x, snap_baseline_offset_to_device_pixels};
 use super::background::max_background_padding;
-use super::types::DecorationRun;
 
 pub(super) fn paint_line(
     origin: Point<Pixels>,

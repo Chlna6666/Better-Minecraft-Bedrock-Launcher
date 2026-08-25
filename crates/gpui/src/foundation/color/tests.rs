@@ -49,9 +49,12 @@ fn test_background_solid() {
     let color = rgba(0xff0099ff);
     let mut background = Background::from(Hsla::from(color));
     assert_eq!(background.tag, BackgroundTag::Solid);
-    assert_eq!(background.solid, color);
+    assert_eq!(u32::from(background.solid), u32::from(color));
 
-    assert_eq!(background.opacity(0.5).solid, color.opacity(0.5));
+    assert_eq!(
+        u32::from(background.opacity(0.5).solid),
+        u32::from(color.opacity(0.5))
+    );
     assert!(!background.is_transparent());
     background.solid = rgba(0x00000000);
     assert!(background.is_transparent());

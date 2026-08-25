@@ -8,8 +8,10 @@ retained, and evicted.
 ## Built-In Scope
 
 Use the `image_cache(provider).child(...)` element to scope image cache behavior
-to a subtree. Use `RetainAllImageCache` when a view wants to keep every loaded
-image until the cache is cleared or dropped.
+to a subtree. `BoundedImageCache` is the built-in cache and requires explicit
+item and retained-byte limits through `BoundedImageCacheConfig`. Streaming
+entries include the compressed source required for subsequent cycles. GPUI does not
+provide an unbounded retain-all cache.
 
 Remote and asset-backed `img(...)` elements load through the app asset source
 and HTTP client, then pass through the active image cache.
@@ -29,6 +31,10 @@ available, or `cx.drop_image(image, None)` during release cleanup.
 Image cache loaders should schedule slow work on the background executor and
 notify the owning view when loading completes. Notify on the next frame when the
 load completion arrives from a background task.
+
+Loading entries count against the item limit. Implementations must cancel or
+detach no longer reachable work deliberately; evicting a key while another
+future silently retains the same load is not bounded behavior.
 
 ## Metrics
 

@@ -231,7 +231,7 @@ impl Display for ActionBuildError {
 type ActionBuilder = fn(json: serde_json::Value) -> anyhow::Result<Box<dyn Action>>;
 
 pub(crate) struct ActionRegistry {
-    by_name: HashMap<&'static str, ActionData>,
+    by_name: HashMap<&'static str, ActionRegistration>,
     names_by_type_id: HashMap<TypeId, &'static str>,
     all_names: Vec<&'static str>, // So we can return a static slice.
     deprecated_aliases: HashMap<&'static str, &'static str>, // deprecated name -> preferred name
@@ -256,7 +256,7 @@ impl Default for ActionRegistry {
     }
 }
 
-struct ActionData {
+struct ActionRegistration {
     pub build: ActionBuilder,
     pub json_schema: fn(&mut schemars::SchemaGenerator) -> Option<schemars::Schema>,
 }
@@ -313,7 +313,7 @@ impl ActionRegistry {
         }
         self.by_name.insert(
             name,
-            ActionData {
+            ActionRegistration {
                 build: action.build,
                 json_schema: action.json_schema,
             },
@@ -327,7 +327,7 @@ impl ActionRegistry {
             }
             self.by_name.insert(
                 alias,
-                ActionData {
+                ActionRegistration {
                     build: action.build,
                     json_schema: action.json_schema,
                 },
@@ -408,16 +408,6 @@ impl ActionRegistry {
     pub fn documentation(&self) -> &HashMap<&'static str, &'static str> {
         &self.documentation
     }
-}
-
-/// Generate a list of all the registered actions.
-/// Useful for transforming the list of available actions into a
-/// format suited for static analysis such as in validating keymaps, or
-/// generating documentation.
-pub fn generate_list_of_all_registered_actions() -> impl Iterator<Item = MacroActionData> {
-    inventory::iter::<MacroActionBuilder>
-        .into_iter()
-        .map(|builder| builder.0())
 }
 
 mod no_action {

@@ -14,9 +14,10 @@ pub enum StepPosition {
 }
 
 /// Built-in easing functions plus a compatibility escape hatch.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum Easing {
     /// Linear interpolation.
+    #[default]
     Linear,
     /// Cubic ease-in.
     InCubic,
@@ -52,12 +53,6 @@ pub enum Easing {
     },
     /// Caller-provided easing function.
     Custom(Rc<dyn Fn(f32) -> f32>),
-}
-
-impl Default for Easing {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 
 impl fmt::Debug for Easing {

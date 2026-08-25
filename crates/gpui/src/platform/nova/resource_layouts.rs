@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) struct NovaResourceLayouts {
+pub(super) struct ResourceLayouts {
     pub(super) quad_resource_set_layout: ResourceSetLayoutId,
     pub(super) shadow_resource_set_layout: ResourceSetLayoutId,
     pub(super) path_rasterization_resource_set_layout: ResourceSetLayoutId,
@@ -23,7 +23,7 @@ pub(super) struct NovaResourceLayouts {
     pub(super) custom_mesh_3d_pipeline_layout: PipelineLayoutId,
 }
 
-pub(super) fn create_resource_layouts<D>(device: &mut D, label: &str) -> Result<NovaResourceLayouts>
+pub(super) fn create_resource_layouts<D>(device: &mut D, label: &str) -> Result<ResourceLayouts>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -293,7 +293,7 @@ where
             resource_set_layouts: vec![custom_mesh_3d_resource_set_layout],
         })?;
 
-    Ok(NovaResourceLayouts {
+    Ok(ResourceLayouts {
         quad_resource_set_layout,
         shadow_resource_set_layout,
         path_rasterization_resource_set_layout,

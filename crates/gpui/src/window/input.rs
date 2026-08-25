@@ -187,7 +187,7 @@ impl Window {
     /// Return a key binding string for an action, to display in the UI. Uses the highest precedence
     /// binding for the action (last binding added to the keymap).
     pub fn keystroke_text_for(&self, action: &dyn Action) -> String {
-        self.highest_precedence_binding_for_action(action)
+        self.binding_for_action(action)
             .map(|binding| {
                 binding
                     .keystrokes()

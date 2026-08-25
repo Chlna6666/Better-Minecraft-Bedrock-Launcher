@@ -1,22 +1,22 @@
 use anyhow::{Context as _, Result};
 
 use super::super::*;
-use super::shaders::NovaRendererShaders;
+use super::shaders::RendererShaders;
 
 pub(super) fn create_renderer_pipelines<D>(
     device: &mut D,
     label: &str,
     surface_config: SurfaceConfig,
     render_pass: RenderPassId,
-    layouts: &NovaResourceLayouts,
-    shaders: NovaRendererShaders,
-) -> Result<NovaPipelines>
+    layouts: &ResourceLayouts,
+    shaders: RendererShaders,
+) -> Result<Pipelines>
 where
     D: BackendResources + BackendPipelines,
 {
     let alpha = create_blend_pipelines(
         device,
-        NovaBlendPipelineDescriptor {
+        BlendPipelineDescriptor {
             label,
             suffix: "alpha",
             blend_mode: BlendMode::Alpha,
@@ -51,7 +51,7 @@ where
     )?;
     let premultiplied = create_blend_pipelines(
         device,
-        NovaBlendPipelineDescriptor {
+        BlendPipelineDescriptor {
             label,
             suffix: "premultiplied",
             blend_mode: BlendMode::PremultipliedAlpha,
@@ -160,7 +160,7 @@ where
             surface_config.size,
         )
         .context("creating nova path render pipeline")?;
-    Ok(NovaPipelines {
+    Ok(Pipelines {
         alpha,
         premultiplied,
         path_rasterization,

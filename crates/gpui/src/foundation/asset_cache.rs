@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// An enum representing
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub enum Resource {
+pub enum AssetLocation {
     /// This resource is at a given URI
     Uri(SharedUri),
     /// This resource is at a given path in the file system
@@ -18,19 +18,19 @@ pub enum Resource {
     Embedded(SharedString),
 }
 
-impl From<SharedUri> for Resource {
+impl From<SharedUri> for AssetLocation {
     fn from(value: SharedUri) -> Self {
         Self::Uri(value)
     }
 }
 
-impl From<PathBuf> for Resource {
+impl From<PathBuf> for AssetLocation {
     fn from(value: PathBuf) -> Self {
         Self::Path(value.into())
     }
 }
 
-impl From<Arc<Path>> for Resource {
+impl From<Arc<Path>> for AssetLocation {
     fn from(value: Arc<Path>) -> Self {
         Self::Path(value)
     }

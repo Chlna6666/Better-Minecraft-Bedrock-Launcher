@@ -13,18 +13,18 @@ fn lock_performance_metrics() -> MutexGuard<'static, ()> {
 }
 
 #[test]
-fn records_aggregate_image_decode_metrics() {
+fn records_aggregate_image_processing_metrics() {
     let _lock = lock_performance_metrics();
     let before = performance_metrics_snapshot();
 
-    record_image_decode_metrics_with_threshold(
+    record_image_processing_metrics_with_threshold(
         10,
         20,
         1,
         Duration::from_millis(2),
         Duration::from_millis(1),
     );
-    record_image_decode_metrics_with_threshold(
+    record_image_processing_metrics_with_threshold(
         30,
         40,
         2,
@@ -33,23 +33,56 @@ fn records_aggregate_image_decode_metrics() {
     );
 
     let snapshot = performance_metrics_snapshot();
-    assert!(snapshot.image_decode_count >= before.image_decode_count + 2);
-    assert!(snapshot.image_decode_compressed_bytes >= before.image_decode_compressed_bytes + 40);
-    assert!(snapshot.image_decode_decoded_bytes >= before.image_decode_decoded_bytes + 60);
-    assert!(snapshot.image_decode_frames >= before.image_decode_frames + 3);
+    assert!(snapshot.image_processing_count >= before.image_processing_count + 2);
+    assert!(
+        snapshot.image_processing_compressed_bytes >= before.image_processing_compressed_bytes + 40
+    );
+    assert!(snapshot.image_processing_output_bytes >= before.image_processing_output_bytes + 60);
+    assert!(snapshot.image_processing_frames >= before.image_processing_frames + 3);
     assert!(
         snapshot
-            .image_decode_total_time
-            .zip(before.image_decode_total_time)
+            .image_processing_total_time
+            .zip(before.image_processing_total_time)
             .map_or(true, |(after, before)| after
                 >= before + Duration::from_millis(5))
     );
     assert!(
         snapshot
-            .image_decode_max_time
+            .image_processing_max_time
             .is_some_and(|duration| duration >= Duration::from_millis(3))
     );
-    assert!(snapshot.image_decode_slow_count >= before.image_decode_slow_count + 1);
+    assert!(snapshot.image_processing_slow_count > before.image_processing_slow_count);
+}
+
+#[test]
+fn records_animation_stream_metrics() {
+    let _lock = lock_performance_metrics();
+    let before = performance_metrics_snapshot().animation;
+
+    record_animation_loop_restart(Duration::from_micros(7), true);
+    record_animation_loop_restart(Duration::from_micros(11), false);
+    record_animation_queue_backpressure();
+    record_animation_stale_frame_count(3);
+    record_animation_worker_pool_wake();
+
+    let animation = performance_metrics_snapshot().animation;
+    assert!(animation.loop_restarts >= before.loop_restarts + 2);
+    assert!(animation.loop_restart_failures > before.loop_restart_failures);
+    assert!(
+        animation
+            .loop_restart_total_time
+            .zip(before.loop_restart_total_time)
+            .map_or(true, |(after, before)| after
+                >= before + Duration::from_micros(18))
+    );
+    assert!(
+        animation
+            .loop_restart_max_time
+            .is_some_and(|duration| duration >= Duration::from_micros(11))
+    );
+    assert!(animation.queue_backpressure_count > before.queue_backpressure_count);
+    assert!(animation.stale_frame_count >= before.stale_frame_count + 3);
+    assert!(animation.worker_pool_wake_count > before.worker_pool_wake_count);
 }
 
 #[test]
@@ -60,23 +93,23 @@ fn records_retained_image_asset_metrics() {
 
     record_image_asset_retained(
         key,
-        ImageDecodeRecord {
+        ImageRenderRecord {
             source: "images/background.webp".to_string(),
             original_width: 3840,
             original_height: 2160,
             target_width: 960,
             target_height: 540,
-            retained_decoded_bytes: 2_073_600,
-            decode_mode: "webp_scaled".to_string(),
+            resident_bytes: 2_073_600,
+            render_path: "webp_scaled".to_string(),
         },
     );
 
     let snapshot = performance_metrics_snapshot();
     assert!(snapshot.image_asset_retained_count >= 1);
-    assert!(snapshot.image_asset_retained_decoded_bytes >= 2_073_600);
-    assert!(snapshot.image_asset_largest_retained_decoded_bytes >= 2_073_600);
+    assert!(snapshot.image_asset_resident_bytes >= 2_073_600);
+    assert!(snapshot.image_asset_largest_resident_bytes >= 2_073_600);
     assert!(
-        snapshot.recent_image_decodes.iter().any(|record| {
+        snapshot.recent_image_processings.iter().any(|record| {
             record.source == "images/background.webp" && record.target_width == 960
         })
     );
@@ -89,6 +122,7 @@ fn records_extended_gpu_metrics() {
     let _lock = lock_performance_metrics();
     reset_frame_upload_metrics();
     let before = performance_metrics_snapshot();
+    record_scene_pack_time(Duration::from_micros(11));
     record_atlas_upload_metrics(64, 1, Duration::from_micros(2));
     record_atlas_upload_metrics(32, 2, Duration::from_micros(3));
     record_prepared_command_count(32);
@@ -136,6 +170,7 @@ fn records_extended_gpu_metrics() {
     assert_eq!(snapshot.gpu_surface_present_mode, "Mailbox");
     assert_eq!(snapshot.atlas_upload_bytes, 96);
     assert_eq!(snapshot.atlas_upload_tiles, 3);
+    assert_eq!(snapshot.scene_pack_time, Some(Duration::from_micros(11)));
     assert_eq!(snapshot.atlas_upload_time, Some(Duration::from_micros(5)));
     assert_eq!(snapshot.upload_bytes, 1280);
     assert_eq!(snapshot.encoded_scene_primitives, 23);
@@ -196,7 +231,7 @@ fn records_extended_gpu_metrics() {
             .gpu_submission_wait_max_time
             .is_some_and(|duration| duration >= Duration::from_millis(9))
     );
-    assert!(snapshot.gpu_submission_slow_wait_count >= before.gpu_submission_slow_wait_count + 1);
+    assert!(snapshot.gpu_submission_slow_wait_count > before.gpu_submission_slow_wait_count);
     assert_eq!(snapshot.gpu_surface_reconfigure_count, 3);
     assert_eq!(snapshot.gpu_surface_error_count, 2);
     assert_eq!(snapshot.dirty_rect_count, 2);

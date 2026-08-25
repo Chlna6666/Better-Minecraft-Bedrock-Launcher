@@ -18,16 +18,16 @@ Use `WgslShaderSource` when validated shader source should be retained:
 let source = gpui::WgslShaderSource::from_path("examples/viewer.wgsl")?;
 ```
 
-For one-shot compilation, use the helper functions:
+Load a file through the associated constructor:
 
 ```rust
-let shader = gpui::compile_wgsl_shader_module_from_path("examples/viewer.wgsl")?;
+let shader = gpui::WgslShaderSource::from_path("examples/viewer.wgsl")?;
 ```
 
 Generated or embedded shader strings can use a source label:
 
 ```rust
-let shader = gpui::compile_wgsl_shader_module(
+let shader = gpui::WgslShaderSource::from_source(
     "generated-material-shader",
     generated_wgsl,
 )?;

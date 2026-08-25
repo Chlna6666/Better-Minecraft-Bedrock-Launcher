@@ -215,11 +215,9 @@ impl RendererBackend {
         let text_rasterization = match self {
             #[cfg(target_os = "windows")]
             Self::NovaVulkan | Self::NovaDx12 => TextRasterizationMode::RgbSubpixel,
-            Self::Auto
-            | Self::NovaVulkan
-            | Self::NovaDx12
-            | Self::NovaMetal
-            | Self::HeadlessTest => TextRasterizationMode::Grayscale,
+            #[cfg(not(target_os = "windows"))]
+            Self::NovaVulkan | Self::NovaDx12 => TextRasterizationMode::Grayscale,
+            Self::Auto | Self::NovaMetal | Self::HeadlessTest => TextRasterizationMode::Grayscale,
         };
         RendererCapabilities { text_rasterization }
     }
@@ -471,6 +469,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        unsafe_code,
+        reason = "the test serializes process environment mutation with ENV_LOCK"
+    )]
     fn environment_override_takes_precedence() {
         let _lock = ENV_LOCK.lock().unwrap();
         // SAFETY: This test holds a process-wide mutex while mutating the environment.

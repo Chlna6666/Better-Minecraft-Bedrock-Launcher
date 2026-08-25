@@ -1,67 +1,66 @@
 use super::*;
 
 #[derive(Clone)]
-pub(super) struct NovaPathMaskTarget {
+pub(super) struct PathMaskTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
     pub(super) resource_sets: Vec<ResourceSetId>,
 }
 
-pub(super) struct NovaPathMaskTargetDescriptor {
+pub(super) struct PathMaskTargetDescriptor {
     pub(super) size: Extent2d,
     pub(super) format: Format,
     pub(super) resource_set_layout: ResourceSetLayoutId,
-    pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
+    pub(super) frame_buffers: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
 
 #[derive(Clone)]
-pub(super) struct NovaBackdropBlurTargets {
-    pub(super) downsample: NovaBackdropBlurConfigSet,
+pub(super) struct BackdropBlurTargets {
     /// Shared accumulated scene color used as the ordered backdrop source.
-    pub(super) source: NovaTextureTarget,
+    pub(super) source: TextureTarget,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
-    pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
+    pub(super) variants: Vec<BackdropBlurVariantTargets>,
 }
 
 #[derive(Clone)]
-pub(super) struct NovaBackdropBlurVariantTargets {
-    pub(super) config: NovaBackdropBlurConfig,
+pub(super) struct BackdropBlurVariantTargets {
+    pub(super) config: BackdropBlurConfig,
     /// Two separable Gaussian targets with axis-specific resolution:
     /// levels[0] = X-blurred target at `(W/downsample, H)`;
     /// levels[1] = Y-blurred final target at `(W/downsample, H/downsample)`.
     /// This prevents vertical aliasing from shrinking Y before a vertical low-pass has run.
-    pub(super) levels: Vec<NovaBackdropBlurLevelTarget>,
+    pub(super) levels: Vec<BackdropBlurLevelTarget>,
     pub(super) target_resource_sets: Vec<ResourceSetId>,
 }
 
 #[derive(Clone)]
-pub(super) struct NovaBackdropBlurLevelTarget {
+pub(super) struct BackdropBlurLevelTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
     pub(super) pass_resource_sets: Vec<ResourceSetId>,
 }
 
-pub(super) struct NovaBackdropBlurTargetDescriptor {
+pub(super) struct BackdropBlurTargetDescriptor {
     pub(super) size: Extent2d,
     pub(super) format: Format,
-    pub(super) downsample: NovaBackdropBlurConfigSet,
+    pub(super) configs: Vec<BackdropBlurConfig>,
     pub(super) pass_resource_set_layout: ResourceSetLayoutId,
     pub(super) blur_resource_set_layout: ResourceSetLayoutId,
-    pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
+    pub(super) frame_buffers: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct NovaTextureTarget {
+pub(super) struct TextureTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
 }
 
-impl NovaBackdropBlurTargets {
+impl BackdropBlurTargets {
     pub(super) fn resource_set_for_config(
         &self,
-        config: NovaBackdropBlurConfig,
+        config: BackdropBlurConfig,
         frame_resource_index: usize,
     ) -> Option<ResourceSetId> {
         self.variants
@@ -76,33 +75,21 @@ impl NovaBackdropBlurTargets {
     ///
     /// Bounds are intentionally ignored. Moving/resizing an animated glass surface updates only
     /// CPU metadata and scissors instead of destroying and recreating GPU textures.
-    pub(super) fn is_layout_compatible(&self, next: &NovaBackdropBlurConfigSet) -> bool {
-        self.variants.len() == next.configs().len()
-            && self
-                .variants
-                .iter()
-                .zip(next.configs())
-                .all(|(variant, config)| {
-                    variant.config.reuse_key() == config.reuse_key()
-                        && variant.config.downsample() == config.downsample()
-                        && variant.config.levels() == config.levels()
-                })
-    }
-
-    /// Updates per-frame canonical bounds without reallocating GPU resources.
-    pub(super) fn update_configs(&mut self, next: NovaBackdropBlurConfigSet) {
-        for (variant, config) in self.variants.iter_mut().zip(next.configs()) {
-            variant.config = *config;
-        }
-        self.downsample = next;
+    pub(super) fn is_layout_compatible(&self, next: &[BackdropBlurConfig]) -> bool {
+        self.variants.len() == next.len()
+            && self.variants.iter().zip(next).all(|(variant, config)| {
+                variant.config.reuse_key() == config.reuse_key()
+                    && variant.config.downsample() == config.downsample()
+                    && variant.config.levels() == config.levels()
+            })
     }
 }
 
 pub(super) fn create_path_mask_target<D>(
     device: &mut D,
     label: &str,
-    descriptor: NovaPathMaskTargetDescriptor,
-) -> Result<NovaPathMaskTarget>
+    descriptor: PathMaskTargetDescriptor,
+) -> Result<PathMaskTarget>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -132,7 +119,7 @@ where
             ),
         })?);
     }
-    Ok(NovaPathMaskTarget {
+    Ok(PathMaskTarget {
         texture,
         texture_view,
         resource_sets,
@@ -141,7 +128,7 @@ where
 
 pub(super) fn destroy_path_mask_target<D>(
     device: &mut D,
-    target: NovaPathMaskTarget,
+    target: PathMaskTarget,
     backend_name: &str,
 ) where
     D: BackendResources + BackendPipelines,
@@ -162,23 +149,21 @@ pub(super) fn destroy_path_mask_target<D>(
 pub(super) fn create_backdrop_blur_target_chain<D>(
     device: &mut D,
     label: &str,
-    descriptor: NovaBackdropBlurTargetDescriptor,
-) -> Result<NovaBackdropBlurTargets>
+    mut descriptor: BackdropBlurTargetDescriptor,
+) -> Result<BackdropBlurTargets>
 where
     D: BackendResources + BackendPipelines,
 {
-    let config_set = descriptor.downsample.clone();
-    let configs = config_set.configs().to_vec();
-    create_backdrop_blur_target_chain_with_configs(device, label, descriptor, config_set, &configs)
+    let configs = std::mem::take(&mut descriptor.configs);
+    create_backdrop_blur_target_chain_with_configs(device, label, descriptor, &configs)
 }
 
 fn create_backdrop_blur_target_chain_with_configs<D>(
     device: &mut D,
     label: &str,
-    descriptor: NovaBackdropBlurTargetDescriptor,
-    config_set: NovaBackdropBlurConfigSet,
-    configs: &[NovaBackdropBlurConfig],
-) -> Result<NovaBackdropBlurTargets>
+    descriptor: BackdropBlurTargetDescriptor,
+    configs: &[BackdropBlurConfig],
+) -> Result<BackdropBlurTargets>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -219,9 +204,7 @@ where
         for (pass_index, target_size) in pass_sizes.into_iter().enumerate() {
             let target = create_render_texture_target(
                 device,
-                &format!(
-                    "{label} backdrop gaussian variant {variant_index} pass {pass_index}"
-                ),
+                &format!("{label} backdrop gaussian variant {variant_index} pass {pass_index}"),
                 target_size,
                 descriptor.format,
             )?;
@@ -239,7 +222,7 @@ where
                     ),
                 })?);
             }
-            levels.push(NovaBackdropBlurLevelTarget {
+            levels.push(BackdropBlurLevelTarget {
                 texture: target.texture,
                 texture_view: target.texture_view,
                 pass_resource_sets,
@@ -265,15 +248,14 @@ where
             })?);
         }
 
-        variants.push(NovaBackdropBlurVariantTargets {
+        variants.push(BackdropBlurVariantTargets {
             config,
             levels,
             target_resource_sets,
         });
     }
 
-    Ok(NovaBackdropBlurTargets {
-        downsample: config_set,
+    Ok(BackdropBlurTargets {
         source,
         source_pass_resource_sets,
         variants,
@@ -282,7 +264,7 @@ where
 
 pub(super) fn destroy_backdrop_blur_target_chain<D>(
     device: &mut D,
-    targets: NovaBackdropBlurTargets,
+    targets: BackdropBlurTargets,
     backend_name: &str,
 ) where
     D: BackendResources + BackendPipelines,
@@ -312,7 +294,7 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
             }
             destroy_render_texture_target(
                 device,
-                NovaTextureTarget {
+                TextureTarget {
                     texture: target.texture,
                     texture_view: target.texture_view,
                 },
@@ -361,7 +343,7 @@ fn create_render_texture_target<D>(
     label: &str,
     size: Extent2d,
     format: Format,
-) -> Result<NovaTextureTarget>
+) -> Result<TextureTarget>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -378,13 +360,13 @@ where
         texture,
         format,
     })?;
-    Ok(NovaTextureTarget {
+    Ok(TextureTarget {
         texture,
         texture_view,
     })
 }
 
-fn destroy_render_texture_target<D>(device: &mut D, target: NovaTextureTarget, backend_name: &str)
+fn destroy_render_texture_target<D>(device: &mut D, target: TextureTarget, backend_name: &str)
 where
     D: BackendResources + BackendPipelines,
 {

@@ -1,6 +1,8 @@
+#[cfg(debug_assertions)]
+use crate::BorderStyle;
 use crate::{
-    App, Background, BackgroundTag, BorderStyle, Bounds, ContentMask, Corners, DevicePixels, Edges,
-    Hsla, Pixels, Point, Rgba, Size, Style, TextStyleRefinement, Window, point, quad, size,
+    App, Background, BackgroundTag, Bounds, ContentMask, Corners, DevicePixels, Edges, Hsla,
+    Pixels, Point, Rgba, Size, Style, TextStyleRefinement, Window, point, quad, size,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

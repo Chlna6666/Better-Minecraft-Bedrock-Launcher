@@ -1,21 +1,27 @@
 use super::*;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use crate::{FontRun, FontWeight, GlyphRasterization, PlatformTextSystem, RenderGlyphParams, font};
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 const PLATFORM_TITLE_FONT_SIZE: Pixels = px(14.0);
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 const PLATFORM_TITLE_MASK_PADDING: i32 = 1;
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) struct PlatformTitleMask {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) alpha: Vec<u8>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 struct RasterizedTitleGlyph {
     origin: Point<i32>,
     size: Size<DevicePixels>,
     alpha: Vec<u8>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) fn rasterize_platform_title(
     text_system: &dyn PlatformTextSystem,
     title: &str,
@@ -257,7 +263,7 @@ pub(crate) fn svg_raster_size_for_paint_bounds(bounds: Bounds<ScaledPixels>) -> 
 
 /// State for implementing a client-side titlebar with native drag and double-click behavior.
 #[derive(Clone, Debug)]
-pub struct TitlebarGestureState {
+pub struct TitlebarGesture {
     drag_armed: bool,
     drag_down_pos: Point<Pixels>,
     last_down_at: Option<Instant>,
@@ -265,7 +271,7 @@ pub struct TitlebarGestureState {
     drag_threshold_px: f32,
 }
 
-impl Default for TitlebarGestureState {
+impl Default for TitlebarGesture {
     fn default() -> Self {
         Self {
             drag_armed: false,
@@ -277,7 +283,7 @@ impl Default for TitlebarGestureState {
     }
 }
 
-impl TitlebarGestureState {
+impl TitlebarGesture {
     /// Create a titlebar gesture state with the default drag threshold.
     pub fn new() -> Self {
         Self::default()
@@ -420,7 +426,7 @@ mod titlebar_gesture_tests {
 
     #[test]
     fn detects_platform_double_clicks_and_disarms_drag() {
-        let mut state = TitlebarGestureState::default();
+        let mut state = TitlebarGesture::default();
         let now = Instant::now();
 
         assert!(!state.mouse_down(&mouse_down(point(px(10.0), px(10.0)), 1), now));
@@ -435,7 +441,7 @@ mod titlebar_gesture_tests {
 
     #[test]
     fn uses_configured_drag_threshold() {
-        let mut state = TitlebarGestureState::with_drag_threshold(6.0);
+        let mut state = TitlebarGesture::with_drag_threshold(6.0);
         let now = Instant::now();
 
         assert!(!state.mouse_down(&mouse_down(point(px(10.0), px(10.0)), 1), now));

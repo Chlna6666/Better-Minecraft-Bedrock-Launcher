@@ -45,13 +45,10 @@ impl Window {
 
     /// Returns the highest precedence key binding that invokes an action on the currently focused
     /// element. This is more efficient than getting the last result of `bindings_for_action`.
-    pub fn highest_precedence_binding_for_action(&self, action: &dyn Action) -> Option<KeyBinding> {
+    pub fn binding_for_action(&self, action: &dyn Action) -> Option<KeyBinding> {
         self.rendered_frame
             .dispatch_tree
-            .highest_precedence_binding_for_action(
-                action,
-                &self.rendered_frame.dispatch_tree.context_stack,
-            )
+            .binding_for_action(action, &self.rendered_frame.dispatch_tree.context_stack)
     }
 
     /// Returns the key bindings for an action in a context.
@@ -66,13 +63,13 @@ impl Window {
 
     /// Returns the highest precedence key binding for an action in a context. This is more
     /// efficient than getting the last result of `bindings_for_action_in_context`.
-    pub fn highest_precedence_binding_for_action_in_context(
+    pub fn binding_for_action_in_context(
         &self,
         action: &dyn Action,
         context: KeyContext,
     ) -> Option<KeyBinding> {
         let dispatch_tree = &self.rendered_frame.dispatch_tree;
-        dispatch_tree.highest_precedence_binding_for_action(action, &[context])
+        dispatch_tree.binding_for_action(action, &[context])
     }
 
     /// Returns any bindings that would invoke an action on the given focus handle if it were
@@ -93,14 +90,14 @@ impl Window {
     /// Returns the highest precedence key binding that would invoke an action on the given focus
     /// handle if it were focused. This is more efficient than getting the last result of
     /// `bindings_for_action_in`.
-    pub fn highest_precedence_binding_for_action_in(
+    pub fn binding_for_action_in(
         &self,
         action: &dyn Action,
         focus_handle: &FocusHandle,
     ) -> Option<KeyBinding> {
         let dispatch_tree = &self.rendered_frame.dispatch_tree;
         let context_stack = self.context_stack_for_focus_handle(focus_handle)?;
-        dispatch_tree.highest_precedence_binding_for_action(action, &context_stack)
+        dispatch_tree.binding_for_action(action, &context_stack)
     }
 
     fn context_stack_for_focus_handle(

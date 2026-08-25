@@ -2,6 +2,11 @@ use crate::RendererBackend;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use super::{
+    AllocatorBucketMetricsSnapshot, AnimationMetricsSnapshot, ImageRenderRecord,
+    WindowMetricsSnapshot,
+};
+
 /// Per-process GPUI rendering and resource metrics.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PerformanceMetricsSnapshot {
@@ -91,64 +96,68 @@ pub struct PerformanceMetricsSnapshot {
     pub gpu_submission_wait_max_time: Option<Duration>,
     /// Number of GPU submission waits that exceeded the frame-time threshold.
     pub gpu_submission_slow_wait_count: usize,
+    /// CPU time spent packing the latest scene into Nova upload buffers.
+    pub scene_pack_time: Option<Duration>,
     /// Time spent queueing platform atlas upload commands during the latest reported frame.
     pub atlas_upload_time: Option<Duration>,
     /// Compressed bytes in the most recently decoded image.
-    pub last_image_decode_compressed_bytes: usize,
+    pub last_image_processing_compressed_bytes: usize,
     /// Decoded BGRA bytes in the most recently decoded image.
-    pub last_image_decode_decoded_bytes: usize,
+    pub last_image_processing_output_bytes: usize,
     /// Frame count in the most recently decoded image.
-    pub last_image_decode_frames: usize,
-    /// Decode time for the most recently decoded image.
-    pub last_image_decode_time: Option<Duration>,
-    /// Number of completed image decodes recorded by GPUI and app decode helpers.
-    pub image_decode_count: usize,
-    /// Total compressed bytes processed by recorded image decodes.
-    pub image_decode_compressed_bytes: usize,
-    /// Total decoded BGRA bytes produced by recorded image decodes.
-    pub image_decode_decoded_bytes: usize,
-    /// Total decoded image frames produced by recorded image decodes.
-    pub image_decode_frames: usize,
-    /// Total time spent in recorded image decodes.
-    pub image_decode_total_time: Option<Duration>,
-    /// Maximum single recorded image decode time.
-    pub image_decode_max_time: Option<Duration>,
-    /// Number of recorded image decodes that exceeded the supplied slow threshold.
-    pub image_decode_slow_count: usize,
-    /// Decoded bytes currently retained by size-aware image assets.
-    pub image_asset_retained_decoded_bytes: usize,
+    pub last_image_processing_frames: usize,
+    /// Processing time for the most recently decoded image.
+    pub last_image_processing_time: Option<Duration>,
+    /// Number of completed image processing operations recorded by GPUI and app decode helpers.
+    pub image_processing_count: usize,
+    /// Total compressed bytes processed by recorded image processing operations.
+    pub image_processing_compressed_bytes: usize,
+    /// Total decoded BGRA bytes produced by recorded image processing operations.
+    pub image_processing_output_bytes: usize,
+    /// Total decoded image frames produced by recorded image processing operations.
+    pub image_processing_frames: usize,
+    /// Total time spent in recorded image processing operations.
+    pub image_processing_total_time: Option<Duration>,
+    /// Maximum single recorded image processing time.
+    pub image_processing_max_time: Option<Duration>,
+    /// Number of recorded image processing operations that exceeded the supplied slow threshold.
+    pub image_processing_slow_count: usize,
+    /// Bounded animated-image streaming diagnostics.
+    pub animation: AnimationMetricsSnapshot,
+    /// Resident bytes currently retained by size-aware image assets.
+    pub image_asset_resident_bytes: usize,
     /// Number of currently retained size-aware image asset variants.
     pub image_asset_retained_count: usize,
-    /// Largest decoded image currently retained by size-aware image assets.
-    pub image_asset_largest_retained_decoded_bytes: usize,
+    /// Largest resident image currently retained by size-aware image assets.
+    pub image_asset_largest_resident_bytes: usize,
     /// Number of entries retained by GPUI image asset caches that are visible globally.
-    pub gpui_image_asset_cache_entries: usize,
+    pub image_asset_cache_entries: usize,
     /// Compressed bytes retained by GPUI image assets.
-    pub gpui_image_asset_retained_compressed_bytes: usize,
-    /// Decoded bytes retained by GPUI image assets and bounded image caches.
-    pub gpui_image_asset_total_retained_decoded_bytes: usize,
+    pub image_asset_compressed_bytes: usize,
+    /// Resident image bytes retained by GPUI image assets and bounded image caches.
+    pub image_asset_total_resident_bytes: usize,
     /// Estimated decoded bytes retained by render images in GPUI caches.
-    pub gpui_render_image_cpu_bytes: usize,
+    pub render_image_cpu_bytes: usize,
     /// Estimated GPU texture bytes retained for render images.
-    pub gpui_render_image_gpu_texture_bytes: usize,
+    pub render_image_gpu_texture_bytes: usize,
     /// Number of entries retained by framework icon caches.
-    pub gpui_icon_cache_entries: usize,
+    pub icon_cache_entries: usize,
     /// Estimated decoded bytes retained by framework icon caches.
-    pub gpui_icon_cache_decoded_bytes: usize,
+    pub icon_cache_resident_bytes: usize,
     /// Estimated bytes retained by monochrome atlas textures.
-    pub gpui_atlas_monochrome_bytes: usize,
+    pub atlas_monochrome_bytes: usize,
     /// Estimated bytes retained by color atlas textures.
-    pub gpui_atlas_polychrome_bytes: usize,
+    pub atlas_polychrome_bytes: usize,
     /// Number of live atlas keys known to renderer metrics.
-    pub gpui_atlas_live_keys: usize,
+    pub atlas_live_keys: usize,
     /// Estimated unused bytes inside retained atlas textures.
-    pub gpui_atlas_unused_bytes: usize,
+    pub atlas_unused_bytes: usize,
     /// Estimated bytes retained by window surface and retained-frame resources.
-    pub gpui_gpu_surface_texture_bytes: usize,
+    pub gpu_surface_texture_bytes: usize,
     /// Aggregate GPUI-owned retained bytes visible to diagnostics.
-    pub gpui_gpu_estimated_total_retained_bytes: usize,
-    /// Recent size-aware image decode records.
-    pub recent_image_decodes: Vec<ImageDecodeRecord>,
+    pub gpu_estimated_total_retained_bytes: usize,
+    /// Recent size-aware image processing records.
+    pub recent_image_processings: Vec<ImageRenderRecord>,
     /// Total foreground time spent building the first frame.
     pub first_frame_build_time: Option<Duration>,
     /// Time spent in root layout for the first frame.
@@ -343,118 +352,6 @@ pub struct PerformanceMetricsSnapshot {
     pub window_metrics: Vec<WindowMetricsSnapshot>,
 }
 
-/// Diagnostics for one size-aware image decode.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImageDecodeRecord {
-    /// Stable source label used for diagnostics.
-    pub source: String,
-    /// Original source width, when available.
-    pub original_width: u32,
-    /// Original source height, when available.
-    pub original_height: u32,
-    /// Requested decode width in device pixels.
-    pub target_width: u32,
-    /// Requested decode height in device pixels.
-    pub target_height: u32,
-    /// Retained decoded bytes produced by the decode.
-    pub retained_decoded_bytes: usize,
-    /// Decode implementation used for this record.
-    pub decode_mode: String,
-}
-
-/// Per-window GPUI rendering and scheduling metrics.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowMetricsSnapshot {
-    /// Stable platform window id.
-    pub window_id: u64,
-    /// Number of frame requests queued for this window.
-    pub request_redraw_count: usize,
-    /// Number of frames that drew for this window.
-    pub draw_count: usize,
-    /// Number of frames that presented for this window.
-    pub present_count: usize,
-    /// Number of frame decisions skipped for this window.
-    pub skip_count: usize,
-    /// Number of skipped frame opportunities observed for this window.
-    pub skipped_frame_count: usize,
-    /// Number of GPU surface reconfigures for this window.
-    pub gpu_surface_reconfigure_count: usize,
-    /// Number of GPU surface acquire/present errors for this window.
-    pub gpu_surface_error_count: usize,
-    /// Number of layout recomputes for this window.
-    pub layout_recompute_count: usize,
-    /// Bytes uploaded on behalf of this window during the latest renderer submission.
-    pub upload_bytes: usize,
-}
-
-/// Per-memory-location allocator metrics for one backend bucket.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AllocatorBucketMetricsSnapshot {
-    /// Bytes currently allocated from this allocator bucket.
-    pub allocated_bytes: usize,
-    /// Bytes currently reserved by blocks in this allocator bucket.
-    pub reserved_bytes: usize,
-    /// Number of live blocks in this allocator bucket.
-    pub block_count: usize,
-    /// Bytes attributed to committed allocations in this allocator bucket.
-    pub committed_allocated_bytes: usize,
-    /// Number of committed allocations in this allocator bucket.
-    pub committed_allocation_count: usize,
-}
-
 /// Global wrapper for [`PerformanceMetricsSnapshot`].
 #[derive(Clone, Debug, Default)]
 pub struct PerformanceMetrics(pub PerformanceMetricsSnapshot);
-
-/// Per-frame foreground timings recorded when frame profiling is enabled.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FramePhaseMetrics {
-    /// Total foreground frame build duration.
-    pub build: Duration,
-    /// Root and overlay layout duration.
-    pub layout: Duration,
-    /// Prepaint duration.
-    pub prepaint: Duration,
-    /// Paint duration.
-    pub paint: Duration,
-    /// Scene finish duration.
-    pub scene_finish: Duration,
-}
-
-/// Per-frame layout counters recorded when frame profiling is enabled.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LayoutFrameMetrics {
-    /// Number of layout nodes requested this frame.
-    pub nodes: usize,
-    /// Number of measured layout nodes requested this frame.
-    pub measured_nodes: usize,
-    /// Number of layout roots computed this frame.
-    pub roots: usize,
-    /// Number of layout bounds cache hits this frame.
-    pub bounds_cache_hits: usize,
-    /// Number of layout bounds cache misses this frame.
-    pub bounds_cache_misses: usize,
-    /// Number of retained layout roots reused this frame.
-    pub cache_reused_roots: usize,
-    /// Number of child roots saved by retained layout reuse this frame.
-    pub cache_saved_roots: usize,
-}
-
-/// Per-frame scene counters recorded when frame profiling is enabled.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SceneFrameMetrics {
-    /// Number of primitives emitted into the scene.
-    pub primitives: usize,
-    /// Number of prepared batches produced by scene finish.
-    pub batches: usize,
-    /// Number of retained scene segments produced by scene finish.
-    pub segments: usize,
-    /// Number of paint operations replayed from a prior frame.
-    pub replayed_primitives: usize,
-    /// Number of retained segments rebuilt for dirty fibers this frame.
-    pub segment_rebuild_count: usize,
-    /// Number of retained segments reused by clean fibers this frame.
-    pub segment_reuse_count: usize,
-    /// Aggregate retained scene-side capacity after finish.
-    pub retained_capacity: usize,
-}

@@ -1,8 +1,8 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::super::AllocatorBucketMetricsSnapshot;
-use super::super::state::shared_metrics;
+use super::AllocatorBucketMetricsSnapshot;
+use super::store::shared_metrics;
 
 /// Per-category Nova frame upload diagnostics.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -81,6 +81,14 @@ pub fn record_atlas_upload_metrics(bytes: usize, tiles: usize, duration: Duratio
     );
 }
 
+/// Records CPU time spent packing the latest scene into Nova upload buffers.
+pub fn record_scene_pack_time(duration: Duration) {
+    shared_metrics().scene_pack_micros.store(
+        duration.as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+}
+
 /// Records upload bytes for the latest frame.
 pub fn record_upload_bytes(bytes: usize) {
     shared_metrics()
@@ -98,6 +106,7 @@ pub fn record_pod_upload_bytes(bytes: usize) {
 /// Clears latest-frame upload and renderer cache counters before a new submission.
 pub fn reset_frame_upload_metrics() {
     let metrics = shared_metrics();
+    metrics.scene_pack_micros.store(0, Ordering::Relaxed);
     metrics.atlas_upload_bytes.store(0, Ordering::Relaxed);
     metrics.atlas_upload_tiles.store(0, Ordering::Relaxed);
     metrics.atlas_upload_micros.store(0, Ordering::Relaxed);

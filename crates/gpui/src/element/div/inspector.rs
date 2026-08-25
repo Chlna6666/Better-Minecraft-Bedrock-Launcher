@@ -1,13 +1,14 @@
-use crate::{
-    App, Bounds, DispatchPhase, GlobalElementId, Hitbox, MouseMoveEvent, Pixels, Size, Style,
-    StyleRefinement, Window, px,
-};
+#[cfg(any(feature = "inspector", debug_assertions))]
+use crate::StyleRefinement;
+use crate::{App, Bounds, Pixels, Size, Window};
+#[cfg(debug_assertions)]
+use crate::{DispatchPhase, GlobalElementId, Hitbox, MouseMoveEvent, Style, px};
 
-use super::state::Interactivity;
+use super::interactivity::Interactivity;
 
 /// Interactivity state displayed an manipulated in the inspector.
 #[derive(Clone)]
-pub struct DivInspectorState {
+pub struct DivInspection {
     /// The inspected element's base style. This is used for both inspecting and modifying the
     /// state. In the future it will make sense to separate the read and write, possibly tracking
     /// the modifications.
@@ -176,11 +177,11 @@ impl Interactivity {
         window.with_inspector_state(
             inspector_id,
             cx,
-            |inspector_state: &mut Option<DivInspectorState>, _window| {
+            |inspector_state: &mut Option<DivInspection>, _window| {
                 if let Some(inspector_state) = inspector_state {
                     self.base_style = inspector_state.base_style.clone();
                 } else {
-                    *inspector_state = Some(DivInspectorState {
+                    *inspector_state = Some(DivInspection {
                         base_style: self.base_style.clone(),
                         bounds: Default::default(),
                         content_size: Default::default(),
@@ -188,6 +189,9 @@ impl Interactivity {
                 }
             },
         );
+
+        #[cfg(not(any(feature = "inspector", debug_assertions)))]
+        let _ = (inspector_id, window, cx);
     }
 
     pub(crate) fn sync_inspector_prepaint_state(
@@ -202,12 +206,15 @@ impl Interactivity {
         window.with_inspector_state(
             inspector_id,
             cx,
-            |inspector_state: &mut Option<DivInspectorState>, _window| {
+            |inspector_state: &mut Option<DivInspection>, _window| {
                 if let Some(inspector_state) = inspector_state {
                     inspector_state.bounds = bounds;
                     inspector_state.content_size = content_size;
                 }
             },
         );
+
+        #[cfg(not(any(feature = "inspector", debug_assertions)))]
+        let _ = (inspector_id, bounds, content_size, window, cx);
     }
 }

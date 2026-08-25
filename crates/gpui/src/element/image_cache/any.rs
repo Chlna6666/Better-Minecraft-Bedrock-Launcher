@@ -1,4 +1,4 @@
-use crate::{AnyEntity, App, Entity, ImageCacheError, RenderImage, Resource, Window};
+use crate::{AnyEntity, App, AssetLocation, Entity, ImageCacheError, RenderImage, Window};
 use std::sync::Arc;
 
 use super::ImageCache;
@@ -9,7 +9,7 @@ pub struct AnyImageCache {
     image_cache: AnyEntity,
     load_fn: fn(
         image_cache: &AnyEntity,
-        resource: &Resource,
+        resource: &AssetLocation,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Result<Arc<RenderImage>, ImageCacheError>>,
@@ -29,7 +29,7 @@ impl AnyImageCache {
     /// returns the result of loading the image if it has finished loading, or None if it is still loading
     pub fn load(
         &self,
-        resource: &Resource,
+        resource: &AssetLocation,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
@@ -39,7 +39,7 @@ impl AnyImageCache {
 
 fn load<I: 'static + ImageCache>(
     image_cache: &AnyEntity,
-    resource: &Resource,
+    resource: &AssetLocation,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {

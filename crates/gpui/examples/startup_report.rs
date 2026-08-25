@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows process memory counters require a Win32 FFI call"
+)]
+
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;

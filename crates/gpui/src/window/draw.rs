@@ -427,7 +427,6 @@ impl Window {
             dirty_region: &self.render_dirty_region,
             partial_present_mode: self.render_present_mode,
             trim_policy: self.render_trim_policy,
-            visual_effect_quality: FrameVisualEffectQuality::Full,
             backdrop_blur_refresh_required: self.backdrop_blur_refresh_required,
         }
     }

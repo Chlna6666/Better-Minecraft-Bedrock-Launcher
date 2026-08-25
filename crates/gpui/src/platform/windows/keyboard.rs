@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "keyboard translation calls Win32 APIs with native buffers"
+)]
+
 use anyhow::Result;
 use collections::HashMap;
 use windows::Win32::UI::{

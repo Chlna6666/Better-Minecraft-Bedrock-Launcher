@@ -1,8 +1,8 @@
 mod app;
-mod bounds_model;
 mod construct;
 mod edges;
 mod map;
 mod ops;
+mod value;
 
-pub use bounds_model::{Bounds, bounds};
+pub use value::{Bounds, bounds};

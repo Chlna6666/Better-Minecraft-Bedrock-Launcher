@@ -1,62 +1,68 @@
+#![expect(
+    unsafe_code,
+    reason = "WebP rendering crosses the audited libwebp FFI boundary"
+)]
+
 use crate::{ObjectFit, Result, size};
 use smallvec::SmallVec;
 use std::mem::MaybeUninit;
 
-use super::target::{
-    bgra_bytes_to_rgba_image, bgra_len, fitted_target_size, high_quality_intermediate_target,
-    resize_rgba_to_target,
+use super::resample::{
+    bgra_byte_len, intermediate_sample_size, resize_rgba_frame, rgba_image_from_bgra,
 };
-use crate::assets::render_image::{AnimatedFrame, RenderImage};
-use crate::assets::types::{ImageDecodeTarget, TargetImageDecodeMetadata};
+use crate::assets::{
+    AnimatedFrame, RenderImage, acquire_bitmap_buffer_capacity, release_bitmap_buffer,
+};
+use crate::assets::{ImageRenderInfo, ImageRenderSize};
 
-pub(super) fn decode_webp_to_target(
+pub(super) fn render_sized(
     bytes: &[u8],
-    target: ImageDecodeTarget,
+    target: ImageRenderSize,
     object_fit: ObjectFit,
-) -> Result<Option<(RenderImage, TargetImageDecodeMetadata)>> {
-    let Some((output, decoded_target, original_width, original_height, initial_decode_mode)) =
-        decode_webp_bgra(bytes, Some((target, object_fit)))?
+) -> Result<Option<(RenderImage, ImageRenderInfo)>> {
+    let Some((output, decoded_target, original_width, original_height, initial_render_path)) =
+        bgra_pixels(bytes, Some((target, object_fit)))?
     else {
         return Ok(None);
     };
     let original_size = size(original_width, original_height);
-    let fitted_target = fitted_target_size(original_size, target, object_fit);
-    let (image, decode_mode) = if decoded_target == fitted_target {
+    let fitted_target = target.fit(original_size, object_fit);
+    let (image, render_path) = if decoded_target == fitted_target {
         let frame = AnimatedFrame::from_bgra_bytes(0, decoded_target.size(), output);
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            initial_decode_mode,
+            initial_render_path,
         )
     } else {
-        let rgba = bgra_bytes_to_rgba_image(output, decoded_target)?;
-        let (rgba, decode_mode) = resize_rgba_to_target(rgba, fitted_target, initial_decode_mode)?;
+        let rgba = rgba_image_from_bgra(output, decoded_target)?;
+        let (rgba, render_path) = resize_rgba_frame(rgba, fitted_target, initial_render_path)?;
         let frame = AnimatedFrame::from_rgba_image(0, rgba);
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            decode_mode,
+            render_path,
         )
     };
     Ok(Some((
         image,
-        TargetImageDecodeMetadata {
+        ImageRenderInfo {
             original_width,
             original_height,
-            target: fitted_target,
-            decode_mode,
+            size: fitted_target,
+            render_path,
         },
     )))
 }
 
-pub(super) fn decode_static_webp_frame(bytes: &[u8]) -> Result<AnimatedFrame> {
-    let (output, target, _, _, _) = decode_webp_bgra(bytes, None)?
+pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
+    let (output, target, _, _, _) = bgra_pixels(bytes, None)?
         .ok_or_else(|| anyhow::anyhow!("animated WebP requires the animation decoder"))?;
     Ok(AnimatedFrame::from_bgra_bytes(0, target.size(), output))
 }
 
-fn decode_webp_bgra(
+fn bgra_pixels(
     bytes: &[u8],
-    target: Option<(ImageDecodeTarget, ObjectFit)>,
-) -> Result<Option<(Vec<u8>, ImageDecodeTarget, u32, u32, &'static str)>> {
+    target: Option<(ImageRenderSize, ObjectFit)>,
+) -> Result<Option<(Vec<u8>, ImageRenderSize, u32, u32, &'static str)>> {
     use libwebp_sys::{
         MODE_BGRA, VP8_STATUS_OK, WebPDecBuffer, WebPDecode, WebPDecoderConfig, WebPGetFeatures,
         WebPInitDecoderConfig, WebPRGBABuffer,
@@ -98,16 +104,20 @@ fn decode_webp_bgra(
         .ok_or_else(|| anyhow::anyhow!("libwebp reported invalid source height"))?;
     let source_size = size(original_width, original_height);
     let fitted_target = if let Some((target, object_fit)) = target {
-        let fitted_target = fitted_target_size(source_size, target, object_fit);
-        high_quality_intermediate_target(source_size, fitted_target)
+        let fitted_target = target.fit(source_size, object_fit);
+        intermediate_sample_size(source_size, fitted_target)
     } else {
-        ImageDecodeTarget {
+        ImageRenderSize {
             width: original_width,
             height: original_height,
         }
     };
-    let output_len = bgra_len(fitted_target)?;
-    let mut output = vec![0; output_len];
+    let output_len = bgra_byte_len(fitted_target)?;
+    let mut output = acquire_bitmap_buffer_capacity(output_len);
+    anyhow::ensure!(
+        output.capacity() >= output_len,
+        "bitmap pool returned insufficient WebP output capacity"
+    );
 
     config.options.use_scaling =
         i32::from(fitted_target.width != original_width || fitted_target.height != original_height);
@@ -122,7 +132,7 @@ fn decode_webp_bgra(
             RGBA: WebPRGBABuffer {
                 rgba: output.as_mut_ptr(),
                 stride: fitted_target.width as i32 * 4,
-                size: output.len(),
+                size: output_len,
             },
         },
         pad: [0; 4],
@@ -133,10 +143,15 @@ fn decode_webp_bgra(
         // SAFETY: config.output points at `output`, which is sized for scaled BGRA pixels and remains live.
         WebPDecode(bytes.as_ptr(), bytes.len(), &mut config)
     };
-    anyhow::ensure!(
-        status == VP8_STATUS_OK,
-        "libwebp decode failed: status {status}"
-    );
+    if status != VP8_STATUS_OK {
+        release_bitmap_buffer(output);
+        anyhow::bail!("libwebp decode failed: status {status}");
+    }
+    unsafe {
+        // SAFETY: a successful WebPDecode with an external BGRA buffer initializes exactly
+        // width * height * 4 bytes, which is `output_len` by construction above.
+        output.set_len(output_len);
+    }
 
     Ok(Some((
         output,
@@ -144,9 +159,9 @@ fn decode_webp_bgra(
         original_width,
         original_height,
         if config.options.use_scaling != 0 {
-            "webp_scaled_decode"
+            "webp_scaled"
         } else {
-            "webp_direct_decode"
+            "webp_direct"
         },
     )))
 }

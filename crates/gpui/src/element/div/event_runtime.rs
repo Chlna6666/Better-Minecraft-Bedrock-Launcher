@@ -7,8 +7,8 @@ use std::{mem, rc::Rc};
 
 use super::{
     drag_drop::{bind_drag_start_listeners, bind_drop_listeners},
-    frame_state::{ElementClickedState, InteractiveElementState},
-    state::Interactivity,
+    interactivity::Interactivity,
+    state::{ElementClickedState, InteractiveElementState},
     style_state::GroupHitboxes,
     tooltip::register_tooltip_mouse_handlers,
 };
@@ -101,7 +101,7 @@ impl Interactivity {
                 bind_drag_start_listeners(
                     hitbox,
                     pending_mouse_down.clone(),
-                    clicked_state.clone(),
+                    clicked_state,
                     has_active_style,
                     drag_cursor_style,
                     drag_listener,

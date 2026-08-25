@@ -13,11 +13,11 @@ mod length;
 mod pixel_conversions;
 mod pixels;
 mod point;
+mod scalar;
 mod scaled_pixels;
 mod size;
 #[cfg(test)]
 mod tests;
-mod traits;
 mod unit;
 
 pub use axis::*;
@@ -29,7 +29,7 @@ pub use grid::*;
 pub use length::*;
 pub use pixels::*;
 pub use point::*;
+pub use scalar::*;
 pub use scaled_pixels::*;
 pub use size::*;
-pub use traits::*;
 pub use unit::*;

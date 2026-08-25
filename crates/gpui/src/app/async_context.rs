@@ -188,14 +188,6 @@ impl AsyncApp {
             .spawn(async move { f(&mut cx).await })
     }
 
-    /// Determine whether global state of the specified type has been assigned.
-    /// Returns an error if the `App` has been dropped.
-    pub fn has_global<G: Global>(&self) -> Result<bool> {
-        let app = self.app.upgrade().context("app was released")?;
-        let app = app.borrow_mut();
-        Ok(app.has_global::<G>())
-    }
-
     /// Reads the global state of the specified type, passing it to the given callback.
     ///
     /// Panics if no global state of the specified type has been assigned.

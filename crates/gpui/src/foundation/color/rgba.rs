@@ -112,10 +112,10 @@ impl Rgba {
 
 impl From<Rgba> for u32 {
     fn from(rgba: Rgba) -> Self {
-        let r = (rgba.r * 255.0) as u32;
-        let g = (rgba.g * 255.0) as u32;
-        let b = (rgba.b * 255.0) as u32;
-        let a = (rgba.a * 255.0) as u32;
+        let r = (rgba.r * 255.0).round() as u32;
+        let g = (rgba.g * 255.0).round() as u32;
+        let b = (rgba.b * 255.0).round() as u32;
+        let a = (rgba.a * 255.0).round() as u32;
         (r << 24) | (g << 16) | (b << 8) | a
     }
 }

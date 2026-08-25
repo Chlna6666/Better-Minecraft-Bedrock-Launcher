@@ -24,6 +24,11 @@ mod style;
 mod text_system;
 mod window;
 
+/// APIs used only by GPUI's Criterion benchmark targets.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod benchmark;
+
 #[cfg(doc)]
 pub use app::ownership_and_data_flow as _ownership_and_data_flow;
 

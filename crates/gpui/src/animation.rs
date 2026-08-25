@@ -2,8 +2,8 @@
 
 mod animatable;
 mod easing;
+mod engine;
 mod keyframe;
-mod manager;
 mod physics;
 mod scheduler;
 mod spring;
@@ -13,9 +13,9 @@ mod tween;
 
 pub use animatable::Animatable;
 pub use easing::{Easing, StepPosition, TransitionEasing};
+pub use engine::{AnimationEngine, AnimationGroupId, AnimationGroupSample, AnimationTick};
 pub use keyframe::{Keyframe, KeyframeTrack};
-pub use manager::{AnimationEngine, AnimationGroupId, AnimationGroupSample, AnimationTick};
-pub use physics::{PhysicsConfig, SpringMotion};
+pub use physics::{SpringMotion, SpringPhysics};
 pub use scheduler::AnimationDriver;
 pub use spring::{Spring, SpringSample};
 pub use timeline::{
@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn spring_progress_moves_toward_one() {
         let spring = Spring {
-            physics: PhysicsConfig {
+            physics: SpringPhysics {
                 stiffness: 60.0,
                 damping: 8.0,
                 mass: 1.0,
@@ -583,14 +583,14 @@ mod tests {
         assert_eq!(spring.sample(-1.0), 0.0);
         assert_eq!(spring.sample(f32::NAN), 0.0);
         assert_ne!(
-            PhysicsConfig {
+            SpringPhysics {
                 stiffness: 10.0,
                 damping: 8.0,
                 mass: 1.0,
             }
             .position_velocity(0.25, 0.0)
             .displacement,
-            PhysicsConfig {
+            SpringPhysics {
                 stiffness: 100.0,
                 damping: 8.0,
                 mass: 1.0,

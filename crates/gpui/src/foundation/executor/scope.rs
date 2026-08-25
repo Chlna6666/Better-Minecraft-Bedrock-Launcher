@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "scoped tasks erase lifetimes while Drop guarantees completion"
+)]
+
 use super::background::BackgroundExecutor;
 use futures::channel::mpsc;
 use smol::prelude::*;

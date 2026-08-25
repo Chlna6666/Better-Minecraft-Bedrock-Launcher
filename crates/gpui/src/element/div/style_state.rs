@@ -33,8 +33,8 @@ impl GroupHitboxes {
     }
 }
 
-use super::frame_state::InteractiveElementState;
-use super::state::Interactivity;
+use super::interactivity::Interactivity;
+use super::state::InteractiveElementState;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ComputedStyleKey {

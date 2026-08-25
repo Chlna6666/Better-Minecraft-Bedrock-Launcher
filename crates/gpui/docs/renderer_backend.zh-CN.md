@@ -18,8 +18,8 @@ defaults。
 - `render_policy`：event-driven、continuous 或 on-demand composition；
 - `frame_metrics`：用于 debugging 和 profiling 的额外 metrics collection。
 
-启动时使用 `Application::new_with_renderer_options(options)` 或
-`Application::new_with_renderer_backend(backend)`。
+启动时使用 `Application::with_renderer_options(options)` 或
+`Application::with_renderer_backend(backend)`。
 
 ## 环境变量 Override
 

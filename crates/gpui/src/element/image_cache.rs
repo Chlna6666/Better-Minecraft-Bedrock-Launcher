@@ -1,11 +1,11 @@
 mod any;
 mod bounded;
+mod cache;
 mod element;
-mod retain_all;
-mod traits;
+mod item;
 
 pub use any::AnyImageCache;
 pub use bounded::{BoundedImageCache, BoundedImageCacheConfig, BoundedImageCacheProvider, bounded};
+pub use cache::{ImageCache, ImageCacheProvider};
 pub use element::{ImageCacheElement, image_cache};
-pub use retain_all::{RetainAllImageCache, RetainAllImageCacheProvider, retain_all};
-pub use traits::{ImageCache, ImageCacheItem, ImageCacheProvider, ImageLoadingTask};
+pub use item::{ImageCacheItem, ImageLoadingTask};

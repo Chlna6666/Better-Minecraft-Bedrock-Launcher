@@ -3,8 +3,8 @@ use std::{borrow::Cow, ops};
 use anyhow::Result;
 
 use crate::{
-    Bounds, DevicePixels, RenderGlyphParams, RenderImageParams, RenderImagePixelFormat,
-    RenderSvgParams, Rgba, Size,
+    Bounds, DevicePixels, ImagePixelFormat, RenderGlyphParams, RenderImageParams, RenderSvgParams,
+    Rgba, Size,
 };
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -35,8 +35,8 @@ impl AtlasKey {
             }
             AtlasKey::Svg(_) => AtlasTextureKind::Monochrome,
             AtlasKey::Image(params) => match params.pixel_format {
-                RenderImagePixelFormat::Bgra8 => AtlasTextureKind::Bgra,
-                RenderImagePixelFormat::Rgba8 => AtlasTextureKind::Rgba,
+                ImagePixelFormat::Bgra8 => AtlasTextureKind::Bgra,
+                ImagePixelFormat::Rgba8 => AtlasTextureKind::Rgba,
             },
         }
     }
@@ -207,12 +207,12 @@ mod tests {
         let bgra_key = AtlasKey::Image(RenderImageParams {
             image_id: crate::ImageId(1),
             frame_slot: 0,
-            pixel_format: RenderImagePixelFormat::Bgra8,
+            pixel_format: ImagePixelFormat::Bgra8,
         });
         let rgba_key = AtlasKey::Image(RenderImageParams {
             image_id: crate::ImageId(1),
             frame_slot: 0,
-            pixel_format: RenderImagePixelFormat::Rgba8,
+            pixel_format: ImagePixelFormat::Rgba8,
         });
 
         assert!(bgra_key != rgba_key);

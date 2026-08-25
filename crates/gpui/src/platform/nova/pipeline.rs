@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) struct NovaPipelines {
-    pub(super) alpha: NovaBlendPipelines,
-    pub(super) premultiplied: NovaBlendPipelines,
+pub(super) struct Pipelines {
+    pub(super) alpha: BlendPipelines,
+    pub(super) premultiplied: BlendPipelines,
     pub(super) path_rasterization: RenderPipelineId,
     pub(super) paths: RenderPipelineId,
     pub(super) backdrop_blur_downsample: RenderPipelineId,
@@ -10,7 +10,7 @@ pub(super) struct NovaPipelines {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct NovaBlendPipelines {
+pub(super) struct BlendPipelines {
     pub(super) solid_quads: RenderPipelineId,
     pub(super) quads: RenderPipelineId,
     pub(super) shadows: RenderPipelineId,
@@ -24,8 +24,8 @@ pub(super) struct NovaBlendPipelines {
 
 pub(super) fn create_blend_pipelines<D>(
     device: &mut D,
-    descriptor: NovaBlendPipelineDescriptor<'_>,
-) -> Result<NovaBlendPipelines>
+    descriptor: BlendPipelineDescriptor<'_>,
+) -> Result<BlendPipelines>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -229,7 +229,7 @@ where
             )
         })?;
 
-    Ok(NovaBlendPipelines {
+    Ok(BlendPipelines {
         solid_quads,
         quads,
         shadows,
@@ -269,10 +269,25 @@ where
         })
         .context("creating nova custom GPU mesh 3D fragment shader module")?;
 
+    let opaque_or_cutout =
+        fragment_entry_point.ends_with("_opaque") || fragment_entry_point.ends_with("_cutout");
+    let blend_mode = if opaque_or_cutout {
+        BlendMode::Replace
+    } else {
+        BlendMode::PremultipliedAlpha
+    };
+
     device
         .create_render_pipeline(
             &RenderPipelineDescriptor {
-                label: Some(format!("{label} custom GPU mesh 3D pipeline")),
+                label: Some(format!(
+                    "{label} custom GPU mesh 3D {} pipeline",
+                    if opaque_or_cutout {
+                        "opaque"
+                    } else {
+                        "transparent"
+                    }
+                )),
                 vertex_shader,
                 vertex_entry_point: vertex_entry_point.to_string(),
                 fragment_shader,
@@ -281,11 +296,11 @@ where
                 render_pass,
                 pipeline_layout: Some(pipeline_layout),
                 color_format: surface_config.format,
-                blend_mode: BlendMode::PremultipliedAlpha,
+                blend_mode,
                 primitive_topology: PrimitiveTopology::TriangleList,
-                depth_state: Some(DepthState::default()),
+                depth_state: Some(DepthState),
             },
             surface_config.size,
         )
-        .context("creating nova custom GPU mesh 3D render pipeline")
+        .context("creating nova custom GPU mesh 3D material pipeline")
 }

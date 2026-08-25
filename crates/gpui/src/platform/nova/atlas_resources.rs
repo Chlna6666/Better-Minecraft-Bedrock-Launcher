@@ -23,7 +23,7 @@ fn default_atlas_texture_size() -> Size<DevicePixels> {
 }
 
 pub(super) fn initial_gpu_atlas_textures(
-    resources: &NovaRendererResources,
+    resources: &RendererResources,
 ) -> FxHashMap<AtlasTextureId, NovaGpuAtlasTexture> {
     let mut textures = FxHashMap::default();
     textures.insert(
@@ -97,7 +97,7 @@ pub(super) fn sync_gpu_atlas_textures<D>(
     gpu_textures: &mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     device: &mut D,
     backend_name: &str,
-    descriptor: NovaAtlasResourceDescriptor,
+    descriptor: AtlasResourceDescriptor,
 ) -> Result<()>
 where
     D: BackendResources,
@@ -112,12 +112,7 @@ where
         .copied()
         .filter(|id| !live_ids.contains(id))
         .collect::<Vec<_>>();
-    for stale_id in stale_ids {
-        if let Some(texture) = gpu_textures.remove(&stale_id) {
-            destroy_gpu_atlas_texture(device, texture, backend_name, stale_id);
-        }
-    }
-
+    let mut pending_textures = Vec::new();
     for texture_info in texture_infos {
         if gpu_textures
             .get(&texture_info.id)
@@ -125,18 +120,34 @@ where
         {
             continue;
         }
-        if let Some(texture) = gpu_textures.remove(&texture_info.id) {
-            destroy_gpu_atlas_texture(device, texture, backend_name, texture_info.id);
-        }
-        let gpu_texture = create_atlas_texture_resources(
+        let gpu_texture = match create_atlas_texture_resources(
             device,
             backend_name,
             texture_info.id,
             texture_info.size,
             &descriptor,
             NovaAtlasResourceSetMode::UsedByTextureKind,
-        )?;
-        gpu_textures.insert(texture_info.id, gpu_texture);
+        ) {
+            Ok(texture) => texture,
+            Err(error) => {
+                for (atlas_id, texture) in pending_textures {
+                    destroy_gpu_atlas_texture(device, texture, backend_name, atlas_id);
+                }
+                return Err(error);
+            }
+        };
+        pending_textures.push((texture_info.id, gpu_texture));
+    }
+
+    for stale_id in stale_ids {
+        if let Some(texture) = gpu_textures.remove(&stale_id) {
+            destroy_gpu_atlas_texture(device, texture, backend_name, stale_id);
+        }
+    }
+    for (atlas_id, gpu_texture) in pending_textures {
+        if let Some(replaced) = gpu_textures.insert(atlas_id, gpu_texture) {
+            destroy_gpu_atlas_texture(device, replaced, backend_name, atlas_id);
+        }
     }
 
     Ok(())
@@ -147,7 +158,7 @@ pub(super) fn create_atlas_texture_resources<D>(
     label: &str,
     atlas_id: AtlasTextureId,
     size: Size<DevicePixels>,
-    descriptor: &NovaAtlasResourceDescriptor,
+    descriptor: &AtlasResourceDescriptor,
     resource_set_mode: NovaAtlasResourceSetMode,
 ) -> Result<NovaGpuAtlasTexture>
 where
@@ -168,43 +179,73 @@ where
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
     })?;
-    let texture_view = device.create_texture_view(&TextureViewDescriptor {
+    let texture_view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!(
             "{label} atlas {:?}/{} texture view",
             atlas_id.kind, atlas_id.index
         )),
         texture,
         format: Format::Bgra8Unorm,
-    })?;
+    }) {
+        Ok(texture_view) => texture_view,
+        Err(error) => {
+            if let Err(destroy_error) = device.destroy_texture(texture) {
+                log::debug!(
+                    "failed to roll back {label} atlas {:?}/{} texture: {destroy_error}",
+                    atlas_id.kind,
+                    atlas_id.index
+                );
+            }
+            return Err(error.into());
+        }
+    };
     let mut mono_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
     let mut poly_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
     let create_mono_resource_sets =
         uses_mono_sprite_resource_sets(atlas_id.kind, resource_set_mode);
     let create_poly_resource_sets =
         uses_poly_sprite_resource_sets(atlas_id.kind, resource_set_mode);
-    for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-        if create_mono_resource_sets {
-            mono_resource_sets.push(create_mono_atlas_resource_set(
-                device,
-                label,
-                atlas_id,
-                index,
-                buffers,
-                texture_view,
-                descriptor,
-            )?);
+    let resource_sets = (|| -> Result<()> {
+        for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+            if create_mono_resource_sets {
+                mono_resource_sets.push(create_mono_atlas_resource_set(
+                    device,
+                    label,
+                    atlas_id,
+                    index,
+                    buffers,
+                    texture_view,
+                    descriptor,
+                )?);
+            }
+            if create_poly_resource_sets {
+                poly_resource_sets.push(create_poly_atlas_resource_set(
+                    device,
+                    label,
+                    atlas_id,
+                    index,
+                    buffers,
+                    texture_view,
+                    descriptor,
+                )?);
+            }
         }
-        if create_poly_resource_sets {
-            poly_resource_sets.push(create_poly_atlas_resource_set(
-                device,
-                label,
-                atlas_id,
-                index,
-                buffers,
+        Ok(())
+    })();
+    if let Err(error) = resource_sets {
+        destroy_gpu_atlas_texture(
+            device,
+            NovaGpuAtlasTexture {
+                size,
+                texture,
                 texture_view,
-                descriptor,
-            )?);
-        }
+                mono_resource_sets,
+                poly_resource_sets,
+            },
+            label,
+            atlas_id,
+        );
+        return Err(error);
     }
 
     Ok(NovaGpuAtlasTexture {
@@ -243,9 +284,9 @@ fn create_mono_atlas_resource_set<D>(
     label: &str,
     atlas_id: AtlasTextureId,
     frame_index: usize,
-    buffers: NovaFrameResourceBuffers,
+    buffers: FrameResourceBuffers,
     texture_view: TextureViewId,
-    descriptor: &NovaAtlasResourceDescriptor,
+    descriptor: &AtlasResourceDescriptor,
 ) -> Result<ResourceSetId>
 where
     D: BackendResources,
@@ -303,9 +344,9 @@ fn create_poly_atlas_resource_set<D>(
     label: &str,
     atlas_id: AtlasTextureId,
     frame_index: usize,
-    buffers: NovaFrameResourceBuffers,
+    buffers: FrameResourceBuffers,
     texture_view: TextureViewId,
-    descriptor: &NovaAtlasResourceDescriptor,
+    descriptor: &AtlasResourceDescriptor,
 ) -> Result<ResourceSetId>
 where
     D: BackendResources,

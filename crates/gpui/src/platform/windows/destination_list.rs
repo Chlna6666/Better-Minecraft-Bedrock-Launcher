@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows jump-list integration calls COM interfaces"
+)]
+
 use std::path::PathBuf;
 
 use itertools::Itertools;

@@ -45,10 +45,10 @@ struct TestDispatcherState {
 
 impl TestDispatcher {
     pub fn new(random: StdRng) -> Self {
-        Self::new_with_seed(random, 0)
+        Self::with_seed(random, 0)
     }
 
-    pub fn new_with_seed(random: StdRng, random_seed: u64) -> Self {
+    pub fn with_seed(random: StdRng, random_seed: u64) -> Self {
         let state = TestDispatcherState {
             random,
             random_seed,

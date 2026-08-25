@@ -88,7 +88,7 @@ pub enum AnimationGroupSample {
 
 impl AnimationGroupSample {
     /// Returns true when the group has completed.
-    pub fn done(&self) -> bool {
+    pub fn is_done(&self) -> bool {
         match self {
             Self::Sequence(sample) => sample.done,
             Self::Parallel(sample) => sample.done,
@@ -499,7 +499,7 @@ impl AnimationEngine {
                 AnimationDriver::Layout => has_layout = true,
             }
 
-            if sample.done() {
+            if sample.is_done() {
                 self.remove_group(group_id);
             }
         }

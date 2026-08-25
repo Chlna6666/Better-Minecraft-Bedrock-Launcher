@@ -6,14 +6,14 @@ use super::depth::create_depth_texture;
 use super::pipelines::create_renderer_pipelines;
 use super::resource_sets::create_renderer_resource_sets;
 use super::shaders::create_renderer_shaders;
-use super::types::{NovaFrameResources, NovaRendererResources};
+use super::{FrameResources, RendererResources};
 
 pub(in crate::platform::nova) fn create_renderer_resources<D>(
     device: &mut D,
     surface_config: SurfaceConfig,
     label: &str,
-    shader_binaries: NovaShaderBinaries,
-) -> Result<NovaRendererResources>
+    shader_binaries: ShaderBinaries,
+) -> Result<RendererResources>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -24,7 +24,7 @@ where
     let path_mask_target = create_path_mask_target(
         device,
         label,
-        NovaPathMaskTargetDescriptor {
+        PathMaskTargetDescriptor {
             size: surface_config.size,
             format: surface_config.format,
             resource_set_layout: layouts.path_resource_set_layout,
@@ -43,7 +43,7 @@ where
             width: DevicePixels(i32::try_from(NOVA_DEFAULT_ATLAS_SIZE).unwrap_or(i32::MAX)),
             height: DevicePixels(i32::try_from(NOVA_DEFAULT_ATLAS_SIZE).unwrap_or(i32::MAX)),
         },
-        &NovaAtlasResourceDescriptor {
+        &AtlasResourceDescriptor {
             mono_sprite_resource_set_layout: layouts.mono_resource_set_layout,
             poly_sprite_resource_set_layout: layouts.poly_resource_set_layout,
             frame_buffers: frame_buffers.clone(),
@@ -61,7 +61,7 @@ where
             shared_buffers.custom_mesh_3d_vertices_buffer,
             CUSTOM_MESH_3D_PLACEHOLDER_VERTICES,
         )?;
-        frame_resources.push(NovaFrameResources {
+        frame_resources.push(FrameResources {
             buffers: frame_buffers,
             resource_sets,
             path_resource_set: path_mask_target
@@ -106,7 +106,7 @@ where
         shaders,
     )?;
 
-    Ok(NovaRendererResources {
+    Ok(RendererResources {
         render_pass,
         pipelines,
         depth_texture,

@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{frame_state::ElementClickedState, state::Interactivity, style_state::GroupHitboxes};
+use super::{interactivity::Interactivity, state::ElementClickedState, style_state::GroupHitboxes};
 
 pub(crate) type DragListener =
     Box<dyn Fn(&dyn Any, Point<Pixels>, &mut Window, &mut App) -> crate::AnyView + 'static>;
