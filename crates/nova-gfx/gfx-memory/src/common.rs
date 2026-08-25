@@ -113,6 +113,7 @@ pub const fn memory_location_to_allocator(
 ) -> gpu_allocator::MemoryLocation {
     match location {
         MemoryLocation::CpuToGpu => gpu_allocator::MemoryLocation::CpuToGpu,
+        MemoryLocation::GpuToCpu => gpu_allocator::MemoryLocation::GpuToCpu,
         MemoryLocation::GpuOnly => gpu_allocator::MemoryLocation::GpuOnly,
     }
 }
@@ -135,7 +136,10 @@ pub(crate) fn align_to(value: u64, alignment: u64) -> Result<u64> {
             "alignment must be a non-zero power of two".to_string(),
         ));
     }
-    Ok(value.div_ceil(alignment) * alignment)
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
+        .ok_or_else(|| GfxError::InvalidInput("aligned size overflow".to_string()))
 }
 
 #[cfg(test)]

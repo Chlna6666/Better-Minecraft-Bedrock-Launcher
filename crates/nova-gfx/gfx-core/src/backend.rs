@@ -4,7 +4,10 @@
 //! backends. They keep backend users generic over Vulkan, Direct3D 12, and
 //! Metal while preserving static dispatch for hot rendering paths.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use crate::{
     BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc, CommandEncoderId, DrawDesc,
@@ -14,7 +17,8 @@ use crate::{
     ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
     Result, SamplerDesc, SamplerId, ScissorRect, ShaderModuleDesc, ShaderModuleId, SubmissionId,
     SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId,
-    TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
+    TextureReadback, TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc,
+    resource_set_list,
 };
 
 /// Identifies the graphics API implemented by a backend type.
@@ -348,6 +352,38 @@ pub trait BackendResources: GfxResourceDevice {
 }
 
 impl<T> BackendResources for T where T: GfxResourceDevice {}
+
+/// Synchronizes and inspects native texture transfers.
+///
+/// This capability is separate from [`GfxResourceDevice`]: rendering can submit uploads without
+/// requiring synchronous readback or timestamp support from every backend.
+pub trait GfxTextureTransferDevice: GfxResourceDevice {
+    /// Returns whether native GPU timestamp queries are available for texture transfers.
+    #[must_use]
+    fn texture_transfer_timestamps_supported(&self) -> bool;
+
+    /// Waits until texture transfers submitted before this call have completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend wait or completion processing fails.
+    fn wait_texture_transfers(&mut self) -> Result<()>;
+
+    /// Returns the most recently completed native texture-transfer GPU duration.
+    #[must_use]
+    fn last_texture_transfer_time(&self) -> Option<Duration>;
+
+    /// Copies a complete texture into tightly packed CPU memory.
+    ///
+    /// The texture must have [`crate::TextureUsage::COPY_SRC`]. This method waits for earlier
+    /// writes before recording the readback copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the texture is invalid, lacks copy-source usage, synchronization
+    /// fails, or the backend cannot map the readback allocation.
+    fn read_texture(&mut self, texture: TextureId) -> Result<TextureReadback>;
+}
 
 /// Creates and destroys shader and pipeline objects.
 ///

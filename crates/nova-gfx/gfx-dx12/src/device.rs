@@ -26,7 +26,8 @@ use gfx_core::{GfxError, Result};
 #[cfg(windows)]
 mod platform {
     use std::{
-        ptr, str,
+        ptr::{self, NonNull},
+        str,
         sync::Arc,
         time::{Duration, Instant},
     };
@@ -39,17 +40,17 @@ mod platform {
         BufferDesc, BufferId, BufferUsage, ClearColor, CommandEncoderDesc, CommandEncoderId,
         CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, FilterMode, Format, GfxBackend,
         GfxCommandDevice, GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice,
-        GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxThreadingMode,
-        IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineLayoutDesc,
-        PipelineLayoutId, PowerPreference, PresentMode, PrimitiveTopology,
+        GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice,
+        GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
+        PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode, PrimitiveTopology,
         RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc,
         RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
         ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
         ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, SamplerDesc, SamplerId,
         ScissorRect, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages,
         SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId,
-        TextureDesc, TextureDimension, TextureId, TextureUsage, TextureViewDesc, TextureViewId,
-        TextureWrite, TextureWriteDesc, resource_set_list,
+        TextureDesc, TextureDimension, TextureId, TextureReadback, TextureUsage, TextureViewDesc,
+        TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -83,17 +84,19 @@ mod platform {
                 D3D12_FENCE_FLAG_NONE, D3D12_FILL_MODE_SOLID, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
                 D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_GPU_DESCRIPTOR_HANDLE,
                 D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
-                D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD,
                 D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
                 D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MESSAGE,
                 D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-                D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_BARRIER,
-                D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-                D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
-                D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_QUERY_HEAP_DESC, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, D3D12_QUERY_TYPE_TIMESTAMP,
+                D3D12_RANGE, D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC,
+                D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC,
+                D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+                D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
                 D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_ROOT_CONSTANTS,
@@ -109,7 +112,7 @@ mod platform {
                 D3D12GetDebugInterface, D3D12SerializeRootSignature, ID3D12CommandAllocator,
                 ID3D12CommandList, ID3D12CommandQueue, ID3D12Debug, ID3D12DescriptorHeap,
                 ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue,
-                ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature,
+                ID3D12PipelineState, ID3D12QueryHeap, ID3D12Resource, ID3D12RootSignature,
             },
             DirectComposition::{
                 DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, DCompositionCreateDevice2,
@@ -124,7 +127,7 @@ mod platform {
                 CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
-                DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS, DXGI_SCALING,
+                DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS,
                 DXGI_SCALING_NONE, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
                 DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
@@ -193,7 +196,9 @@ mod platform {
         upload_pages: Vec<Option<Dx12UploadPage>>,
         deferred_command_encoders: Vec<DeferredDx12CommandEncoder>,
         pending_texture_uploads: DeferredFreeQueue<Dx12SubmittedCommandList>,
-        upload_command_pool: Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
+        upload_command_pool: Vec<Dx12UploadCommands>,
+        timestamp_frequency: Option<u64>,
+        last_texture_transfer_time: Option<Duration>,
         deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
         allow_tearing: bool,
         submitted_frames: u64,
@@ -218,6 +223,10 @@ mod platform {
             );
             let device = create_device(&adapter)?;
             let graphics_queue = create_command_queue(&device)?;
+            // SAFETY: The queue is live and returns its timestamp tick frequency by value.
+            let timestamp_frequency = unsafe { graphics_queue.GetTimestampFrequency() }
+                .ok()
+                .filter(|frequency| *frequency > 0);
             let resource_heap = DescriptorHeapAllocator::new(
                 &device,
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -270,6 +279,8 @@ mod platform {
                 deferred_command_encoders: Vec::new(),
                 pending_texture_uploads: DeferredFreeQueue::new(),
                 upload_command_pool: Vec::new(),
+                timestamp_frequency,
+                last_texture_transfer_time: None,
                 deferred_releases: DeferredFreeQueue::new(),
                 allow_tearing,
                 submitted_frames: 0,
@@ -277,6 +288,7 @@ mod platform {
         }
 
         /// Returns the adapter selected when this logical device was created.
+        #[must_use]
         pub fn adapter_name(&self) -> &str {
             &self.adapter_name
         }
@@ -796,43 +808,188 @@ mod platform {
             &mut self,
             writes: impl IntoIterator<Item = TextureWrite<'a>>,
         ) -> Result<()> {
-            let writes = writes.into_iter().collect::<Vec<_>>();
-            let (copies, uploaded_textures) = match self.prepare_texture_copies(&writes) {
-                Ok(batch) => batch,
-                Err(error) if !is_invalid_input(&error) => {
-                    for write in writes {
-                        self.write_texture(write.descriptor, write.data)?;
-                    }
-                    return Ok(());
-                }
-                Err(error) => return Err(error),
-            };
-            if copies.is_empty() {
+            let writes = writes.into_iter();
+            let mut plans = Vec::with_capacity(writes.size_hint().0);
+            for write in writes {
+                plans.push(self.prepare_texture_copy_plan(write)?);
+            }
+            if plans.is_empty() {
                 return Ok(());
+            }
+            let upload_sizes = plans
+                .iter()
+                .map(|plan| plan.upload_layout.upload_size)
+                .collect::<Vec<_>>();
+            let allocations = self.upload_ring.allocate_batch(&upload_sizes)?;
+            let mut copies = Vec::with_capacity(plans.len());
+            for (plan, allocation) in plans.into_iter().zip(allocations) {
+                copies.push(self.stage_texture_copy(plan, allocation)?);
             }
             let fence_value = self.upload_textures_2d(&copies)?;
             self.upload_ring.retire_used_pages(fence_value);
-            for texture_id in uploaded_textures {
-                self.textures.get_mut(texture_id)?.state =
+            for copy in &copies {
+                self.textures.get_mut(copy.texture_id)?.state =
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             }
             Ok(())
         }
 
-        fn prepare_texture_copies<'a>(
-            &mut self,
-            writes: &[TextureWrite<'a>],
-        ) -> Result<(Vec<Dx12TextureCopyOwned>, Vec<TextureId>)> {
-            let mut copies = Vec::with_capacity(writes.len());
-            let mut uploaded_textures = Vec::new();
-            for write in writes {
-                let desc = write.descriptor;
-                copies.push(self.prepare_texture_copy(desc, write.data)?);
-                if !uploaded_textures.contains(&desc.texture) {
-                    uploaded_textures.push(desc.texture);
+        fn read_texture_pixels(&mut self, texture_id: TextureId) -> Result<TextureReadback> {
+            self.wait_for_pending_work()?;
+            let (resource, desc, state) = {
+                let texture = self.textures.get(texture_id)?;
+                if !texture.desc.usage.contains(TextureUsage::COPY_SRC) {
+                    return Err(GfxError::InvalidInput(
+                        "texture readback requires COPY_SRC usage".to_string(),
+                    ));
                 }
+                let resource = texture.resource.clone().ok_or_else(|| {
+                    GfxError::Backend("DX12 texture has no native resource".to_string())
+                })?;
+                (resource, texture.desc.clone(), texture.state)
+            };
+            let bytes_per_row = desc
+                .size
+                .width()
+                .checked_mul(desc.format.bytes_per_pixel())
+                .ok_or_else(|| GfxError::InvalidInput("texture row size overflow".to_string()))?;
+            let row_pitch =
+                align_to_u32(u64::from(bytes_per_row), DX12_TEXTURE_DATA_PITCH_ALIGNMENT)?;
+            let buffer_size = u64::from(row_pitch)
+                .checked_mul(u64::from(desc.size.height()))
+                .ok_or_else(|| GfxError::InvalidInput("texture readback size overflow".into()))?;
+            let readback_desc = BufferDesc {
+                label: Some("nova-gfx DX12 texture readback".to_string()),
+                size: buffer_size,
+                usage: BufferUsage::COPY_DST,
+                memory_location: MemoryLocation::GpuToCpu,
+            };
+            let readback = create_buffer_resource(&self.device, &readback_desc)?;
+            self.copy_texture_to_readback(&resource, state, &desc, &readback, row_pitch)?;
+
+            let buffer_size = usize::try_from(buffer_size).map_err(|error| {
+                GfxError::InvalidInput(format!("texture readback size overflow: {error}"))
+            })?;
+            let row_bytes = usize::try_from(bytes_per_row).map_err(|error| {
+                GfxError::InvalidInput(format!("texture row size overflow: {error}"))
+            })?;
+            let row_pitch = usize::try_from(row_pitch).map_err(|error| {
+                GfxError::InvalidInput(format!("texture row pitch overflow: {error}"))
+            })?;
+            let height = usize::try_from(desc.size.height()).map_err(|error| {
+                GfxError::InvalidInput(format!("texture height overflow: {error}"))
+            })?;
+            let tight_len = row_bytes
+                .checked_mul(height)
+                .ok_or_else(|| GfxError::InvalidInput("texture readback length overflow".into()))?;
+            let mut mapped = ptr::null_mut();
+            let read_range = D3D12_RANGE {
+                Begin: 0,
+                End: buffer_size,
+            };
+            // SAFETY: The resource is a readback-heap buffer and the range covers its allocation.
+            unsafe { readback.Map(0, Some(&raw const read_range), Some(&raw mut mapped)) }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            let Some(mapped) = NonNull::new(mapped.cast::<u8>()) else {
+                let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+                // SAFETY: Map succeeded above and must be balanced before returning.
+                unsafe { readback.Unmap(0, Some(&raw const written_range)) };
+                return Err(GfxError::Backend(
+                    "DX12 readback mapping returned a null pointer".to_string(),
+                ));
+            };
+            let mut bytes = Vec::with_capacity(tight_len);
+            for row in 0..height {
+                // SAFETY: Each source row is contained by the mapped readback allocation.
+                let source = unsafe {
+                    std::slice::from_raw_parts(mapped.as_ptr().add(row * row_pitch), row_bytes)
+                };
+                bytes.extend_from_slice(source);
             }
-            Ok((copies, uploaded_textures))
+            let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+            // SAFETY: This map was used for reading only and is balanced exactly once.
+            unsafe { readback.Unmap(0, Some(&raw const written_range)) };
+            Ok(TextureReadback {
+                format: desc.format,
+                size: desc.size,
+                bytes_per_row,
+                bytes,
+            })
+        }
+
+        fn copy_texture_to_readback(
+            &mut self,
+            texture: &ID3D12Resource,
+            old_state: D3D12_RESOURCE_STATES,
+            desc: &TextureDesc,
+            readback: &ID3D12Resource,
+            row_pitch: u32,
+        ) -> Result<()> {
+            let allocator = create_command_allocator(&self.device)?;
+            let command_list = create_command_list(&self.device, &allocator)?;
+            if old_state != D3D12_RESOURCE_STATE_COPY_SOURCE {
+                record_transition_barrier(
+                    &command_list,
+                    texture,
+                    old_state,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE,
+                );
+            }
+            let footprint =
+                windows::Win32::Graphics::Direct3D12::D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                    Offset: 0,
+                    Footprint: windows::Win32::Graphics::Direct3D12::D3D12_SUBRESOURCE_FOOTPRINT {
+                        Format: format_to_dxgi(desc.format),
+                        Width: desc.size.width(),
+                        Height: desc.size.height(),
+                        Depth: 1,
+                        RowPitch: row_pitch,
+                    },
+                };
+            let mut destination = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: core::mem::ManuallyDrop::new(Some(readback.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: footprint,
+                },
+            };
+            let mut source = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: core::mem::ManuallyDrop::new(Some(texture.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
+            };
+            // SAFETY: Both resources are live and in copy-compatible states.
+            unsafe {
+                command_list.CopyTextureRegion(
+                    &raw const destination,
+                    0,
+                    0,
+                    0,
+                    &raw const source,
+                    None,
+                );
+            }
+            release_texture_copy_location_resource(&mut destination);
+            release_texture_copy_location_resource(&mut source);
+            if old_state != D3D12_RESOURCE_STATE_COPY_SOURCE {
+                record_transition_barrier(
+                    &command_list,
+                    texture,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    old_state,
+                );
+            }
+            // SAFETY: The command list is open and ready to close.
+            unsafe { command_list.Close() }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            let executable: ID3D12CommandList = command_list
+                .cast()
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            // SAFETY: The command list is closed and belongs to this queue's device.
+            unsafe { self.graphics_queue.ExecuteCommandLists(&[Some(executable)]) };
+            self.wait_for_gpu()
         }
 
         fn prepare_texture_copy(
@@ -840,24 +997,51 @@ mod platform {
             desc: TextureWriteDesc,
             data: &[u8],
         ) -> Result<Dx12TextureCopyOwned> {
-            let (texture_resource, old_state, texture_desc) = {
-                let texture = self.textures.get(desc.texture)?;
-                desc.validate_against(&texture.desc, data.len())?;
-                let resource = texture.resource.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 texture has no native resource".to_string())
-                })?;
-                (resource, texture.state, texture.desc.clone())
-            };
-            let texture_format = texture_desc.format;
-            let upload = self.write_texture_upload_data(desc, texture_format, data)?;
+            let plan = self.prepare_texture_copy_plan(TextureWrite {
+                descriptor: desc,
+                data,
+            })?;
+            let allocation = self.upload_ring.allocate(plan.upload_layout.upload_size)?;
+            self.stage_texture_copy(plan, allocation)
+        }
+
+        fn prepare_texture_copy_plan<'a>(
+            &self,
+            write: TextureWrite<'a>,
+        ) -> Result<Dx12TextureCopyPlan<'a>> {
+            let desc = write.descriptor;
+            let texture = self.textures.get(desc.texture)?;
+            desc.validate_against(&texture.desc, write.data.len())?;
+            let texture_resource = texture.resource.clone().ok_or_else(|| {
+                GfxError::Backend("DX12 texture has no native resource".to_string())
+            })?;
+            let format = texture.desc.format;
+            let upload_layout = texture_upload_layout(desc, format, write.data.len())?;
+            Ok(Dx12TextureCopyPlan {
+                write,
+                texture: texture_resource,
+                old_state: texture.state,
+                format,
+                upload_layout,
+            })
+        }
+
+        fn stage_texture_copy(
+            &mut self,
+            plan: Dx12TextureCopyPlan<'_>,
+            allocation: UploadAllocation,
+        ) -> Result<Dx12TextureCopyOwned> {
+            let desc = plan.write.descriptor;
+            let upload =
+                self.write_texture_upload_data(plan.write.data, plan.upload_layout, allocation)?;
             let upload_resource = self.upload_page_resource(upload.allocation.page_index)?;
             Ok(Dx12TextureCopyOwned {
                 texture_id: desc.texture,
                 upload: upload_resource,
-                texture: texture_resource,
-                old_state,
+                texture: plan.texture,
+                old_state: plan.old_state,
                 desc,
-                format: texture_format,
+                format: plan.format,
                 upload_offset: upload.allocation.offset,
                 row_pitch: upload.row_pitch,
             })
@@ -1932,7 +2116,12 @@ mod platform {
                 self.release_deferred_payload(payload);
             }
             self.upload_ring.complete_fence(completed_fence);
-            self.upload_ring.trim_idle_pages();
+            let retained_page_count = self.upload_ring.trim_idle_pages();
+            self.trim_upload_pages(retained_page_count);
+        }
+
+        fn trim_upload_pages(&mut self, retained_page_count: usize) {
+            self.upload_pages.truncate(retained_page_count);
         }
 
         /// Queues `payload` for release once every submission recorded so far has
@@ -2015,70 +2204,33 @@ mod platform {
 
         fn write_texture_upload_data(
             &mut self,
-            desc: TextureWriteDesc,
-            format: Format,
             data: &[u8],
+            layout: Dx12TextureUploadLayout,
+            allocation: UploadAllocation,
         ) -> Result<Dx12TextureUpload> {
-            let source_row_pitch = usize::try_from(desc.layout.bytes_per_row.get())
-                .map_err(|error| GfxError::InvalidInput(format!("row pitch overflow: {error}")))?;
-            let source_offset = usize::try_from(desc.layout.offset).map_err(|error| {
-                GfxError::InvalidInput(format!("texture upload offset overflow: {error}"))
-            })?;
-            let row_bytes = texture_upload_row_bytes(desc.size.width(), format)?;
-            if source_row_pitch < row_bytes {
-                return Err(GfxError::InvalidInput(format!(
-                    "texture upload bytes_per_row ({source_row_pitch}) is smaller than row data ({row_bytes})"
-                )));
-            }
-            let row_pitch = align_to_u32(
-                u64::from(desc.layout.bytes_per_row.get()),
-                DX12_TEXTURE_DATA_PITCH_ALIGNMENT,
-            )?;
-            let row_pitch_usize = usize::try_from(row_pitch).map_err(|error| {
-                GfxError::InvalidInput(format!("aligned row pitch overflow: {error}"))
-            })?;
-            let height = usize::try_from(desc.size.height())
-                .map_err(|error| GfxError::InvalidInput(format!("height overflow: {error}")))?;
-            let required_len =
-                required_texture_upload_len(source_offset, source_row_pitch, row_bytes, height)?;
-            if data.len() < required_len {
-                return Err(GfxError::InvalidInput(format!(
-                    "texture upload data is smaller than layout: required {required_len} bytes, got {}",
-                    data.len()
-                )));
-            }
-            let upload_size = u64::from(row_pitch)
-                .checked_mul(u64::from(desc.size.height()))
-                .ok_or_else(|| {
-                    GfxError::InvalidInput("texture upload size overflow".to_string())
-                })?;
-            let allocation = self.upload_ring.allocate(upload_size)?;
             self.ensure_upload_page(allocation.page_index)?;
             let page = self
                 .upload_pages
                 .get(allocation.page_index)
                 .and_then(Option::as_ref)
                 .ok_or_else(|| GfxError::Backend("missing DX12 upload page".to_string()))?;
-            let mut mapped = ptr::null_mut();
-            // SAFETY: Upload page resource is an upload heap buffer and remains live while mapped.
-            unsafe { page.resource.Map(0, None, Some(&raw mut mapped)) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
             let offset = usize::try_from(allocation.offset).map_err(|error| {
                 GfxError::InvalidInput(format!("upload offset overflow: {error}"))
             })?;
-            for row in 0..height {
-                let source_start = source_offset
-                    .checked_add(row.checked_mul(source_row_pitch).ok_or_else(|| {
+            for row in 0..layout.height {
+                let source_start = layout
+                    .source_offset
+                    .checked_add(row.checked_mul(layout.source_row_pitch).ok_or_else(|| {
                         GfxError::InvalidInput("source texture row offset overflow".to_string())
                     })?)
                     .ok_or_else(|| {
                         GfxError::InvalidInput("source texture row offset overflow".to_string())
                     })?;
-                let source_end = source_start.checked_add(row_bytes).ok_or_else(|| {
+                let source_end = source_start.checked_add(layout.row_bytes).ok_or_else(|| {
                     GfxError::InvalidInput("source texture row range overflow".to_string())
                 })?;
                 let destination_start = offset
-                    .checked_add(row.checked_mul(row_pitch_usize).ok_or_else(|| {
+                    .checked_add(row.checked_mul(layout.row_pitch_usize).ok_or_else(|| {
                         GfxError::InvalidInput(
                             "destination texture row offset overflow".to_string(),
                         )
@@ -2089,21 +2241,19 @@ mod platform {
                 let source = data.get(source_start..source_end).ok_or_else(|| {
                     GfxError::InvalidInput("texture upload data is smaller than layout".to_string())
                 })?;
-                // SAFETY: Mapped pointer is valid for the upload page and destination range
-                // is inside the suballocation returned by the upload ring.
+                // SAFETY: The page remains mapped for its lifetime and the destination range is
+                // inside the suballocation returned by the upload ring.
                 unsafe {
                     ptr::copy_nonoverlapping(
                         source.as_ptr(),
-                        mapped.cast::<u8>().add(destination_start),
+                        page.mapped.as_ptr().add(destination_start),
                         source.len(),
                     );
                 }
             }
-            // SAFETY: The mapped upload range has been written and can be unmapped immediately.
-            unsafe { page.resource.Unmap(0, None) };
             Ok(Dx12TextureUpload {
                 allocation,
-                row_pitch,
+                row_pitch: layout.row_pitch,
             })
         }
 
@@ -2127,7 +2277,7 @@ mod platform {
                 memory_location: MemoryLocation::CpuToGpu,
             };
             let resource = create_buffer_resource(&self.device, &desc)?;
-            self.upload_pages[page_index] = Some(Dx12UploadPage { resource, size });
+            self.upload_pages[page_index] = Some(Dx12UploadPage::new(resource, size)?);
             Ok(())
         }
 
@@ -2969,7 +3119,8 @@ mod platform {
                 self.release_deferred_payload(payload);
             }
             self.upload_ring.complete_fence(fence_value);
-            self.upload_ring.trim_idle_pages();
+            let retained_page_count = self.upload_ring.trim_idle_pages();
+            self.trim_upload_pages(retained_page_count);
             Ok(())
         }
 
@@ -2981,9 +3132,15 @@ mod platform {
         }
 
         fn recycle_upload_commands(&mut self, commands: Dx12SubmittedCommandList) {
+            if let (Some(timestamps), Some(frequency)) = (
+                commands.commands.timestamps.as_ref(),
+                self.timestamp_frequency,
+            ) && let Ok(elapsed) = read_dx12_timestamps(&timestamps.readback, frequency)
+            {
+                self.last_texture_transfer_time = Some(elapsed);
+            }
             if self.upload_command_pool.len() < DX12_UPLOAD_COMMAND_POOL_CAPACITY {
-                self.upload_command_pool
-                    .push((commands.allocator, commands.graphics_command_list));
+                self.upload_command_pool.push(commands.commands);
             }
         }
 
@@ -3066,8 +3223,13 @@ mod platform {
             } else {
                 self.upload_command_pool.pop()
             };
-            let upload_commands =
-                upload_textures_2d(&self.device, &self.graphics_queue, copies, recycled)?;
+            let upload_commands = upload_textures_2d(
+                &self.device,
+                &self.graphics_queue,
+                copies,
+                recycled,
+                self.timestamp_frequency.is_some(),
+            )?;
             let fence_value = self.signal_frame()?;
             if let Some(commands) = upload_commands {
                 self.pending_texture_uploads.retire(fence_value, commands);
@@ -3123,9 +3285,6 @@ mod platform {
             // SAFETY: Adapter is valid and DXGI initializes the descriptor.
             let desc = unsafe { adapter.GetDesc1() }
                 .map_err(|error| GfxError::Backend(error.to_string()))?;
-            if (desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32)) != 0 {
-                continue;
-            }
             let name = String::from_utf16_lossy(&desc.Description)
                 .trim_end_matches('\0')
                 .to_string();
@@ -3154,7 +3313,7 @@ mod platform {
         if let Some(requested_name) = desc.adapter_name.as_deref() {
             let requested_name = requested_name.trim();
             if !requested_name.is_empty() {
-                return enumerate_hardware_adapters(factory)?
+                return enumerate_adapters(factory)?
                     .into_iter()
                     .find_map(|(adapter, description)| {
                         description
@@ -3177,15 +3336,24 @@ mod platform {
             return Ok(adapter);
         }
 
-        let mut adapters = enumerate_hardware_adapters(factory)?;
+        let mut adapters = enumerate_adapters(factory)?
+            .into_iter()
+            .filter(|(_, description)| !description.software)
+            .collect::<Vec<_>>();
         adapters.sort_by_key(|(_, description)| {
             fallback_adapter_rank(description.dedicated_video_memory, desc.power_preference)
         });
-        adapters
-            .into_iter()
-            .next()
-            .map(|(adapter, _)| adapter)
-            .ok_or_else(|| Dx12Error::Unavailable("no hardware DX12 adapter".to_string()).into())
+        if let Some((adapter, _)) = adapters.into_iter().next() {
+            return Ok(adapter);
+        }
+
+        // SAFETY: The factory is live and initializes the requested WARP adapter interface.
+        unsafe { factory.EnumWarpAdapter::<IDXGIAdapter1>() }.map_err(|error| {
+            Dx12Error::Unavailable(format!(
+                "no hardware DX12 adapter and WARP is unavailable: {error}"
+            ))
+            .into()
+        })
     }
 
     fn pick_adapter_by_gpu_preference(
@@ -3213,7 +3381,7 @@ mod platform {
         }
     }
 
-    fn enumerate_hardware_adapters(
+    fn enumerate_adapters(
         factory: &IDXGIFactory4,
     ) -> Result<Vec<(IDXGIAdapter1, Dx12AdapterDescription)>> {
         let mut adapters = Vec::new();
@@ -3227,9 +3395,7 @@ mod platform {
             };
             adapter_index += 1;
             let description = adapter_description(&adapter)?;
-            if !description.software {
-                adapters.push((adapter, description));
-            }
+            adapters.push((adapter, description));
         }
         Ok(adapters)
     }
@@ -4104,6 +4270,24 @@ mod platform {
         }
     }
 
+    impl GfxTextureTransferDevice for Dx12Device {
+        fn texture_transfer_timestamps_supported(&self) -> bool {
+            self.timestamp_frequency.is_some()
+        }
+
+        fn wait_texture_transfers(&mut self) -> Result<()> {
+            self.wait_for_pending_work()
+        }
+
+        fn last_texture_transfer_time(&self) -> Option<Duration> {
+            self.last_texture_transfer_time
+        }
+
+        fn read_texture(&mut self, texture: TextureId) -> Result<TextureReadback> {
+            self.read_texture_pixels(texture)
+        }
+    }
+
     impl Drop for FenceEvent {
         fn drop(&mut self) {
             // SAFETY: The event handle is owned by this wrapper and may be closed once.
@@ -4413,6 +4597,7 @@ mod platform {
     fn create_buffer_resource(device: &ID3D12Device, desc: &BufferDesc) -> Result<ID3D12Resource> {
         let heap_type = match desc.memory_location {
             MemoryLocation::CpuToGpu => D3D12_HEAP_TYPE_UPLOAD,
+            MemoryLocation::GpuToCpu => D3D12_HEAP_TYPE_READBACK,
             MemoryLocation::GpuOnly => D3D12_HEAP_TYPE_DEFAULT,
         };
         let heap_properties = D3D12_HEAP_PROPERTIES {
@@ -4436,7 +4621,7 @@ mod platform {
         };
         let initial_state = match desc.memory_location {
             MemoryLocation::CpuToGpu => D3D12_RESOURCE_STATE_GENERIC_READ,
-            MemoryLocation::GpuOnly => D3D12_RESOURCE_STATE_COPY_DEST,
+            MemoryLocation::GpuToCpu | MemoryLocation::GpuOnly => D3D12_RESOURCE_STATE_COPY_DEST,
         };
         let mut resource = None;
         // SAFETY: Device, heap properties, and resource desc are valid for committed resource creation.
@@ -4533,7 +4718,8 @@ mod platform {
         device: &ID3D12Device,
         queue: &ID3D12CommandQueue,
         copies: &[Dx12TextureCopyOwned],
-        recycled: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
+        recycled: Option<Dx12UploadCommands>,
+        timestamps_enabled: bool,
     ) -> Result<Option<Dx12SubmittedCommandList>> {
         if copies.is_empty() {
             return Ok(None);
@@ -4541,30 +4727,70 @@ mod platform {
         for copy in copies {
             validate_dx12_texture_copy(copy.upload_offset, copy.row_pitch)?;
         }
-        let (allocator, command_list) = match recycled {
-            Some((allocator, command_list)) => {
+        let commands = match recycled {
+            Some(commands) => {
                 // SAFETY: Pooled objects only re-enter circulation after their
                 // previous submission's fence completed, so Reset is safe here.
-                unsafe { allocator.Reset() }
+                unsafe { commands.allocator.Reset() }
                     .map_err(|error| GfxError::Backend(error.to_string()))?;
                 // SAFETY: The pooled command list was closed after its previous
                 // submission; Reset reopens it against the reset allocator.
-                unsafe { command_list.Reset(&allocator, None) }
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
-                (allocator, command_list)
+                unsafe {
+                    commands
+                        .graphics_command_list
+                        .Reset(&commands.allocator, None)
+                }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                commands
             }
-            None => {
-                let allocator = create_command_allocator(device)?;
-                let command_list = create_command_list(device, &allocator)?;
-                (allocator, command_list)
-            }
+            None => create_dx12_upload_commands(device, timestamps_enabled)?,
         };
+        let command_list = &commands.graphics_command_list;
+        if let Some(timestamps) = &commands.timestamps {
+            // SAFETY: The command list is recording and query slot zero is valid.
+            unsafe { command_list.EndQuery(&timestamps.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
+        }
+        record_dx12_texture_copies(command_list, copies);
+        if let Some(timestamps) = &commands.timestamps {
+            // SAFETY: Both timestamp slots and the 16-byte readback range are valid.
+            unsafe {
+                command_list.EndQuery(&timestamps.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+                command_list.ResolveQueryData(
+                    &timestamps.heap,
+                    D3D12_QUERY_TYPE_TIMESTAMP,
+                    0,
+                    2,
+                    &timestamps.readback,
+                    0,
+                );
+            }
+        }
+        // SAFETY: Command list was opened by create_command_list and is ready to close.
+        unsafe { command_list.Close() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+        let executable: ID3D12CommandList = commands
+            .graphics_command_list
+            .cast()
+            .map_err(|error| GfxError::Backend(error.to_string()))?;
+        // SAFETY: Command list is closed and ready to execute.
+        unsafe {
+            queue.ExecuteCommandLists(&[Some(executable.clone())]);
+        }
+        Ok(Some(Dx12SubmittedCommandList {
+            commands,
+            _command_list: executable,
+        }))
+    }
+
+    fn record_dx12_texture_copies(
+        command_list: &ID3D12GraphicsCommandList,
+        copies: &[Dx12TextureCopyOwned],
+    ) {
         let mut transitioned_textures = Vec::new();
         for copy in copies {
             if !transitioned_textures.contains(&copy.texture_id) {
                 if copy.old_state != D3D12_RESOURCE_STATE_COPY_DEST {
                     record_transition_barrier(
-                        &command_list,
+                        command_list,
                         &copy.texture,
                         copy.old_state,
                         D3D12_RESOURCE_STATE_COPY_DEST,
@@ -4617,28 +4843,83 @@ mod platform {
                 continue;
             }
             record_transition_barrier(
-                &command_list,
+                command_list,
                 &copy.texture,
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             );
             restored_textures.push(copy.texture_id);
         }
-        // SAFETY: Command list was opened by create_command_list and is ready to close.
-        unsafe { command_list.Close() }.map_err(|error| GfxError::Backend(error.to_string()))?;
-        let graphics_command_list = command_list;
-        let command_list: ID3D12CommandList = graphics_command_list
-            .cast()
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
-        // SAFETY: Command list is closed and ready to execute.
-        unsafe {
-            queue.ExecuteCommandLists(&[Some(command_list.clone())]);
-        }
-        Ok(Some(Dx12SubmittedCommandList {
+    }
+
+    fn create_dx12_upload_commands(
+        device: &ID3D12Device,
+        timestamps_enabled: bool,
+    ) -> Result<Dx12UploadCommands> {
+        let allocator = create_command_allocator(device)?;
+        let graphics_command_list = create_command_list(device, &allocator)?;
+        let timestamps = if timestamps_enabled {
+            let query_desc = D3D12_QUERY_HEAP_DESC {
+                Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                Count: 2,
+                NodeMask: 0,
+            };
+            let mut heap = None;
+            // SAFETY: The descriptor and output slot are valid and the device is live.
+            unsafe { device.CreateQueryHeap(&raw const query_desc, &raw mut heap) }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            let heap = heap.ok_or_else(|| {
+                GfxError::Backend("DX12 timestamp query heap creation returned null".to_string())
+            })?;
+            let readback_desc = BufferDesc {
+                label: Some("nova-gfx DX12 upload timestamps".to_string()),
+                size: 16,
+                usage: BufferUsage::COPY_DST,
+                memory_location: MemoryLocation::GpuToCpu,
+            };
+            let readback = create_buffer_resource(device, &readback_desc)?;
+            Some(Dx12TimestampQueries { heap, readback })
+        } else {
+            None
+        };
+        Ok(Dx12UploadCommands {
             allocator,
             graphics_command_list,
-            _command_list: command_list,
-        }))
+            timestamps,
+        })
+    }
+
+    fn read_dx12_timestamps(readback: &ID3D12Resource, frequency: u64) -> Result<Duration> {
+        let mut mapped = ptr::null_mut();
+        let read_range = D3D12_RANGE { Begin: 0, End: 16 };
+        // SAFETY: The resource is a readback buffer containing two resolved u64 timestamps.
+        unsafe { readback.Map(0, Some(&raw const read_range), Some(&raw mut mapped)) }
+            .map_err(|error| GfxError::Backend(error.to_string()))?;
+        let Some(mapped) = NonNull::new(mapped.cast::<u64>()) else {
+            let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+            // SAFETY: Map succeeded above and must be balanced before returning.
+            unsafe { readback.Unmap(0, Some(&raw const written_range)) };
+            return Err(GfxError::Backend(
+                "DX12 timestamp mapping returned a null pointer".to_string(),
+            ));
+        };
+        // SAFETY: The mapped range contains two u64 values written by ResolveQueryData.
+        let (start, end) = unsafe {
+            (
+                ptr::read_unaligned(mapped.as_ptr()),
+                ptr::read_unaligned(mapped.as_ptr().add(1)),
+            )
+        };
+        let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+        // SAFETY: The mapping was used for reads and is balanced once.
+        unsafe { readback.Unmap(0, Some(&raw const written_range)) };
+        let elapsed_nanoseconds = u128::from(end.saturating_sub(start))
+            .saturating_mul(1_000_000_000)
+            .checked_div(u128::from(frequency))
+            .unwrap_or(0);
+        Ok(Duration::from_nanos(
+            u64::try_from(elapsed_nanoseconds).unwrap_or(u64::MAX),
+        ))
     }
 
     fn factory_supports_tearing(factory: &IDXGIFactory4) -> bool {
@@ -4670,10 +4951,6 @@ mod platform {
             )));
         }
         Ok(())
-    }
-
-    const fn is_invalid_input(error: &GfxError) -> bool {
-        matches!(error, GfxError::InvalidInput(_))
     }
 
     fn align_to(value: u64, alignment: u64) -> u64 {
@@ -4736,6 +5013,52 @@ mod platform {
             .checked_mul(format_bytes_per_pixel(format))
             .and_then(|value| usize::try_from(value).ok())
             .ok_or_else(|| GfxError::InvalidInput("texture upload row size overflow".to_string()))
+    }
+
+    fn texture_upload_layout(
+        desc: TextureWriteDesc,
+        format: Format,
+        data_len: usize,
+    ) -> Result<Dx12TextureUploadLayout> {
+        let source_row_pitch = usize::try_from(desc.layout.bytes_per_row.get())
+            .map_err(|error| GfxError::InvalidInput(format!("row pitch overflow: {error}")))?;
+        let source_offset = usize::try_from(desc.layout.offset).map_err(|error| {
+            GfxError::InvalidInput(format!("texture upload offset overflow: {error}"))
+        })?;
+        let row_bytes = texture_upload_row_bytes(desc.size.width(), format)?;
+        if source_row_pitch < row_bytes {
+            return Err(GfxError::InvalidInput(format!(
+                "texture upload bytes_per_row ({source_row_pitch}) is smaller than row data ({row_bytes})"
+            )));
+        }
+        let row_pitch = align_to_u32(
+            u64::from(desc.layout.bytes_per_row.get()),
+            DX12_TEXTURE_DATA_PITCH_ALIGNMENT,
+        )?;
+        let row_pitch_usize = usize::try_from(row_pitch).map_err(|error| {
+            GfxError::InvalidInput(format!("aligned row pitch overflow: {error}"))
+        })?;
+        let height = usize::try_from(desc.size.height())
+            .map_err(|error| GfxError::InvalidInput(format!("height overflow: {error}")))?;
+        let required_len =
+            required_texture_upload_len(source_offset, source_row_pitch, row_bytes, height)?;
+        if data_len < required_len {
+            return Err(GfxError::InvalidInput(format!(
+                "texture upload data is smaller than layout: required {required_len} bytes, got {data_len}"
+            )));
+        }
+        let upload_size = u64::from(row_pitch)
+            .checked_mul(u64::from(desc.size.height()))
+            .ok_or_else(|| GfxError::InvalidInput("texture upload size overflow".to_string()))?;
+        Ok(Dx12TextureUploadLayout {
+            source_row_pitch,
+            source_offset,
+            row_bytes,
+            row_pitch,
+            row_pitch_usize,
+            height,
+            upload_size,
+        })
     }
 
     const fn format_bytes_per_pixel(format: Format) -> u32 {
@@ -5099,11 +5422,61 @@ mod platform {
     struct Dx12UploadPage {
         resource: ID3D12Resource,
         size: u64,
+        mapped: NonNull<u8>,
+    }
+
+    impl Dx12UploadPage {
+        fn new(resource: ID3D12Resource, size: u64) -> Result<Self> {
+            let mut mapped = ptr::null_mut();
+            // SAFETY: This is an upload-heap buffer. D3D12 permits persistent mapping, and
+            // `Drop` balances the call after submissions using the page have retired.
+            unsafe { resource.Map(0, None, Some(&raw mut mapped)) }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            let Some(mapped) = NonNull::new(mapped.cast::<u8>()) else {
+                // SAFETY: `Map` succeeded above, so balance it before returning the invalid
+                // pointer reported by the driver.
+                unsafe { resource.Unmap(0, None) };
+                return Err(GfxError::Backend(
+                    "DX12 upload page mapping returned a null pointer".to_string(),
+                ));
+            };
+            Ok(Self {
+                resource,
+                size,
+                mapped,
+            })
+        }
+    }
+
+    impl Drop for Dx12UploadPage {
+        fn drop(&mut self) {
+            // SAFETY: This page owns one successful persistent `Map` call from `new`.
+            unsafe { self.resource.Unmap(0, None) };
+        }
     }
 
     struct Dx12TextureUpload {
         allocation: UploadAllocation,
         row_pitch: u32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct Dx12TextureUploadLayout {
+        source_row_pitch: usize,
+        source_offset: usize,
+        row_bytes: usize,
+        row_pitch: u32,
+        row_pitch_usize: usize,
+        height: usize,
+        upload_size: u64,
+    }
+
+    struct Dx12TextureCopyPlan<'a> {
+        write: TextureWrite<'a>,
+        texture: ID3D12Resource,
+        old_state: D3D12_RESOURCE_STATES,
+        format: Format,
+        upload_layout: Dx12TextureUploadLayout,
     }
 
     struct Dx12TextureCopyOwned {
@@ -5117,9 +5490,19 @@ mod platform {
         row_pitch: u32,
     }
 
-    struct Dx12SubmittedCommandList {
+    struct Dx12UploadCommands {
         allocator: ID3D12CommandAllocator,
         graphics_command_list: ID3D12GraphicsCommandList,
+        timestamps: Option<Dx12TimestampQueries>,
+    }
+
+    struct Dx12TimestampQueries {
+        heap: ID3D12QueryHeap,
+        readback: ID3D12Resource,
+    }
+
+    struct Dx12SubmittedCommandList {
+        commands: Dx12UploadCommands,
         _command_list: ID3D12CommandList,
     }
 

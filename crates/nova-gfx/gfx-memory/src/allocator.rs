@@ -63,6 +63,21 @@ impl MemoryAllocation {
         }
     }
 
+    /// Returns a mapped byte slice for CPU-visible memory.
+    #[must_use]
+    pub fn mapped_slice(&self) -> Option<&[u8]> {
+        match self {
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(allocation) => allocation.mapped_slice(),
+            #[cfg(feature = "dx12")]
+            Self::Dx12(_) => None,
+            #[cfg(feature = "metal")]
+            Self::Metal(_) => None,
+            #[cfg(not(any(feature = "vulkan", feature = "dx12", feature = "metal")))]
+            _ => None,
+        }
+    }
+
     /// Returns Vulkan device memory and offset for binding.
     ///
     /// # Safety

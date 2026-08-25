@@ -45,7 +45,7 @@ pub use backend::{
     GfxAsyncDiagnosticsDevice, GfxAsyncPipelineDevice, GfxAsyncPresentationDevice,
     GfxAsyncResourceDevice, GfxAsyncSurfaceDevice, GfxBackend, GfxCommandDevice, GfxDevice,
     GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
-    GfxSubmissionDevice, GfxSurfaceDevice, SharedGfxDevice,
+    GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice, SharedGfxDevice,
 };
 
 /// Convenience result type used by nova-gfx crates.
@@ -864,6 +864,8 @@ impl PipelineLayoutDesc {
 pub enum MemoryLocation {
     /// CPU-visible memory intended for uploads.
     CpuToGpu,
+    /// CPU-visible memory intended for GPU readback.
+    GpuToCpu,
     /// Device-local memory intended for GPU-only use.
     GpuOnly,
 }
@@ -1781,6 +1783,19 @@ pub struct TextureWrite<'a> {
     pub data: &'a [u8],
 }
 
+/// Tightly packed pixels copied from a GPU texture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextureReadback {
+    /// Texture format used to interpret the bytes.
+    pub format: Format,
+    /// Width and height of the copied texture.
+    pub size: Extent2d,
+    /// Number of bytes in each tightly packed row.
+    pub bytes_per_row: u32,
+    /// Pixel bytes in row-major order without backend row padding.
+    pub bytes: Vec<u8>,
+}
+
 /// Memory pressure level reported by upper layers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GfxMemoryTrimLevel {
@@ -1838,6 +1853,28 @@ pub struct ResourceStats {
     pub reserved_bytes: u64,
 }
 
+impl ResourceStats {
+    /// Bytes reserved by the backend but not occupied by live allocations.
+    #[must_use]
+    pub const fn unused_reserved_bytes(self) -> u64 {
+        self.reserved_bytes.saturating_sub(self.allocated_bytes)
+    }
+
+    /// Whole percentage of reserved memory occupied by live allocations.
+    #[must_use]
+    pub fn reserved_memory_utilization(self) -> Option<u64> {
+        if self.reserved_bytes == 0 {
+            return None;
+        }
+        let percentage = u128::from(self.allocated_bytes)
+            .saturating_mul(100)
+            .checked_div(u128::from(self.reserved_bytes))
+            .unwrap_or(0)
+            .min(100);
+        Some(u64::try_from(percentage).unwrap_or(100))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1847,6 +1884,19 @@ mod tests {
         assert!(Extent2d::new(0, 1).is_err());
         assert!(Extent2d::new(1, 0).is_err());
         assert!(Extent2d::new(1, 1).is_ok());
+    }
+
+    #[test]
+    fn resource_stats_report_unused_reservation_and_utilization() {
+        let stats = ResourceStats {
+            allocated_bytes: 3,
+            reserved_bytes: 4,
+            ..ResourceStats::default()
+        };
+
+        assert_eq!(stats.unused_reserved_bytes(), 1);
+        assert_eq!(stats.reserved_memory_utilization(), Some(75));
+        assert_eq!(ResourceStats::default().reserved_memory_utilization(), None);
     }
 
     #[test]

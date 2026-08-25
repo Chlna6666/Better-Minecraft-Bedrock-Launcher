@@ -59,7 +59,7 @@ impl VulkanMemoryAllocator {
         name: &str,
         requirements: vk::MemoryRequirements,
         location: MemoryLocation,
-        buffer: vk::Buffer,
+        _buffer: vk::Buffer,
     ) -> Result<MemoryAllocation> {
         let allocation = self
             .allocator
@@ -68,7 +68,7 @@ impl VulkanMemoryAllocator {
                 requirements,
                 location: memory_location_to_allocator(location),
                 linear: true,
-                allocation_scheme: VulkanAllocationScheme::DedicatedBuffer(buffer),
+                allocation_scheme: VulkanAllocationScheme::GpuAllocatorManaged,
             })
             .map_err(MemoryError::from)?;
         track_allocation(&mut self.stats, allocation.size());
@@ -80,7 +80,7 @@ impl VulkanMemoryAllocator {
         name: &str,
         requirements: vk::MemoryRequirements,
         location: MemoryLocation,
-        image: vk::Image,
+        _image: vk::Image,
     ) -> Result<MemoryAllocation> {
         let allocation = self
             .allocator
@@ -89,7 +89,7 @@ impl VulkanMemoryAllocator {
                 requirements,
                 location: memory_location_to_allocator(location),
                 linear: false,
-                allocation_scheme: VulkanAllocationScheme::DedicatedImage(image),
+                allocation_scheme: VulkanAllocationScheme::GpuAllocatorManaged,
             })
             .map_err(MemoryError::from)?;
         track_allocation(&mut self.stats, allocation.size());

@@ -55,13 +55,14 @@ mod platform {
     use objc2::{ClassType, rc::Retained, runtime::ProtocolObject};
     use objc2_app_kit::NSView;
     use objc2_core_foundation::CGSize;
-    use objc2_foundation::{NSError, NSInteger, NSString};
+    use objc2_foundation::{NSError, NSInteger, NSObjectProtocol, NSString};
     use objc2_metal::{
         MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
-        MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction, MTLIndexType,
-        MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder,
-        MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState,
-        MTLResourceOptions, MTLScissorRect, MTLStoreAction, MTLTexture, MTLViewport,
+        MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction,
+        MTLIndexType, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType,
+        MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
+        MTLRenderPipelineState, MTLResourceOptions, MTLScissorRect, MTLStoreAction, MTLTexture,
+        MTLViewport,
     };
     use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
@@ -498,7 +499,7 @@ mod platform {
                 .map(|step| self.prepare_render_step(render_pass, step))
                 .collect::<Result<Vec<_>>>()?;
 
-            objc2::rc::autoreleasepool(|_| {
+            objc2::rc::autoreleasepool(|_| -> Result<()> {
                 let drawable = swapchain.layer.nextDrawable().ok_or_else(|| {
                     GfxError::Backend("CAMetalLayer did not provide a drawable".to_string())
                 })?;
@@ -608,7 +609,7 @@ mod platform {
 
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
             let swapchain = self.swapchains.get(swapchain)?;
-            objc2::rc::autoreleasepool(|_| {
+            objc2::rc::autoreleasepool(|_| -> Result<()> {
                 let drawable = swapchain.layer.nextDrawable().ok_or_else(|| {
                     GfxError::Backend("CAMetalLayer did not provide a drawable".to_string())
                 })?;
@@ -1155,6 +1156,16 @@ mod platform {
         color_attachment.setPixelFormat(format_to_metal(color_format));
         match desc.blend_mode {
             BlendMode::Replace => color_attachment.setBlendingEnabled(false),
+            BlendMode::Alpha => {
+                color_attachment.setBlendingEnabled(true);
+                color_attachment.setRgbBlendOperation(MTLBlendOperation::Add);
+                color_attachment.setAlphaBlendOperation(MTLBlendOperation::Add);
+                color_attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+                color_attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+                color_attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+                color_attachment
+                    .setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            }
             BlendMode::PremultipliedAlpha => {
                 color_attachment.setBlendingEnabled(true);
                 color_attachment.setRgbBlendOperation(MTLBlendOperation::Add);

@@ -20,6 +20,10 @@ pub(crate) use free_list_allocator::FreeListAllocator;
 pub(crate) enum AllocationType {
     Free,
     Linear,
+    #[allow(
+        dead_code,
+        reason = "the visualizer and platform backends share this allocation classification"
+    )]
     NonLinear,
 }
 

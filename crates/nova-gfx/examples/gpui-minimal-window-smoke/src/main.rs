@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("renderer_path=nova-gfx");
     println!("startup_time_ms={}", started_at.elapsed().as_millis());
 
-    Application::new_with_renderer_backend(backend).run({
+    Application::with_renderer_backend(backend).run({
         let first_frame_printed = first_frame_printed.clone();
         move |cx: &mut App| {
             let bounds = Bounds::centered(None, size(px(320.0), px(200.0)), cx);

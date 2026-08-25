@@ -9,7 +9,7 @@ readme = "README.md"
 documentation = "https://docs.rs/gfx-vulkan"
 keywords = ["graphics", "gpu", "vulkan", "rendering", "backend"]
 categories = ["rendering::graphics-api"]
-include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
 [lib]
 path = "src/gfx_vulkan.rs"
@@ -28,3 +28,10 @@ gfx-core = { version = "0.1.0", path = "../gfx-core" }
 gfx-memory = { version = "0.1.0", path = "../gfx-memory", default-features = false, features = ["vulkan"] }
 raw-window-handle = "0.6"
 thiserror = "2.0.17"
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "texture_write"
+harness = false

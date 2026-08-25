@@ -9,7 +9,7 @@ readme = "README.md"
 documentation = "https://docs.rs/gfx-dx12"
 keywords = ["graphics", "gpu", "dx12", "rendering", "backend"]
 categories = ["rendering::graphics-api"]
-include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
 [lib]
 path = "src/gfx_dx12.rs"
@@ -25,6 +25,13 @@ pedantic = "warn"
 gfx-core = { version = "0.1.0", path = "../gfx-core" }
 thiserror = "2.0.17"
 log = "0.4.29"
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "texture_write"
+harness = false
 
 [target.'cfg(windows)'.dependencies]
 gfx-memory = { version = "0.1.0", path = "../gfx-memory", default-features = false, features = ["dx12"] }

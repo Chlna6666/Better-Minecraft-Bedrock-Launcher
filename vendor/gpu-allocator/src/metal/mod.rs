@@ -245,7 +245,12 @@ impl MemoryType {
         let allocation_type = AllocationType::Linear;
 
         let is_host = self.heap_properties.storageMode() != MTLStorageMode::Private;
-        let memblock_size = allocation_sizes.get_memblock_size(is_host, self.active_general_blocks);
+        let is_readback = desc.location == MemoryLocation::GpuToCpu;
+        let memblock_size = allocation_sizes.get_memblock_size(
+            is_host,
+            is_readback,
+            self.active_general_blocks,
+        );
 
         let size = desc.size;
         let alignment = desc.alignment;
