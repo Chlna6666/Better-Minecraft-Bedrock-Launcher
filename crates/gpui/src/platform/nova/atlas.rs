@@ -18,11 +18,6 @@ pub(super) const NOVA_ATLAS_TILE_PADDING: u32 = 1;
 pub(super) const NOVA_ATLAS_KIND_COUNT: usize = 4;
 const NOVA_DEDICATED_IMAGE_AXIS_THRESHOLD: u32 = 1536;
 const NOVA_DEDICATED_IMAGE_AREA_DIVISOR: u64 = 4;
-const NOVA_FALLBACK_ATLAS_BYTES: usize = NOVA_ATLAS_KIND_COUNT
-    * NOVA_DEFAULT_ATLAS_SIZE as usize
-    * NOVA_DEFAULT_ATLAS_SIZE as usize
-    * NOVA_ATLAS_BYTES_PER_PIXEL;
-const NOVA_FALLBACK_ATLAS_TEXTURES: usize = NOVA_ATLAS_KIND_COUNT;
 pub(super) const NOVA_ATLAS_TEXTURE_KINDS: [AtlasTextureKind; NOVA_ATLAS_KIND_COUNT] = [
     AtlasTextureKind::Monochrome,
     AtlasTextureKind::Bgra,
@@ -54,8 +49,6 @@ pub(super) struct NovaAtlasState {
     disabled_kinds: FxHashSet<AtlasTextureKind>,
     pub(super) upload_bytes: Vec<u8>,
     pub(super) pending_uploads: Vec<PendingAtlasUpload>,
-    max_atlas_bytes: usize,
-    max_atlas_textures: usize,
     /// Monotonic counter bumped whenever a texture is created or removed.
     texture_set_generation: u64,
     /// Monotonic counter bumped after every successfully encoded tile upload.
@@ -75,8 +68,6 @@ impl Default for NovaAtlasState {
             disabled_kinds: FxHashSet::default(),
             upload_bytes: Vec::new(),
             pending_uploads: Vec::new(),
-            max_atlas_bytes: NOVA_FALLBACK_ATLAS_BYTES,
-            max_atlas_textures: NOVA_FALLBACK_ATLAS_TEXTURES,
             texture_set_generation: 0,
             content_generation: 0,
         }
@@ -196,19 +187,6 @@ impl NovaAtlas {
 }
 
 impl PlatformAtlas for NovaAtlas {
-    fn configure_image_budget(&self, max_bytes: usize, max_textures: usize) {
-        let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        state.max_atlas_bytes = max_bytes.max(NOVA_FALLBACK_ATLAS_BYTES);
-        state.max_atlas_textures = max_textures.max(NOVA_FALLBACK_ATLAS_TEXTURES);
-        log::info!(
-            "nova atlas image budget configured: bytes={} textures={} texture_size={}x{}",
-            state.max_atlas_bytes,
-            state.max_atlas_textures,
-            NOVA_DEFAULT_ATLAS_SIZE,
-            NOVA_LARGE_IMAGE_ATLAS_SIZE
-        );
-    }
-
     fn ensure_tile_with<'a>(
         &self,
         key: &AtlasKey,
@@ -248,7 +226,7 @@ impl PlatformAtlas for NovaAtlas {
             if state.full_kinds_logged.insert(texture_kind) {
                 log::warn!(
                     concat!(
-                        "nova atlas allocation deferred; atlas is full and the shared fallback ",
+                        "nova atlas allocation deferred; atlas allocation is unavailable and the shared fallback ",
                         "tile will be used: kind={:?} size={}x{}"
                     ),
                     texture_kind,
@@ -302,7 +280,7 @@ impl PlatformAtlas for NovaAtlas {
             if state.full_kinds_logged.insert(texture_kind) {
                 log::warn!(
                     concat!(
-                        "nova atlas refresh deferred; atlas is full and no fallback image ",
+                        "nova atlas refresh deferred; atlas allocation is unavailable and no fallback image ",
                         "will be reported as resident: kind={:?} size={}x{}"
                     ),
                     texture_kind,
@@ -608,15 +586,6 @@ impl NovaAtlasState {
             }
         }
 
-        let texture_count = self
-            .texture_lists
-            .iter()
-            .flat_map(|list| list.textures.iter())
-            .filter(|texture| texture.is_some())
-            .count();
-        if texture_count >= self.max_atlas_textures {
-            return None;
-        }
         let (width, height) = if dedicated {
             padded_content_texture_size(content_size)?
         } else {
@@ -625,26 +594,9 @@ impl NovaAtlasState {
                 preferred_atlas_axis_size(content_size.height.0)?,
             )
         };
-        let texture_bytes = usize::try_from(width)
-            .ok()?
-            .checked_mul(usize::try_from(height).ok()?)
-            .and_then(|pixels| pixels.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL))?;
-        let current_bytes = self
-            .texture_lists
-            .iter()
-            .flat_map(|list| list.textures.iter().flatten())
-            .filter_map(|texture| {
-                usize::try_from(texture.size.width.0)
-                    .ok()?
-                    .checked_mul(usize::try_from(texture.size.height.0).ok()?)
-                    .and_then(|pixels| pixels.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL))
-            })
-            .sum::<usize>();
-        if current_bytes.saturating_add(texture_bytes) > self.max_atlas_bytes {
-            return None;
-        }
-        // Bump before pushing: a failed push only causes one spurious renderer sync, while a
-        // missed bump could leave a new texture without GPU resources.
+        // Atlas growth is governed by live resource ownership and the backend's maximum texture
+        // dimension, not a process-global byte or texture-count ceiling. Empty textures are
+        // retired when their last tile is deallocated.
         self.texture_set_generation = self.texture_set_generation.wrapping_add(1);
         let list = &mut self.texture_lists[atlas_kind_index(texture_kind)];
         let texture = Self::push_texture_with_size(texture_kind, width, height, list)?;
@@ -741,15 +693,6 @@ impl NovaAtlasState {
 mod tests {
     use super::*;
     use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
-
-    #[test]
-    fn configured_budget_is_not_raised_above_fallback_resources() {
-        let atlas = NovaAtlas::new();
-        atlas.configure_image_budget(256 * 1024 * 1024, 32);
-        let state = atlas.state.lock().expect("nova atlas lock poisoned");
-        assert_eq!(state.max_atlas_bytes, 256 * 1024 * 1024);
-        assert_eq!(state.max_atlas_textures, 32);
-    }
 
     #[test]
     fn medium_axis_uses_default_atlas_size() {
@@ -939,9 +882,8 @@ mod tests {
     }
 
     #[test]
-    fn atlas_texture_count_and_byte_budgets_prevent_growth() {
+    fn atlas_growth_is_not_gated_by_byte_or_texture_count_budgets() {
         let mut state = NovaAtlasState::default();
-        state.max_atlas_textures = 1;
         let size = Size {
             width: DevicePixels(1),
             height: DevicePixels(1),
@@ -954,16 +896,15 @@ mod tests {
         assert!(
             state
                 .allocate_and_upload_kind(AtlasTextureKind::Bgra, size, &[1, 2, 3, 4])
-                .is_none()
+                .is_some()
         );
-
-        let mut byte_limited = NovaAtlasState::default();
-        byte_limited.max_atlas_bytes = 1024;
-        assert!(
-            byte_limited
-                .allocate_and_upload_kind(AtlasTextureKind::Rgba, size, &[1, 2, 3, 4])
-                .is_none()
-        );
+        let texture_count = state
+            .texture_lists
+            .iter()
+            .flat_map(|list| list.textures.iter())
+            .filter(|texture| texture.is_some())
+            .count();
+        assert_eq!(texture_count, 2);
     }
 
     #[test]
