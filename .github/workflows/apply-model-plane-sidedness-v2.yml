@@ -45,7 +45,28 @@ jobs:
         run: cargo test -p bedrock-block-model --lib
 
       - name: Check BMCBL library
-        run: cargo check --lib
+        id: bmcbl_check
+        shell: bash
+        run: |
+          set +e
+          mkdir -p target/ci-diagnostics
+          cargo check --lib 2>&1 | tee target/ci-diagnostics/bmcbl-check.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload BMCBL check diagnostics
+        if: steps.bmcbl_check.outputs.status != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-plane-bmcbl-check
+          path: target/ci-diagnostics/bmcbl-check.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail on BMCBL check error
+        if: steps.bmcbl_check.outputs.status != '0'
+        run: exit 1
 
       - name: Validate diff
         run: git diff --check
