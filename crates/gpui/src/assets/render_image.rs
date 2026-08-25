@@ -1,4 +1,4 @@
-use super::animation_stream::{release_animation_queue_bytes, reserve_animation_queue_bytes};
+use super::animation_stream::record_animation_queue_bytes;
 use super::{AnimatedFrame, AnimatedImageConfig, AnimationStream, EncodedImage, ImageRenderSize};
 use crate::{DevicePixels, Result, Size, size};
 use image::{Delay, Frame};
@@ -48,7 +48,7 @@ pub(crate) struct RenderImageParams {
 
 /// A cached and processed image.
 pub struct RenderImage {
-    /// The ID associated with this image
+    /// The ID associated with this image.
     pub id: ImageId,
     /// The scale factor of this image on render.
     pub(crate) scale_factor: f32,
@@ -79,17 +79,12 @@ fn next_render_image_id() -> ImageId {
 /// Returns a stable [`ImageId`] for a repeatable decode source.
 ///
 /// Asset loaders that can re-decode the same source with the same decode parameters use this to
-/// keep the id stable across evictions of the decoded image. Because atlas tiles are keyed by
-/// `RenderImageParams { image_id, .. }` and retained scenes keep tiles resident after
-/// `drop_image`, a re-decode with a fresh id would allocate a new tile on every
-/// trim/redecode cycle until the atlas budget is exhausted. Reusing the id lets the re-decoded
-/// image (which is pixel-identical, since the source and decode parameters match) hit the
-/// existing tile instead.
+/// keep the id stable across decoded-image evictions. Atlas tiles are keyed by
+/// `RenderImageParams { image_id, .. }`, so a quick repaint can cancel a pending GPU retirement
+/// and reuse the existing upload instead of allocating another texture tile.
 ///
-/// The least recently used mappings are evicted after a fixed limit. Atlas residency is already
-/// independently bounded, so an evicted source may receive a new id without making this CPU-side
-/// metadata table unbounded. Manually constructed [`RenderImage`]s keep unique auto-incremented
-/// ids.
+/// The least recently used mappings are evicted after a fixed count to keep this CPU metadata
+/// bounded. Manually constructed [`RenderImage`]s keep unique auto-incremented ids.
 pub(crate) fn interned_render_image_id(loader: TypeId, source_hash: u64) -> ImageId {
     static INTERNED: OnceLock<Mutex<LinkedHashMap<(TypeId, u64), ImageId>>> = OnceLock::new();
 
@@ -222,22 +217,14 @@ impl RenderImage {
         for frame in queued_frames {
             let next_frame_index = frame.sequence().saturating_add(1);
             let frame_byte_len = frame.byte_len();
-            if queued_byte_len != 0
-                && queued_byte_len.saturating_add(frame_byte_len) > config.prefetch_byte_limit
-            {
-                break;
-            }
-            if !reserve_animation_queue_bytes(frame_byte_len) {
-                break;
-            }
             if queue_sender.try_send(frame).is_err() {
-                release_animation_queue_bytes(frame_byte_len);
                 break;
             }
             next_source_index = next_source_index.max(next_frame_index);
             queued_byte_len = queued_byte_len.saturating_add(frame_byte_len);
             queued_frame_count = queued_frame_count.saturating_add(1);
         }
+        record_animation_queue_bytes(queued_byte_len);
         let state = AnimationStream {
             source,
             target,
@@ -247,7 +234,6 @@ impl RenderImage {
             next_sequence: next_source_index,
             next_source_index,
             prefetch_frames: config.prefetch_frames,
-            prefetch_byte_limit: config.prefetch_byte_limit,
             queued_frame_count: AtomicUsize::new(queued_frame_count),
             queued_byte_len: AtomicUsize::new(queued_byte_len),
             delivered_byte_len: AtomicUsize::new(0),
@@ -309,7 +295,7 @@ impl RenderImage {
             .unwrap_or_else(|| self.frame(0).map_or(Size::default(), |frame| frame.size))
     }
 
-    /// Get the delay of this frame from the previous
+    /// Get the delay of this frame from the previous.
     pub fn delay(&self, frame_index: usize) -> Delay {
         self.frame(frame_index)
             .map(|frame| frame.delay)
