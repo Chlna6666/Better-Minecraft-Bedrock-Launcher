@@ -1,6 +1,6 @@
-use super::loader::{ImageRenderRequest, ImageRenderSize};
+use super::loader::ImageRenderRequest;
 use super::retained::{SizedImageElementState, SizedImageRequestLease};
-use crate::{AssetLocation, ObjectFit, SharedString, TestAppContext};
+use crate::{AssetLocation, ImageRenderSize, ObjectFit, SharedString, TestAppContext};
 
 fn request(label: &'static str, size: u32) -> ImageRenderRequest {
     ImageRenderRequest::new(
