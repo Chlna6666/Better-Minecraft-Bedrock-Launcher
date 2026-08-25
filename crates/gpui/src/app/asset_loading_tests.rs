@@ -39,6 +39,34 @@ fn compressed_image_preload_reuses_and_removes_global_asset() {
 }
 
 #[test]
+fn completed_compressed_preload_retires_internal_task_entry() {
+    let mut cx = TestAppContext::single();
+    let source = AssetLocation::Embedded(SharedString::from(
+        "missing-completed-background.webp",
+    ));
+    let initial_assets = cx.read(|cx| cx.loading_assets.len());
+    let task = cx.update(|cx| {
+        let task = cx
+            .preload_compressed_image_resources([source.clone()])
+            .pop()
+            .expect("preload task should be returned");
+        assert_eq!(cx.loading_assets.len(), initial_assets + 1);
+        task
+    });
+
+    cx.run_until_parked();
+
+    assert!(task.peek().is_some(), "preload handle should keep the settled task alive");
+    cx.read(|cx| assert_eq!(cx.loading_assets.len(), initial_assets));
+    cx.update(|cx| {
+        assert!(
+            cx.remove_compressed_image_resource(&source).is_none(),
+            "completed transient task should no longer be retained by the app cache"
+        );
+    });
+}
+
+#[test]
 fn sized_image_preload_reuses_target_and_compressed_cache() {
     let cx = TestAppContext::single();
     let source = AssetLocation::Embedded(SharedString::from("missing-target-background.webp"));
