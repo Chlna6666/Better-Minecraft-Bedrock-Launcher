@@ -1,6 +1,7 @@
 use std::{any::TypeId, sync::Arc};
 
 use anyhow::Result;
+use collections::FxHashMap;
 use futures::{FutureExt, future::Shared};
 
 use crate::{
@@ -10,6 +11,56 @@ use crate::{
 };
 
 use super::App;
+
+type AssetId = (TypeId, u64);
+
+#[derive(Default)]
+struct TransientAssetGenerations {
+    next_generation: u64,
+    current: FxHashMap<AssetId, u64>,
+}
+
+impl TransientAssetGenerations {
+    fn issue(&mut self, asset_id: AssetId) -> u64 {
+        let generation = self.next_generation;
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .expect("transient asset generation overflow");
+        self.current.insert(asset_id, generation);
+        generation
+    }
+}
+
+fn transient_asset_state(cx: &mut App) -> &mut TransientAssetGenerations {
+    cx.globals_by_type
+        .entry(TypeId::of::<TransientAssetGenerations>())
+        .or_insert_with(|| Box::new(TransientAssetGenerations::default()))
+        .downcast_mut::<TransientAssetGenerations>()
+        .expect("transient asset generation state type mismatch")
+}
+
+fn issue_transient_asset_generation(cx: &mut App, asset_id: AssetId) -> u64 {
+    transient_asset_state(cx).issue(asset_id)
+}
+
+fn transient_asset_generation(cx: &App, asset_id: AssetId) -> Option<u64> {
+    cx.globals_by_type
+        .get(&TypeId::of::<TransientAssetGenerations>())
+        .and_then(|state| state.downcast_ref::<TransientAssetGenerations>())
+        .and_then(|state| state.current.get(&asset_id).copied())
+}
+
+fn clear_transient_asset_generation(cx: &mut App, asset_id: AssetId) {
+    let Some(state) = cx
+        .globals_by_type
+        .get_mut(&TypeId::of::<TransientAssetGenerations>())
+        .and_then(|state| state.downcast_mut::<TransientAssetGenerations>())
+    else {
+        return;
+    };
+    state.current.remove(&asset_id);
+}
 
 #[cfg(test)]
 #[path = "asset_loading_tests.rs"]
@@ -50,6 +101,7 @@ impl App {
             .collect::<Vec<_>>();
         for asset_id in completed_compressed {
             self.loading_assets.remove(&asset_id);
+            clear_transient_asset_generation(self, asset_id);
         }
         crate::trim_compressed_cache();
 
@@ -96,6 +148,9 @@ impl App {
     /// Remove an asset from GPUI's cache and return its task if it exists.
     pub fn take_asset<A: Asset>(&mut self, source: &A::Source) -> Option<Shared<Task<A::Output>>> {
         let asset_id = (TypeId::of::<A>(), hash(source));
+        if TypeId::of::<A>() == TypeId::of::<crate::CompressedImageLoader>() {
+            clear_transient_asset_generation(self, asset_id);
+        }
         self.loading_assets
             .remove(&asset_id)
             .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap())
@@ -116,37 +171,30 @@ impl App {
             .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
             .cloned();
         let mut is_first = false;
-        let mut transient_identity = None;
+        let mut transient_generation = None;
         let task = existing.unwrap_or_else(|| {
             is_first = true;
             let future = A::load(source.clone(), self);
             let task = self.background_executor().spawn(future).shared();
             if TypeId::of::<A>() == TypeId::of::<crate::CompressedImageLoader>() {
-                transient_identity = task.downgrade();
+                transient_generation = Some(issue_transient_asset_generation(self, asset_id));
             }
             self.loading_assets.insert(asset_id, Box::new(task.clone()));
             task
         });
 
-        if let Some(transient_identity) = transient_identity {
+        if let Some(transient_generation) = transient_generation {
             let completion = task.clone();
             self.spawn(async move |cx| {
                 let _ = completion.await;
-                let Some(completed_task) = transient_identity.upgrade() else {
-                    return;
-                };
 
                 // The same source may have been explicitly removed and requested again before the
-                // old load completed. Only retire the exact Shared future that scheduled this
-                // cleanup; never let an old completion evict a replacement task with the same key.
+                // old load completed. The generation is recorded outside the Shared future because
+                // futures::Shared deliberately stops exposing pointer identity after termination.
                 let _ = cx.update(|cx| {
-                    let should_remove = cx
-                        .loading_assets
-                        .get(&asset_id)
-                        .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
-                        .is_some_and(|task| task.ptr_eq(&completed_task));
-                    if should_remove {
+                    if transient_asset_generation(cx, asset_id) == Some(transient_generation) {
                         cx.loading_assets.remove(&asset_id);
+                        clear_transient_asset_generation(cx, asset_id);
                     }
                 });
             })
