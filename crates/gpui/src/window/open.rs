@@ -89,10 +89,6 @@ impl Window {
         let display_id = platform_window.display().map(|display| display.id());
         let sprite_atlas = platform_window.sprite_atlas();
         let image_pipeline_config = cx.image_pipeline_config();
-        sprite_atlas.configure_image_budget(
-            image_pipeline_config.max_atlas_bytes,
-            image_pipeline_config.max_atlas_textures,
-        );
         let mouse_position = platform_window.mouse_position();
         let modifiers = platform_window.modifiers();
         let capslock = platform_window.capslock();
