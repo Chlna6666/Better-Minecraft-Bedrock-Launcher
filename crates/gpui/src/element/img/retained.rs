@@ -44,7 +44,7 @@ impl SizedImageRequestLease {
         let Self { request, app } = self;
         app.spawn(async move |cx| {
             let _ = cx.update(|cx| {
-                cx.release_sized_image_element_request(&request, image, None);
+                cx.release_sized_image_element_request_lifecycle(&request, image, None);
             });
         })
         .detach();
