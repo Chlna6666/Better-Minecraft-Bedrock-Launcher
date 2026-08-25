@@ -213,13 +213,12 @@ impl Application {
         Ok(())
     }
 
-    /// Sets the application-wide default font family without registering font data.
-    pub fn try_with_default_font_family(self, family: impl Into<SharedString>) -> Result<Self> {
-        self.try_with_default_font(DefaultFontConfig::system_family(family))
-    }
-
-    /// Sets application-wide image pipeline limits and animated image behavior.
+    /// Sets the application-wide image pipeline behavior.
+    ///
+    /// Active image memory is lifecycle-managed by GPUI rather than rejected by fixed byte
+    /// ceilings. Count-based scheduling controls and the idle bitmap reuse-pool budget are kept.
     pub fn with_image_pipeline_config(self, config: ImagePipelineConfig) -> Self {
+        let config = config.lifecycle_managed();
         crate::assets::configure_global_bitmap_pool(
             config.bitmap_pool_bytes,
             config.bitmap_pool_max_buffer_bytes,
