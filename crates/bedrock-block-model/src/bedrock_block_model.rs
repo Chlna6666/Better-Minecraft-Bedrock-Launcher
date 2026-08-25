@@ -8,6 +8,7 @@ mod error;
 mod geometry;
 mod java;
 mod java_bake;
+mod java_db;
 mod json;
 mod material;
 mod model_family;
@@ -26,6 +27,11 @@ pub use java::{
 };
 pub use java_bake::{
     JAVA_MODEL_DB_SCHEMA, JavaModelBakeStats, bake_java_model_database,
+};
+pub use java_db::{
+    JavaModelApplication, JavaModelAxis, JavaModelDatabase, JavaModelId, JavaPackedElement,
+    JavaPackedElementIter, JavaPackedFace, JavaPackedFaceIter, JavaPackedModel,
+    JavaPropertySource, vanilla_java_model_database,
 };
 pub use material::{
     BlockComponents, BlockFace, BlockTransformation, MaterialInstance, TextureReference, TextureSet,
