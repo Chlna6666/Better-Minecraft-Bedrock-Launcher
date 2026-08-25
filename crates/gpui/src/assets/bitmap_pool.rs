@@ -385,6 +385,17 @@ mod tests {
     }
 
     #[test]
+    fn large_buffers_use_dense_buckets_to_limit_internal_fragmentation() {
+        let pool = BitmapPool::new(8 * 1024 * 1024, usize::MAX);
+        let requested = 1024 * 1024 + 1;
+        let buffer = pool.acquire_capacity(requested);
+
+        assert!(buffer.capacity() >= requested);
+        assert!(buffer.capacity() <= requested + LARGE_BITMAP_BUCKET_GRANULARITY);
+        assert!(buffer.capacity() < requested.next_power_of_two());
+    }
+
+    #[test]
     fn large_bucket_granularity_coarsens_as_buffers_grow() {
         let pool = BitmapPool::new(usize::MAX, usize::MAX);
         assert_eq!(
@@ -399,6 +410,28 @@ mod tests {
             pool.bucket_capacity(40 * 1024 * 1024 + 1) % HUGE_BITMAP_BUCKET_GRANULARITY,
             0
         );
+    }
+
+    #[test]
+    fn supports_concurrent_acquire_and_release() {
+        let pool = Arc::new(BitmapPool::new(64 * 1024, 4096));
+        let workers = (0..8)
+            .map(|_| {
+                let pool = pool.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..64 {
+                        let buffer = pool.acquire(1024);
+                        assert_eq!(buffer.len(), 1024);
+                        pool.release(buffer);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            worker.join().expect("bitmap pool worker should complete");
+        }
+        assert!(pool.snapshot().retained_bytes <= 64 * 1024);
     }
 
     #[test]
