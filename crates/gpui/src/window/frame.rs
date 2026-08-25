@@ -156,10 +156,9 @@ impl Frame {
             .iter()
             .rev()
             .fold_while(None, |style, request| match request.hitbox_id {
-                None => Done(Some(request.style)),
-                Some(hitbox_id) => Continue(
-                    style.or_else(|| hitbox_id.is_hovered(window).then_some(request.style)),
-                ),
+                None => Done(Some(style.unwrap_or(request.style))),
+                Some(hitbox_id) if hitbox_id.is_hovered(window) => Done(Some(request.style)),
+                _ => Continue(style),
             })
             .into_inner()
     }
@@ -302,6 +301,27 @@ impl Frame {
         capacity
     }
 
+    pub(super) fn take_sized_image_element_releases(
+        &mut self,
+    ) -> Vec<crate::SizedImageElementRelease> {
+        let sized_state_type = TypeId::of::<crate::SizedImageElementState>();
+        let mut releases = Vec::new();
+        for ((_, type_id), state) in &mut self.element_states {
+            if *type_id != sized_state_type {
+                continue;
+            }
+            let Some(state) = state
+                .inner
+                .downcast_mut::<Option<crate::SizedImageElementState>>()
+                .and_then(Option::as_mut)
+            else {
+                continue;
+            };
+            state.drain_sized_image_releases(&mut releases);
+        }
+        releases
+    }
+
     pub(super) fn release_image_element_bitmaps(&mut self) {
         let image_state_type = TypeId::of::<crate::ImageElementState>();
         for ((_, type_id), state) in &mut self.element_states {
@@ -315,7 +335,6 @@ impl Frame {
             else {
                 continue;
             };
-            state.current_image = None;
             state.current_frame = None;
         }
     }
