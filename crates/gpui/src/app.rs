@@ -24,6 +24,7 @@ mod network;
 pub mod ownership_and_data_flow;
 mod paths;
 mod prompts;
+mod sized_image_lifecycle;
 mod state;
 mod stream;
 #[cfg(test)]
