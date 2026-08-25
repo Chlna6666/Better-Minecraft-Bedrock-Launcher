@@ -243,6 +243,7 @@ impl Render for DetachedPreview3dView {
             })
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_w(px(0.0))
                     .min_h(px(0.0))
