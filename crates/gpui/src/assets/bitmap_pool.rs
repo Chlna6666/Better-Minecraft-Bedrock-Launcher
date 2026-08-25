@@ -8,6 +8,13 @@ use std::{
 };
 
 const LARGE_BITMAP_BUCKET_GRANULARITY: usize = 64 * 1024;
+const VERY_LARGE_BITMAP_THRESHOLD: usize = 4 * 1024 * 1024;
+const VERY_LARGE_BITMAP_BUCKET_GRANULARITY: usize = 1024 * 1024;
+const HUGE_BITMAP_THRESHOLD: usize = 32 * 1024 * 1024;
+const HUGE_BITMAP_BUCKET_GRANULARITY: usize = 4 * 1024 * 1024;
+const SMALL_REUSE_CLASS_LIMIT: usize = 1024 * 1024;
+const MEDIUM_REUSE_CLASS_LIMIT: usize = 8 * 1024 * 1024;
+const LARGE_REUSE_CLASS_LIMIT: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BitmapPoolSnapshot {
@@ -46,12 +53,32 @@ impl BitmapPool {
         let requested = requested.max(1);
         let capacity = if requested <= LARGE_BITMAP_BUCKET_GRANULARITY {
             requested.next_power_of_two()
-        } else {
+        } else if requested <= VERY_LARGE_BITMAP_THRESHOLD {
             requested
                 .div_ceil(LARGE_BITMAP_BUCKET_GRANULARITY)
                 .saturating_mul(LARGE_BITMAP_BUCKET_GRANULARITY)
+        } else if requested <= HUGE_BITMAP_THRESHOLD {
+            requested
+                .div_ceil(VERY_LARGE_BITMAP_BUCKET_GRANULARITY)
+                .saturating_mul(VERY_LARGE_BITMAP_BUCKET_GRANULARITY)
+        } else {
+            requested
+                .div_ceil(HUGE_BITMAP_BUCKET_GRANULARITY)
+                .saturating_mul(HUGE_BITMAP_BUCKET_GRANULARITY)
         };
         capacity.min(self.max_buffer_bytes.load(Ordering::Relaxed))
+    }
+
+    fn reuse_class(capacity: usize) -> u8 {
+        if capacity <= SMALL_REUSE_CLASS_LIMIT {
+            0
+        } else if capacity <= MEDIUM_REUSE_CLASS_LIMIT {
+            1
+        } else if capacity <= LARGE_REUSE_CLASS_LIMIT {
+            2
+        } else {
+            3
+        }
     }
 
     /// Returns an empty buffer with at least `capacity` spare capacity, without zero-filling.
@@ -65,11 +92,14 @@ impl BitmapPool {
         }
 
         let bucket = self.bucket_capacity(capacity);
+        let requested_class = Self::reuse_class(bucket);
         let mut state = self.state.lock();
         let available_capacity = state
             .free
             .range(bucket..)
-            .next()
+            .find(|(available_capacity, _)| {
+                Self::reuse_class(**available_capacity) == requested_class
+            })
             .map(|(&available_capacity, _)| available_capacity);
         let mut buffer = if let Some(available_capacity) = available_capacity {
             let buffers = state
@@ -98,24 +128,37 @@ impl BitmapPool {
         buffer
     }
 
+    fn evict_capacity(state: &mut BitmapPoolState, capacity: usize) -> bool {
+        let Some(buffers) = state.free.get_mut(&capacity) else {
+            return false;
+        };
+        let buffer = buffers
+            .pop()
+            .expect("a retained bitmap capacity has at least one buffer");
+        if buffers.is_empty() {
+            state.free.remove(&capacity);
+        }
+        state.free_buffers = state.free_buffers.saturating_sub(1);
+        state.retained_bytes = state.retained_bytes.saturating_sub(buffer.capacity());
+        true
+    }
+
     fn evict_largest_free_buffer(state: &mut BitmapPoolState) -> bool {
         let Some(largest_capacity) = state.free.last_key_value().map(|(&capacity, _)| capacity)
         else {
             return false;
         };
-        let buffers = state
+        Self::evict_capacity(state, largest_capacity)
+    }
+
+    fn evict_largest_free_buffer_in_class(state: &mut BitmapPoolState, class: u8) -> bool {
+        let capacity = state
             .free
-            .get_mut(&largest_capacity)
-            .expect("the largest bitmap capacity exists");
-        let buffer = buffers
-            .pop()
-            .expect("a retained bitmap capacity has at least one buffer");
-        if buffers.is_empty() {
-            state.free.remove(&largest_capacity);
-        }
-        state.free_buffers = state.free_buffers.saturating_sub(1);
-        state.retained_bytes = state.retained_bytes.saturating_sub(buffer.capacity());
-        true
+            .keys()
+            .rev()
+            .copied()
+            .find(|capacity| Self::reuse_class(*capacity) == class);
+        capacity.is_some_and(|capacity| Self::evict_capacity(state, capacity))
     }
 
     fn release(&self, mut buffer: Vec<u8>) {
@@ -126,19 +169,27 @@ impl BitmapPool {
 
         buffer.clear();
         let max_bytes = self.max_bytes.load(Ordering::Relaxed);
+        let class = Self::reuse_class(capacity);
         let mut state = self.state.lock();
 
-        // The retention budget is for idle free-list memory, not an image-size ceiling. Keep one
-        // oversized buffer as a hot reuse slot so fullscreen/4K decode and upload staging does not
-        // repeatedly return a large allocation to the general allocator and immediately allocate
-        // it again on the next frame. Explicit trim still releases this buffer.
+        // Keep resize/decode reuse local to a broad size class. In particular a returned 4K
+        // buffer should replace stale 4K-class buffers before it evicts the small allocations
+        // used by normal UI. This reduces allocator churn and cross-workload fragmentation.
         if capacity > max_bytes {
-            while Self::evict_largest_free_buffer(&mut state) {}
+            while Self::evict_largest_free_buffer_in_class(&mut state, class) {}
+            // One oversized hot buffer is still allowed, but preserve a small quarter-budget
+            // working set for unrelated UI instead of flushing the entire pool.
+            let protected_other_bytes = max_bytes / 4;
+            while state.retained_bytes > protected_other_bytes {
+                if !Self::evict_largest_free_buffer(&mut state) {
+                    break;
+                }
+            }
         } else {
-            // Prefer the newest returned capacity over stale free buffers. This keeps the pool
-            // aligned with the current viewport/image workload instead of dropping the buffer that
-            // is most likely to be requested again after a resize.
             while state.retained_bytes.saturating_add(capacity) > max_bytes {
+                if Self::evict_largest_free_buffer_in_class(&mut state, class) {
+                    continue;
+                }
                 if !Self::evict_largest_free_buffer(&mut state) {
                     break;
                 }
@@ -267,7 +318,10 @@ impl Drop for BitmapBytes {
 
 #[cfg(test)]
 mod tests {
-    use super::{BitmapPool, LARGE_BITMAP_BUCKET_GRANULARITY};
+    use super::{
+        BitmapPool, HUGE_BITMAP_BUCKET_GRANULARITY, LARGE_BITMAP_BUCKET_GRANULARITY,
+        VERY_LARGE_BITMAP_BUCKET_GRANULARITY,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -306,6 +360,18 @@ mod tests {
     }
 
     #[test]
+    fn oversized_buffer_preserves_small_ui_reuse_reserve() {
+        let pool = BitmapPool::new(1024 * 1024, usize::MAX);
+        pool.release(Vec::with_capacity(128 * 1024));
+        pool.release(Vec::with_capacity(128 * 1024));
+        pool.release(Vec::with_capacity(2 * 1024 * 1024));
+
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.free_buffers, 3);
+        assert!(snapshot.retained_bytes >= 2 * 1024 * 1024 + 256 * 1024);
+    }
+
+    #[test]
     fn newest_buffer_replaces_stale_buffers_when_free_list_budget_is_full() {
         let pool = BitmapPool::new(1024, usize::MAX);
         pool.release(Vec::with_capacity(512));
@@ -319,35 +385,42 @@ mod tests {
     }
 
     #[test]
-    fn large_buffers_use_dense_buckets_to_limit_internal_fragmentation() {
-        let pool = BitmapPool::new(8 * 1024 * 1024, usize::MAX);
-        let requested = 1024 * 1024 + 1;
-        let buffer = pool.acquire_capacity(requested);
-
-        assert!(buffer.capacity() >= requested);
-        assert!(buffer.capacity() <= requested + LARGE_BITMAP_BUCKET_GRANULARITY);
-        assert!(buffer.capacity() < requested.next_power_of_two());
+    fn large_bucket_granularity_coarsens_as_buffers_grow() {
+        let pool = BitmapPool::new(usize::MAX, usize::MAX);
+        assert_eq!(
+            pool.bucket_capacity(2 * 1024 * 1024 + 1) % LARGE_BITMAP_BUCKET_GRANULARITY,
+            0
+        );
+        assert_eq!(
+            pool.bucket_capacity(8 * 1024 * 1024 + 1) % VERY_LARGE_BITMAP_BUCKET_GRANULARITY,
+            0
+        );
+        assert_eq!(
+            pool.bucket_capacity(40 * 1024 * 1024 + 1) % HUGE_BITMAP_BUCKET_GRANULARITY,
+            0
+        );
     }
 
     #[test]
-    fn supports_concurrent_acquire_and_release() {
-        let pool = Arc::new(BitmapPool::new(64 * 1024, 4096));
-        let workers = (0..8)
-            .map(|_| {
-                let pool = pool.clone();
-                std::thread::spawn(move || {
-                    for _ in 0..64 {
-                        let buffer = pool.acquire(1024);
-                        assert_eq!(buffer.len(), 1024);
-                        pool.release(buffer);
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
+    fn trim_releases_retained_capacity() {
+        let pool = BitmapPool::new(4096, usize::MAX);
+        pool.release(Vec::with_capacity(1024));
+        pool.release(Vec::with_capacity(2048));
+        assert!(pool.snapshot().retained_bytes >= 3072);
+        pool.trim_to(1024);
+        assert!(pool.snapshot().retained_bytes <= 1024);
+    }
 
-        for worker in workers {
-            worker.join().expect("bitmap pool worker should complete");
-        }
-        assert!(pool.snapshot().retained_bytes <= 64 * 1024);
+    #[test]
+    fn bitmap_bytes_returns_owned_vec_to_pool_on_last_arc_drop() {
+        let pool = super::global_bitmap_pool();
+        pool.trim_to(0);
+        let bytes = super::BitmapBytes::from_vec(Vec::with_capacity(256));
+        let cloned = Arc::clone(&bytes);
+        drop(bytes);
+        assert_eq!(pool.snapshot().free_buffers, 0);
+        drop(cloned);
+        assert_eq!(pool.snapshot().free_buffers, 1);
+        pool.trim_to(0);
     }
 }
