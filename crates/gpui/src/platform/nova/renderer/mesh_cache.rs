@@ -6,6 +6,8 @@ const MESH_CACHE_UNUSED_EPOCHS: u64 = 240;
 const INDEX_BUFFER_CAPACITY_BYTES: usize =
     MAX_CUSTOM_MESH_3D_INDICES * PACKED_CUSTOM_MESH_3D_INDEX_BYTES;
 
+type SurfaceMeshAllocatorKey = (usize, u64);
+
 #[derive(Clone, Copy, Debug, Default)]
 struct MeshFreeSpan {
     offset: usize,
@@ -252,9 +254,22 @@ impl SurfaceMeshPageAllocator {
     }
 }
 
-fn surface_mesh_allocators() -> &'static Mutex<FxHashMap<u64, SurfaceMeshPageAllocator>> {
-    static ALLOCATORS: OnceLock<Mutex<FxHashMap<u64, SurfaceMeshPageAllocator>>> = OnceLock::new();
+fn surface_mesh_allocators(
+) -> &'static Mutex<FxHashMap<SurfaceMeshAllocatorKey, SurfaceMeshPageAllocator>> {
+    static ALLOCATORS: OnceLock<
+        Mutex<FxHashMap<SurfaceMeshAllocatorKey, SurfaceMeshPageAllocator>>,
+    > = OnceLock::new();
     ALLOCATORS.get_or_init(|| Mutex::new(FxHashMap::default()))
+}
+
+fn surface_mesh_allocator_key(renderer: &NovaRenderer) -> SurfaceMeshAllocatorKey {
+    // nova-gfx resource IDs are only unique inside one logical device. Every GPUI window owns
+    // its own Nova renderer/device, so two windows can both have SurfaceId(raw=0/1). Using only
+    // surface.raw() in the process-global allocator map lets one window clear/reuse another
+    // window's live vertex/index spans. The atlas Arc is stable for the renderer lifetime and is
+    // created per window, making its address an efficient renderer namespace without adding a
+    // second allocation or another atomic ID to the hot path.
+    (Arc::as_ptr(&renderer.atlas).addr(), renderer.surface.raw())
 }
 
 fn allocate_best_fit(spans: &mut Vec<MeshFreeSpan>, len: usize, alignment: usize) -> Option<usize> {
@@ -361,7 +376,7 @@ impl NovaRenderer {
         current_meshes: &[Arc<GpuMesh3d>],
         current_ids: &FxHashSet<GpuMesh3dId>,
     ) -> Result<()> {
-        let surface_key = self.surface.raw();
+        let surface_key = surface_mesh_allocator_key(self);
 
         if current_meshes.is_empty() {
             if self.pending_submissions.is_empty() {
@@ -441,7 +456,8 @@ impl NovaRenderer {
         let fragmented_vertex_count = allocator_snapshot.2.saturating_sub(allocator_snapshot.4);
         let fragmented_index_bytes = allocator_snapshot.3.saturating_sub(allocator_snapshot.5);
         log::debug!(
-            "nova custom 3D mesh paged cache: surface={surface_key}, current_meshes={}, cached_meshes={}, uploaded_bytes={}, used_vertices={}, used_index_bytes={}, free_vertices={}, free_index_bytes={}, largest_free_vertex_span={}, largest_free_index_span={}, fragmented_vertex_count={fragmented_vertex_count}, fragmented_index_bytes={fragmented_index_bytes}, retired_allocations={}, evictions={}, compactions={}",
+            "nova custom 3D mesh paged cache: surface={}, allocator_key={surface_key:?}, current_meshes={}, cached_meshes={}, uploaded_bytes={}, used_vertices={}, used_index_bytes={}, free_vertices={}, free_index_bytes={}, largest_free_vertex_span={}, largest_free_index_span={}, fragmented_vertex_count={fragmented_vertex_count}, fragmented_index_bytes={fragmented_index_bytes}, retired_allocations={}, evictions={}, compactions={}",
+            self.surface.raw(),
             current_meshes.len(),
             self.custom_mesh_3d_mesh_cache.len(),
             self.custom_mesh_3d_uploaded_bytes_this_frame,
@@ -464,7 +480,7 @@ impl NovaRenderer {
         current_meshes: &[Arc<GpuMesh3d>],
         current_ids: &FxHashSet<GpuMesh3dId>,
     ) -> Result<()> {
-        let surface_key = self.surface.raw();
+        let surface_key = surface_mesh_allocator_key(self);
         let uses_u16 = index_uses_u16(mesh);
         let index_stride = if uses_u16 { 2 } else { 4 };
         let vertex_count = mesh.vertices.len();
@@ -560,7 +576,7 @@ impl NovaRenderer {
     }
 
     fn upload_custom_mesh_3d_with_new_allocation(&mut self, mesh: &GpuMesh3d) -> Result<()> {
-        let surface_key = self.surface.raw();
+        let surface_key = surface_mesh_allocator_key(self);
         let uses_u16 = index_uses_u16(mesh);
         let index_stride = if uses_u16 { 2 } else { 4 };
         let index_byte_count = mesh
@@ -614,10 +630,11 @@ impl NovaRenderer {
             && self.pending_submissions.is_empty()
         {
             self.clear_custom_mesh_3d_cache();
+            let surface_key = surface_mesh_allocator_key(self);
             surface_mesh_allocators()
                 .lock()
                 .expect("nova 3D mesh allocator lock poisoned")
-                .remove(&self.surface.raw());
+                .remove(&surface_key);
         }
 
         let multiplier = match level {
@@ -749,10 +766,11 @@ impl NovaRenderer {
             index_count,
         };
         self.custom_mesh_3d_mesh_cache.insert(mesh.id, entry);
+        let surface_key = surface_mesh_allocator_key(self);
         surface_mesh_allocators()
             .lock()
             .expect("nova 3D mesh allocator lock poisoned")
-            .entry(self.surface.raw())
+            .entry(surface_key)
             .or_default()
             .commit(
                 mesh.id,
