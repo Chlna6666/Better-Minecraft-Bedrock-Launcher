@@ -17,84 +17,53 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     fs,
-    sync::{Arc, OnceLock},
+    sync::{Arc, OnceLock, Weak},
     time::Instant,
 };
 
-struct CompressedCacheEntry {
-    bytes: Arc<[u8]>,
-    last_used: u64,
-}
-
+/// Metadata-only cache for compressed image bytes.
+///
+/// The cache deliberately stores only `Weak` references. Active loaders and decode tasks own the
+/// compressed bytes; when their last strong owner disappears, the payload is released without
+/// waiting for a byte-budget eviction pass.
 struct CompressedCache {
-    entries: HashMap<u64, CompressedCacheEntry>,
-    next_use: u64,
-    retained_bytes: usize,
-    max_bytes: usize,
+    entries: HashMap<u64, Weak<[u8]>>,
 }
 
 impl CompressedCache {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
-            next_use: 0,
-            retained_bytes: 0,
-            max_bytes: 64 * 1024 * 1024,
         }
-    }
-
-    fn touch(&mut self) -> u64 {
-        let use_order = self.next_use;
-        self.next_use = self.next_use.wrapping_add(1);
-        use_order
     }
 
     fn get(&mut self, key: u64) -> Option<Arc<[u8]>> {
-        let use_order = self.touch();
-        let entry = self.entries.get_mut(&key)?;
-        entry.last_used = use_order;
-        Some(entry.bytes.clone())
+        let bytes = self.entries.get(&key).and_then(Weak::upgrade);
+        if bytes.is_none() {
+            self.entries.remove(&key);
+        }
+        bytes
     }
 
-    fn insert(&mut self, key: u64, bytes: Arc<[u8]>) {
-        if bytes.len() > self.max_bytes {
-            return;
-        }
-        let byte_len = bytes.len();
-        let last_used = self.touch();
-        if let Some(previous) = self
-            .entries
-            .insert(key, CompressedCacheEntry { bytes, last_used })
-        {
-            self.retained_bytes = self.retained_bytes.saturating_sub(previous.bytes.len());
-        }
-        self.retained_bytes = self.retained_bytes.saturating_add(byte_len);
-        self.trim(self.max_bytes);
+    fn insert(&mut self, key: u64, bytes: &Arc<[u8]>) {
+        self.entries.insert(key, Arc::downgrade(bytes));
     }
 
-    /// Removes the least recently used entry; eviction is a low-frequency path, so the linear
-    /// scan here is the cheap trade for O(1) `get`/`insert`.
-    fn evict_least_recently_used(&mut self) -> bool {
-        let Some(oldest) = self
-            .entries
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(key, _)| *key)
-        else {
-            return false;
-        };
-        if let Some(previous) = self.entries.remove(&oldest) {
-            self.retained_bytes = self.retained_bytes.saturating_sub(previous.bytes.len());
-        }
-        true
+    fn prune_dead(&mut self) {
+        self.entries.retain(|_, bytes| bytes.strong_count() != 0);
     }
 
-    fn trim(&mut self, max_bytes: usize) {
-        while self.retained_bytes > max_bytes {
-            if !self.evict_least_recently_used() {
-                break;
+    fn snapshot(&mut self) -> (usize, usize) {
+        let mut retained_bytes = 0usize;
+        self.entries.retain(|_, weak| {
+            if let Some(bytes) = weak.upgrade() {
+                retained_bytes = retained_bytes.saturating_add(bytes.len());
+                true
+            } else {
+                false
             }
-        }
+        });
+        (self.entries.len(), retained_bytes)
     }
 }
 
@@ -104,19 +73,12 @@ fn compressed_cache() -> &'static Mutex<CompressedCache> {
     COMPRESSED_CACHE.get_or_init(|| Mutex::new(CompressedCache::new()))
 }
 
-pub(crate) fn configure_compressed_cache(max_bytes: usize) {
-    let mut cache = compressed_cache().lock();
-    cache.max_bytes = max_bytes;
-    cache.trim(max_bytes);
-}
-
 pub(crate) fn compressed_cache_snapshot() -> (usize, usize) {
-    let cache = compressed_cache().lock();
-    (cache.entries.len(), cache.retained_bytes)
+    compressed_cache().lock().snapshot()
 }
 
-pub(crate) fn trim_compressed_cache(max_bytes: usize) {
-    compressed_cache().lock().trim(max_bytes);
+pub(crate) fn trim_compressed_cache() {
+    compressed_cache().lock().prune_dead();
 }
 
 /// AssetLocation image request for a concrete device-pixel output size.
@@ -195,7 +157,7 @@ impl Asset for CompressedImageAssetLoader {
                 load_image_resource_data(source.resource, client, asset_source).await?;
             let compressed = source_bytes.into_compressed_image_bytes();
             if let CompressedImageBytes::Shared(bytes) = &compressed {
-                compressed_cache().lock().insert(cache_key, bytes.clone());
+                compressed_cache().lock().insert(cache_key, bytes);
             }
             Ok(compressed)
         }
@@ -299,8 +261,8 @@ impl Asset for ImageAssetLoader {
 
             let processing_duration = processing_started.elapsed();
             data = data.with_processing_metrics(compressed_len, processing_duration);
-            // Reuse the same ImageId across re-decodes of this resource so retained atlas
-            // tiles keyed by the id are reused instead of leaking a new tile per decode.
+            // Reuse the same ImageId across re-decodes of this resource so a pending atlas
+            // retirement can be canceled when the same pixels become visible again.
             data.id =
                 crate::interned_render_image_id(TypeId::of::<ImageAssetLoader>(), hash(&source));
             record_image_processing_metrics_with_threshold(
@@ -365,7 +327,7 @@ impl Asset for SizedImageAssetLoader {
                 .with_processing_metrics(compressed_len, processing_duration);
             // The source hash covers the resource, decode target, scale factor, and object
             // fit, so a matching key always yields pixel-identical frames and can safely
-            // reuse the previous ImageId (and therefore its resident atlas tiles).
+            // reuse the previous ImageId (and therefore a still-pending GPU allocation).
             data.id = crate::interned_render_image_id(
                 TypeId::of::<SizedImageAssetLoader>(),
                 hash(&source),
@@ -516,18 +478,17 @@ mod tests {
     }
 
     #[test]
-    fn compressed_cache_is_bounded_and_updates_lru_order() {
+    fn compressed_cache_does_not_keep_payload_alive() {
         let mut cache = CompressedCache::new();
-        cache.max_bytes = 8;
-        cache.insert(1, Arc::from(vec![1_u8; 4]));
-        cache.insert(2, Arc::from(vec![2_u8; 4]));
-        assert!(cache.get(1).is_some());
+        let bytes: Arc<[u8]> = Arc::from(vec![1_u8; 8]);
+        cache.insert(1, &bytes);
 
-        cache.insert(3, Arc::from(vec![3_u8; 4]));
+        let cached = cache.get(1).expect("live payload should be reusable");
+        assert_eq!(cached.len(), 8);
+        drop(cached);
+        drop(bytes);
 
-        assert!(cache.entries.contains_key(&1));
-        assert!(!cache.entries.contains_key(&2));
-        assert!(cache.entries.contains_key(&3));
-        assert_eq!(cache.retained_bytes, 8);
+        assert!(cache.get(1).is_none());
+        assert!(cache.entries.is_empty());
     }
 }
