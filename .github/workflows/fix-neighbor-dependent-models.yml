@@ -18,25 +18,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  apply-and-verify:
+  model-core:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang cmake libclang-dev llvm-dev ninja-build pkg-config \
-            libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev \
-            libfreetype6-dev libgl1-mesa-dev libpipewire-0.3-dev libssl-dev \
-            libudev-dev libvulkan-dev libwayland-dev libx11-dev libx11-xcb-dev \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
-            libxcursor-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxrandr-dev nasm yasm
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -62,34 +50,77 @@ jobs:
       - name: Check block model and world crates
         run: cargo check -p bedrock-block-model -p bedrock-world --all-features
 
-      - name: Check BMCBL library
-        shell: bash
+  bmcbl-windows:
+    if: github.actor != 'github-actions[bot]'
+    needs: model-core
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Apply neighbor model patch
+        shell: pwsh
         run: |
-          set -o pipefail
-          cargo check --lib 2>&1 | tee cargo-check.log
+          python scripts/bootstrap_neighbor_model_patch.py
+          python scripts/fix_neighbor_dependent_models.py
+          python scripts/fix_neighbor_model_precedence.py
+
+      - name: Format
+        shell: pwsh
+        run: |
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check BMCBL library
+        shell: pwsh
+        run: |
+          cmd /c "cargo check --lib > cargo-check.log 2>&1"
+          $cargoExit = $LASTEXITCODE
+          Get-Content cargo-check.log
+          if ($cargoExit -ne 0) { exit $cargoExit }
 
       - name: Upload BMCBL check diagnostic
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: neighbor-model-cargo-check
+          name: neighbor-model-cargo-check-windows
           path: cargo-check.log
           if-no-files-found: ignore
           retention-days: 1
 
       - name: Commit verified source changes
-        shell: bash
+        shell: pwsh
         run: |
-          rm -f scripts/fix_neighbor_dependent_models.py
-          rm -f scripts/bootstrap_neighbor_model_patch.py
-          rm -f scripts/fix_neighbor_model_precedence.py
-          rm -f .github/workflows/fix-neighbor-dependent-models.yml
+          git fetch origin master
+          $remoteHead = (git rev-parse origin/master).Trim()
+          if ($remoteHead -ne $env:GITHUB_SHA) {
+            throw "master advanced during validation: $remoteHead != $env:GITHUB_SHA"
+          }
+
+          Remove-Item -Force scripts/fix_neighbor_dependent_models.py -ErrorAction SilentlyContinue
+          Remove-Item -Force scripts/bootstrap_neighbor_model_patch.py -ErrorAction SilentlyContinue
+          Remove-Item -Force scripts/fix_neighbor_model_precedence.py -ErrorAction SilentlyContinue
+          Remove-Item -Force .github/workflows/fix-neighbor-dependent-models.yml -ErrorAction SilentlyContinue
           git add -A
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "No changes to commit"
             exit 0
-          fi
+          }
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "fix(方块模型): 修复邻接方块与方块实体模型"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git push origin HEAD:master
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
