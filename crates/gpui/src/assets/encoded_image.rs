@@ -27,7 +27,7 @@ impl EncodedImage {
 
     /// Produces a renderable image, retaining animation frames according to `config`.
     ///
-    /// Animations that exceed the resident limits continue through GPUI's bounded animation
+    /// Animations that exceed the resident frame count continue through GPUI's bounded animation
     /// worker pool; callers do not provide or own a background executor.
     pub fn render(self, config: AnimatedImageConfig) -> Result<RenderImage> {
         let config = config.clamped();
@@ -35,7 +35,7 @@ impl EncodedImage {
             first_frame,
             remaining_frames,
             is_complete,
-        } = initial_frames(&self, config.max_resident_frames, config.max_resident_bytes)?;
+        } = initial_frames(&self, config.max_resident_frames)?;
 
         let image = if !is_complete {
             let image = RenderImage::streaming(self, first_frame, remaining_frames, config);
