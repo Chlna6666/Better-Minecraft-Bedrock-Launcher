@@ -53,8 +53,8 @@ fn facing_direction_from_int(value: i64) -> Option<CardinalDirection> {''',
 patch(
     "crates/bedrock-block-model/src/model_family/building/stairs.rs",
     "    CardinalDirection, cardinal_direction, state_bool, state_string,\n",
-    "    CardinalDirection, stair_direction, state_bool, state_string,\n",
-    "import stair direction parser",
+    "    CardinalDirection, cardinal_direction, stair_direction, state_bool, state_string,\n",
+    "import stair direction parser while preserving ladder parser",
 )
 patch(
     "crates/bedrock-block-model/src/model_family/building/stairs.rs",
