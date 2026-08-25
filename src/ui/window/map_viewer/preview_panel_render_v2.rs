@@ -36,6 +36,7 @@ impl MapViewerWindowView {
             .pt(px(10.0))
             .min_w(px(0.0))
             .cursor_move()
+            .id("preview-3d-detach-header")
             .on_drag(
                 Preview3dDetachDrag,
                 move |_drag: &Preview3dDetachDrag, position, window, cx| {
