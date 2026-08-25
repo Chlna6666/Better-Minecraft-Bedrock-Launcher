@@ -6,6 +6,7 @@ use super::loader::ImageRenderRequest;
 
 /// Playback and loading values retained by ordinary image elements between frames.
 pub(crate) struct ImageElementState {
+    pub(crate) current_image: Option<Arc<RenderImage>>,
     pub(crate) current_frame: Option<AnimatedFrame>,
     pub(super) next_frame_at: Option<Instant>,
     pub(super) started_loading: Option<(Instant, Task<()>)>,
@@ -56,6 +57,7 @@ impl SizedImageElementState {
     pub(crate) fn new(current_frame: Option<AnimatedFrame>) -> Self {
         Self {
             playback: ImageElementState {
+                current_image: None,
                 current_frame,
                 next_frame_at: None,
                 started_loading: None,
