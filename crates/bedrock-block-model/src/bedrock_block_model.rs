@@ -6,6 +6,7 @@
 
 mod error;
 mod geometry;
+mod java;
 mod json;
 mod material;
 mod model_family;
@@ -18,6 +19,10 @@ mod texture;
 
 pub use error::{BlockModelError, Result};
 pub use geometry::{BlockGeometry, GeometryBone, GeometryCube, GeometryLibrary, GeometryUv};
+pub use java::{
+    JavaBakedModel, JavaModelRepository, java_block_id_for_bedrock_state,
+    java_properties_for_bedrock_state,
+};
 pub use material::{
     BlockComponents, BlockFace, BlockTransformation, MaterialInstance, TextureReference, TextureSet,
 };
