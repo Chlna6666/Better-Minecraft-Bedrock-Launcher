@@ -210,15 +210,26 @@ impl Element for Img {
         let render_to_bounds =
             self.should_render_to_bounds(cx.image_pipeline_config().bounds_policy);
 
+        // Bounds-aware images own a distinct retained-state type during paint. Do not touch the
+        // ordinary image state here: switching rendering modes then makes the previous state stale
+        // and lets the frame lifecycle retire it without branch-specific cleanup.
+        if render_to_bounds {
+            let layout_id = self.interactivity.request_layout(
+                global_id,
+                inspector_id,
+                window,
+                cx,
+                |style, window, cx| window.request_layout(style, None, cx),
+            );
+            return (layout_id, layout_state);
+        }
+
         window.with_optional_element_state(global_id, |state, window| {
             let mut state = state.map(|state| {
                 state.unwrap_or(ImageElementState {
-                    current_image: None,
                     current_frame: None,
                     next_frame_at: None,
                     started_loading: None,
-                    sized_image_request: None,
-                    pending_sized_image_drop: None,
                 })
             });
 
@@ -229,10 +240,6 @@ impl Element for Img {
                 cx,
                 |mut style, window, cx| {
                     let mut replacement_id = None;
-
-                    if render_to_bounds {
-                        return window.request_layout(style, replacement_id, cx);
-                    }
 
                     match self.source.use_render_image(
                         self.image_cache
@@ -459,12 +466,9 @@ impl Element for Img {
                                 global_id,
                                 |state: Option<ImageElementState>, window| {
                                     let mut state = state.unwrap_or(ImageElementState {
-                                        current_image: None,
                                         current_frame: layout_state.frame.clone(),
                                         next_frame_at: None,
                                         started_loading: None,
-                                        sized_image_request: None,
-                                        pending_sized_image_drop: None,
                                     });
                                     let frame = select_animation_frame(
                                         &mut state,
