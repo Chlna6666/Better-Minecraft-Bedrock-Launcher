@@ -6,6 +6,7 @@ on:
     paths:
       - scripts/fix_neighbor_dependent_models.py
       - scripts/bootstrap_neighbor_model_patch.py
+      - scripts/fix_neighbor_model_precedence.py
       - .github/workflows/fix-neighbor-dependent-models.yml
   workflow_dispatch:
 
@@ -48,6 +49,7 @@ jobs:
         run: |
           python3 scripts/bootstrap_neighbor_model_patch.py
           python3 scripts/fix_neighbor_dependent_models.py
+          python3 scripts/fix_neighbor_model_precedence.py
 
       - name: Format
         run: |
@@ -80,6 +82,7 @@ jobs:
         run: |
           rm -f scripts/fix_neighbor_dependent_models.py
           rm -f scripts/bootstrap_neighbor_model_patch.py
+          rm -f scripts/fix_neighbor_model_precedence.py
           rm -f .github/workflows/fix-neighbor-dependent-models.yml
           git add -A
           if git diff --cached --quiet; then
