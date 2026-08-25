@@ -25,14 +25,14 @@ pub struct AnimatedImageConfig {
     pub inactive_max_fps: f32,
     /// Number of frames queued ahead of playback.
     pub prefetch_frames: usize,
-    /// Maximum decoded bytes queued ahead of playback.
-    ///
-    /// A single frame larger than this limit is still admitted when the queue is empty.
-    pub prefetch_byte_limit: usize,
+    /// Internal byte sentinel retained while the streaming implementation transitions to
+    /// frame-count-only scheduling. This is intentionally not part of the public API.
+    pub(crate) prefetch_byte_limit: usize,
     /// Maximum frames retained fully resident for small images.
     pub max_resident_frames: usize,
-    /// Maximum bytes retained fully resident for small images.
-    pub max_resident_bytes: usize,
+    /// Internal byte sentinel retained while resident-frame selection transitions to
+    /// frame-count-only policy. This is intentionally not part of the public API.
+    pub(crate) max_resident_bytes: usize,
 }
 
 impl Default for AnimatedImageConfig {
@@ -43,9 +43,9 @@ impl Default for AnimatedImageConfig {
             max_fps: DEFAULT_ANIMATED_IMAGE_MAX_FPS,
             inactive_max_fps: DEFAULT_INACTIVE_ANIMATED_IMAGE_MAX_FPS,
             prefetch_frames: 12,
-            prefetch_byte_limit: 24 * 1024 * 1024,
+            prefetch_byte_limit: usize::MAX,
             max_resident_frames: 512,
-            max_resident_bytes: 32 * 1024 * 1024,
+            max_resident_bytes: usize::MAX,
         }
     }
 }
@@ -68,9 +68,9 @@ impl AnimatedImageConfig {
                 DEFAULT_INACTIVE_ANIMATED_IMAGE_MAX_FPS,
             ),
             prefetch_frames: self.prefetch_frames.clamp(2, 64),
-            prefetch_byte_limit: self.prefetch_byte_limit.max(4),
+            prefetch_byte_limit: usize::MAX,
             max_resident_frames: self.max_resident_frames.max(1),
-            max_resident_bytes: self.max_resident_bytes.max(4),
+            max_resident_bytes: usize::MAX,
         }
     }
 
