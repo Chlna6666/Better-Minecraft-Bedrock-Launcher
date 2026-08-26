@@ -124,6 +124,12 @@ impl Window {
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
+        // A zero-sized element can occur while layout is settling or while its
+        // parent is hidden. There is no pixel to rasterize in that state.
+        if bounds.size.is_zero() {
+            return Ok(());
+        }
+
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
 

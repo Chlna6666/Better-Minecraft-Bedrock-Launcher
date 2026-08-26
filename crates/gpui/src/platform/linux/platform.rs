@@ -1,3 +1,6 @@
+#[cfg(feature = "wayland")]
+use std::io::Read as _;
+
 use std::{
     env,
     path::{Path, PathBuf},
@@ -6,13 +9,7 @@ use std::{
     sync::Arc,
 };
 #[cfg(any(feature = "wayland", feature = "x11"))]
-use std::{
-    ffi::OsString,
-    fs::File,
-    io::Read as _,
-    os::fd::{AsFd, AsRawFd, FromRawFd},
-    time::Duration,
-};
+use std::{ffi::OsString, fs::File, os::fd::AsFd, time::Duration};
 
 use anyhow::{Context as _, anyhow};
 use calloop::{LoopHandle, LoopSignal, channel::Channel};
@@ -689,11 +686,10 @@ pub(super) fn xkb_compose_state(cx: &xkb::Context) -> Option<xkb::compose::State
     state
 }
 
-#[cfg(any(feature = "wayland", feature = "x11"))]
-pub(super) unsafe fn read_fd(mut fd: filedescriptor::FileDescriptor) -> Result<Vec<u8>> {
-    let mut file = unsafe { File::from_raw_fd(fd.as_raw_fd()) };
+#[cfg(feature = "wayland")]
+pub(super) fn read_fd(mut fd: filedescriptor::FileDescriptor) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+    fd.read_to_end(&mut buffer)?;
     Ok(buffer)
 }
 

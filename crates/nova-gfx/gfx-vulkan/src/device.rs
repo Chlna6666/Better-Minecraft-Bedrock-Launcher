@@ -2673,8 +2673,12 @@ impl GfxSubmissionDevice for VulkanDevice {
 }
 
 impl GfxPresentationDevice for VulkanDevice {
-    fn supports_partial_presentation(&self, swapchain: gfx_core::SwapchainId) -> bool {
-        self.incremental_presentation && self.swapchains.get(swapchain).is_ok()
+    fn supports_partial_presentation(&self, _swapchain: gfx_core::SwapchainId) -> bool {
+        // The renderer submits a complete frame, but Vulkan swapchain images rotate between
+        // presents. Without per-image damage accumulation, VK_KHR_incremental_present can leave
+        // unchanged pixels sourced from an uninitialized image, which appears as intermittent
+        // black corners or rectangular stale regions on Linux/X11 and Wayland.
+        false
     }
 
     fn draw_steps_and_present(

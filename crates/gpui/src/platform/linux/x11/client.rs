@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the X11 platform boundary uses raw descriptors and FFI APIs"
+)]
+
 use crate::{Capslock, xcb_flush};
 use anyhow::{Context as _, anyhow};
 use ashpd::WindowIdentifier;

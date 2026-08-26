@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the X11 window boundary constructs raw window handles"
+)]
+
 use anyhow::{Context as _, anyhow};
 use x11rb::connection::RequestConnection;
 
@@ -1563,7 +1568,7 @@ impl PlatformWindow for X11Window {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         let inner = self.0.state.borrow();
-        inner.renderer.sprite_atlas().clone()
+        inner.renderer.platform_atlas()
     }
 
     fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {

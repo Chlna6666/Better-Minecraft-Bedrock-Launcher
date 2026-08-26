@@ -1,7 +1,12 @@
+#![expect(
+    unsafe_code,
+    reason = "the Wayland clipboard boundary uses raw handles and libc"
+)]
+
 use std::{
     fs::File,
     io::{self, ErrorKind, Read, Write},
-    os::fd::{AsRawFd, BorrowedFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
     time::{Duration, Instant},
 };
 
@@ -125,9 +130,8 @@ impl<T: ReceiveData> DataOffer<T> {
 
     fn read_bytes(&self, connection: &Connection, mime_type: &str) -> Option<Vec<u8>> {
         let pipe = Pipe::new().unwrap();
-        self.inner.receive_data(mime_type.to_string(), unsafe {
-            BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
-        });
+        self.inner
+            .receive_data(mime_type.to_string(), pipe.write.as_fd());
         let fd = pipe.read;
         drop(pipe.write);
 

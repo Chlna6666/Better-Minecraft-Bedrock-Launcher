@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the Wayland window boundary constructs raw window handles"
+)]
+
 use std::{
     cell::{Ref, RefCell, RefMut},
     ffi::c_void,
@@ -275,8 +280,9 @@ impl WaylandWindowState {
     }
 
     pub fn is_transparent(&self) -> bool {
-        self.decorations == WindowDecorations::Client
-            || self.background_appearance != WindowBackgroundAppearance::Opaque
+        // Client-side decorations do not require an alpha surface. The application paints
+        // the complete window, so transparency is determined by the requested appearance.
+        self.background_appearance != WindowBackgroundAppearance::Opaque
     }
 
     pub fn primary_output_scale(&mut self) -> i32 {
@@ -1472,7 +1478,7 @@ impl PlatformWindow for WaylandWindow {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         let state = self.borrow();
-        state.renderer.sprite_atlas().clone()
+        state.renderer.platform_atlas()
     }
 
     fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {

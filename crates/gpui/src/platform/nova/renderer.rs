@@ -140,6 +140,10 @@ struct DrawStepScratch {
 }
 
 impl NovaRenderer {
+    pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        self.atlas.clone()
+    }
+
     fn pack_scene(
         &mut self,
         scene: &crate::Scene,

@@ -1,14 +1,18 @@
+#![expect(
+    unsafe_code,
+    reason = "the Wayland platform boundary uses raw handles and FFI APIs"
+)]
+
 use std::{
     cell::{RefCell, RefMut},
     hash::Hash,
-    os::fd::{AsRawFd, BorrowedFd},
+    os::fd::AsFd,
     path::PathBuf,
     rc::{Rc, Weak},
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use anyhow::Context as _;
 use ashpd::WindowIdentifier;
 use calloop::{
     EventLoop, LoopHandle,
@@ -2053,14 +2057,12 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                     data_offer.set_actions(ACTIONS, ACTIONS);
 
                     let pipe = Pipe::new().unwrap();
-                    data_offer.receive(FILE_LIST_MIME_TYPE.to_string(), unsafe {
-                        BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
-                    });
+                    data_offer.receive(FILE_LIST_MIME_TYPE.to_string(), pipe.write.as_fd());
                     let fd = pipe.read;
                     drop(pipe.write);
 
                     let read_task = state.common.background_executor.spawn(async {
-                        let buffer = unsafe { read_fd(fd)? };
+                        let buffer = read_fd(fd)?;
                         let text = String::from_utf8(buffer)?;
                         anyhow::Ok(text)
                     });

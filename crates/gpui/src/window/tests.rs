@@ -229,6 +229,33 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn paint_svg_skips_zero_sized_bounds(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
+            .unwrap()
+    });
+
+    window
+        .update(cx, |_, window, cx| {
+            let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(0.0), px(16.0)));
+            window.invalidator.set_phase(DrawPhase::Paint);
+
+            window
+                .paint_svg(
+                    bounds,
+                    "missing.svg".into(),
+                    TransformationMatrix::unit(),
+                    Hsla::default(),
+                    cx,
+                )
+                .unwrap();
+
+            window.invalidator.set_phase(DrawPhase::None);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
