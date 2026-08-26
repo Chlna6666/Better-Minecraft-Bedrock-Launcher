@@ -585,6 +585,9 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
     #[cfg(target_os = "linux")]
     {
         options.window_decorations = Some(WindowDecorations::Client);
+        // Client-side decorations rely on the compositor's rounded window shape. Keep the
+        // surface alpha-enabled so pixels outside that shape reveal the desktop instead of the
+        // renderer's transparent-clear color (black).
         options.window_background = WindowBackgroundAppearance::Transparent;
     }
 

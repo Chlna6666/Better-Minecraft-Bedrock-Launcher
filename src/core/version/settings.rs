@@ -216,7 +216,7 @@ fn parse_version_config(content: &str) -> VersionConfig {
 }
 
 fn instance_directory(folder_name: &str) -> PathBuf {
-    Path::new("./BMCBL/versions").join(folder_name)
+    crate::utils::file_ops::bmcbl_subdir("versions").join(folder_name)
 }
 
 fn bmcbl_config_path(instance_directory: &Path) -> PathBuf {
@@ -367,6 +367,14 @@ mod tests {
         let config = parse_version_config(r#"{"inject_on_launch":false}"#);
 
         assert!(config.disable_mod_loading);
+    }
+
+    #[test]
+    fn instance_directory_uses_application_versions_root() {
+        assert_eq!(
+            instance_directory("26.20"),
+            crate::utils::file_ops::bmcbl_subdir("versions").join("26.20")
+        );
     }
 
     #[test]
