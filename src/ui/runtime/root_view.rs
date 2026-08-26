@@ -1,6 +1,6 @@
 use gpui::{
-    AnyView, Context, InteractiveElement as _, IntoElement, ParentElement, Render, Styled,
-    Subscription, Window, div,
+    AnyView, BorrowAppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement,
+    Render, Styled, Subscription, Window, div,
 };
 
 pub struct RootView {
