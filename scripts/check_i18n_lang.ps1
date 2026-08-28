@@ -97,6 +97,22 @@ function Test-DuplicateKeys {
     }
 }
 
+function Get-Placeholders {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $placeholders = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($match in [regex]::Matches($Value, '\{\{\s*([^{}\s]+)\s*\}\}')) {
+        [void]$placeholders.Add($match.Groups[1].Value)
+    }
+
+    return ,$placeholders
+}
+
 $resolvedLocalesDir = (Resolve-Path $LocalesDir).Path
 $langFiles = Get-ChildItem -Path $resolvedLocalesDir -Filter *.lang | Sort-Object Name
 if ($langFiles.Count -eq 0) {
@@ -104,6 +120,7 @@ if ($langFiles.Count -eq 0) {
 }
 
 $tables = @{}
+$invalidValueFound = $false
 foreach ($file in $langFiles) {
     $entries = Read-LangEntries -Path $file.FullName
     Test-DuplicateKeys -Entries $entries -Name $file.Name
@@ -112,6 +129,12 @@ foreach ($file in $langFiles) {
         $entries = Read-LangEntries -Path $file.FullName
     }
     Test-SortedKeys -Entries $entries -Name $file.Name
+    foreach ($entry in $entries) {
+        if ($entry.Value -match '(?i)undefined') {
+            $invalidValueFound = $true
+            Write-Host "Invalid undefined locale value: $($file.Name):$($entry.LineNumber):$($entry.Key)" -ForegroundColor Red
+        }
+    }
     $tables[$file.Name] = $entries
 }
 
@@ -122,10 +145,18 @@ foreach ($entry in $tables[$baseFile]) {
 }
 
 $missingFound = $false
+$placeholderMismatchFound = $false
+$baseEntriesByKey = @{}
+foreach ($entry in $tables[$baseFile]) {
+    $baseEntriesByKey[$entry.Key] = $entry
+}
+
 foreach ($file in $langFiles | Select-Object -Skip 1) {
     $currentKeys = New-Object System.Collections.Generic.HashSet[string]
+    $currentEntriesByKey = @{}
     foreach ($entry in $tables[$file.Name]) {
         [void]$currentKeys.Add($entry.Key)
+        $currentEntriesByKey[$entry.Key] = $entry
     }
 
     $missing = New-Object System.Collections.Generic.List[string]
@@ -152,10 +183,25 @@ foreach ($file in $langFiles | Select-Object -Skip 1) {
             Write-Host "  Extra ($($extra.Count)): $($extra -join ', ')" -ForegroundColor Yellow
         }
     }
+
+    foreach ($key in $baseKeys) {
+        if (-not $currentEntriesByKey.ContainsKey($key)) {
+            continue
+        }
+
+        $basePlaceholders = Get-Placeholders -Value $baseEntriesByKey[$key].Value
+        $currentPlaceholders = Get-Placeholders -Value $currentEntriesByKey[$key].Value
+        if (-not $basePlaceholders.SetEquals($currentPlaceholders)) {
+            $placeholderMismatchFound = $true
+            Write-Host "Placeholder mismatch: $($file.Name):$key" -ForegroundColor Red
+            Write-Host "  Base: $($basePlaceholders -join ', ')" -ForegroundColor Yellow
+            Write-Host "  Current: $($currentPlaceholders -join ', ')" -ForegroundColor Yellow
+        }
+    }
 }
 
-if ($missingFound) {
-    throw "Locale key mismatch detected."
+if ($missingFound -or $placeholderMismatchFound -or $invalidValueFound) {
+    throw "Locale consistency checks failed."
 }
 
 Write-Host "Checked $($langFiles.Count) locale files successfully." -ForegroundColor Green

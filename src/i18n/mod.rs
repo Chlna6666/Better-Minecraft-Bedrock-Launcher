@@ -1,8 +1,15 @@
-use std::borrow::Cow;
 use std::fmt;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
-include!(concat!(env!("OUT_DIR"), "/generated_locales.rs"));
+pub(crate) mod catalog;
+
+#[derive(Clone, Copy)]
+pub(crate) struct TemplatePart<'a> {
+    literal: &'a str,
+    placeholder: Option<&'a str>,
+    argument_index: Option<usize>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Locale {
@@ -13,7 +20,114 @@ pub enum Locale {
     KoKr,
 }
 
+/// A borrowed key for text in the embedded language files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct I18nKey(&'static str);
+
+impl I18nKey {
+    pub const fn new(key: &'static str) -> Self {
+        Self(key)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// A UI message that can outlive the render pass without capturing a
+/// translated string or `fmt::Arguments` from an earlier language.
+#[derive(Clone, Debug)]
+pub enum LocalizedText {
+    Raw(Arc<str>),
+    Key(I18nKey),
+    Args {
+        key: I18nKey,
+        args: Arc<[(&'static str, Arc<str>)]>,
+    },
+}
+
+impl LocalizedText {
+    pub fn raw(text: impl Into<Arc<str>>) -> Self {
+        Self::Raw(text.into())
+    }
+
+    pub const fn key(key: I18nKey) -> Self {
+        Self::Key(key)
+    }
+
+    pub fn args<const N: usize>(key: I18nKey, args: [(&'static str, String); N]) -> Self {
+        let args = args
+            .into_iter()
+            .map(|(name, value)| (name, Arc::<str>::from(value)))
+            .collect::<Vec<_>>();
+        Self::Args {
+            key,
+            args: Arc::from(args),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! i18n_key {
+    ($key:literal) => {
+        $crate::i18n::I18nKey::new($key)
+    };
+}
+
+#[macro_export]
+macro_rules! t {
+    ($key:literal $(,)?) => {{
+        const KEY: $crate::i18n::I18nKey = $crate::i18n::I18nKey::new($key);
+        $crate::ui::state::i18n::global_i18n().t_key(KEY)
+    }};
+    ($key:literal, $($name:ident = $value:expr),+ $(,)?) => {{
+        const KEY: $crate::i18n::I18nKey = $crate::i18n::I18nKey::new($key);
+        $crate::ui::state::i18n::global_i18n()
+            .t_key_args(KEY, $crate::i18n_args![$((stringify!($name), $value)),+])
+    }};
+    ($key:literal, $($value:expr),+ $(,)?) => {{
+        const KEY: $crate::i18n::I18nKey = $crate::i18n::I18nKey::new($key);
+        $crate::ui::state::i18n::global_i18n()
+            .t_key_positional(KEY, $crate::i18n_positional_args![$($value),+])
+    }};
+}
+
+#[macro_export]
+macro_rules! localized_text {
+    ($key:literal) => {{
+        const KEY: $crate::i18n::I18nKey = $crate::i18n::I18nKey::new($key);
+        $crate::i18n::LocalizedText::key(KEY)
+    }};
+    ($key:literal $(, $name:ident = $value:expr)* $(,)?) => {{
+        const KEY: $crate::i18n::I18nKey = $crate::i18n::I18nKey::new($key);
+        $crate::i18n::LocalizedText::args(
+            KEY,
+            [$( (stringify!($name), ($value).to_string()) ),*],
+        )
+    }};
+}
+
 impl Locale {
+    pub(crate) const fn index(self) -> u8 {
+        match self {
+            Locale::ZhCn => 0,
+            Locale::ZhTw => 1,
+            Locale::EnUs => 2,
+            Locale::JaJp => 3,
+            Locale::KoKr => 4,
+        }
+    }
+
+    pub(crate) const fn from_index(index: u8) -> Self {
+        match index {
+            1 => Locale::ZhTw,
+            2 => Locale::EnUs,
+            3 => Locale::JaJp,
+            4 => Locale::KoKr,
+            _ => Locale::ZhCn,
+        }
+    }
+
     pub fn from_code(code: &str) -> Option<Self> {
         let normalized = code.trim().replace('_', "-");
         let lower = normalized.to_ascii_lowercase();
@@ -78,60 +192,19 @@ impl Default for Locale {
     }
 }
 
-#[derive(Clone)]
-pub struct Translator {
-    locale: Locale,
-    entries: &'static [(&'static str, &'static str)],
-}
-
-impl Translator {
-    pub fn new() -> Self {
-        let locale = Locale::default();
-        Self {
-            locale,
-            entries: locale_entries(locale.code()),
-        }
-    }
-
-    pub fn locale(&self) -> Locale {
-        self.locale
-    }
-
-    pub fn set_locale(&mut self, locale: Locale) {
-        self.locale = locale;
-        self.entries = locale_entries(locale.code());
-    }
-
-    pub fn ensure_loaded(&mut self) {}
-
-    pub fn ensure_locale_loaded(&mut self, _locale: Locale) {}
-
-    pub fn translate(&self, key: &str) -> Cow<'static, str> {
-        lookup_entries_value(self.entries, key)
-            .map(Cow::Borrowed)
-            .unwrap_or_else(|| Cow::Owned(key.to_string()))
-    }
-
-    pub fn translate_args<const N: usize>(
-        &self,
-        key: &str,
-        args: [I18nArg<'_>; N],
-    ) -> Cow<'static, str> {
-        if N == 0 {
-            return self.translate(key);
-        }
-
-        let Some(value) = lookup_entries_value(self.entries, key) else {
-            return Cow::Owned(key.to_string());
-        };
-
-        Cow::Owned(interpolate_args(value, args))
-    }
-}
-
 pub struct I18nArg<'a> {
     key: &'a str,
     value: fmt::Arguments<'a>,
+}
+
+pub struct I18nPositionalArg<'a> {
+    value: fmt::Arguments<'a>,
+}
+
+impl<'a> I18nPositionalArg<'a> {
+    pub fn new(value: fmt::Arguments<'a>) -> Self {
+        Self { value }
+    }
 }
 
 impl<'a> I18nArg<'a> {
@@ -151,46 +224,173 @@ macro_rules! i18n_args {
     };
 }
 
-impl Default for Translator {
-    fn default() -> Self {
-        Self::new()
-    }
+#[macro_export]
+macro_rules! i18n_positional_args {
+    ($($value:expr),+ $(,)?) => {
+        [$(
+            $crate::i18n::I18nPositionalArg::new(format_args!("{}", $value))
+        ),+]
+    };
 }
 
-fn lookup_entries_value(
-    entries: &'static [(&'static str, &'static str)],
-    key: &str,
-) -> Option<&'static str> {
-    entries
-        .binary_search_by_key(&key, |(entry_key, _)| *entry_key)
-        .ok()
-        .map(|index| entries[index].1)
-}
-
-fn interpolate_args<const N: usize>(template: &'static str, args: [I18nArg<'_>; N]) -> String {
-    let mut output = String::with_capacity(template.len());
-    let mut cursor = 0;
-
-    while let Some(open_offset) = template[cursor..].find("{{") {
-        let open = cursor + open_offset;
-        output.push_str(&template[cursor..open]);
-
-        let Some(close_offset) = template[open + 2..].find("}}") else {
-            output.push_str(&template[open..]);
-            return output;
-        };
-
-        let close = open + 2 + close_offset;
-        let placeholder = &template[open + 2..close];
-        if let Some(argument) = args.iter().find(|argument| argument.key == placeholder) {
-            let _ = output.write_fmt(argument.value);
-        } else {
-            output.push_str(&template[open..close + 2]);
+pub(crate) fn interpolate_args<'a, const N: usize>(
+    parts: impl Iterator<Item = TemplatePart<'a>> + Clone,
+    args: [I18nArg<'_>; N],
+) -> String {
+    let capacity = parts.clone().map(|part| part.literal.len()).sum();
+    let mut output = String::with_capacity(capacity);
+    for part in parts {
+        output.push_str(part.literal);
+        if let Some(placeholder) = part.placeholder {
+            if let Some(argument) = args.iter().find(|argument| argument.key == placeholder) {
+                let _ = output.write_fmt(argument.value);
+            } else {
+                output.push_str("{{");
+                output.push_str(placeholder);
+                output.push_str("}}");
+            }
         }
+    }
+    output
+}
 
-        cursor = close + 2;
+pub(crate) fn interpolate_positional_args<'a, const N: usize>(
+    parts: impl Iterator<Item = TemplatePart<'a>> + Clone,
+    args: [I18nPositionalArg<'_>; N],
+) -> String {
+    let capacity = parts.clone().map(|part| part.literal.len()).sum();
+    let mut output = String::with_capacity(capacity);
+    for part in parts {
+        output.push_str(part.literal);
+        if let Some(argument_index) = part.argument_index {
+            if let Some(argument) = args.get(argument_index) {
+                let _ = output.write_fmt(argument.value);
+            } else if let Some(placeholder) = part.placeholder {
+                output.push_str("{{");
+                output.push_str(placeholder);
+                output.push_str("}}");
+            }
+        }
+    }
+    output
+}
+
+pub(crate) fn interpolate_owned_args<'a>(
+    parts: impl Iterator<Item = TemplatePart<'a>> + Clone,
+    args: &[(&'static str, Arc<str>)],
+) -> String {
+    let capacity = parts.clone().map(|part| part.literal.len()).sum();
+    let mut output = String::with_capacity(capacity);
+    for part in parts {
+        output.push_str(part.literal);
+        if let Some(placeholder) = part.placeholder {
+            if let Some((_, value)) = args.iter().find(|(name, _)| *name == placeholder) {
+                output.push_str(value);
+            } else {
+                output.push_str("{{");
+                output.push_str(placeholder);
+                output.push_str("}}");
+            }
+        }
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(dead_code)]
+    fn positional_t_macro_compiles() -> gpui::SharedString {
+        t!("LauncherSettings.language_save_failed", "disk full")
     }
 
-    output.push_str(&template[cursor..]);
-    output
+    #[test]
+    fn locale_codes_round_trip() {
+        for locale in Locale::all() {
+            assert_eq!(Locale::from_code(locale.code()), Some(*locale));
+        }
+    }
+
+    #[test]
+    fn embedded_key_resolves_to_borrowed_catalog_text() {
+        catalog::initialize();
+        let key = I18nKey::new("common.cancel");
+        assert_eq!(
+            catalog::lookup(Locale::ZhCn, key.as_str())
+                .expect("embedded key")
+                .text,
+            "取消"
+        );
+    }
+
+    #[test]
+    fn interpolation_preserves_unknown_placeholders() {
+        catalog::initialize();
+        let value = interpolate_args(
+            catalog::lookup(Locale::ZhCn, "LauncherSettings.language_save_failed")
+                .expect("embedded key")
+                .parts,
+            crate::i18n_args![("error", "disk")],
+        );
+        assert!(value.contains("disk"));
+        assert!(!value.contains("{{error}}"));
+    }
+
+    #[test]
+    fn localized_text_owns_dynamic_arguments() {
+        let text = localized_text!("LauncherSettings.language_save_failed", error = "disk full");
+        let LocalizedText::Args { args, .. } = text else {
+            panic!("expected argument-bearing localized text");
+        };
+        assert_eq!(args[0].0, "error");
+        assert_eq!(args[0].1.as_ref(), "disk full");
+    }
+
+    #[test]
+    fn localized_text_without_arguments_keeps_only_the_key() {
+        let text = localized_text!("common.cancel");
+        assert!(matches!(text, LocalizedText::Key(_)));
+    }
+
+    #[test]
+    fn owned_interpolation_repeats_unicode_arguments() {
+        let args: Arc<[(&'static str, Arc<str>)]> = Arc::from([("value", Arc::<str>::from("雪"))]);
+        const PARTS: &[TemplatePart<'static>] = &[
+            TemplatePart {
+                literal: "",
+                placeholder: Some("value"),
+                argument_index: None,
+            },
+            TemplatePart {
+                literal: " / ",
+                placeholder: Some("value"),
+                argument_index: None,
+            },
+        ];
+        assert_eq!(
+            interpolate_owned_args(PARTS.iter().copied(), &args),
+            "雪 / 雪"
+        );
+    }
+
+    #[test]
+    fn positional_interpolation_repeats_unicode_arguments() {
+        const PARTS: &[TemplatePart<'static>] = &[
+            TemplatePart {
+                literal: "",
+                placeholder: Some("value"),
+                argument_index: Some(0),
+            },
+            TemplatePart {
+                literal: " / ",
+                placeholder: Some("value"),
+                argument_index: Some(0),
+            },
+        ];
+        assert_eq!(
+            interpolate_positional_args(PARTS.iter().copied(), crate::i18n_positional_args!["雪"]),
+            "雪 / 雪"
+        );
+    }
 }
