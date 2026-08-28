@@ -12,6 +12,10 @@ use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 use std::time::Instant;
 
+const CONTROL_HEIGHT: f32 = 38.0;
+const TAB_INSET: f32 = 3.0;
+const TAB_HEIGHT: f32 = CONTROL_HEIGHT - 2.0 * (TAB_INSET + 1.0);
+
 pub(super) fn render_toolbar(
     colors: &ThemeColors,
     state: &DownloadPageState,
@@ -23,7 +27,8 @@ pub(super) fn render_toolbar(
     div()
         .relative()
         .w_full()
-        .h(px(68.))
+        .flex_none()
+        .min_h(px(CONTROL_HEIGHT + 28.0))
         .bg(Hsla {
             a: 0.0,
             ..colors.surface
@@ -31,19 +36,18 @@ pub(super) fn render_toolbar(
         .px(px(20.))
         .py(px(14.))
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(12.))
         .child(render_tabs(colors, state, i18n, now))
         .child(
             div()
                 .flex_1()
-                .min_w(px(0.))
-                .px(px(8.))
-                .flex()
-                .items_center()
-                .child(div().w(px(200.)).min_w(px(0.)).child(search)),
+                .min_w(px(160.))
+                .h(px(CONTROL_HEIGHT))
+                .child(search),
         )
-        .child(render_toolbar_controls(colors, state, i18n))
+        .child(render_toolbar_controls(colors, state, i18n).ml_auto())
         .child(crate::ui::onboarding::anchor::observe(
             crate::ui::onboarding::state::OnboardingAnchor::DownloadToolbar,
         ))
@@ -60,20 +64,12 @@ fn render_toolbar_search(
         DownloadTab::Mod => t!("DownloadPage.search_mods"),
     };
 
-    let dark_mode = colors.bg.l < 0.5;
-    let shell_background = if dark_mode {
-        Hsla {
-            a: 0.85,
-            ..colors.settings_card_bg
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..colors.settings_card_bg
-        }
+    let shell_background = Hsla {
+        a: 0.84,
+        ..colors.settings_field_bg
     };
     let shell_border = Hsla {
-        a: 0.25,
+        a: 0.24,
         ..colors.border
     };
 
@@ -81,6 +77,7 @@ fn render_toolbar_search(
         div()
             .id("download-search-input-wrapper")
             .w_full()
+            .h(px(CONTROL_HEIGHT))
             .flex()
             .items_center()
             .child(
@@ -92,14 +89,15 @@ fn render_toolbar_search(
                         colors.text_secondary,
                     ))
                     .w_full()
-                    .with_size(crate::ui::components::input::InputSize::Small),
+                    .h(px(CONTROL_HEIGHT))
+                    .with_size(crate::ui::components::input::InputSize::Medium),
             )
             .into_any_element()
     } else {
         div()
             .id("download-search-placeholder-wrapper")
             .w_full()
-            .h(px(32.))
+            .h(px(CONTROL_HEIGHT))
             .px(px(8.))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(shell_background)
@@ -115,7 +113,7 @@ fn render_toolbar_search(
             ))
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(px(14.))
                     .text_color(colors.text_muted)
                     .child(placeholder),
             )
@@ -180,18 +178,18 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
         div()
             .id(id)
             .w(px(item_w))
-            .h(px(32.))
-            .rounded(px(crate::ui::theme::tokens::radius::MD))
+            .h(px(TAB_HEIGHT))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .cursor_pointer()
             .relative()
             .flex()
             .items_center()
             .justify_center()
             .gap(px(5.))
-            .child(svg().path(icon_path).size(px(15.)).text_color(fg))
+            .child(svg().path(icon_path).size(px(16.)).text_color(fg))
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(px(14.))
                     .font_weight(if is_active {
                         FontWeight::SEMIBOLD
                     } else {
@@ -251,23 +249,25 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
     // Pill indicator with no shadow for flat depth
     let indicator = div()
         .absolute()
-        .left(px(x + (item_w - stretch) * 0.5 + 3.0))
-        .top(px(3.))
+        .left(px(x + (item_w - stretch) * 0.5 + TAB_INSET))
+        .top(px(TAB_INSET))
         .w(px(stretch))
-        .h(px(32.))
-        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .h(px(TAB_HEIGHT))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.surface);
 
     div()
         .relative()
+        .flex_none()
+        .h(px(CONTROL_HEIGHT))
         .flex()
         .items_center()
         .bg(Hsla {
             a: if colors.bg.l < 0.5 { 0.65 } else { 0.85 },
             ..colors.settings_card_bg
         })
-        .p(px(3.))
-        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .p(px(TAB_INSET))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.08,
@@ -315,9 +315,10 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
 
     let icon_btn = |id: &'static str, icon_path: &'static str, disabled: bool| {
         IconButton::new(id, icon_path)
+            .icon_size(16.0)
             .icon_color(colors.text_secondary)
-            .w(px(32.))
-            .h(px(32.))
+            .w(px(CONTROL_HEIGHT))
+            .h(px(CONTROL_HEIGHT))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(Hsla {
                 a: 0.06,
@@ -365,7 +366,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                 });
             },
         )
-        .with_height(px(32.))
+        .with_height(px(CONTROL_HEIGHT))
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .into_any_element()
     } else {
@@ -406,7 +407,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                 });
             },
         )
-        .with_height(px(32.))
+        .with_height(px(CONTROL_HEIGHT))
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .into_any_element()
     } else {
@@ -415,8 +416,8 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
 
     let refresh = IconButton::new("download-refresh", lucide_icons::icon_refresh_cw())
         .icon_color(colors.text_secondary)
-        .w(px(32.))
-        .h(px(32.))
+        .w(px(CONTROL_HEIGHT))
+        .h(px(CONTROL_HEIGHT))
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.05,
@@ -462,7 +463,12 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
         })
         .into_any_element();
 
-    let mut row = div().flex().items_center().gap(px(12.)).justify_end();
+    let mut row = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .justify_end();
 
     match tab {
         DownloadTab::Game => {
@@ -472,13 +478,14 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                 .child(
                     div()
                         .relative()
-                        .w(px(32.))
-                        .h(px(32.))
+                        .w(px(CONTROL_HEIGHT))
+                        .h(px(CONTROL_HEIGHT))
                         .child(
                             IconButton::new("download-import", lucide_icons::icon_upload())
+                                .icon_size(16.0)
                                 .icon_color(colors.text_secondary)
-                                .w(px(32.))
-                                .h(px(32.))
+                                .w(px(CONTROL_HEIGHT))
+                                .h(px(CONTROL_HEIGHT))
                                 .rounded(px(crate::ui::theme::tokens::radius::MD))
                                 .bg(Hsla {
                                     a: 0.06,
@@ -564,7 +571,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                     crate::ui::views::download::curseforge::ensure_results_loaded(false, cx);
                 },
             )
-            .with_height(px(32.))
+            .with_height(px(CONTROL_HEIGHT))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .into_any_element();
 
@@ -623,7 +630,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                     crate::ui::views::download::curseforge::ensure_results_loaded(false, cx);
                 },
             )
-            .with_height(px(32.))
+            .with_height(px(CONTROL_HEIGHT))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .into_any_element();
 
@@ -676,7 +683,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                     });
                 },
             )
-            .with_height(px(32.))
+            .with_height(px(CONTROL_HEIGHT))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .into_any_element();
 
@@ -738,7 +745,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                     });
                 },
             )
-            .with_height(px(32.))
+            .with_height(px(CONTROL_HEIGHT))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .into_any_element();
 
