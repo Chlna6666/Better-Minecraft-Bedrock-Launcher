@@ -1,6 +1,7 @@
 use super::*;
 use crate::ui::animation::{spring_motion, spring_smooth, spring_snappy};
 use crate::ui::components::icon::themed_icon;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tasks::TaskCardMotionKind;
 use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageView};
@@ -21,7 +22,7 @@ fn stable_task_id(task_id: &str) -> u64 {
 
 fn meta_item(
     colors: &ThemeColors,
-    label: &'static str,
+    label: SharedString,
     value: impl Into<SharedString>,
     accent: Hsla,
 ) -> Div {
@@ -56,40 +57,70 @@ fn meta_separator(colors: &ThemeColors) -> Div {
         })
 }
 
-fn thread_label_text(worker_active: Option<u32>, worker_total: Option<u32>) -> Option<Arc<str>> {
-    worker_total.map(|total| match worker_active {
-        Some(active) => Arc::from(format!("{} / {} 线程", active, total)),
-        None => Arc::from(format!("{} 线程", total)),
-    })
-}
-
-fn status_label(model: &TaskCardViewModel) -> Arc<str> {
-    match model.status.as_ref() {
-        "paused" => Arc::from("已暂停"),
-        "cancelling" => Arc::from("取消中..."),
-        "completed" => Arc::from("已完成"),
-        "cancelled" => Arc::from("已取消"),
-        "error" => Arc::from("发生错误"),
-        _ => model.speed_text.as_ref().cloned().unwrap_or_else(|| {
-            if model.stage.as_ref().contains("安装") || model.stage.as_ref().contains("解压") {
-                Arc::from("写入中...")
-            } else {
-                Arc::from("进行中...")
-            }
-        }),
+fn task_amount_text(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
+    let done = crate::utils::format_bytes::format_bytes_compact(model.done);
+    match model.total {
+        Some(total) => SharedString::from(format!(
+            "{} / {}",
+            done,
+            crate::utils::format_bytes::format_bytes_compact(total)
+        )),
+        None => t!("Tasks.completed_amount", done = done),
     }
 }
 
-fn header_right_text(model: &TaskCardViewModel) -> Arc<str> {
+fn thread_label_text(
+    i18n: &I18n,
+    worker_active: Option<u32>,
+    worker_total: Option<u32>,
+) -> Option<SharedString> {
+    worker_total.map(|total| match worker_active {
+        Some(active) => {
+            t!("Tasks.threads_active", active = active, total = total)
+        }
+        None => t!("Tasks.threads_total", total = total),
+    })
+}
+
+fn status_label(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
+    match model.status.as_ref() {
+        "paused" => t!("Tasks.status.paused"),
+        "cancelling" => t!("Tasks.status.cancelling"),
+        "completed" => t!("Tasks.status.completed"),
+        "cancelled" => t!("Tasks.status.cancelled"),
+        "error" => t!("Tasks.status.error"),
+        _ => model
+            .speed_text
+            .as_ref()
+            .map(|value| SharedString::from(value.clone()))
+            .unwrap_or_else(|| {
+                if matches!(
+                    model.stage.as_ref(),
+                    "extracting"
+                        | "preparing_files"
+                        | "patching"
+                        | "installing_linux_packages"
+                        | "extracting_proton_gdk"
+                        | "decrypting"
+                ) {
+                    t!("Tasks.status.writing")
+                } else {
+                    t!("Tasks.status.running")
+                }
+            }),
+    }
+}
+
+fn header_right_text(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
     if matches!(model.status.as_ref(), "completed" | "cancelled" | "error") {
-        return status_label(model);
+        return status_label(i18n, model);
     }
 
     model
         .speed_text
         .as_ref()
-        .cloned()
-        .unwrap_or_else(|| status_label(model))
+        .map(|value| SharedString::from(value.clone()))
+        .unwrap_or_else(|| status_label(i18n, model))
 }
 
 pub(crate) fn render_task_card(
@@ -98,6 +129,7 @@ pub(crate) fn render_task_card(
     motion: Option<TaskCardMotionKind>,
     cx: &mut Context<TasksPageView>,
 ) -> impl IntoElement {
+    let i18n = cx.global::<I18n>();
     let task_id = model.id.clone();
     let kind = task_visual_kind(model.stage.as_ref(), model.status.as_ref());
     let accent = task_status_accent(model.status.as_ref(), kind, colors);
@@ -168,28 +200,28 @@ pub(crate) fn render_task_card(
         .gap(px(10.))
         .child(meta_item(
             colors,
-            "进度:",
-            SharedString::from(model.amount_text.clone()),
+            t!("Tasks.progress"),
+            task_amount_text(i18n, model),
             task_text_tertiary(colors),
         ));
-    if let Some(thread_text) = thread_label_text(model.worker_active, model.worker_total) {
+    if let Some(thread_text) = thread_label_text(i18n, model.worker_active, model.worker_total) {
         metrics = metrics.child(meta_separator(colors)).child(meta_item(
             colors,
-            "线程:",
-            SharedString::from(thread_text),
+            t!("Tasks.threads"),
+            thread_text,
             task_text_tertiary(colors),
         ));
     }
     if let Some(eta_text) = model.eta_text.as_ref() {
         metrics = metrics.child(meta_separator(colors)).child(meta_item(
             colors,
-            "ETA:",
+            t!("Tasks.eta"),
             SharedString::from(eta_text.clone()),
             task_text_tertiary(colors),
         ));
     }
 
-    let header_right_value = header_right_text(model);
+    let header_right_value = header_right_text(i18n, model);
     let header_right_color = if paused {
         task_warning_color(colors)
     } else {
@@ -279,7 +311,7 @@ pub(crate) fn render_task_card(
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(header_right_color)
-                                .child(SharedString::from(header_right_value)),
+                                .child(header_right_value),
                         ),
                 )
                 .child(div().w_full().child(progress_panel(

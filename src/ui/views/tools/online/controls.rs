@@ -1,4 +1,5 @@
 use crate::ui::components::icon::themed_icon;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::prelude::FluentBuilder as _;
@@ -39,15 +40,19 @@ pub(crate) fn persist_tools_online_settings(cx: &mut App) {
     .detach();
 }
 
-pub(super) fn render_session_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+pub(super) fn render_session_card(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+) -> Div {
     crate::ui::components::page_shell::glass_card(colors)
         .w_full()
         .p(px(18.))
         .flex()
         .flex_col()
         .gap(px(16.))
-        .child(render_session_header(colors, state))
-        .child(render_session_details(colors, state))
+        .child(render_session_header(colors, i18n, state))
+        .child(render_session_details(colors, i18n, state))
 }
 
 fn session_accent(colors: &ThemeColors, state: &ToolsPageState) -> Hsla {
@@ -60,14 +65,14 @@ fn session_accent(colors: &ThemeColors, state: &ToolsPageState) -> Hsla {
     }
 }
 
-fn render_session_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_session_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     let accent = session_accent(colors, state);
     div()
         .flex()
         .items_center()
         .justify_between()
         .gap(px(12.))
-        .child(render_session_identity(colors, state, accent))
+        .child(render_session_identity(colors, i18n, state, accent))
         .child(
             icon_button(
                 colors,
@@ -83,7 +88,12 @@ fn render_session_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
         )
 }
 
-fn render_session_identity(colors: &ThemeColors, state: &ToolsPageState, accent: Hsla) -> Div {
+fn render_session_identity(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+    accent: Hsla,
+) -> Div {
     div()
         .flex()
         .items_center()
@@ -108,18 +118,18 @@ fn render_session_identity(colors: &ThemeColors, state: &ToolsPageState, accent:
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("当前会话"),
+                        .child(t!("Online.current_session")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(accent)
-                        .child(online_state_text(state)),
+                        .child(online_state_text(i18n, state)),
                 ),
         )
 }
 
-fn render_session_details(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_session_details(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     crate::ui::components::page_shell::inner_well(colors)
         .w_full()
         .px(px(14.))
@@ -129,24 +139,24 @@ fn render_session_details(colors: &ThemeColors, state: &ToolsPageState) -> Div {
         .gap(px(9.))
         .child(detail_row(
             colors,
-            "虚拟 IP",
+            t!("Online.virtual_ip"),
             state
                 .easytier_ipv4
                 .clone()
-                .unwrap_or_else(|| SharedString::from("连接后显示")),
+                .unwrap_or_else(|| t!("Online.connect_after")),
         ))
         .child(detail_row(
             colors,
-            "节点名称",
+            t!("Online.node_name"),
             if state.easytier_hostname.as_ref().is_empty() {
-                SharedString::from("尚未连接")
+                t!("Online.not_connected")
             } else {
                 state.easytier_hostname.clone()
             },
         ))
         .child(detail_row(
             colors,
-            "Minecraft 地址",
+            t!("Online.minecraft_address"),
             match (
                 state.easytier_game_host.as_ref().is_empty(),
                 state.easytier_game_port,
@@ -154,36 +164,36 @@ fn render_session_details(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                 (false, Some(port)) => {
                     SharedString::from(format!("{}:{port}", state.easytier_game_host))
                 }
-                _ => SharedString::from("连接后显示"),
+                _ => t!("Online.connect_after"),
             },
         ))
         .child(detail_row(
             colors,
-            "NAT",
+            "NAT".into(),
             match (state.nat_udp_type, state.nat_tcp_type) {
-                (Some(udp), Some(tcp)) => SharedString::from(format!(
-                    "UDP：{} / TCP：{}",
-                    nat_type_label(udp),
-                    nat_type_label(tcp)
-                )),
-                _ => SharedString::from("尚未检测"),
+                (Some(udp), Some(tcp)) => {
+                    let udp = nat_type_label(i18n, udp);
+                    let tcp = nat_type_label(i18n, tcp);
+                    t!("Online.nat_summary", udp = udp, tcp = tcp)
+                }
+                _ => t!("Online.nat_not_checked"),
             },
         ))
 }
 
-fn nat_type_label(value: i32) -> &'static str {
+fn nat_type_label(i18n: &I18n, value: i32) -> SharedString {
     match value {
-        0 => "检测中或未知",
-        1 => "开放网络",
-        2 => "完全锥形 NAT",
-        3 => "受限锥形 NAT",
-        4 => "端口受限 NAT",
-        5 => "对称 NAT",
-        _ => "未知类型",
+        0 => t!("Online.nat_checking"),
+        1 => t!("Online.nat_types.open_internet"),
+        2 => t!("Online.nat_types.full_cone"),
+        3 => t!("Online.nat_types.restricted"),
+        4 => t!("Online.nat_types.port_restricted"),
+        5 => t!("Online.nat_types.symmetric"),
+        _ => t!("Online.nat_types.unknown"),
     }
 }
 
-fn detail_row(colors: &ThemeColors, label: &'static str, value: SharedString) -> Div {
+fn detail_row(colors: &ThemeColors, label: SharedString, value: SharedString) -> Div {
     div()
         .w_full()
         .flex()

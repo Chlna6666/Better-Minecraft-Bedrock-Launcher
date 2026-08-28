@@ -2,6 +2,7 @@ use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::Input;
 use crate::ui::components::toast;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::{OnlineBlockingIssue, ToolsPageState};
@@ -15,7 +16,7 @@ use super::actions;
 use super::room_options;
 use super::widgets::{action_button, icon_button};
 
-pub(super) fn render_room_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+pub(super) fn render_room_card(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     let changing_room = state.online_operation.changes_room_content();
     let actions_disabled = state.online_operation.is_busy() || state.easytier_running;
 
@@ -25,32 +26,40 @@ pub(super) fn render_room_card(colors: &ThemeColors, state: &ToolsPageState) -> 
         .flex()
         .flex_col()
         .gap(px(18.))
-        .child(render_header(colors, state))
+        .child(render_header(colors, i18n, state))
         .when(state.is_online_blocking_issue_visible(), |this| {
             this.when_some(state.online_blocking_issue, |this, issue| {
-                this.child(render_blocking_issue(colors, state, issue))
+                this.child(render_blocking_issue(colors, i18n, state, issue))
             })
         })
         .when(state.are_abandoned_nodes_visible(), |this| {
-            this.child(render_abandoned_nodes(colors, &state.abandoned_nodes))
+            this.child(render_abandoned_nodes(colors, i18n, &state.abandoned_nodes))
         })
         .when(!changing_room && !state.easytier_running, |this| {
-            this.child(render_create_action(colors, actions_disabled))
-                .child(render_join_action(colors, state, actions_disabled))
-                .child(room_options::render_advanced_section(colors, state))
+            this.child(render_create_action(colors, i18n, actions_disabled))
+                .child(render_join_action(colors, i18n, state, actions_disabled))
+                .child(room_options::render_advanced_section(colors, i18n, state))
         })
         .when(changing_room, |this| {
-            this.child(render_connecting_state(colors, state))
+            this.child(render_connecting_state(colors, i18n, state))
         })
         .when(!changing_room && state.easytier_running, |this| {
-            this.child(render_connected_state(colors, state))
+            this.child(render_connected_state(colors, i18n, state))
         })
         .when(!state.host_room_code.as_ref().trim().is_empty(), |this| {
-            this.child(render_host_room_code(colors, state.host_room_code.clone()))
+            this.child(render_host_room_code(
+                colors,
+                i18n,
+                state.host_room_code.clone(),
+            ))
         })
 }
 
-fn render_abandoned_nodes(colors: &ThemeColors, nodes: &[SharedString]) -> impl IntoElement {
+fn render_abandoned_nodes(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    nodes: &[SharedString],
+) -> impl IntoElement {
     let node_list = nodes
         .iter()
         .map(|node| node.as_ref())
@@ -95,29 +104,24 @@ fn render_abandoned_nodes(colors: &ThemeColors, nodes: &[SharedString]) -> impl 
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.stat_orange_text)
-                                .child("部分联机节点已停止重试"),
+                                .child(t!("Online.abandoned_title")),
                         )
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .line_height(px(18.))
                                 .text_color(colors.text_secondary)
-                                .child(format!(
-                                    "以下内置或自定义节点连续连接失败 3 次，本次联机不再使用，以减少后台重试与日志开销：{node_list}"
-                                )),
+                                .child(t!("Online.abandoned_description", nodes = node_list)),
                         ),
                 ),
         )
         .child(
-            notice_close_button(
-                "online-abandoned-nodes-dismiss",
-                colors.stat_orange_text,
-            )
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                cx.update_global(|state: &mut ToolsPageState, _cx| {
-                    state.dismiss_abandoned_nodes();
-                });
-            }),
+            notice_close_button("online-abandoned-nodes-dismiss", colors.stat_orange_text)
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    cx.update_global(|state: &mut ToolsPageState, _cx| {
+                        state.dismiss_abandoned_nodes();
+                    });
+                }),
         )
         .with_animation(
             "online-abandoned-nodes-enter",
@@ -132,17 +136,18 @@ fn render_abandoned_nodes(colors: &ThemeColors, nodes: &[SharedString]) -> impl 
 
 fn render_blocking_issue(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &ToolsPageState,
     issue: OnlineBlockingIssue,
 ) -> impl IntoElement {
     let (title, description) = match issue {
         OnlineBlockingIssue::LocalWorldMissing => (
-            "未检测到本机 Minecraft 基岩版局域网世界",
-            "请先进入游戏世界并开启局域网联机，然后再次创建房间。",
+            t!("Online.blocking.local_world_title"),
+            t!("Online.blocking.local_world_detail"),
         ),
         OnlineBlockingIssue::DiscoveryPortOccupied => (
-            "本机 UDP 7551 已被占用",
-            "房间连接仍然保留，但本机游戏代理尚未启动。关闭占用程序后可直接重新检查，无需退出房间。",
+            t!("Online.blocking.port_title"),
+            t!("Online.blocking.port_detail"),
         ),
     };
 
@@ -211,9 +216,9 @@ fn render_blocking_issue(
                                 colors,
                                 "online-recheck-discovery-port",
                                 if state.discovery_retrying {
-                                    "正在检查"
+                                    t!("Online.refreshing")
                                 } else {
-                                    "重新检查"
+                                    t!("Online.recheck")
                                 },
                                 lucide_icons::icon_refresh_cw(),
                                 state.discovery_retrying,
@@ -229,7 +234,7 @@ fn render_blocking_issue(
                             action_button(
                                 colors,
                                 "online-force-stop-minecraft",
-                                "结束占用应用",
+                                t!("Online.terminate_app"),
                                 lucide_icons::icon_circle_x(),
                                 state.discovery_retrying,
                                 true,
@@ -295,7 +300,7 @@ fn notice_close_button(id: &'static str, foreground: Hsla) -> Stateful<Div> {
         .child(themed_icon(lucide_icons::icon_x(), 16.0, foreground))
 }
 
-fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     let latency = state.host_or_avg_latency();
     let player_count = if state.players.is_empty() && state.easytier_running {
         1
@@ -324,7 +329,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                 .text_size(px(20.))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(colors.text_primary)
-                                .child("开始联机"),
+                                .child(t!("Online.start_title")),
                         )
                         .when(state.easytier_running, |this| {
                             this.child(
@@ -353,8 +358,10 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                                 colors.accent,
                                             ))
                                             .child(match latency {
-                                                Some(ms) => format!("延迟 {ms} ms"),
-                                                None => "延迟 -- ms".to_string(),
+                                                Some(ms) => {
+                                                    t!("Online.latency_value", latency = ms)
+                                                }
+                                                None => t!("Online.latency_unknown"),
                                             }),
                                     )
                                     .child(
@@ -377,7 +384,10 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                                 13.0,
                                                 colors.accent,
                                             ))
-                                            .child(format!("玩家 {player_count} 人")),
+                                            .child(t!(
+                                                "Online.players_value",
+                                                count = player_count
+                                            )),
                                     ),
                             )
                         }),
@@ -387,7 +397,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                         .text_size(px(13.))
                         .line_height(px(20.))
                         .text_color(colors.text_secondary)
-                        .child("创建新房间，或使用好友分享的联机码直接加入。"),
+                        .child(t!("Online.start_detail")),
                 ),
         )
         .child(
@@ -413,7 +423,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                             .py(px(7.))
                             .text_size(px(12.))
                             .text_color(colors.accent)
-                            .child(state.online_operation.label()),
+                            .child(state.online_operation.localized_label(i18n)),
                     )
                 })
                 .when(
@@ -424,20 +434,28 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                 | crate::ui::views::tools::state::OnlineOperation::JoiningRoom
                                 | crate::ui::views::tools::state::OnlineOperation::Stopping
                         ),
-                    |this| this.child(render_quick_action(colors, state)),
+                    |this| this.child(render_quick_action(colors, i18n, state)),
                 ),
         )
 }
 
-fn render_quick_action(colors: &ThemeColors, state: &ToolsPageState) -> Stateful<Div> {
+fn render_quick_action(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Stateful<Div> {
     let stopping =
         state.online_operation == crate::ui::views::tools::state::OnlineOperation::Stopping;
     let (id, label, icon) = if state.easytier_running {
-        ("online-stop", "断开连接", lucide_icons::icon_log_out())
+        (
+            "online-stop",
+            t!("Online.disconnect"),
+            lucide_icons::icon_log_out(),
+        )
     } else if state.online_operation.is_busy() {
-        ("online-cancel", "取消", lucide_icons::icon_x())
+        ("online-cancel", t!("common.cancel"), lucide_icons::icon_x())
     } else {
-        ("online-stop", "断开连接", lucide_icons::icon_log_out())
+        (
+            "online-stop",
+            t!("Online.disconnect"),
+            lucide_icons::icon_log_out(),
+        )
     };
     action_button(colors, id, label, icon, stopping, true).when(!stopping, |this| {
         this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
@@ -446,7 +464,7 @@ fn render_quick_action(colors: &ThemeColors, state: &ToolsPageState) -> Stateful
     })
 }
 
-fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_connecting_state(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     div()
         .w_full()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -488,18 +506,18 @@ fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div 
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child(state.online_operation.label()),
+                        .child(state.online_operation.localized_label(i18n)),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.text_secondary)
-                        .child("正在建立网络，完成后即可进入 Minecraft。"),
+                        .child(t!("Online.connecting_detail")),
                 ),
         )
 }
 
-fn render_connected_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_connected_state(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     div()
         .w_full()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -521,17 +539,17 @@ fn render_connected_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                 .text_size(px(14.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child("已连接，可以进入 Minecraft"),
+                .child(t!("Online.connected")),
         )
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(colors.text_secondary)
-                .child(format!("联机码：{}", state.active_room_code)),
+                .child(t!("Online.room_code_value", code = state.active_room_code)),
         )
 }
 
-fn render_create_action(colors: &ThemeColors, disabled: bool) -> Div {
+fn render_create_action(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> Div {
     div()
         .w_full()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -549,11 +567,11 @@ fn render_create_action(colors: &ThemeColors, disabled: bool) -> Div {
         .items_center()
         .justify_between()
         .gap(px(16.))
-        .child(render_create_description(colors))
-        .child(render_create_button(colors, disabled))
+        .child(render_create_description(colors, i18n))
+        .child(render_create_button(colors, i18n, disabled))
 }
 
-fn render_create_description(colors: &ThemeColors) -> Div {
+fn render_create_description(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .min_w(px(0.))
         .flex()
@@ -583,22 +601,22 @@ fn render_create_description(colors: &ThemeColors) -> Div {
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("创建我的房间"),
+                        .child(t!("Online.create_room")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.text_secondary)
-                        .child("自动生成联机码并复制到剪贴板"),
+                        .child(t!("Online.create_room_detail")),
                 ),
         )
 }
 
-fn render_create_button(colors: &ThemeColors, disabled: bool) -> Stateful<Div> {
+fn render_create_button(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> Stateful<Div> {
     action_button(
         colors,
         "online-create-room",
-        "立即创建",
+        t!("Online.create_now"),
         lucide_icons::icon_arrow_right(),
         disabled,
         false,
@@ -610,7 +628,12 @@ fn render_create_button(colors: &ThemeColors, disabled: bool) -> Stateful<Div> {
     })
 }
 
-fn render_join_action(colors: &ThemeColors, state: &ToolsPageState, disabled: bool) -> Div {
+fn render_join_action(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+    disabled: bool,
+) -> Div {
     let paste_input = state.room_code_input.clone();
     crate::ui::components::page_shell::inner_well(colors)
         .w_full()
@@ -623,13 +646,20 @@ fn render_join_action(colors: &ThemeColors, state: &ToolsPageState, disabled: bo
                 .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.text_secondary)
-                .child("加入好友房间"),
+                .child(t!("Online.join_friend_room")),
         )
-        .child(render_join_controls(colors, state, disabled, paste_input))
+        .child(render_join_controls(
+            colors,
+            i18n,
+            state,
+            disabled,
+            paste_input,
+        ))
 }
 
 fn render_join_controls(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &ToolsPageState,
     disabled: bool,
     paste_input: Option<Entity<crate::ui::components::input::InputState>>,
@@ -653,14 +683,14 @@ fn render_join_controls(
                 })
             }),
         )
-        .child(render_join_button(colors, disabled))
+        .child(render_join_button(colors, i18n, disabled))
 }
 
-fn render_join_button(colors: &ThemeColors, disabled: bool) -> Stateful<Div> {
+fn render_join_button(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> Stateful<Div> {
     action_button(
         colors,
         "online-join-room",
-        "加入",
+        t!("Online.join"),
         lucide_icons::icon_log_in(),
         disabled,
         false,
@@ -713,7 +743,7 @@ fn render_join_input(colors: &ThemeColors, state: &ToolsPageState) -> Div {
         .child(field)
 }
 
-fn render_host_room_code(colors: &ThemeColors, room_code: SharedString) -> Div {
+fn render_host_room_code(colors: &ThemeColors, i18n: &I18n, room_code: SharedString) -> Div {
     let copy_room_code = room_code.clone();
     div()
         .w_full()
@@ -732,24 +762,24 @@ fn render_host_room_code(colors: &ThemeColors, room_code: SharedString) -> Div {
         .items_center()
         .justify_between()
         .gap(px(14.))
-        .child(render_host_room_code_text(colors, room_code))
+        .child(render_host_room_code_text(colors, i18n, room_code))
         .child(
             action_button(
                 colors,
                 "online-copy-room-code",
-                "复制",
+                t!("Online.copy"),
                 lucide_icons::icon_copy(),
                 false,
                 false,
             )
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy_room_code.to_string()));
-                toast::push(cx, SharedString::from("联机码已复制"));
+                toast::push(cx, t!("Online.copied_room_code"));
             }),
         )
 }
 
-fn render_host_room_code_text(colors: &ThemeColors, room_code: SharedString) -> Div {
+fn render_host_room_code_text(colors: &ThemeColors, i18n: &I18n, room_code: SharedString) -> Div {
     div()
         .min_w(px(0.))
         .flex()
@@ -759,7 +789,7 @@ fn render_host_room_code_text(colors: &ThemeColors, room_code: SharedString) -> 
             div()
                 .text_size(px(11.))
                 .text_color(colors.text_secondary)
-                .child("分享此联机码"),
+                .child(t!("Online.share_room_code")),
         )
         .child(
             div()
@@ -782,7 +812,7 @@ fn paste_room_code(
         .map(|value| value.trim().replace(['\n', '\r'], " "))
         .unwrap_or_default();
     if value.trim().is_empty() {
-        toast::error(cx, SharedString::from("剪贴板中没有可用的联机码"));
+        toast::error(cx, t!("Online.clipboard_no_room_code"));
         return;
     }
 

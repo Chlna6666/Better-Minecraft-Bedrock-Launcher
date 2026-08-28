@@ -36,7 +36,8 @@ impl ManagePageView {
     pub(super) fn import_dropped_versions(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let paths = supported_paths(paths, LOCAL_GAME_PACKAGE_EXTENSIONS);
         if paths.is_empty() {
-            toast::error(cx, SharedString::from("请拖入 APPX、ZIP 或 MSIXVC 版本包"));
+            let message = t!("Manage.drop_version_package");
+            toast::error(cx, message);
             return;
         }
         start_version_imports(paths, cx);
@@ -44,11 +45,13 @@ impl ManagePageView {
 
     pub(super) fn import_assets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(import_context) = self.asset_import_context(cx) else {
-            toast::error(cx, SharedString::from("请先选择要导入到的游戏版本"));
+            let message = t!("Manage.select_import_version");
+            toast::error(cx, message);
             return;
         };
         let Some(picker) = asset_picker_spec(import_context.tab) else {
-            toast::error(cx, SharedString::from("当前分类不支持导入"));
+            let message = t!("Manage.import_not_supported");
+            toast::error(cx, message);
             return;
         };
 
@@ -81,17 +84,20 @@ impl ManagePageView {
         cx: &mut Context<Self>,
     ) {
         let Some(import_context) = self.asset_import_context(cx) else {
-            toast::error(cx, SharedString::from("请先选择要导入到的游戏版本"));
+            let message = t!("Manage.select_import_version");
+            toast::error(cx, message);
             return;
         };
         let Some(picker) = asset_picker_spec(import_context.tab) else {
-            toast::error(cx, SharedString::from("当前分类不支持拖放导入"));
+            let message = t!("Manage.drop_import_not_supported");
+            toast::error(cx, message);
             return;
         };
         if import_context.tab == ManageTab::Mod {
             let paths = supported_paths(paths, picker.extensions);
             if paths.is_empty() {
-                toast::error(cx, SharedString::from("请拖入 DLL Mod 文件"));
+                let message = t!("Manage.drop_mod_file");
+                toast::error(cx, message);
                 return;
             }
             start_mod_import(import_context.version, paths, cx);
@@ -168,13 +174,14 @@ fn has_supported_extension(path: &Path, extensions: &[&str]) -> bool {
 }
 
 fn start_version_imports(paths: Vec<String>, cx: &mut App) {
+    let i18n = cx.global::<I18n>().clone();
     cx.spawn(async move |cx| {
         for path in paths {
             let task_id = start_local_game_package_import(path).await;
 
             cx.update(|cx| match task_id {
                 Ok(task_id) => {
-                    toast::push(cx, SharedString::from("安装任务已开始"));
+                    toast::push(cx, t!("Manage.import_task_started"));
                     watch_import_task(task_id, cx);
                 }
                 Err(error) => {
@@ -188,18 +195,19 @@ fn start_version_imports(paths: Vec<String>, cx: &mut App) {
 }
 
 fn start_mod_import(version: ManagedVersionEntry, paths: Vec<String>, cx: &mut App) {
+    let i18n = cx.global::<I18n>().clone();
     cx.spawn(async move |cx| {
         let result = gpui_tokio::Tokio::spawn_result(cx, async move {
             data::import_mod_files(version.folder.as_ref(), &paths)
                 .await
-                .map(|()| format!("已导入 {} 个 Mod", paths.len()))
+                .map(|()| t!("Manage.mods_imported", count = paths.len()))
                 .map_err(anyhow::Error::msg)
         })
         .await;
 
         cx.update(|cx| match result {
             Ok(message) => {
-                toast::success(cx, SharedString::from(message));
+                toast::success(cx, message);
                 cx.update_global(|state: &mut ManagePageState, _cx| {
                     state.selected_asset_keys.clear();
                     state.assets_loaded = false;

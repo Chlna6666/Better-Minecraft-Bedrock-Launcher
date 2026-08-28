@@ -21,8 +21,8 @@ pub(super) fn render_theme_color_card(
     settings_card(colors, "settings-theme-color").child(
         settings_card_header(
             colors,
-            i18n.t("CustomizationSettings.theme_color"),
-            i18n.t("CustomizationSettings.theme_color_desc"),
+            t!("CustomizationSettings.theme_color"),
+            t!("CustomizationSettings.theme_color_desc"),
         )
         .child(color_picker_control(
             "settings-theme-color-picker",

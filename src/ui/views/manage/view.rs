@@ -236,6 +236,7 @@ impl ManagePageView {
         state: &ManagePageState,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         if matches!(
             self.version_list_cache.refresh(state),
             VersionListRefresh::QueryChanged
@@ -339,7 +340,7 @@ impl ManagePageView {
                     .flex()
                     .flex_col()
                     .when(state.loading && state.versions.is_empty(), |this| {
-                        this.child(subtle_badge(colors, "正在加载版本列表"))
+                        this.child(subtle_badge(colors, t!("ManagePage.loading_versions")))
                     })
                     .when_some(state.error.clone(), |this, error| {
                         this.child(
@@ -360,8 +361,8 @@ impl ManagePageView {
                             empty_state(
                                 colors,
                                 "images/manage/empty.svg",
-                                "没有找到版本",
-                                "请先导入或安装一个可管理的版本。",
+                                t!("ManagePage.no_versions"),
+                                t!("ManagePage.no_versions_hint"),
                             )
                             .h(px(220.)),
                         )
@@ -618,6 +619,7 @@ impl ManagePageView {
         now: Instant,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         if is_level_dat_editor_route(cx) {
             return div()
                 .flex_1()
@@ -633,8 +635,8 @@ impl ManagePageView {
                             .child(empty_state(
                                 colors,
                                 "images/manage/empty.svg",
-                                "编辑器状态不可用",
-                                "返回资源列表后重新打开 level.dat 编辑器。",
+                                t!("ManagePage.editor_unavailable"),
+                                t!("ManagePage.editor_unavailable_hint"),
                             ))
                             .into_any_element()
                     },
@@ -655,8 +657,8 @@ impl ManagePageView {
                 empty_state(
                     colors,
                     "images/manage/empty.svg",
-                    "请选择一个版本",
-                    "左侧列表会展示所有本地已导入的游戏实例。",
+                    t!("ManagePage.select_version"),
+                    t!("ManagePage.select_version_hint"),
                 ),
             );
         };
@@ -682,6 +684,7 @@ impl ManagePageView {
             ManageTab::Screenshot => filtered_screenshots.len(),
             ManageTab::Server => filtered_servers.len(),
         };
+        let active_count_string = active_count.to_string();
 
         let (version_t, version_animating) = self.version_anim_factor(now);
         let version_t_eased = {
@@ -908,7 +911,13 @@ impl ManagePageView {
                                                 },
                                             ),
                                         )
-                                        .child(subtle_badge(colors, format!("{active_count} 项"))),
+                                        .child(subtle_badge(
+                                            colors,
+                                            t!(
+                                                "ManagePage.active_count",
+                                                count = &active_count_string
+                                            ),
+                                        )),
                                 )
                             })
                             .child(
@@ -960,6 +969,7 @@ impl ManagePageView {
                                     ),
                                     ManageTab::Screenshot => render_screenshot_list(
                                         colors,
+                                        &i18n,
                                         version,
                                         state,
                                         filtered_screenshots,

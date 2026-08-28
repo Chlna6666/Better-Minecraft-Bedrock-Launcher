@@ -2,10 +2,10 @@ use super::model::{CopiedChunkData, CopiedChunkSnapshot};
 use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, GeometryBone, GeometryCube,
     ModelCuboid, ModelFamily, ModelPlane, ModelShape, ModelWarning,
-    block_export_material_name_for_block,
-    block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_face_for_normal, canonical_block_name_for_state, detail_material_block_name_for_state,
-    model_family_for_block_name, model_family_has_detail_shape, model_shape_for_block_state,
+    block_export_material_name_for_block, block_export_material_name_for_face,
+    block_export_material_name_for_plane, block_face_for_normal, canonical_block_name_for_state,
+    detail_material_block_name_for_state, model_family_for_block_name,
+    model_family_has_detail_shape, model_shape_for_block_state,
 };
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
@@ -1641,10 +1641,8 @@ impl Preview3dMeshBuilder {
                     if connects {
                         connected.push(direction);
                     }
-                    query = query.with_state(
-                        direction.state_key(),
-                        if connects { "low" } else { "none" },
-                    );
+                    query = query
+                        .with_state(direction.state_key(), if connects { "low" } else { "none" });
                 }
                 let straight = connected.len() == 2
                     && connected[0].opposite() == connected[1]
@@ -1756,10 +1754,16 @@ impl Preview3dMeshBuilder {
                 true
             }
             Some(Preview3dConnectionKind::RedstoneAxisX) => {
-                matches!(direction, Preview3dCardinalDirection::East | Preview3dCardinalDirection::West)
+                matches!(
+                    direction,
+                    Preview3dCardinalDirection::East | Preview3dCardinalDirection::West
+                )
             }
             Some(Preview3dConnectionKind::RedstoneAxisZ) => {
-                matches!(direction, Preview3dCardinalDirection::North | Preview3dCardinalDirection::South)
+                matches!(
+                    direction,
+                    Preview3dCardinalDirection::North | Preview3dCardinalDirection::South
+                )
             }
             _ => false,
         }
@@ -2207,7 +2211,8 @@ fn preview_3d_push_collected_block(
     };
     match block_class {
         Preview3dBlockClass::Opaque => {
-            if let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
+            if let Some(shape) = resolved_shape
+                .or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
             {
                 if !shape.is_empty() {
                     detail_blocks.push(Preview3dDetailBlock {
@@ -2230,7 +2235,8 @@ fn preview_3d_push_collected_block(
             ));
         }
         Preview3dBlockClass::TransparentGlass => {
-            if let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
+            if let Some(shape) = resolved_shape
+                .or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
             {
                 if !shape.is_empty() {
                     glass_detail_blocks.push(Preview3dDetailBlock {
@@ -2271,7 +2277,8 @@ fn preview_3d_push_collected_block(
             });
         }
         Preview3dBlockClass::DetailOpaque | Preview3dBlockClass::DetailGlass => {
-            let Some(shape) = resolved_shape.or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
+            let Some(shape) = resolved_shape
+                .or_else(|| preview_3d_detail_shape_for_block(state, block_entity_state))
             else {
                 return Ok(());
             };
@@ -3833,7 +3840,9 @@ fn preview_3d_connection_kind(state: &BlockState) -> Option<Preview3dConnectionK
         ModelFamily::FenceGate => Some(Preview3dConnectionKind::FenceGate),
         ModelFamily::Wall => Some(Preview3dConnectionKind::Wall),
         ModelFamily::RedstoneWire => Some(Preview3dConnectionKind::RedstoneWire),
-        ModelFamily::Button | ModelFamily::PressurePlate => Some(Preview3dConnectionKind::RedstoneAny),
+        ModelFamily::Button | ModelFamily::PressurePlate => {
+            Some(Preview3dConnectionKind::RedstoneAny)
+        }
         ModelFamily::RedstoneDevice => preview_3d_redstone_device_connection_kind(state),
         _ => {
             let normalized = preview_3d_normalized_block_name(&state.name);
@@ -3876,10 +3885,16 @@ fn preview_3d_stair_state(state: &BlockState) -> Option<Preview3dStairState> {
     let facing = preview_3d_stair_direction(state)?;
     let top = preview_3d_state_string(state, "vertical_half")
         .or_else(|| preview_3d_state_string(state, "half"))
-        .and_then(|value| match value.trim().strip_prefix("minecraft:").unwrap_or(value.trim()) {
-            "top" | "upper" => Some(true),
-            "bottom" | "lower" => Some(false),
-            _ => None,
+        .and_then(|value| {
+            match value
+                .trim()
+                .strip_prefix("minecraft:")
+                .unwrap_or(value.trim())
+            {
+                "top" | "upper" => Some(true),
+                "bottom" | "lower" => Some(false),
+                _ => None,
+            }
         })
         .or_else(|| preview_3d_state_bool(state, "upside_down_bit"))
         .unwrap_or(false);
@@ -3889,10 +3904,22 @@ fn preview_3d_stair_state(state: &BlockState) -> Option<Preview3dStairState> {
 fn preview_3d_stair_direction(state: &BlockState) -> Option<Preview3dCardinalDirection> {
     preview_3d_state_string(state, "minecraft:cardinal_direction")
         .and_then(preview_3d_cardinal_direction_from_string)
-        .or_else(|| preview_3d_state_string(state, "facing").and_then(preview_3d_cardinal_direction_from_string))
-        .or_else(|| preview_3d_state_string(state, "direction").and_then(preview_3d_cardinal_direction_from_string))
-        .or_else(|| preview_3d_state_i32(state, "weirdo_direction").and_then(preview_3d_stair_direction_from_int))
-        .or_else(|| preview_3d_state_i32(state, "direction").and_then(preview_3d_cardinal_direction_from_int))
+        .or_else(|| {
+            preview_3d_state_string(state, "facing")
+                .and_then(preview_3d_cardinal_direction_from_string)
+        })
+        .or_else(|| {
+            preview_3d_state_string(state, "direction")
+                .and_then(preview_3d_cardinal_direction_from_string)
+        })
+        .or_else(|| {
+            preview_3d_state_i32(state, "weirdo_direction")
+                .and_then(preview_3d_stair_direction_from_int)
+        })
+        .or_else(|| {
+            preview_3d_state_i32(state, "direction")
+                .and_then(preview_3d_cardinal_direction_from_int)
+        })
 }
 
 fn preview_3d_has_direction_connection_state(state: &BlockState) -> bool {

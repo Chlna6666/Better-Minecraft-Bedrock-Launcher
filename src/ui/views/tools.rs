@@ -1,3 +1,4 @@
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::settings::state::SettingsPageState;
@@ -151,7 +152,12 @@ impl Render for ToolsPageView {
             theme.accent,
         );
         let window_size = window.bounds().size;
-        render_tools_page(colors, window_size.width, cx.global::<ToolsPageState>())
+        render_tools_page(
+            colors,
+            window_size.width,
+            cx.global::<ToolsPageState>(),
+            cx.global::<I18n>(),
+        )
     }
 }
 
@@ -159,11 +165,12 @@ pub fn render_tools_page(
     colors: ThemeColors,
     window_width: Pixels,
     state: &ToolsPageState,
+    i18n: &I18n,
 ) -> impl IntoElement {
     let sidebar = sidebar::render_sidebar(&colors, state.tab);
     let content: AnyElement = match state.tab {
         ToolsTab::Online => {
-            online::render_online_panel(&colors, state, window_width).into_any_element()
+            online::render_online_panel(&colors, i18n, state, window_width).into_any_element()
         }
     };
 
@@ -174,13 +181,14 @@ pub fn render_tools_page(
 
 pub fn render_tools_overlay(
     colors: &ThemeColors,
+    i18n: &I18n,
     window_width: Pixels,
     window_height: Pixels,
     state: &ToolsPageState,
 ) -> Option<AnyElement> {
     match state.tab {
         ToolsTab::Online => {
-            online::render_online_overlay(colors, window_width, window_height, state)
+            online::render_online_overlay(colors, i18n, window_width, window_height, state)
         }
     }
 }

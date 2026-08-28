@@ -22,6 +22,7 @@ use super::viewport::{
     screen_x_for_block, screen_y_for_block, tile_bounds_count, tile_coords_for_paint_order,
     tile_paint_rect, tile_paint_sort_key, viewport_screen_for_block,
 };
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use bedrock_render::RenderLayout;
 use std::collections::BTreeMap;
@@ -954,6 +955,7 @@ fn render_paste_controls(
     .clamp(8.0, tools_top_max);
     let angle_label = preview.transform.label();
     let colors = snapshot.colors;
+    let i18n = cx.global::<I18n>().clone();
 
     Some(
         div()
@@ -999,13 +1001,15 @@ fn render_paste_controls(
                         a: 0.90,
                         ..colors.surface
                     })
-                    .child(paste_control_button(&colors, "移动").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
-                            cx.emit(MapCanvasAction::BeginPastePreviewMove);
-                            cx.stop_propagation();
-                        }),
-                    ))
+                    .child(
+                        paste_control_button(&colors, t!("MapViewer.move")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
+                                cx.emit(MapCanvasAction::BeginPastePreviewMove);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                    )
                     .child(paste_control_button(&colors, "↺").on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|_this, _event, _window, cx| {
@@ -1024,9 +1028,9 @@ fn render_paste_controls(
                         paste_control_button(
                             &colors,
                             if preview.tools_expanded {
-                                "工具▴"
+                                t!("MapViewer.tools_collapse")
                             } else {
-                                "工具▾"
+                                t!("MapViewer.tools_expand")
                             },
                         )
                         .on_mouse_down(
@@ -1037,20 +1041,24 @@ fn render_paste_controls(
                             }),
                         ),
                     )
-                    .child(paste_control_button(&colors, "确认").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|_this, _event, _window, cx| {
-                            cx.emit(MapCanvasAction::ConfirmPastePreview);
-                            cx.stop_propagation();
-                        }),
-                    ))
-                    .child(paste_control_button(&colors, "取消").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|_this, _event, _window, cx| {
-                            cx.emit(MapCanvasAction::CancelPastePreview);
-                            cx.stop_propagation();
-                        }),
-                    )),
+                    .child(
+                        paste_control_button(&colors, t!("common.confirm")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_this, _event, _window, cx| {
+                                cx.emit(MapCanvasAction::ConfirmPastePreview);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                    )
+                    .child(
+                        paste_control_button(&colors, t!("common.cancel")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_this, _event, _window, cx| {
+                                cx.emit(MapCanvasAction::CancelPastePreview);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                    ),
             )
             .when(preview.tools_expanded, |this| {
                 this.child(
@@ -1078,47 +1086,61 @@ fn render_paste_controls(
                             div()
                                 .flex()
                                 .gap(px(6.0))
-                                .child(paste_control_button(&colors, "镜像X").on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(MapCanvasAction::MirrorPastePreviewX);
-                                        cx.stop_propagation();
-                                    }),
-                                ))
-                                .child(paste_control_button(&colors, "镜像Z").on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(MapCanvasAction::MirrorPastePreviewZ);
-                                        cx.stop_propagation();
-                                    }),
-                                )),
+                                .child(
+                                    paste_control_button(&colors, t!("MapViewer.mirror_x"))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|_this, _event, _window, cx| {
+                                                cx.emit(MapCanvasAction::MirrorPastePreviewX);
+                                                cx.stop_propagation();
+                                            }),
+                                        ),
+                                )
+                                .child(
+                                    paste_control_button(&colors, t!("MapViewer.mirror_z"))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|_this, _event, _window, cx| {
+                                                cx.emit(MapCanvasAction::MirrorPastePreviewZ);
+                                                cx.stop_propagation();
+                                            }),
+                                        ),
+                                ),
                         )
                         .child(
                             div()
                                 .flex()
                                 .gap(px(6.0))
-                                .child(paste_control_button(&colors, "导出").on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(MapCanvasAction::ExportPastePreviewImage);
-                                        cx.stop_propagation();
-                                    }),
-                                ))
-                                .child(paste_control_button(&colors, "预览3D").on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(MapCanvasAction::OpenPastePreview3d);
-                                        cx.stop_propagation();
-                                    }),
-                                )),
+                                .child(
+                                    paste_control_button(&colors, t!("MapViewer.export"))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|_this, _event, _window, cx| {
+                                                cx.emit(MapCanvasAction::ExportPastePreviewImage);
+                                                cx.stop_propagation();
+                                            }),
+                                        ),
+                                )
+                                .child(
+                                    paste_control_button(&colors, t!("MapViewer.preview_3d"))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|_this, _event, _window, cx| {
+                                                cx.emit(MapCanvasAction::OpenPastePreview3d);
+                                                cx.stop_propagation();
+                                            }),
+                                        ),
+                                ),
                         )
-                        .child(paste_control_button(&colors, "收起").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(MapCanvasAction::TogglePastePreviewTools);
-                                cx.stop_propagation();
-                            }),
-                        )),
+                        .child(
+                            paste_control_button(&colors, t!("MapViewer.collapse")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_this, _event, _window, cx| {
+                                    cx.emit(MapCanvasAction::TogglePastePreviewTools);
+                                    cx.stop_propagation();
+                                }),
+                            ),
+                        ),
                 )
             }),
     )

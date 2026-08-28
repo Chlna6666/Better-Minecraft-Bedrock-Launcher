@@ -192,6 +192,9 @@ impl MapViewerWindowView {
 impl Render for MapViewerWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
+        let i18n = cx.global::<I18n>().clone();
+        let title = t!("MapViewer.window_title", name = &self.asset.display_name).to_string();
+        window.set_title(&title);
         let preview_3d_motion_active = self
             .preview_3d
             .tick_motion(now, self.preview_3d_focus_handle.is_focused(window));
@@ -211,7 +214,7 @@ impl Render for MapViewerWindowView {
             preview_3d_motion_active || paste_preview_auto_pan_active,
         );
         let colors = self.theme_colors(cx);
-        let top_bar_snapshot = self.top_bar_snapshot();
+        let top_bar_snapshot = self.top_bar_snapshot(&i18n);
         let tool_stripe_snapshot = self.tool_stripe_snapshot();
         let menu_overlay_snapshot = self.menu_overlay_snapshot();
         let top_bar_view = self.top_bar_view.clone();
@@ -376,8 +379,8 @@ fn external_paths_are_importable(paths: &ExternalPaths) -> bool {
 }
 
 pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
-    let title = format!("地图预览 - {}", init.asset.display_name);
-    let options = map_viewer_window_options(cx);
+    let title = t!("MapViewer.window_title", name = &init.asset.display_name).to_string();
+    let options = map_viewer_window_options(cx, SharedString::from(title.clone()));
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
         window.activate_window();
@@ -404,7 +407,7 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
     }
 }
 
-fn map_viewer_window_options(cx: &mut App) -> WindowOptions {
+fn map_viewer_window_options(cx: &mut App, title: SharedString) -> WindowOptions {
     let mut options = WindowOptions::default();
     options.window_bounds = Some(WindowBounds::centered(map_viewer_window_size(cx), cx));
     options.window_min_size = Some(size(
@@ -417,7 +420,7 @@ fn map_viewer_window_options(cx: &mut App) -> WindowOptions {
     #[cfg(windows)]
     {
         options.titlebar = Some(TitlebarOptions {
-            title: Some(SharedString::from("地图预览")),
+            title: Some(title),
             appears_transparent: false,
             ..Default::default()
         });

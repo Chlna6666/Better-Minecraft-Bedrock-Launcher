@@ -1,6 +1,7 @@
 use crate::config::config::ProxyType;
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::toast::{self, ToastKind};
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{LauncherDisplayMode, SettingsPageState};
 use gpui::prelude::FluentBuilder as _;
@@ -86,14 +87,15 @@ pub(super) fn spawn_persist_settings_with_success(
     on_success: Option<Rc<dyn Fn(&mut App)>>,
     cx: &mut App,
 ) {
+    let i18n = cx.global::<I18n>().clone();
     let settings_loaded = cx.read_global(|state: &SettingsPageState, _cx| state.loaded);
     if !settings_loaded {
         warn!("skip persisting settings before settings page finishes loading");
-        toast::error(cx, SharedString::from("设置仍在加载，请稍后再试"));
+        toast::error(cx, t!("Settings.load_retry"));
         return;
     }
 
-    let toast_id = toast::pending(cx, SharedString::from("保存设置中..."));
+    let toast_id = toast::pending(cx, t!("Settings.saving"));
 
     cx.spawn(async move |cx| {
         let res = crate::tasks::runtime::run_io_blocking(move || {
@@ -166,27 +168,18 @@ pub(super) fn spawn_persist_settings_with_success(
 
         if let Err(join_err) = res {
             warn!("persist settings join error: {join_err}");
-            toast::resolve_async(
-                cx,
-                toast_id,
-                ToastKind::Error,
-                SharedString::from("保存设置失败"),
-            );
+            toast::resolve_async(cx, toast_id, ToastKind::Error, t!("Settings.save_failed"));
         } else if let Ok(Err(io_err)) = res {
             warn!("persist settings failed: {io_err}");
+            let error_text = io_err.to_string();
             toast::resolve_async(
                 cx,
                 toast_id,
                 ToastKind::Error,
-                SharedString::from(format!("保存设置失败: {io_err}")),
+                t!("Settings.save_failed_with_error", error = &error_text),
             );
         } else {
-            toast::resolve_async(
-                cx,
-                toast_id,
-                ToastKind::Success,
-                SharedString::from("设置已保存"),
-            );
+            toast::resolve_async(cx, toast_id, ToastKind::Success, t!("Settings.saved"));
             if let Some(on_success) = on_success {
                 if let Err(error) = cx.update(move |cx| {
                     on_success(cx);

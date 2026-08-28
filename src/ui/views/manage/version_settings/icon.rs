@@ -31,7 +31,7 @@ pub(super) fn render_icon_card(
             .as_ref()
             .map(|icon_source_path| icon_source_path.as_ref()),
     )
-    .unwrap_or_else(|| i18n.t("VersionSettingsModal.icon_select"));
+    .unwrap_or_else(|| t!("VersionSettingsModal.icon_select"));
 
     panel_shell(colors).w_full().p(px(14.)).child(
         div()
@@ -62,10 +62,7 @@ pub(super) fn render_icon_card(
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .child(card_title(
-                        colors,
-                        i18n.t("VersionSettingsModal.icon_label"),
-                    ))
+                    .child(card_title(colors, t!("VersionSettingsModal.icon_label")))
                     .child(
                         div()
                             .text_size(px(12.))
@@ -73,7 +70,7 @@ pub(super) fn render_icon_card(
                             .text_color(colors.text_secondary)
                             .overflow_hidden()
                             .text_ellipsis()
-                            .child(i18n.t("VersionSettingsModal.icon_desc")),
+                            .child(t!("VersionSettingsModal.icon_desc")),
                     ),
             )
             .child(

@@ -26,7 +26,7 @@ impl MapViewerWindowView {
                     .render_bottom_details_panel(colors, cx)
                     .into_any_element(),
                 MapViewerBottomTab::Diagnostics => {
-                    self.render_diagnostics_panel(colors).into_any_element()
+                    self.render_diagnostics_panel(colors, cx).into_any_element()
                 }
                 MapViewerBottomTab::History => {
                     self.render_history_panel(colors, cx).into_any_element()
@@ -37,25 +37,26 @@ impl MapViewerWindowView {
     /// Bottom dock header: iconified tab strip + collapse button.
     fn render_bottom_dock_header(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let active = self.ui_state.active_bottom_tab;
-        let tabs: [(&'static str, &'static str, MapViewerBottomTab); 4] = [
+        let i18n = cx.global::<I18n>().clone();
+        let tabs: [(&'static str, SharedString, MapViewerBottomTab); 4] = [
             (
                 lucide_icons::icon_layers(),
-                "区块树",
+                t!("MapViewer.chunk_tree"),
                 MapViewerBottomTab::ChunkTree,
             ),
             (
                 lucide_icons::icon_info(),
-                "详情",
+                t!("MapViewer.details"),
                 MapViewerBottomTab::Details,
             ),
             (
                 lucide_icons::icon_activity(),
-                "诊断",
+                t!("MapViewer.diagnostics"),
                 MapViewerBottomTab::Diagnostics,
             ),
             (
                 lucide_icons::icon_history(),
-                "历史",
+                t!("MapViewer.history"),
                 MapViewerBottomTab::History,
             ),
         ];
@@ -100,7 +101,7 @@ impl MapViewerWindowView {
                             ..colors.surface_hover
                         })
                     })
-                    .child(SharedString::from("收起"))
+                    .child(t!("MapViewer.collapse"))
                     .child(themed_icon(
                         lucide_icons::icon_chevron_down(),
                         CHROME_TAB_ICON_SIZE,
@@ -135,6 +136,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn render_db_tree_panel(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -164,7 +166,7 @@ impl MapViewerWindowView {
                                 .text_size(px(12.0))
                                 .line_height(px(18.0))
                                 .text_color(colors.text_muted)
-                                .child("点击地图瓦片后显示该瓦片的区块树。默认不扫描视口。"),
+                                .child(t!("MapViewer.chunk_tree_hint")),
                         )
                     })
                     .children(self.db_tree.nodes.iter().map(|node| {
@@ -191,11 +193,15 @@ impl MapViewerWindowView {
                     .text_size(px(12.0))
                     .line_height(px(18.0))
                     .text_color(colors.text_secondary)
-                    .child(self.db_tree.selection.detail.clone().unwrap_or_else(|| {
-                        SharedString::from("选择左侧 chunk 查看详情。区块树只在点击瓦片后加载。")
-                    })),
+                    .child(
+                        self.db_tree
+                            .selection
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| t!("MapViewer.chunk_detail_hint")),
+                    ),
             )
-            .child(self.render_operation_progress_panel(colors))
+            .child(self.render_operation_progress_panel(colors, cx))
     }
 
     pub(super) fn render_db_tree_node(
@@ -204,6 +210,7 @@ impl MapViewerWindowView {
         node: &DbTreeNode,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>();
         let selected = self
             .db_tree
             .selection
@@ -212,6 +219,11 @@ impl MapViewerWindowView {
             .is_some_and(|id| id == &node.id);
         let kind = node.kind.clone();
         let id = node.id.clone();
+        let description = if node.description.is_empty() {
+            t!("MapViewer.click_chunk_details")
+        } else {
+            node.description.clone()
+        };
         div()
             .px(px(8.0))
             .py(px(6.0))
@@ -267,7 +279,7 @@ impl MapViewerWindowView {
                                 div()
                                     .text_size(px(10.0))
                                     .text_color(colors.text_muted)
-                                    .child(node.description.clone()),
+                                    .child(description),
                             ),
                     ),
             )
@@ -280,14 +292,21 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         self.db_tree.selection.node_id = Some(id);
+        let i18n = cx.global::<I18n>().clone();
         self.db_tree.selection.detail = Some(match kind {
-            DbTreeNodeKind::Dimension(dimension) => SharedString::from(format!(
-                "Dimension {}\n选中瓦片: {:?}\n索引瓦片: {}\n当前节点: {}",
-                dimension.id(),
-                self.db_tree.selected_tile,
-                self.tile_chunk_index.len(),
-                self.db_tree.nodes.len().saturating_sub(1)
-            )),
+            DbTreeNodeKind::Dimension(dimension) => {
+                let dimension_id = dimension.id().to_string();
+                let selected_tile = format!("{:?}", self.db_tree.selected_tile);
+                let indexed = self.tile_chunk_index.len().to_string();
+                let nodes = self.db_tree.nodes.len().saturating_sub(1).to_string();
+                t!(
+                    "MapViewer.dimension_detail",
+                    dimension = &dimension_id,
+                    tile = &selected_tile,
+                    indexed = &indexed,
+                    nodes = &nodes
+                )
+            }
             DbTreeNodeKind::Chunk(chunk) => pretty_json(chunk_json(chunk)),
         });
         cx.notify();
@@ -298,6 +317,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         div().flex_1().min_h(px(0.0)).p(px(10.0)).child(
             self.professional.detail.as_ref().map_or_else(
                 || {
@@ -314,7 +334,7 @@ impl MapViewerWindowView {
                         .justify_center()
                         .text_size(px(12.0))
                         .text_color(colors.text_muted)
-                        .child("还没有打开记录详情。")
+                        .child(t!("MapViewer.no_record_detail"))
                 },
                 |detail| {
                     self.render_professional_detail_panel(colors, detail, cx)
@@ -327,9 +347,13 @@ impl MapViewerWindowView {
         )
     }
 
-    pub(super) fn render_diagnostics_panel(&self, colors: &ThemeColors) -> Div {
+    pub(super) fn render_diagnostics_panel(
+        &self,
+        colors: &ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> Div {
         div().flex_1().min_h(px(0.0)).p(px(10.0)).child(
-            self.render_status_bar(colors)
+            self.render_status_bar(colors, cx)
                 .relative()
                 .left(px(0.0))
                 .bottom(px(0.0))

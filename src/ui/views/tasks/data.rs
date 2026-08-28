@@ -1,6 +1,7 @@
 use super::{TaskConfirmAction, TaskConfirmDialog, TasksPageView};
 use crate::tasks::task_manager;
 use crate::ui::components::toast;
+use crate::ui::state::i18n::I18n;
 use gpui::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -26,7 +27,10 @@ impl TasksPageView {
         };
 
         if !success {
-            toast::error(cx, SharedString::from("当前任务状态不支持暂停或继续"));
+            let message = cx
+                .global::<I18n>()
+                .t_key(crate::i18n_key!("Tasks.pause_unavailable"));
+            toast::error(cx, message);
             return;
         }
     }
@@ -34,11 +38,16 @@ impl TasksPageView {
     pub(crate) fn prompt_cancel_task(&mut self, task_id: Arc<str>, cx: &mut Context<Self>) {
         let subject = task_manager::get_snapshot_arc(task_id.as_ref())
             .map(|snapshot| super::task_subject(&snapshot))
-            .unwrap_or_else(|| "该任务".to_string());
+            .unwrap_or_else(|| {
+                cx.global::<I18n>()
+                    .t_key(crate::i18n_key!("Tasks.this_task"))
+                    .to_string()
+            });
+        let i18n = cx.global::<I18n>();
         self.open_confirm(
             task_id,
-            "取消任务",
-            format!("确定要取消 {} 吗？已产生的临时文件可能会被清理。", subject),
+            t!("Tasks.cancel_title"),
+            t!("Tasks.cancel_description", subject = subject),
             TaskConfirmAction::CancelTask,
             cx,
         );
@@ -185,18 +194,22 @@ impl TasksPageView {
                 cx.spawn(async move |_handle, cx| {
                     match crate::downloads::api::delete_local_download(file_name).await {
                         Ok(()) => {
-                            toast::push_async(
-                                cx,
-                                toast::ToastKind::Success,
-                                SharedString::from("已删除本地下载文件"),
-                            );
+                            let message = cx
+                                .read_global(|i18n: &I18n, _cx| {
+                                    i18n.t_key(crate::i18n_key!("Tasks.download_deleted"))
+                                })
+                                .unwrap_or_else(|_| SharedString::from("Local download deleted"));
+                            toast::push_async(cx, toast::ToastKind::Success, message);
                         }
                         Err(error) => {
-                            toast::push_async(
-                                cx,
-                                toast::ToastKind::Error,
-                                SharedString::from(format!("删除下载文件失败: {error}")),
-                            );
+                            let message = cx
+                                .read_global(|i18n: &I18n, _cx| {
+                                    t!("Tasks.download_delete_failed", error = error)
+                                })
+                                .unwrap_or_else(|_| {
+                                    SharedString::from("Failed to delete download")
+                                });
+                            toast::push_async(cx, toast::ToastKind::Error, message);
                             return Err(anyhow::Error::msg(error));
                         }
                     }

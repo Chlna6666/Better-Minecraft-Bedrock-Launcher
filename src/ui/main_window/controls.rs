@@ -30,6 +30,7 @@ impl MainWindowView {
             return;
         }
         self.manage_controls_initialized = true;
+        let search_placeholder = t!("ManagePage.search_placeholder");
 
         let input = cx.update_global(
             |s: &mut crate::ui::views::manage::state::ManagePageState, cx| {
@@ -37,7 +38,7 @@ impl MainWindowView {
                     let initial = s.search_query.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("搜索版本..."), window, cx);
+                        st.set_placeholder(search_placeholder.clone(), window, cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -73,6 +74,7 @@ impl MainWindowView {
             return;
         }
         self.tools_controls_initialized = true;
+        let i18n = cx.global::<I18n>().clone();
 
         let (room_input, bootstrap_input, player_input, game_ports_input) = cx.update_global(
             |s: &mut crate::ui::views::tools::state::ToolsPageState, cx| {
@@ -93,11 +95,7 @@ impl MainWindowView {
                     let initial = s.bootstrap_peers.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(
-                            SharedString::from("留空自动获取公共节点，或手动输入 tcp://host:port"),
-                            window,
-                            cx,
-                        );
+                        st.set_placeholder(t!("Online.bootstrap_peer_placeholder"), window, cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -110,7 +108,7 @@ impl MainWindowView {
                     let initial = s.player_name.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("留空自动生成随机名称"), window, cx);
+                        st.set_placeholder(t!("Online.player_name_placeholder"), window, cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -123,7 +121,7 @@ impl MainWindowView {
                     let initial = s.game_ports.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("7551, 19132"), window, cx);
+                        st.set_placeholder(t!("Online.open_ports_placeholder"), window, cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }

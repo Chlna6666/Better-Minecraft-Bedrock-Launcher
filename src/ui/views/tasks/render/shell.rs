@@ -42,16 +42,28 @@ pub(crate) fn task_visual_kind(stage: &str, status: &str) -> TaskVisualKind {
         return TaskVisualKind::Extract;
     }
 
-    let stage = stage.to_lowercase();
-    if stage.contains("下载") || stage.contains("解析") || stage.contains("读取") {
+    if matches!(
+        stage,
+        "downloading"
+            | "resolving_url"
+            | "reading_body"
+            | "parsing"
+            | "url_resolved"
+            | "resolving_runner"
+            | "resolving_proton_gdk"
+    ) {
         TaskVisualKind::Download
-    } else if stage.contains("解压")
-        || stage.contains("解密")
-        || stage.contains("安装")
-        || stage.contains("准备")
-    {
+    } else if matches!(
+        stage,
+        "extracting"
+            | "decrypting"
+            | "preparing_files"
+            | "preparing_prefix"
+            | "installing_linux_packages"
+            | "extracting_proton_gdk"
+    ) {
         TaskVisualKind::Extract
-    } else if stage.contains("处理") || stage.contains("整理") || stage.contains("校验") {
+    } else if matches!(stage, "merging" | "verifying" | "renaming" | "patching") {
         TaskVisualKind::Install
     } else {
         TaskVisualKind::Download

@@ -5,7 +5,7 @@ use crate::ui::components::icon::themed_icon;
 use lucide_gpui::icons as lucide_icons;
 
 impl MapViewerWindowView {
-    pub(super) fn top_bar_snapshot(&self) -> MapTopBarSnapshot {
+    pub(super) fn top_bar_snapshot(&self, i18n: &I18n) -> MapTopBarSnapshot {
         MapTopBarSnapshot {
             window_width: self.window_width,
             asset_name: self.asset.display_name.clone(),
@@ -14,7 +14,7 @@ impl MapViewerWindowView {
             dimension: self.dimension,
             y_layer: self.y_layer,
             zoom_percent: self.viewport.scale * 100.0,
-            activity: SharedString::from(compact_activity_label(self)),
+            activity: compact_activity_label(i18n, self),
             chunk_transfer_progress: self.professional.chunk_transfer_progress.clone(),
         }
     }
@@ -177,6 +177,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let i18n = cx.global::<I18n>().clone();
         div()
             .w(px(IDE_LEFT_DOCK_WIDTH))
             .flex_none()
@@ -189,14 +190,14 @@ impl MapViewerWindowView {
             .px(px(12.0))
             .bg(colors.surface)
             .overflow_y_scrollbar()
-            .child(panel_title(colors, "地图工具"))
-            .child(self.render_viewport_inputs(colors))
+            .child(panel_title(colors, t!("MapViewer.tools")))
+            .child(self.render_viewport_inputs(colors, &i18n))
             .child(
                 panel_section_body(colors)
                     .child(panel_section_header(
                         colors,
                         lucide_icons::icon_map(),
-                        "维度",
+                        t!("MapViewer.dimension"),
                     ))
                     .child(
                         div()
@@ -207,6 +208,7 @@ impl MapViewerWindowView {
                                 self.dimension,
                                 self.custom_dimension_id,
                                 colors,
+                                &i18n,
                                 cx,
                             )),
                     )
@@ -214,7 +216,7 @@ impl MapViewerWindowView {
                         this.child(self.render_map_input(
                             colors,
                             MapInputField::DimensionId,
-                            "自定义维度 ID",
+                            t!("MapViewer.dimension_custom_id"),
                             px(252.0),
                         ))
                     }),
@@ -222,12 +224,12 @@ impl MapViewerWindowView {
             .child(self.render_overlay_section(colors, cx))
     }
 
-    pub(super) fn render_viewport_inputs(&self, colors: &ThemeColors) -> Div {
+    pub(super) fn render_viewport_inputs(&self, colors: &ThemeColors, i18n: &I18n) -> Div {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
                 lucide_icons::icon_search(),
-                "定位与缩放",
+                t!("MapViewer.locate_zoom"),
             ))
             .child(
                 div()
@@ -238,19 +240,19 @@ impl MapViewerWindowView {
                     .child(self.render_map_input(
                         colors,
                         MapInputField::CenterX,
-                        "中心 X",
+                        t!("MapViewer.center_x"),
                         px(122.0),
                     ))
                     .child(self.render_map_input(
                         colors,
                         MapInputField::CenterZ,
-                        "中心 Z",
+                        t!("MapViewer.center_z"),
                         px(122.0),
                     ))
                     .child(self.render_map_input(
                         colors,
                         MapInputField::ZoomPercent,
-                        "缩放百分比",
+                        t!("MapViewer.zoom_percent"),
                         px(122.0),
                     )),
             )
@@ -260,7 +262,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         field: MapInputField,
-        label: &'static str,
+        label: impl Into<SharedString>,
         width: Pixels,
     ) -> Div {
         let invalid = self.input_fields.validation.invalid_field == Some(field);
@@ -278,7 +280,7 @@ impl MapViewerWindowView {
                     } else {
                         colors.text_muted
                     })
-                    .child(label),
+                    .child(label.into()),
             )
             .child(
                 div()
@@ -329,11 +331,12 @@ impl MapViewerWindowView {
     }
 
     fn render_display_options(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
                 lucide_icons::icon_eye(),
-                "地图显示",
+                t!("MapViewer.display"),
             ))
             .child(
                 div()
@@ -342,89 +345,112 @@ impl MapViewerWindowView {
                     .items_center()
                     .gap(px(6.0))
                     .child(
-                        mode_button(colors, "坐标轴", self.overlay_options.axis).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| this.toggle_axis(cx)),
-                        ),
-                    )
-                    .child(
-                        mode_button(colors, "区块网格", self.overlay_options.dense_grid)
+                        mode_button(colors, t!("MapViewer.axis"), self.overlay_options.axis)
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| this.toggle_dense_grid(cx)),
-                            ),
-                    )
-                    .child(
-                        mode_button(colors, "地图标尺", self.overlay_options.ruler).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| this.toggle_ruler(cx)),
-                        ),
-                    ),
-            )
-    }
-
-    fn render_data_overlays(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        panel_section_body(colors)
-            .child(panel_section_header(
-                colors,
-                lucide_icons::icon_layers(),
-                "数据叠加",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        mode_button(colors, "玩家显示", self.overlay_options.players)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_player_overlay(cx)
-                                }),
-                            ),
-                    )
-                    .child(
-                        mode_button(colors, "生物实体", self.overlay_options.entities)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_entity_overlay(cx)
-                                }),
-                            ),
-                    )
-                    .child(
-                        mode_button(colors, "方块实体", self.overlay_options.block_entities)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_block_entity_overlay(cx)
-                                }),
-                            ),
-                    )
-                    .child(
-                        mode_button(colors, "村庄范围", self.overlay_options.villages)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_village_overlay(cx)
-                                }),
-                            ),
-                    )
-                    .child(
-                        mode_button(colors, "计划刻队列", self.overlay_options.pending_ticks)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_pending_tick_overlay(cx)
-                                }),
+                                cx.listener(|this, _event, _window, cx| this.toggle_axis(cx)),
                             ),
                     )
                     .child(
                         mode_button(
                             colors,
-                            "硬编码生成区",
+                            t!("MapViewer.chunk_grid"),
+                            self.overlay_options.dense_grid,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| this.toggle_dense_grid(cx)),
+                        ),
+                    )
+                    .child(
+                        mode_button(colors, t!("MapViewer.ruler"), self.overlay_options.ruler)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| this.toggle_ruler(cx)),
+                            ),
+                    ),
+            )
+    }
+
+    fn render_data_overlays(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
+        panel_section_body(colors)
+            .child(panel_section_header(
+                colors,
+                lucide_icons::icon_layers(),
+                t!("MapViewer.data_overlays"),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        mode_button(
+                            colors,
+                            t!("MapViewer.player_overlay"),
+                            self.overlay_options.players,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| this.toggle_player_overlay(cx)),
+                        ),
+                    )
+                    .child(
+                        mode_button(
+                            colors,
+                            t!("MapViewer.entity_overlay"),
+                            self.overlay_options.entities,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| this.toggle_entity_overlay(cx)),
+                        ),
+                    )
+                    .child(
+                        mode_button(
+                            colors,
+                            t!("MapViewer.block_entity_overlay"),
+                            self.overlay_options.block_entities,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_block_entity_overlay(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        mode_button(
+                            colors,
+                            t!("MapViewer.village_overlay"),
+                            self.overlay_options.villages,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_village_overlay(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        mode_button(
+                            colors,
+                            t!("MapViewer.pending_ticks"),
+                            self.overlay_options.pending_ticks,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_pending_tick_overlay(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        mode_button(
+                            colors,
+                            t!("MapViewer.hardcoded_spawn"),
                             self.overlay_options.hardcoded_spawn_areas,
                         )
                         .on_mouse_down(
@@ -436,6 +462,7 @@ impl MapViewerWindowView {
     }
 
     fn render_slime_analysis(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let candidate_count = self
             .professional
             .slime_window_candidates
@@ -445,16 +472,20 @@ impl MapViewerWindowView {
             .child(panel_section_header(
                 colors,
                 lucide_icons::icon_search(),
-                "史莱姆群落分析",
+                t!("MapViewer.slime_analysis"),
             ))
             .child(
-                mode_button(colors, "显示史莱姆区块", self.overlay_options.slime_chunks)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| this.toggle_slime_overlay(cx)),
-                    ),
+                mode_button(
+                    colors,
+                    t!("MapViewer.show_slime_chunks"),
+                    self.overlay_options.slime_chunks,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.toggle_slime_overlay(cx)),
+                ),
             )
-            .child(panel_field_label(colors, "连续窗口大小（区块）"))
+            .child(panel_field_label(colors, t!("MapViewer.slime_window_size")))
             .child(
                 div()
                     .flex()
@@ -467,17 +498,24 @@ impl MapViewerWindowView {
                     )),
             )
             .when(self.professional.slime_window_candidates_loading, |this| {
-                this.child(status_badge(colors, "正在计算候选窗口"))
+                this.child(status_badge(colors, t!("MapViewer.calculating_candidates")))
             })
             .when(candidate_count > 0, |this| {
-                this.child(status_badge(colors, format!("候选窗口 {candidate_count}")))
+                this.child(status_badge(
+                    colors,
+                    t!(
+                        "MapViewer.candidate_windows",
+                        count = &candidate_count.to_string()
+                    ),
+                ))
             })
             .children(self.slime_window_candidate_buttons(colors, cx))
     }
 
     fn render_selection_tools(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let selection = self.professional.selection.map_or_else(
-            || "未选择区块".to_string(),
+            || t!("MapViewer.no_selection").to_string(),
             |selection| {
                 let bounds = selection.bounds();
                 format!(
@@ -490,7 +528,7 @@ impl MapViewerWindowView {
             .child(panel_section_header(
                 colors,
                 lucide_icons::icon_box(),
-                "当前选区",
+                t!("MapViewer.current_selection"),
             ))
             .child(status_badge(colors, selection))
             .child(
@@ -498,18 +536,22 @@ impl MapViewerWindowView {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .child(toolbar_button(colors, "统计选区").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.query_selection_stats_exact(cx)
-                        }),
-                    ))
-                    .child(toolbar_button(colors, "清除选区").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.clear_professional_selection(cx)
-                        }),
-                    )),
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.selection_stats")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.query_selection_stats_exact(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.clear_selection")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.clear_professional_selection(cx)
+                            }),
+                        ),
+                    ),
             )
     }
 
@@ -518,6 +560,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let i18n = cx.global::<I18n>().clone();
         let Some(cache) = self.professional.slime_window_candidates.as_ref() else {
             return Vec::new();
         };
@@ -532,13 +575,18 @@ impl MapViewerWindowView {
             .into_iter()
             .enumerate()
             .map(|(index, window)| {
-                let label = format!(
-                    "候选 {} · {}/{} 史莱姆 · 中心 {},{}",
-                    index + 1,
-                    window.slime_count,
-                    window.total_count,
-                    window.center.x,
-                    window.center.z
+                let index = (index + 1).to_string();
+                let slime_count = window.slime_count.to_string();
+                let total_count = window.total_count.to_string();
+                let center_x = window.center.x.to_string();
+                let center_z = window.center.z.to_string();
+                let label = t!(
+                    "MapViewer.candidate_window",
+                    index = &index,
+                    slime = &slime_count,
+                    total = &total_count,
+                    x = &center_x,
+                    z = &center_z
                 );
                 toolbar_button(colors, label)
                     .w_full()
@@ -553,13 +601,56 @@ impl MapViewerWindowView {
             .collect()
     }
 
-    pub(super) fn render_status_bar(&self, colors: &ThemeColors) -> Div {
+    pub(super) fn render_status_bar(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let validation = self
             .input_fields
             .validation
             .message
             .clone()
             .unwrap_or_else(|| SharedString::from("-"));
+        let fps = format!("{:.1}", self.frame_stats.fps);
+        let tile_loaded = self.tile_manager.loaded_count().to_string();
+        let tile_queued = self.tile_manager.queued_count().to_string();
+        let tile_loading = self.tile_manager.loading_count().to_string();
+        let tile_failed = self.tile_manager.failed_count().to_string();
+        let tile_empty = self.tile_manager.empty_count().to_string();
+        let batches = self.tile_reveal_state.ready_batches.to_string();
+        let last_batch = self.tile_reveal_state.last_batch_size.to_string();
+        let tiles_diagnostics = t!(
+            "MapViewer.tiles_diagnostics",
+            fps = &fps,
+            loaded = &tile_loaded,
+            queued = &tile_queued,
+            loading = &tile_loading,
+            failed = &tile_failed,
+            empty = &tile_empty,
+            batches = &batches,
+            last = &last_batch
+        );
+        let chunks = self
+            .chunk_bounds
+            .map(|bounds| bounds.chunk_count)
+            .unwrap_or(0)
+            .to_string();
+        let cache_probes = self.render_stats.cache_probes.to_string();
+        let cache_hits = self.render_stats.cache_disk_fresh_hits.to_string();
+        let cache_misses = self.render_stats.cache_misses.to_string();
+        let cache_empty = self.render_stats.cache_empty_negative_hits.to_string();
+        let cache_read = self.render_stats.cache_read_ms.to_string();
+        let cache_decode = self.render_stats.cache_decode_ms.to_string();
+        let blob_decode = self.render_stats.tile_blob_decode_ms.to_string();
+        let chunk_diagnostics = t!(
+            "MapViewer.chunk_diagnostics",
+            chunks = &chunks,
+            probes = &cache_probes,
+            hits = &cache_hits,
+            misses = &cache_misses,
+            empty = &cache_empty,
+            read = &cache_read,
+            decode = &cache_decode,
+            blob = &blob_decode
+        );
         overlay_panel(colors)
             .left(px(12.0))
             .bottom(px(12.0))
@@ -573,7 +664,7 @@ impl MapViewerWindowView {
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors.text_primary)
-                    .child("诊断"),
+                    .child(t!("MapViewer.diagnostics")),
             )
             .child(
                 div()
@@ -585,33 +676,13 @@ impl MapViewerWindowView {
                 div()
                     .text_size(px(11.0))
                     .text_color(colors.text_muted)
-                    .child(format!(
-                        "帧率 {:.1} · 瓦片 已加载 {} / 排队 {} / 加载中 {} / 失败 {} / 空瓦片 {} · 显示批次 {} · 上批 {}",
-                        self.frame_stats.fps,
-                        self.tile_manager.loaded_count(),
-                        self.tile_manager.queued_count(),
-                        self.tile_manager.loading_count(),
-                        self.tile_manager.failed_count(),
-                        self.tile_manager.empty_count(),
-                        self.tile_reveal_state.ready_batches,
-                        self.tile_reveal_state.last_batch_size,
-                    )),
+                    .child(tiles_diagnostics),
             )
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(colors.text_muted)
-                    .child(format!(
-                        "区块 {:?} · 渲染缓存 探测 {} / 命中 {} / 未命中 {} / 空负缓存 {} · 读取 {}ms · 解压 {}ms · blob 解码 {}ms",
-                        self.chunk_bounds.map(|bounds| bounds.chunk_count).unwrap_or(0),
-                        self.render_stats.cache_probes,
-                        self.render_stats.cache_disk_fresh_hits,
-                        self.render_stats.cache_misses,
-                        self.render_stats.cache_empty_negative_hits,
-                        self.render_stats.cache_read_ms,
-                        self.render_stats.cache_decode_ms,
-                        self.render_stats.tile_blob_decode_ms,
-                    )),
+                    .child(chunk_diagnostics),
             )
             .child(
                 div()
@@ -686,31 +757,40 @@ pub(super) fn dimension_label(dimension: Dimension) -> String {
     }
 }
 
-pub(super) fn compact_activity_label(view: &MapViewerWindowView) -> String {
+pub(super) fn compact_activity_label(i18n: &I18n, view: &MapViewerWindowView) -> SharedString {
     if let Some(progress) = view.professional.chunk_transfer_progress.as_ref() {
-        return progress.label().to_string();
+        return progress.label().to_string().into();
     }
     if view.metadata_loading {
-        return "扫描中".to_string();
+        return t!("MapViewer.scanning");
     }
     if view.render_batch_active {
         let running_batches = view.render_cancels.len();
-        return format!(
-            "加载 {} · 批次 {running_batches}",
-            view.tile_manager.loading_count()
+        let loading = view.tile_manager.loading_count().to_string();
+        let batches = running_batches.to_string();
+        return t!(
+            "MapViewer.loading_batches",
+            loading = &loading,
+            batches = &batches
         );
     }
     let queued = view.tile_manager.queued_count();
     if queued > 0 {
-        return format!("等待 {queued}");
+        return t!("MapViewer.waiting", count = &queued.to_string());
     }
     if view.tile_manager.failed_count() > 0 {
-        return format!("失败 {}", view.tile_manager.failed_count());
+        return t!(
+            "MapViewer.failed_count",
+            count = &view.tile_manager.failed_count().to_string()
+        );
     }
     if view.tile_manager.empty_count() > 0 {
-        return format!("空 {}", view.tile_manager.empty_count());
+        return t!(
+            "MapViewer.empty_count",
+            count = &view.tile_manager.empty_count().to_string()
+        );
     }
-    "就绪".to_string()
+    t!("MapViewer.ready")
 }
 
 pub(super) fn panel_title(colors: &ThemeColors, title: impl Into<SharedString>) -> Div {

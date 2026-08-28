@@ -15,7 +15,7 @@ pub(super) fn render_customization_tab(
     state: &SettingsPageState,
     system_font_names: &[String],
 ) -> Div {
-    let section = i18n.t("Settings.tabs.customization");
+    let section = t!("Settings.tabs.customization");
 
     div()
         .flex()
@@ -25,8 +25,8 @@ pub(super) fn render_customization_tab(
         .child(setting_toggle_row(
             colors,
             section,
-            i18n.t("CustomizationSettings.launch_animation"),
-            i18n.t("CustomizationSettings.launch_animation_desc"),
+            t!("CustomizationSettings.launch_animation"),
+            t!("CustomizationSettings.launch_animation_desc"),
             state.show_launch_animation,
             "settings-launch-anim",
             |settings| settings.show_launch_animation = !settings.show_launch_animation,

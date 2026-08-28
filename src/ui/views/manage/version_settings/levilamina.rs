@@ -3,6 +3,7 @@ use crate::core::levilamina::{LeviLaminaInstallRequest, LeviLaminaInstallStage};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::toast;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::manage::ManagePageView;
 use gpui::prelude::FluentBuilder as _;
@@ -14,29 +15,37 @@ use tracing::warn;
 pub(super) fn render_card(
     state: &VersionSettingsModalState,
     colors: &ThemeColors,
+    i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let installed_version = state.levilamina_installation.loader_version.clone();
     let status = if state.levilamina_loading {
-        SharedString::from("正在检查支持状态...")
+        t!("ManagePage.levilamina.checking")
     } else if let Some(version) = &installed_version {
+        let loader = SharedString::from(version.clone());
         let preloader = state
             .levilamina_installation
             .preloader_version
             .as_deref()
-            .unwrap_or("未检测到");
+            .map_or_else(
+                || t!("ManagePage.levilamina.not_detected"),
+                |preloader| SharedString::from(preloader.to_owned()),
+            );
         let runtime = if state.levilamina_installation.has_runtime_data {
-            "运行时数据已就绪"
+            t!("ManagePage.levilamina.runtime_ready")
         } else {
-            "缺少运行时数据"
+            t!("ManagePage.levilamina.runtime_missing")
         };
-        SharedString::from(format!(
-            "Loader {version} · PreLoader {preloader} · {runtime}"
-        ))
+        t!(
+            "ManagePage.levilamina.status",
+            loader = loader,
+            preloader = preloader,
+            runtime = runtime
+        )
     } else if state.levilamina_versions.is_empty() {
-        SharedString::from("当前游戏版本不受 LeviLamina 支持")
+        t!("ManagePage.levilamina.unsupported")
     } else {
-        SharedString::from("尚未安装")
+        t!("ManagePage.levilamina.not_installed")
     };
 
     let version_options = state
@@ -56,7 +65,7 @@ pub(super) fn render_card(
         colors,
         px(180.),
         if state.selected_levilamina_version.is_empty() {
-            SharedString::from("无可用版本")
+            t!("ManagePage.levilamina.no_versions")
         } else {
             state.selected_levilamina_version.clone()
         },
@@ -154,8 +163,15 @@ pub(super) fn render_card(
                         .child(version_select)
                         .when(installed_version.is_some(), |this| {
                             this.child(
-                                action_button(colors, "manage-levilamina-remove", "删除", false)
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                action_button(
+                                    colors,
+                                    "manage-levilamina-remove",
+                                    t!("ManagePage.levilamina.remove"),
+                                    false,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    move |_, _, cx| {
                                         if let Err(error) =
                                             uninstall_handle.update(cx, |this, cx| {
                                                 this.uninstall_levilamina(cx);
@@ -163,7 +179,8 @@ pub(super) fn render_card(
                                         {
                                             warn!(%error, "LeviLamina 删除目标已释放");
                                         }
-                                    }),
+                                    },
+                                ),
                             )
                         })
                         .child(
@@ -171,11 +188,11 @@ pub(super) fn render_card(
                                 colors,
                                 "manage-levilamina-install",
                                 if state.levilamina_busy {
-                                    "处理中..."
+                                    t!("ManagePage.levilamina.busy")
                                 } else if installed_version.is_some() {
-                                    "更新"
+                                    t!("ManagePage.levilamina.update")
                                 } else {
-                                    "安装"
+                                    t!("ManagePage.levilamina.install")
                                 },
                                 true,
                             )
@@ -216,7 +233,7 @@ pub(super) fn render_card(
 fn action_button(
     colors: &ThemeColors,
     id: &'static str,
-    label: &'static str,
+    label: SharedString,
     primary: bool,
 ) -> Stateful<Div> {
     div()

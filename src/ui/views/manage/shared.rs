@@ -74,19 +74,20 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
                 let snapshot_clone = snapshot.clone();
                 let _ = cx.update(|cx| {
                     ensure_local_versions_loaded(true, cx);
+                    let i18n = cx.global::<I18n>();
                     match snapshot_clone.status.as_ref() {
                         "completed" => {
-                            toast::success(cx, SharedString::from("导入任务已完成"));
+                            toast::success(cx, t!("ManagePage.import_completed"));
                         }
                         "cancelled" => {
-                            toast::push(cx, SharedString::from("导入任务已取消"));
+                            toast::push(cx, t!("ManagePage.import_cancelled"));
                         }
                         "error" => {
                             let message = snapshot_clone
                                 .message
                                 .as_ref()
                                 .map(|message| SharedString::from(message.to_string()))
-                                .unwrap_or_else(|| SharedString::from("导入任务失败"));
+                                .unwrap_or_else(|| t!("ManagePage.import_failed"));
                             toast::error(cx, message);
                         }
                         _ => {}

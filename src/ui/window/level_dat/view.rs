@@ -1,6 +1,7 @@
 use crate::ui::components::code_editor::{
     CodeEditor, CodeEditorEvent, CodeEditorLanguage, CodeEditorState,
 };
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::manage::data::{self, LevelDatDocument};
@@ -46,16 +47,18 @@ impl LevelDatCodeWindowView {
             editor.set_value(init.initial_text.clone(), cx);
             editor
         });
-        let subscriptions =
-            vec![
-                cx.subscribe(&json_editor, |this, _editor, event, cx| match event {
-                    CodeEditorEvent::Change => this.revalidate(cx),
-                    CodeEditorEvent::SaveRequested => this.save_json(cx),
-                    CodeEditorEvent::FormatRequested => this.format_json(cx),
-                    CodeEditorEvent::PointerInteractionStarted
-                    | CodeEditorEvent::PointerInteractionEnded => {}
-                }),
-            ];
+        let subscriptions = vec![
+            cx.observe_global::<I18n>(|_, cx| {
+                cx.notify();
+            }),
+            cx.subscribe(&json_editor, |this, _editor, event, cx| match event {
+                CodeEditorEvent::Change => this.revalidate(cx),
+                CodeEditorEvent::SaveRequested => this.save_json(cx),
+                CodeEditorEvent::FormatRequested => this.format_json(cx),
+                CodeEditorEvent::PointerInteractionStarted
+                | CodeEditorEvent::PointerInteractionEnded => {}
+            }),
+        ];
 
         Self {
             version: init.version,
@@ -126,10 +129,7 @@ impl LevelDatCodeWindowView {
             editor.set_value(formatted.clone(), cx);
         });
         self.validation = level_dat_editor::validate_document_json(formatted.as_ref());
-        self.status = Some((
-            WindowStatusKind::Success,
-            SharedString::from("JSON 已格式化。"),
-        ));
+        self.status = Some((WindowStatusKind::Success, t!("LevelDat.format_success")));
         cx.notify();
     }
 
@@ -163,6 +163,11 @@ impl LevelDatCodeWindowView {
         self.saving = true;
         self.status = None;
         self.validation = level_dat_editor::validate_document_json(saved_text.as_ref());
+        let i18n = cx.global::<I18n>().clone();
+        let history_capture_label = t!("LevelDat.history_capture").to_string();
+        let history_saved_label = t!("LevelDat.history_saved").to_string();
+        let history_capture_failed = t!("LevelDat.history_capture_failed");
+        let write_task_failed = t!("LevelDat.write_task_failed");
 
         cx.spawn(async move |handle, cx| {
             let result: Result<(), String> = crate::tasks::runtime::run_io_blocking(move || {
@@ -170,7 +175,7 @@ impl LevelDatCodeWindowView {
                 let history_capture = crate::ui::window::map_viewer::map_history::capture_before(
                     crate::ui::window::map_viewer::map_history::MapHistoryCaptureSpec {
                         kind: crate::ui::window::map_viewer::map_history::MapHistoryEntryKind::LevelDatSave,
-                        label: "保存 level.dat".to_string(),
+                        label: history_capture_label,
                         world_path: world_path.clone(),
                         chunks: std::collections::BTreeSet::new(),
                         raw_keys: std::collections::BTreeSet::new(),
@@ -182,7 +187,7 @@ impl LevelDatCodeWindowView {
                     (Ok(capture), Ok(())) => {
                         crate::ui::window::map_viewer::map_history::complete_after(
                             capture,
-                            "level.dat 已保存",
+                            history_saved_label,
                         )?;
                         Ok(())
                     }
@@ -198,12 +203,14 @@ impl LevelDatCodeWindowView {
                         Ok(())
                     }
                     (Err(history_error), Err(write_error)) => {
-                        Err(format!("{write_error}；历史捕获失败: {history_error}"))
+                        Err(format!(
+                            "{write_error}; {history_capture_failed}: {history_error}"
+                        ))
                     }
                 }
             })
             .await
-            .map_err(|error| format!("写入 level.dat 任务失败: {error}"))
+            .map_err(|error| format!("{write_task_failed}: {error}"))
             .and_then(|result| result);
 
             let _ = handle.update(cx, |this, cx| {
@@ -215,7 +222,7 @@ impl LevelDatCodeWindowView {
                             level_dat_editor::validate_document_json(saved_text.as_ref());
                         this.status = Some((
                             WindowStatusKind::Success,
-                            SharedString::from("level.dat 已保存。"),
+                            t!("LevelDat.save_success"),
                         ));
                     }
                     Err(error) => {
@@ -232,12 +239,19 @@ impl LevelDatCodeWindowView {
 }
 
 impl Render for LevelDatCodeWindowView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let i18n = cx.global::<I18n>().clone();
+        let window_title = t!("LevelDat.title");
+        window.set_title(&window_title);
         let colors = self.theme_colors(cx);
         let editor_text = self.json_editor.read(cx).value();
         let dirty = editor_text != self.saved_text;
         let line_count = editor_text.as_ref().lines().count().max(1);
         let char_count = editor_text.chars().count();
+        let instance_name = self.version.display_name().to_string();
+        let document_version = self.document_version.to_string();
+        let line_count_string = line_count.to_string();
+        let char_count_string = char_count.to_string();
         let save_path = format!("{}\\level.dat", self.asset.file_path);
         let status_text = self
             .status
@@ -246,9 +260,9 @@ impl Render for LevelDatCodeWindowView {
             .unwrap_or_else(|| {
                 self.validation.detail.clone().unwrap_or_else(|| {
                     if dirty {
-                        SharedString::from("当前窗口有未保存修改。")
+                        t!("LevelDat.unsaved_hint")
                     } else {
-                        SharedString::from("当前内容已与磁盘保存版本一致。")
+                        t!("LevelDat.synced_hint")
                     }
                 })
             });
@@ -284,7 +298,7 @@ impl Render for LevelDatCodeWindowView {
                                     .text_size(px(18.))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(colors.text_primary)
-                                    .child("Level.dat JSON 代码窗口"),
+                                    .child(t!("LevelDat.code_window")),
                             )
                             .child(
                                 div()
@@ -306,37 +320,39 @@ impl Render for LevelDatCodeWindowView {
                                     .flex_wrap()
                                     .child(info_badge(
                                         &colors,
-                                        SharedString::from(format!(
-                                            "实例 {}",
-                                            self.version.display_name()
-                                        )),
+                                        t!("LevelDat.instance", name = &instance_name),
                                     ))
                                     .child(info_badge(
                                         &colors,
-                                        SharedString::from(format!(
-                                            "版本头 {}",
-                                            self.document_version
-                                        )),
+                                        t!("LevelDat.version_header", version = &document_version),
                                     ))
                                     .child(info_badge(
                                         &colors,
-                                        SharedString::from(format!("{line_count} 行")),
+                                        t!("LevelDat.lines", count = &line_count_string),
                                     ))
                                     .child(info_badge(
                                         &colors,
-                                        SharedString::from(format!("{char_count} 字符")),
+                                        t!("LevelDat.characters", count = &char_count_string),
                                     ))
                                     .when(dirty, |this| {
                                         this.child(status_badge(
                                             &colors,
-                                            "未保存",
+                                            t!("LevelDat.unsaved"),
                                             colors.stat_orange_text,
                                         ))
                                     })
                                     .child(if self.validation.valid {
-                                        status_badge(&colors, "JSON 正确", colors.stat_green_text)
+                                        status_badge(
+                                            &colors,
+                                            t!("LevelDat.json_valid"),
+                                            colors.stat_green_text,
+                                        )
                                     } else {
-                                        status_badge(&colors, "JSON 错误", colors.danger)
+                                        status_badge(
+                                            &colors,
+                                            t!("LevelDat.json_invalid"),
+                                            colors.danger,
+                                        )
                                     }),
                             ),
                     )
@@ -345,20 +361,22 @@ impl Render for LevelDatCodeWindowView {
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .child(action_button(&colors, false, "格式化").on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _window, cx| {
-                                    this.format_json(cx);
-                                }),
-                            ))
+                            .child(
+                                action_button(&colors, false, t!("LevelDat.format")).on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _window, cx| {
+                                        this.format_json(cx);
+                                    }),
+                                ),
+                            )
                             .child(
                                 action_button(
                                     &colors,
                                     true,
                                     if self.saving {
-                                        "保存中..."
+                                        t!("LevelDat.saving")
                                     } else {
-                                        "保存 level.dat"
+                                        t!("LevelDat.save")
                                     },
                                 )
                                 .on_mouse_down(
@@ -368,12 +386,14 @@ impl Render for LevelDatCodeWindowView {
                                     }),
                                 ),
                             )
-                            .child(action_button(&colors, false, "关闭窗口").on_mouse_down(
-                                MouseButton::Left,
-                                move |_, window, _cx| {
-                                    window.remove_window();
-                                },
-                            )),
+                            .child(
+                                action_button(&colors, false, t!("common.close")).on_mouse_down(
+                                    MouseButton::Left,
+                                    move |_, window, _cx| {
+                                        window.remove_window();
+                                    },
+                                ),
+                            ),
                     ),
             )
             .child(
@@ -426,7 +446,7 @@ fn info_badge(colors: &ThemeColors, label: SharedString) -> Div {
         .child(label)
 }
 
-fn status_badge(colors: &ThemeColors, label: &'static str, accent: Hsla) -> Div {
+fn status_badge(colors: &ThemeColors, label: SharedString, accent: Hsla) -> Div {
     div()
         .px(px(10.))
         .py(px(4.))
@@ -438,7 +458,7 @@ fn status_badge(colors: &ThemeColors, label: &'static str, accent: Hsla) -> Div 
         .child(label)
 }
 
-fn action_button(colors: &ThemeColors, primary: bool, label: &'static str) -> Div {
+fn action_button(colors: &ThemeColors, primary: bool, label: SharedString) -> Div {
     div()
         .px(px(16.))
         .h(px(38.))
@@ -478,7 +498,7 @@ fn action_button(colors: &ThemeColors, primary: bool, label: &'static str) -> Di
 }
 
 pub fn open_level_dat_code_window(init: LevelDatCodeWindowInit, cx: &mut App) {
-    let title = format!("Level.dat JSON - {}", init.asset.display_name);
+    let title = t!("LevelDat.window_title", name = &init.asset.display_name).to_string();
     let options = level_dat_code_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
@@ -504,7 +524,7 @@ fn level_dat_code_window_options(cx: &mut App) -> WindowOptions {
     #[cfg(windows)]
     {
         options.titlebar = Some(TitlebarOptions {
-            title: Some(SharedString::from("Level.dat JSON")),
+            title: Some(t!("LevelDat.title")),
             appears_transparent: false,
             ..Default::default()
         });

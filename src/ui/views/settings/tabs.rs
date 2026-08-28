@@ -176,14 +176,14 @@ pub(super) fn render_tabs(
         .child(tab(
             "settings-tab-game",
             lucide_icons::icon_gamepad_2(),
-            i18n.t("Settings.tabs.game"),
+            t!("Settings.tabs.game"),
             SettingsTab::Game,
             active,
         ))
         .child(tab(
             "settings-tab-launcher",
             lucide_icons::icon_rocket(),
-            i18n.t("Settings.tabs.launcher"),
+            t!("Settings.tabs.launcher"),
             SettingsTab::Launcher,
             active,
         ));
@@ -201,21 +201,21 @@ pub(super) fn render_tabs(
         .child(tab(
             "settings-tab-customize",
             lucide_icons::icon_palette(),
-            i18n.t("Settings.tabs.customization"),
+            t!("Settings.tabs.customization"),
             SettingsTab::Customization,
             active,
         ))
         .child(tab(
             "settings-tab-plugins",
             lucide_icons::icon_plug(),
-            i18n.t("Settings.tabs.plugins"),
+            t!("Settings.tabs.plugins"),
             SettingsTab::Plugins,
             active,
         ))
         .child(tab(
             "settings-tab-about",
             lucide_icons::icon_info(),
-            i18n.t("Settings.tabs.about"),
+            t!("Settings.tabs.about"),
             SettingsTab::About,
             active,
         ))

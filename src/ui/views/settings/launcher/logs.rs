@@ -20,43 +20,44 @@ pub(super) fn render(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    let actions = div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(
-            settings_action_button(
-                colors,
-                i18n.t("LauncherSettings.logs.refresh"),
-                !state.log_storage_loading,
-            )
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                refresh_log_stats(cx);
-            }),
-        )
-        .child(
-            settings_action_button(colors, i18n.t("LauncherSettings.logs.open"), true)
+    let actions =
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                settings_action_button(
+                    colors,
+                    t!("LauncherSettings.logs.refresh"),
+                    !state.log_storage_loading,
+                )
                 .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                    open_log_directory(cx);
+                    refresh_log_stats(cx);
                 }),
-        )
-        .child(
-            settings_action_button(
-                colors,
-                i18n.t("LauncherSettings.logs.clean"),
-                !state.log_cleanup_running,
             )
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                clean_inactive_logs(cx);
-            }),
-        );
+            .child(
+                settings_action_button(colors, t!("LauncherSettings.logs.open"), true)
+                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                        open_log_directory(cx);
+                    }),
+            )
+            .child(
+                settings_action_button(
+                    colors,
+                    t!("LauncherSettings.logs.clean"),
+                    !state.log_cleanup_running,
+                )
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    clean_inactive_logs(cx);
+                }),
+            );
 
     let card = settings_flat_card(colors, "settings-launcher-log-management")
         .child(
             settings_card_header(
                 colors,
-                i18n.t("LauncherSettings.logs.title"),
-                i18n.t("LauncherSettings.logs.desc"),
+                t!("LauncherSettings.logs.title"),
+                t!("LauncherSettings.logs.desc"),
             )
             .child(actions),
         )
@@ -78,36 +79,36 @@ fn storage_summary(
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let oldest = if state.log_oldest_archive.is_empty() {
-        i18n.t("LauncherSettings.logs.none")
+        t!("LauncherSettings.logs.none")
     } else {
         state.log_oldest_archive.clone()
     };
     let metrics = [
         (
-            i18n.t("LauncherSettings.logs.total_size"),
+            t!("LauncherSettings.logs.total_size"),
             SharedString::from(format_bytes(state.log_total_bytes)),
         ),
         (
-            i18n.t("LauncherSettings.logs.file_count"),
+            t!("LauncherSettings.logs.file_count"),
             SharedString::from(state.log_file_count.to_string()),
         ),
         (
-            i18n.t("LauncherSettings.logs.archive_count"),
+            t!("LauncherSettings.logs.archive_count"),
             SharedString::from(state.log_archive_count.to_string()),
         ),
         (
-            i18n.t("LauncherSettings.logs.pending_count"),
+            t!("LauncherSettings.logs.pending_count"),
             SharedString::from(state.log_pending_count.to_string()),
         ),
         (
-            i18n.t("LauncherSettings.logs.active_size"),
+            t!("LauncherSettings.logs.active_size"),
             SharedString::from(format_bytes(state.log_active_bytes)),
         ),
         (
-            i18n.t("LauncherSettings.logs.previous_size"),
+            t!("LauncherSettings.logs.previous_size"),
             SharedString::from(format_bytes(state.log_previous_bytes)),
         ),
-        (i18n.t("LauncherSettings.logs.oldest"), oldest),
+        (t!("LauncherSettings.logs.oldest"), oldest),
     ];
 
     div()
@@ -241,9 +242,9 @@ fn compression_row(
         .unwrap_or(1);
     setting_flat_dropdown_row(
         colors,
-        i18n.t("Settings.tabs.launcher"),
-        i18n.t("LauncherSettings.logs.compression"),
-        i18n.t("LauncherSettings.logs.compression_desc"),
+        t!("Settings.tabs.launcher"),
+        t!("LauncherSettings.logs.compression"),
+        t!("LauncherSettings.logs.compression_desc"),
         "settings-launcher-log-compression",
         px(180.),
         SharedString::from(state.log_compression_level.to_string()),
@@ -279,9 +280,11 @@ fn log_setting_dropdown(
         .unwrap_or(0);
     setting_flat_dropdown_row(
         colors,
-        i18n.t("Settings.tabs.launcher"),
-        i18n.t(text_keys.0),
-        i18n.t(text_keys.1),
+        t!("Settings.tabs.launcher"),
+        i18n.lookup(text_keys.0)
+            .unwrap_or_else(|| SharedString::from(text_keys.0)),
+        i18n.lookup(text_keys.1)
+            .unwrap_or_else(|| SharedString::from(text_keys.1)),
         id,
         px(180.),
         SharedString::from(current.to_string()),
@@ -305,7 +308,7 @@ fn advanced_toggle_row(
 ) -> impl IntoElement {
     settings_sub_row(
         colors,
-        i18n.t("LauncherSettings.logs.advanced"),
+        t!("LauncherSettings.logs.advanced"),
         ToggleSwitch::new(
             "settings-launcher-log-advanced-toggle",
             colors,
@@ -332,7 +335,7 @@ fn current_config(state: &SettingsPageState) -> LogManagementConfig {
 
 fn persist_log_config(cx: &mut App) {
     let config = cx.read_global(|state: &SettingsPageState, _cx| current_config(state));
-    let toast_id = toast::pending(cx, cx.global::<I18n>().t("LauncherSettings.logs.saving"));
+    let toast_id = toast::pending(cx, t!("LauncherSettings.logs.saving"));
     cx.spawn(async move |cx| {
         let config_for_storage = config.clone();
         let result = crate::tasks::runtime::run_io_blocking(move || {
@@ -428,7 +431,7 @@ fn clean_inactive_logs(cx: &mut App) {
     if !should_clean {
         return;
     }
-    let toast_id = toast::pending(cx, cx.global::<I18n>().t("LauncherSettings.logs.cleaning"));
+    let toast_id = toast::pending(cx, t!("LauncherSettings.logs.cleaning"));
     cx.spawn(async move |cx| {
         let result = crate::tasks::runtime::run_archive_blocking(|| {
             let report = crate::utils::log_manager::clear_inactive_logs()?;

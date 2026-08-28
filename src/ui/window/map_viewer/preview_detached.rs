@@ -23,6 +23,7 @@ pub(super) struct Preview3dDetachDrag;
 impl Render for Preview3dDetachDrag {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = detached_theme_colors(cx);
+        let i18n = cx.global::<I18n>().clone();
         div()
             .px(px(12.0))
             .py(px(7.0))
@@ -32,7 +33,7 @@ impl Render for Preview3dDetachDrag {
             .bg(colors.surface)
             .text_size(px(12.0))
             .text_color(colors.text_primary)
-            .child("3D 模型预览")
+            .child(t!("MapViewer.preview_model"))
     }
 }
 
@@ -83,6 +84,7 @@ impl DetachedPreview3dView {
             }),
         );
         subscriptions.push(cx.observe_global::<ThemeState>(|_this, cx| cx.notify()));
+        subscriptions.push(cx.observe_global::<I18n>(|_this, cx| cx.notify()));
 
         Self {
             owner: owner.downgrade(),
@@ -143,6 +145,9 @@ impl DetachedPreview3dView {
 impl Render for DetachedPreview3dView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = detached_theme_colors(cx);
+        let i18n = cx.global::<I18n>().clone();
+        let title = t!("MapViewer.preview_model");
+        window.set_title(&title);
         let snapshot = self.owner.upgrade().map(|owner| {
             let main = owner.read(cx);
             (
@@ -194,38 +199,44 @@ impl Render for DetachedPreview3dView {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(panel_title(&colors, "3D 模型预览"))
+                            .child(panel_title(&colors, t!("MapViewer.preview_model")))
                             .when(mesh.is_some() && loading, |this| {
-                                this.child(status_badge(&colors, "流式更新"))
+                                this.child(status_badge(&colors, t!("MapViewer.streaming_update")))
                             }),
                     )
-                    .child(toolbar_button(&colors, "刷新").on_mouse_down(
-                        MouseButton::Left,
-                        move |_event, _window, cx| {
-                            if let Some(owner) = owner_for_refresh.upgrade() {
-                                owner.update(cx, |main, cx| main.refresh_preview_3d_exact(cx));
-                            }
-                        },
-                    ))
-                    .child(toolbar_button(&colors, "重置视角").on_mouse_down(
-                        MouseButton::Left,
-                        move |_event, _window, cx| {
-                            if let Some(owner) = owner_for_reset.upgrade() {
-                                owner.update(cx, |main, cx| main.reset_preview_3d_camera(cx));
-                            }
-                        },
-                    ))
-                    .child(toolbar_button(&colors, "重新停靠").on_mouse_down(
-                        MouseButton::Left,
-                        move |_event, _window, cx| {
-                            if let Some(owner) = owner_for_dock.upgrade() {
-                                owner.update(cx, |main, cx| {
-                                    main.show_right_preview_3d_panel(cx);
-                                    cx.notify();
-                                });
-                            }
-                        },
-                    )),
+                    .child(
+                        toolbar_button(&colors, t!("MapViewer.refresh")).on_mouse_down(
+                            MouseButton::Left,
+                            move |_event, _window, cx| {
+                                if let Some(owner) = owner_for_refresh.upgrade() {
+                                    owner.update(cx, |main, cx| main.refresh_preview_3d_exact(cx));
+                                }
+                            },
+                        ),
+                    )
+                    .child(
+                        toolbar_button(&colors, t!("MapViewer.reset_view")).on_mouse_down(
+                            MouseButton::Left,
+                            move |_event, _window, cx| {
+                                if let Some(owner) = owner_for_reset.upgrade() {
+                                    owner.update(cx, |main, cx| main.reset_preview_3d_camera(cx));
+                                }
+                            },
+                        ),
+                    )
+                    .child(
+                        toolbar_button(&colors, t!("MapViewer.redock")).on_mouse_down(
+                            MouseButton::Left,
+                            move |_event, _window, cx| {
+                                if let Some(owner) = owner_for_dock.upgrade() {
+                                    owner.update(cx, |main, cx| {
+                                        main.show_right_preview_3d_panel(cx);
+                                        cx.notify();
+                                    });
+                                }
+                            },
+                        ),
+                    ),
             )
             .when(mesh.is_some(), |this| {
                 this.child(
@@ -430,8 +441,9 @@ impl MapViewerWindowView {
         options.is_movable = true;
         #[cfg(windows)]
         {
+            let title = t!("MapViewer.preview_model");
             options.titlebar = Some(TitlebarOptions {
-                title: Some(SharedString::from("3D 模型预览")),
+                title: Some(title),
                 appears_transparent: false,
                 ..Default::default()
             });
@@ -440,7 +452,8 @@ impl MapViewerWindowView {
 
         let owner = cx.entity();
         let result = cx.open_window(options, move |window, cx| {
-            window.set_title("3D 模型预览");
+            let title = t!("MapViewer.preview_model");
+            window.set_title(&title);
             window.activate_window();
             let owner_for_close = owner_id;
             window.on_window_should_close(cx, move |window, _cx| {
@@ -464,11 +477,14 @@ impl MapViewerWindowView {
                 self.ui_state.active_right_panel = MapViewerRightPanel::Nbt;
                 self.ui_state.set_right_panel_open(false);
                 self.update_viewport_after_dock_change(cx);
-                self.status = SharedString::from("3D 预览已移到独立窗口");
+                self.status = t!("MapViewer.preview_detached_opened");
                 cx.notify();
             }
             Err(error) => {
-                self.status = SharedString::from(format!("打开独立 3D 预览失败: {error}"));
+                self.status = t!(
+                    "MapViewer.preview_detached_failed",
+                    message = &error.to_string()
+                );
                 cx.notify();
             }
         }

@@ -19,6 +19,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>();
         let selection = self.preview_3d_selection_status();
         let stats = self.preview_3d_stats_label();
         let mesh = self.preview_3d.mesh.clone();
@@ -60,7 +61,7 @@ impl MapViewerWindowView {
                     .flex_1()
                     .min_w(px(0.0))
                     .gap(px(3.0))
-                    .child(panel_title(colors, "3D 预览"))
+                    .child(panel_title(colors, t!("MapViewer.preview_3d")))
                     .child(
                         div()
                             .min_w(px(0.0))
@@ -76,20 +77,26 @@ impl MapViewerWindowView {
                     .items_center()
                     .flex_wrap()
                     .gap(px(6.0))
-                    .child(toolbar_button(colors, "独立窗口").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.open_detached_preview_3d(None, cx)
-                        }),
-                    ))
-                    .child(toolbar_button(colors, "加载/刷新").on_mouse_down(
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.separate_window")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.open_detached_preview_3d(None, cx)
+                            }),
+                        ),
+                    )
+                    .child(toolbar_button(colors, t!("common.refresh")).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| this.refresh_preview_3d_exact(cx)),
                     ))
-                    .child(toolbar_button(colors, "重置视角").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| this.reset_preview_3d_camera(cx)),
-                    ))
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.reset_camera")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.reset_preview_3d_camera(cx)
+                            }),
+                        ),
+                    )
                     .child(dock_close_button(colors).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| this.close_right_panel(cx)),

@@ -49,13 +49,15 @@ impl ManagePageView {
         let Some(version) = self.selected_version(state).cloned() else {
             return;
         };
+        let i18n = cx.global::<I18n>().clone();
         self.confirm_dialog = Some(ConfirmDialogState {
-            title: SharedString::from("删除服务器"),
-            description: SharedString::from(format!(
-                "确定删除服务器 {} ({}) 吗？",
-                entry.name, entry.address
-            )),
-            confirm_label: SharedString::from("删除服务器"),
+            title: t!("ManagePage.server_delete"),
+            description: t!(
+                "ManagePage.server_delete_confirm",
+                name = &entry.name,
+                address = &entry.address
+            ),
+            confirm_label: t!("ManagePage.server_delete"),
             danger: true,
             pending: false,
             action: ConfirmAction::DeleteServer {
@@ -80,13 +82,19 @@ impl ManagePageView {
                 state.selected_gdk_user.clone(),
             )
         };
-        let Some(name_input) = create_text_input(window, cx, "服务器名称", "") else {
+        let Some(name_input) =
+            create_text_input(window, cx, t!("ManagePage.server_name").as_ref(), "")
+        else {
             return;
         };
-        let Some(address_input) = create_text_input(window, cx, "服务器地址", "") else {
+        let Some(address_input) =
+            create_text_input(window, cx, t!("ManagePage.server_address").as_ref(), "")
+        else {
             return;
         };
-        let Some(port_input) = create_text_input(window, cx, "端口", "19132") else {
+        let Some(port_input) =
+            create_text_input(window, cx, t!("ManagePage.server_port").as_ref(), "19132")
+        else {
             return;
         };
         self.server_editor_dialog = Some(ServerEditorDialogState {
@@ -119,17 +127,28 @@ impl ManagePageView {
                 state.selected_gdk_user.clone(),
             )
         };
-        let Some(name_input) = create_text_input(window, cx, "服务器名称", entry.name.as_ref())
-        else {
+        let Some(name_input) = create_text_input(
+            window,
+            cx,
+            t!("ManagePage.server_name").as_ref(),
+            entry.name.as_ref(),
+        ) else {
             return;
         };
-        let Some(address_input) =
-            create_text_input(window, cx, "服务器地址", entry.address.as_ref())
-        else {
+        let Some(address_input) = create_text_input(
+            window,
+            cx,
+            t!("ManagePage.server_address").as_ref(),
+            entry.address.as_ref(),
+        ) else {
             return;
         };
-        let Some(port_input) = create_text_input(window, cx, "端口", &entry.port.to_string())
-        else {
+        let Some(port_input) = create_text_input(
+            window,
+            cx,
+            t!("ManagePage.server_port").as_ref(),
+            &entry.port.to_string(),
+        ) else {
             return;
         };
         self.server_editor_dialog = Some(ServerEditorDialogState {
@@ -151,6 +170,7 @@ impl ManagePageView {
     }
 
     pub(super) fn save_server_editor_dialog(&mut self, cx: &mut Context<Self>) {
+        let i18n = cx.global::<I18n>().clone();
         let Some(dialog) = self.server_editor_dialog.as_mut() else {
             return;
         };
@@ -161,22 +181,22 @@ impl ManagePageView {
         let name = dialog.name_input.read(cx).value().to_string();
         let address = dialog.address_input.read(cx).value().to_string();
         if name.trim().is_empty() {
-            toast::error(cx, SharedString::from("服务器名称不能为空"));
+            toast::error(cx, t!("ManagePage.server_name_required"));
             return;
         }
         if address.trim().is_empty() {
-            toast::error(cx, SharedString::from("服务器地址不能为空"));
+            toast::error(cx, t!("ManagePage.server_address_required"));
             return;
         }
         let port_text = dialog.port_input.read(cx).value().to_string();
         let port = match port_text.trim().parse::<u16>() {
             Ok(port) if port != 0 => port,
             Ok(_) => {
-                toast::error(cx, SharedString::from("端口必须大于 0"));
+                toast::error(cx, t!("ManagePage.server_port_positive"));
                 return;
             }
             Err(error) => {
-                toast::error(cx, SharedString::from(format!("端口无效: {error}")));
+                toast::error(cx, t!("ManagePage.server_port_invalid", error = &error));
                 return;
             }
         };
@@ -188,7 +208,7 @@ impl ManagePageView {
         let editing_key = dialog.editing_key.clone();
         cx.spawn(async move |handle, cx| {
             let result = crate::tasks::runtime::run_blocking(
-                crate::tasks::runtime::BlockingTaskOptions::hidden("保存服务器"),
+                crate::tasks::runtime::BlockingTaskOptions::hidden("manage_server_save"),
                 move || {
                     if let Some(key) = editing_key.as_ref() {
                         data::update_external_server(
@@ -231,13 +251,14 @@ impl ManagePageView {
                             state.server_motd_request_id =
                                 state.server_motd_request_id.wrapping_add(1);
                         });
+                        let i18n = cx.global::<I18n>().clone();
                         toast::success(
                             cx,
-                            SharedString::from(if editing {
-                                "服务器已保存"
+                            if editing {
+                                t!("ManagePage.server_saved")
                             } else {
-                                "服务器已添加"
-                            }),
+                                t!("ManagePage.server_added")
+                            },
                         );
                     }
                     Err(error) => {
@@ -325,8 +346,8 @@ pub(super) fn render_server_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "正在读取用户目录",
-            "请稍候，BMCBL 正在扫描当前 GDK 实例的可用用户。",
+            t!("AssetManager.user_scan_title"),
+            t!("AssetManager.user_scan_hint"),
         )
         .into_any_element();
     }
@@ -335,8 +356,8 @@ pub(super) fn render_server_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "未找到可用用户目录",
-            "当前 GDK 实例没有扫描到可读取服务器列表的用户目录。",
+            t!("AssetManager.user_scan_empty_title"),
+            t!("AssetManager.user_scan_empty_hint"),
         )
         .into_any_element();
     }
@@ -345,8 +366,8 @@ pub(super) fn render_server_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "正在加载服务器",
-            "服务器列表正在后台读取。",
+            t!("ManagePage.server_loading"),
+            t!("ManagePage.server_loading_hint"),
         )
         .into_any_element();
     }
@@ -359,8 +380,8 @@ pub(super) fn render_server_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "没有服务器",
-            "添加服务器后会显示在这里。",
+            t!("AssetManager.empty_server"),
+            t!("AssetManager.empty_server_hint"),
         )
         .into_any_element();
     }
@@ -427,6 +448,7 @@ pub(super) fn render_server_row(
     motd_status: Option<&ManageServerMotdStatus>,
     cx: &mut Context<ManagePageView>,
 ) -> Stateful<Div> {
+    let i18n = cx.global::<I18n>();
     let key = entry.key.clone();
     let mut badges = div()
         .flex()
@@ -445,7 +467,10 @@ pub(super) fn render_server_row(
                 badges = badges.child(subtle_badge(colors, format!("{online}/{max}")));
             }
             if let Some(latency) = motd.latency_ms {
-                badges = badges.child(subtle_badge(colors, format!("{latency} ms")));
+                badges = badges.child(subtle_badge(
+                    colors,
+                    t!("ManagePage.server_latency", latency = latency),
+                ));
             }
             Some(if let Some(line_2) = motd.line_2.clone() {
                 SharedString::from(format!("{} {}", motd.line_1, line_2))
@@ -454,16 +479,16 @@ pub(super) fn render_server_row(
             })
         }
         Some(ManageServerMotdStatus::Loading) => {
-            badges = badges.child(subtle_badge(colors, "查询中"));
+            badges = badges.child(subtle_badge(colors, t!("ManagePage.server_querying")));
             None
         }
         Some(ManageServerMotdStatus::Offline(error)) => {
-            badges = badges.child(subtle_badge(colors, "离线"));
+            badges = badges.child(subtle_badge(colors, t!("ManagePage.server_offline")));
             error_text = Some(error.clone());
             None
         }
         None => {
-            badges = badges.child(subtle_badge(colors, "未查询"));
+            badges = badges.child(subtle_badge(colors, t!("ManagePage.server_not_queried")));
             None
         }
     };
@@ -611,6 +636,7 @@ pub(super) fn render_server_row(
 pub(super) fn render_server_editor_dialog(
     dialog: &ServerEditorDialogState,
     colors: &ThemeColors,
+    i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let editing = dialog.editing_key.is_some();
@@ -628,7 +654,7 @@ pub(super) fn render_server_editor_dialog(
         });
     });
 
-    let input_row = |label: &'static str, input: &Entity<InputState>| {
+    let input_row = |label: SharedString, input: &Entity<InputState>| {
         div()
             .flex()
             .flex_col()
@@ -667,14 +693,17 @@ pub(super) fn render_server_editor_dialog(
                             .font_weight(FontWeight::BOLD)
                             .text_color(colors.text_primary)
                             .child(if editing {
-                                "编辑服务器"
+                                t!("ManagePage.server_edit")
                             } else {
-                                "添加服务器"
+                                t!("ManagePage.server_add")
                             }),
                     )
-                    .child(input_row("名称", &dialog.name_input))
-                    .child(input_row("地址", &dialog.address_input))
-                    .child(input_row("端口", &dialog.port_input)),
+                    .child(input_row(t!("ManagePage.server_name"), &dialog.name_input))
+                    .child(input_row(
+                        t!("ManagePage.server_address"),
+                        &dialog.address_input,
+                    ))
+                    .child(input_row(t!("ManagePage.server_port"), &dialog.port_input)),
             )
             .child(
                 div()
@@ -685,7 +714,12 @@ pub(super) fn render_server_editor_dialog(
                     .gap(px(10.))
                     .child({
                         let view_handle = view_handle.clone();
-                        ghost_button(colors, "manage-server-editor-cancel", "取消").on_mouse_down(
+                        ghost_button(
+                            colors,
+                            "manage-server-editor-cancel",
+                            t!("ManagePage.server_cancel"),
+                        )
+                        .on_mouse_down(
                             MouseButton::Left,
                             move |_, _, cx| {
                                 let _ = view_handle.update(cx, |this, cx| {
@@ -700,11 +734,11 @@ pub(super) fn render_server_editor_dialog(
                             colors,
                             "manage-server-editor-save",
                             if dialog.pending {
-                                SharedString::from("保存中...")
+                                t!("ManagePage.server_saving")
                             } else if editing {
-                                SharedString::from("保存服务器")
+                                t!("common.save")
                             } else {
-                                SharedString::from("添加服务器")
+                                t!("ManagePage.server_add")
                             },
                         )
                         .opacity(if dialog.pending { 0.72 } else { 1.0 })

@@ -13,7 +13,8 @@ impl ManagePageView {
 
             let _ = cx.update(|cx| match result {
                 Ok(path) => {
-                    toast::success(cx, SharedString::from(format!("备份已创建: {path}")));
+                    let i18n = cx.global::<I18n>();
+                    toast::success(cx, t!("ManagePage.map_backup_created", path = path));
                 }
                 Err(error) => {
                     toast::error(cx, SharedString::from(error));
@@ -31,22 +32,15 @@ impl ManagePageView {
         cx: &mut Context<Self>,
     ) {
         window.defer(cx, move |_window, cx| {
-            cx.spawn(async move |cx| {
-                let default_file_name = format!("{}.mcworld", asset.display_name);
-                let target = cx
-                    .background_spawn_blocking(move || {
-                        pick_save_path_with_filter(
-                            "Minecraft World",
-                            &["mcworld"],
-                            &default_file_name,
-                        )
-                    })
-                    .await;
+            let default_file_name = format!("{}.mcworld", asset.display_name);
+            let Some(target) =
+                pick_save_path_with_filter("Minecraft World", &["mcworld"], &default_file_name)
+            else {
+                return;
+            };
 
-                let Some(target) = target else {
-                    return Ok::<(), anyhow::Error>(());
-                };
-                let folder_path = asset.file_path.to_string();
+            let folder_path = asset.file_path.to_string();
+            cx.spawn(async move |cx| {
                 let result = crate::tasks::runtime::run_blocking(
                     crate::tasks::runtime::BlockingTaskOptions::hidden("导出地图"),
                     move || data::export_map(&folder_path, &target),
@@ -55,7 +49,8 @@ impl ManagePageView {
 
                 cx.update(|cx| match result {
                     Ok(()) => {
-                        toast::success(cx, SharedString::from("地图已导出"));
+                        let i18n = cx.global::<I18n>();
+                        toast::success(cx, t!("ManagePage.map_exported"));
                     }
                     Err(error) => {
                         toast::error(cx, SharedString::from(error));

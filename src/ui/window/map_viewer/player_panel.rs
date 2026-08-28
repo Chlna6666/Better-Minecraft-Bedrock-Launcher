@@ -34,6 +34,7 @@ impl MapViewerWindowView {
     }
 
     fn render_player_list_panel(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         div()
             .w(px(320.0))
             .flex_none()
@@ -57,13 +58,13 @@ impl MapViewerWindowView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(panel_title(colors, "玩家"))
+                    .child(panel_title(colors, t!("MapViewer.players")))
                     .child(status_badge(
                         colors,
-                        format!("{} 条", self.players.players.len()),
+                        t!("MapViewer.player_count", count = self.players.players.len()),
                     ))
                     .child(div().flex_1())
-                    .child(toolbar_button(colors, "刷新").on_mouse_down(
+                    .child(toolbar_button(colors, t!("common.refresh")).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| this.refresh_players(cx)),
                     )),
@@ -74,7 +75,7 @@ impl MapViewerWindowView {
                     .text_size(px(10.0))
                     .line_height(px(15.0))
                     .text_color(colors.text_muted)
-                    .child("默认排序：本地玩家 → 服务器玩家 → 其他记录 → 无效数据"),
+                    .child(t!("MapViewer.player_sort_hint")),
             )
             .child(
                 div()
@@ -82,7 +83,7 @@ impl MapViewerWindowView {
                     .text_size(px(10.0))
                     .line_height(px(15.0))
                     .text_color(colors.text_muted)
-                    .child("有效玩家会显示在地图上；保持“玩家”页开启时，单击玩家标记可直接选中。"),
+                    .child(t!("MapViewer.player_map_hint")),
             )
             .child(
                 div()
@@ -97,9 +98,9 @@ impl MapViewerWindowView {
                                 .line_height(px(18.0))
                                 .text_color(colors.text_muted)
                                 .child(if self.players.loading {
-                                    "正在读取并校验玩家列表..."
+                                    t!("MapViewer.loading_player_list")
                                 } else {
-                                    "未读取到玩家记录。"
+                                    t!("MapViewer.no_player_records")
                                 }),
                         )
                     })
@@ -123,13 +124,15 @@ impl MapViewerWindowView {
             .is_some_and(|selected| selected == &player.id);
         let id = player.id.clone();
         let raw_id = player_id_label(&player.id);
+        let i18n = cx.global::<I18n>().clone();
         let kind = match &player.id {
-            PlayerId::Local => "本地",
-            PlayerId::Xuid(_) => "服务器",
-            PlayerId::LegacyLevelDat => "旧版",
-            PlayerId::Unknown(_) => "其他",
+            PlayerId::Local => t!("MapViewer.local").to_string(),
+            PlayerId::Xuid(_) => t!("MapViewer.server").to_string(),
+            PlayerId::LegacyLevelDat => t!("MapViewer.legacy").to_string(),
+            PlayerId::Unknown(_) => t!("MapViewer.other").to_string(),
         };
-        let invalid = player.label.as_ref().starts_with("无效记录");
+        let invalid = player.quality.health == PlayerRecordHealth::Invalid;
+        let label = localized_player_friendly_label(&i18n, &player.id, !invalid);
 
         div()
             .mb(px(3.0))
@@ -195,7 +198,7 @@ impl MapViewerWindowView {
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .truncate()
-                                    .child(player.label.clone()),
+                                    .child(label),
                             )
                             .child(
                                 div()
@@ -227,12 +230,17 @@ impl MapViewerWindowView {
                             } else {
                                 colors.text_secondary
                             })
-                            .child(if invalid { "无效" } else { kind }),
+                            .child(if invalid {
+                                t!("MapViewer.invalid")
+                            } else {
+                                SharedString::from(kind)
+                            }),
                     ),
             )
     }
 
     pub(super) fn render_player_detail(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let Some(detail) = self.players.detail.as_ref() else {
             return div()
                 .size_full()
@@ -245,7 +253,7 @@ impl MapViewerWindowView {
                     self.players
                         .error
                         .clone()
-                        .unwrap_or_else(|| SharedString::from("选择玩家后显示可编辑数据。")),
+                        .unwrap_or_else(|| t!("MapViewer.select_player_editable")),
                 );
         };
 
@@ -254,8 +262,14 @@ impl MapViewerWindowView {
             .players
             .iter()
             .find(|player| player.id == detail.id)
-            .map(|player| player.label.clone())
-            .unwrap_or_else(|| SharedString::from(player_friendly_label(&detail.id, true)));
+            .map(|player| {
+                localized_player_friendly_label(
+                    &i18n,
+                    &player.id,
+                    player.quality.health != PlayerRecordHealth::Invalid,
+                )
+            })
+            .unwrap_or_else(|| localized_player_friendly_label(&i18n, &detail.id, true));
         let entries = player_inventory_entries(&detail.nbt);
         let catalog = self.player_quick_item_catalog();
 
@@ -297,19 +311,21 @@ impl MapViewerWindowView {
                     )
                     .child(div().flex_1())
                     .when(self.players.saving, |this| {
-                        this.child(status_badge(colors, "正在写入..."))
+                        this.child(status_badge(colors, t!("MapViewer.writing")))
                     })
-                    .child(toolbar_button(colors, "高级 NBT 文本").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.open_selected_player_in_editor(cx)
-                        }),
-                    )),
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.advanced_nbt")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.open_selected_player_in_editor(cx)
+                            }),
+                        ),
+                    ),
             )
-            .child(self.render_player_quick_actions(colors, cx))
+            .child(self.render_player_quick_actions(colors, &i18n, cx))
             .child(player_detail_grid(colors, detail))
             .child(self.render_player_inventory_section(colors, &entries, cx))
-            .child(self.render_player_item_add_section(colors, &catalog, cx))
+            .child(self.render_player_item_add_section(colors, &catalog, &i18n, cx))
     }
 
     fn render_player_inventory_section(
@@ -318,6 +334,7 @@ impl MapViewerWindowView {
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         div()
             .flex()
             .flex_col()
@@ -332,18 +349,18 @@ impl MapViewerWindowView {
                             .text_size(px(11.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .child("物品"),
+                            .child(t!("MapViewer.items")),
                     )
                     .child(status_badge(
                         colors,
-                        format!("{} 个有效物品", entries.len()),
+                        t!("MapViewer.valid_item_count", count = entries.len()),
                     ))
                     .child(div().flex_1())
                     .child(
                         div()
                             .text_size(px(10.0))
                             .text_color(colors.text_muted)
-                            .child("空槽位不再以 #0/#1… 原始 NBT 行显示"),
+                            .child(t!("MapViewer.empty_slot_nbt_hint")),
                     ),
             )
             .when(entries.is_empty(), |this| {
@@ -357,7 +374,7 @@ impl MapViewerWindowView {
                         })
                         .text_size(px(12.0))
                         .text_color(colors.text_muted)
-                        .child("当前玩家没有有效物品。可从下方原版图标库添加。"),
+                        .child(t!("MapViewer.no_player_items")),
                 )
             })
             .children(entries.iter().map(|entry| {
@@ -372,6 +389,7 @@ impl MapViewerWindowView {
         entry: &PlayerInventoryEntry,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let kind = entry.kind;
         let list_index = entry.list_index;
         let name = entry
@@ -393,9 +411,10 @@ impl MapViewerWindowView {
             .item
             .damage
             .map_or_else(|| "?".to_string(), |value| value.to_string());
-        let slot_label = entry
-            .slot
-            .map_or_else(|| format!("#{}", list_index), |slot| format!("槽位 {slot}"));
+        let slot_label = entry.slot.map_or_else(
+            || format!("#{list_index}"),
+            |slot| t!("MapViewer.slot_label", slot = slot).to_string(),
+        );
 
         div()
             .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -488,107 +507,131 @@ impl MapViewerWindowView {
                     .flex_wrap()
                     .items_center()
                     .gap(px(5.0))
-                    .child(player_item_action_button(colors, "数量 −").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AdjustCount {
-                                    kind,
-                                    list_index,
-                                    delta: -1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "数量 +").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AdjustCount {
-                                    kind,
-                                    list_index,
-                                    delta: 1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "x64").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::SetCount {
-                                    kind,
-                                    list_index,
-                                    value: 64,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "x127").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::SetCount {
-                                    kind,
-                                    list_index,
-                                    value: 127,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "Damage −").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AdjustDamage {
-                                    kind,
-                                    list_index,
-                                    delta: -1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "Damage +").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AdjustDamage {
-                                    kind,
-                                    list_index,
-                                    delta: 1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "Damage 0").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::SetDamage {
-                                    kind,
-                                    list_index,
-                                    value: 0,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "复制物品").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::DuplicateItem { kind, list_index },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(danger_button(colors, "删除").on_mouse_down(
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.decrease_count"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AdjustCount {
+                                            kind,
+                                            list_index,
+                                            delta: -1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.increase_count"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AdjustCount {
+                                            kind,
+                                            list_index,
+                                            delta: 1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.set_count_64"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::SetCount {
+                                            kind,
+                                            list_index,
+                                            value: 64,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.set_count_127"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::SetCount {
+                                            kind,
+                                            list_index,
+                                            value: 127,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.decrease_damage"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AdjustDamage {
+                                            kind,
+                                            list_index,
+                                            delta: -1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.increase_damage"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AdjustDamage {
+                                            kind,
+                                            list_index,
+                                            delta: 1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.reset_damage"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::SetDamage {
+                                            kind,
+                                            list_index,
+                                            value: 0,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.duplicate_item"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::DuplicateItem { kind, list_index },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(danger_button(colors, t!("common.delete")).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
                             this.run_player_item_mutation(
@@ -605,26 +648,31 @@ impl MapViewerWindowView {
                     .items_center()
                     .gap(px(5.0))
                     .child(
-                        player_item_action_button(colors, "名称 ← 剪贴板").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.set_player_item_name_from_clipboard(kind, list_index, cx)
-                            }),
-                        ),
+                        player_item_action_button(colors, t!("MapViewer.name_clipboard"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.set_player_item_name_from_clipboard(kind, list_index, cx)
+                                }),
+                            ),
                     )
                     .child(
-                        player_item_action_button(colors, "Lore ← 剪贴板").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.set_player_item_lore_from_clipboard(kind, list_index, cx)
-                            }),
-                        ),
+                        player_item_action_button(colors, t!("MapViewer.lore_clipboard"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.set_player_item_lore_from_clipboard(kind, list_index, cx)
+                                }),
+                            ),
                     )
                     .when(lore_count > 0, |this| {
-                        this.child(status_badge(colors, format!("Lore {lore_count} 行")))
+                        this.child(status_badge(
+                            colors,
+                            t!("MapViewer.lore_count", count = lore_count),
+                        ))
                     })
                     .when(entry.item.has_tag, |this| {
-                        this.child(status_badge(colors, "含 tag"))
+                        this.child(status_badge(colors, t!("MapViewer.has_tag")))
                     }),
             )
             .child(self.render_player_enchant_editor(colors, kind, list_index, &enchantments, cx))
@@ -638,6 +686,7 @@ impl MapViewerWindowView {
         enchantments: &[PlayerEnchantEntry],
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         div()
             .flex()
             .flex_col()
@@ -654,85 +703,102 @@ impl MapViewerWindowView {
                             .text_size(px(10.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_muted)
-                            .child("附魔"),
+                            .child(t!("MapViewer.enchantments")),
                     )
-                    .child(player_item_action_button(colors, "锋利 +1").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AddEnchant {
-                                    kind,
-                                    list_index,
-                                    id: 9,
-                                    level: 1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "保护 +1").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AddEnchant {
-                                    kind,
-                                    list_index,
-                                    id: 0,
-                                    level: 1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "效率 +1").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AddEnchant {
-                                    kind,
-                                    list_index,
-                                    id: 15,
-                                    level: 1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "耐久 +1").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AddEnchant {
-                                    kind,
-                                    list_index,
-                                    id: 17,
-                                    level: 1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "经验修补").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.run_player_item_mutation(
-                                PlayerItemMutation::AddEnchant {
-                                    kind,
-                                    list_index,
-                                    id: 26,
-                                    level: 1,
-                                },
-                                cx,
-                            )
-                        }),
-                    ))
                     .child(
-                        player_item_action_button(colors, "id:等级 ← 剪贴板").on_mouse_down(
+                        player_item_action_button(colors, t!("MapViewer.sharpness_plus_one"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AddEnchant {
+                                            kind,
+                                            list_index,
+                                            id: 9,
+                                            level: 1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.protection_plus_one"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AddEnchant {
+                                            kind,
+                                            list_index,
+                                            id: 0,
+                                            level: 1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.efficiency_plus_one"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AddEnchant {
+                                            kind,
+                                            list_index,
+                                            id: 15,
+                                            level: 1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.unbreaking_plus_one"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.run_player_item_mutation(
+                                        PlayerItemMutation::AddEnchant {
+                                            kind,
+                                            list_index,
+                                            id: 17,
+                                            level: 1,
+                                        },
+                                        cx,
+                                    )
+                                }),
+                            ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.mending")).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _event, _window, cx| {
-                                this.add_player_item_enchant_from_clipboard(kind, list_index, cx)
+                                this.run_player_item_mutation(
+                                    PlayerItemMutation::AddEnchant {
+                                        kind,
+                                        list_index,
+                                        id: 26,
+                                        level: 1,
+                                    },
+                                    cx,
+                                )
                             }),
                         ),
+                    )
+                    .child(
+                        player_item_action_button(colors, t!("MapViewer.enchant_clipboard"))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.add_player_item_enchant_from_clipboard(
+                                        kind, list_index, cx,
+                                    )
+                                }),
+                            ),
                     ),
             )
             .children(enchantments.iter().map(|enchantment| {
@@ -749,7 +815,7 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child(format!(
                                 "{} · id {} · lvl {}",
-                                enchant_name(enchantment.id),
+                                localized_enchant_name(&i18n, enchantment.id),
                                 enchantment.id,
                                 enchantment.level
                             )),
@@ -782,7 +848,7 @@ impl MapViewerWindowView {
                             )
                         }),
                     ))
-                    .child(danger_button(colors, "移除").on_mouse_down(
+                    .child(danger_button(colors, t!("MapViewer.remove")).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
                             this.run_player_item_mutation(
@@ -803,9 +869,7 @@ impl MapViewerWindowView {
                         .pl(px(4.0))
                         .text_size(px(10.0))
                         .text_color(colors.text_muted)
-                        .child(
-                            "无附魔。高级值可直接粘贴，例如 `9:32767`；NBT Short 范围内均允许。",
-                        ),
+                        .child(t!("MapViewer.no_enchantments_hint")),
                 )
             })
     }
@@ -814,6 +878,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         catalog: &[PlayerItemTexture],
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         div()
@@ -837,15 +902,15 @@ impl MapViewerWindowView {
                             .text_size(px(11.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .child("添加物品"),
+                            .child(t!("MapViewer.add_item")),
                     )
                     .child(status_badge(
                         colors,
-                        format!("原版图标库 {}", catalog.len()),
+                        t!("MapViewer.vanilla_catalog", count = catalog.len()),
                     ))
                     .child(div().flex_1())
                     .child(
-                        toolbar_button(colors, "物品 ID ← 剪贴板").on_mouse_down(
+                        toolbar_button(colors, t!("MapViewer.item_id_clipboard")).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
                                 this.add_player_item_from_clipboard(cx)
@@ -858,10 +923,7 @@ impl MapViewerWindowView {
                     .text_size(px(10.0))
                     .line_height(px(15.0))
                     .text_color(colors.text_muted)
-                    .child(
-                        "图标直接读取当前实例 data/resource_packs/vanilla/textures/items。点击图标添加；\
-                         自定义/新版/非正常物品可复制 `namespace:item_id` 后使用右侧按钮。",
-                    ),
+                    .child(t!("MapViewer.item_catalog_hint")),
             )
             .child(
                 div()
@@ -934,10 +996,7 @@ impl MapViewerWindowView {
                         })
                         .text_size(px(11.0))
                         .text_color(colors.text_muted)
-                        .child(
-                            "当前实例未找到 vanilla/textures/items；仍可通过剪贴板物品 ID 添加，\
-                             但不会显示原版图标。",
-                        ),
+                        .child(t!("MapViewer.no_item_catalog")),
                 )
             })
     }
@@ -945,24 +1004,25 @@ impl MapViewerWindowView {
     pub(super) fn render_player_quick_actions(
         &self,
         colors: &ThemeColors,
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         let pending = self.players.pending_save_confirmation.as_ref();
         let move_label = if pending == Some(&PlayerQuickEdit::MoveToMapCenter) {
-            "确认移动"
+            t!("MapViewer.confirm_move")
         } else {
-            "移到地图中心"
+            t!("MapViewer.move_player_to_center")
         };
         let dimension_edit = PlayerQuickEdit::SetDimension(self.dimension);
         let dimension_label_text = if pending == Some(&dimension_edit) {
-            "确认维度"
+            t!("MapViewer.confirm_dimension")
         } else {
-            "设为当前维度"
+            t!("MapViewer.set_current_dimension")
         };
         let clear_label = if pending == Some(&PlayerQuickEdit::ClearInventory) {
-            "确认清空背包"
+            t!("MapViewer.confirm_clear_inventory")
         } else {
-            "清空主背包"
+            t!("MapViewer.clear_inventory")
         };
         div()
             .flex()
@@ -991,7 +1051,7 @@ impl MapViewerWindowView {
                 div()
                     .text_size(px(10.0))
                     .text_color(colors.text_muted)
-                    .child("危险操作需要二次点击；所有写入都会进入地图历史。"),
+                    .child(t!("MapViewer.dangerous_action_hint")),
             )
     }
 }

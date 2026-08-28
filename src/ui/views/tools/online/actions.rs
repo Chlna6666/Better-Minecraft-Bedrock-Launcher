@@ -4,6 +4,7 @@ use crate::core::online::{
     EasyTierPeer, EasyTierStartOptions, EasyTierStartRequest, PaperConnectPlayer, PaperConnectRoom,
 };
 use crate::ui::components::toast;
+use crate::ui::state::i18n::I18n;
 use crate::ui::views::tools::state::{
     OnlineBlockingIssue, OnlineOperation, OnlinePeerEntry, OnlinePeerRole, OnlinePlayerEntry,
     ToolsPageState,
@@ -75,13 +76,13 @@ fn start_room(intent: RoomIntent, cx: &mut App) {
 fn prepare_room_request(intent: RoomIntent, cx: &mut App) -> Option<RoomRequest> {
     let running = cx.read_global(|state: &ToolsPageState, _cx| state.easytier_running);
     if running {
-        toast::error(cx, SharedString::from("请先断开当前房间，再开始新的联机"));
+        toast::error(cx, t!("Online.room_already_running"));
         return None;
     }
 
     let room_code = cx.read_global(|state: &ToolsPageState, _cx| state.room_code.to_string());
     if matches!(intent, RoomIntent::Join) && room_code.trim().is_empty() {
-        toast::error(cx, SharedString::from("请输入或粘贴联机码"));
+        toast::error(cx, t!("Online.err_need_room_code"));
         return None;
     }
 
@@ -89,7 +90,7 @@ fn prepare_room_request(intent: RoomIntent, cx: &mut App) -> Option<RoomRequest>
         state.begin_online_operation(intent.operation())
     });
     let Some(generation) = generation else {
-        toast::error(cx, SharedString::from("已有联机操作正在进行，请稍候"));
+        toast::error(cx, t!("Online.operation_in_progress"));
         return None;
     };
 
@@ -101,7 +102,7 @@ fn prepare_room_request(intent: RoomIntent, cx: &mut App) -> Option<RoomRequest>
                     state.finish_online_operation(generation);
                     state.online_error = Some(SharedString::from(error.clone()));
                 });
-                toast::error(cx, SharedString::from("无法分配联机中心端口"));
+                toast::error(cx, t!("Online.center_port_unavailable"));
                 return None;
             }
         }
@@ -286,10 +287,7 @@ fn apply_room_error(generation: u64, action: &'static str, error: String, cx: &m
         Ok(true) => {
             if let Err(update_error) = cx.update(|cx| {
                 append_online_log(format!("{action}失败：{error}"), cx);
-                toast::error(
-                    cx,
-                    SharedString::from(format!("{action}失败，请检查联机设置")),
-                );
+                toast::error(cx, t!("Online.room_failed"));
                 append_abandoned_connector_logs(&abandoned_connectors, cx);
             }) {
                 warn!("failed to report online room error: {update_error:?}");
@@ -354,14 +352,12 @@ fn apply_room_success(
             if let Err(update_error) = cx.update(|cx| {
                 if matches!(intent, RoomIntent::Create) {
                     cx.write_to_clipboard(ClipboardItem::new_string(room_code.clone()));
-                    toast::push(cx, SharedString::from("房间已创建，联机码已复制"));
+                    toast::push(cx, t!("Online.room_created"));
                     append_online_log(format!("联机成功：{room_code}"), cx);
                 } else if discovery_port_occupied {
                     toast::error(
                         cx,
-                        SharedString::from(
-                            "已加入房间，但本机 UDP 7551 已被占用；关闭占用程序后请重新检查",
-                        ),
+                        t!("Online.joined_port_busy"),
                     );
                     append_online_log(
                         "房间连接已保留，但本机 7551 游戏代理启动失败；关闭占用程序后可直接重新检查",
@@ -372,7 +368,7 @@ fn apply_room_success(
                         "PaperConnect 成员联机未完成：EasyTier 已连接，但 UDP 7551 模拟代理未启动"
                     );
                 } else {
-                    toast::push(cx, SharedString::from("已加入房间"));
+                    toast::push(cx, t!("Online.joined_room"));
                     append_online_log(format!("联机成功：{room_code}"), cx);
                     info!(
                         room_code,
@@ -436,17 +432,17 @@ pub(super) fn retry_discovery_proxy(cx: &mut App) {
                 if let Err(update_error) = cx.update(|cx| match result {
                     Ok(crate::core::online::PaperConnectClientState::Ready) => {
                         append_online_log("UDP 7551 已释放，本机游戏代理启动成功", cx);
-                        toast::push(cx, SharedString::from("7551 游戏代理已启动，可以进入游戏"));
+                        toast::push(cx, t!("Online.proxy_ready"));
                         info!("PaperConnect 成员重新检测成功：本机 UDP 7551 模拟代理已启动");
                     }
                     Ok(crate::core::online::PaperConnectClientState::DiscoveryPortOccupied) => {
                         append_online_log("UDP 7551 仍被占用，请关闭占用程序后再次检查", cx);
-                        toast::error(cx, SharedString::from("UDP 7551 仍被占用"));
+                        toast::error(cx, t!("Online.discovery_port_busy"));
                         warn!("PaperConnect 成员重新检测失败：UDP 7551 仍被占用");
                     }
                     Err(error) => {
                         append_online_log(format!("重新启动 7551 游戏代理失败：{error}"), cx);
-                        toast::error(cx, SharedString::from("7551 游戏代理重新启动失败"));
+                        toast::error(cx, t!("Online.proxy_restart_failed"));
                         warn!("PaperConnect 成员重新启动 7551 游戏代理失败：{error}");
                     }
                 }) {
@@ -502,10 +498,7 @@ pub(super) fn confirm_minecraft_termination(cx: &mut App) {
                     if let Err(update_error) = cx.update(|cx| {
                         if summary.matched == 0 {
                             append_online_log("未查询到 UDP 7551 占用进程，继续重新检查端口", cx);
-                            toast::error(
-                                cx,
-                                SharedString::from("未查询到占用进程，正在重新检查 7551"),
-                            );
+                            toast::error(cx, t!("Online.no_port_owner"));
                         } else {
                             append_online_log(
                                 format!(
@@ -514,10 +507,7 @@ pub(super) fn confirm_minecraft_termination(cx: &mut App) {
                                 ),
                                 cx,
                             );
-                            toast::push(
-                                cx,
-                                SharedString::from("占用应用已结束，正在重新检查 7551"),
-                            );
+                            toast::push(cx, t!("Online.port_owner_stopped"));
                         }
                         retry_discovery_proxy(cx);
                     }) {
@@ -529,7 +519,7 @@ pub(super) fn confirm_minecraft_termination(cx: &mut App) {
                 Err(error) => {
                     if let Err(update_error) = cx.update(|cx| {
                         append_online_log(format!("结束 UDP 7551 占用应用失败：{error}"), cx);
-                        toast::error(cx, SharedString::from("结束 7551 占用应用失败"));
+                        toast::error(cx, t!("Online.termination_failed"));
                     }) {
                         warn!(
                             "failed to report UDP 7551 owner termination error: {update_error:?}"
@@ -571,14 +561,17 @@ pub(super) fn stop_session(cx: &mut App) {
         });
         match applied {
             Ok(true) => {
-                if let Err(update_error) = cx.update(|cx| match result {
-                    Ok(()) => {
-                        append_online_log("已断开联机", cx);
-                        toast::push(cx, SharedString::from("已断开联机"));
-                    }
-                    Err(error) => {
-                        append_online_log(format!("断开失败：{error}"), cx);
-                        toast::error(cx, SharedString::from("断开失败，当前连接状态已保留"));
+                if let Err(update_error) = cx.update(|cx| {
+                    let i18n = cx.global::<I18n>().clone();
+                    match result {
+                        Ok(()) => {
+                            append_online_log("已断开联机", cx);
+                            toast::push(cx, t!("Online.disconnected"));
+                        }
+                        Err(error) => {
+                            append_online_log(format!("断开失败：{error}"), cx);
+                            toast::error(cx, t!("Online.disconnect_failed"));
+                        }
                     }
                 }) {
                     warn!("failed to report online stop result: {update_error:?}");
@@ -647,10 +640,10 @@ pub(crate) fn refresh_status(cx: &mut App) {
                     append_abandoned_connector_logs(&abandoned_connectors, cx);
                     toast::error(
                         cx,
-                        SharedString::from(format!(
-                            "{} 个联机节点连续失败，已停止重试",
-                            abandoned_connectors.len()
-                        )),
+                        t!(
+                            "Online.abandoned_retry_stopped",
+                            count = &abandoned_connectors.len().to_string()
+                        ),
                     );
                 }) {
                     warn!("failed to report abandoned EasyTier connectors: {update_error:?}");

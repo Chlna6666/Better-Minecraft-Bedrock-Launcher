@@ -375,6 +375,42 @@ All network work must happen off the UI thread. Preferred patterns:
 - store cancellable tasks when the work should stop with the view;
 - propagate errors to visible UI state instead of discarding them.
 
+## Localization Rules
+
+- `src/ui/state/i18n.rs::I18n` is the only UI language read/notification
+  global. Use its current locale and revision; do not keep a translated
+  `SharedString` as a long-lived cache unless the cache also records the
+  revision that produced it.
+- Runtime language changes go through the application language controller. A
+  view must not write `launcher.language`, persist the preference, or call
+  `I18n::set_locale` directly; the startup bootstrap may seed the initial
+  locale once before windows are created.
+- Built-in UI copy uses a locale key. Use `t!("key")` without passing a
+  receiver; use `t!("key", value)` for positional parameters or
+  `t!("key", name = value)` when a named parameter is clearer. The underlying
+  `t_key`/`t_key_args` methods remain available for lower-level adapters. The
+  `.lang` files are packed into an uncompressed `locales.bin` resource with a
+  shared sorted key index, deduplicated text, and placeholder byte offsets.
+  `include_bytes!` embeds the resource; `I18n` initializes a borrowed binary
+  view before rendering, without building maps or parsing language text.
+  Builds do not generate Rust translation code or validate language keys and
+  parameters. Missing translations fall back to
+  English, then to the key; missing arguments keep their `{{placeholder}}` text.
+  The standalone i18n check scripts remain optional maintenance tools.
+  Literal user content, resource names, third-party text, and diagnostic details are
+  not translated.
+- Data-driven or externally supplied keys use the fallible `lookup`/
+  `lookup_args` API and must define their own fallback; they are not a bypass
+  for built-in copy. Do not reintroduce `I18n::t` or `I18n::t_args`.
+- Use `localized_text!` for messages that cross an async boundary or live in
+  UI state: it stores the key and owned parameters, then resolves against the
+  current locale. Do not store a translated snapshot or `fmt::Arguments`.
+- Background code returns semantic status/error data and parameters. It must
+  not capture `I18n`, GPUI contexts, or materialize a language-specific UI
+  message. The UI resolves the message when it renders or handles the result.
+- Cached child entities and language-sensitive resource projections must
+  invalidate on the language revision as well as their domain-data version.
+
 `docs/ASYNC_RUNTIME_MODEL.md` is authoritative when choosing an executor,
 defining terminal task states, deciding workflow lifetime, or bridging a
 background event into GPUI.

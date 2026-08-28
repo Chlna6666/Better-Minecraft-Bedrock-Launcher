@@ -129,13 +129,13 @@ pub(super) fn launcher_connectivity_row(
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors.text_primary)
-                    .child(i18n.t("LauncherSettings.connectivity_test")),
+                    .child(t!("LauncherSettings.connectivity_test")),
             )
             .child(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_secondary)
-                    .child(i18n.t("LauncherSettings.connectivity_test_desc")),
+                    .child(t!("LauncherSettings.connectivity_test_desc")),
             ),
     )
     .child(
@@ -267,13 +267,13 @@ pub(super) fn render_connectivity_modal(
                                         .text_size(px(24. / 1.5))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_primary)
-                                        .child(i18n.t("Connectivity.title")),
+                                        .child(t!("Connectivity.title")),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(12.))
                                         .text_color(colors.text_secondary)
-                                        .child(i18n.t("LauncherSettings.connectivity_test_desc")),
+                                        .child(t!("LauncherSettings.connectivity_test_desc")),
                                 ),
                         ),
                 )
@@ -306,7 +306,7 @@ pub(super) fn render_connectivity_modal(
                 .gap(px(8.))
                 .child(connectivity_stat_chip(
                     colors,
-                    i18n.t("Connectivity.stats.total"),
+                    t!("Connectivity.stats.total"),
                     total_count,
                     Hsla {
                         a: 0.14,
@@ -315,25 +315,25 @@ pub(super) fn render_connectivity_modal(
                 ))
                 .child(connectivity_stat_chip(
                     colors,
-                    i18n.t("Connectivity.stats.running"),
+                    t!("Connectivity.stats.running"),
                     loading_count,
                     colors.accent,
                 ))
                 .child(connectivity_stat_chip(
                     colors,
-                    i18n.t("Connectivity.stats.success"),
+                    t!("Connectivity.stats.success"),
                     success_count,
                     colors.stat_green_text,
                 ))
                 .child(connectivity_stat_chip(
                     colors,
-                    i18n.t("Connectivity.stats.error"),
+                    t!("Connectivity.stats.error"),
                     error_count,
                     colors.danger,
                 ))
                 .child(connectivity_stat_chip(
                     colors,
-                    i18n.t("Connectivity.stats.pending"),
+                    t!("Connectivity.stats.pending"),
                     pending_count,
                     colors.text_secondary,
                 )),
@@ -560,7 +560,12 @@ fn render_connectivity_list(
                         .text_size(px(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_secondary)
-                        .child(i18n.t(&format!("Connectivity.groups.{group_index}"))),
+                        .child(
+                            i18n.lookup(&format!("Connectivity.groups.{group_index}"))
+                                .unwrap_or_else(|| {
+                                    SharedString::from(format!("Connectivity.groups.{group_index}"))
+                                }),
+                        ),
                 )
                 .children(
                     group
@@ -670,7 +675,7 @@ fn connectivity_item_row(
                 ..colors.danger
             },
             lucide_icons::icon_x(),
-            i18n.t("Connectivity.status.error"),
+            t!("Connectivity.status.error"),
         ),
     };
 

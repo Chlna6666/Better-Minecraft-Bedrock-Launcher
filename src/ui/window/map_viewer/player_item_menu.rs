@@ -320,12 +320,16 @@ impl MapViewerWindowView {
         menu: PlayerItemContextMenuState,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let entry = self.workspace_entry_for_selection(menu.selection);
         let has_item = entry.is_some();
         let item_name = entry
             .as_ref()
             .and_then(|entry| entry.item.name.as_deref())
-            .unwrap_or("空槽位");
+            .map_or_else(
+                || t!("MapViewer.item_empty"),
+                |name| SharedString::from(name.to_string()),
+            );
         let placement = place_context_menu_at_anchor(
             ContextMenuAnchor::Cursor(menu.position),
             self.window_width,
@@ -341,8 +345,8 @@ impl MapViewerWindowView {
         let entity = cx.entity();
         let copy_selection = menu.selection;
         let copy_items = vec![
-            ContextMenuItem::new("复制物品配置")
-                .description("完整 BMCBL JSON；可直接粘贴到其他槽位")
+            ContextMenuItem::new(t!("MapViewer.item_copy_config"))
+                .description(t!("MapViewer.item_copy_config_hint"))
                 .disabled(!has_item)
                 .on_click({
                     let entity = entity.clone();
@@ -352,7 +356,7 @@ impl MapViewerWindowView {
                         })
                     }
                 }),
-            ContextMenuItem::new("复制物品 ID")
+            ContextMenuItem::new(t!("MapViewer.item_copy_id"))
                 .disabled(!has_item)
                 .on_click({
                     let entity = entity.clone();
@@ -360,7 +364,7 @@ impl MapViewerWindowView {
                         entity.update(cx, |this, cx| this.copy_player_item_id(copy_selection, cx))
                     }
                 }),
-            ContextMenuItem::new("复制原始 NBT JSON")
+            ContextMenuItem::new(t!("MapViewer.item_copy_nbt"))
                 .disabled(!has_item)
                 .on_click({
                     let entity = entity.clone();
@@ -368,7 +372,7 @@ impl MapViewerWindowView {
                         entity.update(cx, |this, cx| this.copy_player_item_nbt(copy_selection, cx))
                     }
                 }),
-            ContextMenuItem::new("导出物品配置…")
+            ContextMenuItem::new(t!("MapViewer.item_export_config"))
                 .disabled(!has_item)
                 .on_click({
                     let entity = entity.clone();
@@ -382,9 +386,9 @@ impl MapViewerWindowView {
         let toggle_entity = cx.entity();
         let copy_entry = ContextMenuEntry::submenu(
             if self.player_workspace.item_context_copy_open {
-                "复制 / 导出（收起）"
+                t!("MapViewer.item_copy_export_collapse")
             } else {
-                "复制 / 导出…"
+                t!("MapViewer.item_copy_export")
             },
             self.player_workspace.item_context_copy_open,
             copy_items,
@@ -396,11 +400,11 @@ impl MapViewerWindowView {
         let mut groups = vec![
             ContextMenuGroup::new(vec![copy_entry]),
             ContextMenuGroup::titled(
-                "槽位操作",
+                t!("MapViewer.item_slot_actions"),
                 vec![
                     ContextMenuEntry::item(
-                        ContextMenuItem::new("剪切物品")
-                            .description("复制完整配置后清空当前槽位")
+                        ContextMenuItem::new(t!("MapViewer.item_cut"))
+                            .description(t!("MapViewer.item_cut_hint"))
                             .disabled(!has_item)
                             .on_click({
                                 let entity = entity.clone();
@@ -410,23 +414,28 @@ impl MapViewerWindowView {
                                 }
                             }),
                     ),
-                    ContextMenuEntry::item(ContextMenuItem::new("粘贴到此槽位").on_click({
-                        let entity = entity.clone();
-                        move |cx| {
-                            entity.update(cx, |this, cx| {
-                                this.paste_player_item_context(selection, cx)
-                            })
-                        }
-                    })),
-                    ContextMenuEntry::item(ContextMenuItem::new("从配置文件导入…").on_click({
-                        let entity = entity.clone();
-                        move |cx| {
-                            entity
-                                .update(cx, |this, cx| this.import_player_item_file(selection, cx))
-                        }
-                    })),
                     ContextMenuEntry::item(
-                        ContextMenuItem::new("复制到下一个空槽")
+                        ContextMenuItem::new(t!("MapViewer.item_paste")).on_click({
+                            let entity = entity.clone();
+                            move |cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.paste_player_item_context(selection, cx)
+                                })
+                            }
+                        }),
+                    ),
+                    ContextMenuEntry::item(
+                        ContextMenuItem::new(t!("MapViewer.item_import")).on_click({
+                            let entity = entity.clone();
+                            move |cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.import_player_item_file(selection, cx)
+                                })
+                            }
+                        }),
+                    ),
+                    ContextMenuEntry::item(
+                        ContextMenuItem::new(t!("MapViewer.item_duplicate"))
                             .disabled(!has_item)
                             .on_click({
                                 let entity = entity.clone();
@@ -439,9 +448,9 @@ impl MapViewerWindowView {
                     ),
                     ContextMenuEntry::item(
                         ContextMenuItem::new(if selected_in_multi {
-                            "从多选移除"
+                            t!("MapViewer.item_remove_multi")
                         } else {
-                            "加入多选"
+                            t!("MapViewer.item_add_multi")
                         })
                         .disabled(!has_item)
                         .on_click({
@@ -456,10 +465,10 @@ impl MapViewerWindowView {
                 ],
             ),
             ContextMenuGroup::titled(
-                "配置",
+                t!("MapViewer.item_config"),
                 vec![ContextMenuEntry::item(
-                    ContextMenuItem::new("导出整个玩家背包配置…")
-                        .description("背包、快捷栏、末影箱、护甲与副手")
+                    ContextMenuItem::new(t!("MapViewer.item_export_inventory"))
+                        .description(t!("MapViewer.item_export_inventory_hint"))
                         .on_click({
                             let entity = entity.clone();
                             move |cx| {
@@ -472,25 +481,27 @@ impl MapViewerWindowView {
         ];
         if has_item {
             groups.push(ContextMenuGroup::titled(
-                "危险操作",
+                t!("MapViewer.item_dangerous"),
                 vec![ContextMenuEntry::item(
-                    ContextMenuItem::new("清空槽位").danger(true).on_click({
-                        let entity = entity.clone();
-                        move |cx| {
-                            entity.update(cx, |this, cx| this.clear_context_item(selection, cx))
-                        }
-                    }),
+                    ContextMenuItem::new(t!("MapViewer.item_clear"))
+                        .danger(true)
+                        .on_click({
+                            let entity = entity.clone();
+                            move |cx| {
+                                entity.update(cx, |this, cx| this.clear_context_item(selection, cx))
+                            }
+                        }),
                 )],
             ));
         }
 
         div().child(
             ContextMenu::new(colors, groups)
-                .header(format!(
-                    "{} · {} · 槽位 {}",
-                    item_name,
-                    selection.kind.label(),
-                    selection.slot
+                .header(t!(
+                    "MapViewer.item_header",
+                    item = &item_name,
+                    container = selection.kind.label(),
+                    slot = selection.slot
                 ))
                 .placement(placement)
                 .on_dismiss({

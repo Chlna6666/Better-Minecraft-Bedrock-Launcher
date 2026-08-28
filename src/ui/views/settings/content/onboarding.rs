@@ -3,9 +3,10 @@
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 
-pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
+pub(super) fn render_onboarding_card(colors: &ThemeColors, i18n: &I18n) -> Div {
     let action = div()
         .id("settings-reopen-onboarding")
         .flex_none()
@@ -27,15 +28,15 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .child("重新打开导览")
+        .child(t!("Settings.onboarding.reopen"))
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
             crate::ui::onboarding::reopen(cx);
         });
 
     #[cfg(target_os = "windows")]
-    let description = "重新进入完整交互式功能导览：依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置和工具。UWP 数据保护不属于首次导览，也不保存独立配置；下载或导入 UWP 时只会根据当前 Windows 是否存在 Microsoft Store/系统安装的 Minecraft 实时判断是否需要提示。";
+    let description = t!("Settings.onboarding.description_windows");
     #[cfg(target_os = "linux")]
-    let description = "重新进入完整交互式功能导览：会依次展示游戏下载、CurseForge 资源、模组、导入、任务、版本管理、设置、工具和 Proton-GDK。Linux 导览不会执行 UWP 检查。";
+    let description = t!("Settings.onboarding.description_linux");
 
     crate::ui::components::page_shell::glass_card(colors)
         .shadow(Vec::new())
@@ -86,7 +87,7 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors) -> Div {
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("完整交互式功能导览"),
+                        .child(t!("Settings.onboarding.title")),
                 )
                 .child(
                     div()

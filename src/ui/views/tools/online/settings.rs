@@ -2,6 +2,7 @@ use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::components::input::Input;
 use crate::ui::components::modal;
 use crate::ui::components::toggle_switch::ToggleSwitch;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
@@ -17,6 +18,7 @@ type DismissAction = Rc<dyn Fn(&mut App)>;
 
 pub(super) fn render_settings_overlay(
     colors: &ThemeColors,
+    i18n: &I18n,
     window_width: Pixels,
     _window_height: Pixels,
     state: &ToolsPageState,
@@ -35,7 +37,7 @@ pub(super) fn render_settings_overlay(
             state.easytier_settings_open = false;
         });
     });
-    let card = render_settings_card(colors, width, state, dismiss.clone()).with_animation(
+    let card = render_settings_card(colors, i18n, width, state, dismiss.clone()).with_animation(
         "online-settings-card-enter",
         spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
         |card, progress| {
@@ -50,6 +52,7 @@ pub(super) fn render_settings_overlay(
 
 fn render_settings_card(
     colors: &ThemeColors,
+    i18n: &I18n,
     width: Pixels,
     state: &ToolsPageState,
     close: DismissAction,
@@ -71,12 +74,12 @@ fn render_settings_card(
         .overflow_hidden()
         .flex()
         .flex_col()
-        .child(render_settings_header(colors, close))
-        .child(render_settings_body(colors, state))
-        .child(render_settings_footer(colors))
+        .child(render_settings_header(colors, i18n, close))
+        .child(render_settings_body(colors, i18n, state))
+        .child(render_settings_footer(colors, i18n))
 }
 
-fn render_settings_header(colors: &ThemeColors, close: DismissAction) -> Div {
+fn render_settings_header(colors: &ThemeColors, i18n: &I18n, close: DismissAction) -> Div {
     div()
         .w_full()
         .px(px(20.))
@@ -101,13 +104,13 @@ fn render_settings_header(colors: &ThemeColors, close: DismissAction) -> Div {
                         .text_size(px(18.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("EasyTier 网络设置"),
+                        .child(t!("Online.settings_title")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.text_secondary)
-                        .child("默认设置适合大多数网络，只在连接受限时调整。"),
+                        .child(t!("Online.settings_description")),
                 ),
         )
         .child(
@@ -121,25 +124,25 @@ fn render_settings_header(colors: &ThemeColors, close: DismissAction) -> Div {
         )
 }
 
-fn render_settings_body(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_settings_body(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     div()
         .w_full()
         .p(px(20.))
         .flex()
         .flex_col()
         .gap(px(14.))
-        .child(render_bootstrap_field(colors, state))
+        .child(render_bootstrap_field(colors, i18n, state))
         .child(render_toggle_row(
             colors,
+            t!("Online.relay_first"),
+            t!("Online.relay_first_description"),
             "online-disable-p2p",
-            "优先中继",
-            "禁用 P2P 直连，适合严格防火墙或校园网环境。",
             state.disable_p2p,
             |state| state.disable_p2p = !state.disable_p2p,
         ))
 }
 
-fn render_settings_footer(colors: &ThemeColors) -> Div {
+fn render_settings_footer(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .w_full()
         .px(px(20.))
@@ -155,7 +158,7 @@ fn render_settings_footer(colors: &ThemeColors) -> Div {
             action_button(
                 colors,
                 "online-settings-done",
-                "完成",
+                t!("Online.settings_done"),
                 lucide_icons::icon_check(),
                 false,
                 false,
@@ -169,8 +172,8 @@ fn render_settings_footer(colors: &ThemeColors) -> Div {
         )
 }
 
-fn render_bootstrap_field(colors: &ThemeColors, state: &ToolsPageState) -> Div {
-    let input = render_bootstrap_input(colors, state);
+fn render_bootstrap_field(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
+    let input = render_bootstrap_input(colors, i18n, state);
 
     div()
         .w_full()
@@ -182,7 +185,7 @@ fn render_bootstrap_field(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                 .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.text_secondary)
-                .child("固定引导节点"),
+                .child(t!("Online.bootstrap_peers")),
         )
         .child(
             div()
@@ -201,11 +204,11 @@ fn render_bootstrap_field(colors: &ThemeColors, state: &ToolsPageState) -> Div {
             div()
                 .text_size(px(11.))
                 .text_color(colors.text_muted)
-                .child("可用空格、逗号或分号分隔多个 tcp:// 节点。"),
+                .child(t!("Online.bootstrap_peers_hint")),
         )
 }
 
-fn render_bootstrap_input(colors: &ThemeColors, state: &ToolsPageState) -> AnyElement {
+fn render_bootstrap_input(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> AnyElement {
     state.bootstrap_peers_input.as_ref().map_or_else(
         || {
             div()
@@ -214,7 +217,7 @@ fn render_bootstrap_input(colors: &ThemeColors, state: &ToolsPageState) -> AnyEl
                 .items_center()
                 .text_size(px(13.))
                 .text_color(colors.text_muted)
-                .child("留空自动选择公共节点")
+                .child(t!("Online.bootstrap_peers_empty"))
                 .into_any_element()
         },
         |input| {
@@ -232,9 +235,9 @@ fn render_bootstrap_input(colors: &ThemeColors, state: &ToolsPageState) -> AnyEl
 
 fn render_toggle_row(
     colors: &ThemeColors,
+    title: SharedString,
+    description: SharedString,
     id: &'static str,
-    title: &'static str,
-    description: &'static str,
     enabled: bool,
     toggle: fn(&mut ToolsPageState),
 ) -> Div {
@@ -268,7 +271,7 @@ fn render_toggle_row(
         ))
 }
 
-fn render_toggle_copy(colors: &ThemeColors, title: &'static str, description: &'static str) -> Div {
+fn render_toggle_copy(colors: &ThemeColors, title: SharedString, description: SharedString) -> Div {
     div()
         .min_w(px(0.))
         .flex()

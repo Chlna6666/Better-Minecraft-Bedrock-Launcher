@@ -1,5 +1,6 @@
 use super::preview::{SkinPreviewWindowSkin, SkinPreviewWindowView};
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -69,6 +70,7 @@ pub(super) fn render_skin_selector(
     cx: &mut Context<SkinPreviewWindowView>,
 ) -> Div {
     let page_count = skin_selector_page_count(skins.len());
+    let i18n = cx.global::<I18n>().clone();
     let page_index = page_index.min(page_count.saturating_sub(1));
     let selector_range = skin_selector_range(skins.len(), expanded, page_index);
     let item_size = if expanded {
@@ -140,6 +142,7 @@ pub(super) fn render_skin_selector(
                 page_index,
                 page_count,
                 colors,
+                &i18n,
             ))
         })
         .child(scroller);
@@ -201,11 +204,12 @@ fn render_selector_summary(
     page_index: usize,
     page_count: usize,
     colors: &ThemeColors,
+    i18n: &I18n,
 ) -> Div {
     let selected_name = skins
         .get(selected_index)
         .map(|skin| skin.display_name.clone())
-        .unwrap_or_else(|| SharedString::from("皮肤"));
+        .unwrap_or_else(|| t!("SkinPreview.skin"));
     let count = if skins.is_empty() {
         SharedString::from("0/0")
     } else {

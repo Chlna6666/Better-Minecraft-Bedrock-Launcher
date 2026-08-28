@@ -68,6 +68,7 @@ impl DebugView {
         record_debug_window_metrics(window);
         let window_active = Rc::new(Cell::new(window.is_window_active()));
         let subscriptions = vec![
+            cx.observe_global::<I18n>(|_this, cx| cx.notify()),
             cx.observe_window_bounds(window, |_, window, _cx| {
                 record_debug_window_metrics(window);
             }),

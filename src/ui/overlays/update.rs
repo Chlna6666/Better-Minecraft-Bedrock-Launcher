@@ -110,7 +110,7 @@ fn render_markdown_view(view: Entity<UpdateMarkdownView>) -> AnyElement {
 
 fn format_date(iso: Option<String>, i18n: &I18n) -> SharedString {
     let Some(s) = iso else {
-        return i18n.t("UpdateModal.date.unknown");
+        return t!("UpdateModal.date.unknown");
     };
     let d = if s.len() >= 10 { &s[0..10] } else { s.as_str() };
     let mut it = d.split('-');
@@ -120,10 +120,7 @@ fn format_date(iso: Option<String>, i18n: &I18n) -> SharedString {
     if !m.is_empty() && !dd.is_empty() {
         let month = m.trim_start_matches('0');
         let day = dd.trim_start_matches('0');
-        i18n.t_args(
-            "UpdateModal.date.full",
-            crate::i18n_args![("year", y), ("month", month), ("day", day)],
-        )
+        t!("UpdateModal.date.full", month = y, day = month, year = day)
     } else {
         SharedString::from(d.to_string())
     }
@@ -227,18 +224,15 @@ pub fn render_update_modal(
     i18n: &I18n,
 ) -> impl IntoElement {
     let tag = release.tag.clone();
-    let title = release.name.clone().unwrap_or_else(|| {
-        i18n.t_args(
-            "UpdateModal.default_title",
-            crate::i18n_args![("tag", &tag)],
-        )
-        .to_string()
-    });
+    let title = release
+        .name
+        .clone()
+        .unwrap_or_else(|| t!("UpdateModal.default_title", tag = &tag).to_string());
     let date = format_date(release.published_at.clone(), i18n);
     let size = release
         .asset_size
         .map(format_bytes)
-        .unwrap_or_else(|| i18n.t("UpdateModal.size.unknown").to_string());
+        .unwrap_or_else(|| t!("UpdateModal.size.unknown").to_string());
     let colors = lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
@@ -258,13 +252,13 @@ pub fn render_update_modal(
 
     let (channel_label, channel_bg, channel_fg) = if release.prerelease {
         (
-            i18n.t("common.preview"),
+            t!("common.preview"),
             colors.badge_beta_bg,
             colors.badge_beta_text,
         )
     } else {
         (
-            i18n.t("common.release"),
+            t!("common.release"),
             colors.badge_stable_bg,
             colors.badge_stable_text,
         )
@@ -441,7 +435,7 @@ pub fn render_update_modal(
             snapshot_total
         };
         let total_label = if display_total == 0 {
-            i18n.t("UpdateModal.no_file").to_string()
+            t!("UpdateModal.no_file").to_string()
         } else {
             format_bytes(display_total)
         };
@@ -454,18 +448,18 @@ pub fn render_update_modal(
         };
         let (stage_label, stage_detail) = if is_extracting {
             (
-                i18n.t("UpdateModal.progress.extracting"),
-                i18n.t("UpdateModal.progress.organizing_files"),
+                t!("UpdateModal.progress.extracting"),
+                t!("UpdateModal.progress.organizing_files"),
             )
         } else if is_indeterminate {
             (
-                i18n.t("UpdateModal.progress.downloading"),
-                i18n.t("UpdateModal.progress.connecting_source"),
+                t!("UpdateModal.progress.downloading"),
+                t!("UpdateModal.progress.connecting_source"),
             )
         } else {
             (
-                i18n.t("UpdateModal.progress.downloading"),
-                i18n.t("UpdateModal.progress.install_after_download"),
+                t!("UpdateModal.progress.downloading"),
+                t!("UpdateModal.progress.install_after_download"),
             )
         };
 
@@ -599,21 +593,21 @@ pub fn render_update_modal(
                     .border_color(panel_edge_color)
                     .pt(px(12.))
                     .child(stat_metric(
-                        i18n.t("UpdateModal.progress.speed"),
+                        t!("UpdateModal.progress.speed"),
                         format_bytes_per_sec(speed),
                         lucide_icons::icon_activity(),
                         colors.accent,
                         &colors,
                     ))
                     .child(stat_metric(
-                        i18n.t("UpdateModal.progress.eta"),
+                        t!("UpdateModal.progress.eta"),
                         eta,
                         lucide_icons::icon_clock(),
                         colors.stat_orange_text,
                         &colors,
                     ))
                     .child(stat_metric(
-                        i18n.t("UpdateModal.progress.downloaded"),
+                        t!("UpdateModal.progress.downloaded"),
                         format!("{} / {}", format_bytes(done), total_label),
                         lucide_icons::icon_database(),
                         colors.stat_green_text,
@@ -703,7 +697,7 @@ pub fn render_update_modal(
                                 .size(px(14.))
                                 .text_color(colors.danger),
                         )
-                        .child(i18n.t("UpdateModal.cancel_download"));
+                        .child(t!("UpdateModal.cancel_download"));
 
                     let is_extracting = snapshot
                         .as_ref()
@@ -714,20 +708,14 @@ pub fn render_update_modal(
                         lucide_icons::icon_download()
                     };
                     let download_title = if is_extracting {
-                        i18n.t("UpdateModal.summary.extracting_title")
+                        t!("UpdateModal.summary.extracting_title")
                     } else {
-                        i18n.t("UpdateModal.summary.downloading_title")
+                        t!("UpdateModal.summary.downloading_title")
                     };
                     let download_detail = if is_extracting {
-                        i18n.t_args(
-                            "UpdateModal.summary.extracting_detail",
-                            crate::i18n_args![("tag", &tag)],
-                        )
+                        t!("UpdateModal.summary.extracting_detail", tag = &tag)
                     } else {
-                        i18n.t_args(
-                            "UpdateModal.summary.file_detail",
-                            crate::i18n_args![("tag", &tag), ("size", &size)],
-                        )
+                        t!("UpdateModal.summary.file_detail", tag = &tag, size = &size)
                     };
 
                     let download_icon = div()
@@ -843,7 +831,7 @@ pub fn render_update_modal(
                     let hint_row = div()
                         .text_size(px(11.))
                         .text_color(colors.text_muted)
-                        .child(i18n.t("UpdateModal.hint_auto_check"));
+                        .child(t!("UpdateModal.hint_auto_check"));
 
                     let external = {
                         let mut el = div()
@@ -875,7 +863,7 @@ pub fn render_update_modal(
                                         .h(px(14.))
                                         .text_color(colors.accent),
                                 )
-                                .child(i18n.t("UpdateModal.browser_download")),
+                                .child(t!("UpdateModal.browser_download")),
                         )
                     };
 
@@ -895,7 +883,7 @@ pub fn render_update_modal(
                                 u.set_show_modal(false, now);
                             });
                         })
-                        .child(i18n.t("UpdateModal.later"));
+                        .child(t!("UpdateModal.later"));
 
                     let now_btn = {
                         let mut el = div()
@@ -987,7 +975,7 @@ pub fn render_update_modal(
                         } else {
                             el = el.opacity(0.6);
                         }
-                        el.child(i18n.t("UpdateModal.update_now"))
+                        el.child(t!("UpdateModal.update_now"))
                     };
 
                     let actions = div()
@@ -1097,7 +1085,7 @@ pub fn render_update_modal(
                                         .text_size(px(12.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_muted)
-                                        .child(i18n.t("UpdateModal.changelog")),
+                                        .child(t!("UpdateModal.changelog")),
                                 ),
                         )
                         .child(div().h(px(1.)).bg(panel_edge_color))
@@ -1129,7 +1117,7 @@ pub fn render_update_modal(
                                                             .items_center()
                                                             .justify_center()
                                                             .text_color(colors.text_muted)
-                                                            .child(i18n.t("UpdateModal.preparing_changelog"))
+                                                            .child(t!("UpdateModal.preparing_changelog"))
                                                             .into_any_element()
                                                     },
                                                     render_markdown_view,

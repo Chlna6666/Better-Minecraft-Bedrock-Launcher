@@ -81,6 +81,7 @@ fn render_surface(
     cx: &App,
     page_mode: bool,
 ) -> AnyElement {
+    let i18n = cx.global::<I18n>();
     let editor_text = state.json_editor.read(cx).value();
     let dirty = match state.mode {
         LevelDatEditorMode::Visual => state.visual_dirty,
@@ -116,6 +117,7 @@ fn render_surface(
         .child(render_header(
             state,
             colors,
+            i18n,
             dirty,
             line_count,
             char_count,
@@ -124,7 +126,7 @@ fn render_surface(
         ))
         .child(match state.mode {
             LevelDatEditorMode::Visual => {
-                render_visual_body(state, colors, view_handle.clone(), page_mode)
+                render_visual_body(state, colors, i18n, view_handle.clone(), page_mode)
             }
             LevelDatEditorMode::Json => {
                 render_json_body(state, colors, view_handle.clone(), page_mode)
@@ -142,6 +144,7 @@ fn render_surface(
 fn render_header(
     state: &LevelDatEditorModalState,
     colors: &ThemeColors,
+    i18n: &I18n,
     dirty: bool,
     line_count: usize,
     char_count: usize,
@@ -155,7 +158,7 @@ fn render_header(
         vec![
             TabItem::new(
                 "level-dat-mode-visual",
-                "表单模式",
+                t!("LevelDat.form_mode"),
                 state.mode == LevelDatEditorMode::Visual,
                 {
                     let view_handle = view_handle.clone();
@@ -168,7 +171,7 @@ fn render_header(
             ),
             TabItem::new(
                 "level-dat-mode-json",
-                "JSON 模式",
+                t!("LevelDat.json_mode"),
                 state.mode == LevelDatEditorMode::Json,
                 {
                     let view_handle = view_handle.clone();
@@ -210,7 +213,7 @@ fn render_header(
                         .text_size(if page_mode { px(16.) } else { px(20.) })
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("Level.dat 编辑器"),
+                        .child(t!("LevelDat.editor_title")),
                 )
                 .child(
                     div().max_w(px(560.)).child(
@@ -230,25 +233,34 @@ fn render_header(
                             .flex_wrap()
                             .child(subtle_badge(
                                 colors,
-                                format!("版本头 {}", state.document.version()),
+                                t!(
+                                    "LevelDat.version_header",
+                                    version = state.document.version()
+                                ),
                             ))
                             .when(!state.document.warnings.is_empty(), |child| {
                                 child.child(toned_status_badge(
                                     colors,
-                                    "头部长度已容错",
+                                    t!("LevelDat.header_tolerated"),
                                     colors.stat_orange_text,
                                 ))
                             })
                             .child(subtle_badge(
                                 colors,
-                                format!("实例 {}", state.version.display_name()),
+                                t!("LevelDat.instance", name = state.version.display_name()),
                             ))
-                            .child(subtle_badge(colors, format!("{line_count} 行")))
-                            .child(subtle_badge(colors, format!("{char_count} 字符")))
+                            .child(subtle_badge(
+                                colors,
+                                t!("LevelDat.lines", count = line_count),
+                            ))
+                            .child(subtle_badge(
+                                colors,
+                                t!("LevelDat.characters", count = char_count),
+                            ))
                             .when(dirty, |child| {
                                 child.child(toned_status_badge(
                                     colors,
-                                    "未保存",
+                                    t!("LevelDat.unsaved"),
                                     colors.stat_orange_text,
                                 ))
                             })
@@ -264,23 +276,26 @@ fn render_header(
                             .flex_wrap()
                             .child(subtle_badge(
                                 colors,
-                                format!("版本头 {}", state.document.version()),
+                                t!(
+                                    "LevelDat.version_header",
+                                    version = state.document.version()
+                                ),
                             ))
                             .when(!state.document.warnings.is_empty(), |child| {
                                 child.child(toned_status_badge(
                                     colors,
-                                    "头部长度已容错",
+                                    t!("LevelDat.header_tolerated"),
                                     colors.stat_orange_text,
                                 ))
                             })
                             .child(subtle_badge(
                                 colors,
-                                format!("实例 {}", state.version.display_name()),
+                                t!("LevelDat.instance", name = state.version.display_name()),
                             ))
                             .when(dirty, |child| {
                                 child.child(toned_status_badge(
                                     colors,
-                                    "未保存",
+                                    t!("LevelDat.unsaved"),
                                     colors.stat_orange_text,
                                 ))
                             })
@@ -301,20 +316,31 @@ fn render_header(
                 .when(page_mode, |this| {
                     this.child({
                         let view_handle = view_handle.clone();
-                        compact_secondary_button(colors, "level-dat-back-to-list", "返回列表")
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        compact_secondary_button(
+                            colors,
+                            "level-dat-back-to-list",
+                            t!("LevelDat.back_to_list"),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_, _, cx| {
                                 let _ = view_handle.update(cx, |this, cx| {
                                     this.return_from_level_dat_editor(cx);
                                 });
-                            })
+                            },
+                        )
                     })
                 })
                 .child({
                     let view_handle = view_handle.clone();
                     if page_mode {
-                        compact_secondary_button(colors, "level-dat-launch-map", "启动地图")
+                        compact_secondary_button(
+                            colors,
+                            "level-dat-launch-map",
+                            t!("LevelDat.launch_map"),
+                        )
                     } else {
-                        secondary_button(colors, "level-dat-launch-map", "启动地图")
+                        secondary_button(colors, "level-dat-launch-map", t!("LevelDat.launch_map"))
                     }
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let _ = view_handle.update(cx, |this, cx| {
@@ -325,20 +351,35 @@ fn render_header(
                 .when(compact_json_page, |this| {
                     this.child({
                         let view_handle = view_handle.clone();
-                        compact_secondary_button(colors, "level-dat-format-json", "格式化")
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        compact_secondary_button(
+                            colors,
+                            "level-dat-format-json",
+                            t!("LevelDat.format"),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_, _, cx| {
                                 let _ = view_handle.update(cx, |this, cx| {
                                     this.format_level_dat_editor(cx);
                                 });
-                            })
+                            },
+                        )
                     })
                 })
                 .child({
                     let view_handle = view_handle.clone();
                     if page_mode {
-                        compact_secondary_button(colors, "level-dat-open-code-window", "新窗口代码")
+                        compact_secondary_button(
+                            colors,
+                            "level-dat-open-code-window",
+                            t!("LevelDat.new_code_window"),
+                        )
                     } else {
-                        secondary_button(colors, "level-dat-open-code-window", "新窗口代码")
+                        secondary_button(
+                            colors,
+                            "level-dat-open-code-window",
+                            t!("LevelDat.new_code_window"),
+                        )
                     }
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let _ = view_handle.update(cx, |this, cx| {
@@ -355,9 +396,9 @@ fn render_header(
                     colors,
                     "level-dat-save-inline",
                     if state.saving {
-                        "保存中..."
+                        t!("LevelDat.saving")
                     } else {
-                        "保存 level.dat"
+                        t!("LevelDat.save")
                     },
                 )
                 .opacity(if state.saving || !state.validation.valid {
@@ -377,6 +418,7 @@ fn render_header(
 fn render_visual_body(
     state: &LevelDatEditorModalState,
     colors: &ThemeColors,
+    i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
     page_mode: bool,
 ) -> AnyElement {
@@ -399,7 +441,14 @@ fn render_visual_body(
                 .flex_col()
                 .gap(if page_mode { px(8.) } else { px(12.) })
                 .children(sections.into_iter().map(|section| {
-                    render_visual_section(colors, section, state, view_handle.clone(), page_mode)
+                    render_visual_section(
+                        colors,
+                        i18n,
+                        section,
+                        state,
+                        view_handle.clone(),
+                        page_mode,
+                    )
                 })),
         )
         .into_any_element()
@@ -690,6 +739,7 @@ fn compact_primary_button(
 
 fn render_visual_section(
     colors: &ThemeColors,
+    i18n: &I18n,
     section: LevelDatFieldSection,
     state: &LevelDatEditorModalState,
     view_handle: WeakEntity<ManagePageView>,
@@ -783,7 +833,11 @@ fn render_visual_section(
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_muted)
-                        .child(if collapsed { "展开" } else { "收起" }),
+                        .child(if collapsed {
+                            t!("common.expand")
+                        } else {
+                            t!("common.collapse")
+                        }),
                 )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     let _ = view_handle.update(cx, |this, cx| {
@@ -1105,7 +1159,8 @@ fn render_validation_badge(colors: &ThemeColors, validation: &LevelDatJsonValida
     }
 }
 
-fn toned_status_badge(_colors: &ThemeColors, label: &'static str, accent: Hsla) -> Div {
+fn toned_status_badge(_colors: &ThemeColors, label: impl Into<SharedString>, accent: Hsla) -> Div {
+    let label = label.into();
     div()
         .px(px(10.))
         .py(px(4.))

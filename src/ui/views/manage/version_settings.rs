@@ -104,12 +104,17 @@ pub fn render(
                                 i18n,
                                 view_handle.clone(),
                             ))
-                            .child(levilamina::render_card(state, colors, view_handle.clone()))
+                            .child(levilamina::render_card(
+                                state,
+                                colors,
+                                i18n,
+                                view_handle.clone(),
+                            ))
                             .child(render_toggle_card(
                                 "settings-debug-console",
                                 colors,
-                                i18n.t("VersionSettingsModal.debug_console_label"),
-                                i18n.t("VersionSettingsModal.debug_console_desc"),
+                                t!("VersionSettingsModal.debug_console_label"),
+                                t!("VersionSettingsModal.debug_console_desc"),
                                 state.config.enable_debug_console,
                                 VersionSettingsToggle::DebugConsole,
                                 view_handle.clone(),
@@ -117,8 +122,8 @@ pub fn render(
                             .child(render_toggle_card(
                                 "settings-redirection",
                                 colors,
-                                i18n.t("VersionSettingsModal.redirection_label"),
-                                i18n.t("VersionSettingsModal.redirection_desc"),
+                                t!("VersionSettingsModal.redirection_label"),
+                                t!("VersionSettingsModal.redirection_desc"),
                                 state.config.enable_redirection,
                                 VersionSettingsToggle::Redirection,
                                 view_handle.clone(),
@@ -134,8 +139,8 @@ pub fn render(
                             .child(render_toggle_card(
                                 "settings-shortcut-silent-launch",
                                 colors,
-                                i18n.t("VersionSettingsModal.shortcut_silent_launch_label"),
-                                i18n.t("VersionSettingsModal.shortcut_silent_launch_desc"),
+                                t!("VersionSettingsModal.shortcut_silent_launch_label"),
+                                t!("VersionSettingsModal.shortcut_silent_launch_desc"),
                                 state.config.shortcut_silent_launch,
                                 VersionSettingsToggle::ShortcutSilentLaunch,
                                 view_handle.clone(),
@@ -143,8 +148,8 @@ pub fn render(
                             .child(render_toggle_card(
                                 "settings-disable-mod-loading",
                                 colors,
-                                i18n.t("VersionSettingsModal.disable_mod_loading_label"),
-                                i18n.t("VersionSettingsModal.disable_mod_loading_desc"),
+                                t!("VersionSettingsModal.disable_mod_loading_label"),
+                                t!("VersionSettingsModal.disable_mod_loading_desc"),
                                 state.config.disable_mod_loading,
                                 VersionSettingsToggle::DisableModLoading,
                                 view_handle.clone(),
@@ -153,8 +158,8 @@ pub fn render(
                                 this.child(render_toggle_card(
                                     "settings-editor-mode",
                                     colors,
-                                    i18n.t("VersionSettingsModal.editor_label"),
-                                    i18n.t("VersionSettingsModal.editor_desc"),
+                                    t!("VersionSettingsModal.editor_label"),
+                                    t!("VersionSettingsModal.editor_desc"),
                                     state.config.editor_mode,
                                     VersionSettingsToggle::EditorMode,
                                     view_handle.clone(),
@@ -176,7 +181,7 @@ pub fn render(
                     .justify_end()
                     .gap(px(10.))
                     .child({
-                        ghost_button(colors, "manage-settings-cancel", i18n.t("common.cancel"))
+                        ghost_button(colors, "manage-settings-cancel", t!("common.cancel"))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 cancel_dismiss.dismiss(cx);
                             })
@@ -187,9 +192,9 @@ pub fn render(
                             colors,
                             "manage-settings-save",
                             if state.saving {
-                                i18n.t("common.saving")
+                                t!("common.saving")
                             } else {
-                                i18n.t("VersionSettingsModal.save_changes")
+                                t!("VersionSettingsModal.save_changes")
                             },
                         )
                         .opacity(if state.saving { 0.75 } else { 1.0 })
@@ -226,7 +231,7 @@ fn render_header(
                 .text_size(px(18.))
                 .font_weight(FontWeight::BOLD)
                 .text_color(colors.text_primary)
-                .child(i18n.t("ManagePage.version_settings")),
+                .child(t!("ManagePage.version_settings")),
         )
         .child(
             div()
@@ -360,14 +365,14 @@ fn render_mouse_lock_card(
                         .gap(px(6.))
                         .child(card_title(
                             colors,
-                            i18n.t("VersionSettingsModal.mouse_lock_label"),
+                            t!("VersionSettingsModal.mouse_lock_label"),
                         ))
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .line_height(relative(1.45))
                                 .text_color(colors.text_secondary)
-                                .child(i18n.t("VersionSettingsModal.mouse_lock_desc")),
+                                .child(t!("VersionSettingsModal.mouse_lock_desc")),
                         ),
                 )
                 .child(ToggleSwitch::new(
@@ -408,14 +413,14 @@ fn render_mouse_lock_card(
                                         .gap(px(4.))
                                         .child(card_title(
                                             colors,
-                                            i18n.t("VersionSettingsModal.mouse_lock_reduce_label"),
+                                            t!("VersionSettingsModal.mouse_lock_reduce_label"),
                                         ))
                                         .child(
                                             div()
                                                 .text_size(px(12.))
                                                 .text_color(colors.text_secondary)
-                                                .child(i18n.t(
-                                                    "VersionSettingsModal.mouse_lock_reduce_desc",
+                                                .child(t!(
+                                                    "VersionSettingsModal.mouse_lock_reduce_desc"
                                                 )),
                                         ),
                                 )
@@ -446,24 +451,20 @@ fn render_mouse_lock_card(
                                 .gap(px(8.))
                                 .child(card_title(
                                     colors,
-                                    i18n.t("VersionSettingsModal.mouse_lock_hotkey_label"),
+                                    t!("VersionSettingsModal.mouse_lock_hotkey_label"),
                                 ))
                                 .child(
                                     div()
                                         .text_size(px(12.))
                                         .text_color(colors.text_secondary)
-                                        .child(
-                                            i18n.t("VersionSettingsModal.mouse_lock_hotkey_desc"),
-                                        ),
+                                        .child(t!("VersionSettingsModal.mouse_lock_hotkey_desc")),
                                 )
                                 .child(hotkey_group)
                                 .child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(colors.text_muted)
-                                        .child(
-                                            i18n.t("VersionSettingsModal.mouse_lock_hotkey_tip"),
-                                        ),
+                                        .child(t!("VersionSettingsModal.mouse_lock_hotkey_tip")),
                                 ),
                         ),
                 ),

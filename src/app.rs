@@ -1,7 +1,7 @@
 use crate::http::gpui_client::create_gpui_http_client;
 use crate::i18n::Locale;
 use crate::launch::LaunchMode;
-use crate::ui::state::i18n::I18n;
+use crate::ui::state::i18n::{I18n, LanguageController};
 use anyhow::Result;
 use gpui::*;
 use std::env;
@@ -313,6 +313,11 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     }
 
     cx.default_global::<I18n>();
+    let global_i18n = cx.global::<I18n>().clone();
+    if global_i18n.register_global().is_err() {
+        panic!("application I18n must be registered once");
+    }
+    cx.default_global::<LanguageController>();
     cx.default_global::<crate::ui::state::navigation::NavState>();
     cx.default_global::<crate::ui::views::download::state::DownloadPageState>();
     cx.default_global::<crate::ui::state::local_versions::LocalVersionsState>();
@@ -346,6 +351,12 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
 
     cx.update_global(|i18n: &mut I18n, _cx| {
         i18n.set_locale(bootstrap.initial_locale);
+    });
+    cx.update_global(|language: &mut LanguageController, _cx| {
+        language.initialize(
+            &bootstrap.config.launcher.language,
+            bootstrap.initial_locale,
+        );
     });
 
     crate::ui::state::theme::ThemeState::apply_startup_config(

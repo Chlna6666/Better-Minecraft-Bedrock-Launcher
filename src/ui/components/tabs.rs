@@ -1,4 +1,5 @@
 use crate::ui::animation::{ease_out_cubic, raw_progress, request_animation_frame_if};
+use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -65,6 +66,9 @@ impl RenderOnce for UnderlineTabs {
         let colors = self.colors;
 
         div()
+            .min_w(px(0.))
+            .overflow_x_scrollbar()
+            .scrollbar_width(px(0.))
             .flex()
             .gap(self.gap)
             .children(self.items.into_iter().map(move |item| {
@@ -87,6 +91,7 @@ impl RenderOnce for UnderlineTabs {
 
                 div()
                     .id(item.id.clone())
+                    .flex_shrink_0()
                     .px(px(4.))
                     .py(px(6.))
                     .border_b_2()
@@ -336,6 +341,9 @@ impl RenderOnce for AnimatedSegmentTabs {
                     .child(
                         content.child(
                             div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_ellipsis()
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(if active { active_text } else { inactive_text })
@@ -344,7 +352,7 @@ impl RenderOnce for AnimatedSegmentTabs {
                     );
 
                 if let Some(item_width) = item_width {
-                    tab = tab.w(item_width);
+                    tab = tab.w(item_width).overflow_hidden();
                 } else {
                     tab = tab.flex_1().min_w(px(0.));
                 }

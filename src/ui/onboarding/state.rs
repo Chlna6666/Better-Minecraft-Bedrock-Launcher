@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::i18n::{I18nKey, LocalizedText};
 use gpui::{Bounds, Global, Pixels};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -123,15 +124,17 @@ pub enum OnboardingAnchor {
 
 #[derive(Clone, Debug)]
 pub struct OnboardingSummaryItem {
-    pub label: String,
-    pub value: String,
+    pub label: I18nKey,
     pub warning: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct OnboardingPlatformSummary {
-    pub title: String,
-    pub detail: String,
+    pub ready: bool,
+    pub missing_reason: Option<String>,
+    pub distribution_name: String,
+    pub runner: Option<String>,
+    pub local_versions: usize,
     pub items: Vec<OnboardingSummaryItem>,
 }
 
@@ -141,7 +144,7 @@ pub struct OnboardingTourState {
     pub reopened: bool,
     pub platform_scanning: bool,
     pub platform_summary: Option<OnboardingPlatformSummary>,
-    pub error: Option<String>,
+    pub error: Option<LocalizedText>,
     anchors: HashMap<OnboardingAnchor, Bounds<Pixels>>,
     request_id: u64,
 }
@@ -218,17 +221,17 @@ impl OnboardingTourState {
         true
     }
 
-    pub fn set_error(&mut self, request_id: u64, error: impl Into<String>) -> bool {
+    pub fn set_error(&mut self, request_id: u64, error: LocalizedText) -> bool {
         if !self.visible || self.request_id != request_id {
             return false;
         }
         self.platform_scanning = false;
-        self.error = Some(error.into());
+        self.error = Some(error);
         true
     }
 
-    pub fn set_persist_error(&mut self, error: impl Into<String>) {
-        self.error = Some(error.into());
+    pub fn set_persist_error(&mut self, error: LocalizedText) {
+        self.error = Some(error);
     }
 
     pub fn finish(&mut self) {

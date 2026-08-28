@@ -64,7 +64,7 @@ pub(super) fn render_sponsors_modal(
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors.text_primary)
-                    .child(i18n.t("AboutSection.sponsors.title")),
+                    .child(t!("AboutSection.sponsors.title")),
             )
             .child(
                 div()
@@ -73,7 +73,7 @@ pub(super) fn render_sponsors_modal(
                     .gap(px(10.))
                     .child(icon_btn(
                         colors,
-                        i18n.t("AboutSection.sponsors.support_link"),
+                        t!("AboutSection.sponsors.support_link"),
                         lucide_icons::icon_link(),
                         true,
                         Rc::new(|cx: &mut App| {
@@ -82,7 +82,7 @@ pub(super) fn render_sponsors_modal(
                     ))
                     .child(icon_btn(
                         colors,
-                        i18n.t("common.close"),
+                        t!("common.close"),
                         lucide_icons::icon_x(),
                         true,
                         close_button,
@@ -291,7 +291,7 @@ fn render_sponsors_body(
                     div()
                         .text_size(px(13.))
                         .text_color(colors.text_primary)
-                        .child(i18n.t("AboutSection.sponsors.error")),
+                        .child(t!("AboutSection.sponsors.error")),
                 )
                 .child(
                     div()
@@ -301,7 +301,7 @@ fn render_sponsors_body(
                 )
                 .child(action_btn(
                     colors,
-                    i18n.t("retry"),
+                    t!("common.retry"),
                     Rc::new(|cx: &mut App| spawn_load_sponsors(cx)),
                 )),
         );
@@ -313,7 +313,7 @@ fn render_sponsors_body(
                 div()
                     .text_size(px(13.))
                     .text_color(colors.text_secondary)
-                    .child(i18n.t("AboutSection.sponsors.empty")),
+                    .child(t!("AboutSection.sponsors.empty")),
             ),
         );
     }

@@ -28,15 +28,6 @@ use super::tile_render::*;
 use super::tile_state::*;
 use super::viewport::*;
 
-const MAP_VIEWER_TASK_STAGE_LABELS: [(&str, &str); 7] = [
-    ("map_export", "地图导出"),
-    ("map_import", "地图导入"),
-    ("map_copy", "复制区块"),
-    ("map_paste", "粘贴区块"),
-    ("map_delete", "删除区块"),
-    ("map_write", "写入地图"),
-    ("map_refresh", "刷新地图瓦片"),
-];
 // Submit original world-tile images directly to GPUI. The retained tile layer already
 // publishes ready batches incrementally and budgets new GPU uploads per frame, while keeping
 // the one-block-per-pixel source images reusable across zoom levels without viewport resampling.
@@ -311,7 +302,6 @@ impl MapViewerWindowView {
     }
 
     pub fn new(init: MapViewerWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        task_manager::register_task_stage_labels(MAP_VIEWER_TASK_STAGE_LABELS);
         let world_path = PathBuf::from(init.world_path.as_ref());
         let window_size = window.viewport_size();
         let mut viewport = MapViewport::new(window_size);
@@ -353,6 +343,9 @@ impl MapViewerWindowView {
                 cx.notify();
             }
         })];
+        subscriptions.push(cx.observe_global::<I18n>(|_, cx| {
+            cx.notify();
+        }));
         subscriptions.extend(map_input_subscriptions(&input_fields, cx));
         subscriptions.extend(player_workspace_subscriptions(&player_workspace, cx));
         let top_bar_view = cx.new(|_cx| MapTopBarView::default());

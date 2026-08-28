@@ -48,25 +48,23 @@ pub fn render_launch_prereq_overlay(
         .or_else(|| version.map(|version| detect_launch_platform(version.kind.as_ref())))
         .unwrap_or(LaunchPlatform::Uwp);
     let platform_label = match platform {
-        LaunchPlatform::Uwp => i18n.t("common.uwp"),
-        LaunchPlatform::Gdk => i18n.t("common.gdk"),
+        LaunchPlatform::Uwp => t!("common.uwp"),
+        LaunchPlatform::Gdk => t!("common.gdk"),
     };
     let subtitle = version
         .map(|version| {
-            i18n.t_args(
+            t!(
                 "LaunchPrereq.subtitle",
-                crate::i18n_args![
-                    ("name", &version.name),
-                    ("folder", &version.folder),
-                    ("version", &version.version)
-                ],
+                name = &version.name,
+                folder = &version.folder,
+                version = &version.version
             )
         })
-        .unwrap_or_else(|| i18n.t("LaunchPrereq.waitingAction"));
+        .unwrap_or_else(|| t!("LaunchPrereq.waitingAction"));
     let operation_text = state
         .operation
         .map(|operation| operation_label(operation, i18n))
-        .unwrap_or_else(|| i18n.t("McDeps.waitingAction"));
+        .unwrap_or_else(|| t!("McDeps.waitingAction"));
     let progress_percent = state
         .progress_percent
         .unwrap_or(match state.operation {
@@ -120,14 +118,13 @@ pub fn render_launch_prereq_overlay(
     content = content.child(render_issue_sections(state, &colors, action_enabled, i18n));
     content = content.child(render_logs_section(state, &colors, i18n));
 
-    let mut recheck_button =
-        secondary_button(&colors, i18n.t("LaunchPrereq.recheck"), action_enabled);
+    let mut recheck_button = secondary_button(&colors, t!("LaunchPrereq.recheck"), action_enabled);
     if action_enabled {
         recheck_button = recheck_button.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
             recheck_launch_prereq(cx);
         });
     }
-    let mut close_button = secondary_button(&colors, i18n.t("common.cancel"), true);
+    let mut close_button = secondary_button(&colors, t!("common.cancel"), true);
     close_button = close_button.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
         if cx.global::<LaunchPrereqState>().is_busy() {
             cancel_launch_prereq(cx);
@@ -139,11 +136,11 @@ pub fn render_launch_prereq_overlay(
     modal::modal_layer(
         render_shell(
             &colors,
-            i18n.t("LaunchPrereq.title"),
+            t!("LaunchPrereq.title"),
             subtitle,
             platform,
             platform_label,
-            i18n.t("LaunchPrereq.footerHint"),
+            t!("LaunchPrereq.footerHint"),
             content,
             recheck_button,
             close_button,
@@ -246,7 +243,7 @@ fn render_issue_sections(
     if check.developer_mode_required {
         let mut open_settings_button = secondary_button(
             colors,
-            i18n.t("LaunchPrereq.issueDeveloperMode.openSettings"),
+            t!("LaunchPrereq.issueDeveloperMode.openSettings"),
             close_enabled,
         );
         if close_enabled {
@@ -257,7 +254,7 @@ fn render_issue_sections(
         }
         let mut modify_registry_button = primary_button(
             colors,
-            i18n.t("LaunchPrereq.issueDeveloperMode.modifyRegistry"),
+            t!("LaunchPrereq.issueDeveloperMode.modifyRegistry"),
             close_enabled,
         );
         if close_enabled {
@@ -271,8 +268,8 @@ fn render_issue_sections(
             colors,
             lucide_icons::icon_wrench(),
             colors.stat_orange_text,
-            i18n.t("LaunchPrereq.issueDeveloperMode.title"),
-            i18n.t("LaunchPrereq.issueDeveloperMode.description"),
+            t!("LaunchPrereq.issueDeveloperMode.title"),
+            t!("LaunchPrereq.issueDeveloperMode.description"),
             vec![developer_mode_actions(
                 open_settings_button,
                 modify_registry_button,
@@ -283,7 +280,7 @@ fn render_issue_sections(
     if !check.missing_uwp_dependencies.is_empty() {
         let mut install_button = primary_button(
             colors,
-            i18n.t("LaunchPrereq.issueUwpDependencies.install"),
+            t!("LaunchPrereq.issueUwpDependencies.install"),
             close_enabled,
         );
         if close_enabled {
@@ -330,17 +327,15 @@ fn render_issue_sections(
                                             .text_size(px(14.))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(colors.text_primary)
-                                            .child(
-                                                i18n.t("LaunchPrereq.issueUwpDependencies.title"),
-                                            ),
+                                            .child(t!("LaunchPrereq.issueUwpDependencies.title")),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(12.))
                                             .line_height(relative(1.45))
                                             .text_color(colors.text_secondary)
-                                            .child(i18n.t(
-                                                "LaunchPrereq.issueUwpDependencies.description",
+                                            .child(t!(
+                                                "LaunchPrereq.issueUwpDependencies.description"
                                             )),
                                     )
                                     .child(
@@ -356,7 +351,7 @@ fn render_issue_sections(
     if let Some(plan) = check.game_input_plan.as_ref() {
         let mut install_button = primary_button(
             colors,
-            i18n.t("LaunchPrereq.issueGameInput.install"),
+            t!("LaunchPrereq.issueGameInput.install"),
             close_enabled,
         );
         if close_enabled {
@@ -368,10 +363,10 @@ fn render_issue_sections(
 
         let description = match plan.source {
             GameInputInstallerSource::Local => {
-                i18n.t("LaunchPrereq.issueGameInput.descriptionLocal")
+                t!("LaunchPrereq.issueGameInput.descriptionLocal")
             }
             GameInputInstallerSource::Download => {
-                i18n.t("LaunchPrereq.issueGameInput.descriptionDownload")
+                t!("LaunchPrereq.issueGameInput.descriptionDownload")
             }
         };
         let source_label = match plan.source {
@@ -412,7 +407,7 @@ fn render_issue_sections(
                                             .text_size(px(14.))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(colors.text_primary)
-                                            .child(i18n.t("LaunchPrereq.issueGameInput.title")),
+                                            .child(t!("LaunchPrereq.issueGameInput.title")),
                                     )
                                     .child(
                                         div()
@@ -432,7 +427,7 @@ fn render_issue_sections(
     if let Some(plan) = check.windows_app_sdk_plan.as_ref() {
         let mut install_button = primary_button(
             colors,
-            i18n.t("LaunchPrereq.issueWindowsAppSdk.install"),
+            t!("LaunchPrereq.issueWindowsAppSdk.install"),
             close_enabled,
         );
         if close_enabled {
@@ -444,10 +439,10 @@ fn render_issue_sections(
 
         let description = match plan.source {
             WindowsAppSdkInstallerSource::Local => {
-                i18n.t("LaunchPrereq.issueWindowsAppSdk.descriptionLocal")
+                t!("LaunchPrereq.issueWindowsAppSdk.descriptionLocal")
             }
             WindowsAppSdkInstallerSource::Download => {
-                i18n.t("LaunchPrereq.issueWindowsAppSdk.descriptionDownload")
+                t!("LaunchPrereq.issueWindowsAppSdk.descriptionDownload")
             }
         };
         let source_label = match plan.source {
@@ -490,7 +485,7 @@ fn render_issue_sections(
                                             .text_size(px(14.))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(colors.text_primary)
-                                            .child(i18n.t("LaunchPrereq.issueWindowsAppSdk.title")),
+                                            .child(t!("LaunchPrereq.issueWindowsAppSdk.title")),
                                     )
                                     .child(
                                         div()
@@ -527,7 +522,7 @@ fn render_logs_section(state: &LaunchPrereqState, colors: &ThemeColors, i18n: &I
                     .text_size(px(13.))
                     .font_weight(FontWeight::BOLD)
                     .text_color(colors.text_primary)
-                    .child(i18n.t("LaunchPrereq.logs.title")),
+                    .child(t!("LaunchPrereq.logs.title")),
             ),
         )
         .child(
@@ -545,7 +540,7 @@ fn render_logs_section(state: &LaunchPrereqState, colors: &ThemeColors, i18n: &I
                         div()
                             .text_size(px(12.))
                             .text_color(colors.text_muted)
-                            .child(i18n.t("McDeps.noLogs"))
+                            .child(t!("McDeps.noLogs"))
                             .into_any_element(),
                     ]
                 } else {
@@ -843,10 +838,10 @@ fn render_uwp_dependency_issue_row(
     let reason = format_uwp_dependency_issue_reason(dependency, i18n);
     let badge_label = match &dependency.issue_kind {
         crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => {
-            i18n.t("LaunchPrereq.issueUwpDependencies.reasonMissing")
+            t!("LaunchPrereq.issueUwpDependencies.reasonMissing")
         }
         crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch { .. } => {
-            i18n.t("LaunchPrereq.issueUwpDependencies.reasonVersionShort")
+            t!("LaunchPrereq.issueUwpDependencies.reasonVersionShort")
         }
     };
     let badge_color = match &dependency.issue_kind {
@@ -902,24 +897,22 @@ fn format_uwp_dependency_issue_reason(
 ) -> SharedString {
     match &dependency.issue_kind {
         crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => {
-            i18n.t("LaunchPrereq.issueUwpDependencies.reasonMissing")
+            t!("LaunchPrereq.issueUwpDependencies.reasonMissing")
         }
         crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch {
             installed_version: Some(installed_version),
             required_version,
-        } => i18n.t_args(
+        } => t!(
             "LaunchPrereq.issueUwpDependencies.reasonVersionMismatch",
-            crate::i18n_args![
-                ("current", installed_version),
-                ("required", required_version)
-            ],
+            current = installed_version,
+            required = required_version
         ),
         crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch {
             installed_version: None,
             required_version,
-        } => i18n.t_args(
+        } => t!(
             "LaunchPrereq.issueUwpDependencies.reasonVersionUnknown",
-            crate::i18n_args![("required", required_version)],
+            required = required_version
         ),
     }
 }
@@ -1057,21 +1050,21 @@ fn secondary_button(colors: &ThemeColors, label: SharedString, enabled: bool) ->
 
 fn operation_label(operation: LaunchPrereqOperation, i18n: &I18n) -> SharedString {
     match operation {
-        LaunchPrereqOperation::Checking => i18n.t("LaunchPrereq.operation.checking"),
+        LaunchPrereqOperation::Checking => t!("LaunchPrereq.operation.checking"),
         LaunchPrereqOperation::OpeningDeveloperSettings => {
-            i18n.t("LaunchPrereq.operation.openingDeveloperSettings")
+            t!("LaunchPrereq.operation.openingDeveloperSettings")
         }
         LaunchPrereqOperation::EnablingDeveloperMode => {
-            i18n.t("LaunchPrereq.operation.enablingDeveloperMode")
+            t!("LaunchPrereq.operation.enablingDeveloperMode")
         }
         LaunchPrereqOperation::InstallingUwpDependencies => {
-            i18n.t("LaunchPrereq.operation.installingUwpDependencies")
+            t!("LaunchPrereq.operation.installingUwpDependencies")
         }
         LaunchPrereqOperation::InstallingGameInput => {
-            i18n.t("LaunchPrereq.operation.installingGameInput")
+            t!("LaunchPrereq.operation.installingGameInput")
         }
         LaunchPrereqOperation::InstallingWindowsAppSdk => {
-            i18n.t("LaunchPrereq.operation.installingWindowsAppSdk")
+            t!("LaunchPrereq.operation.installingWindowsAppSdk")
         }
     }
 }

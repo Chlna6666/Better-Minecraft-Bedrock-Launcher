@@ -36,25 +36,23 @@ pub(super) fn render_about_tab(
     settings: &SettingsPageState,
     update: &UpdateState,
 ) -> Div {
-    let section = i18n.t("Settings.tabs.about");
+    let section = t!("Settings.tabs.about");
 
     let app_version = SharedString::from(app_info::get_version());
 
-    let version_line = i18n.t_args(
+    let version_line = t!(
         "AboutSection.app.version",
-        crate::i18n_args![
-            ("appVersion", app_version.as_ref()),
-            ("renderEngine", render_engine.as_ref()),
-        ],
+        appVersion = app_version.as_ref(),
+        renderEngine = render_engine.as_ref()
     );
 
     let checking = update.checking;
     let update_btn_title = if checking {
-        i18n.t("AboutSection.app.checking")
+        t!("AboutSection.app.checking")
     } else {
-        i18n.t("AboutSection.app.official")
+        t!("AboutSection.app.official")
     };
-    let no_update_msg = i18n.t("AboutSection.update.no_update");
+    let no_update_msg = t!("AboutSection.update.no_update");
 
     let dev_card = about_big_card(
         colors,
@@ -65,9 +63,9 @@ pub(super) fn render_about_tab(
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .opacity(0.95),
         SharedString::from("Chlna6666"),
-        i18n.t("AboutSection.dev.description"),
+        t!("AboutSection.dev.description"),
         Some(IconAction {
-            title: i18n.t("AboutSection.dev.sponsor"),
+            title: t!("AboutSection.dev.sponsor"),
             icon_path: lucide_icons::icon_link(),
             enabled: true,
             on_click: Rc::new(|cx: &mut App| {
@@ -108,10 +106,10 @@ pub(super) fn render_about_tab(
         .child(tab_title(colors, section))
         .child(dev_card)
         .child(app_card)
-        .child(sub_title(colors, i18n.t("AboutSection.thanks.title")))
+        .child(sub_title(colors, t!("AboutSection.thanks.title")))
         .child(render_thanks_grid(colors, window_width, i18n))
         .child(render_dependencies_card(colors, i18n))
-        .child(sub_title(colors, i18n.t("AboutSection.legal.title")))
+        .child(sub_title(colors, t!("AboutSection.legal.title")))
         .child(render_legal_cards(colors, i18n, settings))
 }
 
@@ -362,7 +360,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         ThanksItem {
             img: SharedString::from(IMG_MCAPPX),
             title: SharedString::from("MCAPPX"),
-            desc: i18n.t("AboutSection.thanks.MCAPPX"),
+            desc: t!("AboutSection.thanks.MCAPPX"),
             link: Some(SharedString::from("https://www.mcappx.com/")),
             action: None,
             is_square: true,
@@ -371,7 +369,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         ThanksItem {
             img: SharedString::from(IMG_MCIM),
             title: SharedString::from("MCIM"),
-            desc: i18n.t("AboutSection.thanks.mcim"),
+            desc: t!("AboutSection.thanks.mcim"),
             link: Some(SharedString::from("https://www.mcimirror.top/")),
             action: None,
             is_square: true,
@@ -380,7 +378,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         ThanksItem {
             img: SharedString::from(IMG_EASYTIER),
             title: SharedString::from("EasyTier"),
-            desc: i18n.t("AboutSection.thanks.easytier"),
+            desc: t!("AboutSection.thanks.easytier"),
             link: Some(SharedString::from("https://github.com/EasyTier/EasyTier")),
             action: None,
             is_square: true,
@@ -389,7 +387,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         ThanksItem {
             img: SharedString::from(IMG_BL_CORE),
             title: SharedString::from("BedrockLauncher.Core"),
-            desc: i18n.t("AboutSection.thanks.bl_core"),
+            desc: t!("AboutSection.thanks.bl_core"),
             link: Some(SharedString::from(
                 "https://github.com/Round-Studio/BedrockLauncher.Core",
             )),
@@ -400,7 +398,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         ThanksItem {
             img: SharedString::from("https://avatars.githubusercontent.com/u/5191659?v=4"),
             title: SharedString::from("MCMrARM"),
-            desc: i18n.t("AboutSection.thanks.mcmrarm"),
+            desc: t!("AboutSection.thanks.mcmrarm"),
             link: Some(SharedString::from(
                 "https://github.com/MCMrARM/mc-w10-versiondb",
             )),
@@ -411,7 +409,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         ThanksItem {
             img: SharedString::from(IMG_FUFUHA),
             title: SharedString::from("Fufuha"),
-            desc: i18n.t("AboutSection.thanks.fufuha"),
+            desc: t!("AboutSection.thanks.fufuha"),
             link: Some(SharedString::from("https://space.bilibili.com/1798893653/")),
             action: None,
             is_square: false,
@@ -420,7 +418,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         ThanksItem {
             img: SharedString::from(IMG_USTINIANA),
             title: SharedString::from("Ustiniana1641"),
-            desc: i18n.t("AboutSection.thanks.ustiniana1641"),
+            desc: t!("AboutSection.thanks.ustiniana1641"),
             link: None,
             action: None,
             is_square: false,
@@ -428,8 +426,8 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         },
         ThanksItem {
             img: SharedString::from(IMG_GITHUB),
-            title: i18n.t("AboutSection.thanks.contributors"),
-            desc: i18n.t("AboutSection.thanks.community"),
+            title: t!("AboutSection.thanks.contributors"),
+            desc: t!("AboutSection.thanks.community"),
             link: Some(SharedString::from(
                 "https://github.com/BMCBL/Better-Minecraft-Bedrock-Launcher/graphs/contributors",
             )),
@@ -439,8 +437,8 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         },
         ThanksItem {
             img: SharedString::from(IMG_AFDIAN),
-            title: i18n.t("AboutSection.thanks.sponsors"),
-            desc: i18n.t("AboutSection.thanks.support"),
+            title: t!("AboutSection.thanks.sponsors"),
+            desc: t!("AboutSection.thanks.support"),
             link: None,
             action: Some(open_sponsors),
             is_square: true,
@@ -448,8 +446,8 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
         },
         ThanksItem {
             img: SharedString::from(IMG_LOGO),
-            title: i18n.t("AboutSection.thanks.users"),
-            desc: i18n.t("AboutSection.thanks.user_support"),
+            title: t!("AboutSection.thanks.users"),
+            desc: t!("AboutSection.thanks.user_support"),
             link: None,
             action: None,
             is_square: true,
@@ -464,7 +462,7 @@ fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -
     let content_width = window_width_value.min(1000.0);
     let available_width = (content_width - 28.0).max(220.0);
     let two_columns = available_width >= 620.0;
-    let view_label = i18n.t("AboutSection.common.view");
+    let view_label = t!("AboutSection.common.view");
     if two_columns {
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut index = 0usize;
@@ -605,21 +603,21 @@ fn render_legal_cards(colors: &ThemeColors, i18n: &I18n, _settings: &SettingsPag
 
     let cards = vec![
         LegalItem {
-            title: i18n.t("AboutSection.legal.copyright.title"),
-            content: i18n.t("AboutSection.legal.copyright.content"),
+            title: t!("AboutSection.legal.copyright.title"),
+            content: t!("AboutSection.legal.copyright.content"),
             link: Some(SharedString::from(
                 "https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher",
             )),
             action: None,
         },
         LegalItem {
-            title: i18n.t("AboutSection.legal.agreement.title"),
-            content: i18n.t("AboutSection.legal.agreement.content"),
+            title: t!("AboutSection.legal.agreement.title"),
+            content: t!("AboutSection.legal.agreement.content"),
             link: None,
             action: Some(open_agreement),
         },
         LegalItem {
-            title: i18n.t("AboutSection.legal.license.title"),
+            title: t!("AboutSection.legal.license.title"),
             content: license,
             link: None,
             action: None,
@@ -685,7 +683,7 @@ fn render_dependencies_card(colors: &ThemeColors, i18n: &I18n) -> Stateful<Div> 
                         .text_size(px(15.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child(i18n.t("AboutSection.dependencies.title")),
+                        .child(t!("AboutSection.dependencies.title")),
                 )
                 .child(
                     div()
@@ -693,12 +691,12 @@ fn render_dependencies_card(colors: &ThemeColors, i18n: &I18n) -> Stateful<Div> 
                         .line_height(px(18.))
                         .text_color(colors.text_secondary)
                         .whitespace_normal()
-                        .child(i18n.t("AboutSection.dependencies.content")),
+                        .child(t!("AboutSection.dependencies.content")),
                 ),
         )
         .child(icon_btn(
             colors,
-            i18n.t("AboutSection.common.view"),
+            t!("AboutSection.common.view"),
             lucide_icons::icon_external_link(),
             true,
             open_dependencies,

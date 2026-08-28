@@ -1,6 +1,7 @@
 use gpui::{Entity, Global, SharedString};
 
 use crate::ui::components::input::InputState;
+use crate::ui::state::i18n::I18n;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolsTab {
@@ -18,13 +19,13 @@ pub enum OnlineOperation {
 }
 
 impl OnlineOperation {
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) fn localized_label(self, i18n: &I18n) -> SharedString {
         match self {
-            Self::Idle => "",
-            Self::CreatingRoom => "正在创建房间",
-            Self::JoiningRoom => "正在加入房间",
-            Self::RefreshingPeers => "正在刷新节点",
-            Self::Stopping => "正在断开连接",
+            Self::Idle => SharedString::from(""),
+            Self::CreatingRoom => t!("Online.creating_room"),
+            Self::JoiningRoom => t!("Online.joining_room"),
+            Self::RefreshingPeers => t!("Online.refreshing_peers"),
+            Self::Stopping => t!("Online.stopping"),
         }
     }
 

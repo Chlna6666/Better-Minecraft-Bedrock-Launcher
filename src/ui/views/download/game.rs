@@ -6,6 +6,7 @@ use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::components::toast;
 use crate::ui::components::virtual_list::compute_virtual_list_plan;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{
     DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, GameDialogCdnResult,
@@ -44,9 +45,10 @@ struct GamePageRowProps {
 struct GameVisibleRowProps {
     version: SharedString,
     package_id: SharedString,
-    badge: &'static str,
+    badge: SharedString,
+    is_preview: bool,
     is_gdk: bool,
-    action_label: &'static str,
+    action_label: SharedString,
     local_ready: bool,
     disabled: bool,
     md5: Option<SharedString>,
@@ -569,6 +571,7 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
 }
 
 pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
+    let i18n = cx.global::<I18n>().clone();
     let cache = window.use_keyed_state("download-game-panel-cache", cx, |_, _| {
         GamePanelRenderCache::default()
     });
@@ -599,17 +602,17 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
     if let Some(err) = state.error.clone() {
         return panel.child(div().p(px(18.)).child(status_card(
             colors,
-            &format!("加载失败: {err}"),
+            &t!("DownloadPage.load_error", error = &err.to_string()),
             Some(colors.danger),
         )));
     }
 
     if state.versions.is_empty() {
-        return panel.child(
-            div()
-                .p(px(18.))
-                .child(status_card(colors, "暂无可用版本", None)),
-        );
+        return panel.child(div().p(px(18.)).child(status_card(
+            colors,
+            t!("DownloadPage.no_data").as_ref(),
+            None,
+        )));
     }
 
     let (filtered_total, total_pages, page_index, page_rows) = {
@@ -666,12 +669,17 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
             let local_ready = local_path.is_some();
             let disabled =
                 !row.meta_present || matches!(row.archival_status, Some(0 | 1)) || state.loading;
-            let badge = if row.version_type == 0 {
-                "正式"
+            let is_preview = row.version_type != 0;
+            let badge = if is_preview {
+                t!("common.preview")
             } else {
-                "预览"
+                t!("common.release")
             };
-            let action_label = if local_ready { "安装" } else { "下载" };
+            let action_label = if local_ready {
+                t!("common.install")
+            } else {
+                t!("common.download")
+            };
             let (download_task, extract_task) = state
                 .operations_by_package
                 .get(&row.package_id)
@@ -695,6 +703,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 version: row.version.clone(),
                 package_id: row.package_id.clone(),
                 badge,
+                is_preview,
                 is_gdk: row.is_gdk,
                 action_label,
                 local_ready,
@@ -727,10 +736,12 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
         rows_body = rows_body
             .child(render_version_row(
                 colors,
+                &i18n,
                 row.version.clone(),
-                row.badge,
+                row.badge.clone(),
+                row.is_preview,
                 row.is_gdk,
-                row.action_label,
+                row.action_label.clone(),
                 row.local_ready,
                 row.disabled,
                 row.package_id.clone(),
@@ -807,6 +818,7 @@ fn render_pager(
     showing: usize,
     total: usize,
 ) -> Div {
+    let i18n = cx.global::<I18n>().clone();
     let state = cx.global::<DownloadPageState>();
     let page_index = state.page_index;
     let page_size = state.page_size;
@@ -975,7 +987,7 @@ fn render_pager(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_muted)
-                    .child("跳转至"),
+                    .child(t!("DownloadPage.pagination_goto")),
             )
             .child(
                 Input::new(&input_entity)
@@ -987,7 +999,7 @@ fn render_pager(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_muted)
-                    .child("页"),
+                    .child(t!("DownloadPage.pagination_page")),
             )
     });
 
@@ -1009,7 +1021,12 @@ fn render_pager(
                         page_index * page_size + 1
                     };
                     let end = (start + showing.saturating_sub(1)).min(total);
-                    format!("结果: {start}-{end} / {total}")
+                    t!(
+                        "DownloadPage.result_range",
+                        start = start,
+                        end = end,
+                        total = total
+                    )
                 }),
         )
         .child(
@@ -1042,10 +1059,12 @@ fn render_pager(
 
 fn render_version_row(
     colors: &ThemeColors,
+    i18n: &I18n,
     version: SharedString,
-    channel: &'static str,
+    channel: SharedString,
+    is_preview: bool,
     is_gdk: bool,
-    action_label: &'static str,
+    action_label: SharedString,
     is_installed: bool,
     disabled: bool,
     package_id: SharedString,
@@ -1055,15 +1074,15 @@ fn render_version_row(
     active_task: Option<Arc<TaskSnapshot>>,
     levilamina_supported: bool,
 ) -> AnyElement {
-    let channel_bg = if channel == "正式" {
-        colors.badge_stable_bg
-    } else {
+    let channel_bg = if is_preview {
         colors.badge_beta_bg
-    };
-    let channel_fg = if channel == "正式" {
-        colors.badge_stable_text
     } else {
+        colors.badge_stable_bg
+    };
+    let channel_fg = if is_preview {
         colors.badge_beta_text
+    } else {
+        colors.badge_stable_text
     };
 
     let action_bg = if is_installed {
@@ -1085,7 +1104,7 @@ fn render_version_row(
     ));
     let row_element_id = stable_game_row_element_id(&package_id);
 
-    let meta_tag = |label: &'static str, bg: Hsla, fg: Hsla| {
+    let meta_tag = |label: SharedString, bg: Hsla, fg: Hsla| {
         div()
             .px(px(8.))
             .py(px(2.))
@@ -1096,7 +1115,7 @@ fn render_version_row(
             .child(label)
     };
 
-    let icon_path = if channel == "预览" {
+    let icon_path = if is_preview {
         "images/minecraft/Preview.png"
     } else {
         "images/minecraft/Release.png"
@@ -1204,7 +1223,7 @@ fn render_version_row(
                                 .gap(px(8.))
                                 .children(is_gdk.then(|| {
                                     meta_tag(
-                                        "GDK",
+                                        SharedString::from("GDK"),
                                         Hsla {
                                             a: 0.10,
                                             ..colors.accent
@@ -1214,7 +1233,7 @@ fn render_version_row(
                                     .into_any_element()
                                 }))
                                 .child(meta_tag(
-                                    "x64",
+                                    SharedString::from("x64"),
                                     Hsla {
                                         a: 0.10,
                                         ..colors.text_secondary
@@ -1223,7 +1242,7 @@ fn render_version_row(
                                 ))
                                 .children((!is_gdk).then(|| {
                                     meta_tag(
-                                        "UWP",
+                                        SharedString::from("UWP"),
                                         Hsla {
                                             a: 0.10,
                                             ..colors.stat_blue_bg
@@ -1234,7 +1253,7 @@ fn render_version_row(
                                 }))
                                 .children(levilamina_supported.then(|| {
                                     meta_tag(
-                                        "支持 LeviLamina",
+                                        t!("DownloadPage.levilamina_supported"),
                                         Hsla {
                                             a: 0.10,
                                             ..colors.stat_green_text
@@ -1260,9 +1279,9 @@ fn render_version_row(
                 .map(|snapshot| SharedString::from(snapshot.stage.clone()))
                 .unwrap_or_else(|| {
                     if active_task_running {
-                        SharedString::from("处理中")
+                        t!("common.processing")
                     } else {
-                        SharedString::from(action_label)
+                        action_label.clone()
                     }
                 });
             let local_ready = local_path.is_some();
@@ -1329,7 +1348,7 @@ fn render_version_row(
                         kind: dialog_kind,
                         version: version.clone(),
                         package_id: package_id.clone(),
-                        version_type: if channel == "正式" { 0 } else { 2 },
+                        version_type: if is_preview { 2 } else { 0 },
                         md5: md5.clone(),
                         is_gdk,
                         file_name: file_name.clone(),
@@ -1380,9 +1399,10 @@ fn open_game_dialog(window: &mut Window, cx: &mut App, dialog: GameDialogState) 
             .unwrap_or_else(|| SharedString::from(""));
     });
     if is_confirm_download {
+        let version_name_label = t!("DownloadPage.version_name");
         let folder_input = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
-            input.set_placeholder(SharedString::from("版本名称"), window, cx);
+            input.set_placeholder(version_name_label.clone(), window, cx);
             input.set_value(initial_version.clone(), window, cx);
             input
         });
@@ -1584,11 +1604,11 @@ pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
     .detach();
 }
 
-fn channel_label(version_type: i32) -> &'static str {
+fn channel_label(i18n: &I18n, version_type: i32) -> SharedString {
     match version_type {
-        0 => "正式",
-        1 => "Beta",
-        _ => "预览",
+        0 => t!("common.release"),
+        1 => SharedString::from("Beta"),
+        _ => t!("common.preview"),
     }
 }
 
@@ -1623,7 +1643,12 @@ fn start_game_operation(
     ) {
         Ok(request) => request,
         Err(error) => {
-            toast::error(cx, SharedString::from(error));
+            let message = if error == "missing_gdk_source" {
+                t!("DownloadPage.missing_gdk_source")
+            } else {
+                SharedString::from(error)
+            };
+            toast::error(cx, message);
             return;
         }
     };
@@ -1673,7 +1698,7 @@ fn build_game_install_request(
         let base = selected_cdn_base
             .map(ToOwned::to_owned)
             .or(default_base)
-            .ok_or_else(|| "缺少 GDK 下载源".to_string())?;
+            .ok_or_else(|| "missing_gdk_source".to_string())?;
         GamePackageSource::Gdk {
             url: apply_cdn_base(dialog.package_id.as_ref(), &base)?,
         }
@@ -1801,9 +1826,15 @@ fn finish_game_install_operation(
             state.local_files.insert(file_name.clone());
         }
         if let Some(error) = error {
+            let file_name_string = file_name.to_string();
+            let error_string = error.to_string();
             toast::error(
                 cx,
-                SharedString::from(format!("{} 操作失败: {error}", file_name.as_ref())),
+                t!(
+                    "DownloadPage.operation_failed",
+                    file = &file_name_string,
+                    error = &error_string
+                ),
             );
         }
     });
@@ -1849,8 +1880,8 @@ fn render_local_action_card<F>(
     colors: &ThemeColors,
     icon: &'static str,
     accent: Hsla,
-    title: &'static str,
-    subtitle: &'static str,
+    title: SharedString,
+    subtitle: SharedString,
     primary: bool,
     handler: F,
 ) -> Div
@@ -1952,7 +1983,7 @@ where
         ))
 }
 
-fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) -> Div {
+fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDialogState) -> Div {
     let local_path = dialog
         .local_path
         .clone()
@@ -1962,7 +1993,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
         .and_then(|name| name.to_str())
         .unwrap_or(dialog.file_name.as_ref())
         .to_string();
-    let channel = channel_label(dialog.version_type);
+    let channel = channel_label(i18n, dialog.version_type);
     let platform_label = if dialog.is_gdk { "GDK" } else { "UWP" };
     let local_path_for_open = local_path.clone();
     let header = div()
@@ -1986,7 +2017,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                         .text_size(px(17.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("本地安装选项"),
+                        .child(t!("DownloadPage.local_package_actions_title")),
                 )
                 .child(
                     div()
@@ -1995,7 +2026,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                         .line_height(relative(1.35))
                         .text_color(colors.text_secondary)
                         .whitespace_normal()
-                        .child("检测到本地已下载的安装包。你可以直接本地安装，或重新下载，也可以删除本地包释放空间。"),
+                        .child(t!("DownloadPage.local_package_actions_desc")),
                 ),
         )
         .child(
@@ -2018,10 +2049,18 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                     close_game_dialog(cx);
                 }),
         )
-        .child(div().absolute().left(px(0.)).right(px(0.)).bottom(px(0.)).h(px(1.)).bg(Hsla {
-            a: 0.14,
-            ..colors.border
-        }));
+        .child(
+            div()
+                .absolute()
+                .left(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .h(px(1.))
+                .bg(Hsla {
+                    a: 0.14,
+                    ..colors.border
+                }),
+        );
 
     let package_card = div()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -2169,8 +2208,8 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
             colors,
             lucide_icons::icon_download(),
             colors.accent,
-            "本地安装",
-            "继续进入安装确认并设置版本名称",
+            t!("DownloadPage.local_install"),
+            t!("DownloadPage.local_install_desc"),
             true,
             {
                 let dialog = dialog.clone();
@@ -2190,8 +2229,8 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
             colors,
             lucide_icons::icon_rotate_cw(),
             colors.text_secondary,
-            "重新下载",
-            "忽略本地包并重新下载最新安装包",
+            t!("DownloadPage.redownload"),
+            t!("DownloadPage.redownload_desc"),
             false,
             {
                 let dialog = dialog.clone();
@@ -2204,8 +2243,8 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
             colors,
             lucide_icons::icon_trash_2(),
             colors.danger,
-            "删除本地安装包",
-            "从下载目录删除该本地安装包",
+            t!("DownloadPage.delete_local_package"),
+            t!("DownloadPage.delete_local_package_desc"),
             false,
             {
                 let dialog = dialog.clone();
@@ -2255,6 +2294,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
 
 pub(super) fn render_game_dialog(
     colors: &ThemeColors,
+    i18n: &I18n,
     dialog: GameDialogState,
     folder_name_input: Option<&Entity<InputState>>,
     cdn_loading: bool,
@@ -2267,21 +2307,22 @@ pub(super) fn render_game_dialog(
     selected_levilamina_version: SharedString,
 ) -> Div {
     if matches!(dialog.kind, GameDialogKind::LocalActions) {
-        return render_local_actions_dialog(colors, dialog);
+        return render_local_actions_dialog(colors, i18n, dialog);
     }
 
     let is_local_install_confirm =
         matches!(dialog.kind, GameDialogKind::ConfirmDownload) && dialog.local_path.is_some();
     let title = match dialog.kind {
-        GameDialogKind::ConfirmDownload if is_local_install_confirm => "本地安装确认",
-        GameDialogKind::ConfirmDownload => "确认",
-        GameDialogKind::ConfirmDelete => "删除本地包",
+        GameDialogKind::ConfirmDownload if is_local_install_confirm => {
+            t!("DownloadPage.local_install")
+        }
+        GameDialogKind::ConfirmDownload => t!("common.confirm"),
+        GameDialogKind::ConfirmDelete => t!("DownloadPage.delete_local_confirm_title"),
         GameDialogKind::LocalActions => unreachable!("local actions dialog is rendered separately"),
     };
     let subtitle = match dialog.kind {
-        GameDialogKind::ConfirmDownload if is_local_install_confirm => "请确认版本名称",
-        GameDialogKind::ConfirmDownload => "版本名称",
-        GameDialogKind::ConfirmDelete => "删除本地包",
+        GameDialogKind::ConfirmDownload => t!("DownloadPage.version_name_hint"),
+        GameDialogKind::ConfirmDelete => t!("DownloadPage.delete_local_package_desc"),
         GameDialogKind::LocalActions => unreachable!("local actions dialog is rendered separately"),
     };
 
@@ -2297,7 +2338,7 @@ pub(super) fn render_game_dialog(
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .child("版本名称"),
+                            .child(t!("DownloadPage.version_name")),
                     )
                     .child(
                         Input::new(input)
@@ -2331,13 +2372,13 @@ pub(super) fn render_game_dialog(
                     .text_size(px(14.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors.text_primary)
-                    .child("将从下载目录删除这个本地安装包。"),
+                    .child(t!("DownloadPage.delete_local_confirm_desc")),
             )
             .child(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_secondary)
-                    .child("这不会删除已安装的游戏目录，只会移除当前下载好的本地包。"),
+                    .child(t!("DownloadPage.delete_local_confirm_warning")),
             )
             .into_any_element()
     });
@@ -2345,6 +2386,7 @@ pub(super) fn render_game_dialog(
     let levilamina_panel = (matches!(dialog.kind, GameDialogKind::ConfirmDownload)
         && !loader_versions.is_empty())
     .then(|| {
+        let loader_version_count = loader_versions.len().to_string();
         let version_options = loader_versions
             .iter()
             .cloned()
@@ -2359,7 +2401,7 @@ pub(super) fn render_game_dialog(
             .get(selected_index)
             .cloned()
             .map(SharedString::from)
-            .unwrap_or_else(|| SharedString::from("无可用版本"));
+            .unwrap_or_else(|| t!("DownloadPage.no_levilamina_versions"));
         let selectable_versions = loader_versions.clone();
         let version_select = Dropdown::new(
             "game-dialog-levilamina-version",
@@ -2424,15 +2466,15 @@ pub(super) fn render_game_dialog(
                                     .text_size(px(14.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(colors.text_primary)
-                                    .child("同时安装 LeviLamina"),
+                                    .child(t!("DownloadPage.install_levilamina")),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.))
                                     .text_color(colors.text_secondary)
-                                    .child(format!(
-                                        "支持此游戏版本，可选择 {} 个加载器版本",
-                                        loader_versions.len()
+                                    .child(t!(
+                                        "DownloadPage.levilamina_version_count",
+                                        count = &loader_version_count
                                     )),
                             ),
                     )
@@ -2447,7 +2489,7 @@ pub(super) fn render_game_dialog(
                                         .text_size(px(12.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_secondary)
-                                        .child("LeviLamina 版本"),
+                                        .child(t!("DownloadPage.levilamina_version")),
                                 )
                                 .child(version_select),
                         )
@@ -2484,9 +2526,9 @@ pub(super) fn render_game_dialog(
                         });
                     })
                     .child(if install_levilamina {
-                        "已选择"
+                        t!("DownloadPage.selected")
                     } else {
-                        "不安装"
+                        t!("DownloadPage.do_not_install")
                     }),
             )
     });
@@ -2519,11 +2561,11 @@ pub(super) fn render_game_dialog(
             let is_selected = selected_cdn_base.as_ref() == Some(&result.base);
             let badge_text = if cdn_loading && result.latency_ms.is_none() && result.error.is_none()
             {
-                "测试中".to_string()
+                t!("DownloadPage.cdn_testing")
             } else if let Some(latency_ms) = result.latency_ms {
-                format!("{latency_ms} ms")
+                SharedString::from(format!("{latency_ms} ms"))
             } else {
-                "失败".to_string()
+                t!("DownloadPage.cdn_failed")
             };
             let badge_color = if let Some(latency_ms) = result.latency_ms {
                 if latency_ms <= 80 {
@@ -2645,17 +2687,27 @@ pub(super) fn render_game_dialog(
         }
 
         let toggle_button = if cdn_expanded {
-            render_dialog_button(colors, "收起节点", false, |_window, cx| {
-                cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    state.game_dialog_cdn_expanded = false;
-                });
-            })
+            render_dialog_button(
+                colors,
+                t!("DownloadPage.cdn_collapse"),
+                false,
+                |_window, cx| {
+                    cx.update_global(|state: &mut DownloadPageState, _cx| {
+                        state.game_dialog_cdn_expanded = false;
+                    });
+                },
+            )
         } else {
-            render_dialog_button(colors, "展开节点", false, |_window, cx| {
-                cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    state.game_dialog_cdn_expanded = true;
-                });
-            })
+            render_dialog_button(
+                colors,
+                t!("DownloadPage.cdn_expand"),
+                false,
+                |_window, cx| {
+                    cx.update_global(|state: &mut DownloadPageState, _cx| {
+                        state.game_dialog_cdn_expanded = true;
+                    });
+                },
+            )
         };
 
         div()
@@ -2673,7 +2725,7 @@ pub(super) fn render_game_dialog(
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .child("GDK CDN 节点"),
+                            .child(t!("DownloadPage.cdn_nodes")),
                     )
                     .child(
                         div()
@@ -2683,7 +2735,7 @@ pub(super) fn render_game_dialog(
                             .child(toggle_button)
                             .child(render_dialog_button(
                                 colors,
-                                "重新测试",
+                                t!("DownloadPage.cdn_retest"),
                                 false,
                                 |_window, cx| refresh_game_dialog_cdn(cx),
                             )),
@@ -2702,9 +2754,9 @@ pub(super) fn render_game_dialog(
                     .text_size(px(12.))
                     .text_color(colors.text_secondary)
                     .child(if cdn_expanded {
-                        "已测试并按延迟排序，可手动选择任意 CDN 节点。"
+                        t!("DownloadPage.cdn_help_expanded")
                     } else {
-                        "默认显示并优先使用最快可用节点，点击「展开节点」可手动切换。"
+                        t!("DownloadPage.cdn_help_collapsed")
                     }),
             )
     });
@@ -2811,7 +2863,7 @@ pub(super) fn render_game_dialog(
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
-                                .child(channel_label(dialog.version_type)),
+                                .child(channel_label(i18n, dialog.version_type)),
                         )
                         .child(
                             div()
@@ -2861,10 +2913,11 @@ pub(super) fn render_game_dialog(
                 .children(levilamina_panel.map(IntoElement::into_any_element))
                 .children(cdn_panel.map(IntoElement::into_any_element))
                 .children(dialog.local_path.clone().map(|path| {
+                    let local_path_string = path.to_string();
                     div()
                         .text_size(px(13.))
                         .text_color(colors.text_secondary)
-                        .child(format!("本地文件: {path}"))
+                        .child(t!("DownloadPage.local_file", path = &local_path_string))
                         .into_any_element()
                 })),
         );
@@ -2876,16 +2929,16 @@ pub(super) fn render_game_dialog(
             .gap(px(10.))
             .child(render_dialog_button(
                 colors,
-                "取消",
+                t!("common.cancel"),
                 false,
                 |_window, cx| close_game_dialog(cx),
             ))
             .child(render_dialog_button(
                 colors,
                 if is_local_install_confirm {
-                    "开始安装"
+                    t!("DownloadPage.start_install")
                 } else {
-                    "开始下载"
+                    t!("DownloadPage.start_download")
                 },
                 true,
                 {
@@ -2930,7 +2983,7 @@ pub(super) fn render_game_dialog(
             .flex()
             .justify_end()
             .gap(px(10.))
-            .child(render_dialog_button(colors, "取消", false, {
+            .child(render_dialog_button(colors, t!("common.cancel"), false, {
                 let dialog = dialog.clone();
                 move |window, cx| {
                     open_game_dialog(
@@ -2943,10 +2996,15 @@ pub(super) fn render_game_dialog(
                     )
                 }
             }))
-            .child(render_dialog_button(colors, "确认删除", true, {
-                let dialog = dialog.clone();
-                move |_window, cx| delete_game_local_file(cx, dialog.clone())
-            })),
+            .child(render_dialog_button(
+                colors,
+                t!("DownloadPage.delete_local_confirm"),
+                true,
+                {
+                    let dialog = dialog.clone();
+                    move |_window, cx| delete_game_local_file(cx, dialog.clone())
+                },
+            )),
         GameDialogKind::LocalActions => unreachable!("local actions dialog is rendered separately"),
     };
 
@@ -2962,7 +3020,7 @@ pub(super) fn render_game_dialog(
 
 fn render_dialog_button<F>(
     colors: &ThemeColors,
-    label: &'static str,
+    label: SharedString,
     primary: bool,
     handler: F,
 ) -> Div

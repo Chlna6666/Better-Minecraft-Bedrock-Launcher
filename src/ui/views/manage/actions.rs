@@ -51,15 +51,15 @@ impl ManagePageView {
         let Some(input) = create_text_input(
             window,
             cx,
-            "输入整数像素值",
+            t!("ManagePage.input_pixels").as_ref(),
             &state.config.reduce_pixels.to_string(),
         ) else {
             return;
         };
         self.value_prompt = Some(ValuePromptDialogState {
-            title: SharedString::from("缩减像素"),
-            description: SharedString::from("输入鼠标锁定时缩减的像素值。"),
-            confirm_label: SharedString::from("应用"),
+            title: t!("ManagePage.reduce_pixels"),
+            description: t!("ManagePage.reduce_pixels_desc"),
+            confirm_label: t!("common.apply"),
             input,
             target: ValuePromptTarget::VersionReducePixels,
             pending: false,
@@ -78,6 +78,7 @@ impl ManagePageView {
         let version = modal_state.version.clone();
         let config = modal_state.config.clone();
         let icon_source_path = modal_state.icon_source_path.clone();
+        let i18n = cx.global::<I18n>().clone();
         cx.spawn(async move |handle, cx| {
             let version_for_save = version.clone();
             let config_for_save = config.clone();
@@ -91,7 +92,7 @@ impl ManagePageView {
                         std::path::Path::new(version_for_save.path.as_ref()),
                     )
                     .await
-                    .map_err(|error| anyhow::anyhow!("保存版本图标失败: {error}"))?;
+                    .map_err(|error| anyhow::anyhow!("failed to save version icon: {error}"))?;
                 }
                 Ok::<(), anyhow::Error>(())
             })
@@ -108,12 +109,16 @@ impl ManagePageView {
                             state.version_config_error = None;
                         });
                         ensure_local_versions_loaded(true, cx);
-                        toast::success(cx, SharedString::from("版本设置已保存"));
+                        let message = t!("ManagePage.settings_saved");
+                        toast::success(cx, message);
                         this.version_settings_modal = None;
                         this.invalidate_version_dependent_data(cx);
                     }
                     Err(error) => {
-                        toast::error(cx, SharedString::from(error.to_string()));
+                        let message = error.to_string();
+                        let localized_message =
+                            t!("ManagePage.settings_save_failed", message = &message);
+                        toast::error(cx, localized_message);
                     }
                 }
                 cx.notify();
@@ -125,7 +130,8 @@ impl ManagePageView {
     pub(super) fn refresh_versions(&mut self, cx: &mut Context<Self>) {
         self.invalidate_version_dependent_data(cx);
         ensure_local_versions_loaded(true, cx);
-        toast::push(cx, SharedString::from("正在刷新版本列表"));
+        let message = t!("ManagePage.refreshing_versions");
+        toast::push(cx, message);
     }
     pub(super) fn open_version_settings(&mut self, cx: &mut Context<Self>) {
         let state = cx.global::<ManagePageState>();
@@ -228,13 +234,15 @@ impl ManagePageView {
         let Some(version) = self.selected_version(state).cloned() else {
             return;
         };
+        let i18n = cx.global::<I18n>().clone();
+        let version_name = version.display_name().to_string();
         self.confirm_dialog = Some(ConfirmDialogState {
-            title: SharedString::from("删除版本"),
-            description: SharedString::from(format!(
-                "确定删除 {} 吗？此操作不可撤销。",
-                version.display_name()
-            )),
-            confirm_label: SharedString::from("删除版本"),
+            title: t!("ManagePage.delete_version_title"),
+            description: t!(
+                "ManagePage.delete_version_confirm_named",
+                name = &version_name
+            ),
+            confirm_label: t!("ManagePage.delete_version"),
             danger: true,
             pending: false,
             action: ConfirmAction::DeleteVersion { version },
@@ -264,18 +272,18 @@ impl ManagePageView {
             return;
         };
         let folder = version.folder.to_string();
+        let i18n = cx.global::<I18n>().clone();
         match crate::utils::shortcut::create_desktop_shortcut(&folder, &folder) {
             Ok(path) => {
-                toast::success(
-                    cx,
-                    SharedString::from(format!("桌面快捷方式已创建: {}", path.display())),
+                let message = t!(
+                    "ManagePage.shortcut_created",
+                    path = &path.display().to_string()
                 );
+                toast::success(cx, message);
             }
             Err(error) => {
-                toast::error(
-                    cx,
-                    SharedString::from(format!("创建桌面快捷方式失败: {error}")),
-                );
+                let message = t!("ManagePage.shortcut_failed", message = &error.to_string());
+                toast::error(cx, message);
             }
         }
     }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::ui::components::button::Button;
 use crate::ui::components::modal;
+use crate::ui::state::i18n::I18n;
 use std::rc::Rc;
 
 pub fn render_tasks_overlay(
@@ -8,6 +9,7 @@ pub fn render_tasks_overlay(
     view: &Entity<TasksPageView>,
     cx: &App,
 ) -> Option<AnyElement> {
+    let i18n = cx.global::<I18n>();
     let dialog = view.read_with(cx, |this, _| this.confirm_dialog.clone());
     dialog.map(|dialog| {
         let entity = view.downgrade();
@@ -65,7 +67,7 @@ pub fn render_tasks_overlay(
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_secondary)
-                                .label("取消")
+                                .label(t!("common.cancel"))
                                 .on_click(move |_ev, _window, app| {
                                     let _ = dismiss_entity.update(app, |this, cx| {
                                         this.close_confirm(cx);
@@ -82,7 +84,7 @@ pub fn render_tasks_overlay(
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.btn_primary_text)
-                                .label("确认")
+                                .label(t!("common.confirm"))
                                 .on_click(move |_ev, _window, app| {
                                     let task_id = confirm_task_id.clone();
                                     let action = confirm_action.clone();

@@ -1,5 +1,6 @@
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::{
     OnlinePeerEntry, OnlinePeerRole, OnlinePlayerEntry, ToolsPageState,
@@ -12,7 +13,11 @@ use super::actions;
 use super::widgets::subtle_button;
 
 /// 渲染“房间成员”卡片（置顶房主，快速可见）
-pub(super) fn render_room_members_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+pub(super) fn render_room_members_card(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+) -> Div {
     let disabled = state.online_operation.is_busy() || !state.easytier_running;
     crate::ui::components::page_shell::glass_card(colors)
         .w_full()
@@ -20,11 +25,16 @@ pub(super) fn render_room_members_card(colors: &ThemeColors, state: &ToolsPageSt
         .flex()
         .flex_col()
         .gap(px(13.))
-        .child(render_room_members_header(colors, state, disabled))
-        .child(render_room_members_list(colors, state))
+        .child(render_room_members_header(colors, i18n, state, disabled))
+        .child(render_room_members_list(colors, i18n, state))
 }
 
-fn render_room_members_header(colors: &ThemeColors, state: &ToolsPageState, disabled: bool) -> Div {
+fn render_room_members_header(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+    disabled: bool,
+) -> Div {
     div()
         .w_full()
         .flex()
@@ -42,7 +52,7 @@ fn render_room_members_header(colors: &ThemeColors, state: &ToolsPageState, disa
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("房间成员"),
+                        .child(t!("Online.room_members")),
                 )
                 .child(
                     div()
@@ -56,7 +66,7 @@ fn render_room_members_header(colors: &ThemeColors, state: &ToolsPageState, disa
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.accent)
-                        .child(format!("{} 人", state.players.len())),
+                        .child(t!("Online.people_count", count = state.players.len())),
                 ),
         )
         .child(
@@ -64,9 +74,9 @@ fn render_room_members_header(colors: &ThemeColors, state: &ToolsPageState, disa
                 colors,
                 "online-players-refresh",
                 if state.peers_loading {
-                    "刷新中"
+                    t!("Online.refreshing")
                 } else {
-                    "刷新"
+                    t!("Online.refresh")
                 },
                 lucide_icons::icon_refresh_cw(),
                 disabled,
@@ -79,7 +89,11 @@ fn render_room_members_header(colors: &ThemeColors, state: &ToolsPageState, disa
         )
 }
 
-fn render_room_members_list(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoElement {
+fn render_room_members_list(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+) -> impl IntoElement {
     // 排序：房主 (is_room_host == true) 强制置顶展示
     let mut sorted_players = state.players.clone();
     sorted_players.sort_by_key(|player| !player.is_room_host);
@@ -90,15 +104,15 @@ fn render_room_members_list(colors: &ThemeColors, state: &ToolsPageState) -> imp
         .flex_col()
         .gap(px(7.))
         .when(state.peers_loading && sorted_players.is_empty(), |this| {
-            this.child(empty_row(colors, "正在同步房间成员…"))
+            this.child(empty_row(colors, t!("Online.syncing_members")))
         })
         .when(sorted_players.is_empty() && !state.peers_loading, |this| {
             this.child(empty_row(
                 colors,
                 if state.easytier_running {
-                    "房间建立成功，等待其他玩家加入"
+                    t!("Online.waiting_members")
                 } else {
-                    "加入或创建房间后可查看成员列表"
+                    t!("Online.members_after_join")
                 },
             ))
         })
@@ -107,13 +121,17 @@ fn render_room_members_list(colors: &ThemeColors, state: &ToolsPageState) -> imp
                 sorted_players
                     .into_iter()
                     .enumerate()
-                    .map(|(index, player)| render_player_row(colors, index, &player)),
+                    .map(|(index, player)| render_player_row(colors, i18n, index, &player)),
             )
         })
 }
 
 /// 渲染“网络节点”卡片（底部显示，可点击展开/收起）
-pub(super) fn render_network_nodes_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+pub(super) fn render_network_nodes_card(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+) -> Div {
     let disabled = state.online_operation.is_busy() || !state.easytier_running;
     let expanded = state.network_nodes_expanded;
 
@@ -124,13 +142,16 @@ pub(super) fn render_network_nodes_card(colors: &ThemeColors, state: &ToolsPageS
         .flex_col()
         .gap(px(13.))
         .child(render_network_nodes_header(
-            colors, state, disabled, expanded,
+            colors, i18n, state, disabled, expanded,
         ))
-        .when(expanded, |this| this.child(render_peer_list(colors, state)))
+        .when(expanded, |this| {
+            this.child(render_peer_list(colors, i18n, state))
+        })
 }
 
 fn render_network_nodes_header(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &ToolsPageState,
     disabled: bool,
     expanded: bool,
@@ -164,7 +185,7 @@ fn render_network_nodes_header(
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("网络节点"),
+                        .child(t!("Online.network_nodes")),
                 )
                 .child(
                     div()
@@ -178,7 +199,7 @@ fn render_network_nodes_header(
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.text_secondary)
-                        .child(format!("{} 节点", peer_count)),
+                        .child(t!("Online.nodes_count", count = peer_count)),
                 ),
         )
         .child(
@@ -192,9 +213,9 @@ fn render_network_nodes_header(
                             colors,
                             "online-peers-refresh",
                             if state.peers_loading {
-                                "刷新中"
+                                t!("Online.refreshing")
                             } else {
-                                "刷新"
+                                t!("Online.refresh")
                             },
                             lucide_icons::icon_refresh_cw(),
                             disabled,
@@ -219,7 +240,7 @@ fn render_network_nodes_header(
         )
 }
 
-fn render_collapsed_hint(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_collapsed_hint(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     let peer_count = state.peers.len();
     crate::ui::components::page_shell::inner_well(colors)
         .w_full()
@@ -234,52 +255,58 @@ fn render_collapsed_hint(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                 .text_color(colors.text_muted)
                 .child(if state.easytier_running {
                     if peer_count > 0 {
-                        format!("已建立网络链路（共 {peer_count} 个节点），点击展开详情")
+                        t!("Online.network_linked", count = peer_count)
                     } else {
-                        "网络节点就绪，点击展开明细".to_string()
+                        t!("Online.network_ready")
                     }
                 } else {
-                    "连接房间后可展开查看局域网节点与中转信息".to_string()
+                    t!("Online.connect_for_nodes")
                 }),
         )
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(colors.accent)
-                .child("点击展开"),
+                .child(t!("Online.expand_nodes")),
         )
 }
 
-fn render_peer_list(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoElement {
+fn render_peer_list(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> impl IntoElement {
     div()
         .w_full()
         .flex()
         .flex_col()
         .gap(px(8.))
         .when(state.peers_loading && state.peers.is_empty(), |this| {
-            this.child(empty_row(colors, "正在同步节点列表…"))
+            this.child(empty_row(colors, t!("Online.syncing_nodes")))
         })
         .when(state.peers.is_empty() && !state.peers_loading, |this| {
             this.child(empty_row(
                 colors,
                 if state.easytier_running {
-                    "路由建立后，节点会显示在这里"
+                    t!("Online.nodes_after_route")
                 } else {
-                    "连接房间后显示在线节点"
+                    t!("Online.nodes_after_join")
                 },
             ))
         })
         .when(!state.peers.is_empty(), |this| {
-            this.children(render_peer_groups(colors, &state.peers))
+            this.children(render_peer_groups(colors, i18n, &state.peers))
         })
 }
 
-fn render_peer_groups(colors: &ThemeColors, peers: &[OnlinePeerEntry]) -> Vec<Div> {
+fn render_peer_groups(colors: &ThemeColors, i18n: &I18n, peers: &[OnlinePeerEntry]) -> Vec<Div> {
     [
-        (OnlinePeerRole::Server, "联机中心节点"),
-        (OnlinePeerRole::User, "客户端网络节点"),
-        (OnlinePeerRole::Relay, "公共中转节点"),
-        (OnlinePeerRole::Unknown, "其他网络节点"),
+        (
+            OnlinePeerRole::Server,
+            crate::i18n_key!("Online.role_server"),
+        ),
+        (OnlinePeerRole::User, crate::i18n_key!("Online.role_user")),
+        (OnlinePeerRole::Relay, crate::i18n_key!("Online.role_relay")),
+        (
+            OnlinePeerRole::Unknown,
+            crate::i18n_key!("Online.role_unknown"),
+        ),
     ]
     .into_iter()
     .filter_map(|(role, title)| {
@@ -298,19 +325,24 @@ fn render_peer_groups(colors: &ThemeColors, peers: &[OnlinePeerEntry]) -> Vec<Di
                     div()
                         .text_size(px(11.))
                         .text_color(colors.text_muted)
-                        .child(title),
+                        .child(i18n.t_key(title)),
                 )
                 .children(
                     peers
                         .into_iter()
-                        .map(|(index, peer)| render_peer_row(colors, index, peer)),
+                        .map(|(index, peer)| render_peer_row(colors, i18n, index, peer)),
                 )
         })
     })
     .collect()
 }
 
-fn render_peer_row(colors: &ThemeColors, index: usize, peer: &OnlinePeerEntry) -> Stateful<Div> {
+fn render_peer_row(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    index: usize,
+    peer: &OnlinePeerEntry,
+) -> Stateful<Div> {
     crate::ui::components::page_shell::inner_well(colors)
         .id(("online-peer", index))
         .w_full()
@@ -339,7 +371,7 @@ fn render_peer_row(colors: &ThemeColors, index: usize, peer: &OnlinePeerEntry) -
                         .text_size(px(11.))
                         .text_color(colors.text_muted)
                         .truncate()
-                        .child(connection_detail(peer)),
+                        .child(connection_detail(i18n, peer)),
                 ),
         )
         .child(
@@ -349,12 +381,13 @@ fn render_peer_row(colors: &ThemeColors, index: usize, peer: &OnlinePeerEntry) -
                 .text_size(px(12.))
                 .text_color(colors.text_secondary)
                 .truncate()
-                .child(peer_address(peer)),
+                .child(peer_address(i18n, peer)),
         )
 }
 
 fn render_player_row(
     colors: &ThemeColors,
+    i18n: &I18n,
     index: usize,
     player: &OnlinePlayerEntry,
 ) -> Stateful<Div> {
@@ -430,28 +463,32 @@ fn render_player_row(
                 } else {
                     colors.text_secondary
                 })
-                .child(if is_host { "房主" } else { "玩家" }),
+                .child(if is_host {
+                    t!("Online.host")
+                } else {
+                    t!("Online.player")
+                }),
         )
 }
 
-fn connection_detail(peer: &OnlinePeerEntry) -> SharedString {
+fn connection_detail(i18n: &I18n, peer: &OnlinePeerEntry) -> SharedString {
     use crate::core::online::EasyTierConnectionKind;
 
     let mut details = vec![match peer.connection_kind {
-        EasyTierConnectionKind::Local => "本机节点".to_string(),
+        EasyTierConnectionKind::Local => t!("Online.peer_local").to_string(),
         EasyTierConnectionKind::Direct if peer.role == OnlinePeerRole::Relay => {
-            "中转入口已连接".to_string()
+            t!("Online.peer_relay_connected").to_string()
         }
-        EasyTierConnectionKind::Direct => "P2P 直连".to_string(),
+        EasyTierConnectionKind::Direct => t!("Online.peer_p2p").to_string(),
         EasyTierConnectionKind::Relayed => peer
             .via_hostname
             .as_ref()
-            .map(|hostname| format!("经 {hostname} 中转"))
-            .unwrap_or_else(|| "经公共节点中转".to_string()),
+            .map(|hostname| t!("Online.peer_via", hostname = hostname).to_string())
+            .unwrap_or_else(|| t!("Online.peer_public_relay").to_string()),
         EasyTierConnectionKind::Unknown if peer.role == OnlinePeerRole::Relay => {
-            "公共中转节点".to_string()
+            t!("Online.public_relay").to_string()
         }
-        EasyTierConnectionKind::Unknown => "连接信息同步中".to_string(),
+        EasyTierConnectionKind::Unknown => t!("Online.peer_syncing").to_string(),
     }];
     if let Some(protocol) = peer.protocol.as_ref() {
         details.push(protocol.to_string());
@@ -462,25 +499,25 @@ fn connection_detail(peer: &OnlinePeerEntry) -> SharedString {
     SharedString::from(details.join(" · "))
 }
 
-fn peer_address(peer: &OnlinePeerEntry) -> SharedString {
+fn peer_address(i18n: &I18n, peer: &OnlinePeerEntry) -> SharedString {
     peer.ipv4
         .clone()
         .or_else(|| peer.remote_endpoint.clone())
         .unwrap_or_else(|| {
             SharedString::from(if peer.role == OnlinePeerRole::Relay {
-                "公共中转节点"
+                t!("Online.public_relay")
             } else {
-                "无虚拟地址"
+                t!("Online.no_virtual_address")
             })
         })
 }
 
-fn empty_row(colors: &ThemeColors, text: &'static str) -> Div {
+fn empty_row(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
     crate::ui::components::page_shell::inner_well(colors)
         .w_full()
         .px(px(12.))
         .py(px(14.))
         .text_size(px(12.))
         .text_color(colors.text_muted)
-        .child(text)
+        .child(text.into())
 }

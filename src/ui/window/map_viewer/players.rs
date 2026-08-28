@@ -27,6 +27,15 @@ impl PlayerRecordHealth {
             Self::Invalid => "无效",
         }
     }
+
+    pub(super) fn localized_label(self, i18n: &I18n) -> SharedString {
+        match self {
+            Self::Complete => t!("MapViewer.health_complete"),
+            Self::Partial => t!("MapViewer.health_partial"),
+            Self::Stub => t!("MapViewer.health_stub"),
+            Self::Invalid => t!("MapViewer.health_invalid"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +141,15 @@ impl PlayerInventoryKind {
             Self::Armor => "护甲",
             Self::Offhand => "副手",
             Self::EnderChest => "末影箱",
+        }
+    }
+
+    pub(super) fn localized_label(self, i18n: &I18n) -> SharedString {
+        match self {
+            Self::Inventory => t!("MapViewer.inventory"),
+            Self::Armor => t!("MapViewer.armor"),
+            Self::Offhand => t!("MapViewer.offhand"),
+            Self::EnderChest => t!("MapViewer.ender_chest"),
         }
     }
 }
@@ -599,13 +617,15 @@ impl MapViewerWindowView {
         mutation: PlayerItemMutation,
         cx: &mut Context<Self>,
     ) {
+        let i18n = cx.global::<I18n>().clone();
+        let player_item_written = t!("MapViewer.player_item_written");
         let Some(id) = self.players.selected.clone() else {
-            self.status = SharedString::from("请先选择玩家记录");
+            self.status = t!("MapViewer.select_player_record");
             cx.notify();
             return;
         };
         if self.players.saving {
-            self.status = SharedString::from("上一项玩家写入尚未完成");
+            self.status = t!("MapViewer.player_write_pending");
             cx.notify();
             return;
         }
@@ -616,7 +636,7 @@ impl MapViewerWindowView {
         self.players.generation = self.players.generation.saturating_add(1);
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
-        self.status = SharedString::from(format!("正在{label}..."));
+        self.status = t!("MapViewer.performing_edit", action = &label);
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -672,7 +692,7 @@ impl MapViewerWindowView {
                 match result {
                     Ok(detail) => {
                         this.players.detail = Some(detail);
-                        this.status = SharedString::from("玩家物品已写入 · 可在历史面板撤销");
+                        this.status = player_item_written.clone();
                     }
                     Err(error) => {
                         this.players.error = Some(SharedString::from(error.clone()));
@@ -687,8 +707,11 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn run_player_quick_edit(&mut self, edit: PlayerQuickEdit, cx: &mut Context<Self>) {
+        let i18n = cx.global::<I18n>().clone();
+        let edit_label = edit.localized_label(&i18n);
+        let player_record_written = t!("MapViewer.player_record_written");
         let Some(id) = self.players.selected.clone() else {
-            self.status = SharedString::from("请先选择玩家记录");
+            self.status = t!("MapViewer.select_player_record");
             cx.notify();
             return;
         };
@@ -699,7 +722,7 @@ impl MapViewerWindowView {
             .is_none_or(|pending| pending != &edit)
         {
             self.players.pending_save_confirmation = Some(edit.clone());
-            self.status = SharedString::from(format!("再次点击以确认{}", edit.label()));
+            self.status = t!("MapViewer.confirm_edit", action = edit_label.clone());
             cx.notify();
             return;
         }
@@ -710,7 +733,7 @@ impl MapViewerWindowView {
         let world_path = self.world_path.clone();
         let center_block = self.viewport.center_block(self.active_layout);
         let dimension = self.dimension;
-        self.status = SharedString::from(format!("正在{}...", edit.label()));
+        self.status = t!("MapViewer.performing_edit", action = edit_label);
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -763,7 +786,7 @@ impl MapViewerWindowView {
                     Ok(detail) => {
                         this.sync_player_marker_from_detail(&detail);
                         this.players.detail = Some(detail);
-                        this.status = SharedString::from("玩家记录已写入");
+                        this.status = player_record_written.clone();
                         let colors = this.theme_colors(cx);
                         this.sync_canvas_snapshot(colors, cx);
                     }
@@ -1168,47 +1191,72 @@ pub(super) fn player_item_lore_count(tag: &NbtTag) -> usize {
     lines.len()
 }
 
-pub(super) fn enchant_name(id: i16) -> &'static str {
+pub(super) fn localized_enchant_name(i18n: &I18n, id: i16) -> SharedString {
+    let key = match id {
+        0 => "MapViewer.enchant_protection",
+        1 => "MapViewer.enchant_fire_protection",
+        2 => "MapViewer.enchant_feather_falling",
+        3 => "MapViewer.enchant_blast_protection",
+        4 => "MapViewer.enchant_projectile_protection",
+        5 => "MapViewer.enchant_thorns",
+        6 => "MapViewer.enchant_respiration",
+        7 => "MapViewer.enchant_depth_strider",
+        8 => "MapViewer.enchant_aqua_affinity",
+        9 => "MapViewer.enchant_sharpness",
+        10 => "MapViewer.enchant_smite",
+        11 => "MapViewer.enchant_bane_of_arthropods",
+        12 => "MapViewer.enchant_knockback",
+        13 => "MapViewer.enchant_fire_aspect",
+        14 => "MapViewer.enchant_looting",
+        15 => "MapViewer.enchant_efficiency",
+        16 => "MapViewer.enchant_silk_touch",
+        17 => "MapViewer.enchant_unbreaking",
+        18 => "MapViewer.enchant_fortune",
+        19 => "MapViewer.enchant_power",
+        20 => "MapViewer.enchant_punch",
+        21 => "MapViewer.enchant_flame",
+        22 => "MapViewer.enchant_infinity",
+        23 => "MapViewer.enchant_luck_of_the_sea",
+        24 => "MapViewer.enchant_lure",
+        25 => "MapViewer.enchant_frost_walker",
+        26 => "MapViewer.enchant_mending",
+        27 => "MapViewer.enchant_binding_curse",
+        28 => "MapViewer.enchant_vanishing_curse",
+        29 => "MapViewer.enchant_impaling",
+        30 => "MapViewer.enchant_riptide",
+        31 => "MapViewer.enchant_loyalty",
+        32 => "MapViewer.enchant_channeling",
+        33 => "MapViewer.enchant_multishot",
+        34 => "MapViewer.enchant_piercing",
+        35 => "MapViewer.enchant_quick_charge",
+        36 => "MapViewer.enchant_soul_speed",
+        37 => "MapViewer.enchant_swift_sneak",
+        _ => return SharedString::from(format!("Unknown enchantment {id}")),
+    };
+    i18n.lookup(key)
+        .unwrap_or_else(|| SharedString::from(format!("Unknown enchantment {id}")))
+}
+
+pub(super) fn localized_player_friendly_label(
+    i18n: &I18n,
+    id: &PlayerId,
+    valid: bool,
+) -> SharedString {
+    if !valid {
+        return t!("MapViewer.invalid_record", id = player_id_label(id));
+    }
     match id {
-        0 => "保护",
-        1 => "火焰保护",
-        2 => "摔落保护",
-        3 => "爆炸保护",
-        4 => "弹射物保护",
-        5 => "荆棘",
-        6 => "水下呼吸",
-        7 => "深海探索者",
-        8 => "水下速掘",
-        9 => "锋利",
-        10 => "亡灵杀手",
-        11 => "节肢杀手",
-        12 => "击退",
-        13 => "火焰附加",
-        14 => "抢夺",
-        15 => "效率",
-        16 => "精准采集",
-        17 => "耐久",
-        18 => "时运",
-        19 => "力量",
-        20 => "冲击",
-        21 => "火矢",
-        22 => "无限",
-        23 => "海之眷顾",
-        24 => "饵钓",
-        25 => "冰霜行者",
-        26 => "经验修补",
-        27 => "绑定诅咒",
-        28 => "消失诅咒",
-        29 => "穿刺",
-        30 => "激流",
-        31 => "忠诚",
-        32 => "引雷",
-        33 => "多重射击",
-        34 => "穿透",
-        35 => "快速装填",
-        36 => "灵魂疾行",
-        37 => "迅捷潜行",
-        _ => "自定义/新版附魔",
+        PlayerId::Local => t!("MapViewer.local_player"),
+        PlayerId::Xuid(xuid) => {
+            t!("MapViewer.server_player", id = xuid)
+        }
+        PlayerId::LegacyLevelDat => t!("MapViewer.legacy_player"),
+        PlayerId::Unknown(_) if is_server_like_player_id(id) => {
+            t!("MapViewer.server_record", id = player_id_label(id))
+        }
+        PlayerId::Unknown(_) => {
+            t!("MapViewer.other_player", id = player_id_label(id))
+        }
     }
 }
 

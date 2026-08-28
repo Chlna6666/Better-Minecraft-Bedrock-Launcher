@@ -31,19 +31,19 @@ pub(super) fn render_font_card(
         .collect::<Vec<_>>();
     let font_desc = SharedString::from(format!(
         "{} {}",
-        i18n.t("CustomizationSettings.font_desc").as_ref(),
+        t!("CustomizationSettings.font_desc").as_ref(),
         crate::utils::font_settings::default_app_font_display()
     ));
 
     settings_card(colors, "settings-custom-font")
         .child(
-            settings_card_header(colors, i18n.t("CustomizationSettings.font"), font_desc)
+            settings_card_header(colors, t!("CustomizationSettings.font"), font_desc)
                 .child(settings_badge(colors, current_font_label(i18n, state))),
         )
         .child(system_font_row(
             colors,
-            i18n.t("CustomizationSettings.system_font"),
-            i18n.t("CustomizationSettings.system_font_desc"),
+            t!("CustomizationSettings.system_font"),
+            t!("CustomizationSettings.system_font_desc"),
             selected_label,
             options,
             selected_index,
@@ -56,10 +56,10 @@ pub(super) fn render_font_card(
             |this| {
                 this.child(local_font_row(
                     colors,
-                    i18n.t("CustomizationSettings.local_font"),
-                    i18n.t("CustomizationSettings.local_font_desc"),
+                    t!("CustomizationSettings.local_font"),
+                    t!("CustomizationSettings.local_font_desc"),
                     local_font_display(i18n, state),
-                    i18n.t("CustomizationSettings.select_font"),
+                    t!("CustomizationSettings.select_font"),
                     state.font_source.as_ref() == crate::config::config::FONT_SOURCE_LOCAL,
                 ))
             },
@@ -269,11 +269,11 @@ fn persist_font_settings_and_apply(
 fn custom_font_option_label(i18n: &I18n, state: &SettingsPageState) -> SharedString {
     let family = state.local_font_family.as_ref().trim();
     if family.is_empty() {
-        i18n.t("CustomizationSettings.local_font")
+        t!("CustomizationSettings.local_font")
     } else {
         SharedString::from(format!(
             "{}({family})",
-            i18n.t("CustomizationSettings.local_font").as_ref()
+            t!("CustomizationSettings.local_font").as_ref()
         ))
     }
 }
@@ -334,11 +334,11 @@ fn current_font_label(i18n: &I18n, state: &SettingsPageState) -> SharedString {
             if !family.is_empty() {
                 SharedString::from(format!(
                     "{}: {}",
-                    i18n.t("CustomizationSettings.local_font").as_ref(),
+                    t!("CustomizationSettings.local_font").as_ref(),
                     family
                 ))
             } else {
-                i18n.t("CustomizationSettings.local_font")
+                t!("CustomizationSettings.local_font")
             }
         }
         crate::config::config::FONT_SOURCE_SYSTEM => {
@@ -346,11 +346,11 @@ fn current_font_label(i18n: &I18n, state: &SettingsPageState) -> SharedString {
             if !family.is_empty() {
                 SharedString::from(format!(
                     "{}: {}",
-                    i18n.t("CustomizationSettings.system_font").as_ref(),
+                    t!("CustomizationSettings.system_font").as_ref(),
                     family
                 ))
             } else {
-                i18n.t("CustomizationSettings.system_font")
+                t!("CustomizationSettings.system_font")
             }
         }
         _ => SharedString::from(crate::utils::font_settings::default_app_font_display()),
@@ -360,7 +360,7 @@ fn current_font_label(i18n: &I18n, state: &SettingsPageState) -> SharedString {
 fn local_font_display(i18n: &I18n, state: &SettingsPageState) -> SharedString {
     let path = state.local_font_path.as_ref().trim();
     if path.is_empty() {
-        return i18n.t("CustomizationSettings.no_font");
+        return t!("CustomizationSettings.no_font");
     }
 
     let family = state.local_font_family.as_ref().trim();

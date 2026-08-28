@@ -548,7 +548,7 @@ fn plugin_list(
                         .text_color(colors.text_primary)
                         .child(format!(
                             "{} ({})",
-                            i18n.t("PluginSettings.installed"),
+                            t!("PluginSettings.installed"),
                             statuses.len()
                         )),
                 )
@@ -578,7 +578,7 @@ fn plugin_list(
                 .py(px(16.))
                 .text_size(px(12.))
                 .text_color(colors.text_secondary)
-                .child(i18n.t("PluginSettings.empty")),
+                .child(t!("PluginSettings.empty")),
         );
     }
 
@@ -709,7 +709,7 @@ fn plugin_detail(
                 div()
                     .text_size(px(13.))
                     .text_color(colors.text_secondary)
-                    .child(i18n.t("PluginSettings.empty")),
+                    .child(t!("PluginSettings.empty")),
             );
     };
 
@@ -756,7 +756,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
     let diagnostics_id = status.id.clone();
 
     let authors = if status.authors.is_empty() {
-        i18n.t("PluginSettings.unknown").to_string()
+        t!("PluginSettings.unknown").to_string()
     } else {
         status.authors.join(", ")
     };
@@ -1063,7 +1063,7 @@ fn plugin_sub_tabs(
             ..colors.surface_hover
         })
         .child(button(
-            i18n.t("PluginSettings.readme"),
+            t!("PluginSettings.readme"),
             PluginSettingsSubTab::Readme,
         ))
         .child(button(
@@ -1071,11 +1071,11 @@ fn plugin_sub_tabs(
             PluginSettingsSubTab::Permissions,
         ))
         .child(button(
-            i18n.t("PluginSettings.config"),
+            t!("PluginSettings.config"),
             PluginSettingsSubTab::Config,
         ))
         .child(button(
-            i18n.t("PluginSettings.logs"),
+            t!("PluginSettings.logs"),
             PluginSettingsSubTab::Logs,
         ))
 }
@@ -1086,7 +1086,7 @@ fn plugin_readme_panel(
     model: &PluginSettingsModel,
 ) -> AnyElement {
     let Some(markdown) = model.readme.as_ref() else {
-        return empty_panel(colors, i18n.t("PluginSettings.readme_empty"));
+        return empty_panel(colors, t!("PluginSettings.readme_empty"));
     };
     let document = parse_markdown_document(markdown);
     div()
@@ -1216,8 +1216,8 @@ fn plugin_config_panel(
         .unwrap_or_default();
     let plugin_id = status.id.clone();
     let generation = status.generation;
-    let save_success_message = i18n.t("PluginSettings.config_saved");
-    let save_failed_message = i18n.t("PluginSettings.config_save_failed");
+    let save_success_message = t!("PluginSettings.config_saved");
+    let save_failed_message = t!("PluginSettings.config_save_failed");
     let mut panel =
         div()
             .w_full()
@@ -1225,7 +1225,7 @@ fn plugin_config_panel(
             .flex_col()
             .gap(px(8.))
             .child(div().flex().justify_end().child(
-                settings_action_button(colors, i18n.t("PluginSettings.save"), true).on_mouse_down(
+                settings_action_button(colors, t!("PluginSettings.save"), true).on_mouse_down(
                     MouseButton::Left,
                     move |_event, _window, cx| {
                         let content =
@@ -1279,7 +1279,7 @@ fn plugin_config_panel(
             ));
         }
     } else if draft.is_empty() {
-        panel = panel.child(empty_panel(colors, i18n.t("PluginSettings.config_empty")));
+        panel = panel.child(empty_panel(colors, t!("PluginSettings.config_empty")));
     } else {
         panel = panel.child(raw_config_panel(colors, i18n, &draft));
     }
@@ -1522,7 +1522,7 @@ fn raw_config_panel(colors: &ThemeColors, i18n: &I18n, content: &str) -> AnyElem
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child(i18n.t("PluginSettings.raw_config")),
+                .child(t!("PluginSettings.raw_config")),
         )
         .child(
             div()
@@ -1536,7 +1536,7 @@ fn raw_config_panel(colors: &ThemeColors, i18n: &I18n, content: &str) -> AnyElem
 
 fn plugin_logs_panel(colors: &ThemeColors, i18n: &I18n, model: &PluginSettingsModel) -> AnyElement {
     if model.logs.is_empty() {
-        return empty_panel(colors, i18n.t("PluginSettings.logs_empty"));
+        return empty_panel(colors, t!("PluginSettings.logs_empty"));
     }
     div()
         .w_full()
@@ -1649,8 +1649,8 @@ fn import_plugin_package_from_picker(cx: &mut App) {
     };
     let (success_message, failed_message) = cx.read_global(|i18n: &I18n, _cx| {
         (
-            i18n.t("PluginSettings.import_success"),
-            i18n.t("PluginSettings.import_failed"),
+            t!("PluginSettings.import_success"),
+            t!("PluginSettings.import_failed"),
         )
     });
     let source = PathBuf::from(path);
@@ -1800,7 +1800,7 @@ fn localized_field_description(
         SharedString::from(format!(
             "{} {}",
             description,
-            i18n.t("PluginSettings.restart_required")
+            t!("PluginSettings.restart_required")
         ))
     } else {
         SharedString::from(description)

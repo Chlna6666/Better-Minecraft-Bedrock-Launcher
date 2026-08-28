@@ -10,6 +10,7 @@ impl MapViewerWindowView {
         detail: &ProfessionalDetail,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>();
         overlay_panel(colors)
             .right(px(16.0))
             .top(px(86.0))
@@ -31,7 +32,7 @@ impl MapViewerWindowView {
                             .text_color(colors.text_primary)
                             .child(detail.title()),
                     )
-                    .child(toolbar_button(colors, "关闭").on_mouse_down(
+                    .child(toolbar_button(colors, t!("common.close")).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| {
                             this.set_professional_detail(None, cx);

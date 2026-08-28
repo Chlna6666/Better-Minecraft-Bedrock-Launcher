@@ -24,21 +24,21 @@ pub fn render_diagnostics_overlay(
     let card_height = (window_height - px(72.)).max(px(420.)).min(px(720.));
     let overlay_bg = hsla(0.0, 0.0, 0.0, 0.34);
 
-    let title = i18n.t("Diagnostics.modal.title");
-    let description = i18n.t("Diagnostics.modal.description");
-    let report_id_label = i18n.t("Diagnostics.modal.report_id");
-    let detail_label = i18n.t("Diagnostics.modal.detail");
-    let log_tail_label = i18n.t("Diagnostics.modal.log_tail");
-    let copy_label = i18n.t("Diagnostics.modal.copy");
-    let github_label = i18n.t("Diagnostics.modal.github");
+    let title = t!("Diagnostics.modal.title");
+    let description = t!("Diagnostics.modal.description");
+    let report_id_label = t!("Diagnostics.modal.report_id");
+    let detail_label = t!("Diagnostics.modal.detail");
+    let log_tail_label = t!("Diagnostics.modal.log_tail");
+    let copy_label = t!("Diagnostics.modal.copy");
+    let github_label = t!("Diagnostics.modal.github");
     let sentry_label = if auto_sentry_enabled {
-        i18n.t("Diagnostics.modal.sentry_auto")
+        t!("Diagnostics.modal.sentry_auto")
     } else if share_payload.sentry_dsn.is_some() {
-        i18n.t("Diagnostics.modal.sentry")
+        t!("Diagnostics.modal.sentry")
     } else {
-        i18n.t("Diagnostics.modal.sentry_unconfigured")
+        t!("Diagnostics.modal.sentry_unconfigured")
     };
-    let dismiss_label = i18n.t("Diagnostics.modal.dismiss");
+    let dismiss_label = t!("Diagnostics.modal.dismiss");
 
     let detail_text =
         serde_json::to_string_pretty(&report.detail).unwrap_or_else(|_| "{}".to_string());
@@ -180,7 +180,7 @@ pub fn render_diagnostics_overlay(
                         .line_height(px(16.))
                         .whitespace_normal()
                         .text_color(colors.text_muted)
-                        .child(i18n.t("Diagnostics.modal.privacy_hint")),
+                        .child(t!("Diagnostics.modal.privacy_hint")),
                 )
                 .child(
                     div()
@@ -203,7 +203,7 @@ pub fn render_diagnostics_overlay(
                                 ));
                                 toast::success(
                                     cx,
-                                    cx.global::<I18n>().t("Diagnostics.toast.copied"),
+                                    t!("Diagnostics.toast.copied"),
                                 );
                             }),
                         )
@@ -219,7 +219,7 @@ pub fn render_diagnostics_overlay(
                                 cx.open_url(&share_payload.github_issue_url);
                                 toast::success(
                                     cx,
-                                    cx.global::<I18n>().t("Diagnostics.toast.github_opened"),
+                                    t!("Diagnostics.toast.github_opened"),
                                 );
                             }),
                         )
@@ -240,8 +240,7 @@ pub fn render_diagnostics_overlay(
                                     let Some(dsn) = dsn.clone() else {
                                         toast::error(
                                             cx,
-                                            cx.global::<I18n>()
-                                                .t("Diagnostics.toast.sentry_unconfigured"),
+                                            t!("Diagnostics.toast.sentry_unconfigured"),
                                         );
                                         return;
                                     };
@@ -268,8 +267,7 @@ pub fn render_diagnostics_overlay(
                                                         cx,
                                                         SharedString::from(format!(
                                                             "{}: {error:#}",
-                                                            cx.global::<I18n>()
-                                                                .t("common.save_failed")
+                                                            t!("common.save_failed")
                                                         )),
                                                     );
                                                 }
@@ -281,8 +279,7 @@ pub fn render_diagnostics_overlay(
                                                 );
                                                 toast::success(
                                                     cx,
-                                                    cx.global::<I18n>()
-                                                        .t("Diagnostics.toast.sentry_success"),
+                                                    t!("Diagnostics.toast.sentry_success"),
                                                 );
                                             }
                                             Err(error) => {
@@ -295,8 +292,7 @@ pub fn render_diagnostics_overlay(
                                                     cx,
                                                     SharedString::from(format!(
                                                         "{}: {error:#}",
-                                                        cx.global::<I18n>()
-                                                            .t("Diagnostics.toast.sentry_failed")
+                                                        t!("Diagnostics.toast.sentry_failed")
                                                     )),
                                                 );
                                             }
@@ -323,7 +319,7 @@ pub fn render_diagnostics_overlay(
                                         cx,
                                         SharedString::from(format!(
                                             "{}: {error:#}",
-                                            cx.global::<I18n>().t("common.save_failed")
+                                            t!("common.save_failed")
                                         )),
                                     );
                                     return;
@@ -375,20 +371,14 @@ pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
                 if let Err(error) = crate::utils::diagnostics::acknowledge_pending_report() {
                     toast::error(
                         cx,
-                        SharedString::from(format!(
-                            "{}: {error:#}",
-                            cx.global::<I18n>().t("common.save_failed")
-                        )),
+                        SharedString::from(format!("{}: {error:#}", t!("common.save_failed"))),
                     );
                 }
                 clear_diagnostics_marker_files();
                 cx.update_global(|diagnostics_state: &mut DiagnosticsState, _cx| {
                     diagnostics_state.clear();
                 });
-                toast::success(
-                    cx,
-                    cx.global::<I18n>().t("Diagnostics.toast.sentry_success"),
-                );
+                toast::success(cx, t!("Diagnostics.toast.sentry_success"));
             }
             Err(error) => {
                 cx.update_global(|diagnostics_state: &mut DiagnosticsState, _cx| {
@@ -398,7 +388,7 @@ pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
                     cx,
                     SharedString::from(format!(
                         "{}: {error:#}",
-                        cx.global::<I18n>().t("Diagnostics.toast.sentry_failed")
+                        t!("Diagnostics.toast.sentry_failed")
                     )),
                 );
             }

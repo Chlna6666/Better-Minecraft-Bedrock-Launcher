@@ -6,6 +6,7 @@ use lucide_gpui::icons as lucide_icons;
 
 use crate::core::minecraft::uwp_registration::{MinecraftUwpChannel, SystemUwpRegistration};
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::launch_prereq::PendingLaunchVersion;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
@@ -343,6 +344,7 @@ pub fn render_uwp_safety_guide(
         theme.factor(std::time::Instant::now()),
         theme.accent,
     );
+    let i18n = cx.global::<I18n>().clone();
     let size = window.bounds().size;
     let width = size.width / px(1.0);
     let height = size.height / px(1.0);
@@ -354,26 +356,26 @@ pub fn render_uwp_safety_guide(
 
     let launch_confirmation = trigger == UwpSafetyGuideTrigger::Launch;
     let title = if state.checking {
-        "正在检查 Windows UWP 注册"
+        t!("UwpSafety.checking_title")
     } else if launch_confirmation {
-        "启动前将自动保护当前 UWP 数据"
+        t!("UwpSafety.launch_title")
     } else {
-        "检测到系统安装的 UWP"
+        t!("UwpSafety.detected_title")
     };
     let subtitle = if state.checking {
-        "只读取 Windows 包注册元数据，不扫描存档或修改系统。"
+        t!("UwpSafety.checking_subtitle")
     } else {
         if launch_confirmation {
-            "确认后由 BMCBL 自动备份、切换注册并恢复数据，无需手动导出。"
+            t!("UwpSafety.launch_subtitle")
         } else {
-            "下载不会更改现有注册；首次启动下载版本时会自动保护数据。"
+            t!("UwpSafety.download_subtitle")
         }
     };
 
     let body = if state.checking {
-        render_checking_body(&colors).into_any_element()
+        render_checking_body(&colors, &i18n).into_any_element()
     } else {
-        render_safety_body(trigger, registration, &colors).into_any_element()
+        render_safety_body(trigger, registration, &colors, &i18n).into_any_element()
     };
 
     let card = div()
@@ -499,7 +501,7 @@ pub fn render_uwp_safety_guide(
                                 .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                                     cancel_launch(cx);
                                 })
-                                .child("取消启动"),
+                                .child(t!("UwpSafety.cancel_launch")),
                         )
                     })
                     .child(
@@ -521,9 +523,9 @@ pub fn render_uwp_safety_guide(
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.btn_primary_text)
                             .child(if launch_confirmation {
-                                "由 BMCBL 自动保护并继续启动"
+                                t!("UwpSafety.launch_continue")
                             } else {
-                                "知道了，继续"
+                                t!("UwpSafety.continue")
                             })
                             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                                 continue_after_confirmation(cx);
@@ -544,7 +546,7 @@ pub fn render_uwp_safety_guide(
         .child(card)
 }
 
-fn render_checking_body(colors: &ThemeColors) -> Div {
+fn render_checking_body(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .size_full()
         .p(px(20.0))
@@ -576,7 +578,7 @@ fn render_checking_body(colors: &ThemeColors) -> Div {
                 .text_size(px(13.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child("正在确认当前 Minecraft UWP 的注册来源…"),
+                .child(t!("UwpSafety.checking_body_title")),
         )
         .child(
             div()
@@ -584,9 +586,7 @@ fn render_checking_body(colors: &ThemeColors) -> Div {
                 .text_center()
                 .line_height(px(17.0))
                 .text_color(colors.text_secondary)
-                .child(
-                    "检查完成后，如果没有 Microsoft Store / 系统 UWP，会自动回到原来的下载确认。",
-                ),
+                .child(t!("UwpSafety.checking_body_detail")),
         )
 }
 
@@ -594,17 +594,14 @@ fn render_safety_body(
     trigger: UwpSafetyGuideTrigger,
     registration: Option<&SystemUwpRegistration>,
     colors: &ThemeColors,
+    i18n: &I18n,
 ) -> Div {
     let context = match trigger {
         UwpSafetyGuideTrigger::DownloadRelease | UwpSafetyGuideTrigger::DownloadPreview => {
-            "检测到当前 Windows 使用 Microsoft Store / 系统方式安装的 Minecraft UWP。你正在下载另一个 UWP 版本；下载本身不会卸载系统版本，只有以后实际切换注册时才会进入数据保护流程。"
+            t!("UwpSafety.context_download")
         }
-        UwpSafetyGuideTrigger::Import => {
-            "检测到当前 Windows 使用 Microsoft Store / 系统方式安装的 Minecraft UWP。你正在导入 APPX / ZIP；导入本身不会卸载系统版本，只有以后实际切换注册时才会进入数据保护流程。"
-        }
-        UwpSafetyGuideTrigger::Launch => {
-            "检测到当前 Windows 使用 Microsoft Store / 系统方式安装的 Minecraft UWP。启动本地下载版本时，Windows 可能需要移除当前 Store 包注册，再注册本地版本路径；整个数据保护流程由 BMCBL 自动完成。"
-        }
+        UwpSafetyGuideTrigger::Import => t!("UwpSafety.context_import"),
+        UwpSafetyGuideTrigger::Launch => t!("UwpSafety.context_launch"),
     };
 
     let mut content = div()
@@ -623,10 +620,13 @@ fn render_safety_body(
 
     if let Some(summary) = registration {
         let channel = match summary.channel {
-            MinecraftUwpChannel::Release => "Microsoft Store 正式版",
-            MinecraftUwpChannel::Preview => "Microsoft Store Preview",
+            MinecraftUwpChannel::Release => t!("UwpSafety.registration_release"),
+            MinecraftUwpChannel::Preview => t!("UwpSafety.registration_preview"),
         };
-        let version = summary.version.as_deref().unwrap_or("未知版本");
+        let version = summary
+            .version
+            .clone()
+            .unwrap_or_else(|| t!("UwpSafety.unknown_version").to_string());
         content = content.child(
             div()
                 .w_full()
@@ -640,7 +640,11 @@ fn render_safety_body(
                 .text_size(px(11.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child(format!("当前系统注册：{channel} · {version}")),
+                .child(t!(
+                    "UwpSafety.registration_label",
+                    channel = channel,
+                    version = version
+                )),
         );
     }
 
@@ -648,20 +652,20 @@ fn render_safety_body(
         .child(safety_step(
             colors,
             1,
-            "下载和导入阶段不会更改注册",
-            "BMCBL 只保存新的本地 UWP 版本文件；真正启动且注册路径不同时才进行切换。",
+            t!("UwpSafety.step_download_title"),
+            t!("UwpSafety.step_download_detail"),
         ))
         .child(safety_step(
             colors,
             2,
-            "移除 Store 注册前自动备份并校验",
-            "BMCBL 自动备份 LocalState 中的 Minecraft 数据并核对文件统计；备份或校验失败会在移除前停止，无需手动导出。",
+            t!("UwpSafety.step_backup_title"),
+            t!("UwpSafety.step_backup_detail"),
         ))
         .child(safety_step(
             colors,
             3,
-            "注册本地路径后自动恢复",
-            "本地包注册和路径校验通过后，仅在目标数据目录为空时恢复并复核数据；迁移备份会继续保留。",
+            t!("UwpSafety.step_restore_title"),
+            t!("UwpSafety.step_restore_detail"),
         ))
         .child(
             div()
@@ -676,11 +680,18 @@ fn render_safety_body(
                 .text_size(px(11.0))
                 .line_height(px(17.0))
                 .text_color(colors.text_secondary)
-                .child("切换由 Windows Package Manager 执行。游戏退出后不会自动切回 Microsoft Store 注册；以后启动其他 UWP 路径时会再次检查。GDK / MSIXVC 不触发。"),
+                .child(t!("UwpSafety.footer_note")),
         )
 }
 
-fn safety_step(colors: &ThemeColors, number: u8, title: &'static str, detail: &'static str) -> Div {
+fn safety_step(
+    colors: &ThemeColors,
+    number: u8,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+) -> Div {
+    let title = title.into();
+    let detail = detail.into();
     div()
         .w_full()
         .flex()

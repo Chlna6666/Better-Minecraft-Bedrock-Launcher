@@ -1,4 +1,5 @@
 use crate::ui::components::icon::themed_icon;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::ThemeColors;
 use ego_tree::NodeRef;
 use gpui::prelude::FluentBuilder as _;
@@ -752,6 +753,7 @@ fn parse_html_document_with_compiled_css(
 pub fn render_html_document(
     document: &HtmlDocument,
     colors: &ThemeColors,
+    i18n: &I18n,
     image_cache: Option<&HashMap<SharedString, Arc<RenderImage>>>,
 ) -> Div {
     let mut column = div().w_full().flex().flex_col();
@@ -759,7 +761,7 @@ pub fn render_html_document(
 
     for (index, block) in document.blocks.iter().enumerate() {
         let style = document.block_styles.get(index).unwrap_or(&default_style);
-        column = column.child(render_block(block, style, colors, image_cache));
+        column = column.child(render_block(block, style, colors, i18n, image_cache));
     }
 
     column
@@ -1312,7 +1314,7 @@ fn parse_video_block(element_ref: &ElementRef<'_>, base_url: Option<&str>) -> Op
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-        .unwrap_or_else(|| format!("{provider} 视频"));
+        .unwrap_or_else(|| "Video".to_string());
 
     Some(HtmlBlock::Video {
         src: SharedString::from(src),
@@ -1334,9 +1336,9 @@ fn detect_video_provider(url: &str) -> &'static str {
         || lower.ends_with(".mov")
         || lower.ends_with(".m3u8")
     {
-        "直链视频"
+        "direct"
     } else {
-        "网络视频"
+        "network"
     }
 }
 
@@ -2648,6 +2650,7 @@ fn render_block(
     block: &HtmlBlock,
     style: &HtmlBlockStyle,
     colors: &ThemeColors,
+    i18n: &I18n,
     image_cache: Option<&HashMap<SharedString, Arc<RenderImage>>>,
 ) -> AnyElement {
     let default_font_size = style.font_size.unwrap_or(14.0).max(1.0);
@@ -2809,7 +2812,7 @@ fn render_block(
             src,
             title,
             provider,
-        } => render_video_block(src, title, provider, style, colors),
+        } => render_video_block(src, title, provider, style, colors, i18n),
         HtmlBlock::Table { headers, rows } => {
             render_table(headers, rows, style, colors).into_any_element()
         }
@@ -2818,7 +2821,7 @@ fn render_block(
             let default_style = HtmlBlockStyle::default();
             for (index, child) in blocks.iter().enumerate() {
                 let child_style = styles.get(index).unwrap_or(&default_style);
-                column = column.child(render_block(child, child_style, colors, image_cache));
+                column = column.child(render_block(child, child_style, colors, i18n, image_cache));
             }
             column.into_any_element()
         }
@@ -2931,7 +2934,18 @@ fn render_video_block(
     provider: &SharedString,
     style: &HtmlBlockStyle,
     colors: &ThemeColors,
+    i18n: &I18n,
 ) -> AnyElement {
+    let provider_label = match provider.as_ref() {
+        "direct" => t!("Html.direct_video"),
+        "network" => t!("Html.network_video"),
+        _ => provider.clone(),
+    };
+    let title_label = if title.as_ref().is_empty() || title.as_ref() == "Video" {
+        t!("Html.video")
+    } else {
+        title.clone()
+    };
     let card = div()
         .w_full()
         .rounded(px(style
@@ -3021,20 +3035,20 @@ fn render_video_block(
                                 div()
                                     .text_size(px(12.0))
                                     .text_color(colors.text_muted)
-                                    .child(provider.clone()),
+                                    .child(provider_label),
                             )
                             .child(
                                 div()
                                     .text_size(px(15.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(colors.text_primary)
-                                    .child(title.clone()),
+                                    .child(title_label),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.0))
                                     .text_color(colors.text_secondary)
-                                    .child("点击后将在浏览器中播放"),
+                                    .child(t!("Html.open_in_browser")),
                             ),
                     )
                     .child(
@@ -3055,7 +3069,7 @@ fn render_video_block(
                                 16.0,
                                 colors.btn_primary_text,
                             ))
-                            .child("打开"),
+                            .child(t!("Html.open")),
                     ),
             ),
     )

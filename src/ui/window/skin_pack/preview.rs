@@ -7,6 +7,7 @@ use super::selector::{
     skin_selector_page_for_index,
 };
 use crate::ui::animation::request_animation_frame_if;
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
@@ -60,9 +61,14 @@ pub struct SkinPreviewWindowView {
 
 impl SkinPreviewWindowView {
     fn new(init: SkinPreviewWindowInit, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let subscriptions = vec![cx.observe_global::<ThemeState>(|_, cx| {
-            cx.notify();
-        })];
+        let subscriptions = vec![
+            cx.observe_global::<ThemeState>(|_, cx| {
+                cx.notify();
+            }),
+            cx.observe_global::<I18n>(|_, cx| {
+                cx.notify();
+            }),
+        ];
         let selected_index = init.selected_index.min(init.skins.len().saturating_sub(1));
         let selector_page = skin_selector_page_for_index(selected_index);
         let mut this = Self {
@@ -88,7 +94,7 @@ impl SkinPreviewWindowView {
 
     fn load_mesh(&mut self, cx: &mut Context<Self>) {
         let Some(skin) = self.current_skin().cloned() else {
-            self.mesh = Some(Err(SharedString::from("这个皮肤包没有可预览的皮肤贴图")));
+            self.mesh = Some(Err(t!("SkinPreview.no_texture")));
             cx.notify();
             return;
         };
@@ -328,6 +334,7 @@ impl SkinPreviewWindowView {
         now: Instant,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let i18n = cx.global::<I18n>().clone();
         match &self.mesh {
             Some(Ok(mesh)) => {
                 let mesh = mesh.clone();
@@ -398,8 +405,10 @@ impl SkinPreviewWindowView {
                     }))
                     .into_any_element()
             }
-            Some(Err(error)) => centered_status(colors, error.clone()),
-            None => centered_status(colors, SharedString::from("正在生成 3D 预览...")),
+            Some(Err(error)) => {
+                centered_status(colors, t!("SkinPreview.mesh_error", detail = error))
+            }
+            None => centered_status(colors, t!("SkinPreview.generating")),
         }
     }
 }
@@ -407,6 +416,9 @@ impl SkinPreviewWindowView {
 impl Render for SkinPreviewWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
+        let i18n = cx.global::<I18n>().clone();
+        let window_title = t!("SkinPreview.window_title", name = &self.title).to_string();
+        window.set_title(&window_title);
         request_animation_frame_if(
             window,
             self.walking && self.mesh.as_ref().is_some_and(Result::is_ok),
@@ -415,9 +427,9 @@ impl Render for SkinPreviewWindowView {
         let model_label = self.current_model_label();
         let skin_label = self.current_skin_label();
         let layer_label = if self.layer_mode.is_extruded() {
-            "3D 层次"
+            t!("SkinPreview.layer_3d")
         } else {
-            "平面层"
+            t!("SkinPreview.layer_flat")
         };
         let skin_counter = if self.skins.is_empty() {
             "0/0".to_string()
@@ -470,10 +482,12 @@ impl Render for SkinPreviewWindowView {
                                             .text_ellipsis()
                                             .text_size(px(11.))
                                             .text_color(colors.text_secondary)
-                                            .child(format!(
-                                                "3D 皮肤预览 · {layer_label} · {} · {skin_counter} · {}",
-                                                skin_label.as_ref(),
-                                                model_label.as_ref()
+                                            .child(t!(
+                                                "SkinPreview.subtitle",
+                                                layer = &layer_label,
+                                                skin = &skin_label,
+                                                counter = &skin_counter,
+                                                model = &model_label
                                             )),
                                     ),
                             ),
@@ -596,7 +610,7 @@ impl Render for SkinPreviewWindowView {
 }
 
 pub fn open_skin_preview_window(init: SkinPreviewWindowInit, cx: &mut App) {
-    let title = format!("皮肤 3D 预览 - {}", init.title);
+    let title = t!("SkinPreview.window_title", name = &init.title).to_string();
     let options = skin_preview_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
@@ -630,7 +644,7 @@ fn skin_preview_window_options(cx: &mut App) -> WindowOptions {
     #[cfg(windows)]
     {
         options.titlebar = Some(TitlebarOptions {
-            title: Some(SharedString::from("皮肤 3D 预览")),
+            title: Some(t!("SkinPreview.title")),
             appears_transparent: false,
             ..Default::default()
         });

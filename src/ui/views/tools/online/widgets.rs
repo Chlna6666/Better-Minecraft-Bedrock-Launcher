@@ -6,11 +6,12 @@ use gpui::*;
 pub(super) fn action_button(
     colors: &ThemeColors,
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: &'static str,
     disabled: bool,
     danger: bool,
 ) -> Stateful<Div> {
+    let label = label.into();
     let accent = if danger { colors.danger } else { colors.accent };
     div()
         .id(id)
@@ -43,10 +44,11 @@ pub(super) fn action_button(
 pub(super) fn subtle_button(
     colors: &ThemeColors,
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: &'static str,
     disabled: bool,
 ) -> Stateful<Div> {
+    let label = label.into();
     div()
         .id(id)
         .min_h(px(40.))

@@ -3,6 +3,7 @@ use crate::ui::hooks::use_launcher::{
     LauncherSnapshot, cancel_launcher, close_launcher, copy_launcher_error, minimize_launcher,
     retry_launcher,
 };
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
@@ -34,6 +35,7 @@ pub fn render_launcher_overlay(
     let smooth = (factor * factor * (3.0 - 2.0 * factor)).clamp(0.0, 1.0);
     let now = std::time::Instant::now();
     let theme_state = cx.global::<ThemeState>();
+    let i18n = cx.global::<I18n>().clone();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
@@ -56,17 +58,17 @@ pub fn render_launcher_overlay(
         .last_snapshot
         .as_ref()
         .map(|value| value.stage.to_string())
-        .unwrap_or_else(|| "准备中".to_string());
+        .unwrap_or_else(|| t!("LaunchPage.preparing").to_string());
     let is_error = status == "error";
     let is_completed = status == "completed";
     let is_cancelled = status == "cancelled";
     let is_terminal = matches!(status.as_str(), "completed" | "cancelled" | "error");
     let button_label = if is_error {
-        "重试"
+        t!("common.retry")
     } else if is_terminal {
-        "关闭"
+        t!("common.close")
     } else {
-        "取消"
+        t!("common.cancel")
     };
     let action_fg = if is_error {
         colors.badge_beta_text
@@ -188,20 +190,14 @@ pub fn render_launcher_overlay(
                                                 .font_weight(FontWeight::BOLD)
                                                 .text_color(colors.text_primary)
                                                 .truncate()
-                                                .child(format!(
-                                                    "正在启动 {}",
-                                                    snapshot.version_folder
-                                                )),
+                                                .child(t!("LaunchPage.launching", folder = snapshot.version_folder.as_ref())),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(11.))
                                                 .text_color(colors.text_secondary)
                                                 .truncate()
-                                                .child(format!(
-                                                    "版本: {} | 构建类型: {}",
-                                                    snapshot.version, snapshot.kind
-                                                )),
+                                                .child(t!("LaunchPage.version_build", version = snapshot.version.as_ref(), kind = snapshot.kind.as_ref())),
                                         )
                                         .child(
                                             div()
@@ -421,7 +417,7 @@ pub fn render_launcher_overlay(
                                             .child(
                                                 ghost_button(
                                                     &colors,
-                                                    "复制错误",
+                                                    t!("LaunchPage.copy_error"),
                                                     lucide_icons::icon_copy(),
                                                 )
                                                     .on_mouse_down(
@@ -435,7 +431,7 @@ pub fn render_launcher_overlay(
                                             .child(
                                                 primary_button(
                                                     &colors,
-                                                    "重试",
+                                                    t!("common.retry"),
                                                     lucide_icons::icon_rotate_ccw(),
                                                 )
                                                 .on_mouse_down(
@@ -488,7 +484,7 @@ fn line_color(colors: &ThemeColors, line: &str) -> Hsla {
     }
 }
 
-fn ghost_button(colors: &ThemeColors, label: &'static str, icon_path: &'static str) -> Div {
+fn ghost_button(colors: &ThemeColors, label: SharedString, icon_path: &'static str) -> Div {
     let hover_bg = colors.btn_ghost_hover_bg;
     let hover_fg = colors.text_primary;
     div()
@@ -514,7 +510,7 @@ fn ghost_button(colors: &ThemeColors, label: &'static str, icon_path: &'static s
 
 fn primary_button(
     colors: &ThemeColors,
-    label: &'static str,
+    label: SharedString,
     icon_path: &'static str,
 ) -> Stateful<Div> {
     div()
@@ -543,7 +539,7 @@ fn primary_button(
 
 fn action_button(
     colors: &ThemeColors,
-    label: &'static str,
+    label: SharedString,
     icon_path: Option<&'static str>,
     action_fg: Hsla,
 ) -> Stateful<Div> {

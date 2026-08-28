@@ -127,7 +127,7 @@ impl<T> Default for EditorDocument<T> {
     fn default() -> Self {
         Self {
             target: None,
-            title: SharedString::from("未选择记录"),
+            title: SharedString::from(""),
             text: SharedString::from(""),
             dirty: false,
             loading: false,
@@ -217,7 +217,7 @@ pub fn chunk_tree_nodes_for_tile(
                 chunk.z
             )),
             label: SharedString::from(format!("Chunk {}, {}", chunk.x, chunk.z)),
-            description: SharedString::from("点击查看区块详情"),
+            description: SharedString::from(""),
             depth: 1,
             kind: DbTreeNodeKind::Chunk(chunk),
             loading: false,

@@ -61,18 +61,16 @@ pub fn game_info_summary(
 ) -> SharedString {
     let duration = if info.total_play_time >= 3_600 {
         let hours = format!("{:.1}", info.total_play_time as f64 / 3_600.0);
-        i18n.t_args("game_info.hours", crate::i18n_args![("hours", &hours)])
+        t!("game_info.hours", hours = &hours)
     } else {
         let minutes = (info.total_play_time / 60).to_string();
-        i18n.t_args(
-            "game_info.minutes",
-            crate::i18n_args![("minutes", &minutes)],
-        )
+        t!("game_info.minutes", minutes = &minutes)
     };
     let sessions = info.total_sessions.to_string();
-    i18n.t_args(
+    t!(
         "game_info.summary",
-        crate::i18n_args![("sessions", &sessions), ("duration", &duration)],
+        sessions = &sessions,
+        duration = &duration
     )
 }
 
@@ -381,11 +379,11 @@ pub fn version_edition(version: &LaunchVersionEntry) -> Edition {
 
 pub fn version_channel_label(i18n: &I18n, name: &str) -> SharedString {
     if name.contains("Beta") {
-        i18n.t("common.beta")
+        t!("common.beta")
     } else if name.contains("Preview") {
-        i18n.t("common.preview")
+        t!("common.preview")
     } else {
-        i18n.t("common.release")
+        t!("common.release")
     }
 }
 
@@ -444,24 +442,24 @@ pub fn version_target_root_path(version: &LaunchVersionEntry) -> Option<SharedSt
     get_game_root(&options).map(|path| SharedString::from(path.to_string_lossy().to_string()))
 }
 
-pub fn version_isolation_label(version: &LaunchVersionEntry) -> SharedString {
+pub fn version_isolation_label(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
     if version_enable_isolation(version) {
-        SharedString::from("版本隔离")
+        t!("LocalVersions.isolated")
     } else {
-        SharedString::from("系统路径")
+        t!("LocalVersions.system_path")
     }
 }
 
-pub fn version_type_summary_label(version: &LaunchVersionEntry) -> SharedString {
+pub fn version_type_summary_label(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
     let platform = if version.kind.eq_ignore_ascii_case("gdk") {
-        "GDK"
+        t!("common.gdk")
     } else {
-        "UWP"
+        t!("common.uwp")
     };
     let edition = if version.name.contains("Preview") || version.name.contains("Beta") {
-        "预览版"
+        t!("common.preview")
     } else {
-        "正式版"
+        t!("common.release")
     };
     SharedString::from(format!("{platform} · {edition}"))
 }
@@ -480,21 +478,21 @@ pub fn launch_version_display_name(version: &LaunchVersionEntry) -> SharedString
     }
 }
 
-pub fn launch_version_display_type(version: &LaunchVersionEntry) -> &'static str {
+pub fn launch_version_display_type(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
     if version.name.contains("Preview")
         || version.name.contains("Beta")
         || version.folder.contains("Preview")
         || version.folder.contains("Beta")
     {
-        "预览版"
+        t!("common.preview")
     } else {
-        "正式版"
+        t!("common.release")
     }
 }
 
-pub fn launch_version_dropdown_label(version: &LaunchVersionEntry) -> SharedString {
+pub fn launch_version_dropdown_label(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
     let name = launch_version_display_name(version);
-    let type_str = launch_version_display_type(version);
+    let type_str = launch_version_display_type(version, i18n);
     SharedString::from(format!("{} ({})", name, type_str))
 }
 

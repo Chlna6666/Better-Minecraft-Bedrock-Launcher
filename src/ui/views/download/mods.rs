@@ -3,6 +3,7 @@ use crate::ui::components::button::{Button, IconButton};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
 use gpui::prelude::FluentBuilder as _;
@@ -115,14 +116,15 @@ fn rebuild_mod_panel_render_cache(
 }
 
 pub(super) fn render_mod_panel(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
+    let i18n = cx.global::<I18n>().clone();
     {
         let state = cx.global::<DownloadPageState>();
         if state.levilauncher_loading && !state.levilauncher_loaded {
-            return render_loading_state(colors);
+            return render_loading_state(colors, &i18n);
         }
 
         if let Some(err) = state.levilauncher_error.clone() {
-            return render_error_state(colors, &err);
+            return render_error_state(colors, &err, &i18n);
         }
     }
 
@@ -150,13 +152,13 @@ pub(super) fn render_mod_panel(window: &mut Window, cx: &mut App, colors: &Theme
     let loader_ver = state.levilauncher_selected_loader_version.as_ref();
 
     let main_content = if total_mods == 0 {
-        render_empty_state(colors)
+        render_empty_state(colors, &i18n)
     } else {
-        render_mod_grid(colors, &cached.page_mods, state)
+        render_mod_grid(colors, &cached.page_mods, state, &i18n)
     };
 
-    let stats_bar = render_stats_bar(colors, total_mods, loader_type, loader_ver);
-    let pagination = render_pagination(colors, page_index, total_pages, total_mods);
+    let stats_bar = render_stats_bar(colors, total_mods, loader_type, loader_ver, &i18n);
+    let pagination = render_pagination(colors, page_index, total_pages, total_mods, &i18n);
 
     div()
         .size_full()
@@ -174,7 +176,7 @@ pub(super) fn render_mod_panel(window: &mut Window, cx: &mut App, colors: &Theme
         .child(pagination)
 }
 
-fn render_loading_state(colors: &ThemeColors) -> Div {
+fn render_loading_state(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .size_full()
         .flex()
@@ -206,17 +208,17 @@ fn render_loading_state(colors: &ThemeColors) -> Div {
                 .text_size(px(15.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.text_primary)
-                .child("正在加载 LeviLamina 客户端模组信息..."),
+                .child(t!("LeviLaminaMods.loading")),
         )
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(colors.text_muted)
-                .child("调用 https://lipr.levimc.org/levilauncher.json"),
+                .child(t!("LeviLaminaMods.source")),
         )
 }
 
-fn render_error_state(colors: &ThemeColors, err: &SharedString) -> Div {
+fn render_error_state(colors: &ThemeColors, err: &SharedString, i18n: &I18n) -> Div {
     let err_str = err.to_string();
     div()
         .size_full()
@@ -249,7 +251,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString) -> Div {
                 .text_size(px(16.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child("加载 LeviLamina 模组信息失败"),
+                .child(t!("LeviLaminaMods.load_failed")),
         )
         .child(
             div()
@@ -259,7 +261,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString) -> Div {
         )
         .child(
             Button::new("retry-fetch-mods")
-                .label("重新加载")
+                .label(t!("LeviLaminaMods.reload"))
                 .bg(colors.accent)
                 .text_color(colors.btn_primary_text)
                 .on_click(|_ev, _window, cx| {
@@ -272,7 +274,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString) -> Div {
         )
 }
 
-fn render_empty_state(colors: &ThemeColors) -> Div {
+fn render_empty_state(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .size_full()
         .flex()
@@ -292,13 +294,13 @@ fn render_empty_state(colors: &ThemeColors) -> Div {
                 .text_size(px(15.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.text_primary)
-                .child("未找到符合条件的 LeviLamina 客户端模组信息"),
+                .child(t!("LeviLaminaMods.empty")),
         )
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(colors.text_muted)
-                .child("请尝试调整搜索关键词或加载器版本筛选条件"),
+                .child(t!("LeviLaminaMods.empty_hint")),
         )
 }
 
@@ -307,21 +309,25 @@ fn render_stats_bar(
     total_mods: usize,
     loader_type: &str,
     loader_ver: &str,
+    i18n: &I18n,
 ) -> Div {
-    let loader_filter_text =
-        if loader_type.is_empty() || loader_type == "全部" || loader_type == "全部加载器" {
-            if loader_ver.is_empty() || loader_ver == "全部版本" || loader_ver == "全部" {
-                "全部加载器 & 全部版本".to_string()
-            } else {
-                format!("全部加载器 ({})", loader_ver)
-            }
+    let all_filter = loader_type.is_empty() || loader_type == "全部" || loader_type == "全部加载器";
+    let all_versions = loader_ver.is_empty() || loader_ver == "全部版本" || loader_ver == "全部";
+    let loader_filter_text = if all_filter {
+        if all_versions {
+            t!("LeviLaminaMods.filter_all")
         } else {
-            if loader_ver.is_empty() || loader_ver == "全部版本" || loader_ver == "全部" {
-                loader_type.to_string()
-            } else {
-                format!("{} {}", loader_type, loader_ver)
-            }
-        };
+            t!("LeviLaminaMods.filter_all_loader", version = loader_ver)
+        }
+    } else if all_versions {
+        SharedString::from(loader_type.to_owned())
+    } else {
+        t!(
+            "LeviLaminaMods.filter_loader_version",
+            loader = loader_type,
+            version = loader_ver
+        )
+    };
 
     div()
         .w_full()
@@ -356,20 +362,23 @@ fn render_stats_bar(
                         .text_size(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.accent)
-                        .child(format!("{} 个客户端模组", total_mods)),
+                        .child(t!("LeviLaminaMods.count", count = total_mods)),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.text_muted)
-                        .child(format!("(当前筛选: {})", loader_filter_text)),
+                        .child(t!(
+                            "LeviLaminaMods.filter_current",
+                            filter = loader_filter_text
+                        )),
                 ),
         )
         .child(
             div()
                 .text_size(px(11.))
                 .text_color(colors.text_muted)
-                .child("仅显示 Client 客户端模组信息 | 来源于 LeviLauncher 注册表"),
+                .child(t!("LeviLaminaMods.client_source")),
         )
 }
 
@@ -377,6 +386,7 @@ fn render_mod_grid(
     colors: &ThemeColors,
     mods: &[LeviLaminaModEntry],
     _state: &DownloadPageState,
+    i18n: &I18n,
 ) -> Div {
     let mut grid = div()
         .w_full()
@@ -386,13 +396,18 @@ fn render_mod_grid(
         .items_stretch();
 
     for (idx, mod_entry) in mods.iter().enumerate() {
-        grid = grid.child(render_mod_card(colors, mod_entry, idx));
+        grid = grid.child(render_mod_card(colors, mod_entry, idx, i18n));
     }
 
     grid
 }
 
-fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: usize) -> AnyElement {
+fn render_mod_card(
+    colors: &ThemeColors,
+    mod_entry: &LeviLaminaModEntry,
+    idx: usize,
+    i18n: &I18n,
+) -> AnyElement {
     let mod_clone = (*mod_entry).clone();
     let mod_clone_for_detail = mod_clone.clone();
 
@@ -508,7 +523,7 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
                         .overflow_hidden()
                         .text_ellipsis()
                         .child(if mod_entry.description.trim().is_empty() {
-                            "暂无描述".to_string()
+                            t!("LeviLaminaMods.no_description").to_string()
                         } else {
                             mod_entry.description.clone()
                         }),
@@ -565,7 +580,7 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
                 )
                 .child(
                     Button::new(ElementId::NamedInteger("btn-mod-detail".into(), idx as u64))
-                        .label("详情")
+                        .label(t!("LeviLaminaMods.details"))
                         .bg(Hsla {
                             a: 0.08,
                             ..colors.accent
@@ -585,6 +600,7 @@ fn render_pagination(
     page_index: usize,
     total_pages: usize,
     _total_mods: usize,
+    i18n: &I18n,
 ) -> Div {
     if total_pages <= 1 {
         return div();
@@ -627,7 +643,11 @@ fn render_pagination(
                 .text_size(px(13.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.text_primary)
-                .child(format!("第 {} / {} 页", page_index + 1, total_pages)),
+                .child(t!(
+                    "LeviLaminaMods.page_info",
+                    current = page_index + 1,
+                    total = total_pages
+                )),
         )
         .child(
             IconButton::new("mod-next-page", lucide_icons::icon_chevron_right())
@@ -651,6 +671,7 @@ pub(super) fn render_detail_modal_content(
     cx: &App,
     mod_entry: &LeviLaminaModEntry,
 ) -> Div {
+    let i18n = cx.global::<I18n>();
     let mod_id = mod_entry.package_id.clone();
     let mod_name = mod_entry.name.clone();
     let mod_desc = mod_entry.description.clone();
@@ -703,9 +724,9 @@ pub(super) fn render_detail_modal_content(
         colors,
         px(180.),
         if targets_loading {
-            SharedString::from("正在检查...")
+            t!("LeviLaminaMods.checking")
         } else if current_ver.is_empty() {
-            SharedString::from("无兼容版本")
+            t!("LeviLaminaMods.no_compatible_version")
         } else {
             SharedString::from(current_ver.clone())
         },
@@ -728,9 +749,9 @@ pub(super) fn render_detail_modal_content(
     let target_label = selected_target.map_or_else(
         || {
             SharedString::from(if targets_loading {
-                "正在检查 LeviLamina 实例..."
+                t!("LeviLaminaMods.checking_instances")
             } else {
-                "没有已安装且兼容的 LeviLamina 实例"
+                t!("LeviLaminaMods.no_compatible_instances")
             })
         },
         |target| target.label.clone(),
@@ -854,14 +875,17 @@ pub(super) fn render_detail_modal_content(
                                             div()
                                                 .text_size(px(12.))
                                                 .text_color(colors.text_secondary)
-                                                .child(format!("{} stars", mod_stars)),
+                                                .child(t!(
+                                                    "LeviLaminaMods.stars",
+                                                    count = &mod_stars
+                                                )),
                                         ),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(12.))
                                         .text_color(colors.text_muted)
-                                        .child(format!("更新: {}", mod_updated)),
+                                        .child(t!("LeviLaminaMods.updated", date = &mod_updated)),
                                 ),
                         ),
                 ),
@@ -898,7 +922,7 @@ pub(super) fn render_detail_modal_content(
                 .text_color(colors.text_primary)
                 .line_height(px(19.))
                 .child(if mod_desc.trim().is_empty() {
-                    "无详细描述".to_string()
+                    t!("LeviLaminaMods.no_description").to_string()
                 } else {
                     mod_desc
                 }),
@@ -913,7 +937,7 @@ pub(super) fn render_detail_modal_content(
                         .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("版本与依赖"),
+                        .child(t!("LeviLaminaMods.version_dependencies")),
                 )
                 .child(
                     div()
@@ -924,7 +948,7 @@ pub(super) fn render_detail_modal_content(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.text_muted)
-                                .child("选择版本:"),
+                                .child(t!("LeviLaminaMods.select_version")),
                         )
                         .child(version_select),
                 ),
@@ -939,7 +963,7 @@ pub(super) fn render_detail_modal_content(
                         .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("安装到游戏版本"),
+                        .child(t!("LeviLaminaMods.install_to_game")),
                 )
                 .child(target_select)
                 .children(install_error.map(|error| {
@@ -960,9 +984,9 @@ pub(super) fn render_detail_modal_content(
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.text_muted)
-                        .child("该版本依赖项:"),
+                        .child(t!("LeviLaminaMods.dependencies")),
                 )
-                .child(render_dependencies_list(colors, &deps)),
+                .child(render_dependencies_list(colors, &deps, i18n)),
         );
 
     let install_mod_id = mod_id;
@@ -987,7 +1011,7 @@ pub(super) fn render_detail_modal_content(
         .gap(px(10.))
         .child(
             Button::new("mod-modal-close")
-                .label("关闭")
+                .label(t!("common.close"))
                 .bg(Hsla {
                     a: 0.08,
                     ..colors.text_primary
@@ -1003,9 +1027,9 @@ pub(super) fn render_detail_modal_content(
         .child(
             Button::new("mod-modal-install")
                 .label(if install_busy {
-                    "正在安装..."
+                    t!("LeviLaminaMods.installing")
                 } else {
-                    "安装"
+                    t!("common.install")
                 })
                 .bg(colors.accent)
                 .text_color(colors.btn_primary_text)
@@ -1031,8 +1055,9 @@ pub(super) fn render_detail_modal_content(
 }
 
 fn start_mod_install(cx: &mut App, package_id: String, version: String) {
+    let i18n = cx.global::<I18n>().clone();
     if version.trim().is_empty() {
-        toast::error(cx, SharedString::from("当前实例没有可用的 Mod 版本"));
+        toast::error(cx, t!("LeviLaminaMods.no_version"));
         return;
     }
     let target = cx.read_global(|state: &DownloadPageState, _cx| {
@@ -1042,7 +1067,7 @@ fn start_mod_install(cx: &mut App, package_id: String, version: String) {
             .map(|path| (path, state.levilauncher_install_target_version.to_string()))
     });
     let Some((game_directory, game_version)) = target else {
-        toast::error(cx, SharedString::from("请先选择已安装的游戏版本"));
+        toast::error(cx, t!("LeviLaminaMods.select_game_version"));
         return;
     };
     cx.update_global(|state: &mut DownloadPageState, _cx| {
@@ -1100,12 +1125,13 @@ fn start_mod_install(cx: &mut App, package_id: String, version: String) {
 fn render_dependencies_list(
     colors: &ThemeColors,
     deps: &std::collections::HashMap<String, String>,
+    i18n: &I18n,
 ) -> AnyElement {
     if deps.is_empty() {
         return div()
             .text_size(px(12.))
             .text_color(colors.text_muted)
-            .child("无依赖项")
+            .child(t!("LeviLaminaMods.no_dependencies"))
             .into_any_element();
     }
 

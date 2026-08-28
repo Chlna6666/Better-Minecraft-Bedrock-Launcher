@@ -6,6 +6,7 @@ use super::layout::{
 use super::model::{ChunkTransferProgress, ViewerMode};
 use super::panels::{mode_button, status_badge};
 use crate::ui::components::icon::themed_icon;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use bedrock_render::Dimension;
 use gpui::prelude::FluentBuilder as _;
@@ -48,6 +49,7 @@ impl EventEmitter<MapViewerAction> for MapTopBarView {}
 impl Render for MapTopBarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme_colors(cx);
+        let i18n = cx.global::<I18n>().clone();
         let Some(snapshot) = self.snapshot.clone() else {
             return div().h(px(IDE_TOP_BAR_HEIGHT)).into_any_element();
         };
@@ -71,14 +73,18 @@ impl Render for MapTopBarView {
             .items_center()
             .gap(px(8.0))
             .overflow_hidden()
-            .child(render_title(&snapshot, layout.title_width, &colors))
+            .child(render_title(&snapshot, layout.title_width, &colors, &i18n))
             .when(!layout.show_modes, |this| {
-                this.child(status_badge(&colors, viewer_mode_label(snapshot.mode)))
+                this.child(status_badge(
+                    &colors,
+                    viewer_mode_label(&i18n, snapshot.mode),
+                ))
             })
             .when(layout.show_modes, |this| {
                 this.child(toolbar_group(&colors).children(mode_buttons(
                     snapshot.mode,
                     &colors,
+                    &i18n,
                     cx,
                 )))
             })
@@ -108,7 +114,7 @@ impl Render for MapTopBarView {
             .when(layout.show_zoom_controls, |this| {
                 this.child(
                     toolbar_group(&colors)
-                        .child(stepper_name(&colors, "缩放"))
+                        .child(stepper_name(&colors, t!("MapViewer.zoom")))
                         .child(
                             top_icon_button(&colors, lucide_icons::icon_minus()).on_mouse_down(
                                 MouseButton::Left,
@@ -140,27 +146,37 @@ impl Render for MapTopBarView {
                 this.child(status_badge(&colors, snapshot.activity))
             })
             .child(
-                top_command_button(&colors, lucide_icons::icon_upload(), "导入").on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|_this, _event, _window, cx| {
-                        cx.emit(MapViewerAction::ImportStructureFile);
-                    }),
-                ),
-            )
-            .child(
-                top_command_button(&colors, lucide_icons::icon_chevron_down(), "更多")
+                top_command_button(&colors, lucide_icons::icon_upload(), t!("MapViewer.import"))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|_this, _event, _window, cx| {
-                            cx.emit(MapViewerAction::ToggleTopMore);
+                            cx.emit(MapViewerAction::ImportStructureFile);
                         }),
                     ),
+            )
+            .child(
+                top_command_button(
+                    &colors,
+                    lucide_icons::icon_chevron_down(),
+                    t!("MapViewer.more"),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_this, _event, _window, cx| {
+                        cx.emit(MapViewerAction::ToggleTopMore);
+                    }),
+                ),
             )
             .into_any_element()
     }
 }
 
-fn render_title(snapshot: &MapTopBarSnapshot, width: f32, colors: &ThemeColors) -> Div {
+fn render_title(
+    snapshot: &MapTopBarSnapshot,
+    width: f32,
+    colors: &ThemeColors,
+    i18n: &I18n,
+) -> Div {
     div()
         .w(px(width))
         .flex_none()
@@ -185,7 +201,7 @@ fn render_title(snapshot: &MapTopBarSnapshot, width: f32, colors: &ThemeColors) 
                         .text_size(px(14.0))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("Bedrock Map"),
+                        .child(t!("MapViewer.bedrock_map")),
                 )
                 .child(
                     div()
@@ -196,7 +212,7 @@ fn render_title(snapshot: &MapTopBarSnapshot, width: f32, colors: &ThemeColors) 
                             "{} · {} · {}",
                             snapshot.asset_name,
                             snapshot.version_name,
-                            dimension_label(snapshot.dimension)
+                            dimension_label(i18n, snapshot.dimension)
                         )),
                 ),
         )
@@ -205,14 +221,15 @@ fn render_title(snapshot: &MapTopBarSnapshot, width: f32, colors: &ThemeColors) 
 fn mode_buttons(
     active: ViewerMode,
     colors: &ThemeColors,
+    i18n: &I18n,
     cx: &mut Context<MapTopBarView>,
 ) -> Vec<gpui::AnyElement> {
     [
-        (ViewerMode::Surface, "地形"),
-        (ViewerMode::Biome, "群系"),
-        (ViewerMode::Height, "高度"),
-        (ViewerMode::Layer, "Y层"),
-        (ViewerMode::Cave, "洞穴"),
+        (ViewerMode::Surface, t!("MapViewer.mode_surface")),
+        (ViewerMode::Biome, t!("MapViewer.mode_biome")),
+        (ViewerMode::Height, t!("MapViewer.mode_height")),
+        (ViewerMode::Layer, t!("MapViewer.mode_layer")),
+        (ViewerMode::Cave, t!("MapViewer.mode_cave")),
     ]
     .into_iter()
     .map(|(mode, label)| {
@@ -247,12 +264,12 @@ fn toolbar_group(colors: &ThemeColors) -> Div {
         })
 }
 
-fn stepper_name(colors: &ThemeColors, label: &'static str) -> Div {
+fn stepper_name(colors: &ThemeColors, label: impl Into<SharedString>) -> Div {
     div()
         .px(px(5.0))
         .text_size(px(11.0))
         .text_color(colors.text_secondary)
-        .child(label)
+        .child(label.into())
 }
 
 fn stepper_value(colors: &ThemeColors, value: impl Into<SharedString>) -> Div {
@@ -288,7 +305,11 @@ fn top_icon_button(colors: &ThemeColors, icon_path: &'static str) -> Div {
         ))
 }
 
-fn top_command_button(colors: &ThemeColors, icon_path: &'static str, label: &'static str) -> Div {
+fn top_command_button(
+    colors: &ThemeColors,
+    icon_path: &'static str,
+    label: impl Into<SharedString>,
+) -> Div {
     div()
         .h(px(36.0))
         .px(px(9.0))
@@ -321,7 +342,7 @@ fn top_command_button(colors: &ThemeColors, icon_path: &'static str, label: &'st
             CHROME_ICON_SIZE - 2.0,
             colors.text_secondary,
         ))
-        .child(label)
+        .child(label.into())
 }
 
 fn theme_colors(cx: &App) -> ThemeColors {
@@ -334,22 +355,24 @@ fn theme_colors(cx: &App) -> ThemeColors {
     )
 }
 
-fn viewer_mode_label(mode: ViewerMode) -> &'static str {
+fn viewer_mode_label(i18n: &I18n, mode: ViewerMode) -> SharedString {
     match mode {
-        ViewerMode::Surface => "地形",
-        ViewerMode::Biome => "群系",
-        ViewerMode::Height => "高度",
-        ViewerMode::Layer => "Y层",
-        ViewerMode::Cave => "洞穴",
+        ViewerMode::Surface => t!("MapViewer.mode_surface"),
+        ViewerMode::Biome => t!("MapViewer.mode_biome"),
+        ViewerMode::Height => t!("MapViewer.mode_height"),
+        ViewerMode::Layer => t!("MapViewer.mode_layer"),
+        ViewerMode::Cave => t!("MapViewer.mode_cave"),
     }
 }
 
-fn dimension_label(dimension: Dimension) -> String {
+fn dimension_label(i18n: &I18n, dimension: Dimension) -> SharedString {
     match dimension {
-        Dimension::Overworld => "主世界".to_string(),
-        Dimension::Nether => "下界".to_string(),
-        Dimension::End => "末地".to_string(),
-        Dimension::Unknown(id) => format!("维度 {id}"),
+        Dimension::Overworld => t!("MapViewer.dimension_overworld"),
+        Dimension::Nether => t!("MapViewer.dimension_nether"),
+        Dimension::End => t!("MapViewer.dimension_end"),
+        Dimension::Unknown(id) => {
+            t!("MapViewer.dimension_unknown", id = &id.to_string())
+        }
     }
 }
 

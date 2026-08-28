@@ -39,7 +39,8 @@ impl ManagePageView {
             let Some(asset) = resolve_asset_by_key(state, &asset_key)
                 .filter(|asset| asset.kind == state::ManageAssetKind::SkinPack)
             else {
-                toast::error(cx, SharedString::from("皮肤包不存在"));
+                let i18n = cx.global::<I18n>().clone();
+                toast::error(cx, t!("ManagePage.skin_pack_missing"));
                 return;
             };
             (version, state.version_config.clone(), asset)
@@ -55,11 +56,12 @@ impl ManagePageView {
             let _ = handle.update(cx, |_this, cx| {
                 match result {
                     Ok(next_config) => {
+                        let i18n = cx.global::<I18n>().clone();
                         cx.update_global(|state: &mut ManagePageState, _cx| {
                             state.version_config = next_config;
                             state.version_config_error = None;
                         });
-                        toast::success(cx, SharedString::from("默认皮肤已更新"));
+                        toast::success(cx, t!("ManagePage.default_skin_updated"));
                     }
                     Err(error) => {
                         toast::error(cx, SharedString::from(error.to_string()));
@@ -91,11 +93,12 @@ impl ManagePageView {
             let _ = handle.update(cx, |_this, cx| {
                 match result {
                     Ok(next_config) => {
+                        let i18n = cx.global::<I18n>().clone();
                         cx.update_global(|state: &mut ManagePageState, _cx| {
                             state.version_config = next_config;
                             state.version_config_error = None;
                         });
-                        toast::success(cx, SharedString::from("默认皮肤已清除"));
+                        toast::success(cx, t!("ManagePage.default_skin_cleared"));
                     }
                     Err(error) => {
                         toast::error(cx, SharedString::from(error.to_string()));

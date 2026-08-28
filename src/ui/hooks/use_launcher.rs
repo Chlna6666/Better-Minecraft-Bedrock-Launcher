@@ -17,7 +17,7 @@ use crate::core::minecraft::launcher::preflight::{
 };
 use crate::core::minecraft::launcher::task::embedded_dll_version_string;
 use crate::core::minecraft::launcher::{LaunchRequest, start_launch_task};
-use crate::i18n::Locale;
+use crate::i18n::LocalizedText;
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
@@ -63,20 +63,19 @@ struct ActiveLaunchPrereq {
     request_id: u64,
     version: PendingLaunchVersion,
     check: Option<LaunchPrerequisiteCheck>,
-    locale: Locale,
     busy: bool,
 }
 
 #[derive(Default)]
 struct DependencyEventBatch {
-    logs: Vec<SharedString>,
+    logs: Vec<LocalizedText>,
     progress: Option<DependencyProgressUpdate>,
-    admin_notice: Option<SharedString>,
+    admin_notice: Option<LocalizedText>,
 }
 
 struct DependencyProgressUpdate {
     percent: u32,
-    stage: SharedString,
+    stage: LocalizedText,
     target: Option<SharedString>,
 }
 
@@ -84,7 +83,7 @@ impl DependencyEventBatch {
     fn push(&mut self, event: DependencyEvent) {
         match event {
             DependencyEvent::Log(message) => {
-                self.logs.push(SharedString::from(message));
+                self.logs.push(message);
             }
             DependencyEvent::Progress {
                 percent,
@@ -93,34 +92,34 @@ impl DependencyEventBatch {
             } => {
                 self.progress = Some(DependencyProgressUpdate {
                     percent,
-                    stage: SharedString::from(stage),
+                    stage,
                     target: target.map(SharedString::from),
                 });
             }
             DependencyEvent::AdminRequired(message) => {
-                self.admin_notice = Some(SharedString::from(message));
+                self.admin_notice = Some(message);
             }
         }
     }
 
-    fn apply(self, request_id: u64, state: &mut LaunchPrereqState) -> bool {
+    fn apply(self, request_id: u64, state: &mut LaunchPrereqState, i18n: &I18n) -> bool {
         let mut changed = false;
 
         for log in self.logs {
-            changed |= state.push_log_if_matches(request_id, log);
+            changed |= state.push_log_if_matches(request_id, i18n.resolve(&log));
         }
 
         if let Some(progress) = self.progress {
             changed |= state.update_progress_if_matches(
                 request_id,
                 progress.percent,
-                progress.stage,
+                i18n.resolve(&progress.stage),
                 progress.target,
             );
         }
 
         if let Some(admin_notice) = self.admin_notice {
-            changed |= state.set_admin_notice_if_matches(request_id, admin_notice);
+            changed |= state.set_admin_notice_if_matches(request_id, i18n.resolve(&admin_notice));
         }
 
         changed
@@ -441,9 +440,7 @@ pub fn open_launch_prereq_developer_settings(cx: &mut App) {
         version_name = %context.version.name,
         "打开开发者模式设置页"
     );
-    let start_log = cx
-        .global::<I18n>()
-        .t("LaunchPrereq.logs.openDeveloperSettings");
+    let start_log = t!("LaunchPrereq.logs.openDeveloperSettings");
     cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         if state.set_operation_if_matches(
             context.request_id,
@@ -522,9 +519,7 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
         return;
     }
 
-    let start_log = cx
-        .global::<I18n>()
-        .t("LaunchPrereq.logs.enableDeveloperMode");
+    let start_log = t!("LaunchPrereq.logs.enableDeveloperMode");
     cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         if state.set_operation_if_matches(
             context.request_id,
@@ -658,9 +653,7 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
         return;
     }
 
-    let start_log = cx
-        .global::<I18n>()
-        .t("LaunchPrereq.logs.installUwpDependencies");
+    let start_log = t!("LaunchPrereq.logs.installUwpDependencies");
     cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         if state.set_operation_if_matches(
             context.request_id,
@@ -687,7 +680,6 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = match crate::tasks::runtime::spawn_io(async move {
             mc_dependency::install_missing_uwp_dependencies(
-                context.locale,
                 check.missing_uwp_dependencies,
                 Some(sender),
             )
@@ -762,7 +754,7 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
         return;
     };
 
-    let start_log = cx.global::<I18n>().t("LaunchPrereq.logs.installGameInput");
+    let start_log = t!("LaunchPrereq.logs.installGameInput");
     cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         if state.set_operation_if_matches(
             context.request_id,
@@ -784,7 +776,7 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let result = match crate::tasks::runtime::spawn_io(async move {
-            mc_dependency::install_game_input_runtime(context.locale, plan, Some(sender)).await
+            mc_dependency::install_game_input_runtime(plan, Some(sender)).await
         }) {
             Ok(task) => task.await.map_err(|error| error.to_string()),
             Err(error) => Err(error),
@@ -855,9 +847,7 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
         return;
     };
 
-    let start_log = cx
-        .global::<I18n>()
-        .t("LaunchPrereq.logs.installWindowsAppSdk");
+    let start_log = t!("LaunchPrereq.logs.installWindowsAppSdk");
     cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         if state.set_operation_if_matches(
             context.request_id,
@@ -880,7 +870,7 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let result = match crate::tasks::runtime::spawn_io(async move {
-            mc_dependency::install_windows_app_sdk_runtime(context.locale, plan, Some(sender)).await
+            mc_dependency::install_windows_app_sdk_runtime(plan, Some(sender)).await
         }) {
             Ok(task) => task.await.map_err(|error| error.to_string()),
             Err(error) => Err(error),
@@ -1020,13 +1010,11 @@ fn launch_prereq_ticket(request_id: u64) -> Arc<str> {
 }
 
 fn read_active_launch_prereq(cx: &App) -> Option<ActiveLaunchPrereq> {
-    let locale = cx.global::<I18n>().locale();
     cx.read_global(|state: &LaunchPrereqState, _cx| {
         Some(ActiveLaunchPrereq {
             request_id: state.request_id,
             version: state.version.clone()?,
             check: state.check.clone(),
-            locale,
             busy: state.is_busy(),
         })
     })
@@ -1185,7 +1173,10 @@ fn spawn_dependency_event_pump(
             let has_progress = batch.progress.is_some();
             let has_admin_notice = batch.admin_notice.is_some();
             let applied = cx
-                .update_global(|state: &mut LaunchPrereqState, _cx| batch.apply(request_id, state))
+                .update_global(|state: &mut LaunchPrereqState, cx| {
+                    let i18n = cx.global::<I18n>().clone();
+                    batch.apply(request_id, state, &i18n)
+                })
                 .unwrap_or(false);
 
             if applied {
@@ -1226,9 +1217,11 @@ fn async_i18n_text(cx: &mut AsyncApp, key: &str) -> SharedString {
     let key_string = key.to_string();
     cx.read_global({
         let key_string = key_string.clone();
-        move |i18n: &I18n, _cx| i18n.t(&key_string)
+        move |i18n: &I18n, _cx| i18n.lookup(&key_string)
     })
-    .unwrap_or_else(|_| SharedString::from(key_string))
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| SharedString::from(key_string))
 }
 
 fn async_i18n_text_items(cx: &mut AsyncApp, key: &str, items: &str) -> SharedString {
@@ -1238,10 +1231,12 @@ fn async_i18n_text_items(cx: &mut AsyncApp, key: &str, items: &str) -> SharedStr
         let key_string = key_string.clone();
         let items_string = items_string.clone();
         move |i18n: &I18n, _cx| {
-            i18n.t_args(&key_string, crate::i18n_args![("items", &items_string)])
+            i18n.lookup_args(&key_string, crate::i18n_args![("items", &items_string)])
         }
     })
-    .unwrap_or_else(|_| SharedString::from(format!("{key_string}: {items_string}")))
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| SharedString::from(format!("{key_string}: {items_string}")))
 }
 
 fn async_i18n_text_required(cx: &mut AsyncApp, key: &str, required: &str) -> SharedString {
@@ -1251,13 +1246,15 @@ fn async_i18n_text_required(cx: &mut AsyncApp, key: &str, required: &str) -> Sha
         let key_string = key_string.clone();
         let required_string = required_string.clone();
         move |i18n: &I18n, _cx| {
-            i18n.t_args(
+            i18n.lookup_args(
                 &key_string,
                 crate::i18n_args![("required", &required_string)],
             )
         }
     })
-    .unwrap_or_else(|_| SharedString::from(format!("{key_string}: {required_string}")))
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| SharedString::from(format!("{key_string}: {required_string}")))
 }
 
 fn async_i18n_text_current_required(
@@ -1274,13 +1271,15 @@ fn async_i18n_text_current_required(
         let current_string = current_string.clone();
         let required_string = required_string.clone();
         move |i18n: &I18n, _cx| {
-            i18n.t_args(
+            i18n.lookup_args(
                 &key_string,
                 crate::i18n_args![("current", &current_string), ("required", &required_string)],
             )
         }
     })
-    .unwrap_or_else(|_| {
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| {
         SharedString::from(format!(
             "{key_string}: current={current_string}, required={required_string}"
         ))
@@ -1293,9 +1292,13 @@ fn async_i18n_text_path(cx: &mut AsyncApp, key: &str, path: &str) -> SharedStrin
     cx.read_global({
         let key_string = key_string.clone();
         let path_string = path_string.clone();
-        move |i18n: &I18n, _cx| i18n.t_args(&key_string, crate::i18n_args![("path", &path_string)])
+        move |i18n: &I18n, _cx| {
+            i18n.lookup_args(&key_string, crate::i18n_args![("path", &path_string)])
+        }
     })
-    .unwrap_or_else(|_| SharedString::from(format!("{key_string}: {path_string}")))
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| SharedString::from(format!("{key_string}: {path_string}")))
 }
 
 fn async_i18n_text_url(cx: &mut AsyncApp, key: &str, url: &str) -> SharedString {
@@ -1304,9 +1307,13 @@ fn async_i18n_text_url(cx: &mut AsyncApp, key: &str, url: &str) -> SharedString 
     cx.read_global({
         let key_string = key_string.clone();
         let url_string = url_string.clone();
-        move |i18n: &I18n, _cx| i18n.t_args(&key_string, crate::i18n_args![("url", &url_string)])
+        move |i18n: &I18n, _cx| {
+            i18n.lookup_args(&key_string, crate::i18n_args![("url", &url_string)])
+        }
     })
-    .unwrap_or_else(|_| SharedString::from(format!("{key_string}: {url_string}")))
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| SharedString::from(format!("{key_string}: {url_string}")))
 }
 
 fn async_i18n_text_args(cx: &mut AsyncApp, key: &str, message: &str) -> SharedString {
@@ -1316,10 +1323,12 @@ fn async_i18n_text_args(cx: &mut AsyncApp, key: &str, message: &str) -> SharedSt
         let key_string = key_string.clone();
         let message_string = message_string.clone();
         move |i18n: &I18n, _cx| {
-            i18n.t_args(&key_string, crate::i18n_args![("message", &message_string)])
+            i18n.lookup_args(&key_string, crate::i18n_args![("message", &message_string)])
         }
     })
-    .unwrap_or_else(|_| SharedString::from(format!("{key_string}: {message_string}")))
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| SharedString::from(format!("{key_string}: {message_string}")))
 }
 
 fn build_issue_logs(check: &LaunchPrerequisiteCheck, cx: &mut AsyncApp) -> Vec<SharedString> {

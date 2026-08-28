@@ -52,9 +52,14 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dirty_label = if self.editor_document.dirty {
-            "已修改"
+            t!("MapViewer.modified")
         } else {
-            "同步"
+            t!("MapViewer.synced")
+        };
+        let title = if self.editor_document.title.is_empty() {
+            t!("MapViewer.no_record_selected")
+        } else {
+            self.editor_document.title.clone()
         };
         div()
             .size_full()
@@ -83,7 +88,7 @@ impl MapViewerWindowView {
                             .text_size(px(12.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_primary)
-                            .child(self.editor_document.title.clone()),
+                            .child(title),
                     )
                     .child(status_badge(colors, dirty_label))
                     .child(dock_close_button(colors).on_mouse_down(
@@ -123,7 +128,7 @@ impl MapViewerWindowView {
                                 CHROME_TAB_ICON_SIZE,
                                 colors.text_primary,
                             ))
-                            .child(SharedString::from("保存"))
+                            .child(t!("common.save"))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _event, _window, cx| {

@@ -1,5 +1,6 @@
 use crate::ui::animation::{ease_out_cubic, request_animation_frame_if};
 use crate::ui::components::modal;
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
@@ -572,9 +573,14 @@ pub fn render_download_page(
         .flex()
         .flex_col()
         .child(
-            toolbar::render_toolbar(&colors, cx.global::<DownloadPageState>(), now)
-                .rounded(px(0.))
-                .border_0(),
+            toolbar::render_toolbar(
+                &colors,
+                cx.global::<DownloadPageState>(),
+                cx.global::<I18n>(),
+                now,
+            )
+            .rounded(px(0.))
+            .border_0(),
         )
         .child(div().h(px(1.)).bg(Hsla {
             a: 0.06,
@@ -686,6 +692,7 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
                 modal::modal_layer_dismissible(
                     game::render_game_dialog(
                         colors,
+                        cx.global::<crate::ui::state::i18n::I18n>(),
                         dialog,
                         dialog_folder_input.as_ref(),
                         cdn_loading,

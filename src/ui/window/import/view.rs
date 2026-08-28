@@ -86,6 +86,9 @@ impl ImportWindowView {
             cx.observe_global::<ThemeState>(|_, cx| {
                 cx.notify();
             }),
+            cx.observe_global::<I18n>(|_, cx| {
+                cx.notify();
+            }),
             cx.observe_global::<LauncherState>(|_, cx| {
                 cx.notify();
             }),
@@ -202,7 +205,7 @@ impl ImportWindowView {
         cx: &mut Context<Self>,
     ) {
         let Some(selected_folder) = self.selected_folder.clone() else {
-            self.status = Some((StatusKind::Error, SharedString::from("未选择导入版本")));
+            self.status = Some((StatusKind::Error, t!("Import.errors.no_selected_version")));
             cx.notify();
             return;
         };
@@ -214,13 +217,10 @@ impl ImportWindowView {
                 .preview
                 .as_ref()
                 .and_then(|preview| preview.invalid_reason.clone())
-                .unwrap_or_else(|| "缺少 uuid".to_string());
+                .unwrap_or_else(|| t!("Import.errors.missingUuid").to_string());
             self.status = Some((
                 StatusKind::Error,
-                cx.global::<I18n>().t_args(
-                    "Import.errors.invalidPack",
-                    crate::i18n_args![("reason", &reason)],
-                ),
+                t!("Import.errors.invalidPack", reason = &reason),
             ));
             cx.notify();
             return;
@@ -234,7 +234,7 @@ impl ImportWindowView {
         let versions = read_local_versions_snapshot(cx);
         let Some(selected_version) = selected_launch_version(self, &versions) else {
             self.is_importing = false;
-            self.status = Some((StatusKind::Error, SharedString::from("未找到目标版本信息")));
+            self.status = Some((StatusKind::Error, t!("Import.errors.no_target_version")));
             cx.notify();
             return;
         };
@@ -367,17 +367,17 @@ impl ImportWindowView {
                     false
                 };
                 let message = if result.failed_count == 0 && launch_started {
-                    cx.global::<I18n>().t("Import.importSuccessLaunching")
+                    t!("Import.importSuccessLaunching")
                 } else if result.failed_count == 0 {
-                    SharedString::from(format!(
-                        "{}，5 秒后自动关闭",
-                        cx.global::<I18n>().t("Import.importSuccess")
-                    ))
+                    t!("Import.auto_close", message = &t!("Import.importSuccess"))
                 } else {
-                    SharedString::from(format!(
-                        "导入完成，成功 {} 个，失败 {} 个",
-                        result.imported_count, result.failed_count
-                    ))
+                    let imported = result.imported_count.to_string();
+                    let failed = result.failed_count.to_string();
+                    t!(
+                        "Import.import_counts",
+                        imported = &imported,
+                        failed = &failed
+                    )
                 };
                 toast::success(cx, message.clone());
                 self.status = Some((StatusKind::Success, message));
@@ -499,7 +499,9 @@ impl ImportWindowView {
 
     fn kind_label(kind: &str, cx: &App) -> SharedString {
         if kind.starts_with("Import.") {
-            cx.global::<I18n>().t(kind)
+            cx.global::<I18n>()
+                .lookup(kind)
+                .unwrap_or_else(|| SharedString::from(kind.to_string()))
         } else {
             SharedString::from(kind.to_string())
         }
@@ -576,11 +578,12 @@ impl Render for ImportWindowView {
             self.close_after_launch_completion = false;
             self.schedule_window_close_after(Duration::from_millis(1200), cx);
         }
-        let title = cx.global::<I18n>().t("Import.title");
-        let processing_label = cx.global::<I18n>().t("Import.processing");
-        let done_label = cx.global::<I18n>().t("Import.done");
-        let start_import_label = cx.global::<I18n>().t("Import.startImport");
-        let start_import_and_launch_label = cx.global::<I18n>().t("Import.startImportAndLaunch");
+        let title = t!("Import.title");
+        window.set_title(&title);
+        let processing_label = t!("Import.processing");
+        let done_label = t!("Import.done");
+        let start_import_label = t!("Import.startImport");
+        let start_import_and_launch_label = t!("Import.startImportAndLaunch");
         request_animation_frame_if(window, self.is_inspecting || self.is_importing);
         request_animation_frame_if(window, cx.global::<LauncherState>().is_modal_animating(now));
 
@@ -1139,16 +1142,16 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                 div()
                     .text_size(px(13.))
                     .text_color(colors.text_secondary)
-                    .child(i18n.t("Import.inspecting")),
+                    .child(t!("Import.inspecting")),
             )
             .into_any_element();
     }
 
     if let Some(preview) = &this.preview {
         if is_world_preview(preview) {
-            let map_name_label = i18n.t("Import.mapName");
-            let map_type_label = i18n.t("Import.mapType");
-            let file_size_label = i18n.t("Import.fileSize");
+            let map_name_label = t!("Import.mapName");
+            let map_type_label = t!("Import.mapType");
+            let file_size_label = t!("Import.fileSize");
 
             let mut card = section_shell(colors)
                 .flex()
@@ -1172,7 +1175,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                                         .text_size(px(11.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_secondary)
-                                        .child(i18n.t("Import.mapInfo")),
+                                        .child(t!("Import.mapInfo")),
                                 )
                                 .child(
                                     MinecraftFormattedText::new(
@@ -1228,10 +1231,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                     this,
                     colors,
                     cx,
-                    i18n.t_args(
-                        "Import.embeddedPacksCount",
-                        crate::i18n_args![("count", sub_packs.len())],
-                    ),
+                    t!("Import.embeddedPacksCount", count = sub_packs.len()),
                 ));
             }
 
@@ -1248,7 +1248,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                 let reason = preview
                     .invalid_reason
                     .clone()
-                    .unwrap_or_else(|| i18n.t("Import.errors.missingUuid").to_string());
+                    .unwrap_or_else(|| t!("Import.errors.missingUuid").to_string());
                 card = card.child(
                     div()
                         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -1265,10 +1265,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                         })
                         .text_size(px(11.))
                         .text_color(colors.danger)
-                        .child(i18n.t_args(
-                            "Import.errors.invalidPack",
-                            crate::i18n_args![("reason", &reason)],
-                        )),
+                        .child(t!("Import.errors.invalidPack", reason = &reason)),
                 );
             }
 
@@ -1276,10 +1273,10 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
         }
 
         if is_world_template_preview(preview) {
-            let template_name_label = i18n.t("Import.templateName");
-            let template_type_label = i18n.t("Import.templateType");
-            let template_version_label = i18n.t("Import.templateVersion");
-            let file_size_label = i18n.t("Import.fileSize");
+            let template_name_label = t!("Import.templateName");
+            let template_type_label = t!("Import.templateType");
+            let template_version_label = t!("Import.templateVersion");
+            let file_size_label = t!("Import.fileSize");
 
             let mut card = section_shell(colors)
                 .flex()
@@ -1303,7 +1300,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                                         .text_size(px(11.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_secondary)
-                                        .child(i18n.t("Import.templateInfo")),
+                                        .child(t!("Import.templateInfo")),
                                 )
                                 .child(
                                     MinecraftFormattedText::new(
@@ -1317,7 +1314,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                                 .child(
                                     MinecraftFormattedText::new(
                                         if preview.description.is_empty() {
-                                            i18n.t("Import.noDescription")
+                                            t!("Import.noDescription")
                                         } else {
                                             SharedString::from(preview.description.clone())
                                         },
@@ -1369,10 +1366,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                     this,
                     colors,
                     cx,
-                    i18n.t_args(
-                        "Import.templatePacksCount",
-                        crate::i18n_args![("count", sub_packs.len())],
-                    ),
+                    t!("Import.templatePacksCount", count = sub_packs.len()),
                 ));
             }
 
@@ -1389,7 +1383,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                 let reason = preview
                     .invalid_reason
                     .clone()
-                    .unwrap_or_else(|| i18n.t("Import.errors.missingUuid").to_string());
+                    .unwrap_or_else(|| t!("Import.errors.missingUuid").to_string());
                 card = card.child(
                     div()
                         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -1406,10 +1400,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                         })
                         .text_size(px(11.))
                         .text_color(colors.danger)
-                        .child(i18n.t_args(
-                            "Import.errors.invalidPack",
-                            crate::i18n_args![("reason", &reason)],
-                        )),
+                        .child(t!("Import.errors.invalidPack", reason = &reason)),
                 );
             }
 
@@ -1442,7 +1433,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                         .child(
                             MinecraftFormattedText::new(
                                 if preview.description.is_empty() {
-                                    i18n.t("Import.noDescription")
+                                    t!("Import.noDescription")
                                 } else {
                                     SharedString::from(preview.description.clone())
                                 },
@@ -1482,7 +1473,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
             let reason = preview
                 .invalid_reason
                 .clone()
-                .unwrap_or_else(|| i18n.t("Import.errors.missingUuid").to_string());
+                .unwrap_or_else(|| t!("Import.errors.missingUuid").to_string());
             card = card.child(
                 div()
                     .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -1499,10 +1490,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                     })
                     .text_size(px(11.))
                     .text_color(colors.danger)
-                    .child(i18n.t_args(
-                        "Import.errors.invalidPack",
-                        crate::i18n_args![("reason", &reason)],
-                    )),
+                    .child(t!("Import.errors.invalidPack", reason = &reason)),
             );
         }
 
@@ -1523,10 +1511,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                             .text_size(px(11.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .child(i18n.t_args(
-                                "Import.subPacksCount",
-                                crate::i18n_args![("count", &sub_pack_count)],
-                            )),
+                            .child(t!("Import.subPacksCount", count = &sub_pack_count)),
                     ),
             );
 
@@ -1579,7 +1564,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                                     .text_size(px(10.))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(colors.danger)
-                                    .child(i18n.t("Import.invalidPackShort")),
+                                    .child(t!("Import.invalidPackShort")),
                             )
                         }),
                 );
@@ -1627,7 +1612,7 @@ fn render_versions_card(
             .text_size(px(12.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(colors.text_secondary)
-            .child(i18n.t("Import.targetVersion")),
+            .child(t!("Import.targetVersion")),
     );
 
     if versions.versions.is_empty() {
@@ -1636,7 +1621,7 @@ fn render_versions_card(
                 div()
                     .text_size(px(13.))
                     .text_color(colors.text_secondary)
-                    .child(i18n.t("Import.noVersions")),
+                    .child(t!("Import.noVersions")),
             )
             .into_any_element();
     }
@@ -1646,12 +1631,12 @@ fn render_versions_card(
     let dropdown_label = selected_version
         .map(version_primary_label)
         .or_else(|| this.target.instance_name.clone())
-        .unwrap_or_else(|| i18n.t("Import.noVersions"));
+        .unwrap_or_else(|| t!("Import.noVersions"));
     let dropdown_options = versions
         .versions
         .iter()
         .map(|version| DropdownOption {
-            label: version_dropdown_label(version),
+            label: version_dropdown_label(version, i18n),
         })
         .collect::<Vec<_>>();
     let view_handle = cx.entity().downgrade();
@@ -1663,10 +1648,10 @@ fn render_versions_card(
     let selected_meta = selected_version
         .map(version_detail_label)
         .or_else(|| this.target.game_version.clone())
-        .unwrap_or_else(|| i18n.t("Import.noVersions"));
+        .unwrap_or_else(|| t!("Import.noVersions"));
     let target_locked = this.target.lock_version;
     let trigger_meta = if target_locked {
-        SharedString::from(format!("{selected_meta} · 已锁定为当前管理实例"))
+        t!("Import.locked_instance", meta = &selected_meta)
     } else {
         selected_meta.clone()
     };
@@ -1753,9 +1738,10 @@ fn render_versions_card(
         ))
         .child(info_summary_panel(
             colors,
+            i18n,
             selected_version,
             selected_meta,
-            i18n.t("Import.unknown"),
+            t!("Import.unknown"),
         ));
     card.into_any_element()
 }
@@ -1896,7 +1882,7 @@ fn render_embedded_pack_list(
                             .text_size(px(10.))
                             .font_weight(FontWeight::BOLD)
                             .text_color(colors.danger)
-                            .child(i18n.t("Import.invalidPackShort")),
+                            .child(t!("Import.invalidPackShort")),
                     )
                 }),
         );
@@ -1935,10 +1921,7 @@ fn render_world_pack_reference_list(
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_secondary)
-                        .child(i18n.t_args(
-                            "Import.worldPackRefsCount",
-                            crate::i18n_args![("count", &count)],
-                        )),
+                        .child(t!("Import.worldPackRefsCount", count = &count)),
                 ),
         )
         .child(
@@ -1948,27 +1931,21 @@ fn render_world_pack_reference_list(
                 .gap(px(6.))
                 .child(meta_pill(
                     colors,
-                    i18n.t_args(
-                        "Import.worldPackRefsMatchedCount",
-                        crate::i18n_args![("count", matched_count)],
-                    ),
+                    t!("Import.worldPackRefsMatchedCount", count = matched_count),
                     true,
                 ))
                 .child(meta_pill(
                     colors,
-                    i18n.t_args(
+                    t!(
                         "Import.worldPackRefsUnmatchedCount",
-                        crate::i18n_args![("count", unmatched_count)],
+                        count = unmatched_count
                     ),
                     unmatched_count == 0,
                 )),
         );
 
     for (index, reference) in references.iter().enumerate() {
-        let order_label = i18n.t_args(
-            "Import.packOrder",
-            crate::i18n_args![("order", reference.order)],
-        );
+        let order_label = t!("Import.packOrder", order = reference.order);
         let matched_pack = matched_pack_name_for_reference(reference, sub_packs);
         let matched = matched_pack.is_some();
         list = list.child(
@@ -2011,9 +1988,9 @@ fn render_world_pack_reference_list(
                                 .child(meta_pill(
                                     colors,
                                     if matched {
-                                        i18n.t("Import.referenceMatched")
+                                        t!("Import.referenceMatched")
                                     } else {
-                                        i18n.t("Import.referenceUnmatched")
+                                        t!("Import.referenceUnmatched")
                                     },
                                     matched,
                                 )),
@@ -2021,14 +1998,14 @@ fn render_world_pack_reference_list(
                 )
                 .child(preview_info_row(
                     colors,
-                    i18n.t("Import.dependencyUuid"),
+                    t!("Import.dependencyUuid"),
                     SharedString::from(reference.uuid.clone()),
                     lucide_icons::icon_tag(),
                 ))
                 .when_some(matched_pack, |this, pack_name| {
                     this.child(preview_info_row(
                         colors,
-                        i18n.t("Import.matchedPack"),
+                        t!("Import.matchedPack"),
                         pack_name,
                         lucide_icons::icon_package_open(),
                     ))
@@ -2050,13 +2027,13 @@ fn render_world_pack_reference_list(
                             })
                             .text_size(px(11.))
                             .text_color(colors.danger)
-                            .child(i18n.t("Import.referenceMissingHint")),
+                            .child(t!("Import.referenceMissingHint")),
                     )
                 })
                 .when_some(reference.version.as_ref(), |this, version| {
                     this.child(preview_info_row(
                         colors,
-                        i18n.t("Import.packVersion"),
+                        t!("Import.packVersion"),
                         SharedString::from(version.clone()),
                         lucide_icons::icon_tag(),
                     ))
@@ -2064,7 +2041,7 @@ fn render_world_pack_reference_list(
                 .when_some(reference.subpack.as_ref(), |this, subpack| {
                     this.child(preview_info_row(
                         colors,
-                        i18n.t("Import.subpackName"),
+                        t!("Import.subpackName"),
                         SharedString::from(subpack.clone()),
                         lucide_icons::icon_boxes(),
                     ))
@@ -2093,6 +2070,7 @@ fn matched_pack_name_for_reference(
 
 fn info_summary_panel(
     colors: &ThemeColors,
+    i18n: &I18n,
     selected_version: Option<&crate::core::version::launch_versions::LaunchVersionEntry>,
     selected_meta: SharedString,
     unknown_label: SharedString,
@@ -2104,10 +2082,10 @@ fn info_summary_panel(
         .and_then(version_target_root_path)
         .unwrap_or_else(|| SharedString::from("-"));
     let isolation = selected_version
-        .map(version_isolation_label)
+        .map(|version| version_isolation_label(version, i18n))
         .unwrap_or_else(|| SharedString::from("-"));
     let version_type = selected_version
-        .map(version_type_summary_label)
+        .map(|version| version_type_summary_label(version, i18n))
         .unwrap_or_else(|| SharedString::from("-"));
 
     div()
@@ -2164,19 +2142,19 @@ fn info_summary_panel(
         )
         .child(info_summary_row(
             colors,
-            "目标路径",
+            t!("Import.targetPath"),
             target_path,
             lucide_icons::icon_folder_tree(),
         ))
         .child(info_summary_row(
             colors,
-            "隔离状态",
+            t!("Import.isolationStatus"),
             isolation,
             lucide_icons::icon_hard_drive(),
         ))
         .child(info_summary_row(
             colors,
-            "版本类型",
+            t!("Import.versionType"),
             version_type,
             lucide_icons::icon_boxes(),
         ))
@@ -2185,7 +2163,7 @@ fn info_summary_panel(
 
 fn info_summary_row(
     colors: &ThemeColors,
-    label: &'static str,
+    label: SharedString,
     value: SharedString,
     icon_path: &'static str,
 ) -> AnyElement {
@@ -2285,22 +2263,25 @@ fn version_target_root_path(
 
 fn version_isolation_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
+    i18n: &I18n,
 ) -> SharedString {
-    crate::ui::hooks::use_local_versions::version_isolation_label(version)
+    crate::ui::hooks::use_local_versions::version_isolation_label(version, i18n)
 }
 
 fn version_type_summary_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
+    i18n: &I18n,
 ) -> SharedString {
-    crate::ui::hooks::use_local_versions::version_type_summary_label(version)
+    crate::ui::hooks::use_local_versions::version_type_summary_label(version, i18n)
 }
 
 fn version_dropdown_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
+    i18n: &I18n,
 ) -> SharedString {
     let name = version_primary_label(version);
     let game_version = version_detail_label(version);
-    let edition = crate::ui::hooks::use_local_versions::launch_version_display_type(version);
+    let edition = crate::ui::hooks::use_local_versions::launch_version_display_type(version, i18n);
     SharedString::from(format!("{name} · {game_version} ({edition})"))
 }
 
@@ -2412,9 +2393,9 @@ fn render_conflict_dialog(
     let incoming_preview = view.preview.as_ref();
     let is_shared_fallback = conflict_type.as_deref() == Some("shared_fallback");
     let primary_label = if is_shared_fallback {
-        i18n.t("Import.conflict.importToShared")
+        t!("Import.conflict.importToShared")
     } else {
-        i18n.t("Import.conflict.overwriteImport")
+        t!("Import.conflict.overwriteImport")
     };
     div()
         .absolute()
@@ -2470,9 +2451,7 @@ fn render_conflict_dialog(
                                                                 .text_size(px(19.))
                                                                 .font_weight(FontWeight::BOLD)
                                                                 .text_color(colors.text_primary)
-                                                                .child(
-                                                                    i18n.t("Import.conflict.title"),
-                                                                ),
+                                                                .child(t!("Import.conflict.title")),
                                                         )
                                                         .child(
                                                             div()
@@ -2488,9 +2467,9 @@ fn render_conflict_dialog(
                                         .child(meta_chip(
                                             colors,
                                             if is_shared_fallback {
-                                                SharedString::from("Shared")
+                                                t!("Import.conflict.shared")
                                             } else {
-                                                SharedString::from("Overwrite")
+                                                t!("Import.conflict.overwriteImport")
                                             },
                                             !is_shared_fallback,
                                         )),
@@ -2504,55 +2483,54 @@ fn render_conflict_dialog(
                                 );
 
                             if is_shared_fallback {
-                                panel =
-                                    panel.child(
-                                        div()
-                                            .rounded(px(crate::ui::theme::tokens::radius::MD))
-                                            .bg(Hsla {
-                                                a: 0.42,
-                                                ..colors.surface
-                                            })
-                                            .border_1()
-                                            .border_color(Hsla {
-                                                a: 0.08,
-                                                ..colors.border
-                                            })
-                                            .p(px(16.))
-                                            .flex()
-                                            .gap(px(12.))
-                                            .items_start()
-                                            .child(icon(
-                                                lucide_icons::icon_folder_git_2(),
-                                                18.0,
-                                                colors.accent,
-                                            ))
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w(px(0.))
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap(px(6.))
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(13.))
-                                                            .font_weight(FontWeight::BOLD)
-                                                            .text_color(colors.text_primary)
-                                                            .child(i18n.t(
-                                                                "Import.conflict.importToShared",
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(12.))
-                                                            .line_height(relative(1.45))
-                                                            .text_color(colors.text_secondary)
-                                                            .child(i18n.t(
-                                                                "Import.conflict.overwriteWarning",
-                                                            )),
-                                                    ),
-                                            ),
-                                    );
+                                panel = panel.child(
+                                    div()
+                                        .rounded(px(crate::ui::theme::tokens::radius::MD))
+                                        .bg(Hsla {
+                                            a: 0.42,
+                                            ..colors.surface
+                                        })
+                                        .border_1()
+                                        .border_color(Hsla {
+                                            a: 0.08,
+                                            ..colors.border
+                                        })
+                                        .p(px(16.))
+                                        .flex()
+                                        .gap(px(12.))
+                                        .items_start()
+                                        .child(icon(
+                                            lucide_icons::icon_folder_git_2(),
+                                            18.0,
+                                            colors.accent,
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(6.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .text_color(colors.text_primary)
+                                                        .child(t!(
+                                                            "Import.conflict.importToShared"
+                                                        )),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .line_height(relative(1.45))
+                                                        .text_color(colors.text_secondary)
+                                                        .child(t!(
+                                                            "Import.conflict.overwriteWarning"
+                                                        )),
+                                                ),
+                                        ),
+                                );
                             } else {
                                 panel = panel
                                     .child(render_conflict_compare_panel(
@@ -2568,7 +2546,7 @@ fn render_conflict_dialog(
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_center()
                                             .text_color(colors.danger)
-                                            .child(i18n.t("Import.conflict.overwriteWarning")),
+                                            .child(t!("Import.conflict.overwriteWarning")),
                                     );
                             }
 
@@ -2577,18 +2555,14 @@ fn render_conflict_dialog(
                                     .flex()
                                     .gap(px(12.))
                                     .child(
-                                        secondary_button(
-                                            &colors,
-                                            SharedString::from("取消"),
-                                            false,
-                                        )
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                this.show_conflict_dialog = false;
-                                                cx.notify();
-                                            }),
-                                        ),
+                                        secondary_button(&colors, t!("common.cancel"), false)
+                                            .on_mouse_up(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.show_conflict_dialog = false;
+                                                    cx.notify();
+                                                }),
+                                            ),
                                     )
                                     .child(
                                         primary_button(&colors, primary_label, false).on_mouse_up(
@@ -2639,7 +2613,7 @@ fn render_conflict_compare_panel(
         .gap(px(12.))
         .child(render_conflict_pack_card(
             colors,
-            cx.global::<I18n>().t("Import.conflict.current"),
+            t!("Import.conflict.current"),
             existing_preview,
             false,
             view,
@@ -2678,7 +2652,7 @@ fn render_conflict_compare_panel(
         )
         .child(render_conflict_pack_card(
             colors,
-            cx.global::<I18n>().t("Import.conflict.new"),
+            t!("Import.conflict.new"),
             incoming_preview,
             true,
             view,
@@ -2705,12 +2679,12 @@ fn render_conflict_pack_card(
     let description = preview
         .map(|preview| {
             if preview.description.is_empty() {
-                cx.global::<I18n>().t("Import.noDescription")
+                t!("Import.noDescription")
             } else {
                 SharedString::from(preview.description.clone())
             }
         })
-        .unwrap_or_else(|| cx.global::<I18n>().t("Import.noDescription"));
+        .unwrap_or_else(|| t!("Import.noDescription"));
     let size_text = preview.map(|preview| format_size(preview.size));
     let card_background = if emphasize {
         Hsla {

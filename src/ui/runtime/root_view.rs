@@ -14,6 +14,12 @@ impl RootView {
         let subscriptions = {
             cx.default_global::<crate::ui::onboarding::state::OnboardingTourState>();
             let mut subscriptions = vec![
+                cx.observe_global::<crate::ui::state::i18n::I18n>(|_this, cx| {
+                    // One subscription per native window invalidates its root;
+                    // child views decide whether their own cached text is stale
+                    // from the language revision during the next render.
+                    cx.notify();
+                }),
                 cx.observe_global::<crate::ui::onboarding::state::OnboardingTourState>(
                     |_this, cx| cx.notify(),
                 ),

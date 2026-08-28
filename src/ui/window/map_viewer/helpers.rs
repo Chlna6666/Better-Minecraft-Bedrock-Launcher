@@ -418,13 +418,17 @@ pub(super) fn dimension_buttons(
     active: Dimension,
     custom_id: i32,
     colors: &ThemeColors,
+    i18n: &I18n,
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<AnyElement> {
     [
-        (Dimension::Overworld, "主世界"),
-        (Dimension::Nether, "下界"),
-        (Dimension::End, "末地"),
-        (Dimension::Unknown(custom_id), "自定义"),
+        (Dimension::Overworld, t!("MapViewer.dimension_overworld")),
+        (Dimension::Nether, t!("MapViewer.dimension_nether")),
+        (Dimension::End, t!("MapViewer.dimension_end")),
+        (
+            Dimension::Unknown(custom_id),
+            t!("MapViewer.dimension_custom"),
+        ),
     ]
     .into_iter()
     .map(|(dimension, label)| {

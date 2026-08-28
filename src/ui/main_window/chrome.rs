@@ -3,6 +3,7 @@ use crate::core::bedrock_auth::{AuthPhase, AuthSnapshot, XboxProfile};
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::bedrock_auth::BedrockAuthState;
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
@@ -37,21 +38,21 @@ fn icon(path: &'static str, color: Hsla, size: Pixels) -> Svg {
     svg().path(path).size(size).text_color(color)
 }
 
-fn status_label(snapshot: &AuthSnapshot) -> SharedString {
+fn status_label(i18n: &I18n, snapshot: &AuthSnapshot) -> SharedString {
     match snapshot.phase {
         AuthPhase::SignedIn => snapshot
             .profile
             .as_ref()
             .map(|profile| SharedString::from(profile.gamertag.clone()))
-            .unwrap_or_else(|| SharedString::from("Xbox")),
-        AuthPhase::Restoring => SharedString::from("恢复登录…"),
-        AuthPhase::RequestingCode => SharedString::from("连接中…"),
-        AuthPhase::WaitingForUser => SharedString::from("等待确认"),
-        AuthPhase::AuthenticatingXbox => SharedString::from("Xbox 验证…"),
-        AuthPhase::SwitchingAccount => SharedString::from("切换账号…"),
-        AuthPhase::SigningOut => SharedString::from("正在退出…"),
-        AuthPhase::Error => SharedString::from("登录失败"),
-        AuthPhase::SignedOut => SharedString::from("登录 Xbox"),
+            .unwrap_or_else(|| t!("Auth.xbox")),
+        AuthPhase::Restoring => t!("Auth.restoring"),
+        AuthPhase::RequestingCode => t!("Auth.requesting_code"),
+        AuthPhase::WaitingForUser => t!("Auth.waiting_confirmation"),
+        AuthPhase::AuthenticatingXbox => t!("Auth.authenticating"),
+        AuthPhase::SwitchingAccount => t!("Auth.switching_account"),
+        AuthPhase::SigningOut => t!("Auth.signing_out"),
+        AuthPhase::Error => t!("Auth.login_failed"),
+        AuthPhase::SignedOut => t!("Auth.xbox_login"),
     }
 }
 
@@ -116,6 +117,7 @@ fn account_avatar(profile: &XboxProfile, foreground: Hsla, size: Pixels) -> AnyE
 }
 
 fn account_list(
+    i18n: &I18n,
     snapshot: &AuthSnapshot,
     pending_delete_account_id: Option<&str>,
     text: Hsla,
@@ -129,6 +131,7 @@ fn account_list(
     );
     let active_account_id = snapshot.active_account_id.as_deref();
     let pending_delete = pending_delete_account_id.is_some();
+    let account_count = snapshot.accounts.len().to_string();
 
     div()
         .mt(px(16.))
@@ -142,8 +145,8 @@ fn account_list(
                 .justify_between()
                 .text_size(px(11.))
                 .text_color(muted)
-                .child("已保存账号")
-                .child(format!("{} 个", snapshot.accounts.len())),
+                .child(t!("Auth.saved_accounts"))
+                .child(t!("Auth.account_count", count = &account_count)),
         )
         .child(
             div()
@@ -232,7 +235,7 @@ fn account_list(
                                     .text_size(px(9.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(accent)
-                                    .child("当前"),
+                                    .child(t!("Auth.current")),
                             )
                         })
                         .child(
@@ -306,13 +309,14 @@ fn account_list(
                 div()
                     .text_size(px(10.5))
                     .text_color(rgb(0xdc2626))
-                    .child("再次点击红色删除按钮以移除账号和加密凭证"),
+                    .child(t!("Auth.remove_account_hint")),
             )
         })
         .into_any_element()
 }
 
 fn auth_panel(
+    i18n: &I18n,
     snapshot: AuthSnapshot,
     pending_delete_account_id: Option<String>,
     text: Hsla,
@@ -321,28 +325,26 @@ fn auth_panel(
     surface: Hsla,
     border: Hsla,
 ) -> AnyElement {
-    let title = snapshot
-        .profile
-        .as_ref()
-        .map_or("Microsoft 与 Xbox", |profile| {
-            profile.display_name.as_str()
-        });
+    let title = snapshot.profile.as_ref().map_or_else(
+        || t!("Auth.microsoft_xbox"),
+        |profile| SharedString::from(profile.display_name.clone()),
+    );
     let subtitle = snapshot.profile.as_ref().map_or_else(
         || match snapshot.phase {
-            AuthPhase::SignedOut => "登录后可在启动器中管理 Xbox 会话".to_string(),
-            AuthPhase::Restoring => "正在从系统凭证库恢复加密会话".to_string(),
-            AuthPhase::RequestingCode => "正在向 Microsoft 请求登录代码".to_string(),
-            AuthPhase::WaitingForUser => "请在 Microsoft 页面确认此设备".to_string(),
-            AuthPhase::AuthenticatingXbox => "正在建立 Xbox Live 与 Minecraft 服务令牌".to_string(),
-            AuthPhase::SwitchingAccount => "正在刷新并验证所选 Xbox 账号".to_string(),
-            AuthPhase::SigningOut => "正在从系统凭证库与兼容环境中清除会话".to_string(),
-            AuthPhase::Error | AuthPhase::SignedIn => String::new(),
+            AuthPhase::SignedOut => t!("Auth.signed_out_hint"),
+            AuthPhase::Restoring => t!("Auth.restoring_hint"),
+            AuthPhase::RequestingCode => t!("Auth.requesting_code_hint"),
+            AuthPhase::WaitingForUser => t!("Auth.waiting_confirmation_hint"),
+            AuthPhase::AuthenticatingXbox => t!("Auth.authenticating_hint"),
+            AuthPhase::SwitchingAccount => t!("Auth.switching_account_hint"),
+            AuthPhase::SigningOut => t!("Auth.signing_out_hint"),
+            AuthPhase::Error | AuthPhase::SignedIn => SharedString::default(),
         },
         |profile| {
-            profile.gamerscore.as_ref().map_or_else(
+            SharedString::from(profile.gamerscore.as_ref().map_or_else(
                 || format!("@{}", profile.gamertag),
                 |score| format!("@{} · {} G", profile.gamertag, score),
-            )
+            ))
         },
     );
 
@@ -370,9 +372,9 @@ fn auth_panel(
                 px(16.),
             ))
             .child(if snapshot.accounts.is_empty() {
-                "使用 Microsoft 登录"
+                t!("Auth.login_with_microsoft")
             } else {
-                "添加 Microsoft 账号"
+                t!("Auth.add_microsoft_account")
             })
             .into_any_element(),
         AuthPhase::WaitingForUser => {
@@ -444,7 +446,7 @@ fn auth_panel(
                             rgb(0xffffff).into(),
                             px(15.),
                         ))
-                        .child("打开 Microsoft 登录页面"),
+                        .child(t!("Auth.open_login_page")),
                 )
                 .child(
                     div()
@@ -464,7 +466,7 @@ fn auth_panel(
                             cx.write_to_clipboard(ClipboardItem::new_string(copied_url.clone()));
                         })
                         .child(icon(lucide_icons::icon_link(), text, px(15.)))
-                        .child("复制登录链接（可在其他浏览器打开）"),
+                        .child(t!("Auth.copy_login_link")),
                 )
                 .child(
                     div()
@@ -479,7 +481,7 @@ fn auth_panel(
                             cx.stop_propagation();
                             crate::core::bedrock_auth::cancel_login();
                         })
-                        .child("取消登录"),
+                        .child(t!("Auth.cancel_login")),
                 )
                 .into_any_element()
         }
@@ -503,13 +505,13 @@ fn auth_panel(
                 }
             })
             .child(icon(lucide_icons::icon_user_plus(), text, px(15.)))
-            .child("添加其他 Microsoft 账号")
+            .child(t!("Auth.add_microsoft_account"))
             .into_any_element(),
         AuthPhase::Error => {
             let message = snapshot
                 .error
                 .clone()
-                .unwrap_or_else(|| "Microsoft/Xbox 登录失败".to_string());
+                .unwrap_or_else(|| t!("Auth.login_error").to_string());
             let retry_account_id = snapshot.active_account_id.clone();
             let has_saved_accounts = !snapshot.accounts.is_empty();
             div()
@@ -550,7 +552,7 @@ fn auth_panel(
                                 tracing::warn!(%error, "could not retry Xbox login");
                             }
                         })
-                        .child("重新登录"),
+                        .child(t!("Auth.retry_login")),
                 )
                 .when(has_saved_accounts, |error_panel| {
                     error_panel.child(
@@ -576,7 +578,7 @@ fn auth_panel(
                                 }
                             })
                             .child(icon(lucide_icons::icon_user_plus(), text, px(14.)))
-                            .child("添加其他 Microsoft 账号"),
+                            .child(t!("Auth.add_microsoft_account")),
                     )
                 })
                 .into_any_element()
@@ -606,7 +608,7 @@ fn auth_panel(
                     },
                 ),
             )
-            .child(status_label(&snapshot))
+            .child(status_label(i18n, &snapshot))
             .into_any_element(),
     };
 
@@ -646,7 +648,7 @@ fn auth_panel(
                                         .text_size(px(15.))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(text)
-                                        .child(title.to_string()),
+                                        .child(title),
                                 )
                                 .child(div().text_size(px(11.5)).text_color(muted).child(subtitle)),
                         ),
@@ -672,6 +674,7 @@ fn auth_panel(
         )
         .when(!snapshot.accounts.is_empty(), |panel| {
             panel.child(account_list(
+                i18n,
                 &snapshot,
                 pending_delete_account_id.as_deref(),
                 text,
@@ -699,18 +702,42 @@ pub(super) fn render_app_chrome(
     let labels_layout_factor = state.labels_layout_factor.clamp(0.0, 1.0);
     let labels_opacity_factor = state.labels_opacity_factor.clamp(0.0, 1.0);
     let mut nav_items = vec![
-        (lucide_icons::icon_house(), "启动", AppRoute::Home),
-        (lucide_icons::icon_download(), "下载", AppRoute::Download),
-        (lucide_icons::icon_list(), "版本", AppRoute::Manage),
-        (lucide_icons::icon_wrench(), "工具", AppRoute::Tools),
-        (lucide_icons::icon_activity(), "任务", AppRoute::Tasks),
-        (lucide_icons::icon_settings(), "设置", AppRoute::Settings),
+        (
+            lucide_icons::icon_house(),
+            t!("Sidebar.launch"),
+            AppRoute::Home,
+        ),
+        (
+            lucide_icons::icon_download(),
+            t!("Sidebar.download"),
+            AppRoute::Download,
+        ),
+        (
+            lucide_icons::icon_list(),
+            t!("Sidebar.versions"),
+            AppRoute::Manage,
+        ),
+        (
+            lucide_icons::icon_wrench(),
+            t!("Sidebar.tools"),
+            AppRoute::Tools,
+        ),
+        (
+            lucide_icons::icon_activity(),
+            t!("Tasks.title"),
+            AppRoute::Tasks,
+        ),
+        (
+            lucide_icons::icon_settings(),
+            t!("Sidebar.settings"),
+            AppRoute::Settings,
+        ),
     ]
     .into_iter()
     .map(|(icon_path, label, target)| NavItem {
         icon_path,
         image_icon_path: None,
-        label: SharedString::from(label),
+        label,
         target: RouteTarget::Builtin(target),
     })
     .collect::<Vec<_>>();
@@ -863,7 +890,7 @@ pub(super) fn render_app_chrome(
                 .text_size(px(11.5))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child(status_label(&auth_snapshot)),
+                .child(status_label(&state.i18n, &auth_snapshot)),
         );
 
     let icon_button = |id: &'static str, path: &'static str| {
@@ -1040,6 +1067,7 @@ pub(super) fn render_app_chrome(
 
     root.when(dialog_open, |element| {
         element.child(auth_panel(
+            &state.i18n,
             state.auth_snapshot,
             state.auth_pending_delete_account_id,
             colors.text_primary,

@@ -1,5 +1,6 @@
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::prelude::FluentBuilder as _;
@@ -10,6 +11,7 @@ use super::{controls, peers, room, settings};
 
 pub(in crate::ui::views::tools) fn render_online_panel(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &ToolsPageState,
     window_width: Pixels,
 ) -> impl IntoElement {
@@ -18,10 +20,15 @@ pub(in crate::ui::views::tools) fn render_online_panel(
         .overflow_y_scrollbar()
         .scrollbar_width(px(0.))
         .p(px(14.))
-        .child(render_online_body(colors, state, compact))
+        .child(render_online_body(colors, i18n, state, compact))
 }
 
-fn render_online_body(colors: &ThemeColors, state: &ToolsPageState, compact: bool) -> Div {
+fn render_online_body(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+    compact: bool,
+) -> Div {
     let primary = div()
         .when(compact, |this| this.w_full())
         .flex_1()
@@ -29,7 +36,7 @@ fn render_online_body(colors: &ThemeColors, state: &ToolsPageState, compact: boo
         .flex()
         .flex_col()
         .gap(px(14.))
-        .child(room::render_room_card(colors, state));
+        .child(room::render_room_card(colors, i18n, state));
     let secondary = div()
         .min_w(px(0.))
         .when(!compact, |this| this.w(px(330.)).flex_none())
@@ -38,11 +45,11 @@ fn render_online_body(colors: &ThemeColors, state: &ToolsPageState, compact: boo
         .flex_col()
         .gap(px(14.))
         .when(state.easytier_running, |this| {
-            this.child(peers::render_room_members_card(colors, state))
+            this.child(peers::render_room_members_card(colors, i18n, state))
         })
-        .child(render_activity_card(colors, state))
-        .child(controls::render_session_card(colors, state))
-        .child(peers::render_network_nodes_card(colors, state));
+        .child(render_activity_card(colors, i18n, state))
+        .child(controls::render_session_card(colors, i18n, state))
+        .child(peers::render_network_nodes_card(colors, i18n, state));
 
     div()
         .w_full()
@@ -54,26 +61,26 @@ fn render_online_body(colors: &ThemeColors, state: &ToolsPageState, compact: boo
         .child(secondary)
 }
 
-fn render_activity_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+fn render_activity_card(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
     crate::ui::components::page_shell::glass_card(colors)
         .w_full()
         .p(px(17.))
         .flex()
         .flex_col()
         .gap(px(12.))
-        .child(render_activity_header(colors))
+        .child(render_activity_header(colors, i18n))
         .when_some(state.online_error.clone(), |this, error| {
             this.child(render_error_banner(colors, error))
         })
         .when(state.online_log.as_ref().trim().is_empty(), |this| {
-            this.child(render_activity_hint(colors))
+            this.child(render_activity_hint(colors, i18n))
         })
         .when(!state.online_log.as_ref().trim().is_empty(), |this| {
             this.child(render_log_lines(colors, state))
         })
 }
 
-fn render_activity_header(colors: &ThemeColors) -> Div {
+fn render_activity_header(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .flex()
         .items_center()
@@ -88,7 +95,7 @@ fn render_activity_header(colors: &ThemeColors) -> Div {
                 .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child("活动与提示"),
+                .child(t!("Online.activity")),
         )
 }
 
@@ -113,12 +120,12 @@ fn render_error_banner(colors: &ThemeColors, error: SharedString) -> Div {
         .child(error)
 }
 
-fn render_activity_hint(colors: &ThemeColors) -> Div {
+fn render_activity_hint(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .text_size(px(12.))
         .line_height(px(19.))
         .text_color(colors.text_secondary)
-        .child("创建或加入后，等待数秒让路由建立，再进入 Minecraft。高级网络选项保持默认即可满足大多数场景。")
+        .child(t!("Online.activity_hint"))
 }
 
 fn render_log_lines(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoElement {
@@ -142,11 +149,12 @@ fn render_log_lines(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoEl
 
 pub(in crate::ui::views::tools) fn render_online_overlay(
     colors: &ThemeColors,
+    i18n: &I18n,
     window_width: Pixels,
     window_height: Pixels,
     state: &ToolsPageState,
 ) -> Option<AnyElement> {
-    settings::render_settings_overlay(colors, window_width, window_height, state)
+    settings::render_settings_overlay(colors, i18n, window_width, window_height, state)
 }
 
 pub(in crate::ui::views::tools) fn parse_bootstrap_peers(text: &str) -> Vec<String> {
@@ -201,15 +209,18 @@ pub(in crate::ui::views::tools) fn append_online_log(message: impl Into<String>,
     });
 }
 
-pub(in crate::ui::views::tools) fn online_state_text(state: &ToolsPageState) -> SharedString {
+pub(in crate::ui::views::tools) fn online_state_text(
+    i18n: &I18n,
+    state: &ToolsPageState,
+) -> SharedString {
     if state.online_operation.is_busy() {
-        SharedString::from(state.online_operation.label())
+        state.online_operation.localized_label(i18n)
     } else if state.online_error.is_some() {
-        SharedString::from("需要处理")
+        t!("Online.state_attention")
     } else if state.easytier_running {
-        SharedString::from("已连接")
+        t!("Online.state_connected")
     } else {
-        SharedString::from("等待连接")
+        t!("Online.state_waiting")
     }
 }
 

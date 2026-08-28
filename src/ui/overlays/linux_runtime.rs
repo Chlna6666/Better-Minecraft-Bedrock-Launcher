@@ -5,6 +5,7 @@ use crate::ui::components::{button, modal};
 use crate::ui::hooks::use_linux_runtime::{
     authorize_and_install, can_authorize_install, dismiss, open_proton_gdk_settings, recheck,
 };
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::linux_runtime::{LinuxRuntimeState, LinuxRuntimeStatus};
 use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
@@ -13,7 +14,11 @@ use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 use std::time::Duration;
 
-pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeColors) -> AnyElement {
+pub fn render_linux_runtime_overlay(
+    state: &LinuxRuntimeState,
+    colors: &ThemeColors,
+    i18n: &I18n,
+) -> AnyElement {
     if !state.visible {
         return Empty {}.into_any_element();
     }
@@ -30,13 +35,13 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
         .is_some();
     let distribution = check
         .map(|check| SharedString::from(check.distribution_name.to_string()))
-        .unwrap_or_else(|| "正在识别 Linux 发行版…".into());
+        .unwrap_or_else(|| t!("LinuxRuntime.detecting_distribution"));
     let status_text = match state.status {
-        LinuxRuntimeStatus::Checking => "正在检测 Linux 兼容环境…",
-        LinuxRuntimeStatus::Installing => "正在安装 Linux 运行依赖…",
-        LinuxRuntimeStatus::Error => "兼容环境处理失败",
-        _ if needs_host_dependencies => "Proton-GDK 缺少系统运行依赖",
-        _ => "未检测到 Proton-GDK",
+        LinuxRuntimeStatus::Checking => t!("LinuxRuntime.checking"),
+        LinuxRuntimeStatus::Installing => t!("LinuxRuntime.installing"),
+        LinuxRuntimeStatus::Error => t!("LinuxRuntime.error"),
+        _ if needs_host_dependencies => t!("LinuxRuntime.missing_dependencies"),
+        _ => t!("LinuxRuntime.missing_runtime"),
     };
 
     let mut details = div().flex().flex_col().gap(px(10.));
@@ -44,21 +49,21 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
         details = details.child(info_row(
             colors,
             lucide_icons::icon_circle_alert(),
-            "检测结果",
+            t!("LinuxRuntime.detection_result"),
             SharedString::from(reason.to_string()),
         ));
     }
     details = details.child(info_row(
         colors,
         lucide_icons::icon_package(),
-        "Linux 发行版",
+        t!("LinuxRuntime.distribution"),
         distribution,
     ));
     if let Some(plan) = check.and_then(|check| check.install_plan.as_ref()) {
         details = details.child(info_row(
             colors,
             lucide_icons::icon_terminal(),
-            "授权后执行",
+            t!("LinuxRuntime.authorized_action"),
             plan.command_preview().into(),
         ));
     }
@@ -72,7 +77,7 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
             .install_snapshot
             .as_ref()
             .map(|snapshot| SharedString::from(snapshot.stage.to_string()))
-            .unwrap_or_else(|| "正在准备安装任务".into());
+            .unwrap_or_else(|| t!("LinuxRuntime.preparing_install"));
         let current_output = logs
             .last()
             .map(|line| SharedString::from(line.to_string()))
@@ -83,8 +88,13 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
                     .and_then(|snapshot| snapshot.message.as_ref())
                     .map(|message| SharedString::from(message.to_string()))
             })
-            .unwrap_or_else(|| "等待系统授权窗口…".into());
-        details = details.child(install_progress(colors, stage, current_output));
+            .unwrap_or_else(|| t!("LinuxRuntime.waiting_authorization"));
+        details = details.child(install_progress(
+            colors,
+            stage,
+            current_output,
+            t!("LinuxRuntime.processing"),
+        ));
     }
     if let Some(error) = state.error_message.as_ref() {
         details = details.child(
@@ -109,9 +119,10 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
 
     let manual_hint = check
         .map(|check| SharedString::from(check.manual_install_hint.to_string()))
-        .unwrap_or_else(|| "检测完成后会显示可用的安装方式。".into());
-    let mut later_button = button::secondary_button(colors, "linux-runtime-later", "暂不安装")
-        .when(busy, |button| button.opacity(0.45));
+        .unwrap_or_else(|| t!("LinuxRuntime.install_hint_pending"));
+    let mut later_button =
+        button::secondary_button(colors, "linux-runtime-later", t!("LinuxRuntime.later"))
+            .when(busy, |button| button.opacity(0.45));
     if !busy {
         later_button = later_button.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
             dismiss(cx);
@@ -119,11 +130,11 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
     }
 
     let action_label = match state.status {
-        LinuxRuntimeStatus::Checking => "正在检测",
-        LinuxRuntimeStatus::Installing => "正在安装",
-        LinuxRuntimeStatus::Error if !can_install => "重新检测",
-        _ if can_install => "授权并安装依赖",
-        _ => "前往 Proton-GDK 设置",
+        LinuxRuntimeStatus::Checking => t!("LinuxRuntime.checking_action"),
+        LinuxRuntimeStatus::Installing => t!("LinuxRuntime.installing_action"),
+        LinuxRuntimeStatus::Error if !can_install => t!("LinuxRuntime.recheck"),
+        _ if can_install => t!("LinuxRuntime.authorize_install"),
+        _ => t!("LinuxRuntime.open_settings"),
     };
     let action_enabled = !busy;
     let mut action_button =
@@ -187,9 +198,9 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
                             .font_weight(FontWeight::BOLD)
                             .text_color(colors.text_primary)
                             .child(if needs_host_dependencies {
-                                "需要安装 Linux 运行依赖"
+                                t!("LinuxRuntime.dependencies_title")
                             } else {
-                                "需要安装 Proton-GDK"
+                                t!("LinuxRuntime.runtime_title")
                             }),
                     )
                     .child(
@@ -217,9 +228,9 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
                     .line_height(relative(1.5))
                     .text_color(colors.text_secondary)
                     .child(if needs_host_dependencies {
-                        "Minecraft Bedrock 需要 Proton-GDK 的标准 32 位兼容载入器。BMCBL 只会通过系统包管理器安装缺失的运行依赖。"
+                        t!("LinuxRuntime.dependencies_description")
                     } else {
-                        "Minecraft Bedrock 的 UWP/GDK 版本需要专用 Proton-GDK。请在 BMCBL 的 Proton-GDK 设置页下载和管理运行环境。"
+                        t!("LinuxRuntime.runtime_description")
                     }),
             )
             .child(details)
@@ -250,9 +261,9 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
                             .text_size(px(12.))
                             .text_color(colors.stat_green_text)
                             .child(if needs_host_dependencies {
-                                "BMCBL 始终以当前用户运行；仅系统包管理器会通过 pkexec 请求授权。"
+                                t!("LinuxRuntime.dependencies_security")
                             } else {
-                                "Proton-GDK 会安装到当前用户的数据目录，不需要管理员授权。"
+                                t!("LinuxRuntime.runtime_security")
                             }),
                     ),
             ),
@@ -278,6 +289,7 @@ fn install_progress(
     colors: &ThemeColors,
     stage: SharedString,
     current_output: SharedString,
+    processing: SharedString,
 ) -> AnyElement {
     div()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -315,7 +327,7 @@ fn install_progress(
                         .flex_none()
                         .text_size(px(11.))
                         .text_color(colors.accent)
-                        .child("处理中"),
+                        .child(processing),
                 ),
         )
         .child(
@@ -369,9 +381,10 @@ fn install_progress(
 fn info_row(
     colors: &ThemeColors,
     icon: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: SharedString,
 ) -> AnyElement {
+    let label = label.into();
     div()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.settings_card_bg)

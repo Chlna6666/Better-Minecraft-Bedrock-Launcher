@@ -1179,6 +1179,17 @@ impl PlayerQuickEdit {
             Self::ClearInventory => "清空背包物品".to_string(),
         }
     }
+
+    pub(super) fn localized_label(&self, i18n: &I18n) -> SharedString {
+        match self {
+            Self::MoveToMapCenter => t!("MapViewer.move_player_to_center"),
+            Self::SetDimension(dimension) => t!(
+                "MapViewer.set_dimension",
+                dimension = dimension_label(*dimension)
+            ),
+            Self::ClearInventory => t!("MapViewer.clear_player_inventory"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]

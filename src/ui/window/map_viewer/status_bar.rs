@@ -98,6 +98,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let visible_local_progress = self.visible_chunk_transfer_progress();
         let local_progress = visible_local_progress.map(|(progress, _active)| progress);
         let local_progress_active =
@@ -112,31 +113,49 @@ impl MapViewerWindowView {
             task_count,
             finished_tasks.first(),
         ) {
-            (true, _, 0, _) => "打开进度".to_string(),
-            (true, _, 1, _) => format!("打开进度 · {}", active_tasks[0].stage),
-            (true, _, count, _) => format!("打开进度 · {count} 个任务"),
-            (false, true, 0, _) => "最近完成".to_string(),
-            (false, true, 1, _) => format!("最近完成 · {}", active_tasks[0].stage),
-            (false, true, count, _) => format!("最近完成 · {count} 个任务"),
-            (false, false, 0, Some(snapshot)) => format!(
-                "{} · {}",
-                task_status_label(snapshot.status.as_ref()),
-                snapshot.title
+            (true, _, 0, _) => t!("MapViewer.progress_open"),
+            (true, _, 1, _) => t!(
+                "MapViewer.progress_open_stage",
+                stage = &active_tasks[0].stage
             ),
-            (false, false, 0, None) => "无后台任务".to_string(),
-            (false, false, 1, _) => format!("1 个后台任务 · {}", active_tasks[0].stage),
-            (false, false, count, _) => format!("{count} 个后台任务"),
+            (true, _, count, _) => {
+                let count = count.to_string();
+                t!("MapViewer.progress_open_tasks", count = &count)
+            }
+            (false, true, 0, _) => t!("MapViewer.recent_completed"),
+            (false, true, 1, _) => t!(
+                "MapViewer.recent_completed_stage",
+                stage = &active_tasks[0].stage
+            ),
+            (false, true, count, _) => {
+                let count = count.to_string();
+                t!("MapViewer.recent_completed_tasks", count = &count)
+            }
+            (false, false, 0, Some(snapshot)) => t!(
+                "MapViewer.task_status",
+                status = &task_status_label(&i18n, snapshot.status.as_ref()),
+                title = &snapshot.title
+            ),
+            (false, false, 0, None) => t!("MapViewer.no_background_tasks"),
+            (false, false, 1, _) => t!(
+                "MapViewer.background_task_stage",
+                stage = &active_tasks[0].stage
+            ),
+            (false, false, count, _) => {
+                let count = count.to_string();
+                t!("MapViewer.background_tasks", count = &count)
+            }
         };
         let primary_active_task = local_progress
             .is_none()
             .then(|| active_tasks.first().cloned())
             .flatten();
         let activity_label = if local_progress_active {
-            "运行中".to_string()
+            t!("MapViewer.running")
         } else if local_progress.is_some() {
-            "完成".to_string()
+            t!("MapViewer.completed")
         } else {
-            compact_activity_label(self)
+            compact_activity_label(&i18n, self)
         };
         let center = self.viewport.center_block(self.active_layout);
         let hover = self.hover_chunk_pos();
@@ -194,7 +213,7 @@ impl MapViewerWindowView {
                 this.child(local_progress_inline(colors, progress, active))
             })
             .when_some(primary_active_task.as_ref(), |this, snapshot| {
-                this.child(task_progress_inline(colors, snapshot))
+                this.child(task_progress_inline(colors, &i18n, snapshot))
             })
             .child(
                 div()
@@ -215,7 +234,12 @@ impl MapViewerWindowView {
             )
     }
 
-    pub(super) fn render_operation_progress_panel(&self, colors: &ThemeColors) -> impl IntoElement {
+    pub(super) fn render_operation_progress_panel(
+        &self,
+        colors: &ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let i18n = cx.global::<I18n>().clone();
         let active_tasks = self.active_task_snapshots();
         let finished_tasks = self.finished_task_snapshots(3);
         let width = (self.window_width * 0.28).clamp(300.0, 380.0);
@@ -239,7 +263,7 @@ impl MapViewerWindowView {
             .flex_col()
             .gap(px(10.0))
             .overflow_y_scrollbar()
-            .child(panel_title(colors, "当前进度"))
+            .child(panel_title(colors, t!("MapViewer.current_progress")))
             .when_some(
                 self.visible_chunk_transfer_progress(),
                 |this, (progress, active)| {
@@ -261,14 +285,14 @@ impl MapViewerWindowView {
                             .text_size(px(12.0))
                             .line_height(px(18.0))
                             .text_color(colors.text_muted)
-                            .child("没有正在运行的导入、导出、复制、粘贴或下载任务。"),
+                            .child(t!("MapViewer.no_running_tasks")),
                     )
                 },
             )
             .children(
                 active_tasks
                     .iter()
-                    .map(|snapshot| task_progress_card(colors, snapshot).into_any_element()),
+                    .map(|snapshot| task_progress_card(colors, &i18n, snapshot).into_any_element()),
             )
             .when(!finished_tasks.is_empty(), |this| {
                 this.child(
@@ -287,10 +311,10 @@ impl MapViewerWindowView {
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_muted)
-                                .child("最近完成"),
+                                .child(t!("MapViewer.recent_completed")),
                         )
                         .children(finished_tasks.iter().map(|snapshot| {
-                            finished_task_row(colors, snapshot).into_any_element()
+                            finished_task_row(colors, &i18n, snapshot).into_any_element()
                         })),
                 )
             })
@@ -416,7 +440,7 @@ fn local_progress_inline(
         )
 }
 
-fn task_progress_inline(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
+fn task_progress_inline(colors: &ThemeColors, i18n: &I18n, snapshot: &TaskSnapshot) -> Div {
     let ratio = snapshot
         .percent
         .map_or(0.0, |percent| percent as f32 / 100.0);
@@ -448,7 +472,7 @@ fn task_progress_inline(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
                 .text_ellipsis()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child(snapshot.stage.to_string()),
+                .child(task_stage_label(i18n, snapshot.stage.as_ref())),
         )
         .child(inline_progress_bar(colors, ratio, color))
         .child(
@@ -493,7 +517,7 @@ fn local_progress_card(
         )
 }
 
-fn task_progress_card(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
+fn task_progress_card(colors: &ThemeColors, i18n: &I18n, snapshot: &TaskSnapshot) -> Div {
     let ratio = snapshot.percent.map(|percent| percent as f32 / 100.0);
     progress_card_shell(colors)
         .child(
@@ -517,7 +541,7 @@ fn task_progress_card(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
                         .flex_none()
                         .text_size(px(10.0))
                         .text_color(task_status_color(colors, snapshot.status.as_ref()))
-                        .child(task_status_label(snapshot.status.as_ref())),
+                        .child(task_status_label(i18n, snapshot.status.as_ref())),
                 ),
         )
         .child(progress_bar(
@@ -539,15 +563,21 @@ fn task_progress_card(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
                         .overflow_hidden()
                         .text_ellipsis()
                         .child(snapshot.detail.as_ref().map_or_else(
-                            || snapshot.stage.to_string(),
-                            |detail| format!("{} · {}", snapshot.stage, detail),
+                            || task_stage_label(i18n, snapshot.stage.as_ref()).to_string(),
+                            |detail| {
+                                format!(
+                                    "{} · {}",
+                                    task_stage_label(i18n, snapshot.stage.as_ref()),
+                                    detail
+                                )
+                            },
                         )),
                 )
                 .child(task_progress_numbers(snapshot)),
         )
 }
 
-fn finished_task_row(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
+fn finished_task_row(colors: &ThemeColors, i18n: &I18n, snapshot: &TaskSnapshot) -> Div {
     div()
         .flex()
         .items_center()
@@ -559,7 +589,7 @@ fn finished_task_row(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
                 .w(px(50.0))
                 .flex_none()
                 .text_color(task_status_color(colors, snapshot.status.as_ref()))
-                .child(task_status_label(snapshot.status.as_ref())),
+                .child(task_status_label(i18n, snapshot.status.as_ref())),
         )
         .child(
             div()
@@ -645,16 +675,34 @@ fn task_progress_numbers(snapshot: &TaskSnapshot) -> String {
     }
 }
 
-fn task_status_label(status: &str) -> &'static str {
+fn task_status_label(i18n: &I18n, status: &str) -> SharedString {
     match status {
-        "running" => "运行中",
-        "paused" => "暂停",
-        "cancelling" => "取消中",
-        "completed" => "完成",
-        "cancelled" => "已取消",
-        "error" => "错误",
-        _ => "任务",
+        "running" => t!("MapViewer.running"),
+        "paused" => t!("MapViewer.paused"),
+        "cancelling" => t!("MapViewer.cancelling"),
+        "completed" => t!("MapViewer.completed"),
+        "cancelled" => t!("MapViewer.cancelled"),
+        "error" => t!("MapViewer.error"),
+        _ => t!("MapViewer.task"),
     }
+}
+
+fn task_stage_label(i18n: &I18n, stage: &str) -> SharedString {
+    let key = match stage {
+        "ready" | "queued" | "starting" => "InstallProgressBar.stage_ready",
+        "downloading" | "reading_body" | "url_resolved" => "InstallProgressBar.stage_downloading",
+        "resolving_url" | "resolving_runner" | "resolving_proton_gdk" => {
+            "InstallProgressBar.stage_resolving"
+        }
+        "extracting" | "extracting_proton_gdk" | "decrypting" => {
+            "InstallProgressBar.stage_extracting"
+        }
+        "verifying" => "InstallProgressBar.stage_verifying",
+        "parsing" => "common.processing",
+        _ => return SharedString::from(stage.to_owned()),
+    };
+    i18n.lookup(key)
+        .unwrap_or_else(|| SharedString::from(stage.to_owned()))
 }
 
 fn task_status_color(colors: &ThemeColors, status: &str) -> Hsla {

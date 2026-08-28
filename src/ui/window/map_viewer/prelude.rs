@@ -74,6 +74,7 @@ pub(super) use crate::ui::components::input::{Input, InputEvent, InputSize, Inpu
 pub(super) use crate::ui::components::scroll::ScrollableElement as _;
 pub(super) use crate::ui::components::split_pane::{SplitPaneAxis, split_handle, splitter_line};
 pub(super) use crate::ui::components::toast;
+pub(super) use crate::ui::state::i18n::I18n;
 pub(super) use crate::ui::state::theme::ThemeState;
 pub(super) use crate::ui::theme::colors::{
     DarkColors, LightColors, ThemeColors, lerp_theme_colors,

@@ -8,20 +8,18 @@ use super::rows::{setting_dropdown_row, setting_toggle_row, tab_title};
 use crate::ui::components::dropdown::DropdownOption;
 
 pub(super) fn render_game_tab(colors: &ThemeColors, i18n: &I18n, state: &SettingsPageState) -> Div {
-    let section = i18n.t("Settings.tabs.game");
+    let section = t!("Settings.tabs.game");
 
     let display_mode_options = vec![
-        DropdownOption::from(i18n.t("GameSettings.visibility.minimize")),
-        DropdownOption::from(i18n.t("GameSettings.visibility.close")),
-        DropdownOption::from(i18n.t("GameSettings.visibility.keep")),
+        DropdownOption::from(t!("GameSettings.visibility.minimize")),
+        DropdownOption::from(t!("GameSettings.visibility.close")),
+        DropdownOption::from(t!("GameSettings.visibility.keep")),
     ];
 
     let (display_mode_label, display_mode_selected) = match state.launcher_display_mode {
-        LauncherDisplayMode::MinimizeOnLaunch => {
-            (i18n.t("GameSettings.visibility.minimize"), 0usize)
-        }
-        LauncherDisplayMode::CloseOnLaunch => (i18n.t("GameSettings.visibility.close"), 1usize),
-        LauncherDisplayMode::KeepVisible => (i18n.t("GameSettings.visibility.keep"), 2usize),
+        LauncherDisplayMode::MinimizeOnLaunch => (t!("GameSettings.visibility.minimize"), 0usize),
+        LauncherDisplayMode::CloseOnLaunch => (t!("GameSettings.visibility.close"), 1usize),
+        LauncherDisplayMode::KeepVisible => (t!("GameSettings.visibility.keep"), 2usize),
     };
 
     div()
@@ -32,8 +30,8 @@ pub(super) fn render_game_tab(colors: &ThemeColors, i18n: &I18n, state: &Setting
         .child(setting_dropdown_row(
             colors,
             section.clone(),
-            i18n.t("GameSettings.launcher_visibility"),
-            i18n.t("GameSettings.launcher_visibility_desc"),
+            t!("GameSettings.launcher_visibility"),
+            t!("GameSettings.launcher_visibility_desc"),
             "settings-launcher-display-mode",
             px(220.),
             display_mode_label,
@@ -59,8 +57,8 @@ pub(super) fn render_game_tab(colors: &ThemeColors, i18n: &I18n, state: &Setting
         .child(setting_toggle_row(
             colors,
             section.clone(),
-            i18n.t("GameSettings.uwp_minimize_fix"),
-            i18n.t("GameSettings.uwp_minimize_fix_desc"),
+            t!("GameSettings.uwp_minimize_fix"),
+            t!("GameSettings.uwp_minimize_fix_desc"),
             state.fix_uwp_minimize,
             "settings-uwp-minimize",
             |settings| settings.fix_uwp_minimize = !settings.fix_uwp_minimize,
@@ -68,8 +66,8 @@ pub(super) fn render_game_tab(colors: &ThemeColors, i18n: &I18n, state: &Setting
         .child(setting_toggle_row(
             colors,
             section.clone(),
-            i18n.t("GameSettings.keep_downloaded_game_package"),
-            i18n.t("GameSettings.keep_downloaded_game_package_desc"),
+            t!("GameSettings.keep_downloaded_game_package"),
+            t!("GameSettings.keep_downloaded_game_package_desc"),
             state.keep_downloaded_packages,
             "settings-keep-package",
             |settings| settings.keep_downloaded_packages = !settings.keep_downloaded_packages,
@@ -77,8 +75,8 @@ pub(super) fn render_game_tab(colors: &ThemeColors, i18n: &I18n, state: &Setting
         .child(setting_toggle_row(
             colors,
             section,
-            i18n.t("GameSettings.modify_appx_manifest"),
-            i18n.t("GameSettings.modify_appx_manifest_desc"),
+            t!("GameSettings.modify_appx_manifest"),
+            t!("GameSettings.modify_appx_manifest_desc"),
             state.modify_appx_manifest,
             "settings-modify-manifest",
             |settings| settings.modify_appx_manifest = !settings.modify_appx_manifest,

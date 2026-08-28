@@ -59,7 +59,7 @@ impl ManagePageView {
                     })
             });
         let Some(skins) = skins else {
-            toast::error(cx, SharedString::from("这个皮肤包没有可预览的皮肤贴图"));
+            toast::error(cx, t!("AssetManager.skin_preview_unavailable"));
             return;
         };
 
@@ -131,13 +131,12 @@ impl ManagePageView {
         if folder_names.is_empty() {
             return;
         }
+        let i18n = cx.global::<I18n>().clone();
+        let count = folder_names.len().to_string();
         self.confirm_dialog = Some(ConfirmDialogState {
-            title: SharedString::from("删除资源"),
-            description: SharedString::from(format!(
-                "确定删除选中的 {} 个资源吗？",
-                folder_names.len()
-            )),
-            confirm_label: SharedString::from("删除所选"),
+            title: t!("AssetManager.delete_title_bulk"),
+            description: t!("AssetManager.delete_confirm", count = &count),
+            confirm_label: t!("AssetManager.delete_with_count", count = &count),
             danger: true,
             pending: false,
             action: ConfirmAction::DeleteAssets {
@@ -558,6 +557,7 @@ pub(super) fn render_asset_list(
     asset_scroll_handle: &ScrollHandle,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
+    let i18n = cx.global::<I18n>().clone();
     let missing_gdk_user =
         version.is_gdk() && is_gdk_user_scoped_tab(state.tab) && state.selected_gdk_user.is_none();
 
@@ -569,8 +569,8 @@ pub(super) fn render_asset_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "正在读取用户目录",
-            "请稍候，BMCBL 正在扫描当前 GDK 实例的可用用户。",
+            t!("AssetManager.user_scan_title"),
+            t!("AssetManager.user_scan_hint"),
         )
         .into_any_element();
     }
@@ -597,8 +597,8 @@ pub(super) fn render_asset_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "未找到可用用户目录",
-            "当前 GDK 实例没有扫描到可读取地图的普通用户目录。",
+            t!("AssetManager.user_scan_empty_title"),
+            t!("AssetManager.user_scan_empty_hint"),
         )
         .into_any_element();
     }
@@ -607,8 +607,8 @@ pub(super) fn render_asset_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "正在加载资源",
-            "当前实例的资源列表正在刷新。",
+            t!("AssetManager.loading_assets_title"),
+            t!("AssetManager.loading_assets_hint"),
         )
         .into_any_element();
     }
@@ -632,13 +632,34 @@ pub(super) fn render_asset_list(
 
     if filtered_asset_indices.is_empty() {
         let (title, description) = match state.tab {
-            ManageTab::Mod => ("没有 Mod", "导入 DLL 后会显示在这里。"),
-            ManageTab::ResourcePack => ("没有资源包", "支持导入 mcpack、mcaddon、zip。"),
-            ManageTab::SkinPack => ("没有皮肤包", "支持导入 mcpack、mcaddon、zip。"),
-            ManageTab::Map => ("没有地图", "支持导入 mcworld、mctemplate、zip。"),
-            ManageTab::Statistics => ("没有统计", "游戏统计会显示在这里。"),
-            ManageTab::Screenshot => ("没有截图", "游戏截图会显示在这里。"),
-            ManageTab::Server => ("没有服务器", "添加服务器后会显示在这里。"),
+            ManageTab::Mod => (
+                t!("AssetManager.empty_mod"),
+                t!("AssetManager.empty_mod_hint"),
+            ),
+            ManageTab::ResourcePack => (
+                t!("AssetManager.empty_resource_pack"),
+                t!("AssetManager.empty_resource_pack_hint"),
+            ),
+            ManageTab::SkinPack => (
+                t!("AssetManager.empty_skin_pack"),
+                t!("AssetManager.empty_skin_pack_hint"),
+            ),
+            ManageTab::Map => (
+                t!("AssetManager.empty_map"),
+                t!("AssetManager.empty_map_hint"),
+            ),
+            ManageTab::Statistics => (
+                t!("AssetManager.empty_statistics"),
+                t!("AssetManager.empty_statistics_hint"),
+            ),
+            ManageTab::Screenshot => (
+                t!("AssetManager.empty_screenshot"),
+                t!("AssetManager.empty_screenshot_hint"),
+            ),
+            ManageTab::Server => (
+                t!("AssetManager.empty_server"),
+                t!("AssetManager.empty_server_hint"),
+            ),
         };
         return empty_state(colors, "images/manage/empty.svg", title, description)
             .into_any_element();
@@ -690,6 +711,7 @@ pub(super) fn render_asset_list(
                     asset,
                     selected_asset_keys.contains(&asset.key),
                     virtual_list_plan.heavy_slice.contains(virtual_index),
+                    &i18n,
                     cx,
                 )),
         );
@@ -745,6 +767,7 @@ pub(super) fn render_asset_row(
     asset: &ManageAssetEntry,
     is_selected: bool,
     render_heavy: bool,
+    i18n: &I18n,
     cx: &mut Context<ManagePageView>,
 ) -> Stateful<Div> {
     let selection_key = asset.key.clone();
@@ -871,13 +894,25 @@ pub(super) fn render_asset_row(
         }
     }
     if let Some(resource_count) = asset.resource_pack_count {
-        meta = meta.child(subtle_badge(colors, format!("资源包 {resource_count}")));
+        let count = resource_count.to_string();
+        meta = meta.child(subtle_badge(
+            colors,
+            t!("AssetManager.resource_pack_count", count = &count),
+        ));
     }
     if let Some(behavior_count) = asset.behavior_pack_count {
-        meta = meta.child(subtle_badge(colors, format!("行为包 {behavior_count}")));
+        let count = behavior_count.to_string();
+        meta = meta.child(subtle_badge(
+            colors,
+            t!("AssetManager.behavior_pack_count", count = &count),
+        ));
     }
     if let Some(skin_count) = asset.skin_count {
-        meta = meta.child(subtle_badge(colors, format!("皮肤 {skin_count}")));
+        let count = skin_count.to_string();
+        meta = meta.child(subtle_badge(
+            colors,
+            t!("AssetManager.skin_count", count = &count),
+        ));
     }
     if let Some(mod_type) = asset.mod_type.clone() {
         meta = meta.child(
@@ -896,7 +931,11 @@ pub(super) fn render_asset_row(
                 } else {
                     colors.danger
                 })
-                .child(if enabled { "已启用" } else { "已禁用" }),
+                .child(if enabled {
+                    t!("AssetManager.status_enabled")
+                } else {
+                    t!("AssetManager.status_disabled")
+                }),
         );
     }
 

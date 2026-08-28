@@ -9,7 +9,9 @@ use crate::core::minecraft::uwp_backup::{
     ManualUwpBackupResult, export_user_data_backup, migration_backup_root, user_data_path,
 };
 use crate::core::minecraft::uwp_migration::MinecraftDataSummary;
+use crate::i18n::LocalizedText;
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
@@ -19,9 +21,9 @@ pub struct UwpBackupToolsState {
     request_id: u64,
     scanning: bool,
     summary: Option<MinecraftDataSummary>,
-    error: Option<SharedString>,
+    error: Option<LocalizedText>,
     exporting: bool,
-    export_status: Option<SharedString>,
+    export_status: Option<LocalizedText>,
 }
 
 impl Global for UwpBackupToolsState {}
@@ -62,7 +64,7 @@ impl UwpBackupToolsState {
         self.error = None;
     }
 
-    fn fail_scan(&mut self, request_id: u64, error: impl Into<SharedString>) {
+    fn fail_scan(&mut self, request_id: u64, error: LocalizedText) {
         if self.request_id != request_id {
             return;
         }
@@ -114,7 +116,10 @@ pub fn sync_from_safety(cx: &mut App) {
             }
             Err(error) => {
                 cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-                    state.fail_scan(request_id, format!("读取 UWP 用户数据失败：{error}"));
+                    state.fail_scan(
+                        request_id,
+                        crate::localized_text!("UwpBackup.scan_failed", detail = error),
+                    );
                 });
             }
         })?;
@@ -141,12 +146,12 @@ fn format_bytes(bytes: u64) -> String {
 
 fn open_directory(path: &Path) -> Result<(), String> {
     if !path.exists() {
-        return Err(format!("目录不存在：{}", path.display()));
+        return Err(format!("Directory is unavailable: {}", path.display()));
     }
     std::process::Command::new("explorer.exe")
         .arg(path)
         .spawn()
-        .map_err(|error| format!("打开目录失败：{error}"))?;
+        .map_err(|error| format!("Failed to open directory: {error}"))?;
     Ok(())
 }
 
@@ -166,7 +171,9 @@ fn start_export(window: &mut Window, cx: &mut App) {
     };
     if !has_data {
         cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-            state.export_status = Some(SharedString::from("没有检测到可导出的 UWP 用户数据"));
+            state.export_status = Some(LocalizedText::key(crate::i18n_key!(
+                "UwpBackup.no_export_data"
+            )));
         });
         return;
     }
@@ -178,7 +185,9 @@ fn start_export(window: &mut Window, cx: &mut App) {
     let destination = PathBuf::from(destination);
     cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
         state.exporting = true;
-        state.export_status = Some(SharedString::from("正在生成 ZIP 备份，请不要关闭 BMCBL…"));
+        state.export_status = Some(LocalizedText::key(crate::i18n_key!(
+            "UwpBackup.exporting_detail"
+        )));
     });
 
     cx.spawn(async move |cx| {
@@ -189,19 +198,23 @@ fn start_export(window: &mut Window, cx: &mut App) {
         cx.update(|cx| {
             cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
                 state.exporting = false;
-                state.export_status = Some(SharedString::from(match result {
+                state.export_status = Some(match result {
                     Ok(Ok(ManualUwpBackupResult {
                         archive_path,
                         summary,
-                    })) => format!(
-                        "备份完成：{} · {} 个文件 · {}",
-                        archive_path.display(),
-                        summary.file_count,
-                        format_bytes(summary.total_size)
+                    })) => crate::localized_text!(
+                        "UwpBackup.export_complete",
+                        path = archive_path.display().to_string(),
+                        files = summary.file_count,
+                        size = format_bytes(summary.total_size),
                     ),
-                    Ok(Err(error)) => format!("备份失败：{error}"),
-                    Err(error) => format!("备份任务失败：{error}"),
-                }));
+                    Ok(Err(error)) => {
+                        crate::localized_text!("UwpBackup.export_failed", detail = error,)
+                    }
+                    Err(error) => {
+                        crate::localized_text!("UwpBackup.export_task_failed", detail = error,)
+                    }
+                });
             });
         })?;
         Ok::<(), anyhow::Error>(())
@@ -216,38 +229,43 @@ fn open_user_data(cx: &mut App) {
         .as_ref()
         .map(user_data_path);
     let message = match path {
-        Some(path) => open_directory(&path)
-            .err()
-            .unwrap_or_else(|| format!("已打开：{}", path.display())),
-        None => "尚未完成 UWP 数据扫描".to_string(),
+        Some(path) => match open_directory(&path) {
+            Ok(()) => {
+                crate::localized_text!("UwpBackup.opened", path = path.display().to_string(),)
+            }
+            Err(error) => crate::localized_text!("UwpBackup.open_failed", detail = error),
+        },
+        None => LocalizedText::key(crate::i18n_key!("UwpBackup.scan_not_finished")),
     };
     cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-        state.export_status = Some(SharedString::from(message));
+        state.export_status = Some(message);
     });
 }
 
 fn open_migration_backups(cx: &mut App) {
     let path = migration_backup_root();
     let result = std::fs::create_dir_all(&path)
-        .map_err(|error| format!("创建迁移备份目录失败：{error}"))
+        .map_err(|error| format!("Failed to create migration backup directory: {error}"))
         .and_then(|_| open_directory(&path));
     cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-        state.export_status = Some(SharedString::from(
-            result
-                .err()
-                .unwrap_or_else(|| format!("已打开：{}", path.display())),
-        ));
+        state.export_status = Some(match result {
+            Ok(()) => {
+                crate::localized_text!("UwpBackup.opened", path = path.display().to_string(),)
+            }
+            Err(error) => crate::localized_text!("UwpBackup.open_failed", detail = error),
+        });
     });
 }
 
 fn action_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: &'static str,
     colors: ThemeColors,
     enabled: bool,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let label = label.into();
     let button = div()
         .id(id)
         .h(px(34.0))
@@ -320,6 +338,7 @@ pub fn render_uwp_backup_tools(
     window: &mut Window,
     cx: &App,
 ) -> AnyElement {
+    let i18n = cx.global::<I18n>().clone();
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
@@ -338,26 +357,28 @@ pub fn render_uwp_backup_tools(
     let attached = right_space >= 210.0;
 
     let data_text = if state.scanning {
-        "正在统计世界、资源包和数据大小…".to_string()
+        t!("UwpBackup.scanning").to_string()
     } else if let Some(summary) = state.summary.as_ref() {
         if summary.data_present && summary.file_count > 0 {
-            format!(
-                "{} 个文件 · {}\n世界 {} · 资源包 {} · 行为包 {}\n皮肤包 {} · 截图 {}",
-                summary.file_count,
-                format_bytes(summary.total_size),
-                summary.worlds,
-                summary.resource_packs,
-                summary.behavior_packs,
-                summary.skin_packs,
-                summary.screenshots
+            t!(
+                "UwpBackup.files_summary",
+                files = summary.file_count,
+                size = format_bytes(summary.total_size),
+                worlds = summary.worlds,
+                resource_packs = summary.resource_packs,
+                behavior_packs = summary.behavior_packs,
+                skin_packs = summary.skin_packs,
+                screenshots = summary.screenshots
             )
+            .to_string()
         } else {
-            "未检测到 games/com.mojang 中的可备份文件。".to_string()
+            t!("UwpBackup.no_files").to_string()
         }
     } else if let Some(error) = state.error.as_ref() {
-        error.to_string()
+        let error = i18n.resolve(error);
+        t!("UwpBackup.error_detail", detail = error).to_string()
     } else {
-        "等待 UWP 数据扫描…".to_string()
+        t!("UwpBackup.waiting").to_string()
     };
     let can_export = !state.scanning
         && !state.exporting
@@ -375,12 +396,18 @@ pub fn render_uwp_backup_tools(
             .summary
             .as_ref()
             .filter(|summary| summary.data_present && summary.file_count > 0)
-            .map(|summary| format!("UWP 数据 · {}", format_bytes(summary.total_size)))
+            .map(|summary| {
+                t!(
+                    "UwpBackup.compact_data",
+                    size = format_bytes(summary.total_size)
+                )
+                .to_string()
+            })
             .unwrap_or_else(|| {
                 if state.scanning {
-                    "正在检查 UWP 数据".to_string()
+                    t!("UwpBackup.checking").to_string()
                 } else {
-                    "UWP 数据工具".to_string()
+                    t!("UwpBackup.tool_title").to_string()
                 }
             });
 
@@ -454,9 +481,9 @@ pub fn render_uwp_backup_tools(
         .child(action_button(
             "uwp-manual-backup-export",
             if state.exporting {
-                "正在导出"
+                t!("UwpBackup.exporting")
             } else {
-                "导出备份"
+                t!("UwpBackup.export_backup")
             },
             lucide_icons::icon_download(),
             colors,
@@ -465,7 +492,7 @@ pub fn render_uwp_backup_tools(
         ))
         .child(action_button(
             "uwp-manual-backup-open-data",
-            "数据目录",
+            t!("UwpBackup.data_directory"),
             lucide_icons::icon_folder_open(),
             colors,
             can_open_data,
@@ -473,7 +500,7 @@ pub fn render_uwp_backup_tools(
         ))
         .child(action_button(
             "uwp-manual-backup-open-migrations",
-            "迁移备份",
+            t!("UwpBackup.migration_backup"),
             lucide_icons::icon_folder_open(),
             colors,
             true,
@@ -542,14 +569,14 @@ pub fn render_uwp_backup_tools(
                                 .text_size(px(13.0))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(colors.text_primary)
-                                .child("数据安全工具"),
+                                .child(t!("UwpBackup.tool_title")),
                         )
                         .child(
                             div()
                                 .text_size(px(10.0))
                                 .line_height(px(14.0))
                                 .text_color(colors.text_muted)
-                                .child("额外手动保险，不替代自动迁移校验"),
+                                .child(t!("UwpBackup.tool_subtitle")),
                         ),
                 ),
         )
@@ -578,7 +605,7 @@ pub fn render_uwp_backup_tools(
                     .line_height(px(15.0))
                     .whitespace_normal()
                     .text_color(colors.text_secondary)
-                    .child(status),
+                    .child(i18n.resolve(&status)),
             )
         })
         .into_any_element()

@@ -30,13 +30,14 @@ impl ManagePageView {
         entry: ManageScreenshotEntry,
         cx: &mut Context<Self>,
     ) {
+        let i18n = cx.global::<I18n>().clone();
         self.confirm_dialog = Some(ConfirmDialogState {
-            title: SharedString::from("删除截图"),
-            description: SharedString::from(format!(
-                "确定删除截图 {} 吗？同名 .json/.mc 文件也会一起删除。",
-                entry.file_name
-            )),
-            confirm_label: SharedString::from("删除截图"),
+            title: t!("ManagePage.delete_screenshot_title"),
+            description: t!(
+                "ManagePage.delete_screenshot_confirm",
+                file = &entry.file_name
+            ),
+            confirm_label: t!("ManagePage.delete_screenshot_title"),
             danger: true,
             pending: false,
             action: ConfirmAction::DeleteScreenshot { entry },
@@ -120,6 +121,7 @@ pub(super) fn build_filtered_screenshot_indices(
 }
 pub(super) fn render_screenshot_list(
     colors: &ThemeColors,
+    i18n: &I18n,
     version: &ManagedVersionEntry,
     state: &ManagePageState,
     filtered_indices: &[usize],
@@ -130,8 +132,8 @@ pub(super) fn render_screenshot_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "正在读取用户目录",
-            "请稍候，BMCBL 正在扫描当前 GDK 实例的可用用户。",
+            t!("ManagePage.screenshots_loading_users"),
+            t!("ManagePage.screenshots_loading_users_hint"),
         )
         .into_any_element();
     }
@@ -140,8 +142,8 @@ pub(super) fn render_screenshot_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "未找到可用用户目录",
-            "当前 GDK 实例没有扫描到可读取截图的用户目录。",
+            t!("ManagePage.screenshots_no_users"),
+            t!("ManagePage.screenshots_no_users_hint"),
         )
         .into_any_element();
     }
@@ -150,8 +152,8 @@ pub(super) fn render_screenshot_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "正在加载截图",
-            "截图目录正在后台扫描。",
+            t!("ManagePage.screenshots_loading"),
+            t!("ManagePage.screenshots_loading_hint"),
         )
         .into_any_element();
     }
@@ -164,8 +166,8 @@ pub(super) fn render_screenshot_list(
         return empty_state(
             colors,
             "images/manage/empty.svg",
-            "没有截图",
-            "游戏截图会显示在这里。",
+            t!("AssetManager.empty_screenshot"),
+            t!("AssetManager.empty_screenshot_hint"),
         )
         .into_any_element();
     }

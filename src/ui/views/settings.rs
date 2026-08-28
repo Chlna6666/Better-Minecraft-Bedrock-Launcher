@@ -208,7 +208,7 @@ pub fn render_settings_overlay(
     if state.tab == crate::ui::views::settings::state::SettingsTab::About
         && state.about_agreement_open
     {
-        let title = i18n.t("UserAgreement.title");
+        let title = t!("UserAgreement.title");
         return Some(
             crate::ui::overlays::user_agreement::render_user_agreement_modal(
                 agreement_document,
@@ -313,14 +313,14 @@ fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                                     .text_size(px(18.))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(colors.text_primary)
-                                    .child(i18n.t("CustomizationSettings.font_restart_title")),
+                                    .child(t!("CustomizationSettings.font_restart_title")),
                             )
                             .child(
                                 div()
                                     .text_size(px(13.))
                                     .line_height(px(20.))
                                     .text_color(colors.text_secondary)
-                                    .child(i18n.t("CustomizationSettings.font_restart_desc")),
+                                    .child(t!("CustomizationSettings.font_restart_desc")),
                             ),
                     ),
             )
@@ -348,7 +348,7 @@ fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .label(i18n.t("CustomizationSettings.font_restart_later"))
+                            .label(t!("CustomizationSettings.font_restart_later"))
                             .on_click(move |_event, _window, cx| {
                                 cancel_dismiss(cx);
                             }),
@@ -363,7 +363,7 @@ fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.btn_primary_text)
-                            .label(i18n.t("CustomizationSettings.font_restart_now"))
+                            .label(t!("CustomizationSettings.font_restart_now"))
                             .on_click(|_event, _window, cx| {
                                 cx.update_global(|state: &mut SettingsPageState, _cx| {
                                     state.close_font_restart_confirm();

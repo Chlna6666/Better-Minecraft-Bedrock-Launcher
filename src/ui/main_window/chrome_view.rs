@@ -14,6 +14,7 @@ impl AppChromeView {
             cx.observe_global::<gpui_router::RouterState>(|_, cx| cx.notify()),
             cx.observe_global::<NavState>(|_, cx| cx.notify()),
             cx.observe_global::<ThemeState>(|_, cx| cx.notify()),
+            cx.observe_global::<I18n>(|_, cx| cx.notify()),
             cx.observe_global::<UpdateState>(|_, cx| cx.notify()),
             cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
                 cx.notify()
@@ -42,6 +43,7 @@ impl AppChromeView {
         let auth = cx.global::<BedrockAuthState>();
         let (pill_left_steps, pill_right_steps) = nav.pill_edges(now);
         TopbarRenderState {
+            i18n: cx.global::<I18n>().clone(),
             theme_k: theme.factor(now),
             theme_target_dark: theme.target_dark,
             theme_animating: theme.is_animating(now),

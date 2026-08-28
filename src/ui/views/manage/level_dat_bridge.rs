@@ -379,13 +379,14 @@ impl ManagePageView {
                 }
                 match result {
                     Ok(()) => {
+                        let i18n = cx.global::<I18n>().clone();
                         if let Some(editor) = this.level_dat_editor.as_mut() {
                             editor.saved_text = saved_text.clone();
                             editor.validation =
                                 level_dat_editor::validate_document_json(saved_text.as_ref());
                             editor.visual_dirty = false;
                         }
-                        toast::success(cx, SharedString::from("地图数据已保存"));
+                        toast::success(cx, t!("LevelDat.save_success"));
                     }
                     Err(error) => {
                         toast::error(cx, SharedString::from(error));
@@ -437,7 +438,8 @@ impl ManagePageView {
             editor.validation = level_dat_editor::validate_document_json(formatted.as_ref());
             editor.needs_form_sync = true;
         }
-        toast::success(cx, SharedString::from("JSON 已格式化"));
+        let i18n = cx.global::<I18n>().clone();
+        toast::success(cx, t!("LevelDat.format_success"));
         cx.notify();
     }
 

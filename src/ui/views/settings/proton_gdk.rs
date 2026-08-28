@@ -1,10 +1,11 @@
 use crate::ui::components::toast;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
-pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
+pub(super) fn render(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
     let runner_root = crate::utils::file_ops::runners_dir();
     let config = crate::config::config::read_config().unwrap_or_default();
     let mut runners = crate::core::linux_runtime::installed_proton_gdk_runners();
@@ -35,9 +36,9 @@ pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
         .flex()
         .flex_col()
         .gap(px(14.))
-        .child(page_heading(colors))
-        .child(environment_overview(colors, is_ready))
-        .child(source_selector(colors, source))
+        .child(page_heading(colors, i18n))
+        .child(environment_overview(colors, i18n, is_ready))
+        .child(source_selector(colors, i18n, source))
         .child(
             div()
                 .flex()
@@ -57,13 +58,13 @@ pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
                                 .text_size(px(15.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
-                                .child("已安装版本"),
+                                .child(t!("Settings.proton_gdk.installed_title")),
                         )
                         .child(
                             div()
                                 .text_size(px(11.5))
                                 .text_color(colors.text_muted)
-                                .child("启动游戏时使用当前选中的 Proton-GDK"),
+                                .child(t!("Settings.proton_gdk.use_selected_description")),
                         ),
                 )
                 .child(
@@ -74,7 +75,7 @@ pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
                         .child(
                             action_button(
                                 colors,
-                                "注册本地版本",
+                                t!("Settings.proton_gdk.register_local"),
                                 lucide_icons::icon_folder_open(),
                                 false,
                             )
@@ -88,7 +89,7 @@ pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
                         .child(
                             action_button(
                                 colors,
-                                "安装新版本",
+                                t!("Settings.proton_gdk.install_latest"),
                                 lucide_icons::icon_download(),
                                 true,
                             )
@@ -109,15 +110,17 @@ pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
                     .gap(px(8.))
                     .children(runners.into_iter().map(|runner| {
                         let selected = selected_runner == runner.executable().to_string_lossy();
-                        installed_runner_card(colors, runner, selected)
+                        installed_runner_card(colors, i18n, runner, selected)
                     })),
             )
         })
-        .when(!has_runners, |this| this.child(empty_runner_card(colors)))
-        .child(storage_footer(colors, runner_root))
+        .when(!has_runners, |this| {
+            this.child(empty_runner_card(colors, i18n))
+        })
+        .child(storage_footer(colors, i18n, runner_root))
 }
 
-fn page_heading(colors: &ThemeColors) -> Div {
+fn page_heading(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .flex()
         .items_start()
@@ -139,13 +142,14 @@ fn page_heading(colors: &ThemeColors) -> Div {
                     div()
                         .text_size(px(12.5))
                         .text_color(colors.text_secondary)
-                        .child("管理 Minecraft Bedrock 在 Linux 上使用的兼容运行环境"),
+                        .child(t!("Settings.proton_gdk.description")),
                 ),
         )
 }
 
 fn source_selector(
     colors: &ThemeColors,
+    i18n: &I18n,
     selected: crate::core::linux_runtime::ProtonGdkSource,
 ) -> Div {
     div()
@@ -175,13 +179,13 @@ fn source_selector(
                         .text_size(px(13.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child("下载源"),
+                        .child(t!("Settings.proton_gdk.source")),
                 )
                 .child(
                     div()
                         .text_size(px(11.5))
                         .text_color(colors.text_muted)
-                        .child("安装新版本时从选中的仓库获取 Release"),
+                        .child(t!("Settings.proton_gdk.source_description")),
                 ),
         )
         .child(
@@ -192,19 +196,19 @@ fn source_selector(
                 .gap(px(8.))
                 .child(source_option(
                     colors,
-                    "RoundMCDev（推荐 · 支持登录）",
+                    t!("Settings.proton_gdk.source_roundmcdev"),
                     crate::core::linux_runtime::ProtonGdkSource::RoundMcDev,
                     selected,
                 ))
                 .child(source_option(
                     colors,
-                    "LukasPAH（无法登录）",
+                    t!("Settings.proton_gdk.source_lukaspah"),
                     crate::core::linux_runtime::ProtonGdkSource::LukasPah,
                     selected,
                 ))
                 .child(source_option(
                     colors,
-                    "Weather-OS（无法登录）",
+                    t!("Settings.proton_gdk.source_weather_os"),
                     crate::core::linux_runtime::ProtonGdkSource::WeatherOs,
                     selected,
                 )),
@@ -213,13 +217,17 @@ fn source_selector(
 
 fn source_option(
     colors: &ThemeColors,
-    label: &'static str,
+    label: SharedString,
     source: crate::core::linux_runtime::ProtonGdkSource,
     selected: crate::core::linux_runtime::ProtonGdkSource,
 ) -> Stateful<Div> {
     let active = source == selected;
+    let label_for_id = label.clone();
+    let label_for_toast = label.clone();
     div()
-        .id(SharedString::from(format!("proton-gdk-source-{label}")))
+        .id(SharedString::from(format!(
+            "proton-gdk-source-{label_for_id}"
+        )))
         .h(px(34.))
         .px(px(11.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -276,26 +284,35 @@ fn source_option(
                     cx.update_global(
                         |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
                     );
-                    toast::success(cx, format!("下载源已切换为 {label}").into());
+                    toast::success(
+                        cx,
+                        t!(
+                            "Settings.proton_gdk.source_changed",
+                            source = label_for_toast
+                        ),
+                    );
                 }
                 Err(error) => {
-                    toast::error(cx, format!("保存下载源失败：{error}").into());
+                    toast::error(
+                        cx,
+                        t!("Settings.proton_gdk.source_save_failed", error = error),
+                    );
                 }
             };
         })
 }
 
-fn environment_overview(colors: &ThemeColors, is_ready: bool) -> Div {
+fn environment_overview(colors: &ThemeColors, i18n: &I18n, is_ready: bool) -> Div {
     let (status, description, tone) = if is_ready {
         (
-            "已选择运行环境",
-            "Proton-GDK 已安装，启动游戏前会继续检查 GDK API 兼容性",
+            t!("Settings.proton_gdk.ready"),
+            t!("Settings.proton_gdk.ready_description"),
             colors.accent,
         )
     } else {
         (
-            "需要安装运行环境",
-            "尚未检测到 Proton-GDK，安装后才能启动 Bedrock UWP/GDK 版本",
+            t!("Settings.proton_gdk.not_ready"),
+            t!("Settings.proton_gdk.not_ready_description"),
             colors.danger,
         )
     };
@@ -369,9 +386,9 @@ fn environment_overview(colors: &ThemeColors, is_ready: bool) -> Div {
                 .text_color(tone)
                 .cursor_pointer()
                 .child(if is_ready {
-                    "可用"
+                    t!("Settings.proton_gdk.available")
                 } else {
-                    "未安装 · 点击安装"
+                    t!("Settings.proton_gdk.install_action")
                 })
                 .hover(move |this| this.bg(Hsla { a: 0.22, ..tone }))
                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
@@ -393,7 +410,7 @@ fn start_latest_install(cx: &mut App) {
     let task_id = crate::core::linux_runtime::start_proton_gdk_install_latest(source);
     toast::success(
         cx,
-        SharedString::from(format!("已开始下载 Proton-GDK（任务 {task_id}）")),
+        t!("Settings.proton_gdk.install_started", task = &task_id),
     );
     let terminal_task_id = task_id.clone();
     let terminal_task = gpui_tokio::Tokio::spawn_result(cx, async move {
@@ -424,7 +441,7 @@ fn register_local_runner(window: &Window, cx: &mut App) {
         .into_iter()
         .find(|candidate| candidate.is_file());
     let Some(executable) = executable else {
-        toast::error(cx, "所选目录中没有 proton 或 bin/proton".into());
+        toast::error(cx, t!("Settings.proton_gdk.runner_not_found"));
         return;
     };
     let executable = executable.to_string_lossy().into_owned();
@@ -435,16 +452,20 @@ fn register_local_runner(window: &Window, cx: &mut App) {
             cx.update_global(
                 |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
             );
-            toast::success(cx, "本地 Proton-GDK 已注册并设为默认".into());
+            toast::success(cx, t!("Settings.proton_gdk.runner_registered"));
         }
         Err(error) => {
-            toast::error(cx, format!("保存本地 Proton-GDK 失败：{error}").into());
+            toast::error(
+                cx,
+                t!("Settings.proton_gdk.runner_save_failed", error = error),
+            );
         }
     };
 }
 
 fn installed_runner_card(
     colors: &ThemeColors,
+    i18n: &I18n,
     runner: crate::core::linux_runtime::InstalledProtonGdkRunner,
     selected: bool,
 ) -> Stateful<Div> {
@@ -550,7 +571,10 @@ fn installed_runner_card(
                         )
                         .when(asset_count > 0, |this| {
                             this.child(div().text_size(px(10.5)).text_color(colors.accent).child(
-                                format!("固定资源包已集成：{asset_count} 项（UMU 仅作为启动入口）"),
+                                t!(
+                                    "Settings.proton_gdk.assets_integrated",
+                                    count = &asset_count
+                                ),
                             ))
                         }),
                 ),
@@ -573,9 +597,9 @@ fn installed_runner_card(
                         .text_size(px(11.))
                         .text_color(colors.accent)
                         .child(if selected {
-                            "当前使用"
+                            t!("Settings.proton_gdk.current")
                         } else {
-                            "设为默认"
+                            t!("Settings.proton_gdk.set_default")
                         }),
                 )
                 .child(
@@ -622,16 +646,19 @@ fn installed_runner_card(
                     cx.update_global(
                         |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
                     );
-                    toast::success(cx, "已设为默认 Proton-GDK".into());
+                    toast::success(cx, t!("Settings.proton_gdk.default_set"));
                 }
                 Err(error) => {
-                    toast::error(cx, format!("保存默认版本失败：{error}").into());
+                    toast::error(
+                        cx,
+                        t!("Settings.proton_gdk.default_save_failed", error = error),
+                    );
                 }
             };
         })
 }
 
-fn empty_runner_card(colors: &ThemeColors) -> Div {
+fn empty_runner_card(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .w_full()
         .min_h(px(150.))
@@ -675,13 +702,13 @@ fn empty_runner_card(colors: &ThemeColors) -> Div {
                 .text_size(px(14.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.text_primary)
-                .child("还没有安装 Proton-GDK"),
+                .child(t!("Settings.proton_gdk.empty_title")),
         )
         .child(
             div()
                 .text_size(px(11.5))
                 .text_color(colors.text_muted)
-                .child("安装后，版本会显示在这里"),
+                .child(t!("Settings.proton_gdk.empty_description")),
         )
 }
 
@@ -713,7 +740,7 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                     toast::push_async(
                         cx,
                         toast::ToastKind::Error,
-                        format!("清除默认版本失败：{error}").into(),
+                        t!("Settings.proton_gdk.clear_default_failed", error = error),
                     );
                     return anyhow::Ok(());
                 }
@@ -723,7 +750,7 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                 toast::push_async(
                     cx,
                     toast::ToastKind::Success,
-                    "Proton-GDK 版本及残留安装目录已完全删除".into(),
+                    t!("Settings.proton_gdk.removed"),
                 );
             }
             Ok(None) => {
@@ -735,21 +762,21 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                     toast::push_async(
                         cx,
                         toast::ToastKind::Error,
-                        format!("清除默认版本失败：{error}").into(),
+                        t!("Settings.proton_gdk.clear_default_failed", error = error),
                     );
                     return anyhow::Ok(());
                 }
                 toast::push_async(
                     cx,
                     toast::ToastKind::Success,
-                    "本地 Proton-GDK 已取消注册".into(),
+                    t!("Settings.proton_gdk.unregistered"),
                 );
             }
             Err(error) => {
                 toast::push_async(
                     cx,
                     toast::ToastKind::Error,
-                    format!("删除 Proton-GDK 失败：{error}").into(),
+                    t!("Settings.proton_gdk.remove_failed", error = error),
                 );
             }
         }
@@ -758,7 +785,7 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
     .detach();
 }
 
-fn storage_footer(colors: &ThemeColors, runner_root: std::path::PathBuf) -> Div {
+fn storage_footer(colors: &ThemeColors, i18n: &I18n, runner_root: std::path::PathBuf) -> Div {
     div()
         .mt(px(2.))
         .px(px(4.))
@@ -782,15 +809,21 @@ fn storage_footer(colors: &ThemeColors, runner_root: std::path::PathBuf) -> Div 
                         .h(px(14.))
                         .text_color(colors.text_muted),
                 )
-                .child(format!("存储位置：{}", runner_root.display())),
+                .child(t!(
+                    "Settings.proton_gdk.storage_path",
+                    path = runner_root.display()
+                )),
         )
         .child(
-            action_button(colors, "清理版本", lucide_icons::icon_trash_2(), false).on_mouse_down(
-                MouseButton::Left,
-                move |_event, _window, cx| {
-                    toast::error(cx, "请先选择要删除的 Proton-GDK 版本".into());
-                },
-            ),
+            action_button(
+                colors,
+                t!("Settings.proton_gdk.cleanup"),
+                lucide_icons::icon_trash_2(),
+                false,
+            )
+            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                toast::error(cx, t!("Settings.proton_gdk.select_to_remove"));
+            }),
         )
 }
 

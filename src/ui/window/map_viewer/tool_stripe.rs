@@ -1,6 +1,7 @@
 use super::actions::MapViewerAction;
 use super::layout::IDE_LEFT_STRIPE_WIDTH;
 use super::state::{MapViewerBottomTab, MapViewerLeftPanel, MapViewerRightPanel};
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::{
     App, Context, CursorStyle, EventEmitter, Hsla, InteractiveElement, IntoElement, MouseButton,
@@ -38,6 +39,7 @@ impl EventEmitter<MapViewerAction> for MapToolStripeView {}
 impl Render for MapToolStripeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme_colors(cx);
+        let i18n = cx.global::<I18n>().clone();
         let snapshot = self.snapshot.unwrap_or(MapToolStripeSnapshot {
             left_panel_open: true,
             right_panel_open: false,
@@ -62,7 +64,7 @@ impl Render for MapToolStripeView {
                 "stripe-tools",
                 &colors,
                 lucide_icons::icon_wrench(),
-                "工具",
+                t!("MapViewer.tools"),
                 snapshot.left_panel_open && snapshot.active_left_panel == MapViewerLeftPanel::Tools,
                 cx.listener(|_this, _event, _window, cx| {
                     cx.emit(MapViewerAction::ToggleLeftPanelKind(
@@ -74,7 +76,7 @@ impl Render for MapToolStripeView {
                 "stripe-chunks",
                 &colors,
                 lucide_icons::icon_layers(),
-                "区块",
+                t!("MapViewer.chunks"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::ChunkTree,
                 cx.listener(|_this, _event, _window, cx| {
@@ -87,7 +89,7 @@ impl Render for MapToolStripeView {
                 "stripe-players",
                 &colors,
                 lucide_icons::icon_users(),
-                "玩家",
+                t!("MapViewer.players"),
                 snapshot.left_panel_open
                     && snapshot.active_left_panel == MapViewerLeftPanel::Players,
                 cx.listener(|_this, _event, _window, cx| {
@@ -100,7 +102,7 @@ impl Render for MapToolStripeView {
                 "stripe-details",
                 &colors,
                 lucide_icons::icon_info(),
-                "详情",
+                t!("MapViewer.details"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::Details,
                 cx.listener(|_this, _event, _window, cx| {
@@ -137,7 +139,7 @@ impl Render for MapToolStripeView {
                 "stripe-diagnostics",
                 &colors,
                 lucide_icons::icon_activity(),
-                "诊断",
+                t!("MapViewer.diagnostics"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::Diagnostics,
                 cx.listener(|_this, _event, _window, cx| {
@@ -150,7 +152,7 @@ impl Render for MapToolStripeView {
                 "stripe-history",
                 &colors,
                 lucide_icons::icon_history(),
-                "历史",
+                t!("MapViewer.history"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::History,
                 cx.listener(|_this, _event, _window, cx| {
@@ -177,7 +179,7 @@ fn stripe_button(
     id: &'static str,
     colors: &ThemeColors,
     icon_path: &'static str,
-    label: &'static str,
+    label: impl Into<gpui::SharedString>,
     active: bool,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -231,7 +233,7 @@ fn stripe_button(
                 .text_size(px(10.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(foreground)
-                .child(label),
+                .child(label.into()),
         )
         .on_mouse_down(MouseButton::Left, on_click)
 }

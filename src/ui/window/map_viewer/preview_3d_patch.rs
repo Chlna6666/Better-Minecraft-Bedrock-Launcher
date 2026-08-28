@@ -1,10 +1,7 @@
 // Extra helpers kept in the same `preview_3d` module via `include!` so they can
 // preserve the renderer-private LOD meshes while exact-selection parts are merged.
 
-pub(super) fn namespace_preview_3d_mesh(
-    mesh: &Preview3dMesh,
-    namespace: u64,
-) -> Preview3dMesh {
+pub(super) fn namespace_preview_3d_mesh(mesh: &Preview3dMesh, namespace: u64) -> Preview3dMesh {
     let mut namespaced = mesh.clone();
     for chunk in &mut namespaced.chunk_meshes {
         chunk.gpu_mesh = Arc::new(namespace_gpu_mesh(chunk.gpu_mesh.as_ref(), namespace, 0));

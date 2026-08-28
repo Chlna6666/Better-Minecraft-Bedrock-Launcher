@@ -1,7 +1,7 @@
 use crate::i18n::Locale;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::components::{dropdown::Dropdown, dropdown::DropdownOption};
-use crate::ui::state::i18n::I18n;
+use crate::ui::state::i18n::{I18n, LanguageController, LanguagePreference, LanguageRequest};
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::prelude::FluentBuilder as _;
@@ -24,7 +24,7 @@ pub(super) fn render_launcher_tab(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> Div {
-    let section = i18n.t("Settings.tabs.launcher");
+    let section = t!("Settings.tabs.launcher");
 
     div()
         .flex()
@@ -37,8 +37,8 @@ pub(super) fn render_launcher_tab(
         .child(setting_toggle_row(
             colors,
             section.clone(),
-            i18n.t("LauncherSettings.debug"),
-            i18n.t("LauncherSettings.debug_desc"),
+            t!("LauncherSettings.debug"),
+            t!("LauncherSettings.debug_desc"),
             state.debug,
             "settings-launcher-debug",
             |settings| settings.debug = !settings.debug,
@@ -46,8 +46,8 @@ pub(super) fn render_launcher_tab(
         .child(setting_toggle_row(
             colors,
             section.clone(),
-            i18n.t("LauncherSettings.stats_upload"),
-            i18n.t("LauncherSettings.stats_upload_desc"),
+            t!("LauncherSettings.stats_upload"),
+            t!("LauncherSettings.stats_upload_desc"),
             state.stats_upload,
             "settings-launcher-stats",
             |settings| settings.stats_upload = !settings.stats_upload,
@@ -55,8 +55,8 @@ pub(super) fn render_launcher_tab(
         .child(setting_toggle_row(
             colors,
             section.clone(),
-            i18n.t("LauncherSettings.error_report_sentry"),
-            i18n.t("LauncherSettings.error_report_sentry_desc"),
+            t!("LauncherSettings.error_report_sentry"),
+            t!("LauncherSettings.error_report_sentry_desc"),
             state.error_report_sentry_enabled,
             "settings-launcher-error-report-sentry",
             |settings| settings.error_report_sentry_enabled = !settings.error_report_sentry_enabled,
@@ -64,8 +64,8 @@ pub(super) fn render_launcher_tab(
         .child(setting_toggle_row(
             colors,
             section.clone(),
-            i18n.t("LauncherSettings.error_report_sentry_auto"),
-            i18n.t("LauncherSettings.error_report_sentry_auto_desc"),
+            t!("LauncherSettings.error_report_sentry_auto"),
+            t!("LauncherSettings.error_report_sentry_auto_desc"),
             state.error_report_sentry_auto,
             "settings-launcher-error-report-sentry-auto",
             |settings| settings.error_report_sentry_auto = !settings.error_report_sentry_auto,
@@ -107,22 +107,18 @@ fn launcher_sentry_test_row(
         .gap(px(22.))
         .child(super::common::settings_card_text(
             colors,
-            i18n.t("LauncherSettings.error_report_sentry_test"),
-            i18n.t("LauncherSettings.error_report_sentry_test_desc"),
+            t!("LauncherSettings.error_report_sentry_test"),
+            t!("LauncherSettings.error_report_sentry_test_desc"),
         ))
         .child(
             settings_action_button(
                 colors,
-                i18n.t("LauncherSettings.error_report_sentry_test_send"),
+                t!("LauncherSettings.error_report_sentry_test_send"),
                 enabled,
             )
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                 if !enabled {
-                    toast::error(
-                        cx,
-                        cx.global::<I18n>()
-                            .t("Diagnostics.toast.sentry_unconfigured"),
-                    );
+                    toast::error(cx, t!("Diagnostics.toast.sentry_unconfigured"));
                     return;
                 }
 
@@ -132,14 +128,8 @@ fn launcher_sentry_test_row(
 }
 
 fn spawn_sentry_test_log(cx: &mut App) {
-    let toast_id = toast::pending(
-        cx,
-        cx.global::<I18n>()
-            .t("LauncherSettings.error_report_sentry_test_sending"),
-    );
-    let success_message = cx
-        .global::<I18n>()
-        .t("LauncherSettings.error_report_sentry_test_sent");
+    let toast_id = toast::pending(cx, t!("LauncherSettings.error_report_sentry_test_sending"));
+    let success_message = t!("LauncherSettings.error_report_sentry_test_sent");
 
     cx.spawn(async move |cx| {
         let result = cx
@@ -179,52 +169,98 @@ fn resolve_locale_for_code(code: &str) -> Locale {
     }
 }
 
-fn spawn_persist_language(code: String, resolved_locale: Locale, cx: &mut App) {
-    let toast_id = toast::pending(cx, SharedString::from("保存语言中..."));
+fn submit_language(request: LanguageRequest, cx: &mut App) {
+    let requested_locale = request.locale;
+    let request_to_start =
+        cx.update_global(|controller: &mut LanguageController, _cx| controller.submit(request));
 
+    if cx.global::<I18n>().locale() != requested_locale {
+        cx.update_global(|i18n: &mut I18n, _cx| {
+            i18n.set_locale(requested_locale);
+        });
+    }
+
+    let Some((request_id, request)) = request_to_start else {
+        return;
+    };
+
+    let toast_id = toast::pending(
+        cx,
+        cx.global::<I18n>()
+            .t_key(crate::i18n_key!("LauncherSettings.language_saving")),
+    );
     cx.spawn(async move |cx| {
-        let res = crate::tasks::runtime::run_io_blocking({
-            let code = code.clone();
-            move || {
-                crate::config::config::update_config(|cfg| {
-                    cfg.launcher.language = code;
-                })?;
-                Ok::<(), std::io::Error>(())
+        let mut current = (request_id, request);
+        loop {
+            let (id, request) = current;
+            let save_result = crate::tasks::runtime::run_io_blocking({
+                let code = request.preference.code().to_string();
+                move || crate::config::config::persist_language(&code)
+            })
+            .await;
+            let error_text = match save_result {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => {
+                    warn!("persist language failed: {error}");
+                    Some(error.to_string())
+                }
+                Err(error) => {
+                    warn!("persist language join error: {error}");
+                    Some(error.to_string())
+                }
+            };
+
+            let completion = match cx.update_global(|controller: &mut LanguageController, _cx| {
+                controller.complete(id, error_text.is_none())
+            }) {
+                Ok(completion) => completion,
+                Err(error) => {
+                    warn!("complete language request failed: {error:?}");
+                    break;
+                }
+            };
+
+            if let Some(rollback) = completion.rollback {
+                let current_locale = cx
+                    .read_global(|i18n: &I18n, _cx| i18n.locale())
+                    .unwrap_or(rollback.locale);
+                if current_locale != rollback.locale
+                    && let Err(error) = cx.update_global(|i18n: &mut I18n, _cx| {
+                        i18n.set_locale(rollback.locale);
+                    })
+                {
+                    warn!("rollback language failed: {error:?}");
+                }
+                if let Err(error) = cx.update_global(|settings: &mut SettingsPageState, _cx| {
+                    settings.language = SharedString::from(rollback.preference.code());
+                }) {
+                    warn!("rollback language setting failed: {error:?}");
+                }
+                let error = error_text.unwrap_or_else(|| "unknown error".to_string());
+                let message = cx
+                    .read_global(|i18n: &I18n, _cx| {
+                        t!("LauncherSettings.language_save_failed", error = error)
+                    })
+                    .unwrap_or_else(|_| SharedString::from("Language save failed"));
+                toast::resolve_async(cx, toast_id, ToastKind::Error, message);
+                break;
             }
-        })
-        .await;
 
-        if let Err(join_err) = res {
-            warn!("persist language join error: {join_err}");
-            toast::resolve_async(
-                cx,
-                toast_id,
-                ToastKind::Error,
-                SharedString::from("保存语言失败"),
-            );
-        } else if let Ok(Err(io_err)) = res {
-            warn!("persist language failed: {io_err}");
-            toast::resolve_async(
-                cx,
-                toast_id,
-                ToastKind::Error,
-                SharedString::from(format!("保存语言失败: {io_err}")),
-            );
-        } else {
-            toast::resolve_async(
-                cx,
-                toast_id,
-                ToastKind::Success,
-                SharedString::from("语言已保存"),
-            );
+            if let Some(next) = completion.next {
+                current = next;
+                continue;
+            }
+
+            let message = cx
+                .read_global(|i18n: &I18n, _cx| {
+                    i18n.t_key(crate::i18n_key!("LauncherSettings.language_saved"))
+                })
+                .unwrap_or_else(|_| SharedString::from("Language saved"));
+            toast::resolve_async(cx, toast_id, ToastKind::Success, message);
+            break;
         }
 
-        if let Err(err) = cx.update_global(|i18n: &mut I18n, cx| {
-            i18n.ensure_loaded();
-            i18n.set_locale(resolved_locale);
-        }) {
-            warn!("update_global(I18n) failed: {err:?}");
-        }
+        Ok::<(), anyhow::Error>(())
     })
     .detach();
 }
@@ -237,7 +273,7 @@ fn launcher_language_row(
     fn language_label(i18n: &I18n, code: &str) -> SharedString {
         let code = code.trim();
         if code.eq_ignore_ascii_case("auto") {
-            return i18n.t("LauncherSettings.lang_options.auto");
+            return t!("LauncherSettings.lang_options.auto");
         }
         match Locale::from_code(code) {
             Some(Locale::ZhCn) => SharedString::from("简体中文"),
@@ -249,7 +285,7 @@ fn launcher_language_row(
         }
     }
 
-    let section = i18n.t("Settings.tabs.launcher");
+    let section = t!("Settings.tabs.launcher");
 
     let codes: Vec<SharedString> = vec![
         SharedString::from("auto"),
@@ -278,8 +314,8 @@ fn launcher_language_row(
     setting_dropdown_row(
         colors,
         section,
-        i18n.t("LauncherSettings.language"),
-        i18n.t("LauncherSettings.language_desc"),
+        t!("LauncherSettings.language"),
+        t!("LauncherSettings.language_desc"),
         "settings-language",
         px(180.),
         display,
@@ -293,19 +329,30 @@ fn launcher_language_row(
                 .unwrap_or_else(|| SharedString::from("auto"))
                 .to_string();
             let resolved = resolve_locale_for_code(&new_code);
+            let preference = if new_code.eq_ignore_ascii_case("auto") {
+                LanguagePreference::Auto
+            } else {
+                LanguagePreference::Explicit(resolved)
+            };
             cx.update_global(|settings: &mut SettingsPageState, cx| {
                 settings.language = SharedString::from(new_code.clone());
             });
-            spawn_persist_language(new_code, resolved, cx);
+            submit_language(
+                LanguageRequest {
+                    preference,
+                    locale: resolved,
+                },
+                cx,
+            );
         },
     )
 }
 
 fn render_engine_label(i18n: &I18n, renderer_backend: &SharedString) -> SharedString {
     match crate::config::config::normalize_renderer_backend(renderer_backend.as_ref()).as_str() {
-        "vulkan" => i18n.t("LauncherSettings.render_engine.vulkan"),
-        "dx12" => i18n.t("LauncherSettings.render_engine.dx12"),
-        _ => i18n.t("LauncherSettings.render_engine.auto"),
+        "vulkan" => t!("LauncherSettings.render_engine.vulkan"),
+        "dx12" => t!("LauncherSettings.render_engine.dx12"),
+        _ => t!("LauncherSettings.render_engine.auto"),
     }
 }
 
@@ -314,7 +361,7 @@ fn launcher_render_engine_row(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    let section = i18n.t("Settings.tabs.launcher");
+    let section = t!("Settings.tabs.launcher");
 
     let values = if cfg!(target_os = "linux") {
         vec![SharedString::from("auto"), SharedString::from("vulkan")]
@@ -339,13 +386,13 @@ fn launcher_render_engine_row(
     let display = values
         .get(selected_index)
         .map(|value| render_engine_label(i18n, value))
-        .unwrap_or_else(|| i18n.t("LauncherSettings.render_engine.auto"));
+        .unwrap_or_else(|| t!("LauncherSettings.render_engine.auto"));
 
     setting_dropdown_row(
         colors,
         section,
-        i18n.t("LauncherSettings.render_engine"),
-        i18n.t("LauncherSettings.render_engine_desc"),
+        t!("LauncherSettings.render_engine"),
+        t!("LauncherSettings.render_engine_desc"),
         "settings-render-engine",
         px(180.),
         display,
@@ -403,7 +450,7 @@ fn gpu_adapter_options(state: &SettingsPageState) -> Vec<SharedString> {
 
 fn gpu_adapter_label(i18n: &I18n, adapter_name: &SharedString) -> SharedString {
     if adapter_name.as_ref().eq_ignore_ascii_case("auto") {
-        i18n.t("LauncherSettings.gpu_adapter.auto")
+        t!("LauncherSettings.gpu_adapter.auto")
     } else {
         adapter_name.clone()
     }
@@ -414,7 +461,7 @@ fn launcher_gpu_adapter_row(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    let section = i18n.t("Settings.tabs.launcher");
+    let section = t!("Settings.tabs.launcher");
     let values = gpu_adapter_options(state);
     let current =
         crate::config::config::normalize_gpu_adapter_name(state.gpu_adapter_name.as_ref());
@@ -430,13 +477,13 @@ fn launcher_gpu_adapter_row(
     let display = values
         .get(selected_index)
         .map(|value| gpu_adapter_label(i18n, value))
-        .unwrap_or_else(|| i18n.t("LauncherSettings.gpu_adapter.auto"));
+        .unwrap_or_else(|| t!("LauncherSettings.gpu_adapter.auto"));
 
     setting_dropdown_row(
         colors,
         section,
-        i18n.t("LauncherSettings.gpu_adapter"),
-        i18n.t("LauncherSettings.gpu_adapter_desc"),
+        t!("LauncherSettings.gpu_adapter"),
+        t!("LauncherSettings.gpu_adapter_desc"),
         "settings-gpu-adapter",
         px(260.),
         display,
@@ -464,14 +511,14 @@ fn launcher_update_channel_dropdown(
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let options = vec![
-        DropdownOption::from(i18n.t("LauncherSettings.update_channel.stable")),
-        DropdownOption::from(i18n.t("LauncherSettings.update_channel.nightly")),
+        DropdownOption::from(t!("LauncherSettings.update_channel.stable")),
+        DropdownOption::from(t!("LauncherSettings.update_channel.nightly")),
     ];
 
     let (label, selected_index) = if state.update_channel_nightly {
-        (i18n.t("LauncherSettings.update_channel.nightly"), 1usize)
+        (t!("LauncherSettings.update_channel.nightly"), 1usize)
     } else {
-        (i18n.t("LauncherSettings.update_channel.stable"), 0usize)
+        (t!("LauncherSettings.update_channel.stable"), 0usize)
     };
 
     Dropdown::new(
@@ -502,8 +549,8 @@ fn launcher_auto_update_group(
         .child(
             settings_card_header(
                 colors,
-                i18n.t("LauncherSettings.auto_check_updates"),
-                i18n.t("LauncherSettings.auto_check_updates_desc"),
+                t!("LauncherSettings.auto_check_updates"),
+                t!("LauncherSettings.auto_check_updates_desc"),
             )
             .child(ToggleSwitch::new(
                 SharedString::from("settings-launcher-autoupdate-toggle"),
@@ -521,7 +568,7 @@ fn launcher_auto_update_group(
         .when(state.auto_check_updates, |this| {
             this.child(settings_sub_row(
                 colors,
-                i18n.t("LauncherSettings.update_channel"),
+                t!("LauncherSettings.update_channel"),
                 launcher_update_channel_dropdown(colors, i18n, state),
             ))
         })

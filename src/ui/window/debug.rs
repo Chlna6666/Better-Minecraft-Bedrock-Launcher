@@ -1,4 +1,3 @@
-use crate::i18n::Locale;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
@@ -16,6 +15,7 @@ pub use state::DebugState;
 /// the main GPUI window rather than to one inspected element.
 pub struct DebugView {
     inner: Entity<view::DebugView>,
+    _i18n_subscription: Subscription,
     flash_surface_updates: bool,
     show_layout_bounds: bool,
 }
@@ -23,6 +23,7 @@ pub struct DebugView {
 impl DebugView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let inner = cx.new(|cx| view::DebugView::new(window, cx));
+        let i18n_subscription = cx.observe_global::<I18n>(|_this, cx| cx.notify());
         cx.on_release(|_, cx| {
             apply_main_window_visual_debug(false, false, cx);
         })
@@ -30,6 +31,7 @@ impl DebugView {
 
         Self {
             inner,
+            _i18n_subscription: i18n_subscription,
             flash_surface_updates: false,
             show_layout_bounds: false,
         }
@@ -46,8 +48,8 @@ impl Render for DebugView {
             theme.factor(now),
             theme.accent,
         );
-        let locale = cx.global::<I18n>().locale();
-        let copy = VisualDebugCopy::from_locale(locale);
+        let i18n = cx.global::<I18n>().clone();
+        let copy = VisualDebugCopy::from_i18n(&i18n);
 
         let flash_enabled = self.flash_surface_updates;
         let layout_enabled = self.show_layout_bounds;
@@ -191,8 +193,8 @@ fn apply_main_window_visual_debug(
 
 fn debug_toggle(
     id: &'static str,
-    label: &'static str,
-    description: &'static str,
+    label: impl Into<SharedString>,
+    description: impl Into<SharedString>,
     enabled: bool,
     colors: &ThemeColors,
 ) -> Stateful<Div> {
@@ -274,51 +276,40 @@ fn debug_toggle(
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child(label),
+                        .child(label.into()),
                 )
                 .child(
                     div()
                         .text_size(px(9.))
                         .line_height(px(13.))
                         .text_color(colors.text_muted)
-                        .child(description),
+                        .child(description.into()),
                 ),
         )
         .child(track)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct VisualDebugCopy {
-    title: &'static str,
-    subtitle: &'static str,
-    flash_surface_updates: &'static str,
-    flash_surface_updates_desc: &'static str,
-    show_layout_bounds: &'static str,
-    show_layout_bounds_desc: &'static str,
-    legend: &'static str,
+    title: SharedString,
+    subtitle: SharedString,
+    flash_surface_updates: SharedString,
+    flash_surface_updates_desc: SharedString,
+    show_layout_bounds: SharedString,
+    show_layout_bounds_desc: SharedString,
+    legend: SharedString,
 }
 
 impl VisualDebugCopy {
-    fn from_locale(locale: Locale) -> Self {
-        match locale {
-            Locale::ZhCn | Locale::ZhTw => Self {
-                title: "GUI 可视化",
-                subtitle: "用于定位无效重绘、布局和剪辑问题。",
-                flash_surface_updates: "显示面更新",
-                flash_surface_updates_desc: "主窗口产生新的 surface 帧时，让整个窗口短暂闪烁。",
-                show_layout_bounds: "显示布局边界",
-                show_layout_bounds_desc: "显示 margin、border、padding、content 与 overflow clip 边界。",
-                legend: "橙 margin · 蓝 border · 绿 padding · 紫 content · 红 clip",
-            },
-            _ => Self {
-                title: "GUI Visualization",
-                subtitle: "Diagnose unnecessary repaints, layout and clipping issues.",
-                flash_surface_updates: "Flash Surface Updates",
-                flash_surface_updates_desc: "Flash the main window whenever GPUI paints a new surface frame.",
-                show_layout_bounds: "Show Layout Bounds",
-                show_layout_bounds_desc: "Show margin, border, padding, content and overflow clip bounds.",
-                legend: "orange margin · blue border · green padding · purple content · red clip",
-            },
+    fn from_i18n(i18n: &I18n) -> Self {
+        Self {
+            title: t!("Debug.visual_title"),
+            subtitle: t!("Debug.visual_subtitle"),
+            flash_surface_updates: t!("Debug.flash_surface_updates"),
+            flash_surface_updates_desc: t!("Debug.flash_surface_updates_desc"),
+            show_layout_bounds: t!("Debug.show_layout_bounds"),
+            show_layout_bounds_desc: t!("Debug.show_layout_bounds_desc"),
+            legend: t!("Debug.visual_legend"),
         }
     }
 }

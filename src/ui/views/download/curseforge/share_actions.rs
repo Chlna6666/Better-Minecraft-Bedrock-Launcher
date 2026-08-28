@@ -1,4 +1,5 @@
 use crate::ui::components::toast;
+use crate::ui::state::i18n::I18n;
 use crate::ui::views::download::common::{format_count, format_date_ymd};
 use crate::ui::views::download::state::CurseForgeModEntry;
 use gpui::*;
@@ -20,17 +21,21 @@ pub(super) fn curseforge_project_url(mod_entry: &CurseForgeModEntry) -> SharedSt
 
 pub(super) fn copy_curseforge_link(mod_entry: &CurseForgeModEntry, cx: &mut App) {
     write_text_to_clipboard(curseforge_project_url(mod_entry), cx);
-    toast::push(cx, SharedString::from("已复制项目链接"));
+    toast::push(cx, t!("CurseForge.share_link_copied"));
 }
 
 pub(super) fn copy_curseforge_share_text(mod_entry: &CurseForgeModEntry, cx: &mut App) {
     let url = curseforge_project_url(mod_entry);
-    let content = format!(
-        "你的好友向你推荐了一个资源【{}】\n地址：{}\n前往 BMCBL 后粘贴即可打开该资源\nID: {}",
-        mod_entry.name, url, mod_entry.id
+    let name = mod_entry.name.to_string();
+    let id = mod_entry.id.to_string();
+    let content = t!(
+        "CurseForge.share_text",
+        name = &name,
+        url = url.as_ref(),
+        id = &id
     );
-    write_text_to_clipboard(SharedString::from(content), cx);
-    toast::push(cx, SharedString::from("已复制分享文本"));
+    write_text_to_clipboard(content, cx);
+    toast::push(cx, t!("CurseForge.share_text_copied"));
 }
 
 pub(super) fn copy_curseforge_analysis(
@@ -39,7 +44,7 @@ pub(super) fn copy_curseforge_analysis(
     cx: &mut App,
 ) {
     let authors = if mod_entry.author_names.is_empty() {
-        "未知作者".to_string()
+        t!("CurseForge.unknown_author").to_string()
     } else {
         mod_entry
             .author_names
@@ -49,7 +54,7 @@ pub(super) fn copy_curseforge_analysis(
             .join(", ")
     };
     let category_text = if categories.is_empty() {
-        "未分类".to_string()
+        t!("CurseForge.uncategorized").to_string()
     } else {
         categories
             .iter()
@@ -57,31 +62,32 @@ pub(super) fn copy_curseforge_analysis(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let content = format!(
-        "名称: {}\n作者: {}\n更新时间: {}\n下载量: {}\n分类: {}\n链接: {}",
-        mod_entry.name,
-        authors,
-        format_date_ymd(mod_entry.date_modified.as_ref()),
-        format_count(mod_entry.download_count),
-        category_text,
-        curseforge_project_url(mod_entry)
+    let name = mod_entry.name.to_string();
+    let updated = format_date_ymd(mod_entry.date_modified.as_ref());
+    let downloads = format_count(mod_entry.download_count);
+    let url = curseforge_project_url(mod_entry);
+    let content = t!(
+        "CurseForge.analysis_text",
+        name = &name,
+        authors = &authors,
+        updated = updated.as_ref(),
+        downloads = downloads.as_ref(),
+        categories = &category_text,
+        url = url.as_ref()
     );
-    write_text_to_clipboard(SharedString::from(content), cx);
-    toast::push(cx, SharedString::from("已复制资源分析"));
+    write_text_to_clipboard(content, cx);
+    toast::push(cx, t!("CurseForge.analysis_copied"));
 }
 
 pub(super) fn handle_curseforge_share_text(text: &str, cx: &mut App) {
     let Some(mod_id) = parse_shared_curseforge_id(text) else {
-        toast::error(
-            cx,
-            SharedString::from("剪贴板内容无法识别，需要包含 `ID:` 字段"),
-        );
+        toast::error(cx, t!("CurseForge.share_invalid"));
         return;
     };
 
     toast::push(
         cx,
-        SharedString::from(format!("已识别 CurseForge ID: {mod_id}")),
+        t!("CurseForge.share_id_detected", id = &mod_id.to_string()),
     );
     super::modals::open_curseforge_mod_page(mod_id, cx);
 }

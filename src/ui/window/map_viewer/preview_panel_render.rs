@@ -18,6 +18,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>();
         let selection = self.preview_3d_selection_status();
         let status = self.preview_3d_status_label();
         let stats = self.preview_3d_stats_label();
@@ -31,113 +32,116 @@ impl MapViewerWindowView {
             .min_h(px(0.0))
             .p(px(10.0))
             .child(
-            div()
-                .size_full()
-                .min_w(px(0.0))
-                .min_h(px(0.0))
-                .rounded(px(crate::ui::theme::tokens::radius::SM))
-                .border_1()
-                .border_color(Hsla {
-                    a: 0.24,
-                    ..colors.border
-                })
-                .bg(Hsla {
-                    a: 0.38,
-                    ..colors.surface_hover
-                })
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .overflow_hidden()
-                .text_size(px(12.0))
-                .text_color(colors.text_secondary)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(8.0))
-                        .px(px(10.0))
-                        .pt(px(10.0))
-                        .min_w(px(0.0))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .gap(px(3.0))
-                                .child(panel_title(colors, "3D 预览"))
-                                .child(
-                                    div()
-                                        .min_w(px(0.0))
-                                        .line_clamp(2)
-                                        .text_color(colors.text_muted)
-                                        .child(selection),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_none()
-                                .items_center()
-                                .flex_wrap()
-                                .gap(px(6.0))
-                                .child(toolbar_button(colors, "加载/刷新").on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.refresh_preview_3d_exact(cx)
-                                    }),
-                                ))
-                                .child(toolbar_button(colors, "重置视角").on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.reset_preview_3d_camera(cx)
-                                    }),
-                                ))
-                                .child(dock_close_button(colors).on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.close_right_panel(cx)
-                                    }),
-                                )),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(px(8.0))
-                        .px(px(10.0))
-                        .min_w(px(0.0))
-                        .child(status_badge(colors, status))
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .line_clamp(3)
-                                .text_color(colors.text_muted)
-                                .child(stats),
-                        ),
-                )
-                .child(
-                    div()
-                        .px(px(10.0))
-                        .min_w(px(0.0))
-                        .text_color(colors.text_muted)
-                        .child(
-                            "左键拖动模型，右键拖动镜头，WASD / 方向键 / Space / Shift 移动视角",
-                        ),
-                )
-                .child(self.render_preview_3d_canvas(
-                    colors,
-                    mesh,
-                    camera,
-                    model_rotation,
-                    view,
-                    cx,
-                )),
-        )
+                div()
+                    .size_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
+                    .border_1()
+                    .border_color(Hsla {
+                        a: 0.24,
+                        ..colors.border
+                    })
+                    .bg(Hsla {
+                        a: 0.38,
+                        ..colors.surface_hover
+                    })
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .overflow_hidden()
+                    .text_size(px(12.0))
+                    .text_color(colors.text_secondary)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .px(px(10.0))
+                            .pt(px(10.0))
+                            .min_w(px(0.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .gap(px(3.0))
+                                    .child(panel_title(colors, t!("MapViewer.preview_3d")))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .line_clamp(2)
+                                            .text_color(colors.text_muted)
+                                            .child(selection),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .gap(px(6.0))
+                                    .child(
+                                        toolbar_button(colors, t!("common.refresh")).on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.refresh_preview_3d_exact(cx)
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        toolbar_button(colors, t!("MapViewer.reset_camera"))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _event, _window, cx| {
+                                                    this.reset_preview_3d_camera(cx)
+                                                }),
+                                            ),
+                                    )
+                                    .child(dock_close_button(colors).on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.close_right_panel(cx)
+                                        }),
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap(px(8.0))
+                            .px(px(10.0))
+                            .min_w(px(0.0))
+                            .child(status_badge(colors, status))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .line_clamp(3)
+                                    .text_color(colors.text_muted)
+                                    .child(stats),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(10.0))
+                            .min_w(px(0.0))
+                            .text_color(colors.text_muted)
+                            .child(t!("MapViewer.preview_controls")),
+                    )
+                    .child(self.render_preview_3d_canvas(
+                        colors,
+                        mesh,
+                        camera,
+                        model_rotation,
+                        view,
+                        cx,
+                    )),
+            )
     }
 
     pub(super) fn render_preview_3d_canvas(

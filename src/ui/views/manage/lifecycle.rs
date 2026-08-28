@@ -152,11 +152,12 @@ impl ManagePageView {
             return;
         }
 
+        let i18n = cx.global::<I18n>().clone();
         let input = cx.update_global(|state: &mut ManagePageState, cx| {
             let initial = state.asset_search_query.to_string();
             cx.new(|cx| {
                 let mut input_state = InputState::new(window, cx);
-                input_state.set_placeholder(SharedString::from("搜索资源..."), window, cx);
+                input_state.set_placeholder(t!("Manage.search_assets"), window, cx);
                 if !initial.trim().is_empty() {
                     input_state.set_value(SharedString::from(initial), window, cx);
                 }
@@ -193,11 +194,12 @@ impl ManagePageView {
             return;
         }
 
+        let i18n = cx.global::<I18n>().clone();
         let input = cx.update_global(|state: &mut ManagePageState, cx| {
             let initial = state.screenshot_search_query.to_string();
             cx.new(|cx| {
                 let mut input_state = InputState::new(window, cx);
-                input_state.set_placeholder(SharedString::from("搜索截图..."), window, cx);
+                input_state.set_placeholder(t!("Manage.search_screenshots"), window, cx);
                 if !initial.trim().is_empty() {
                     input_state.set_value(SharedString::from(initial), window, cx);
                 }
@@ -234,11 +236,12 @@ impl ManagePageView {
             return;
         }
 
+        let i18n = cx.global::<I18n>().clone();
         let input = cx.update_global(|state: &mut ManagePageState, cx| {
             let initial = state.server_search_query.to_string();
             cx.new(|cx| {
                 let mut input_state = InputState::new(window, cx);
-                input_state.set_placeholder(SharedString::from("搜索服务器..."), window, cx);
+                input_state.set_placeholder(t!("Manage.search_servers"), window, cx);
                 if !initial.trim().is_empty() {
                     input_state.set_value(SharedString::from(initial), window, cx);
                 }

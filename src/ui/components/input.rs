@@ -260,6 +260,22 @@ impl InputState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.set_placeholder_value(placeholder, cx);
+    }
+
+    pub(crate) fn set_placeholder_without_window(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_placeholder_value(placeholder, cx);
+    }
+
+    fn set_placeholder_value(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         let placeholder = placeholder.into();
         if self.placeholder == placeholder {
             return;

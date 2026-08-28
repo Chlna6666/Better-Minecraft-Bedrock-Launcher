@@ -42,7 +42,7 @@ fn download_section_title(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement
             div()
                 .px(px(4.))
                 .py(px(2.))
-                .child(i18n.t("LauncherSettings.download.title")),
+                .child(t!("LauncherSettings.download.title")),
         )
 }
 
@@ -51,12 +51,12 @@ fn launcher_multi_thread_row(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    let section = i18n.t("Settings.tabs.launcher");
+    let section = t!("Settings.tabs.launcher");
     super::super::rows::setting_toggle_row(
         colors,
         section,
-        i18n.t("LauncherSettings.download.multi_thread"),
-        i18n.t("LauncherSettings.download.multi_thread_desc"),
+        t!("LauncherSettings.download.multi_thread"),
+        t!("LauncherSettings.download.multi_thread_desc"),
         state.download_multi_thread,
         "settings-launcher-download-multi-thread",
         |settings| {
@@ -73,12 +73,12 @@ fn launcher_auto_thread_count_row(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    let section = i18n.t("Settings.tabs.launcher");
+    let section = t!("Settings.tabs.launcher");
     super::super::rows::setting_toggle_row(
         colors,
         section,
-        i18n.t("LauncherSettings.download.auto_thread_count"),
-        i18n.t("LauncherSettings.download.auto_thread_count_desc"),
+        t!("LauncherSettings.download.auto_thread_count"),
+        t!("LauncherSettings.download.auto_thread_count_desc"),
         state.download_auto_thread_count,
         "settings-launcher-download-auto-thread-count",
         |settings| {
@@ -95,7 +95,7 @@ fn launcher_max_threads_row(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    let section = i18n.t("Settings.tabs.launcher");
+    let section = t!("Settings.tabs.launcher");
     let thread_values: Vec<u32> = vec![1, 2, 4, 8, 16, 32, 64, 128, 256];
     let options = thread_values
         .iter()
@@ -108,8 +108,8 @@ fn launcher_max_threads_row(
     setting_dropdown_row(
         colors,
         section,
-        i18n.t("LauncherSettings.download.max_threads"),
-        i18n.t("LauncherSettings.download.multi_thread_desc"),
+        t!("LauncherSettings.download.max_threads"),
+        t!("LauncherSettings.download.multi_thread_desc"),
         "settings-launcher-download-max-threads",
         px(180.),
         SharedString::from(state.download_max_threads.to_string()),
@@ -139,10 +139,10 @@ fn launcher_proxy_mode_row(
         SharedString::from("socks5"),
     ];
     let options = vec![
-        DropdownOption::from(i18n.t("LauncherSettings.download.proxy.none")),
-        DropdownOption::from(i18n.t("LauncherSettings.download.proxy.system")),
-        DropdownOption::from(i18n.t("LauncherSettings.download.proxy.http")),
-        DropdownOption::from(i18n.t("LauncherSettings.download.proxy.socks5")),
+        DropdownOption::from(t!("LauncherSettings.download.proxy.none")),
+        DropdownOption::from(t!("LauncherSettings.download.proxy.system")),
+        DropdownOption::from(t!("LauncherSettings.download.proxy.http")),
+        DropdownOption::from(t!("LauncherSettings.download.proxy.socks5")),
     ];
     let selected_index = values
         .iter()
@@ -151,7 +151,7 @@ fn launcher_proxy_mode_row(
     let label = options
         .get(selected_index)
         .map(|option| option.label.clone())
-        .unwrap_or_else(|| i18n.t("LauncherSettings.download.proxy.none"));
+        .unwrap_or_else(|| t!("LauncherSettings.download.proxy.none"));
     let mode_dropdown = Dropdown::new(
         SharedString::from("settings-launcher-download-proxy-mode-dropdown"),
         colors,
@@ -177,15 +177,15 @@ fn launcher_proxy_mode_row(
         .child(
             settings_card_header(
                 colors,
-                i18n.t("LauncherSettings.download.proxy.mode"),
-                i18n.t("LauncherSettings.download.proxy.mode_desc"),
+                t!("LauncherSettings.download.proxy.mode"),
+                t!("LauncherSettings.download.proxy.mode_desc"),
             )
             .child(mode_dropdown),
         )
         .when(state.download_proxy_type.as_ref() == "http", |this| {
             this.child(settings_sub_input_row(
                 colors,
-                i18n.t("LauncherSettings.download.proxy.http_proxy_url"),
+                t!("LauncherSettings.download.proxy.http_proxy_url"),
                 state.download_http_proxy_url_input.as_ref(),
                 "http(s)://host:port",
             ))
@@ -193,7 +193,7 @@ fn launcher_proxy_mode_row(
         .when(state.download_proxy_type.as_ref() == "socks5", |this| {
             this.child(settings_sub_input_row(
                 colors,
-                i18n.t("LauncherSettings.download.proxy.socks_proxy_url"),
+                t!("LauncherSettings.download.proxy.socks_proxy_url"),
                 state.download_socks_proxy_url_input.as_ref(),
                 "socks5://host:port",
             ))
@@ -211,9 +211,11 @@ fn launcher_curseforge_source_row(
         SharedString::from("custom"),
     ];
     let options = vec![
-        DropdownOption::from(i18n.t("LauncherSettings.download.curseforge_api_source.official")),
-        DropdownOption::from(i18n.t("LauncherSettings.download.curseforge_api_source.mirror")),
-        DropdownOption::from(i18n.t("LauncherSettings.download.curseforge_api_source.custom")),
+        DropdownOption::from(t!(
+            "LauncherSettings.download.curseforge_api_source.official"
+        )),
+        DropdownOption::from(t!("LauncherSettings.download.curseforge_api_source.mirror")),
+        DropdownOption::from(t!("LauncherSettings.download.curseforge_api_source.custom")),
     ];
     let selected_index = values
         .iter()
@@ -222,7 +224,7 @@ fn launcher_curseforge_source_row(
     let label = options
         .get(selected_index)
         .map(|option| option.label.clone())
-        .unwrap_or_else(|| i18n.t("LauncherSettings.download.curseforge_api_source.mirror"));
+        .unwrap_or_else(|| t!("LauncherSettings.download.curseforge_api_source.mirror"));
     let source_dropdown = Dropdown::new(
         SharedString::from("settings-launcher-download-cf-source-dropdown"),
         colors,
@@ -248,8 +250,8 @@ fn launcher_curseforge_source_row(
         .child(
             settings_card_header(
                 colors,
-                i18n.t("LauncherSettings.download.curseforge_api_source"),
-                i18n.t("LauncherSettings.download.curseforge_api_source_desc"),
+                t!("LauncherSettings.download.curseforge_api_source"),
+                t!("LauncherSettings.download.curseforge_api_source_desc"),
             )
             .child(source_dropdown),
         )
@@ -258,7 +260,7 @@ fn launcher_curseforge_source_row(
             |this| {
                 this.child(settings_sub_input_row(
                     colors,
-                    i18n.t("LauncherSettings.download.curseforge_api_base"),
+                    t!("LauncherSettings.download.curseforge_api_base"),
                     state.download_curseforge_api_base_input.as_ref(),
                     "https://api.curseforge.com",
                 ))

@@ -3,6 +3,7 @@ use lucide_gpui::icons as lucide_icons;
 
 use super::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
@@ -102,6 +103,7 @@ pub fn render_onboarding_tour(
     cx: &App,
 ) -> AnyElement {
     let theme = cx.global::<ThemeState>();
+    let i18n = cx.global::<I18n>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
@@ -126,7 +128,7 @@ pub fn render_onboarding_tour(
     let mut root = div().absolute().inset_0();
 
     if show_tasks_demo {
-        root = root.child(render_tasks_demo_layer(width, height, &colors));
+        root = root.child(render_tasks_demo_layer(width, height, &colors, i18n));
     }
     if show_manage_demo {
         root = root.child(render_manage_demo_layer(
@@ -134,6 +136,7 @@ pub fn render_onboarding_tour(
             width,
             height,
             &colors,
+            i18n,
         ));
     }
 
@@ -150,7 +153,7 @@ pub fn render_onboarding_tour(
             .top(px(geometry.panel.y))
             .w(px(geometry.panel.w))
             .h(px(geometry.panel.h))
-            .child(render_guide_panel(state, &colors, geometry.class)),
+            .child(render_guide_panel(state, &colors, i18n, geometry.class)),
     )
     .into_any_element()
 }
@@ -455,6 +458,7 @@ fn render_spotlight(bounds: RectF, colors: &ThemeColors) -> Div {
 fn render_guide_panel(
     state: &OnboardingTourState,
     colors: &ThemeColors,
+    i18n: &I18n,
     class: ViewportClass,
 ) -> Div {
     let inner_px = if class == ViewportClass::Tight {
@@ -485,7 +489,7 @@ fn render_guide_panel(
         .overflow_hidden()
         .flex()
         .flex_col()
-        .child(render_header(state, colors, class))
+        .child(render_header(state, colors, i18n, class))
         .child(
             div()
                 .flex_1()
@@ -493,13 +497,18 @@ fn render_guide_panel(
                 .overflow_y_scrollbar()
                 .px(px(inner_px))
                 .py(px(11.0))
-                .child(render_scene_body(state, colors)),
+                .child(render_scene_body(state, colors, i18n)),
         )
-        .child(render_footer(state, colors))
+        .child(render_footer(state, colors, i18n))
 }
 
-fn render_header(state: &OnboardingTourState, colors: &ThemeColors, class: ViewportClass) -> Div {
-    let (icon, title, subtitle) = scene_header(state.scene);
+fn render_header(
+    state: &OnboardingTourState,
+    colors: &ThemeColors,
+    i18n: &I18n,
+    class: ViewportClass,
+) -> Div {
+    let (icon, title, subtitle) = scene_header(state.scene, i18n);
     let icon_size = if class == ViewportClass::Tight {
         34.0
     } else {
@@ -570,336 +579,348 @@ fn render_header(state: &OnboardingTourState, colors: &ThemeColors, class: Viewp
         )
 }
 
-fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors) -> AnyElement {
+fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     match state.scene {
-        OnboardingScene::Welcome => render_welcome(colors),
-        OnboardingScene::DownloadNavigation => render_download_navigation(colors),
-        OnboardingScene::GameDownload => render_game_download(colors),
-        OnboardingScene::ResourcePackDownload => render_resource_download(colors),
-        OnboardingScene::ModDownload => render_mod_download(colors),
-        OnboardingScene::ImportPackage => render_import(colors),
-        OnboardingScene::TasksOverview => render_tasks_overview(colors),
-        OnboardingScene::ManageOverview => render_manage_overview(colors),
-        OnboardingScene::ManageContent => render_manage_content(colors),
-        OnboardingScene::SettingsOverview => render_settings_overview(colors),
-        OnboardingScene::ToolsOverview => render_tools_overview(colors),
-        OnboardingScene::PlatformSetup => render_platform(state, colors),
-        OnboardingScene::Finish => render_finish(colors),
+        OnboardingScene::Welcome => render_welcome(colors, i18n),
+        OnboardingScene::DownloadNavigation => render_download_navigation(colors, i18n),
+        OnboardingScene::GameDownload => render_game_download(colors, i18n),
+        OnboardingScene::ResourcePackDownload => render_resource_download(colors, i18n),
+        OnboardingScene::ModDownload => render_mod_download(colors, i18n),
+        OnboardingScene::ImportPackage => render_import(colors, i18n),
+        OnboardingScene::TasksOverview => render_tasks_overview(colors, i18n),
+        OnboardingScene::ManageOverview => render_manage_overview(colors, i18n),
+        OnboardingScene::ManageContent => render_manage_content(colors, i18n),
+        OnboardingScene::SettingsOverview => render_settings_overview(colors, i18n),
+        OnboardingScene::ToolsOverview => render_tools_overview(colors, i18n),
+        OnboardingScene::PlatformSetup => render_platform(state, colors, i18n),
+        OnboardingScene::Finish => render_finish(colors, i18n),
     }
 }
 
-fn render_welcome(colors: &ThemeColors) -> AnyElement {
+fn render_welcome(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(intro(
-            colors,
-            "不用先记所有功能。导览会直接切到真实页面，只解释第一次真正会用到的入口。",
-        ))
+        .child(intro(colors, t!("Onboarding.welcome.intro")))
         .child(feature(
             colors,
             lucide_icons::icon_download(),
-            "获得游戏",
-            "在线下载，或导入已有 APPX / ZIP / MSIXVC。",
+            t!("Onboarding.welcome.get_game"),
+            t!("Onboarding.welcome.get_game_detail"),
         ))
         .child(feature(
             colors,
             lucide_icons::icon_activity(),
-            "看任务",
-            "下载、安装、导入和失败原因都集中在任务页。",
+            t!("Onboarding.welcome.tasks"),
+            t!("Onboarding.welcome.tasks_detail"),
         ))
         .child(feature(
             colors,
             lucide_icons::icon_settings_2(),
-            "管理版本",
-            "启动、模组、资源包、地图等操作都围绕具体实例。",
+            t!("Onboarding.welcome.manage"),
+            t!("Onboarding.welcome.manage_detail"),
         ))
-        .child(tip(colors, "演示数据只在真实页面为空时出现，不写入磁盘。"))
+        .child(tip(colors, t!("Onboarding.welcome.demo_hint")))
         .into_any_element()
 }
 
-fn render_download_navigation(colors: &ThemeColors) -> AnyElement {
+fn render_download_navigation(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：下载类型标签"))
+        .child(route_badge(
+            colors,
+            t!("Onboarding.download.highlight_types"),
+        ))
         .child(feature(
             colors,
             lucide_icons::icon_box(),
-            "游戏",
-            "Minecraft Bedrock 本体和历史版本。",
+            t!("Onboarding.common.game"),
+            t!("Onboarding.download.game_detail"),
         ))
         .child(feature(
             colors,
             lucide_icons::icon_package(),
-            "资源包",
-            "CurseForge 内容，安装到指定实例。",
+            t!("Onboarding.common.resource_pack"),
+            t!("Onboarding.download.resource_detail"),
         ))
         .child(feature(
             colors,
             lucide_icons::icon_layers(),
-            "模组",
-            "LeviLamina / LeviLauncher 客户端模组。",
+            t!("Onboarding.common.mods"),
+            t!("Onboarding.download.mod_detail"),
         ))
         .into_any_element()
 }
 
-fn render_game_download(colors: &ThemeColors) -> AnyElement {
+fn render_game_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：搜索与版本筛选区"))
+        .child(route_badge(colors, t!("Onboarding.game.highlight_search")))
         .child(step(
             colors,
             1,
-            "搜索或筛选",
-            "知道版本号就直接搜；日常使用优先正式版。",
+            t!("Onboarding.game.search"),
+            t!("Onboarding.game.search_detail"),
         ))
         .child(step(
             colors,
             2,
-            "选择加载器",
-            "不需要模组时保持原版最简单。",
+            t!("Onboarding.game.loader"),
+            t!("Onboarding.game.loader_detail"),
         ))
         .child(step(
             colors,
             3,
-            "点列表右侧按钮",
-            "下载或安装完成后会进入本地版本列表。",
+            t!("Onboarding.game.action"),
+            t!("Onboarding.game.action_detail"),
         ))
-        .child(tip(colors, "第一次不知道怎么选：正式版 + 原版。"))
+        .child(tip(colors, t!("Onboarding.game.first_tip")))
         .into_any_element()
 }
 
-fn render_resource_download(colors: &ThemeColors) -> AnyElement {
+fn render_resource_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：CurseForge 搜索与筛选"))
-        .child(step(colors, 1, "找项目", "按分类或关键字找到资源包。"))
-        .child(step(
-            colors,
-            2,
-            "确认游戏版本",
-            "版本不匹配时不要强行安装。",
-        ))
-        .child(step(
-            colors,
-            3,
-            "选择目标实例",
-            "资源写入指定实例，不会替换 Minecraft 本体。",
-        ))
-        .into_any_element()
-}
-
-fn render_mod_download(colors: &ThemeColors) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：模组加载器筛选"))
+        .child(route_badge(colors, t!("Onboarding.resource.highlight")))
         .child(step(
             colors,
             1,
-            "先看加载器",
-            "选择 LeviLamina 等加载器类型和版本。",
+            t!("Onboarding.resource.find"),
+            t!("Onboarding.resource.find_detail"),
         ))
         .child(step(
             colors,
             2,
-            "再看兼容性",
-            "游戏、加载器、模组三者版本需要匹配。",
+            t!("Onboarding.resource.version"),
+            t!("Onboarding.resource.version_detail"),
         ))
         .child(step(
             colors,
             3,
-            "最后选实例",
-            "安装前确认目标版本，避免放错目录。",
+            t!("Onboarding.resource.target"),
+            t!("Onboarding.resource.target_detail"),
         ))
         .into_any_element()
 }
 
-fn render_import(colors: &ThemeColors) -> AnyElement {
+fn render_mod_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：右上角上传按钮"))
-        .child(format_card(colors, "APPX", "常见 UWP 安装包。"))
-        .child(format_card(colors, "ZIP", "BMCBL 支持的版本压缩包。"))
+        .child(route_badge(colors, t!("Onboarding.mod.highlight")))
+        .child(step(
+            colors,
+            1,
+            t!("Onboarding.mod.loader"),
+            t!("Onboarding.mod.loader_detail"),
+        ))
+        .child(step(
+            colors,
+            2,
+            t!("Onboarding.mod.compatibility"),
+            t!("Onboarding.mod.compatibility_detail"),
+        ))
+        .child(step(
+            colors,
+            3,
+            t!("Onboarding.mod.target"),
+            t!("Onboarding.mod.target_detail"),
+        ))
+        .into_any_element()
+}
+
+fn render_import(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(route_badge(colors, t!("Onboarding.import.highlight")))
+        .child(format_card(colors, "APPX", t!("Onboarding.import.appx")))
+        .child(format_card(colors, "ZIP", t!("Onboarding.import.zip")))
         .child(format_card(
             colors,
             "MSIXVC",
-            "部分 GDK 版本使用的容器格式。",
+            t!("Onboarding.import.msixvc"),
         ))
-        .child(tip(colors, "选完文件后去任务页看解析、解包和导入进度。"))
+        .child(tip(colors, t!("Onboarding.import.tip")))
         .into_any_element()
 }
 
-fn render_tasks_overview(colors: &ThemeColors) -> AnyElement {
+fn render_tasks_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(route_badge(colors, "任务页：下载以后先看这里"))
+        .child(route_badge(colors, t!("Onboarding.tasks.highlight")))
         .child(step(
             colors,
             1,
-            "进度",
-            "百分比、速度、线程和 ETA 会集中显示。",
-        ))
-        .child(step(colors, 2, "控制", "支持的任务可以暂停、继续或取消。"))
-        .child(step(
-            colors,
-            3,
-            "错误",
-            "失败原因也会留在任务卡里，方便排查。",
-        ))
-        .child(tip(colors, "没有真实任务时才会显示只读演示任务。"))
-        .into_any_element()
-}
-
-fn render_manage_overview(colors: &ThemeColors) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：版本列表"))
-        .child(step(colors, 1, "先选实例", "真实版本来自 BMCBL/versions。"))
-        .child(step(
-            colors,
-            2,
-            "再做实例级操作",
-            "打开目录、设置、删除、启动只作用于当前版本。",
-        ))
-        .child(tip(
-            colors,
-            "没有真实版本时才投影只读示例，不创建任何目录。",
-        ))
-        .into_any_element()
-}
-
-fn render_manage_content(colors: &ThemeColors) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：当前实例的内容区域"))
-        .child(step(
-            colors,
-            1,
-            "按标签管理",
-            "统计、Mod、资源包、皮肤、地图、截图、服务器各自独立。",
+            t!("Onboarding.tasks.progress"),
+            t!("Onboarding.tasks.progress_detail"),
         ))
         .child(step(
             colors,
             2,
-            "所有操作都有实例边界",
-            "启用、禁用、导入和删除都只针对当前版本。",
+            t!("Onboarding.tasks.controls"),
+            t!("Onboarding.tasks.controls_detail"),
         ))
         .child(step(
             colors,
             3,
-            "存档操作要留备份",
-            "地图和 level.dat 会修改真实世界数据。",
+            t!("Onboarding.tasks.errors"),
+            t!("Onboarding.tasks.errors_detail"),
         ))
+        .child(tip(colors, t!("Onboarding.tasks.demo_hint")))
         .into_any_element()
 }
 
-fn render_settings_overview(colors: &ThemeColors) -> AnyElement {
+fn render_manage_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：设置分类"))
+        .child(route_badge(colors, t!("Onboarding.manage.highlight")))
         .child(step(
             colors,
             1,
-            "保持默认也能用",
-            "第一次不需要把所有设置检查一遍。",
+            t!("Onboarding.manage.select"),
+            t!("Onboarding.manage.select_detail"),
         ))
         .child(step(
             colors,
             2,
-            "下载或网络有问题",
-            "回启动器设置检查下载线程、代理和 API。",
+            t!("Onboarding.manage.actions"),
+            t!("Onboarding.manage.actions_detail"),
         ))
-        .child(step(
-            colors,
-            3,
-            "外观 / 插件 / 关于",
-            "主题、WASM 插件和重新打开导览都在这里。",
-        ))
+        .child(tip(colors, t!("Onboarding.manage.demo_hint")))
         .into_any_element()
 }
 
-fn render_tools_overview(colors: &ThemeColors) -> AnyElement {
+fn render_manage_content(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(route_badge(colors, "当前高光：工具列表"))
+        .child(route_badge(colors, t!("Onboarding.content.highlight")))
         .child(step(
             colors,
             1,
-            "按需使用",
-            "工具不是启动 Minecraft 的必经步骤。",
+            t!("Onboarding.content.tabs"),
+            t!("Onboarding.content.tabs_detail"),
         ))
         .child(step(
             colors,
             2,
-            "当前主要是联机大厅",
-            "通过 EasyTier 创建或加入跨网络房间。",
+            t!("Onboarding.content.scope"),
+            t!("Onboarding.content.scope_detail"),
         ))
         .child(step(
             colors,
             3,
-            "联机异常再看高级项",
-            "NAT、节点、P2P 和 bootstrap 用于排障。",
+            t!("Onboarding.content.backup"),
+            t!("Onboarding.content.backup_detail"),
         ))
         .into_any_element()
 }
 
-fn render_platform(state: &OnboardingTourState, colors: &ThemeColors) -> AnyElement {
+fn render_settings_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(route_badge(colors, t!("Onboarding.settings.highlight")))
+        .child(step(
+            colors,
+            1,
+            t!("Onboarding.settings.defaults"),
+            t!("Onboarding.settings.defaults_detail"),
+        ))
+        .child(step(
+            colors,
+            2,
+            t!("Onboarding.settings.network"),
+            t!("Onboarding.settings.network_detail"),
+        ))
+        .child(step(
+            colors,
+            3,
+            t!("Onboarding.settings.other"),
+            t!("Onboarding.settings.other_detail"),
+        ))
+        .into_any_element()
+}
+
+fn render_tools_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(route_badge(colors, t!("Onboarding.tools.highlight")))
+        .child(step(
+            colors,
+            1,
+            t!("Onboarding.tools.optional"),
+            t!("Onboarding.tools.optional_detail"),
+        ))
+        .child(step(
+            colors,
+            2,
+            t!("Onboarding.tools.online"),
+            t!("Onboarding.tools.online_detail"),
+        ))
+        .child(step(
+            colors,
+            3,
+            t!("Onboarding.tools.advanced"),
+            t!("Onboarding.tools.advanced_detail"),
+        ))
+        .into_any_element()
+}
+
+fn render_platform(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     let mut body = div().flex().flex_col().gap(px(8.0));
 
     #[cfg(target_os = "windows")]
     {
         body = body
-            .child(route_badge(colors, "Windows：UWP 注册与数据保护"))
+            .child(route_badge(colors, t!("Onboarding.platform.windows")))
             .child(step(
                 colors,
                 1,
-                "BMCBL 散装 UWP",
-                "切换版本时重新指向目标版本目录。",
+                t!("Onboarding.platform.windows_step"),
+                t!("Onboarding.platform.windows_step_detail"),
             ))
             .child(step(
                 colors,
                 2,
-                "Store / 外部注册",
-                "存在世界数据时先备份并校验，失败就停止替换。",
+                t!("Onboarding.platform.store_step"),
+                t!("Onboarding.platform.store_step_detail"),
             ));
     }
 
     #[cfg(target_os = "linux")]
     {
         body = body
-            .child(route_badge(colors, "Linux：Proton-GDK / UMU"))
+            .child(route_badge(colors, t!("Onboarding.platform.linux")))
             .child(step(
                 colors,
                 1,
-                "Linux 不执行 UWP 检查",
-                "不会处理 Microsoft Store 注册或 Windows LocalState。",
+                t!("Onboarding.platform.linux_step"),
+                t!("Onboarding.platform.linux_step_detail"),
             ))
             .child(step(
                 colors,
                 2,
-                "检查兼容运行环境",
-                "重点确认 Proton-GDK / UMU runner 和系统依赖。",
+                t!("Onboarding.platform.runtime_step"),
+                t!("Onboarding.platform.runtime_step_detail"),
             ));
     }
 
@@ -907,10 +928,11 @@ fn render_platform(state: &OnboardingTourState, colors: &ThemeColors) -> AnyElem
         body = body.child(status(
             colors,
             lucide_icons::icon_loader_circle(),
-            "正在检测当前电脑…",
+            t!("Onboarding.platform.scanning"),
             false,
         ));
-    } else if let Some(error) = state.error.as_deref() {
+    } else if let Some(error) = &state.error {
+        let error = i18n.resolve(error);
         body = body.child(dynamic_status(
             colors,
             lucide_icons::icon_triangle_alert(),
@@ -918,15 +940,15 @@ fn render_platform(state: &OnboardingTourState, colors: &ThemeColors) -> AnyElem
             true,
         ));
     } else if let Some(summary) = &state.platform_summary {
-        body = body.child(platform_summary(colors, summary));
+        body = body.child(platform_summary(colors, i18n, summary));
     } else {
-        body = body.child(tip(colors, "等待环境检测结果。"));
+        body = body.child(tip(colors, t!("Onboarding.platform.waiting")));
     }
 
     body.into_any_element()
 }
 
-fn render_finish(colors: &ThemeColors) -> AnyElement {
+fn render_finish(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -960,31 +982,31 @@ fn render_finish(colors: &ThemeColors) -> AnyElement {
                         .text_size(px(15.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("现在知道下一步去哪了"),
+                        .child(t!("Onboarding.finish.next")),
                 ),
         )
         .child(feature(
             colors,
             lucide_icons::icon_download(),
-            "没有游戏",
-            "去下载页选正式版，或导入已有安装包。",
+            t!("Onboarding.finish.no_game"),
+            t!("Onboarding.finish.no_game_detail"),
         ))
         .child(feature(
             colors,
             lucide_icons::icon_settings_2(),
-            "已经有版本",
-            "去管理页选择实例并启动或管理内容。",
+            t!("Onboarding.finish.has_version"),
+            t!("Onboarding.finish.has_version_detail"),
         ))
-        .child(tip(colors, "以后可在“设置 → 关于”重新打开完整导览。"))
+        .child(tip(colors, t!("Onboarding.finish.reopen_hint")))
         .into_any_element()
 }
 
-fn render_footer(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
+fn render_footer(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n) -> Div {
     let scene = state.scene;
     let left_label = if scene == OnboardingScene::Welcome {
-        "跳过"
+        t!("Onboarding.skip")
     } else {
-        "上一步"
+        t!("common.back")
     };
     let left =
         secondary_button(colors, left_label).on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -997,9 +1019,9 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
 
     let next_enabled = scene != OnboardingScene::PlatformSetup || !state.platform_scanning;
     let next_label = if scene == OnboardingScene::Finish {
-        "完成"
+        t!("Onboarding.finish_button")
     } else {
-        "下一步"
+        t!("Onboarding.next")
     };
     let mut next = primary_button(colors, next_label, next_enabled);
     if next_enabled {
@@ -1023,90 +1045,95 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
         .child(next)
 }
 
-fn scene_header(scene: OnboardingScene) -> (&'static str, &'static str, &'static str) {
+fn scene_header(scene: OnboardingScene, i18n: &I18n) -> (&'static str, SharedString, SharedString) {
     match scene {
         OnboardingScene::Welcome => (
             lucide_icons::icon_route(),
-            "欢迎使用 BMCBL",
-            "跟着真实页面走一遍，不用先学所有设置。",
+            t!("Onboarding.header.welcome"),
+            t!("Onboarding.header.welcome_detail"),
         ),
         OnboardingScene::DownloadNavigation => (
             lucide_icons::icon_download(),
-            "先认识下载页",
-            "高光会直接指向当前要看的区域。",
+            t!("Onboarding.header.download"),
+            t!("Onboarding.header.download_detail"),
         ),
         OnboardingScene::GameDownload => (
             lucide_icons::icon_box(),
-            "下载 Minecraft",
-            "搜索、筛选，然后从列表开始下载。",
+            t!("Onboarding.header.game"),
+            t!("Onboarding.header.game_detail"),
         ),
         OnboardingScene::ResourcePackDownload => (
             lucide_icons::icon_package(),
-            "CurseForge 资源包",
-            "找项目、确认版本、选择安装目标。",
+            t!("Onboarding.header.resource"),
+            t!("Onboarding.header.resource_detail"),
         ),
         OnboardingScene::ModDownload => (
             lucide_icons::icon_layers(),
-            "客户端模组",
-            "先确认加载器与兼容关系。",
+            t!("Onboarding.header.mod"),
+            t!("Onboarding.header.mod_detail"),
         ),
         OnboardingScene::ImportPackage => (
             lucide_icons::icon_upload(),
-            "导入已有安装包",
-            "已有文件就不必重新下载。",
+            t!("Onboarding.header.import"),
+            t!("Onboarding.header.import_detail"),
         ),
         OnboardingScene::TasksOverview => (
             lucide_icons::icon_activity(),
-            "任务去哪里看？",
-            "下载、安装、导入和错误都集中在这里。",
+            t!("Onboarding.header.tasks"),
+            t!("Onboarding.header.tasks_detail"),
         ),
         OnboardingScene::ManageOverview => (
             lucide_icons::icon_settings_2(),
-            "管理一个版本",
-            "先选实例，再做启动与实例级操作。",
+            t!("Onboarding.header.manage"),
+            t!("Onboarding.header.manage_detail"),
         ),
         OnboardingScene::ManageContent => (
             lucide_icons::icon_package(),
-            "管理实例内容",
-            "Mod、资源包、地图等都属于当前版本。",
+            t!("Onboarding.header.content"),
+            t!("Onboarding.header.content_detail"),
         ),
         OnboardingScene::SettingsOverview => (
             lucide_icons::icon_settings(),
-            "设置在哪里？",
-            "大多数配置保持默认即可。",
+            t!("Onboarding.header.settings"),
+            t!("Onboarding.header.settings_detail"),
         ),
         OnboardingScene::ToolsOverview => (
             lucide_icons::icon_wrench(),
-            "工具在哪里？",
-            "高级能力按需使用。",
+            t!("Onboarding.header.tools"),
+            t!("Onboarding.header.tools_detail"),
         ),
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "windows")]
             {
                 (
                     lucide_icons::icon_shield_check(),
-                    "Windows 数据安全",
-                    "替换 UWP 注册前先保护已有世界数据。",
+                    t!("Onboarding.header.windows"),
+                    t!("Onboarding.header.windows_detail"),
                 )
             }
             #[cfg(target_os = "linux")]
             {
                 (
                     lucide_icons::icon_box(),
-                    "Linux 运行环境",
-                    "确认 Proton-GDK / UMU，不做 Windows UWP。",
+                    t!("Onboarding.header.linux"),
+                    t!("Onboarding.header.linux_detail"),
                 )
             }
         }
         OnboardingScene::Finish => (
             lucide_icons::icon_circle_check(),
-            "导览完成",
-            "现在可以按自己的情况开始。",
+            t!("Onboarding.header.finish"),
+            t!("Onboarding.header.finish_detail"),
         ),
     }
 }
 
-fn render_tasks_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> AnyElement {
+fn render_tasks_demo_layer(
+    width: f32,
+    height: f32,
+    colors: &ThemeColors,
+    i18n: &I18n,
+) -> AnyElement {
     let page_x = crate::ui::components::page_shell::PAGE_INSET_X / px(1.0);
     let page_y = crate::ui::components::page_shell::PAGE_INSET_TOP / px(1.0);
     let page_bottom = crate::ui::components::page_shell::PAGE_INSET_BOTTOM / px(1.0);
@@ -1139,40 +1166,40 @@ fn render_tasks_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> Any
                         .text_size(px(16.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("任务"),
+                        .child(t!("Onboarding.tasks.title")),
                 )
-                .child(demo_badge(colors, "只读演示 · 无网络请求")),
+                .child(demo_badge(colors, t!("Onboarding.demo.read_only"))),
         )
         .child(demo_task_card(
             colors,
             "Minecraft 1.21.100",
-            "下载中",
+            t!("Tasks.status.running"),
             0.68,
-            "18.4 MB/s · 12 线程 · ETA 00:42",
+            t!("Onboarding.demo.download_detail"),
             false,
         ))
         .child(demo_task_card(
             colors,
             "Faithful 32x",
-            "安装中",
+            t!("CurseForgeInstall.installing"),
             0.88,
-            "正在写入目标实例",
+            t!("Onboarding.demo.install_detail"),
             false,
         ))
         .child(demo_task_card(
             colors,
-            "LeviLamina 模组依赖",
-            "完成",
+            t!("Onboarding.demo.mod_dependency"),
+            t!("Tasks.status.completed"),
             1.0,
-            "已安装到演示版本",
+            t!("Onboarding.demo.installed_detail"),
             false,
         ))
         .child(demo_task_card(
             colors,
-            "旧版 APPX 导入",
-            "失败",
+            t!("Onboarding.demo.legacy_import"),
+            t!("Tasks.status.error"),
             0.37,
-            "示例：安装包不完整",
+            t!("Onboarding.demo.failure_detail"),
             true,
         ))
         .into_any_element()
@@ -1180,12 +1207,15 @@ fn render_tasks_demo_layer(width: f32, height: f32, colors: &ThemeColors) -> Any
 
 fn demo_task_card(
     colors: &ThemeColors,
-    title: &'static str,
-    status: &'static str,
+    title: impl Into<SharedString>,
+    status: impl Into<SharedString>,
     progress: f32,
-    detail: &'static str,
+    detail: impl Into<SharedString>,
     danger: bool,
 ) -> Div {
+    let title = title.into();
+    let status = status.into();
+    let detail = detail.into();
     let accent = if danger { colors.danger } else { colors.accent };
     div()
         .w_full()
@@ -1262,6 +1292,7 @@ fn render_manage_demo_layer(
     width: f32,
     height: f32,
     colors: &ThemeColors,
+    i18n: &I18n,
 ) -> AnyElement {
     let page_x = crate::ui::components::page_shell::PAGE_INSET_X / px(1.0);
     let page_y = crate::ui::components::page_shell::PAGE_INSET_TOP / px(1.0);
@@ -1292,11 +1323,15 @@ fn render_manage_demo_layer(
                 .flex()
                 .flex_col()
                 .gap(px(8.0))
-                .child(demo_badge(colors, "空页面示例"))
+                .child(demo_badge(colors, t!("Onboarding.demo.empty_page")))
                 .child(demo_version(
                     colors,
                     "Minecraft 1.21.100",
-                    "UWP · 正式版",
+                    t!(
+                        "Onboarding.demo.platform_edition",
+                        platform = t!("common.uwp"),
+                        edition = t!("common.release")
+                    ),
                     true,
                 ))
                 .child(demo_version(
@@ -1336,13 +1371,13 @@ fn render_manage_demo_layer(
                                 .text_color(colors.text_primary)
                                 .child("Minecraft 1.21.100"),
                         )
-                        .child(demo_badge(colors, "只读示例")),
+                        .child(demo_badge(colors, t!("Onboarding.demo.read_only_short"))),
                 )
-                .child(render_demo_tabs(colors, content_is_resource))
+                .child(render_demo_tabs(colors, i18n, content_is_resource))
                 .child(if content_is_resource {
-                    render_demo_resource_list(colors).into_any_element()
+                    render_demo_resource_list(colors, i18n).into_any_element()
                 } else {
-                    render_demo_statistics(colors).into_any_element()
+                    render_demo_statistics(colors, i18n).into_any_element()
                 }),
         )
         .into_any_element()
@@ -1350,10 +1385,12 @@ fn render_manage_demo_layer(
 
 fn demo_version(
     colors: &ThemeColors,
-    name: &'static str,
-    detail: &'static str,
+    name: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     selected: bool,
 ) -> Div {
+    let name = name.into();
+    let detail = detail.into();
     div()
         .w_full()
         .p(px(9.0))
@@ -1387,8 +1424,16 @@ fn demo_version(
         )
 }
 
-fn render_demo_tabs(colors: &ThemeColors, resource_active: bool) -> Div {
-    let tabs = ["统计", "Mod", "资源包", "皮肤", "地图", "截图", "服务器"];
+fn render_demo_tabs(colors: &ThemeColors, i18n: &I18n, resource_active: bool) -> Div {
+    let tabs = [
+        t!("Onboarding.demo.tab_stats"),
+        t!("Onboarding.common.mods"),
+        t!("Onboarding.common.resource_pack"),
+        t!("Onboarding.demo.tab_skins"),
+        t!("Onboarding.demo.tab_maps"),
+        t!("Onboarding.demo.tab_screenshots"),
+        t!("Onboarding.demo.tab_servers"),
+    ];
     div()
         .flex()
         .items_center()
@@ -1430,22 +1475,52 @@ fn render_demo_tabs(colors: &ThemeColors, resource_active: bool) -> Div {
         }))
 }
 
-fn render_demo_statistics(colors: &ThemeColors) -> Div {
+fn render_demo_statistics(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .flex_1()
         .min_h(px(0.0))
         .flex()
         .flex_wrap()
         .gap(px(8.0))
-        .child(demo_stat(colors, "游戏版本", "1.21.100"))
-        .child(demo_stat(colors, "平台", "UWP"))
-        .child(demo_stat(colors, "世界", "3 个"))
-        .child(demo_stat(colors, "Mod", "2 个启用"))
-        .child(demo_stat(colors, "资源包", "4 个"))
-        .child(demo_stat(colors, "数据模式", "实例隔离"))
+        .child(demo_stat(
+            colors,
+            t!("Onboarding.demo.stat_game"),
+            "1.21.100",
+        ))
+        .child(demo_stat(
+            colors,
+            t!("Onboarding.demo.stat_platform"),
+            "UWP",
+        ))
+        .child(demo_stat(
+            colors,
+            t!("Onboarding.demo.stat_world"),
+            t!("Onboarding.demo.world_count"),
+        ))
+        .child(demo_stat(
+            colors,
+            t!("Onboarding.common.mods"),
+            t!("Onboarding.demo.mods_enabled"),
+        ))
+        .child(demo_stat(
+            colors,
+            t!("Onboarding.common.resource_pack"),
+            t!("Onboarding.demo.resource_count"),
+        ))
+        .child(demo_stat(
+            colors,
+            t!("Onboarding.demo.stat_mode"),
+            t!("Onboarding.demo.isolated"),
+        ))
 }
 
-fn demo_stat(colors: &ThemeColors, label: &'static str, value: &'static str) -> Div {
+fn demo_stat(
+    colors: &ThemeColors,
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+) -> Div {
+    let label = label.into();
+    let value = value.into();
     div()
         .w(px(154.0))
         .min_h(px(62.0))
@@ -1473,7 +1548,7 @@ fn demo_stat(colors: &ThemeColors, label: &'static str, value: &'static str) -> 
         )
 }
 
-fn render_demo_resource_list(colors: &ThemeColors) -> Div {
+fn render_demo_resource_list(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .flex_1()
         .min_h(px(0.0))
@@ -1483,29 +1558,32 @@ fn render_demo_resource_list(colors: &ThemeColors) -> Div {
         .child(demo_asset_row(
             colors,
             "Faithful 32x Bedrock",
-            "资源包 · 已启用",
+            t!("Onboarding.demo.resource_enabled"),
             "1.21.x",
         ))
         .child(demo_asset_row(
             colors,
             "UI Tweaks",
-            "资源包 · 已启用",
+            t!("Onboarding.demo.resource_enabled"),
             "1.21.x",
         ))
         .child(demo_asset_row(
             colors,
             "Better Animations",
-            "行为包 · 已禁用",
+            t!("Onboarding.demo.behavior_disabled"),
             "1.21.100",
         ))
 }
 
 fn demo_asset_row(
     colors: &ThemeColors,
-    name: &'static str,
-    detail: &'static str,
-    version: &'static str,
+    name: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    version: impl Into<SharedString>,
 ) -> Div {
+    let name = name.into();
+    let detail = detail.into();
+    let version = version.into();
     div()
         .w_full()
         .px(px(10.0))
@@ -1548,7 +1626,8 @@ fn demo_asset_row(
         .child(demo_badge(colors, version))
 }
 
-fn demo_badge(colors: &ThemeColors, label: &'static str) -> Div {
+fn demo_badge(colors: &ThemeColors, label: impl Into<SharedString>) -> Div {
+    let label = label.into();
     div()
         .px(px(7.0))
         .py(px(3.0))
@@ -1566,9 +1645,11 @@ fn demo_badge(colors: &ThemeColors, label: &'static str) -> Div {
 fn feature(
     colors: &ThemeColors,
     icon: &'static str,
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
 ) -> Div {
+    let title = title.into();
+    let detail = detail.into();
     div()
         .w_full()
         .px(px(8.0))
@@ -1606,7 +1687,14 @@ fn feature(
         )
 }
 
-fn step(colors: &ThemeColors, number: usize, title: &'static str, detail: &'static str) -> Div {
+fn step(
+    colors: &ThemeColors,
+    number: usize,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+) -> Div {
+    let title = title.into();
+    let detail = detail.into();
     div()
         .w_full()
         .flex()
@@ -1654,7 +1742,13 @@ fn step(colors: &ThemeColors, number: usize, title: &'static str, detail: &'stat
         )
 }
 
-fn format_card(colors: &ThemeColors, format: &'static str, detail: &'static str) -> Div {
+fn format_card(
+    colors: &ThemeColors,
+    format: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+) -> Div {
+    let format = format.into();
+    let detail = detail.into();
     div()
         .w_full()
         .px(px(8.0))
@@ -1693,7 +1787,8 @@ fn format_card(colors: &ThemeColors, format: &'static str, detail: &'static str)
         )
 }
 
-fn intro(colors: &ThemeColors, text: &'static str) -> Div {
+fn intro(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
+    let text = text.into();
     div()
         .w_full()
         .text_size(px(10.0))
@@ -1702,7 +1797,8 @@ fn intro(colors: &ThemeColors, text: &'static str) -> Div {
         .child(text)
 }
 
-fn route_badge(colors: &ThemeColors, label: &'static str) -> Div {
+fn route_badge(colors: &ThemeColors, label: impl Into<SharedString>) -> Div {
+    let label = label.into();
     div()
         .w_full()
         .px(px(8.0))
@@ -1732,15 +1828,26 @@ fn route_badge(colors: &ThemeColors, label: &'static str) -> Div {
         )
 }
 
-fn tip(colors: &ThemeColors, text: &'static str) -> Div {
+fn tip(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
     status(colors, lucide_icons::icon_info(), text, false)
 }
 
-fn status(colors: &ThemeColors, icon: &'static str, text: &'static str, danger: bool) -> Div {
+fn status(
+    colors: &ThemeColors,
+    icon: &'static str,
+    text: impl Into<SharedString>,
+    danger: bool,
+) -> Div {
     dynamic_status(colors, icon, text, danger)
 }
 
-fn dynamic_status(colors: &ThemeColors, icon: &'static str, text: &str, danger: bool) -> Div {
+fn dynamic_status(
+    colors: &ThemeColors,
+    icon: &'static str,
+    text: impl Into<SharedString>,
+    danger: bool,
+) -> Div {
+    let text = text.into();
     let color = if danger {
         colors.danger
     } else {
@@ -1763,16 +1870,46 @@ fn dynamic_status(colors: &ThemeColors, icon: &'static str, text: &str, danger: 
                 .text_size(px(9.0))
                 .line_height(px(14.0))
                 .text_color(colors.text_secondary)
-                .child(text.to_string()),
+                .child(text),
         )
 }
 
 fn platform_summary(
     colors: &ThemeColors,
+    i18n: &I18n,
     summary: &crate::ui::onboarding::state::OnboardingPlatformSummary,
 ) -> Div {
+    let title = if summary.ready {
+        t!("Onboarding.platform.ready_title")
+    } else {
+        t!("Onboarding.platform.needs_runtime")
+    };
+    let detail = if summary.ready {
+        t!("Onboarding.platform.ready_detail")
+    } else if let Some(reason) = &summary.missing_reason {
+        let reason = reason.clone();
+        SharedString::from(format!(
+            "{}: {reason}",
+            t!("Onboarding.platform.missing_reason_label")
+        ))
+    } else {
+        t!("Onboarding.platform.missing_fallback")
+    };
+    let runtime_value = summary.runner.as_deref().map_or_else(
+        || t!("Onboarding.platform.runner_missing"),
+        |runner| SharedString::from(runner.to_owned()),
+    );
+    let local_versions = t!(
+        "Onboarding.platform.local_versions_value",
+        count = summary.local_versions
+    );
     let mut items = div().w_full().flex().flex_col().gap(px(5.0));
     for item in &summary.items {
+        let value = match item.label.as_str() {
+            "Onboarding.platform.runtime" => runtime_value.clone(),
+            "Onboarding.platform.local_versions" => local_versions.clone(),
+            _ => SharedString::from(summary.distribution_name.clone()),
+        };
         let color = if item.warning {
             colors.danger
         } else {
@@ -1801,14 +1938,14 @@ fn platform_summary(
                                 .text_size(px(8.8))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
-                                .child(item.label.clone()),
+                                .child(i18n.t_key(item.label)),
                         )
                         .child(
                             div()
                                 .text_size(px(8.2))
                                 .line_height(px(13.0))
                                 .text_color(colors.text_secondary)
-                                .child(item.value.clone()),
+                                .child(value),
                         ),
                 ),
         );
@@ -1831,19 +1968,24 @@ fn platform_summary(
                 .text_size(px(9.5))
                 .font_weight(FontWeight::BOLD)
                 .text_color(colors.text_primary)
-                .child(summary.title.clone()),
+                .child(title),
         )
         .child(
             div()
                 .text_size(px(8.2))
                 .line_height(px(13.0))
                 .text_color(colors.text_secondary)
-                .child(summary.detail.clone()),
+                .child(detail),
         )
         .child(items)
 }
 
-fn primary_button(colors: &ThemeColors, label: &'static str, enabled: bool) -> Stateful<Div> {
+fn primary_button(
+    colors: &ThemeColors,
+    label: impl Into<SharedString>,
+    enabled: bool,
+) -> Stateful<Div> {
+    let label = label.into();
     let mut button = div()
         .id(SharedString::from(format!(
             "onboarding-guided-primary-{label}"
@@ -1870,7 +2012,8 @@ fn primary_button(colors: &ThemeColors, label: &'static str, enabled: bool) -> S
     button
 }
 
-fn secondary_button(colors: &ThemeColors, label: &'static str) -> Stateful<Div> {
+fn secondary_button(colors: &ThemeColors, label: impl Into<SharedString>) -> Stateful<Div> {
+    let label = label.into();
     div()
         .id(SharedString::from(format!(
             "onboarding-guided-secondary-{label}"

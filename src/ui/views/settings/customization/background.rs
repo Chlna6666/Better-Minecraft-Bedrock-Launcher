@@ -29,9 +29,9 @@ pub(super) fn render_background_card(
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let options = vec![
-        DropdownOption::from(i18n.t("CustomizationSettings.background_options.default")),
-        DropdownOption::from(i18n.t("CustomizationSettings.background_options.local")),
-        DropdownOption::from(i18n.t("CustomizationSettings.background_options.network")),
+        DropdownOption::from(t!("CustomizationSettings.background_options.default")),
+        DropdownOption::from(t!("CustomizationSettings.background_options.local")),
+        DropdownOption::from(t!("CustomizationSettings.background_options.network")),
     ];
     let selected_index = match state.background_option.as_ref() {
         "local" => 1,
@@ -41,7 +41,7 @@ pub(super) fn render_background_card(
     let selected_label = options
         .get(selected_index)
         .map(|option| option.label.clone())
-        .unwrap_or_else(|| i18n.t("CustomizationSettings.background_options.default"));
+        .unwrap_or_else(|| t!("CustomizationSettings.background_options.default"));
     let current_source_label = selected_label.clone();
     let is_local = state.background_option.as_ref() == "local";
     let is_network = state.background_option.as_ref() == "network";
@@ -50,15 +50,15 @@ pub(super) fn render_background_card(
         .child(
             settings_card_header(
                 colors,
-                i18n.t("CustomizationSettings.custom_background"),
-                i18n.t("CustomizationSettings.custom_background_desc"),
+                t!("CustomizationSettings.custom_background"),
+                t!("CustomizationSettings.custom_background_desc"),
             )
             .child(settings_badge(colors, current_source_label)),
         )
         .child(background_source_row(
             colors,
-            i18n.t("CustomizationSettings.custom_background"),
-            i18n.t("CustomizationSettings.custom_background_desc"),
+            t!("CustomizationSettings.custom_background"),
+            t!("CustomizationSettings.custom_background_desc"),
             selected_label,
             options,
             selected_index,
@@ -66,33 +66,33 @@ pub(super) fn render_background_card(
         ))
         .child(background_blur_row(
             colors,
-            i18n.t("CustomizationSettings.background_blur"),
-            i18n.t("CustomizationSettings.background_blur_desc"),
+            t!("CustomizationSettings.background_blur"),
+            t!("CustomizationSettings.background_blur_desc"),
             state.background_blur_preview,
         ))
         .when(is_local, |this| {
             this.child(local_picker_row(
                 colors,
-                i18n.t("CustomizationSettings.local_image"),
-                i18n.t("CustomizationSettings.custom_background_desc"),
+                t!("CustomizationSettings.local_image"),
+                t!("CustomizationSettings.custom_background_desc"),
                 state.local_image_path.clone(),
-                i18n.t("CustomizationSettings.no_file"),
-                i18n.t("CustomizationSettings.select_file"),
+                t!("CustomizationSettings.no_file"),
+                t!("CustomizationSettings.select_file"),
                 true,
             ))
         })
         .when(is_network, |this| {
             let refresh_label = if state.network_image_refreshing {
-                SharedString::from("刷新中")
+                t!("CustomizationSettings.refreshing")
             } else {
-                SharedString::from("刷新")
+                t!("common.refresh")
             };
             this.child(network_input_row(
                 colors,
-                i18n.t("CustomizationSettings.network_image"),
-                i18n.t("CustomizationSettings.custom_background_desc"),
+                t!("CustomizationSettings.network_image"),
+                t!("CustomizationSettings.custom_background_desc"),
                 state.network_image_url_input.as_ref(),
-                i18n.t("CustomizationSettings.network_placeholder"),
+                t!("CustomizationSettings.network_placeholder"),
                 refresh_label,
                 state.network_image_refreshing,
                 true,

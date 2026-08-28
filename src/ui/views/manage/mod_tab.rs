@@ -23,7 +23,8 @@ impl ManagePageView {
             .await;
             let _ = cx.update(|cx| match result {
                 Ok(()) => {
-                    toast::success(cx, SharedString::from("Mod 状态已更新"));
+                    let i18n = cx.global::<I18n>();
+                    toast::success(cx, t!("ManagePage.mod_status_updated"));
                     cx.update_global(|state: &mut ManagePageState, _cx| {
                         state.assets_loaded = false;
                         state.assets_loading = false;

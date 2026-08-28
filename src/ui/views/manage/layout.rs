@@ -6,6 +6,7 @@ pub(super) fn render_version_header(
     state: &ManagePageState,
     cx: &mut Context<ManagePageView>,
 ) -> Div {
+    let i18n = cx.global::<I18n>().clone();
     let version_title = {
         let display_name = version.display_name();
         if display_name.as_ref().trim().is_empty() {
@@ -15,9 +16,9 @@ pub(super) fn render_version_header(
         }
     };
     let version_type_label = if version.is_preview() {
-        SharedString::from("预览")
+        t!("common.preview")
     } else {
-        SharedString::from("正式")
+        t!("common.release")
     };
     let version_type_color = if version.is_preview() {
         colors.danger
@@ -48,16 +49,23 @@ pub(super) fn render_version_header(
 
     if state.version_config.enable_redirection {
         has_status_badges = true;
-        status_badges =
-            status_badges.child(tonal_badge(colors, "隔离模式", colors.stat_green_text));
+        status_badges = status_badges.child(tonal_badge(
+            colors,
+            t!("ManagePage.isolation"),
+            colors.stat_green_text,
+        ));
     }
     if state.version_config.editor_mode {
         has_status_badges = true;
-        status_badges = status_badges.child(subtle_badge(colors, "编辑器模式"));
+        status_badges = status_badges.child(subtle_badge(colors, t!("ManagePage.editor_mode")));
     }
     if state.version_config.disable_mod_loading {
         has_status_badges = true;
-        status_badges = status_badges.child(tonal_badge(colors, "禁用 Mod", colors.danger));
+        status_badges = status_badges.child(tonal_badge(
+            colors,
+            t!("ManagePage.mod_disabled"),
+            colors.danger,
+        ));
     }
 
     let mut header = div()
@@ -149,13 +157,14 @@ pub(super) fn render_tab_bar(
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let view_handle = cx.entity().downgrade();
+    let i18n = cx.global::<I18n>().clone();
 
     UnderlineTabs::new(
         colors,
         vec![
             TabItem::new(
                 "manage-tab-statistics",
-                "统计",
+                t!("ManagePage.tabs.statistics"),
                 state.tab == ManageTab::Statistics,
                 {
                     let view_handle = view_handle.clone();
@@ -167,18 +176,23 @@ pub(super) fn render_tab_bar(
                 },
             )
             .icon(lucide_icons::icon_activity()),
-            TabItem::new("manage-tab-mod", "Mod", state.tab == ManageTab::Mod, {
-                let view_handle = view_handle.clone();
-                move |_window, cx| {
-                    let _ = view_handle.update(cx, |this, cx| {
-                        this.set_tab(ManageTab::Mod, cx);
-                    });
-                }
-            })
+            TabItem::new(
+                "manage-tab-mod",
+                t!("ManagePage.tabs.mods"),
+                state.tab == ManageTab::Mod,
+                {
+                    let view_handle = view_handle.clone();
+                    move |_window, cx| {
+                        let _ = view_handle.update(cx, |this, cx| {
+                            this.set_tab(ManageTab::Mod, cx);
+                        });
+                    }
+                },
+            )
             .icon(lucide_icons::icon_layers()),
             TabItem::new(
                 "manage-tab-pack",
-                "资源包",
+                t!("ManagePage.tabs.resource"),
                 state.tab == ManageTab::ResourcePack,
                 {
                     let view_handle = view_handle.clone();
@@ -192,7 +206,7 @@ pub(super) fn render_tab_bar(
             .icon(lucide_icons::icon_package()),
             TabItem::new(
                 "manage-tab-skin-pack",
-                "皮肤",
+                t!("ManagePage.tabs.skins"),
                 state.tab == ManageTab::SkinPack,
                 {
                     let view_handle = view_handle.clone();
@@ -204,18 +218,23 @@ pub(super) fn render_tab_bar(
                 },
             )
             .icon(lucide_icons::icon_user()),
-            TabItem::new("manage-tab-map", "地图", state.tab == ManageTab::Map, {
-                let view_handle = view_handle.clone();
-                move |_window, cx| {
-                    let _ = view_handle.update(cx, |this, cx| {
-                        this.set_tab(ManageTab::Map, cx);
-                    });
-                }
-            })
+            TabItem::new(
+                "manage-tab-map",
+                t!("ManagePage.tabs.maps"),
+                state.tab == ManageTab::Map,
+                {
+                    let view_handle = view_handle.clone();
+                    move |_window, cx| {
+                        let _ = view_handle.update(cx, |this, cx| {
+                            this.set_tab(ManageTab::Map, cx);
+                        });
+                    }
+                },
+            )
             .icon(lucide_icons::icon_map()),
             TabItem::new(
                 "manage-tab-screenshot",
-                "截图",
+                t!("ManagePage.tabs.screenshots"),
                 state.tab == ManageTab::Screenshot,
                 {
                     let view_handle = view_handle.clone();
@@ -229,7 +248,7 @@ pub(super) fn render_tab_bar(
             .icon(lucide_icons::icon_image()),
             TabItem::new(
                 "manage-tab-server",
-                "服务器",
+                t!("ManagePage.tabs.servers"),
                 state.tab == ManageTab::Server,
                 move |_window, cx| {
                     let _ = view_handle.update(cx, |this, cx| {
@@ -250,6 +269,7 @@ pub(super) fn render_pack_subtype_switch(
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let view_handle = cx.entity().downgrade();
+    let i18n = cx.global::<I18n>().clone();
 
     AnimatedSegmentTabs::new(
         "manage-pack-subtype-tabs",
@@ -257,7 +277,7 @@ pub(super) fn render_pack_subtype_switch(
         vec![
             TabItem::new(
                 "manage-pack-resource",
-                "资源包",
+                t!("AssetManager.pack_resource_short"),
                 state.pack_subtype == ManagePackSubtype::Resource,
                 {
                     let view_handle = view_handle.clone();
@@ -271,7 +291,7 @@ pub(super) fn render_pack_subtype_switch(
             .icon(lucide_icons::icon_package()),
             TabItem::new(
                 "manage-pack-behavior",
-                "行为包",
+                t!("AssetManager.pack_behavior_short"),
                 state.pack_subtype == ManagePackSubtype::Behavior,
                 move |_window, cx| {
                     let _ = view_handle.update(cx, |this, cx| {
@@ -283,7 +303,7 @@ pub(super) fn render_pack_subtype_switch(
         ],
     )
     .height(px(28.))
-    .item_width(px(76.))
+    .item_width(px(96.))
     .without_indicator_shadow()
     .into_any_element()
 }
@@ -343,8 +363,9 @@ pub(super) fn gdk_user_label(user: &ManageGdkUser) -> SharedString {
 pub(super) fn render_gdk_dropdown(
     colors: &ThemeColors,
     state: &ManagePageState,
-    _cx: &mut Context<ManagePageView>,
+    cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
+    let i18n = cx.global::<I18n>().clone();
     let options: Vec<_> = state
         .gdk_users
         .iter()
@@ -374,7 +395,7 @@ pub(super) fn render_gdk_dropdown(
     let label = options
         .get(selected_index)
         .map(|option| option.label.clone())
-        .unwrap_or_else(|| SharedString::from("用户目录"));
+        .unwrap_or_else(|| t!("ManagePage.user_directory"));
 
     Dropdown::with_trigger(
         SharedString::from("manage-gdk-user-dropdown"),

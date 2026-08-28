@@ -144,6 +144,7 @@ struct AgreementRenderState {
 }
 
 struct TopbarRenderState {
+    i18n: I18n,
     theme_k: f32,
     theme_target_dark: bool,
     theme_animating: bool,
@@ -524,6 +525,7 @@ impl MainWindowView {
         if model.builtin_route == AppRoute::Tools
             && let Some(tools_overlay) = crate::ui::views::tools::render_tools_overlay(
                 &model.theme_colors,
+                cx.global::<I18n>(),
                 model.window_width,
                 model.window_height,
                 cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
@@ -556,8 +558,8 @@ impl MainWindowView {
         }
 
         if model.agreement_render_state.visible {
-            let agreement_title = cx.global::<I18n>().t("UserAgreement.title");
-            let agreement_accept_label = cx.global::<I18n>().t("UserAgreement.accept_button");
+            let agreement_title = t!("UserAgreement.title");
+            let agreement_accept_label = t!("UserAgreement.accept_button");
             root = root.child(
                 crate::ui::overlays::user_agreement::render_user_agreement_modal(
                     model.agreement_render_state.document.clone(),
@@ -668,6 +670,7 @@ impl MainWindowView {
                     crate::ui::overlays::linux_runtime::render_linux_runtime_overlay(
                         cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(),
                         &model.theme_colors,
+                        cx.global::<I18n>(),
                     ),
                 );
             }
@@ -709,6 +712,7 @@ impl MainWindowView {
                 crate::ui::views::tools::online::render_minecraft_termination_dialog(
                     &model.theme_colors,
                     cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
+                    cx.global::<I18n>(),
                 )
         {
             root = root.child(dialog);
@@ -1358,6 +1362,7 @@ impl MainWindowView {
         };
 
         // Create search input and channel select once and keep subscriptions alive in MainWindowView.
+        let search_placeholder = t!("DownloadPage.search_game");
         let search_input = cx.update_global(
             |s: &mut crate::ui::views::download::state::DownloadPageState, cx| {
                 s.page_size = initial_page_size;
@@ -1369,7 +1374,7 @@ impl MainWindowView {
                 if s.search_input.is_none() {
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("搜索游戏版本..."), window, cx);
+                        st.set_placeholder(search_placeholder.clone(), window, cx);
                         st
                     });
                     s.search_input = Some(input);

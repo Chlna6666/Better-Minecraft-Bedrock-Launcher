@@ -8,6 +8,7 @@ use gpui::*;
 
 use crate::launch::ImportLaunchContext;
 use crate::ui::components::{modal, toast};
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 
 pub use view::ImportWindowView;
@@ -71,15 +72,15 @@ pub fn open_dropped_import(
     let Some(file_path) = supported.next().cloned() else {
         toast::error(
             cx,
-            SharedString::from(format!("支持的导入文件类型：{}", extensions.join("、"))),
+            t!(
+                "Import.supported_types",
+                extensions = &extensions.join(", ")
+            ),
         );
         return;
     };
     if supported.next().is_some() {
-        toast::push(
-            cx,
-            SharedString::from("一次处理一个导入包，已打开第一个文件"),
-        );
+        toast::push(cx, t!("Import.multiple_package"));
     }
     open_import_overlay(file_path, target, window, cx);
 }
@@ -90,19 +91,11 @@ pub fn open_dropped_import_any(paths: &[PathBuf], window: &mut Window, cx: &mut 
             || has_supported_extension(path, UNAMBIGUOUS_GAME_PACKAGE_EXTENSIONS)
     });
     let Some(file_path) = supported.next().cloned() else {
-        toast::error(
-            cx,
-            SharedString::from(
-                "不支持该文件；游戏版本支持 APPX/MSIXVC，资源支持 MCPACK/MCADDON/MCWORLD/MCTEMPLATE/ZIP",
-            ),
-        );
+        toast::error(cx, t!("Import.unsupported_file"));
         return;
     };
     if supported.next().is_some() {
-        toast::push(
-            cx,
-            SharedString::from("一次处理一个导入文件，已打开第一个支持的文件"),
-        );
+        toast::push(cx, t!("Import.multiple_file"));
     }
     if has_supported_extension(&file_path, UNAMBIGUOUS_GAME_PACKAGE_EXTENSIONS) {
         start_game_package_import(file_path, cx);
@@ -162,7 +155,7 @@ fn start_game_package_import(file_path: PathBuf, cx: &mut App) {
         let result =
             crate::core::minecraft::local_package::start_local_game_package_import(file_path).await;
         cx.update(|cx| match result {
-            Ok(_) => toast::push(cx, SharedString::from("游戏版本导入任务已开始")),
+            Ok(_) => toast::push(cx, t!("Import.game_import_started")),
             Err(error) => toast::error(cx, SharedString::from(error)),
         })
     })
@@ -175,7 +168,7 @@ pub fn open_import_window(file_path: PathBuf, target: ImportWindowTarget, cx: &m
     let import_view_in_closure = Rc::clone(&import_view);
     let import_context = ImportLaunchContext { file_path };
     let import_window = cx.open_window(window_options, move |window, cx| {
-        window.set_title("资源导入");
+        window.set_title(t!("Import.title").as_ref());
         let view = cx.new(|cx| {
             ImportWindowView::new(
                 import_context,
@@ -202,7 +195,7 @@ pub fn open_import_window(file_path: PathBuf, target: ImportWindowTarget, cx: &m
         }
         Err(error) => crate::result::show_application_error_in_app(
             cx,
-            "导入窗口打开失败",
+            t!("Import.open_failed").as_ref(),
             "open_import_window",
             format!("Failed to open import window: {error:#?}"),
         ),
@@ -231,7 +224,7 @@ fn import_window_options(cx: &mut App) -> WindowOptions {
     #[cfg(windows)]
     {
         options.titlebar = Some(TitlebarOptions {
-            title: Some(SharedString::from("资源导入")),
+            title: Some(t!("Import.title")),
             appears_transparent: true,
             ..Default::default()
         });

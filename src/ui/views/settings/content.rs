@@ -74,7 +74,7 @@ pub(super) fn render_settings_content(
             launcher::render_launcher_tab(colors, i18n, state).into_any_element()
         }
         #[cfg(target_os = "linux")]
-        SettingsTab::ProtonGdk => proton_gdk::render(colors).into_any_element(),
+        SettingsTab::ProtonGdk => proton_gdk::render(colors, i18n).into_any_element(),
         SettingsTab::Customization => {
             customization::render_customization_tab(colors, i18n, state, system_font_names)
                 .into_any_element()
@@ -94,7 +94,7 @@ pub(super) fn render_settings_content(
                     .flex_col()
                     .gap(px(12.))
                     .child(about_panel)
-                    .child(onboarding::render_onboarding_card(colors))
+                    .child(onboarding::render_onboarding_card(colors, i18n))
                     .into_any_element()
             }
             #[cfg(not(any(target_os = "windows", target_os = "linux")))]

@@ -5,6 +5,7 @@ use lucide_gpui::icons as lucide_icons;
 
 use super::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
@@ -74,6 +75,7 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
     let width = size.width / px(1.0);
     let height = size.height / px(1.0);
     let (card_w, card_h) = welcome_size(width, height);
+    let i18n = cx.global::<I18n>().clone();
 
     let card = div()
         .w(px(card_w))
@@ -91,10 +93,7 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
             ..colors.bg
         })
         .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.22,
-                ..black()
-            },
+            color: Hsla { a: 0.22, ..black() },
             blur_radius: px(34.0),
             spread_radius: px(-6.0),
             offset: point(px(0.0), px(14.0)),
@@ -103,7 +102,7 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
         .occlude()
         .flex()
         .flex_col()
-        .child(render_welcome_header(state, &colors))
+        .child(render_welcome_header(state, &colors, &i18n))
         .child(
             div()
                 .flex_1()
@@ -120,28 +119,28 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
                         .text_size(px(12.0))
                         .line_height(px(19.0))
                         .text_color(colors.text_secondary)
-                        .child("第一次使用不用先记住所有设置。接下来的导览会直接切换到真实页面，只告诉你第一次最需要知道的入口和操作顺序。"),
+                        .child(t!("Onboarding.welcome.intro")),
                 )
                 .child(animated_welcome_feature(
                     &colors,
                     0,
                     lucide_icons::icon_download(),
-                    "获得 Minecraft",
-                    "在线下载游戏本体，或导入已有 APPX / ZIP / MSIXVC 安装包。",
+                    t!("Onboarding.welcome.get_game"),
+                    t!("Onboarding.welcome.get_game_detail"),
                 ))
                 .child(animated_welcome_feature(
                     &colors,
                     1,
                     lucide_icons::icon_activity(),
-                    "查看任务",
-                    "下载、安装、导入、进度与失败原因都集中在任务页面。",
+                    t!("Onboarding.welcome.tasks"),
+                    t!("Onboarding.welcome.tasks_detail"),
                 ))
                 .child(animated_welcome_feature(
                     &colors,
                     2,
                     lucide_icons::icon_settings_2(),
-                    "管理版本",
-                    "启动、模组、资源包、地图等操作都围绕你选中的 Minecraft 实例。",
+                    t!("Onboarding.welcome.manage"),
+                    t!("Onboarding.welcome.manage_detail"),
                 ))
                 .child(
                     div()
@@ -169,11 +168,11 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
                                 .text_size(px(10.5))
                                 .line_height(px(16.0))
                                 .text_color(colors.text_secondary)
-                                .child("如果真实页面暂时没有任务或版本，导览只会显示只读演示数据，不会写入磁盘。"),
+                                .child(t!("Onboarding.welcome.demo_hint")),
                         ),
                 ),
         )
-        .child(render_welcome_footer(&colors))
+        .child(render_welcome_footer(&colors, &i18n))
         .with_animation(
             "onboarding-welcome-card-enter",
             crate::ui::animation::spring_motion(
@@ -219,7 +218,7 @@ fn welcome_size(width: f32, height: f32) -> (f32, f32) {
     (ideal_w.min(max_w), ideal_h.min(max_h))
 }
 
-fn render_welcome_header(state: &OnboardingTourState, colors: &ThemeColors) -> Div {
+fn render_welcome_header(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .w_full()
         .px(px(22.0))
@@ -264,14 +263,14 @@ fn render_welcome_header(state: &OnboardingTourState, colors: &ThemeColors) -> D
                         .text_size(px(18.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("欢迎使用 BMCBL"),
+                        .child(t!("Onboarding.header.welcome")),
                 )
                 .child(
                     div()
                         .text_size(px(11.5))
                         .line_height(px(17.0))
                         .text_color(colors.text_secondary)
-                        .child("跟着真实页面走一遍，几分钟内认识常用功能。"),
+                        .child(t!("Onboarding.header.welcome_detail")),
                 ),
         )
         .child(
@@ -299,9 +298,11 @@ fn animated_welcome_feature(
     colors: &ThemeColors,
     index: usize,
     icon: &'static str,
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
 ) -> AnyElement {
+    let title = title.into();
+    let detail = detail.into();
     let row = div()
         .w_full()
         .min_h(px(68.0))
@@ -376,7 +377,7 @@ fn animated_welcome_feature(
     .into_any_element()
 }
 
-fn render_welcome_footer(colors: &ThemeColors) -> Div {
+fn render_welcome_footer(colors: &ThemeColors, i18n: &I18n) -> Div {
     div()
         .w_full()
         .px(px(22.0))
@@ -410,7 +411,7 @@ fn render_welcome_footer(colors: &ThemeColors) -> Div {
                     })
                 })
                 .active(|this| this.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
-                .child("跳过")
+                .child(t!("Onboarding.skip"))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     crate::ui::onboarding::skip(cx);
                 }),
@@ -433,7 +434,7 @@ fn render_welcome_footer(colors: &ThemeColors) -> Div {
                 .text_color(colors.btn_primary_text)
                 .hover(|this| this.bg(colors.accent_hover))
                 .active(|this| this.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
-                .child("开始导览")
+                .child(t!("Onboarding.next"))
                 .child(
                     svg()
                         .path(lucide_icons::icon_arrow_right())

@@ -106,8 +106,6 @@ pub(super) struct TaskCardViewModel {
     pub(super) status: Arc<str>,
     pub(super) worker_total: Option<u32>,
     pub(super) worker_active: Option<u32>,
-    pub(super) percent_text: Arc<str>,
-    pub(super) amount_text: Arc<str>,
     pub(super) speed_text: Option<Arc<str>>,
     pub(super) eta_text: Option<Arc<str>>,
     pub(super) message: Option<Arc<str>>,
@@ -179,20 +177,6 @@ fn is_generic_task_title(title: &str) -> bool {
 
 fn non_empty_arc(text: Option<&Arc<str>>) -> Option<Arc<str>> {
     text.filter(|value| !value.trim().is_empty()).cloned()
-}
-
-fn format_task_amount(done: u64, total: Option<u64>) -> Arc<str> {
-    Arc::from(match total {
-        Some(total) => format!(
-            "{} / {}",
-            crate::utils::format_bytes::format_bytes_compact(done),
-            crate::utils::format_bytes::format_bytes_compact(total)
-        ),
-        None => format!(
-            "已完成 {}",
-            crate::utils::format_bytes::format_bytes_compact(done)
-        ),
-    })
 }
 
 fn format_task_speed(speed_bytes_per_sec: f64) -> Arc<str> {
@@ -294,13 +278,6 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
             .visualization
             .as_ref()
             .and_then(|visualization| visualization.worker_active),
-        percent_text: Arc::from(
-            snapshot
-                .percent
-                .map(|value| format!("{value:.0}%"))
-                .unwrap_or_else(|| "进行中".to_string()),
-        ),
-        amount_text: format_task_amount(snapshot.done, snapshot.total),
         speed_text: (snapshot.speed_bytes_per_sec > 0.0)
             .then(|| format_task_speed(snapshot.speed_bytes_per_sec)),
         eta_text: (snapshot.eta.as_ref() != "unknown").then(|| snapshot.eta.clone()),
@@ -358,8 +335,6 @@ fn hash_task_card_model(hasher: &mut RenderFingerprint, model: &TaskCardViewMode
     model.status.hash(hasher);
     model.worker_total.hash(hasher);
     model.worker_active.hash(hasher);
-    model.percent_text.hash(hasher);
-    model.amount_text.hash(hasher);
     hash_optional_text(hasher, model.speed_text.as_ref());
     hash_optional_text(hasher, model.eta_text.as_ref());
     hash_optional_text(hasher, model.message.as_ref());
@@ -954,8 +929,6 @@ mod tests {
             status: Arc::from(status),
             worker_total: None,
             worker_active: None,
-            percent_text: Arc::from("50%"),
-            amount_text: Arc::from("1 / 2 MB"),
             speed_text: None,
             eta_text: None,
             message: None,

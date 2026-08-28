@@ -8,6 +8,7 @@ use crate::ui::components::modal;
 use crate::ui::hooks::use_local_versions::{
     LocalVersionsSnapshot, read_local_versions_snapshot, use_local_versions,
 };
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use anyhow::Result;
@@ -430,7 +431,8 @@ impl Render for CurseForgeSidebarView {
             theme.accent,
         );
         let state = cx.global::<DownloadPageState>();
-        render_curseforge_sidebar(&colors, state, &self.sidebar_image_cache)
+        let i18n = cx.global::<I18n>();
+        render_curseforge_sidebar(&colors, i18n, state, &self.sidebar_image_cache)
     }
 }
 
@@ -523,6 +525,7 @@ fn truncate_curseforge_list_text(
 
 fn build_curseforge_result_card_props(
     state: &DownloadPageState,
+    i18n: &I18n,
     visible_slice_start: usize,
     visible_slice_len: usize,
 ) -> Vec<CurseForgeResultCardProps> {
@@ -544,11 +547,11 @@ fn build_curseforge_result_card_props(
                 Some(summary) if !summary.trim().is_empty() => {
                     SharedString::from(sanitize_single_line(summary.as_ref()))
                 }
-                _ => SharedString::from("暂无简介"),
+                _ => t!("CurseForgeMod.no_description"),
             };
 
             let authors = if mod_entry.author_names.is_empty() {
-                SharedString::from("未知作者")
+                t!("CurseForge.unknown_author")
             } else {
                 let joined = mod_entry
                     .author_names
@@ -576,7 +579,7 @@ fn build_curseforge_result_card_props(
                         .find_map(|category_id| category_by_id.get(category_id).copied())
                 });
             let primary_tag_label = primary_tag_category.map(|category| {
-                localize_curseforge_tag(category.name.as_ref(), Some(category.slug.as_ref()))
+                localize_curseforge_tag(i18n, category.name.as_ref(), Some(category.slug.as_ref()))
             });
 
             CurseForgeResultCardProps {
@@ -597,58 +600,89 @@ fn scroll_event_delta_y_with_line_height(event: &ScrollWheelEvent, line_height: 
     event.delta.pixel_delta(line_height).y
 }
 
-fn localize_curseforge_tag(name: &str, slug: Option<&str>) -> SharedString {
+fn localize_curseforge_tag(i18n: &I18n, name: &str, slug: Option<&str>) -> SharedString {
     let key = slug
         .map(normalize_curseforge_tag_key)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| normalize_curseforge_tag_key(name));
 
-    let localized = match key.as_str() {
-        "miscellaneous" => "杂项",
-        "pvp" => "PVP",
-        "utility" => "实用",
-        "adventure" => "冒险",
-        "survival" => "生存",
-        "horror" => "恐怖",
-        "medieval" => "中世纪",
-        "modern" => "现代",
-        "technology" => "科技",
-        "furniture" => "家具",
-        "weapons" => "武器",
-        "shaders" => "光影",
-        "realistic" => "写实",
-        "cartoon" => "卡通",
-        "vanilla" => "原版风格",
-        "mini_game" => "小游戏",
-        "parkour" => "跑酷",
-        "creation" => "建筑",
-        "world_generation" => "世界生成",
-        "gui" => "界面",
-        "16x" => "16x",
-        "32x" => "32x",
-        "64x" => "64x",
-        "128x" => "128x",
-        _ => name,
+    let locale_key = match key.as_str() {
+        "16x" => Some("x16"),
+        "32x" => Some("x32"),
+        "64x" => Some("x64"),
+        "128x" => Some("x128"),
+        "mini_game" => Some("minigame"),
+        "vanilla" => Some("vanilla_plus"),
+        key if matches!(
+            key,
+            "addons"
+                | "adventure"
+                | "armor_tools_and_weapons"
+                | "cosmetics"
+                | "creation"
+                | "ctm"
+                | "custom_terrain"
+                | "data_packs"
+                | "fantasy"
+                | "food"
+                | "horror"
+                | "magic"
+                | "maps"
+                | "minecraft_addon_maker"
+                | "miscellaneous"
+                | "mobs"
+                | "modjam_2025"
+                | "multiplayer"
+                | "parkour"
+                | "performance"
+                | "players"
+                | "puzzle"
+                | "pvp"
+                | "realistic"
+                | "redstone"
+                | "roleplay"
+                | "rollercoaster"
+                | "scripts"
+                | "shaders"
+                | "simplistic"
+                | "skin_packs"
+                | "skins"
+                | "survival"
+                | "technology"
+                | "texture_packs"
+                | "texture_packs_and_tools"
+                | "themed"
+                | "utility"
+                | "vanilla_plus"
+        ) =>
+        {
+            Some(key)
+        }
+        _ => None,
     };
 
-    SharedString::from(localized.to_string())
+    locale_key
+        .and_then(|key| i18n.lookup(&format!("CurseForge.tags.{key}")))
+        .unwrap_or_else(|| SharedString::from(name.to_string()))
 }
 
 fn curseforge_file_version_label(
     file: &crate::ui::views::download::state::CurseForgeFileEntry,
+    i18n: &I18n,
 ) -> SharedString {
     file.game_versions
         .iter()
         .find(|version| version.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
         .cloned()
-        .unwrap_or_else(|| SharedString::from("未知版本"))
+        .unwrap_or_else(|| t!("common.unknown"))
 }
 
 fn render_curseforge_detail_file_row(
     colors: &ThemeColors,
+    i18n: &I18n,
     file: &crate::ui::views::download::state::CurseForgeFileEntry,
 ) -> Div {
-    let version_label = curseforge_file_version_label(file);
+    let version_label = curseforge_file_version_label(file, i18n);
     let date_label = format_date_ymd(file.file_date.as_ref());
 
     div()
@@ -711,6 +745,7 @@ fn render_curseforge_detail_file_row(
 
 fn render_curseforge_detail_files_panel(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &DownloadPageState,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
@@ -718,7 +753,11 @@ fn render_curseforge_detail_files_panel(
     let Some(mod_entry) = state.curseforge_mod_page_mod.as_ref().cloned() else {
         return div()
             .rounded(px(crate::ui::theme::tokens::radius::SM))
-            .child(status_card(colors, "未选择资源", None));
+            .child(status_card(
+                colors,
+                t!("CurseForge.no_resource").as_ref(),
+                None,
+            ));
     };
 
     let files_loading = matches!(
@@ -758,13 +797,13 @@ fn render_curseforge_detail_files_panel(
                                 .text_size(px(14.))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(colors.text_primary)
-                                .child("文件列表"),
+                                .child(t!("CurseForge.files")),
                         )
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.text_muted)
-                                .child("直接查看可安装文件、版本与更新时间"),
+                                .child(t!("CurseForge.files_hint")),
                         ),
                 )
                 .child(
@@ -785,16 +824,23 @@ fn render_curseforge_detail_files_panel(
                         .items_center()
                         .text_size(px(11.))
                         .text_color(colors.text_secondary)
-                        .child(format!("{} 个文件", state.curseforge_install_files.len())),
+                        .child(t!(
+                            "CurseForge.file_count",
+                            count = state.curseforge_install_files.len()
+                        )),
                 ),
         )
         .when(files_loading, |this| {
-            this.child(status_card(colors, "正在加载文件列表...", None))
+            this.child(status_card(
+                colors,
+                t!("CurseForgeInstall.loading_files").as_ref(),
+                None,
+            ))
         })
         .when_some(files_error, |this, error| {
             this.child(status_card(
                 colors,
-                &format!("文件列表加载失败: {error}"),
+                &t!("CurseForgeInstall.file_list_failed", error = error),
                 Some(colors.danger),
             ))
         })
@@ -802,7 +848,13 @@ fn render_curseforge_detail_files_panel(
             !files_loading
                 && state.curseforge_install_error.is_none()
                 && state.curseforge_install_files.is_empty(),
-            |this| this.child(status_card(colors, "当前资源没有可展示的文件记录。", None)),
+            |this| {
+                this.child(status_card(
+                    colors,
+                    t!("CurseForge.no_files").as_ref(),
+                    None,
+                ))
+            },
         )
         .when(!state.curseforge_install_files.is_empty(), |this| {
             let mut list = div().flex().flex_col().gap(px(10.));
@@ -813,7 +865,7 @@ fn render_curseforge_detail_files_panel(
                     selected_folder.clone(),
                     local_versions,
                 );
-                let row = render_curseforge_detail_file_row(colors, file);
+                let row = render_curseforge_detail_file_row(colors, i18n, file);
                 let action = div()
                     .h(px(40.))
                     .px(px(14.))
@@ -831,7 +883,7 @@ fn render_curseforge_detail_files_panel(
                         16.0,
                         colors.btn_primary_text,
                     ))
-                    .child("安装")
+                    .child(t!("common.install"))
                     .on_mouse_down(MouseButton::Left, {
                         let mod_entry = mod_entry.clone();
                         let default_target = default_target.clone();
@@ -861,6 +913,7 @@ fn render_curseforge_detail_files_panel(
 
 fn render_curseforge_detail_description_panel(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &DownloadPageState,
 ) -> Div {
     let description_document = &state.curseforge_mod_page_document;
@@ -881,12 +934,17 @@ fn render_curseforge_detail_description_panel(
         .when(description_empty, |this| {
             this.child(status_card(
                 colors,
-                "这个资源暂时没有提供更详细的项目介绍。",
+                t!("CurseForgeMod.no_detailed_description").as_ref(),
                 None,
             ))
         })
         .when(!description_empty, |this| {
-            this.child(render_html_document(description_document, colors, None))
+            this.child(render_html_document(
+                description_document,
+                colors,
+                i18n,
+                None,
+            ))
         })
 }
 
@@ -957,11 +1015,13 @@ pub(super) fn render_curseforge_install_overlay(
     );
     let local_versions = read_local_versions_snapshot(cx);
     let tasks = &state.task_snapshots;
+    let i18n = cx.global::<I18n>();
 
     if state.curseforge_install_open {
         return Some(
             modals::render_curseforge_install_modal(
                 colors,
+                i18n,
                 state,
                 selected_folder,
                 &local_versions,
@@ -976,6 +1036,7 @@ pub(super) fn render_curseforge_install_overlay(
             return Some(
                 modals::render_curseforge_mod_page_modal(
                     colors,
+                    i18n,
                     state,
                     &cache_ref.0,
                     selected_folder,
@@ -992,6 +1053,7 @@ pub(super) fn render_curseforge_install_overlay(
 
 fn render_curseforge_sidebar(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &DownloadPageState,
     sidebar_image_cache: &Entity<BoundedImageCache>,
 ) -> Div {
@@ -1145,7 +1207,7 @@ fn render_curseforge_sidebar(
 
     let mut content = div().flex().flex_col().gap(px(2.));
     content = content.child(sidebar_item(
-        SharedString::from("全部"),
+        t!("common.all"),
         sidebar_all_icon(active_root.is_none()),
         active_root.is_none(),
         Box::new(|s: &mut DownloadPageState| {
@@ -1161,7 +1223,7 @@ fn render_curseforge_sidebar(
 
     for c in root_items {
         let id = c.id;
-        let label = localize_curseforge_tag(c.name.as_ref(), Some(c.slug.as_ref()));
+        let label = localize_curseforge_tag(i18n, c.name.as_ref(), Some(c.slug.as_ref()));
         content = content.child(sidebar_item(
             label,
             sidebar_category_icon(c.icon_url.clone(), active_root == Some(id)),
@@ -1193,7 +1255,7 @@ fn render_curseforge_sidebar(
                 .text_size(px(11.))
                 .font_weight(FontWeight::BOLD)
                 .text_color(colors.text_secondary)
-                .child("子分类"),
+                .child(t!("CurseForge.subcategories")),
         )
         .child(themed_icon(
             lucide_icons::icon_chevron_down(),
@@ -1209,7 +1271,7 @@ fn render_curseforge_sidebar(
     let mut sub_list = div().flex().flex_col().gap(px(2.)).pl(px(6.));
     if active_root.is_some() {
         sub_list = sub_list.child(sidebar_item(
-            SharedString::from("全部子分类"),
+            t!("CurseForge.all_subcategories"),
             sidebar_category_icon(None, active_sub.is_none()),
             active_sub.is_none(),
             Box::new(|s| {
@@ -1224,7 +1286,7 @@ fn render_curseforge_sidebar(
         ));
         for c in sub_items {
             let id = c.id;
-            let label = localize_curseforge_tag(c.name.as_ref(), Some(c.slug.as_ref()));
+            let label = localize_curseforge_tag(i18n, c.name.as_ref(), Some(c.slug.as_ref()));
             sub_list = sub_list.child(sidebar_item(
                 label,
                 sidebar_category_icon(c.icon_url.clone(), active_sub == Some(id)),
@@ -1243,8 +1305,12 @@ fn render_curseforge_sidebar(
 
     let status: Option<AnyElement> = if let Some(err) = state.curseforge_error.as_ref() {
         Some(
-            status_card(colors, &format!("加载失败: {err}"), Some(colors.danger))
-                .into_any_element(),
+            status_card(
+                colors,
+                &t!("CurseForge.load_failed", error = err),
+                Some(colors.danger),
+            )
+            .into_any_element(),
         )
     } else {
         None
@@ -1267,7 +1333,7 @@ fn render_curseforge_sidebar(
                 .text_size(px(12.))
                 .font_weight(FontWeight::BOLD)
                 .text_color(colors.text_secondary)
-                .child("分享导入"),
+                .child(t!("CurseForge.share_import_title")),
         )
         .child(
             div()
@@ -1275,7 +1341,7 @@ fn render_curseforge_sidebar(
                 .line_height(px(16.))
                 .text_color(colors.text_muted)
                 .whitespace_normal()
-                .child("Ctrl+V 粘贴分享内容，或点击按钮读取剪贴板，通过 `ID:` 字段直接跳转。"),
+                .child(t!("CurseForge.share_import_hint")),
         )
         .child(
             div()
@@ -1305,7 +1371,7 @@ fn render_curseforge_sidebar(
                         .text_size(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_secondary)
-                        .child("从剪贴板打开"),
+                        .child(t!("CurseForge.share_import_open_clipboard")),
                 )
                 .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
                     let text = cx
@@ -1362,7 +1428,7 @@ fn render_curseforge_sidebar(
                 .text_size(px(11.))
                 .font_weight(FontWeight::BOLD)
                 .text_color(colors.text_secondary)
-                .child("分类"),
+                .child(t!("CurseForge.categories")),
         )
         .when_some(status, |this, status| this.child(status))
         .child(scroll_area)
@@ -1376,6 +1442,7 @@ fn render_curseforge_content(
     _now: Instant,
 ) -> Div {
     let state = cx.global::<DownloadPageState>();
+    let i18n = cx.global::<I18n>();
     let skeleton_bar = |width: Pixels, height: Pixels| {
         div()
             .w(width)
@@ -1504,8 +1571,10 @@ fn render_curseforge_content(
     let root_name = state
         .curseforge_selected_root_id
         .and_then(|id| state.curseforge_categories.iter().find(|c| c.id == id))
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|| SharedString::from("全部"));
+        .map(|category| {
+            localize_curseforge_tag(i18n, category.name.as_ref(), Some(category.slug.as_ref()))
+        })
+        .unwrap_or_else(|| t!("common.all"));
 
     let sub_name = state
         .curseforge_selected_sub_id
@@ -1513,17 +1582,17 @@ fn render_curseforge_content(
         .map(|c| c.name.clone());
 
     let version_label = if state.curseforge_selected_game_version.trim().is_empty() {
-        SharedString::from("全部版本")
+        t!("CurseForge.all_versions")
     } else {
         state.curseforge_selected_game_version.clone()
     };
 
     let (sort_label, sort_is_default) = match state.curseforge_sort_field {
-        2 => (SharedString::from("热门"), false),
-        3 => (SharedString::from("更新"), false),
-        4 => (SharedString::from("名称"), false),
-        6 => (SharedString::from("下载"), false),
-        _ => (SharedString::from("精选"), true),
+        2 => (t!("CurseForge.sort_popularity"), false),
+        3 => (t!("CurseForge.sort_updated"), false),
+        4 => (t!("CurseForge.sort_name"), false),
+        6 => (t!("CurseForge.sort_downloads"), false),
+        _ => (t!("CurseForge.sort_featured"), true),
     };
 
     let search = state.search_query.trim();
@@ -1548,7 +1617,7 @@ fn render_curseforge_content(
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.accent)
-                .child("已更新"),
+                .child(t!("CurseForge.updated")),
         );
 
     let cf_chip = |label: SharedString,
@@ -1807,6 +1876,7 @@ fn render_curseforge_results_list(
     window: &mut Window,
     cx: &mut Context<CurseForgeResultsListView>,
 ) -> Div {
+    let i18n = cx.global::<I18n>().clone();
     let (
         results_loading,
         results_error,
@@ -1833,7 +1903,7 @@ fn render_curseforge_results_list(
     if this.last_prepared_results_signature != results_signature {
         let started_at = std::time::Instant::now();
         let next_page_card_props = cx.read_global(|state: &DownloadPageState, _cx| {
-            build_curseforge_result_card_props(state, 0, mod_count)
+            build_curseforge_result_card_props(state, &i18n, 0, mod_count)
         });
         this.cached_page_card_props = next_page_card_props;
         let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1920,7 +1990,7 @@ fn render_curseforge_results_list(
     if let Some(err) = results_error.as_ref() {
         return div().size_full().child(list.child(status_card(
             colors,
-            &format!("加载失败: {err}"),
+            &t!("CurseForge.load_failed", error = err),
             Some(colors.danger),
         )));
     }
@@ -1928,7 +1998,7 @@ fn render_curseforge_results_list(
     if !has_cached_cards {
         return div().size_full().child(list.child(status_card(
             colors,
-            "没有找到匹配的资源",
+            &t!("CurseForge.no_results"),
             None,
         )));
     }
@@ -1971,6 +2041,7 @@ fn render_curseforge_results_list(
         let is_heavy_card = virtual_list_plan.heavy_slice.contains(visible_index);
         visible_card_items = visible_card_items.child(render_curseforge_result_card(
             colors,
+            &i18n,
             cached_card_props,
             &this.result_logo_cache,
             default_install_target.clone(),
@@ -2047,6 +2118,7 @@ fn default_install_target_for_results(cx: &App) -> Option<SharedString> {
 
 fn render_curseforge_result_card(
     colors: &ThemeColors,
+    i18n: &I18n,
     props: &CurseForgeResultCardProps,
     result_logo_cache: &Entity<BoundedImageCache>,
     default_install_target: Option<SharedString>,
@@ -2320,7 +2392,7 @@ fn render_curseforge_result_card(
                         .gap(px(6.))
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
-                        .child("安装"),
+                        .child(t!("common.install")),
                 ),
         )
         .into_any_element()
@@ -2328,6 +2400,7 @@ fn render_curseforge_result_card(
 
 fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
     let state = cx.global::<DownloadPageState>();
+    let i18n = cx.global::<I18n>().clone();
 
     let page_index = state.curseforge_page_index;
     let results_loading = state.curseforge_results_loading
@@ -2549,7 +2622,7 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_muted)
-                    .child("跳转至"),
+                    .child(t!("CurseForge.jump_to")),
             )
             .child(
                 Input::new(&input_entity)
@@ -2561,7 +2634,7 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_muted)
-                    .child("页"),
+                    .child(t!("CurseForge.page")),
             )
     });
 
@@ -2576,7 +2649,11 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
                 .justify_start()
                 .text_size(px(12.))
                 .text_color(colors.text_muted)
-                .child(format!("结果: {showing} / {total}")),
+                .child(t!(
+                    "CurseForge.result_count",
+                    showing = showing,
+                    total = total
+                )),
         )
         .child(
             div()
@@ -2664,7 +2741,7 @@ fn render_curseforge_install_close_button(colors: &ThemeColors) -> Div {
 
 fn render_curseforge_install_header(
     colors: &ThemeColors,
-    kicker: &'static str,
+    kicker: SharedString,
     title: SharedString,
     subtitle: Option<SharedString>,
 ) -> Div {
@@ -2748,21 +2825,27 @@ fn render_curseforge_install_header(
 
 fn launch_version_dropdown_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
+    i18n: &I18n,
 ) -> SharedString {
-    crate::ui::hooks::use_local_versions::launch_version_dropdown_label(version)
+    crate::ui::hooks::use_local_versions::launch_version_dropdown_label(version, i18n)
 }
 
-fn install_target_label(folder: &str, local_versions: &LocalVersionsSnapshot) -> SharedString {
+fn install_target_label(
+    folder: &str,
+    local_versions: &LocalVersionsSnapshot,
+    i18n: &I18n,
+) -> SharedString {
     local_versions
         .versions
         .iter()
         .find(|version| version.folder.as_ref() == folder)
-        .map(launch_version_dropdown_label)
+        .map(|version| launch_version_dropdown_label(version, i18n))
         .unwrap_or_else(|| SharedString::from(folder.to_string()))
 }
 
 fn render_install_target_dropdown(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &DownloadPageState,
     local_versions: &LocalVersionsSnapshot,
     enabled: bool,
@@ -2772,11 +2855,11 @@ fn render_install_target_dropdown(
         local_versions
             .versions
             .iter()
-            .map(launch_version_dropdown_label)
+            .map(|version| launch_version_dropdown_label(version, i18n))
             .map(DropdownOption::from)
             .collect::<Vec<_>>()
     } else {
-        vec![DropdownOption::from(SharedString::from("暂无可用版本"))]
+        vec![DropdownOption::from(t!("CurseForgeInstall.no_versions"))]
     };
 
     let selected_index = state
@@ -2793,12 +2876,12 @@ fn render_install_target_dropdown(
     let label = state
         .curseforge_install_target_folder
         .as_ref()
-        .map(|folder| install_target_label(folder.as_ref(), local_versions))
-        .unwrap_or_else(|| SharedString::from("选择版本"));
+        .map(|folder| install_target_label(folder.as_ref(), local_versions, i18n))
+        .unwrap_or_else(|| t!("CurseForgeInstall.select_version"));
     let label = if has_versions {
         label
     } else {
-        SharedString::from("暂无可用版本")
+        t!("CurseForgeInstall.no_versions")
     };
 
     let folders = local_versions
@@ -2806,6 +2889,7 @@ fn render_install_target_dropdown(
         .iter()
         .map(|version| SharedString::from(version.folder.to_string()))
         .collect::<Vec<_>>();
+    let target_version_label = t!("CurseForgeInstall.target_version");
 
     Dropdown::with_trigger(
         SharedString::from("curseforge-install-target-dropdown"),
@@ -2816,7 +2900,7 @@ fn render_install_target_dropdown(
         options,
         selected_index,
         enabled && has_versions,
-        |colors, _width, _height, enabled, open_k, label| {
+        move |colors, _width, _height, enabled, open_k, label| {
             let chevron = svg()
                 .path(lucide_icons::icon_chevron_down())
                 .w(px(18.))
@@ -2869,7 +2953,7 @@ fn render_install_target_dropdown(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(colors.text_secondary)
-                                        .child(SharedString::from("选择安装目标版本")),
+                                        .child(target_version_label.clone()),
                                 ),
                         ),
                 )
@@ -2890,17 +2974,18 @@ fn render_install_target_dropdown(
 
 fn render_curseforge_install_file_option(
     colors: &ThemeColors,
+    i18n: &I18n,
     file: &crate::ui::views::download::state::CurseForgeFileEntry,
     default_target: Option<SharedString>,
 ) -> Div {
     let file_id = file.id;
     let disabled = file.download_url.is_none();
-    let version_label = curseforge_file_version_label(file);
+    let version_label = curseforge_file_version_label(file, i18n);
     let date_label = format_date_ymd(file.file_date.as_ref());
     let action_label = if disabled {
-        "无下载地址"
+        t!("CurseForgeInstall.no_download_url")
     } else {
-        "安装"
+        t!("common.install")
     };
 
     div()
@@ -3040,6 +3125,7 @@ fn render_curseforge_install_file_option(
 
 fn render_curseforge_install_file_selection_modal(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &DownloadPageState,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
@@ -3048,7 +3134,7 @@ fn render_curseforge_install_file_selection_modal(
         .curseforge_install_mod
         .as_ref()
         .map(|mod_entry| mod_entry.name.clone())
-        .unwrap_or_else(|| SharedString::from("CurseForge 安装"));
+        .unwrap_or_else(|| t!("CurseForgeInstall.title"));
     let files_loading = matches!(
         state.curseforge_install_stage,
         crate::ui::views::download::state::CurseForgeInstallStage::LoadingFiles
@@ -3065,6 +3151,7 @@ fn render_curseforge_install_file_selection_modal(
             modals::default_install_target_for_file(file, selected_folder.clone(), local_versions);
         files_list = files_list.child(render_curseforge_install_file_option(
             colors,
+            i18n,
             file,
             default_target,
         ));
@@ -3088,7 +3175,7 @@ fn render_curseforge_install_file_selection_modal(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.text_muted)
-                        .child("选择要下载的资源文件版本"),
+                        .child(t!("CurseForgeInstall.select_file_version")),
                 )
                 .child(
                     div()
@@ -3104,16 +3191,23 @@ fn render_curseforge_install_file_selection_modal(
                         .text_size(px(11.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.accent)
-                        .child(format!("{} 个文件", state.curseforge_install_files.len())),
+                        .child(t!(
+                            "CurseForgeInstall.file_count",
+                            count = state.curseforge_install_files.len()
+                        )),
                 ),
         )
         .when(files_loading, |this| {
-            this.child(status_card(colors, "正在加载文件列表...", None))
+            this.child(status_card(
+                colors,
+                t!("CurseForgeInstall.loading_files").as_ref(),
+                None,
+            ))
         })
         .when_some(files_error, |this, error| {
             this.child(status_card(
                 colors,
-                &format!("文件列表加载失败: {error}"),
+                &t!("CurseForgeInstall.file_list_failed", error = error),
                 Some(colors.danger),
             ))
         })
@@ -3121,7 +3215,13 @@ fn render_curseforge_install_file_selection_modal(
             !files_loading
                 && state.curseforge_install_error.is_none()
                 && state.curseforge_install_files.is_empty(),
-            |this| this.child(status_card(colors, "当前资源没有可安装文件。", None)),
+            |this| {
+                this.child(status_card(
+                    colors,
+                    t!("CurseForgeInstall.no_installable_files").as_ref(),
+                    None,
+                ))
+            },
         )
         .when(!state.curseforge_install_files.is_empty(), |this| {
             this.child(
@@ -3156,7 +3256,10 @@ fn render_curseforge_install_file_selection_modal(
         .min_w(px(500.))
         .min_h(px(340.))
         .child(render_curseforge_install_header(
-            colors, "文件", mod_name, None,
+            colors,
+            t!("CurseForgeInstall.files"),
+            mod_name,
+            None,
         ))
         .child(body),
         Hsla {
@@ -3171,16 +3274,18 @@ fn render_curseforge_install_file_selection_modal(
 
 fn render_curseforge_install_modal(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &DownloadPageState,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
     tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
 ) -> AnyElement {
+    let i18n = (*i18n).clone();
     let mod_name = state
         .curseforge_install_mod
         .as_ref()
         .map(|m| m.name.clone())
-        .unwrap_or_else(|| SharedString::from("CurseForge 安装"));
+        .unwrap_or_else(|| t!("CurseForgeInstall.title"));
 
     let stage = state.curseforge_install_stage;
     let task_snapshot = state
@@ -3196,6 +3301,7 @@ fn render_curseforge_install_modal(
     }) else {
         return render_curseforge_install_file_selection_modal(
             colors,
+            &i18n,
             state,
             selected_folder,
             local_versions,
@@ -3204,7 +3310,7 @@ fn render_curseforge_install_modal(
 
     let header = render_curseforge_install_header(
         colors,
-        "安装",
+        t!("CurseForgeInstall.title"),
         mod_name,
         Some(selected_file.display_name.clone()),
     );
@@ -3214,11 +3320,21 @@ fn render_curseforge_install_modal(
             | crate::ui::views::download::state::CurseForgeInstallStage::Error
             | crate::ui::views::download::state::CurseForgeInstallStage::Success
     );
-    let target_dropdown =
-        render_install_target_dropdown(colors, state, local_versions, target_dropdown_enabled);
+    let target_dropdown = render_install_target_dropdown(
+        colors,
+        &i18n,
+        state,
+        local_versions,
+        target_dropdown_enabled,
+    );
 
     let error_line = state.curseforge_install_error.as_ref().map(|e| {
-        status_card(colors, &format!("错误: {e}"), Some(colors.danger)).into_any_element()
+        status_card(
+            colors,
+            &t!("CurseForgeInstall.error", error = e),
+            Some(colors.danger),
+        )
+        .into_any_element()
     });
 
     let conflict_line = state
@@ -3244,13 +3360,17 @@ fn render_curseforge_install_modal(
                         div()
                             .text_size(px(12.))
                             .text_color(colors.text_secondary)
-                            .child(format!("{}  {}%", snap.stage, pct.round())),
+                            .child(t!(
+                                "CurseForgeInstall.progress",
+                                stage = snap.stage.as_ref(),
+                                percent = pct.round()
+                            )),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
                             .text_color(colors.text_muted)
-                            .child(format!("ETA {}", snap.eta)),
+                            .child(t!("Tasks.eta_value", value = snap.eta)),
                     ),
             )
             .child(
@@ -3287,15 +3407,25 @@ fn render_curseforge_install_modal(
         );
 
     let primary_btn_label = match stage {
-        crate::ui::views::download::state::CurseForgeInstallStage::Conflict => "覆盖安装",
-        crate::ui::views::download::state::CurseForgeInstallStage::Success => "完成",
-        crate::ui::views::download::state::CurseForgeInstallStage::Downloading => "下载中...",
-        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => "检查中...",
-        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => {
-            "检查冲突..."
+        crate::ui::views::download::state::CurseForgeInstallStage::Conflict => {
+            t!("CurseForgeInstall.overwrite")
         }
-        crate::ui::views::download::state::CurseForgeInstallStage::Installing => "安装中...",
-        _ => "下载并安装",
+        crate::ui::views::download::state::CurseForgeInstallStage::Success => {
+            t!("CurseForgeInstall.done")
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::Downloading => {
+            t!("CurseForgeInstall.downloading")
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => {
+            t!("CurseForgeInstall.inspecting")
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => {
+            t!("CurseForgeInstall.checking_conflict")
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::Installing => {
+            t!("CurseForgeInstall.installing")
+        }
+        _ => t!("CurseForgeInstall.download_and_install"),
     };
 
     let primary_enabled = match stage {
@@ -3307,6 +3437,7 @@ fn render_curseforge_install_modal(
         | crate::ui::views::download::state::CurseForgeInstallStage::Installing => false,
         _ => can_install,
     };
+    let i18n_for_action = i18n.clone();
 
     let primary_btn = div()
         .px(px(16.))
@@ -3393,6 +3524,7 @@ fn render_curseforge_install_modal(
                 s.curseforge_install_conflict_message = None;
             });
 
+            let i18n_for_task = i18n_for_action.clone();
             cx.spawn(async move |cx| {
                 let result = async {
                     let task_id = crate::downloads::api::download_resource_to_cache(
@@ -3438,7 +3570,10 @@ fn render_curseforge_install_modal(
                     if !preview.valid {
                         let msg = preview
                             .invalid_reason
-                            .unwrap_or_else(|| "无效的资源包".to_string());
+                            .unwrap_or_else(|| {
+                                t!("CurseForgeInstall.invalid_package")
+                                    .to_string()
+                            });
                         cx.update_global(|s: &mut DownloadPageState, _cx| {
                             s.curseforge_install_stage =
                                 crate::ui::views::download::state::CurseForgeInstallStage::Error;
@@ -3523,18 +3658,30 @@ fn render_curseforge_install_modal(
         });
 
     let operation_line = match stage {
-        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => {
-            Some(status_card(colors, "正在检查资源包...", None).into_any_element())
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => {
-            Some(status_card(colors, "正在检查已安装资源冲突...", None).into_any_element())
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::Installing => {
-            Some(status_card(colors, "正在安装资源包...", None).into_any_element())
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::Success => {
-            Some(status_card(colors, "安装完成", Some(colors.accent)).into_any_element())
-        }
+        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => Some(
+            status_card(colors, t!("CurseForgeInstall.inspecting").as_ref(), None)
+                .into_any_element(),
+        ),
+        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => Some(
+            status_card(
+                colors,
+                t!("CurseForgeInstall.checking_conflict").as_ref(),
+                None,
+            )
+            .into_any_element(),
+        ),
+        crate::ui::views::download::state::CurseForgeInstallStage::Installing => Some(
+            status_card(colors, t!("CurseForgeInstall.installing").as_ref(), None)
+                .into_any_element(),
+        ),
+        crate::ui::views::download::state::CurseForgeInstallStage::Success => Some(
+            status_card(
+                colors,
+                t!("CurseForgeInstall.done").as_ref(),
+                Some(colors.accent),
+            )
+            .into_any_element(),
+        ),
         _ => None,
     };
 
@@ -3569,16 +3716,17 @@ fn render_curseforge_install_modal(
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_secondary)
-                .child("安装目标版本"),
+                .child(t!("CurseForgeInstall.target_version")),
         )
         .child(target_dropdown)
         .when_some(selected_version, |this, version| {
             let target_path =
                 crate::ui::hooks::use_local_versions::version_target_root_path(version)
                     .unwrap_or_else(|| SharedString::from("-"));
-            let isolation = crate::ui::hooks::use_local_versions::version_isolation_label(version);
+            let isolation =
+                crate::ui::hooks::use_local_versions::version_isolation_label(version, &i18n);
             let version_type =
-                crate::ui::hooks::use_local_versions::version_type_summary_label(version);
+                crate::ui::hooks::use_local_versions::version_type_summary_label(version, &i18n);
 
             this.child(
                 div()
@@ -3605,7 +3753,7 @@ fn render_curseforge_install_modal(
                                     .flex_none()
                                     .text_size(px(11.))
                                     .text_color(colors.text_muted)
-                                    .child("目标路径"),
+                                    .child(t!("Import.targetPath")),
                             )
                             .child(
                                 div()
@@ -3644,7 +3792,7 @@ fn render_curseforge_install_modal(
                                     .flex_none()
                                     .text_size(px(11.))
                                     .text_color(colors.text_muted)
-                                    .child("隔离状态"),
+                                    .child(t!("Import.isolationStatus")),
                             )
                             .child(
                                 div()
@@ -3683,7 +3831,7 @@ fn render_curseforge_install_modal(
                                     .flex_none()
                                     .text_size(px(11.))
                                     .text_color(colors.text_muted)
-                                    .child("版本类型"),
+                                    .child(t!("Import.versionType")),
                             )
                             .child(
                                 div()
@@ -3750,9 +3898,9 @@ fn render_curseforge_install_modal(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.text_muted)
-                                .child(format!(
-                                    "默认下载到系统缓存 ({})",
-                                    format_bytes(selected_file.file_length)
+                                .child(t!(
+                                    "CurseForgeInstall.cache_hint",
+                                    size = format_bytes(selected_file.file_length)
                                 )),
                         )
                     },
@@ -3797,13 +3945,14 @@ fn render_curseforge_install_modal(
 
 fn render_curseforge_mod_page_modal(
     colors: &ThemeColors,
+    i18n: &I18n,
     state: &DownloadPageState,
     detail_image_cache: &Entity<BoundedImageCache>,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
     _tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
 ) -> AnyElement {
-    let toolbar_button = |label: &'static str, icon_path: &'static str, primary: bool| {
+    let toolbar_button = |label: SharedString, icon_path: &'static str, primary: bool| {
         div()
             .h(px(42.))
             .px(px(16.))
@@ -3865,7 +4014,7 @@ fn render_curseforge_mod_page_modal(
             .child(themed_icon(icon_path, 16.0, colors.text_secondary))
     };
 
-    let stat_card = |icon_path: &'static str, label: &'static str, value: SharedString| {
+    let stat_card = |icon_path: &'static str, label: SharedString, value: SharedString| {
         div()
             .flex_1()
             .min_w(px(0.))
@@ -3904,7 +4053,7 @@ fn render_curseforge_mod_page_modal(
             )
     };
 
-    let detail_row = |label: &'static str, value: SharedString| {
+    let detail_row = |label: SharedString, value: SharedString| {
         div()
             .w_full()
             .rounded(px(crate::ui::theme::tokens::radius::MD))
@@ -3960,10 +4109,14 @@ fn render_curseforge_mod_page_modal(
                 .gap(px(12.))
                 .min_w(px(0.))
                 .child(
-                    toolbar_button("返回列表", lucide_icons::icon_arrow_left(), false)
-                        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                            modals::close_curseforge_mod_page(cx);
-                        }),
+                    toolbar_button(
+                        t!("CurseForge.back_to_list"),
+                        lucide_icons::icon_arrow_left(),
+                        false,
+                    )
+                    .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+                        modals::close_curseforge_mod_page(cx);
+                    }),
                 )
                 .child(
                     div()
@@ -3976,13 +4129,13 @@ fn render_curseforge_mod_page_modal(
                                 .text_size(px(15.))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(colors.text_primary)
-                                .child("CurseForge 详情"),
+                                .child(t!("CurseForge.detail_title")),
                         )
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.text_muted)
-                                .child("资源信息、文件列表与直接下载"),
+                                .child(t!("CurseForge.detail_hint")),
                         ),
                 ),
         )
@@ -3994,7 +4147,11 @@ fn render_curseforge_mod_page_modal(
                 .iter()
                 .filter(|category| mod_entry.category_ids.contains(&category.id))
                 .map(|category| {
-                    localize_curseforge_tag(category.name.as_ref(), Some(category.slug.as_ref()))
+                    localize_curseforge_tag(
+                        i18n,
+                        category.name.as_ref(),
+                        Some(category.slug.as_ref()),
+                    )
                 })
                 .collect::<Vec<_>>();
             let open_link = share_actions::curseforge_project_url(&mod_entry);
@@ -4003,18 +4160,22 @@ fn render_curseforge_mod_page_modal(
                     .flex()
                     .gap(px(10.))
                     .child(
-                        toolbar_button("直接下载", lucide_icons::icon_download(), true)
-                            .on_mouse_down(MouseButton::Left, {
-                                let mod_entry = mod_entry.clone();
-                                let default_target = default_target.clone();
-                                move |_ev, _window, cx| {
-                                    modals::open_curseforge_install_modal(
-                                        mod_entry.clone(),
-                                        default_target.clone(),
-                                        cx,
-                                    );
-                                }
-                            }),
+                        toolbar_button(
+                            t!("CurseForge.direct_download"),
+                            lucide_icons::icon_download(),
+                            true,
+                        )
+                        .on_mouse_down(MouseButton::Left, {
+                            let mod_entry = mod_entry.clone();
+                            let default_target = default_target.clone();
+                            move |_ev, _window, cx| {
+                                modals::open_curseforge_install_modal(
+                                    mod_entry.clone(),
+                                    default_target.clone(),
+                                    cx,
+                                );
+                            }
+                        }),
                     )
                     .child(icon_button(lucide_icons::icon_globe()).on_mouse_down(
                         MouseButton::Left,
@@ -4065,7 +4226,11 @@ fn render_curseforge_mod_page_modal(
             .flex_1()
             .min_h(px(0.))
             .p(px(20.))
-            .child(status_card(colors, "正在加载资源详情...", None))
+            .child(status_card(
+                colors,
+                t!("CurseForgeMod.loading").as_ref(),
+                None,
+            ))
             .into_any_element()
     } else if let Some(err) = state.curseforge_mod_page_error.as_ref() {
         div()
@@ -4074,7 +4239,7 @@ fn render_curseforge_mod_page_modal(
             .p(px(20.))
             .child(status_card(
                 colors,
-                &format!("资源详情加载失败: {err}"),
+                &t!("CurseForgeMod.load_failed", message = err),
                 Some(colors.danger),
             ))
             .into_any_element()
@@ -4083,9 +4248,9 @@ fn render_curseforge_mod_page_modal(
         let summary = mod_entry
             .summary
             .clone()
-            .unwrap_or_else(|| SharedString::from("暂无简介"));
+            .unwrap_or_else(|| t!("CurseForgeMod.no_description"));
         let authors = if mod_entry.author_names.is_empty() {
-            SharedString::from("未知作者")
+            t!("CurseForge.unknown_author")
         } else {
             SharedString::from(
                 mod_entry
@@ -4150,10 +4315,18 @@ fn render_curseforge_mod_page_modal(
                                 .image_cache(detail_image_cache),
                         )
                     })
-                    .child(div().min_w(px(0.)).child(localize_curseforge_tag(
-                        category.name.as_ref(),
-                        Some(category.slug.as_ref()),
-                    ))),
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(localize_curseforge_tag(
+                                i18n,
+                                category.name.as_ref(),
+                                Some(category.slug.as_ref()),
+                            )),
+                    ),
             );
         }
 
@@ -4261,7 +4434,7 @@ fn render_curseforge_mod_page_modal(
                                                         div()
                                                             .text_size(px(11.))
                                                             .text_color(colors.btn_primary_text)
-                                                            .child("CurseForge 资源"),
+                                                            .child(t!("CurseForge.resource")),
                                                     )
                                                     .child(
                                                         div()
@@ -4288,12 +4461,12 @@ fn render_curseforge_mod_page_modal(
                                             .gap(px(10.))
                                             .child(stat_card(
                                                 lucide_icons::icon_download(),
-                                                "总下载量",
+                                                t!("CurseForge.downloads"),
                                                 downloads.clone(),
                                             ))
                                             .child(stat_card(
                                                 lucide_icons::icon_calendar_days(),
-                                                "最近更新",
+                                                t!("CurseForge.updated_at"),
                                                 updated_at.clone(),
                                             )),
                                     )
@@ -4318,15 +4491,15 @@ fn render_curseforge_mod_page_modal(
                                                     .text_size(px(12.))
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(colors.text_primary)
-                                                    .child("资源概览"),
+                                                    .child(t!("CurseForge.overview")),
                                             )
-                                            .child(detail_row("作者", authors))
+                                            .child(detail_row(t!("CurseForge.author"), authors))
                                             .child(detail_row(
-                                                "项目 ID",
+                                                t!("CurseForge.project_id"),
                                                 SharedString::from(mod_entry.id.to_string()),
                                             ))
-                                            .child(detail_row("更新时间", updated_at.clone()))
-                                            .child(detail_row("页面链接", open_link.clone())),
+                                            .child(detail_row(t!("CurseForge.updated_at"), updated_at.clone()))
+                                            .child(detail_row(t!("CurseForge.website"), open_link.clone())),
                                     )
                                     .when(!mod_entry.category_ids.is_empty(), |this| {
                                         this.child(
@@ -4350,7 +4523,7 @@ fn render_curseforge_mod_page_modal(
                                                         .text_size(px(12.))
                                                         .font_weight(FontWeight::BOLD)
                                                         .text_color(colors.text_primary)
-                                                        .child("分类标签"),
+                                                        .child(t!("CurseForge.categories")),
                                                 )
                                                 .child(tag_row),
                                         )
@@ -4410,7 +4583,7 @@ fn render_curseforge_mod_page_modal(
                                                                 .text_size(px(12.))
                                                                 .font_weight(FontWeight::BOLD)
                                                                 .text_color(colors.text_primary)
-                                                                .child("详细介绍 & 快速了解"),
+                                                                .child(t!("CurseForge.description_highlights")),
                                                         ),
                                                 )
                                                 .child(notes),
@@ -4426,12 +4599,13 @@ fn render_curseforge_mod_page_modal(
                                     .gap(px(16.))
                                     .child(render_curseforge_detail_files_panel(
                                         colors,
+                                        i18n,
                                         state,
                                         selected_folder.clone(),
                                         local_versions,
                                     ))
                                     .child(render_curseforge_detail_description_panel(
-                                        colors, state,
+                                        colors, i18n, state,
                                     )),
                             ),
                     ),
@@ -4440,7 +4614,7 @@ fn render_curseforge_mod_page_modal(
     } else {
         div()
             .p(px(16.))
-            .child(status_card(colors, "未选择资源", None))
+            .child(status_card(colors, &t!("CurseForge.no_resource"), None))
             .into_any_element()
     };
 

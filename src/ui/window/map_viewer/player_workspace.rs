@@ -24,6 +24,15 @@ impl PlayerWorkspaceCenter {
             Self::Equipment => "装备",
         }
     }
+
+    pub(super) fn localized_label(self, i18n: &I18n) -> SharedString {
+        match self {
+            Self::Map => t!("MapViewer.map"),
+            Self::Inventory => t!("MapViewer.inventory"),
+            Self::EnderChest => t!("MapViewer.ender_chest"),
+            Self::Equipment => t!("MapViewer.equipment"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -67,16 +76,17 @@ pub(super) struct PlayerWorkspaceState {
 
 impl PlayerWorkspaceState {
     pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
-        let search = workspace_input(window, cx, "搜索玩家 / UID / XUID...");
-        let item_id = workspace_input(window, cx, "物品 ID，例如 minecraft:gold_ingot");
-        let count = workspace_input(window, cx, "数量");
-        let damage = workspace_input(window, cx, "Damage");
-        let custom_name = workspace_input(window, cx, "自定义名称（留空移除）");
-        let lore = workspace_input(window, cx, "Lore，多行使用 | 分隔");
-        let can_place_on = workspace_input(window, cx, "可放置方块 ID，逗号分隔");
-        let can_destroy = workspace_input(window, cx, "可破坏方块 ID，逗号分隔");
-        let enchant_id = workspace_input(window, cx, "附魔 ID，例如 9");
-        let enchant_level = workspace_input(window, cx, "等级，例如 32767");
+        let i18n = cx.global::<I18n>().clone();
+        let search = workspace_input(window, cx, t!("MapViewer.player_search_placeholder"));
+        let item_id = workspace_input(window, cx, t!("MapViewer.item_id_placeholder"));
+        let count = workspace_input(window, cx, t!("MapViewer.count_placeholder"));
+        let damage = workspace_input(window, cx, t!("MapViewer.damage_placeholder"));
+        let custom_name = workspace_input(window, cx, t!("MapViewer.custom_name_placeholder"));
+        let lore = workspace_input(window, cx, t!("MapViewer.lore_placeholder"));
+        let can_place_on = workspace_input(window, cx, t!("MapViewer.can_place_on_placeholder"));
+        let can_destroy = workspace_input(window, cx, t!("MapViewer.can_destroy_placeholder"));
+        let enchant_id = workspace_input(window, cx, t!("MapViewer.enchant_id_placeholder"));
+        let enchant_level = workspace_input(window, cx, t!("MapViewer.enchant_level_placeholder"));
         let item_editor_state = cx.new(|cx| {
             let mut editor = CodeEditorState::new(cx);
             editor.set_language(CodeEditorLanguage::JsonNbt, cx);
@@ -112,11 +122,11 @@ impl PlayerWorkspaceState {
 fn workspace_input(
     window: &mut Window,
     cx: &mut Context<MapViewerWindowView>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
         let mut input = InputState::new(window, cx);
-        input.set_placeholder(SharedString::from(placeholder), window, cx);
+        input.set_placeholder(placeholder, window, cx);
         input
     })
 }
@@ -126,6 +136,59 @@ pub(super) fn player_workspace_subscriptions(
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<Subscription> {
     let mut subscriptions = Vec::new();
+    let localized_inputs = [
+        (
+            state.search.clone(),
+            crate::i18n_key!("MapViewer.player_search_placeholder"),
+        ),
+        (
+            state.item_id.clone(),
+            crate::i18n_key!("MapViewer.item_id_placeholder"),
+        ),
+        (
+            state.count.clone(),
+            crate::i18n_key!("MapViewer.count_placeholder"),
+        ),
+        (
+            state.damage.clone(),
+            crate::i18n_key!("MapViewer.damage_placeholder"),
+        ),
+        (
+            state.custom_name.clone(),
+            crate::i18n_key!("MapViewer.custom_name_placeholder"),
+        ),
+        (
+            state.lore.clone(),
+            crate::i18n_key!("MapViewer.lore_placeholder"),
+        ),
+        (
+            state.can_place_on.clone(),
+            crate::i18n_key!("MapViewer.can_place_on_placeholder"),
+        ),
+        (
+            state.can_destroy.clone(),
+            crate::i18n_key!("MapViewer.can_destroy_placeholder"),
+        ),
+        (
+            state.enchant_id.clone(),
+            crate::i18n_key!("MapViewer.enchant_id_placeholder"),
+        ),
+        (
+            state.enchant_level.clone(),
+            crate::i18n_key!("MapViewer.enchant_level_placeholder"),
+        ),
+    ];
+    subscriptions.push(cx.observe_global::<I18n>(move |this, cx| {
+        let i18n = cx.global::<I18n>().clone();
+        for (input, key) in &localized_inputs {
+            let placeholder = i18n.t_key(*key);
+            input.update(cx, |input, cx| {
+                input.set_placeholder_without_window(placeholder, cx);
+            });
+        }
+        this.player_workspace.item_editor_error = None;
+        cx.notify();
+    }));
     for input in [
         state.search.clone(),
         state.item_id.clone(),
@@ -331,6 +394,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let query = self
             .player_workspace
             .search
@@ -376,13 +440,13 @@ impl MapViewerWindowView {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(panel_title(colors, "玩家资源"))
+                            .child(panel_title(colors, t!("MapViewer.player_resources")))
                             .child(status_badge(
                                 colors,
                                 format!("{} / {}", visible.len(), self.players.players.len()),
                             ))
                             .child(div().flex_1())
-                            .child(toolbar_button(colors, "刷新").on_mouse_down(
+                            .child(toolbar_button(colors, t!("common.refresh")).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _event, _window, cx| this.refresh_players(cx)),
                             )),
@@ -418,7 +482,7 @@ impl MapViewerWindowView {
                             .text_size(px(10.0))
                             .line_height(px(15.0))
                             .text_color(colors.text_muted)
-                            .child("可信度排序：本地玩家 → 完整服务器玩家 → 其他完整玩家 → 部分/残留记录。仅可信记录显示地图标记。"),
+                            .child(t!("MapViewer.player_quality_hint")),
                     ),
             )
             .child(
@@ -428,22 +492,25 @@ impl MapViewerWindowView {
                     .overflow_y_scrollbar()
                     .px(px(8.0))
                     .pb(px(10.0))
-                    .when(self.players.loading && self.players.players.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .p(px(8.0))
-                                .text_size(px(11.0))
-                                .text_color(colors.text_muted)
-                                .child("正在读取并校验玩家记录..."),
-                        )
-                    })
+                    .when(
+                        self.players.loading && self.players.players.is_empty(),
+                        |this| {
+                            this.child(
+                                div()
+                                    .p(px(8.0))
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_muted)
+                                    .child(t!("MapViewer.players_loading")),
+                            )
+                        },
+                    )
                     .when(visible.is_empty() && !self.players.loading, |this| {
                         this.child(
                             div()
                                 .p(px(10.0))
                                 .text_size(px(11.0))
                                 .text_color(colors.text_muted)
-                                .child("没有匹配的玩家记录。"),
+                                .child(t!("MapViewer.no_matching_players")),
                         )
                     })
                     .children(visible.into_iter().map(|player| {
@@ -459,6 +526,7 @@ impl MapViewerWindowView {
         player: &PlayerSummary,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let selected = self
             .players
             .selected
@@ -466,9 +534,17 @@ impl MapViewerWindowView {
             .is_some_and(|selected| selected == &player.id);
         let id = player.id.clone();
         let raw = player_id_label(&player.id);
-        let stable_label = stable_middle_ellipsis(player.label.as_ref(), 30);
+        let stable_label = stable_middle_ellipsis(
+            localized_player_friendly_label(
+                &i18n,
+                &player.id,
+                player.quality.health != PlayerRecordHealth::Invalid,
+            )
+            .as_ref(),
+            30,
+        );
         let stable_raw = stable_middle_ellipsis(&raw, 34);
-        let quality_label = player.quality.health.label();
+        let quality_label = player.quality.health.localized_label(&i18n);
         let quality_color = match player.quality.health {
             PlayerRecordHealth::Complete => colors.accent,
             PlayerRecordHealth::Partial => colors.stat_orange_text,
@@ -635,6 +711,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let Some(detail) = self.players.detail.as_ref() else {
             return div()
                 .size_full()
@@ -645,9 +722,9 @@ impl MapViewerWindowView {
                 .text_size(px(12.0))
                 .text_color(colors.text_muted)
                 .child(if self.players.loading {
-                    "正在读取玩家数据..."
+                    t!("MapViewer.players_loading")
                 } else {
-                    "从左侧选择玩家。"
+                    t!("MapViewer.select_player")
                 });
         };
         let entries = player_inventory_entries(&detail.nbt);
@@ -659,7 +736,7 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .bg(colors.bg)
-            .child(self.render_player_workspace_header(colors, detail, cx))
+            .child(self.render_player_workspace_header(colors, detail, &i18n, cx))
             .child(
                 div()
                     .flex_1()
@@ -669,13 +746,13 @@ impl MapViewerWindowView {
                     .child(match self.player_workspace.center {
                         PlayerWorkspaceCenter::Map => div().into_any_element(),
                         PlayerWorkspaceCenter::Inventory => self
-                            .render_inventory_workspace(colors, &entries, cx)
+                            .render_inventory_workspace(colors, &entries, &i18n, cx)
                             .into_any_element(),
                         PlayerWorkspaceCenter::EnderChest => self
-                            .render_ender_chest_workspace(colors, &entries, cx)
+                            .render_ender_chest_workspace(colors, &entries, &i18n, cx)
                             .into_any_element(),
                         PlayerWorkspaceCenter::Equipment => self
-                            .render_equipment_workspace(colors, &entries, cx)
+                            .render_equipment_workspace(colors, &entries, &i18n, cx)
                             .into_any_element(),
                     }),
             )
@@ -685,6 +762,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         detail: &PlayerDetail,
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         let title = self
@@ -740,7 +818,7 @@ impl MapViewerWindowView {
                 .map(|center| {
                     workspace_tab_button(
                         colors,
-                        center.label(),
+                        center.localized_label(i18n),
                         self.player_workspace.center == center,
                     )
                     .on_mouse_down(
@@ -758,37 +836,44 @@ impl MapViewerWindowView {
                 |this| {
                     this.child(status_badge(
                         colors,
-                        format!(
-                            "已选 {} 项",
-                            self.player_workspace.multi_selected_items.len()
+                        t!(
+                            "MapViewer.selected_items",
+                            count = self.player_workspace.multi_selected_items.len()
                         ),
                     ))
                 },
             )
             .child(status_badge(
                 colors,
-                format!("{} 个物品", detail.item_count),
+                t!("MapViewer.item_count", count = detail.item_count),
             ))
-            .child(toolbar_button(colors, "玩家 NBT").on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.open_selected_player_in_editor(cx)),
-            ))
-            .child(danger_button(colors, "删除玩家").on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    this.confirm_or_run_edit(
-                        EditTarget::Player(delete_player_id.clone()),
-                        EditAction::Delete,
-                        cx,
-                    )
-                }),
-            ))
+            .child(
+                toolbar_button(colors, t!("MapViewer.player_nbt")).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.open_selected_player_in_editor(cx)
+                    }),
+                ),
+            )
+            .child(
+                danger_button(colors, t!("MapViewer.delete_player")).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.confirm_or_run_edit(
+                            EditTarget::Player(delete_player_id.clone()),
+                            EditAction::Delete,
+                            cx,
+                        )
+                    }),
+                ),
+            )
     }
 
     fn render_inventory_workspace(
         &self,
         colors: &ThemeColors,
         entries: &[PlayerInventoryEntry],
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let metrics = self.player_workspace_metrics();
@@ -812,8 +897,8 @@ impl MapViewerWindowView {
             .gap(px(15.0))
             .child(inventory_section_title(
                 colors,
-                "玩家背包",
-                "3 × 9 主背包 + 9 格快捷栏",
+                t!("MapViewer.player_inventory"),
+                t!("MapViewer.player_inventory_detail"),
             ))
             .child(
                 div()
@@ -861,6 +946,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         entries: &[PlayerInventoryEntry],
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         let metrics = self.player_workspace_metrics();
@@ -882,7 +968,11 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(12.0))
-            .child(inventory_section_title(colors, "末影箱", "27 个独立槽位"))
+            .child(inventory_section_title(
+                colors,
+                t!("MapViewer.ender_chest"),
+                t!("MapViewer.ender_chest_detail"),
+            ))
             .children((0..3).map(|row| {
                 self.render_slot_row(
                     colors,
@@ -899,9 +989,15 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         entries: &[PlayerInventoryEntry],
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
-        let armor_labels = ["头盔", "胸甲", "护腿", "靴子"];
+        let armor_labels = [
+            t!("MapViewer.helmet"),
+            t!("MapViewer.chestplate"),
+            t!("MapViewer.leggings"),
+            t!("MapViewer.boots"),
+        ];
         let metrics = self.player_workspace_metrics();
         div()
             .w_full()
@@ -921,7 +1017,11 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(14.0))
-            .child(inventory_section_title(colors, "装备", "护甲与副手"))
+            .child(inventory_section_title(
+                colors,
+                t!("MapViewer.equipment"),
+                t!("MapViewer.equipment_detail"),
+            ))
             .child(
                 div()
                     .flex()
@@ -948,7 +1048,7 @@ impl MapViewerWindowView {
                                         div()
                                             .text_size(px(11.0))
                                             .text_color(colors.text_muted)
-                                            .child(armor_labels[slot as usize]),
+                                            .child(armor_labels[slot as usize].clone()),
                                     )
                                     .into_any_element()
                             })),
@@ -962,7 +1062,7 @@ impl MapViewerWindowView {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(colors.text_muted)
-                                    .child("副手"),
+                                    .child(t!("MapViewer.offhand")),
                             )
                             .child(self.render_player_inventory_slot(
                                 colors,
@@ -1205,6 +1305,7 @@ impl MapViewerWindowView {
     }
 
     fn render_workspace_quick_catalog(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>().clone();
         let catalog = self.player_quick_item_catalog();
         div()
             .pt(px(10.0))
@@ -1226,13 +1327,13 @@ impl MapViewerWindowView {
                             .text_size(px(11.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .child("常用物品"),
+                            .child(t!("MapViewer.common_items")),
                     )
                     .child(
                         div()
                             .text_size(px(10.0))
                             .text_color(colors.text_muted)
-                            .child("点击可替换已选槽位，也可直接拖到背包 / 末影箱 / 装备槽"),
+                            .child(t!("MapViewer.quick_catalog_hint")),
                     ),
             )
             .child(
@@ -1474,6 +1575,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let i18n = cx.global::<I18n>().clone();
         let Some(detail) = self.players.detail.as_ref() else {
             return div()
                 .size_full()
@@ -1483,9 +1585,9 @@ impl MapViewerWindowView {
                 .text_size(px(12.0))
                 .text_color(colors.text_muted)
                 .child(if self.players.loading {
-                    "正在加载玩家..."
+                    t!("MapViewer.players_loading")
                 } else {
-                    "从左侧玩家列表选择记录。"
+                    t!("MapViewer.select_player_record")
                 })
                 .into_any_element();
         };
@@ -1528,7 +1630,7 @@ impl MapViewerWindowView {
                             .child(title),
                     )
                     .when(self.players.saving, |this| {
-                        this.child(status_badge(colors, "正在写入"))
+                        this.child(status_badge(colors, t!("MapViewer.writing")))
                     })
                     .child(dock_close_button(colors).on_mouse_down(
                         MouseButton::Left,
@@ -1537,9 +1639,9 @@ impl MapViewerWindowView {
             )
             .child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(
                 if self.player_workspace.selected_item.is_some() {
-                    self.render_selected_player_item_inspector(colors, cx)
+                    self.render_selected_player_item_inspector(colors, &i18n, cx)
                 } else {
-                    self.render_player_overview_inspector(colors, detail, cx)
+                    self.render_player_overview_inspector(colors, detail, &i18n, cx)
                 },
             ))
             .into_any_element()
@@ -1549,6 +1651,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         detail: &PlayerDetail,
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let record_id = player_id_label(&detail.id);
@@ -1571,25 +1674,47 @@ impl MapViewerWindowView {
             .flex_col()
             .gap(px(10.0))
             .child(player_detail_grid(colors, detail))
-            .child(div().flex().flex_wrap().gap(px(6.0))
-                .child(toolbar_button(colors, "复制名称").on_mouse_down(MouseButton::Left,
-                    cx.listener(move |this, _event, _window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_name.clone()));
-                        this.status = SharedString::from("玩家名称已复制"); cx.notify();
-                    })))
-                .child(toolbar_button(colors, "复制记录 ID").on_mouse_down(MouseButton::Left,
-                    cx.listener(move |this, _event, _window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_record.clone()));
-                        this.status = SharedString::from("玩家记录 ID 已复制"); cx.notify();
-                    })))
-                .when_some(copy_uid, |this, uid| this.child(
-                    toolbar_button(colors, "复制 UID").on_mouse_down(MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(uid.clone()));
-                            this.status = SharedString::from("玩家 UID 已复制"); cx.notify();
-                        }))
-                )))
-            .child(self.render_player_quick_actions(colors, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.copy_name")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy_name.clone()));
+                                this.status = SharedString::from("玩家名称已复制");
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.copy_record_id")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    copy_record.clone(),
+                                ));
+                                this.status = SharedString::from("玩家记录 ID 已复制");
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .when_some(copy_uid, |this, uid| {
+                        this.child(
+                            toolbar_button(colors, t!("MapViewer.copy_uid")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(uid.clone()));
+                                    this.status = SharedString::from("玩家 UID 已复制");
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                    }),
+            )
+            .child(self.render_player_quick_actions(colors, i18n, cx))
             .child(
                 div()
                     .p(px(10.0))
@@ -1601,7 +1726,7 @@ impl MapViewerWindowView {
                     .text_size(px(11.0))
                     .line_height(px(17.0))
                     .text_color(colors.text_muted)
-                    .child("在中间背包 / 末影箱 / 装备界面点击槽位后，右侧会切换到该物品的可视化 Inspector。高级用户可切换完整 NBT。"),
+                    .child(t!("MapViewer.player_inspector_hint")),
             )
             .into_any_element()
     }
@@ -1609,6 +1734,7 @@ impl MapViewerWindowView {
     fn render_selected_player_item_inspector(
         &self,
         colors: &ThemeColors,
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selection = self.player_workspace.selected_item.expect("checked above");
@@ -1616,7 +1742,8 @@ impl MapViewerWindowView {
         let item_name = entry
             .as_ref()
             .and_then(|entry| entry.item.name.as_deref())
-            .unwrap_or("空槽位");
+            .map(str::to_owned)
+            .unwrap_or_else(|| t!("MapViewer.empty_slot").to_string());
         let texture = entry
             .as_ref()
             .and_then(|entry| self.player_item_texture(entry.item.name.as_deref()));
@@ -1684,21 +1811,24 @@ impl MapViewerWindowView {
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(colors.text_primary)
-                                    .child(item_name.to_string()),
+                                    .child(item_name),
                             )
                             .child(
                                 div()
                                     .text_size(px(10.0))
                                     .text_color(colors.text_muted)
-                                    .child(format!(
-                                        "{} · 槽位 {}",
-                                        selection.kind.label(),
-                                        selection.slot
+                                    .child(t!(
+                                        "MapViewer.slot_info",
+                                        kind = selection.kind.localized_label(i18n),
+                                        slot = selection.slot
                                     )),
                             ),
                     )
                     .when(unknown > 0, |this| {
-                        this.child(status_badge(colors, format!("保留 {unknown} 个扩展字段")))
+                        this.child(status_badge(
+                            colors,
+                            t!("MapViewer.unknown_fields", count = unknown),
+                        ))
                     }),
             )
             .child(
@@ -1710,20 +1840,23 @@ impl MapViewerWindowView {
                     .items_center()
                     .gap(px(6.0))
                     .child(
-                        workspace_tab_button(colors, "可视化", mode == PlayerInspectorMode::Visual)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.player_workspace.inspector_mode =
-                                        PlayerInspectorMode::Visual;
-                                    cx.notify();
-                                }),
-                            ),
+                        workspace_tab_button(
+                            colors,
+                            t!("MapViewer.visualized"),
+                            mode == PlayerInspectorMode::Visual,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.player_workspace.inspector_mode = PlayerInspectorMode::Visual;
+                                cx.notify();
+                            }),
+                        ),
                     )
                     .child(
                         workspace_tab_button(
                             colors,
-                            "原始 NBT",
+                            t!("MapViewer.raw_nbt"),
                             mode == PlayerInspectorMode::RawNbt,
                         )
                         .on_mouse_down(
@@ -1736,16 +1869,20 @@ impl MapViewerWindowView {
                         ),
                     )
                     .child(div().flex_1())
-                    .child(danger_button(colors, "清空槽位").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.clear_selected_player_item_slot(cx)
-                        }),
-                    )),
+                    .child(
+                        danger_button(colors, t!("MapViewer.clear_slot")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.clear_selected_player_item_slot(cx)
+                            }),
+                        ),
+                    ),
             )
             .child(match mode {
-                PlayerInspectorMode::Visual => self.render_player_item_visual_form(colors, cx),
-                PlayerInspectorMode::RawNbt => self.render_player_item_raw_form(colors, cx),
+                PlayerInspectorMode::Visual => {
+                    self.render_player_item_visual_form(colors, i18n, cx)
+                }
+                PlayerInspectorMode::RawNbt => self.render_player_item_raw_form(colors, i18n, cx),
             })
             .into_any_element()
     }
@@ -1753,6 +1890,7 @@ impl MapViewerWindowView {
     fn render_player_item_visual_form(
         &self,
         colors: &ThemeColors,
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entry = self.selected_workspace_entry();
@@ -1770,7 +1908,7 @@ impl MapViewerWindowView {
             .gap(px(9.0))
             .child(player_form_field(
                 colors,
-                "物品 ID",
+                t!("MapViewer.item_id"),
                 self.player_workspace.item_id.clone(),
             ))
             .child(
@@ -1779,32 +1917,40 @@ impl MapViewerWindowView {
                     .flex_wrap()
                     .gap(px(7.0))
                     .child(
-                        player_form_field(colors, "数量", self.player_workspace.count.clone())
-                            .flex_1(),
+                        player_form_field(
+                            colors,
+                            t!("MapViewer.item_count_label"),
+                            self.player_workspace.count.clone(),
+                        )
+                        .flex_1(),
                     )
                     .child(
-                        player_form_field(colors, "Damage", self.player_workspace.damage.clone())
-                            .flex_1(),
+                        player_form_field(
+                            colors,
+                            t!("MapViewer.damage"),
+                            self.player_workspace.damage.clone(),
+                        )
+                        .flex_1(),
                     ),
             )
             .child(player_form_field(
                 colors,
-                "自定义名称",
+                t!("MapViewer.custom_name"),
                 self.player_workspace.custom_name.clone(),
             ))
             .child(player_form_field(
                 colors,
-                "Lore（使用 | 分隔多行）",
+                t!("MapViewer.lore"),
                 self.player_workspace.lore.clone(),
             ))
             .child(player_form_field(
                 colors,
-                "CanPlaceOn（逗号分隔）",
+                t!("MapViewer.can_place_on"),
                 self.player_workspace.can_place_on.clone(),
             ))
             .child(player_form_field(
                 colors,
-                "CanDestroy（逗号分隔）",
+                t!("MapViewer.can_destroy"),
                 self.player_workspace.can_destroy.clone(),
             ))
             .child(
@@ -1818,25 +1964,29 @@ impl MapViewerWindowView {
                     .text_size(px(10.0))
                     .line_height(px(16.0))
                     .text_color(colors.text_muted)
-                    .child("可视化保存只增量修改 Name / Count / Damage / tag.display / tag.ench / CanPlaceOn / CanDestroy；Block、BlockEntityTag、新版组件与未知字段原样保留。"),
+                    .child(t!("MapViewer.visual_save_hint")),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .child(toolbar_button(colors, "保存可视化修改").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.save_selected_player_item_visual(cx)
-                        }),
-                    ))
-                    .child(toolbar_button(colors, "从剪贴板导入").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.import_selected_player_item_from_clipboard(cx)
-                        }),
-                    )),
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.save_visual")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.save_selected_player_item_visual(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.import_clipboard")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.import_selected_player_item_from_clipboard(cx)
+                            }),
+                        ),
+                    ),
             )
             .child(
                 div()
@@ -1854,7 +2004,7 @@ impl MapViewerWindowView {
                             .text_size(px(11.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_secondary)
-                            .child("附魔"),
+                            .child(t!("MapViewer.enchantments")),
                     )
                     .children(enchantments.iter().map(|enchantment| {
                         div()
@@ -1868,7 +2018,7 @@ impl MapViewerWindowView {
                                     .text_color(colors.text_secondary)
                                     .child(format!(
                                         "{} · id {} · lvl {}",
-                                        enchant_name(enchantment.id),
+                                        localized_enchant_name(&i18n, enchantment.id),
                                         enchantment.id,
                                         enchantment.level
                                     )),
@@ -1882,7 +2032,7 @@ impl MapViewerWindowView {
                             .child(
                                 player_form_field(
                                     colors,
-                                    "附魔 ID",
+                                    t!("MapViewer.enchant_id"),
                                     self.player_workspace.enchant_id.clone(),
                                 )
                                 .flex_1(),
@@ -1890,33 +2040,39 @@ impl MapViewerWindowView {
                             .child(
                                 player_form_field(
                                     colors,
-                                    "等级",
+                                    t!("MapViewer.level"),
                                     self.player_workspace.enchant_level.clone(),
                                 )
                                 .flex_1(),
                             ),
                     )
-                    .child(toolbar_button(colors, "添加 / 覆盖附魔").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.add_selected_player_item_enchant_from_inputs(cx)
-                        }),
-                    )),
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.add_enchantment")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.add_selected_player_item_enchant_from_inputs(cx)
+                            }),
+                        ),
+                    ),
             )
-            .when_some(self.player_workspace.item_editor_error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(colors.danger)
-                        .child(error),
-                )
-            })
+            .when_some(
+                self.player_workspace.item_editor_error.clone(),
+                |this, error| {
+                    this.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(colors.danger)
+                            .child(error),
+                    )
+                },
+            )
             .into_any_element()
     }
 
     fn render_player_item_raw_form(
         &self,
         colors: &ThemeColors,
+        i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
@@ -1935,24 +2091,28 @@ impl MapViewerWindowView {
                     .child(status_badge(
                         colors,
                         if self.player_workspace.item_editor_dirty {
-                            "已修改"
+                            t!("MapViewer.modified")
                         } else {
-                            "同步"
+                            t!("MapViewer.synced")
                         },
                     ))
                     .child(div().flex_1())
-                    .child(toolbar_button(colors, "格式化").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.format_selected_player_item_raw(cx)
-                        }),
-                    ))
-                    .child(toolbar_button(colors, "保存 NBT").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.save_selected_player_item_raw(cx)
-                        }),
-                    )),
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.format")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.format_selected_player_item_raw(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.save_nbt")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.save_selected_player_item_raw(cx)
+                            }),
+                        ),
+                    ),
             )
             .child(
                 div().flex_1().min_h(px(0.0)).overflow_hidden().child(
@@ -2575,7 +2735,8 @@ pub(super) fn inventory_kind_capacity(kind: PlayerInventoryKind) -> i32 {
     }
 }
 
-fn workspace_tab_button(colors: &ThemeColors, label: &'static str, active: bool) -> Div {
+fn workspace_tab_button(colors: &ThemeColors, label: impl Into<SharedString>, active: bool) -> Div {
+    let label = label.into();
     div()
         .px(px(9.0))
         .py(px(5.0))
@@ -2609,7 +2770,13 @@ fn workspace_tab_button(colors: &ThemeColors, label: &'static str, active: bool)
         .child(label)
 }
 
-fn inventory_section_title(colors: &ThemeColors, title: &'static str, detail: &'static str) -> Div {
+fn inventory_section_title(
+    colors: &ThemeColors,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+) -> Div {
+    let title = title.into();
+    let detail = detail.into();
     div()
         .flex()
         .items_center()
@@ -2629,7 +2796,12 @@ fn inventory_section_title(colors: &ThemeColors, title: &'static str, detail: &'
         )
 }
 
-fn player_form_field(colors: &ThemeColors, label: &'static str, input: Entity<InputState>) -> Div {
+fn player_form_field(
+    colors: &ThemeColors,
+    label: impl Into<SharedString>,
+    input: Entity<InputState>,
+) -> Div {
+    let label = label.into();
     div()
         .flex()
         .flex_col()

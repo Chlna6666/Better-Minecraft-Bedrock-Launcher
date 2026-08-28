@@ -87,7 +87,9 @@ impl ManagePageView {
             ConfirmAction::DeleteVersion { version } => {
                 let folder = version.folder.to_string();
                 self.confirm_dialog = None;
-                toast::push(cx, SharedString::from("正在删除版本"));
+                let i18n = cx.global::<I18n>().clone();
+                let deleting_message = t!("ManagePage.deleting_version");
+                toast::push(cx, deleting_message);
                 cx.spawn(async move |handle, cx| {
                     let folder_for_delete = folder.clone();
                     let result = gpui_tokio::Tokio::spawn_result(cx, async move {
@@ -101,7 +103,8 @@ impl ManagePageView {
                             Ok(()) => {
                                 remove_local_version(&folder, cx);
                                 this.invalidate_version_dependent_data(cx);
-                                toast::success(cx, SharedString::from("版本已删除"));
+                                let message = t!("ManagePage.version_deleted");
+                                toast::success(cx, message);
                                 ensure_local_versions_loaded(true, cx);
                             }
                             Err(error) => {
@@ -123,6 +126,7 @@ impl ManagePageView {
                 selected_gdk_user,
                 folder_names,
             } => {
+                let i18n = cx.global::<I18n>().clone();
                 cx.spawn(async move |handle, cx| {
                     let result = gpui_tokio::Tokio::spawn_result(cx, async move {
                         data::delete_assets(
@@ -140,7 +144,8 @@ impl ManagePageView {
                     let _ = handle.update(cx, |this, cx| {
                         match result {
                             Ok(()) => {
-                                toast::success(cx, SharedString::from("资源已删除"));
+                                let message = t!("ManagePage.asset_deleted");
+                                toast::success(cx, message);
                                 this.confirm_dialog = None;
                                 cx.update_global(|state: &mut ManagePageState, _cx| {
                                     state.selected_asset_keys.clear();
@@ -161,9 +166,10 @@ impl ManagePageView {
                 .detach();
             }
             ConfirmAction::DeleteScreenshot { entry } => {
+                let i18n = cx.global::<I18n>().clone();
                 cx.spawn(async move |handle, cx| {
                     let result = crate::tasks::runtime::run_blocking(
-                        crate::tasks::runtime::BlockingTaskOptions::hidden("删除截图"),
+                        crate::tasks::runtime::BlockingTaskOptions::hidden("Deleting screenshot"),
                         {
                             let entry = entry.clone();
                             move || data::delete_screenshot(&entry)
@@ -173,7 +179,8 @@ impl ManagePageView {
                     let _ = handle.update(cx, |this, cx| {
                         match result {
                             Ok(()) => {
-                                toast::success(cx, SharedString::from("截图已删除"));
+                                let message = t!("ManagePage.screenshot_deleted");
+                                toast::success(cx, message);
                                 this.confirm_dialog = None;
                                 this.last_screenshots_signature = None;
                                 cx.update_global(|state: &mut ManagePageState, _cx| {
@@ -200,9 +207,10 @@ impl ManagePageView {
                 selected_gdk_user,
                 entry,
             } => {
+                let i18n = cx.global::<I18n>().clone();
                 cx.spawn(async move |handle, cx| {
                     let result = crate::tasks::runtime::run_blocking(
-                        crate::tasks::runtime::BlockingTaskOptions::hidden("删除服务器"),
+                        crate::tasks::runtime::BlockingTaskOptions::hidden("Deleting server"),
                         {
                             let entry = entry.clone();
                             move || {
@@ -219,7 +227,8 @@ impl ManagePageView {
                     let _ = handle.update(cx, |this, cx| {
                         match result {
                             Ok(()) => {
-                                toast::success(cx, SharedString::from("服务器已删除"));
+                                let message = t!("ManagePage.server_deleted");
+                                toast::success(cx, message);
                                 this.confirm_dialog = None;
                                 this.last_servers_signature = None;
                                 cx.update_global(|state: &mut ManagePageState, _cx| {
@@ -262,9 +271,9 @@ impl ManagePageView {
         });
         let i18n = cx.global::<I18n>();
         self.value_prompt = Some(ValuePromptDialogState {
-            title: i18n.t("ManagePage.rename_title"),
-            description: i18n.t("ManagePage.rename_desc"),
-            confirm_label: i18n.t("common.confirm"),
+            title: t!("ManagePage.rename_title"),
+            description: t!("ManagePage.rename_desc"),
+            confirm_label: t!("common.confirm"),
             input,
             target: ValuePromptTarget::RenameVersion { version },
             pending: false,
@@ -278,6 +287,7 @@ impl ManagePageView {
     }
 
     pub(super) fn save_value_prompt(&mut self, cx: &mut Context<Self>) {
+        let i18n = cx.global::<I18n>().clone();
         let Some(prompt) = self.value_prompt.as_mut() else {
             return;
         };
@@ -291,7 +301,10 @@ impl ManagePageView {
                 let parsed = match value.trim().parse::<i32>() {
                     Ok(value) => value.max(0),
                     Err(error) => {
-                        toast::error(cx, SharedString::from(format!("输入无效: {error}")));
+                        toast::error(
+                            cx,
+                            t!("ManagePage.invalid_input", message = &error.to_string()),
+                        );
                         return;
                     }
                 };
@@ -332,17 +345,15 @@ impl ManagePageView {
                                 crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(
                                     true, cx,
                                 );
-                                let msg = cx.global::<I18n>().t("ManagePage.rename_success");
+                                let msg = t!("ManagePage.rename_success");
                                 toast::success(cx, msg);
                             }
                             Err(error) => {
                                 if let Some(prompt) = this.value_prompt.as_mut() {
                                     prompt.pending = false;
                                 }
-                                let msg = cx.global::<I18n>().t_args(
-                                    "ManagePage.rename_failed",
-                                    crate::i18n_args![("message", &error.to_string())],
-                                );
+                                let msg =
+                                    t!("ManagePage.rename_failed", message = &error.to_string());
                                 toast::error(cx, msg);
                             }
                         }
@@ -374,7 +385,10 @@ impl ManagePageView {
                 let delay = match value.trim().parse::<u64>() {
                     Ok(value) => value,
                     Err(error) => {
-                        toast::error(cx, SharedString::from(format!("输入无效: {error}")));
+                        toast::error(
+                            cx,
+                            t!("ManagePage.invalid_input", message = &error.to_string()),
+                        );
                         return;
                     }
                 };
@@ -399,7 +413,7 @@ impl ManagePageView {
                                 cx.update_global(|state: &mut ManagePageState, _cx| {
                                     state.assets_loaded = false;
                                 });
-                                toast::success(cx, SharedString::from("注入延迟已更新"));
+                                toast::success(cx, t!("ManagePage.inject_delay_updated"));
                             }
                             Err(error) => {
                                 if let Some(prompt) = this.value_prompt.as_mut() {
@@ -423,6 +437,7 @@ impl ManagePageView {
     }
 
     pub(super) fn save_mod_type_dialog(&mut self, cx: &mut Context<Self>) {
+        let i18n = cx.global::<I18n>().clone();
         let Some(dialog) = self.mod_type_dialog.as_mut() else {
             return;
         };
@@ -438,7 +453,10 @@ impl ManagePageView {
             Ok(value) => value,
             Err(error) => {
                 dialog.pending = false;
-                toast::error(cx, SharedString::from(format!("输入无效: {error}")));
+                toast::error(
+                    cx,
+                    t!("ManagePage.invalid_input", message = &error.to_string()),
+                );
                 return;
             }
         };
@@ -472,7 +490,7 @@ impl ManagePageView {
                         cx.update_global(|state: &mut ManagePageState, _cx| {
                             state.assets_loaded = false;
                         });
-                        toast::success(cx, SharedString::from("Mod 类型已更新"));
+                        toast::success(cx, t!("ManagePage.mod_type_updated"));
                     }
                     Err(error) => {
                         if let Some(dialog) = this.mod_type_dialog.as_mut() {
@@ -492,6 +510,7 @@ impl ManagePageView {
 pub(super) fn render_confirm_dialog(
     dialog: &ConfirmDialogState,
     colors: &ThemeColors,
+    i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let modal_dismiss_handle = modal::ModalDismissHandle::new();
@@ -511,6 +530,7 @@ pub(super) fn render_confirm_dialog(
 
     let confirm_view_handle = view_handle.clone();
     dialog::confirm_dialog(
+        i18n,
         colors,
         dialog.title.clone(),
         dialog.description.clone(),
@@ -530,6 +550,7 @@ pub(super) fn render_confirm_dialog(
 pub(super) fn render_value_prompt(
     dialog: &ValuePromptDialogState,
     colors: &ThemeColors,
+    i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let modal_dismiss_handle = modal::ModalDismissHandle::new();
@@ -549,6 +570,7 @@ pub(super) fn render_value_prompt(
 
     let save_view_handle = view_handle.clone();
     dialog::prompt_dialog(
+        i18n,
         colors,
         dialog.title.clone(),
         dialog.description.clone(),
@@ -569,24 +591,25 @@ pub(super) fn render_value_prompt(
 pub(super) fn render_mod_type_dialog(
     dialog: &ModTypeDialogState,
     colors: &ThemeColors,
+    i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let options = vec![
         (
             SharedString::from("preload-native"),
-            DropdownOption::from(SharedString::from("Preload Native")),
+            DropdownOption::from(t!("AssetManager.mod_type_preload_native")),
         ),
         (
             SharedString::from("hot-inject"),
-            DropdownOption::from(SharedString::from("Hot Inject")),
+            DropdownOption::from(t!("AssetManager.mod_type_hot_inject")),
         ),
         (
             SharedString::from("native"),
-            DropdownOption::from(SharedString::from("Native")),
+            DropdownOption::from(t!("AssetManager.mod_type_native")),
         ),
         (
             SharedString::from("lse-quickjs"),
-            DropdownOption::from(SharedString::from("LSE QuickJS")),
+            DropdownOption::from(t!("AssetManager.mod_type_lse_quickjs")),
         ),
     ];
     let selected_index = options
@@ -596,7 +619,7 @@ pub(super) fn render_mod_type_dialog(
     let label = options
         .get(selected_index)
         .map(|(_, option)| option.label.clone())
-        .unwrap_or_else(|| SharedString::from("Preload Native"));
+        .unwrap_or_else(|| t!("AssetManager.mod_type_preload_native"));
 
     let dropdown = Dropdown::new(
         SharedString::from("manage-mod-type-dropdown"),
@@ -660,7 +683,7 @@ pub(super) fn render_mod_type_dialog(
                         .text_size(px(18.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child("Mod 设置"),
+                        .child(t!("ManagePage.mod_settings")),
                 )
                 .child(
                     div()
@@ -679,7 +702,7 @@ pub(super) fn render_mod_type_dialog(
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
-                                .child("注入方式"),
+                                .child(t!("ManagePage.injection_method")),
                         )
                         .child(dropdown),
                 )
@@ -694,7 +717,7 @@ pub(super) fn render_mod_type_dialog(
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(colors.text_primary)
-                                    .child("注入延迟"),
+                                    .child(t!("ManagePage.inject_delay")),
                             )
                             .child(
                                 Input::new(&dialog.delay_input)
@@ -705,14 +728,14 @@ pub(super) fn render_mod_type_dialog(
                                 div()
                                     .text_size(px(11.))
                                     .text_color(colors.text_muted)
-                                    .child("单位为毫秒，适用于 hot-inject。"),
+                                    .child(t!("ManagePage.inject_delay_hint")),
                             ),
                     )
                 }),
         )
         .child(dialog::dialog_actions(
             colors,
-            ghost_button(colors, "manage-mod-type-cancel", "取消").on_mouse_down(
+            ghost_button(colors, "manage-mod-type-cancel", t!("common.cancel")).on_mouse_down(
                 MouseButton::Left,
                 move |_, _, cx| {
                     cancel_dismiss.dismiss(cx);
@@ -722,9 +745,9 @@ pub(super) fn render_mod_type_dialog(
                 colors,
                 "manage-mod-type-save",
                 if dialog.pending {
-                    SharedString::from("保存中...")
+                    t!("common.saving")
                 } else {
-                    SharedString::from("保存 Mod 设置")
+                    t!("ManagePage.save_mod_settings")
                 },
             )
             .opacity(if dialog.pending { 0.72 } else { 1.0 })
@@ -787,16 +810,36 @@ pub fn render_manage_overlay(
         ));
     }
     if let Some(dialog) = confirm_dialog.as_ref() {
-        root = root.child(render_confirm_dialog(dialog, colors, view_handle.clone()));
+        root = root.child(render_confirm_dialog(
+            dialog,
+            colors,
+            i18n,
+            view_handle.clone(),
+        ));
     }
     if let Some(dialog) = value_prompt.as_ref() {
-        root = root.child(render_value_prompt(dialog, colors, view_handle.clone()));
+        root = root.child(render_value_prompt(
+            dialog,
+            colors,
+            i18n,
+            view_handle.clone(),
+        ));
     }
     if let Some(dialog) = mod_type_dialog.as_ref() {
-        root = root.child(render_mod_type_dialog(dialog, colors, view_handle.clone()));
+        root = root.child(render_mod_type_dialog(
+            dialog,
+            colors,
+            i18n,
+            view_handle.clone(),
+        ));
     }
     if let Some(dialog) = server_editor_dialog.as_ref() {
-        root = root.child(render_server_editor_dialog(dialog, colors, view_handle));
+        root = root.child(render_server_editor_dialog(
+            dialog,
+            colors,
+            i18n,
+            view_handle,
+        ));
     }
 
     Some(root.into_any_element())

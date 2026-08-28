@@ -71,7 +71,10 @@ pub fn open_platform_settings(cx: &mut App) {
 fn complete(cx: &mut App, route: Option<crate::ui::navigation::AppRoute>) {
     if let Err(error) = crate::config::onboarding::complete_current_onboarding() {
         cx.update_global(|state: &mut OnboardingTourState, _cx| {
-            state.set_persist_error(format!("保存首次运行引导状态失败：{error}"));
+            state.set_persist_error(crate::localized_text!(
+                "Onboarding.error.persist",
+                error = error
+            ));
         });
         return;
     }
@@ -216,7 +219,10 @@ fn start_platform_scan(cx: &mut App) {
             }
             Err(error) => {
                 cx.update_global(|state: &mut OnboardingTourState, _cx| {
-                    state.set_error(request_id, format!("平台环境检测失败：{error}"));
+                    state.set_error(
+                        request_id,
+                        crate::localized_text!("Onboarding.error.platform_check", error = error),
+                    );
                 });
             }
         })?;
@@ -237,47 +243,33 @@ fn build_platform_summary() -> OnboardingPlatformSummary {
                 .count()
         })
         .unwrap_or(0);
-    let runner = check.runner.as_ref().map_or_else(
-        || "未检测到可用 Proton/UMU runner".to_string(),
-        |runner| {
-            format!(
-                "{} · {}",
-                runner.kind.display_name(),
-                runner.executable.display()
-            )
-        },
-    );
+    let runner = check.runner.as_ref().map(|runner| {
+        format!(
+            "{} · {}",
+            runner.kind.display_name(),
+            runner.executable.display()
+        )
+    });
     let ready = check.is_ready();
 
     OnboardingPlatformSummary {
-        title: if ready {
-            "Linux 兼容运行环境已就绪".to_string()
-        } else {
-            "还需要配置 Proton-GDK / UMU".to_string()
-        },
-        detail: if ready {
-            "BMCBL 会直接使用 Linux 兼容运行环境启动 Bedrock，不执行 Windows UWP 注册或 Store 数据迁移。".to_string()
-        } else {
-            check
-                .missing_reason
-                .as_deref()
-                .unwrap_or("请前往 Proton-GDK 设置页安装或选择兼容运行环境。")
-                .to_string()
-        },
+        ready,
+        missing_reason: check.missing_reason.as_deref().map(str::to_owned),
+        distribution_name: check.distribution_name.to_string(),
+        runner,
+        local_versions,
         items: vec![
             OnboardingSummaryItem {
-                label: "Linux 发行版".to_string(),
+                label: crate::i18n_key!("Onboarding.platform.distribution"),
                 value: check.distribution_name.to_string(),
                 warning: false,
             },
             OnboardingSummaryItem {
-                label: "Proton-GDK / UMU".to_string(),
-                value: runner,
+                label: crate::i18n_key!("Onboarding.platform.runtime"),
                 warning: !ready,
             },
             OnboardingSummaryItem {
-                label: "BMCBL 本地版本".to_string(),
-                value: format!("{local_versions} 个版本目录"),
+                label: crate::i18n_key!("Onboarding.platform.local_versions"),
                 warning: false,
             },
         ],

@@ -649,7 +649,7 @@ pub fn export_map(folder_path: &str, target_path: &str) -> Result<(), String> {
 
 pub fn backup_map(folder_path: &str, map_name: &str) -> Result<String, String> {
     let source = PathBuf::from(folder_path);
-    let backup_dir = crate::utils::file_ops::bmcbl_subdir("backup");
+    let backup_dir = crate::utils::file_ops::bmcbl_subdir("backups");
     std::fs::create_dir_all(&backup_dir).map_err(|error| format!("创建备份目录失败: {error}"))?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");

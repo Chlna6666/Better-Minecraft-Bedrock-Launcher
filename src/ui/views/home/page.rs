@@ -52,8 +52,8 @@ fn icon_path(path: &'static str) -> Svg {
 
 fn kind_label(i18n: &I18n, kind: &str) -> SharedString {
     match kind.to_ascii_uppercase().as_str() {
-        "GDK" => i18n.t("common.gdk"),
-        "UWP" => i18n.t("common.uwp"),
+        "GDK" => t!("common.gdk"),
+        "UWP" => t!("common.uwp"),
         other => SharedString::from(other.to_string()),
     }
 }
@@ -783,20 +783,20 @@ impl Render for HomePageView {
             launch_args: None,
         });
         let launch_label = if initial_versions_loading {
-            SharedString::from("加载中")
+            t!("common.loading")
         } else if is_empty {
-            i18n.t("common.not_installed")
+            t!("common.no_installed")
         } else {
-            i18n.t("Sidebar.launch")
+            t!("Sidebar.launch")
         };
         let launch_sub = if initial_versions_loading {
-            SharedString::from("请稍候...")
+            t!("common.loading")
         } else if is_empty {
-            i18n.t("common.go_download")
+            t!("common.go_download")
         } else if let Some(version) = selected_version {
             version.version.clone().into()
         } else {
-            i18n.t("common.all_versions")
+            t!("common.all_versions")
         };
         let kind_labels = dropdown_visible.then(|| {
             self.versions

@@ -2,6 +2,7 @@ use crate::ui::components::button::IconButton;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::Input;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{
     DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, DownloadTab,
@@ -11,8 +12,13 @@ use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 use std::time::Instant;
 
-pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, now: Instant) -> Div {
-    let search = render_toolbar_search(colors, state);
+pub(super) fn render_toolbar(
+    colors: &ThemeColors,
+    state: &DownloadPageState,
+    i18n: &I18n,
+    now: Instant,
+) -> Div {
+    let search = render_toolbar_search(colors, state, i18n);
 
     div()
         .relative()
@@ -27,7 +33,7 @@ pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, no
         .flex()
         .items_center()
         .gap(px(12.))
-        .child(render_tabs(colors, state, now))
+        .child(render_tabs(colors, state, i18n, now))
         .child(
             div()
                 .flex_1()
@@ -37,17 +43,21 @@ pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, no
                 .items_center()
                 .child(div().w(px(200.)).min_w(px(0.)).child(search)),
         )
-        .child(render_toolbar_controls(colors, state))
+        .child(render_toolbar_controls(colors, state, i18n))
         .child(crate::ui::onboarding::anchor::observe(
             crate::ui::onboarding::state::OnboardingAnchor::DownloadToolbar,
         ))
 }
 
-fn render_toolbar_search(colors: &ThemeColors, state: &DownloadPageState) -> AnyElement {
+fn render_toolbar_search(
+    colors: &ThemeColors,
+    state: &DownloadPageState,
+    i18n: &I18n,
+) -> AnyElement {
     let placeholder = match state.tab {
-        DownloadTab::Game => "搜索游戏版本...",
-        DownloadTab::ResourcePack => "搜索资源包...",
-        DownloadTab::Mod => "搜索模组...",
+        DownloadTab::Game => t!("DownloadPage.search_game"),
+        DownloadTab::ResourcePack => t!("DownloadPage.search_resource"),
+        DownloadTab::Mod => t!("DownloadPage.search_mods"),
     };
 
     let dark_mode = colors.bg.l < 0.5;
@@ -113,7 +123,7 @@ fn render_toolbar_search(colors: &ThemeColors, state: &DownloadPageState) -> Any
     }
 }
 
-fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) -> Div {
+fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now: Instant) -> Div {
     let active = state.tab;
     let (t, animating) = state.tab_anim_factor(now);
     let from = state.tab_anim_from;
@@ -149,10 +159,15 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
 
     let tab = |id: &'static str,
                icon_path: &'static str,
-               label: &'static str,
+               label: SharedString,
                tab: DownloadTab,
                active: DownloadTab| {
         let is_active = tab == active;
+        let placeholder = match tab {
+            DownloadTab::Game => t!("DownloadPage.search_game"),
+            DownloadTab::ResourcePack => t!("DownloadPage.search_resource"),
+            DownloadTab::Mod => t!("DownloadPage.search_mods"),
+        };
         let fg = if is_active {
             colors.text_primary
         } else {
@@ -205,13 +220,8 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
                     s.tab = tab;
 
                     if let Some(ref search_input) = s.search_input {
-                        let placeholder = match tab {
-                            DownloadTab::Game => "搜索游戏版本...",
-                            DownloadTab::ResourcePack => "搜索资源包...",
-                            DownloadTab::Mod => "搜索模组...",
-                        };
                         let _ = search_input.update(cx, |st, cx| {
-                            st.set_placeholder(SharedString::from(placeholder), window, cx);
+                            st.set_placeholder(placeholder.clone(), window, cx);
                         });
                     }
 
@@ -267,28 +277,28 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
         .child(tab(
             "download-tab-game",
             lucide_icons::icon_box(),
-            "游戏",
+            t!("DownloadPage.tab_game"),
             DownloadTab::Game,
             active,
         ))
         .child(tab(
             "download-tab-resource",
             lucide_icons::icon_package(),
-            "资源包",
+            t!("DownloadPage.tab_resource"),
             DownloadTab::ResourcePack,
             active,
         ))
         .child(tab(
             "download-tab-mod",
             lucide_icons::icon_layers(),
-            "模组",
+            t!("DownloadPage.tab_mods"),
             DownloadTab::Mod,
             active,
         ))
         .when(animating, |this| this)
 }
 
-fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> Div {
+fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {
     let tab = state.tab;
     let refresh_disabled = match tab {
         DownloadTab::Game => state.loading || state.force_refresh_next,
@@ -319,16 +329,16 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
 
     let channel_filter: AnyElement = if tab == DownloadTab::Game {
         let (label, selected_index) = match state.channel_filter {
-            DownloadChannelFilter::All => (SharedString::from("全部"), 0usize),
-            DownloadChannelFilter::Release => (SharedString::from("正式"), 1usize),
-            DownloadChannelFilter::Beta => (SharedString::from("测试版"), 2usize),
-            DownloadChannelFilter::Preview => (SharedString::from("预览"), 3usize),
+            DownloadChannelFilter::All => (t!("common.all"), 0usize),
+            DownloadChannelFilter::Release => (t!("common.release"), 1usize),
+            DownloadChannelFilter::Beta => (t!("common.beta"), 2usize),
+            DownloadChannelFilter::Preview => (t!("common.preview"), 3usize),
         };
         let options = vec![
-            DropdownOption::from("全部"),
-            DropdownOption::from("正式"),
-            DropdownOption::from("测试版"),
-            DropdownOption::from("预览"),
+            DropdownOption::from(t!("common.all")),
+            DropdownOption::from(t!("common.release")),
+            DropdownOption::from(t!("common.beta")),
+            DropdownOption::from(t!("common.preview")),
         ];
         Dropdown::new(
             "download-channel-filter",
@@ -364,9 +374,9 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
 
     let loader_filter: AnyElement = if tab == DownloadTab::Game {
         let (label, selected_index) = match state.loader_filter {
-            DownloadLoaderFilter::All => (SharedString::from("全部"), 0usize),
-            DownloadLoaderFilter::Vanilla => (SharedString::from("原版"), 1usize),
-            DownloadLoaderFilter::LeviLamina => (SharedString::from("LeviLamina"), 2usize),
+            DownloadLoaderFilter::All => (t!("common.all"), 0usize),
+            DownloadLoaderFilter::Vanilla => (t!("DownloadPage.filter_vanilla"), 1usize),
+            DownloadLoaderFilter::LeviLamina => (t!("DownloadPage.filter_levilamina"), 2usize),
         };
         Dropdown::new(
             "download-loader-filter",
@@ -374,9 +384,9 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             px(132.),
             label,
             vec![
-                DropdownOption::from("全部"),
-                DropdownOption::from("原版"),
-                DropdownOption::from("LeviLamina"),
+                DropdownOption::from(t!("common.all")),
+                DropdownOption::from(t!("DownloadPage.filter_vanilla")),
+                DropdownOption::from(t!("DownloadPage.filter_levilamina")),
             ],
             selected_index,
             state.levilamina_support_loaded || state.loader_filter == DownloadLoaderFilter::All,
@@ -491,15 +501,15 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
 
             let mut version_options: Vec<DropdownOption> =
                 Vec::with_capacity(1 + state.curseforge_versions.len());
-            version_options.push(DropdownOption::from("全部版本"));
+            version_options.push(DropdownOption::from(t!("common.all_versions")));
             for v in &state.curseforge_versions {
                 version_options.push(DropdownOption::from(v.clone()));
             }
 
             let version_label = if !enabled {
-                SharedString::from("加载中...")
+                t!("common.loading")
             } else if state.curseforge_selected_game_version.trim().is_empty() {
-                SharedString::from("全部版本")
+                t!("common.all_versions")
             } else {
                 state.curseforge_selected_game_version.clone()
             };
@@ -559,19 +569,19 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             .into_any_element();
 
             let sort_options = vec![
-                DropdownOption::from("精选"),
-                DropdownOption::from("热门"),
-                DropdownOption::from("更新"),
-                DropdownOption::from("名称"),
-                DropdownOption::from("下载"),
+                DropdownOption::from(t!("CurseForge.sort_featured")),
+                DropdownOption::from(t!("CurseForge.sort_popularity")),
+                DropdownOption::from(t!("CurseForge.sort_updated")),
+                DropdownOption::from(t!("CurseForge.sort_name")),
+                DropdownOption::from(t!("CurseForge.sort_downloads")),
             ];
 
             let (sort_label, sort_selected_index) = match state.curseforge_sort_field {
-                2 => (SharedString::from("热门"), 1usize),
-                3 => (SharedString::from("更新"), 2usize),
-                4 => (SharedString::from("名称"), 3usize),
-                6 => (SharedString::from("下载"), 4usize),
-                _ => (SharedString::from("精选"), 0usize),
+                2 => (t!("CurseForge.sort_popularity"), 1usize),
+                3 => (t!("CurseForge.sort_updated"), 2usize),
+                4 => (t!("CurseForge.sort_name"), 3usize),
+                6 => (t!("CurseForge.sort_downloads"), 4usize),
+                _ => (t!("CurseForge.sort_featured"), 0usize),
             };
 
             let sort_select = Dropdown::new(
@@ -581,7 +591,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 if enabled {
                     sort_label
                 } else {
-                    SharedString::from("加载中...")
+                    t!("common.loading")
                 },
                 sort_options,
                 sort_selected_index,
@@ -621,6 +631,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
         }
         DownloadTab::Mod => {
             let enabled = state.levilauncher_loaded;
+            let all_label = t!("common.all");
 
             // 1. 加载器选择下拉框 (Loader Type Dropdown: "全部", "LeviLamina")
             let mut loader_type_options = Vec::with_capacity(state.levilauncher_loaders.len());
@@ -629,7 +640,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             }
 
             let loader_type_label = if state.levilauncher_selected_loader.trim().is_empty() {
-                SharedString::from("全部")
+                t!("common.all")
             } else {
                 state.levilauncher_selected_loader.clone()
             };
@@ -653,7 +664,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                         s.levilauncher_loaders
                             .get(ix)
                             .cloned()
-                            .unwrap_or_else(|| SharedString::from("全部"))
+                            .unwrap_or_else(|| all_label.clone())
                     });
                     cx.update_global(|s: &mut DownloadPageState, _cx| {
                         if s.levilauncher_selected_loader == chosen_loader {
@@ -671,18 +682,19 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
 
             // 2. 加载器版本选择下拉框 (Loader Version Dropdown)
             let mut ver_options = Vec::with_capacity(1 + state.levilauncher_loader_versions.len());
-            ver_options.push(DropdownOption::from("全部版本"));
+            ver_options.push(DropdownOption::from(t!("common.all_versions")));
             for v in &state.levilauncher_loader_versions {
                 ver_options.push(DropdownOption::from(v.clone()));
             }
 
             let ver_label = if !enabled && state.levilauncher_loading {
-                SharedString::from("加载中...")
+                t!("common.loading")
             } else if state.levilauncher_selected_loader_version.trim().is_empty() {
-                SharedString::from("全部版本")
+                t!("common.all_versions")
             } else {
                 state.levilauncher_selected_loader_version.clone()
             };
+            let all_versions_label = t!("common.all_versions");
 
             let selected_ver_index = if state.levilauncher_selected_loader_version.trim().is_empty()
                 || state.levilauncher_selected_loader_version == "全部版本"
@@ -707,13 +719,13 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 enabled,
                 move |ix, _window, cx| {
                     let version = if ix == 0 {
-                        SharedString::from("全部版本")
+                        all_versions_label.clone()
                     } else {
                         cx.read_global(|s: &DownloadPageState, _cx| {
                             s.levilauncher_loader_versions
                                 .get(ix.saturating_sub(1))
                                 .cloned()
-                                .unwrap_or_else(|| SharedString::from("全部版本"))
+                                .unwrap_or_else(|| all_versions_label.clone())
                         })
                     };
                     cx.update_global(|s: &mut DownloadPageState, _cx| {

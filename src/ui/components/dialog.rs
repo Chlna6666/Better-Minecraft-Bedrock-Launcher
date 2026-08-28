@@ -1,3 +1,4 @@
+use crate::ui::state::i18n::I18n;
 use crate::ui::{
     components::{
         button::{ghost_button, primary_button},
@@ -75,6 +76,7 @@ pub fn dialog_actions(
 
 /// Unified Confirmation Dialog Component.
 pub fn confirm_dialog(
+    i18n: &I18n,
     colors: &ThemeColors,
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
@@ -87,7 +89,11 @@ pub fn confirm_dialog(
 ) -> AnyElement {
     let cancel_dismiss = dismiss_handle.clone();
     let confirm_label: SharedString = confirm_label.into();
-    let mut cancel_button = ghost_button(colors, "dialog-confirm-cancel", "取消");
+    let mut cancel_button = ghost_button(
+        colors,
+        "dialog-confirm-cancel",
+        i18n.t_key(crate::i18n_key!("common.cancel")),
+    );
     if pending {
         cancel_button = cancel_button.opacity(0.55);
     } else {
@@ -99,7 +105,7 @@ pub fn confirm_dialog(
         colors,
         "dialog-confirm-save",
         if pending {
-            SharedString::from("处理中...")
+            i18n.t_key(crate::i18n_key!("common.processing"))
         } else {
             confirm_label
         },
@@ -124,6 +130,7 @@ pub fn confirm_dialog(
 
 /// Unified Single-Input Prompt Dialog Component.
 pub fn prompt_dialog(
+    i18n: &I18n,
     colors: &ThemeColors,
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
@@ -165,17 +172,19 @@ pub fn prompt_dialog(
         )
         .child(dialog_actions(
             colors,
-            ghost_button(colors, "dialog-prompt-cancel", "取消").on_mouse_down(
-                MouseButton::Left,
-                move |_, _, cx| {
-                    cancel_dismiss.dismiss(cx);
-                },
-            ),
+            ghost_button(
+                colors,
+                "dialog-prompt-cancel",
+                i18n.t_key(crate::i18n_key!("common.cancel")),
+            )
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cancel_dismiss.dismiss(cx);
+            }),
             primary_button(
                 colors,
                 "dialog-prompt-save",
                 if pending {
-                    SharedString::from("处理中...")
+                    i18n.t_key(crate::i18n_key!("common.processing"))
                 } else {
                     confirm_label
                 },

@@ -5,8 +5,9 @@ use chrono::{Days, Utc};
 pub(super) fn render_statistics_tab(
     colors: &ThemeColors,
     version: &ManagedVersionEntry,
-    _cx: &mut Context<ManagePageView>,
+    cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
+    let i18n = cx.global::<I18n>();
     let info = &version.game_info;
     let days = recent_days(info, 14);
     let max_sessions = days
@@ -36,41 +37,41 @@ pub(super) fn render_statistics_tab(
                 .gap(px(10.))
                 .child(stat_card(
                     colors,
-                    "累计游戏时间",
-                    format_duration(info.total_play_time),
+                    t!("ManagePage.stats_total_play_time"),
+                    format_duration(i18n, info.total_play_time),
                 ))
                 .child(stat_card(
                     colors,
-                    "启动次数",
-                    format!("{} 次", info.total_sessions),
+                    t!("ManagePage.stats_launch_count"),
+                    t!("ManagePage.stats_count", count = info.total_sessions),
                 ))
                 .child(stat_card(
                     colors,
-                    "最近启动",
+                    t!("ManagePage.stats_last_launch"),
                     info.last_play_time.map_or_else(
-                        || "从未启动".to_string(),
-                        |time| time.format("%Y-%m-%d %H:%M").to_string(),
+                        || t!("ManagePage.stats_never_launched"),
+                        |time| SharedString::from(time.format("%Y-%m-%d %H:%M").to_string()),
                     ),
                 )),
         )
         .child(chart_card(
             colors,
-            "每日启动次数",
-            "最近 14 天",
+            t!("ManagePage.stats_daily_launches"),
+            t!("ManagePage.stats_last_14_days"),
             &days,
             max_sessions,
             |day| day.sessions,
-            |value| format!("{value} 次"),
+            |value| t!("ManagePage.stats_count", count = value),
             colors.accent,
         ))
         .child(chart_card(
             colors,
-            "每日游戏时间",
-            "最近 14 天",
+            t!("ManagePage.stats_daily_play_time"),
+            t!("ManagePage.stats_last_14_days"),
             &days,
             max_play_time,
             |day| day.play_time,
-            format_duration,
+            |value| format_duration(i18n, value),
             colors.stat_green_text,
         ))
         .into_any_element()
@@ -99,7 +100,7 @@ fn recent_days(info: &crate::core::version::game_info::GameInfo, count: u64) -> 
         .collect()
 }
 
-fn stat_card(colors: &ThemeColors, label: &'static str, value: String) -> Div {
+fn stat_card(colors: &ThemeColors, label: SharedString, value: SharedString) -> Div {
     div()
         .min_h(px(86.))
         .p(px(14.))
@@ -130,12 +131,12 @@ fn stat_card(colors: &ThemeColors, label: &'static str, value: String) -> Div {
 
 fn chart_card(
     colors: &ThemeColors,
-    title: &'static str,
-    subtitle: &'static str,
+    title: SharedString,
+    subtitle: SharedString,
     days: &[DailyPoint],
     maximum: u64,
     value: impl Fn(&DailyPoint) -> u64,
-    value_label: impl Fn(u64) -> String,
+    value_label: impl Fn(u64) -> SharedString,
     color: Hsla,
 ) -> Div {
     div()
@@ -214,10 +215,13 @@ fn chart_card(
         )
 }
 
-fn format_duration(seconds: u64) -> String {
+fn format_duration(i18n: &I18n, seconds: u64) -> SharedString {
     if seconds >= 3_600 {
-        format!("{:.1} 小时", seconds as f64 / 3_600.0)
+        t!(
+            "ManagePage.stats_hours",
+            hours = format!("{:.1}", seconds as f64 / 3_600.0)
+        )
     } else {
-        format!("{} 分钟", seconds / 60)
+        t!("ManagePage.stats_minutes", minutes = seconds / 60)
     }
 }

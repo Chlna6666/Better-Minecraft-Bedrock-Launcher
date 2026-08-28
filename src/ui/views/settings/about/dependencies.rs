@@ -103,12 +103,12 @@ pub(super) fn render_dependencies_modal(
                         .text_size(px(15.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child(i18n.t("AboutSection.dependencies.title")),
+                        .child(t!("AboutSection.dependencies.title")),
                 ),
         )
         .child(icon_btn(
             colors,
-            i18n.t("common.close"),
+            t!("common.close"),
             lucide_icons::icon_x(),
             true,
             close_button,
@@ -134,15 +134,15 @@ pub(super) fn render_dependencies_modal(
                         .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child(i18n.t("AboutSection.dependencies.manifest")),
+                        .child(t!("AboutSection.dependencies.manifest")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.text_secondary)
-                        .child(i18n.t_args(
+                        .child(t!(
                             "AboutSection.dependencies.count",
-                            crate::i18n_args![("count", dependency_count.as_ref())],
+                            count = dependency_count.as_ref()
                         )),
                 ),
         )
@@ -291,11 +291,11 @@ fn render_font_info(colors: &ThemeColors, i18n: &I18n, font_family: SharedString
                 .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child(i18n.t("AboutSection.dependencies.font_title")),
+                .child(t!("AboutSection.dependencies.font_title")),
         )
         .child(info_row(
             colors,
-            i18n.t("AboutSection.dependencies.font_family"),
+            t!("AboutSection.dependencies.font_family"),
             font_family,
         ))
 }
@@ -426,19 +426,19 @@ fn render_dependency_item(
                         .gap(px(7.))
                         .child(metadata_chip(
                             colors,
-                            i18n.t("AboutSection.dependencies.version"),
+                            t!("AboutSection.dependencies.version"),
                             SharedString::from(item.version),
                             i18n,
                         ))
                         .child(metadata_chip(
                             colors,
-                            i18n.t("AboutSection.dependencies.license"),
+                            t!("AboutSection.dependencies.license"),
                             SharedString::from(item.license),
                             i18n,
                         ))
                         .child(metadata_chip(
                             colors,
-                            i18n.t("AboutSection.dependencies.source"),
+                            t!("AboutSection.dependencies.source"),
                             source_kind_label(i18n, &item.source_kind),
                             i18n,
                         )),
@@ -454,7 +454,7 @@ fn metadata_chip(
     i18n: &I18n,
 ) -> Div {
     let value = if value.as_ref().trim().is_empty() {
-        i18n.t("AboutSection.dependencies.unknown")
+        t!("AboutSection.dependencies.unknown")
     } else {
         value
     };
@@ -528,9 +528,9 @@ fn dependency_source_button(
 
 fn source_kind_label(i18n: &I18n, source_kind: &str) -> SharedString {
     match source_kind {
-        "registry" => i18n.t("AboutSection.dependencies.source_registry"),
-        "git" => i18n.t("AboutSection.dependencies.source_git"),
-        "path" => i18n.t("AboutSection.dependencies.source_path"),
+        "registry" => t!("AboutSection.dependencies.source_registry"),
+        "git" => t!("AboutSection.dependencies.source_git"),
+        "path" => t!("AboutSection.dependencies.source_path"),
         _ => SharedString::from(source_kind.to_string()),
     }
 }

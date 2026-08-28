@@ -1,6 +1,7 @@
 use super::*;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::state::i18n::I18n;
 use crate::ui::views::tasks::{
     TaskCardMotionKind, TaskCardViewModel, TasksPageRenderModel, TasksPageView,
 };
@@ -8,7 +9,7 @@ use gpui::prelude::FluentBuilder as _;
 use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
 
-fn loading_state(colors: &ThemeColors) -> AnyElement {
+fn loading_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .size_full()
         .flex()
@@ -19,12 +20,12 @@ fn loading_state(colors: &ThemeColors) -> AnyElement {
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(task_text_secondary(colors))
-                .child("任务数据整理中..."),
+                .child(t!("common.loading")),
         )
         .into_any_element()
 }
 
-fn empty_state(colors: &ThemeColors) -> AnyElement {
+fn empty_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
         .size_full()
         .flex()
@@ -58,19 +59,19 @@ fn empty_state(colors: &ThemeColors) -> AnyElement {
                         .text_size(px(17.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(task_text_main(colors))
-                        .child("暂无任务"),
+                        .child(t!("Tasks.empty")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(task_text_secondary(colors))
-                        .child("下载、安装和更新开始后，任务会在这里展示。"),
+                        .child(t!("Tasks.empty_hint")),
                 ),
         )
         .into_any_element()
 }
 
-fn header_stat(colors: &ThemeColors, label: &'static str, value: impl ToString) -> Div {
+fn header_stat(colors: &ThemeColors, label: SharedString, value: impl ToString) -> Div {
     div()
         .flex()
         .items_center()
@@ -137,15 +138,16 @@ fn render_tasks_body(
     colors: &ThemeColors,
     this: &TasksPageView,
     render_model: &TasksPageRenderModel,
+    i18n: &I18n,
     cx: &mut Context<TasksPageView>,
 ) -> AnyElement {
     if render_model.loading {
-        return loading_state(colors);
+        return loading_state(colors, i18n);
     }
 
     if render_model.total_count == 0 {
         if this.transition_cards().is_empty() {
-            return empty_state(colors);
+            return empty_state(colors, i18n);
         }
 
         return render_task_list(colors, this, Vec::new(), cx).into_any_element();
@@ -171,6 +173,7 @@ pub(super) fn render_tasks_page(
     _window: &mut Window,
     cx: &mut Context<TasksPageView>,
 ) -> impl IntoElement {
+    let i18n = cx.global::<I18n>().clone();
     let header = div()
         .w_full()
         .px(px(24.))
@@ -190,7 +193,7 @@ pub(super) fn render_tasks_page(
                     .text_size(px(20.))
                     .font_weight(FontWeight::BOLD)
                     .text_color(task_text_main(&colors))
-                    .child("任务管理器"),
+                    .child(t!("Tasks.title")),
             ),
         )
         .child(
@@ -200,17 +203,17 @@ pub(super) fn render_tasks_page(
                 .gap(px(20.))
                 .child(header_stat(
                     &colors,
-                    "活动任务:",
+                    t!("Tasks.active"),
                     this.render_model.active_total,
                 ))
                 .child(header_stat(
                     &colors,
-                    "总线程:",
+                    t!("Tasks.total_threads"),
                     this.render_model.thread_total,
                 )),
         );
 
-    let list_body = render_tasks_body(&colors, this, &this.render_model, cx);
+    let list_body = render_tasks_body(&colors, this, &this.render_model, &i18n, cx);
     let body = div()
         .flex_1()
         .min_h(px(0.))

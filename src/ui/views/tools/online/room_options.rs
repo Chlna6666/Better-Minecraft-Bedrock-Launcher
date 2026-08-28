@@ -1,5 +1,6 @@
 use crate::ui::animation::{spring_bouncy, spring_motion};
 use crate::ui::components::input::Input;
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
@@ -10,15 +11,19 @@ use lucide_gpui::icons as lucide_icons;
 
 use super::widgets::subtle_button;
 
-pub(super) fn render_advanced_section(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+pub(super) fn render_advanced_section(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+) -> Div {
     let mut section = div().w_full().flex().flex_col().gap(px(10.)).child(
         subtle_button(
             colors,
             "online-room-advanced",
             if state.room_advanced_open {
-                "收起房间参数"
+                t!("Online.room_options_close")
             } else {
-                "房间参数"
+                t!("Online.room_options")
             },
             lucide_icons::icon_sliders_horizontal(),
             state.online_operation.is_busy(),
@@ -33,13 +38,17 @@ pub(super) fn render_advanced_section(colors: &ThemeColors, state: &ToolsPageSta
     );
 
     if state.room_advanced_open {
-        section = section.child(render_advanced_panel(colors, state));
+        section = section.child(render_advanced_panel(colors, i18n, state));
     }
 
     section
 }
 
-fn render_advanced_panel(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoElement {
+fn render_advanced_panel(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &ToolsPageState,
+) -> impl IntoElement {
     crate::ui::components::page_shell::inner_well(colors)
         .w_full()
         .p(px(14.))
@@ -48,17 +57,17 @@ fn render_advanced_panel(colors: &ThemeColors, state: &ToolsPageState) -> impl I
         .gap(px(12.))
         .child(render_inline_input(
             colors,
-            "玩家名",
-            "留空时每次自动生成随机名称",
+            t!("Online.player_name"),
+            t!("Online.player_name_hint"),
             state.player_name_input.as_ref(),
-            "留空自动生成",
+            t!("Online.player_name_placeholder"),
         ))
         .child(render_inline_input(
             colors,
-            "开放端口",
-            "首个有效端口用作本次房主标识",
+            t!("Online.open_ports"),
+            t!("Online.open_ports_hint_short"),
             state.game_ports_input.as_ref(),
-            "7551, 19132",
+            t!("Online.open_ports_placeholder"),
         ))
         .with_animation(
             "online-room-advanced-panel",
@@ -74,10 +83,10 @@ fn render_advanced_panel(colors: &ThemeColors, state: &ToolsPageState) -> impl I
 
 fn render_inline_input(
     colors: &ThemeColors,
-    label: &'static str,
-    helper: &'static str,
+    label: SharedString,
+    helper: SharedString,
     input: Option<&Entity<crate::ui::components::input::InputState>>,
-    placeholder: &'static str,
+    placeholder: SharedString,
 ) -> Div {
     let field: AnyElement = input.map_or_else(
         || {
@@ -111,7 +120,7 @@ fn render_inline_input(
         .child(render_input_field(colors, field))
 }
 
-fn render_input_label(colors: &ThemeColors, label: &'static str, helper: &'static str) -> Div {
+fn render_input_label(colors: &ThemeColors, label: SharedString, helper: SharedString) -> Div {
     div()
         .flex()
         .items_center()
