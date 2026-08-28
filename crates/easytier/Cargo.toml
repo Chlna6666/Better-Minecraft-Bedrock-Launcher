@@ -194,7 +194,7 @@ parking_lot = { version = "0.12.0" }
 
 wildmatch = "2.3.4"
 
-rust-i18n = "3"
+rust-i18n = "4.2.1"
 sys-locale = "0.3"
 
 ringbuf = "0.4.5"
