@@ -1,7 +1,7 @@
 use crate::config::agreement;
 use crate::ui::components::markdown_renderer::{MarkdownDocument, render_markdown_document};
 use crate::ui::components::modal;
-use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::components::scroll::Scrollbar;
 use crate::ui::state::agreement::AgreementState;
 use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
@@ -35,127 +35,10 @@ impl UserAgreementModalOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AgreementScrollAction {
-    Top,
-    PageUp,
-    PageDown,
-    Bottom,
-}
-
-fn agreement_scroll_progress(handle: &ScrollHandle) -> f32 {
-    let viewport_height = handle.bounds().size.height / px(1.0);
-    if viewport_height <= 1.0 {
-        return 0.0;
-    }
-
-    let max_scroll = handle.max_offset().height / px(1.0);
-    if max_scroll <= 1.0 {
-        return 1.0;
-    }
-
-    let current_scroll = -(handle.offset().y / px(1.0));
-    (current_scroll / max_scroll).clamp(0.0, 1.0)
-}
-
-fn apply_agreement_scroll_action(
-    handle: &ScrollHandle,
-    action: AgreementScrollAction,
-    window: &mut Window,
-    check_acceptance: bool,
-) {
-    let current = handle.offset();
-    let viewport_height = (handle.bounds().size.height / px(1.0)).max(1.0);
-    let max_scroll = (handle.max_offset().height / px(1.0)).max(0.0);
-    let current_scroll = -(current.y / px(1.0));
-    let page_step = (viewport_height * 0.82).max(120.0);
-
-    let target_scroll = match action {
-        AgreementScrollAction::Top => 0.0,
-        AgreementScrollAction::PageUp => (current_scroll - page_step).max(0.0),
-        AgreementScrollAction::PageDown => (current_scroll + page_step).min(max_scroll),
-        AgreementScrollAction::Bottom => max_scroll,
-    };
-
-    handle.set_offset(point(current.x, px(-target_scroll)));
-    window.refresh();
-
-    if check_acceptance {
-        window.on_next_frame(|_window, cx| {
-            cx.update_global(|agreement: &mut AgreementState, _cx| {
-                agreement.unlock_accept_if_scrolled_to_end();
-            });
-        });
-    }
-}
-
-fn scroll_action_button(
-    id: &'static str,
-    action: AgreementScrollAction,
-    handle: ScrollHandle,
-    colors: crate::ui::theme::colors::ThemeColors,
-    check_acceptance: bool,
-) -> impl IntoElement {
-    let icon_path = match action {
-        AgreementScrollAction::Top | AgreementScrollAction::PageUp => {
-            lucide_icons::icon_chevron_up()
-        }
-        AgreementScrollAction::PageDown | AgreementScrollAction::Bottom => {
-            lucide_icons::icon_chevron_down()
-        }
-    };
-    let has_edge_line = matches!(
-        action,
-        AgreementScrollAction::Top | AgreementScrollAction::Bottom
-    );
-    let edge_line_before = action == AgreementScrollAction::Top;
-
-    div()
-        .id(id)
-        .flex_none()
-        .size(px(30.0))
-        .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.60,
-            ..colors.border
-        })
-        .bg(colors.surface)
-        .cursor_pointer()
-        .hover(|this| this.bg(colors.surface_hover))
-        .active(|this| this.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(1.0))
-        .when(has_edge_line && edge_line_before, |this| {
-            this.child(
-                div()
-                    .w(px(10.0))
-                    .h(px(1.0))
-                    .rounded(px(1.0))
-                    .bg(colors.text_muted),
-            )
-        })
-        .child(
-            svg()
-                .path(icon_path)
-                .size(px(13.0))
-                .text_color(colors.text_secondary),
-        )
-        .when(has_edge_line && !edge_line_before, |this| {
-            this.child(
-                div()
-                    .w(px(10.0))
-                    .h(px(1.0))
-                    .rounded(px(1.0))
-                    .bg(colors.text_muted),
-            )
-        })
-        .on_mouse_down(MouseButton::Left, move |_event, window, _cx| {
-            apply_agreement_scroll_action(&handle, action, window, check_acceptance);
-        })
+fn check_acceptance(_window: &mut Window, cx: &mut App) {
+    cx.update_global(|agreement: &mut AgreementState, _cx| {
+        agreement.unlock_accept_if_scrolled_to_end();
+    });
 }
 
 pub fn render_user_agreement_modal(
@@ -180,7 +63,6 @@ pub fn render_user_agreement_modal(
     let card_h = px(((window_height / px(1.)) * 0.82).clamp(420.0, 700.0));
     let content = render_markdown_document(markdown_document.as_ref(), &colors, theme_factor > 0.5);
     let overlay_bg = hsla(0., 0., 0.12, 0.30);
-    let scroll_progress = agreement_scroll_progress(&agreement_scroll_handle);
 
     let mut header = div()
         .px(px(24.))
@@ -251,104 +133,38 @@ pub fn render_user_agreement_modal(
         }
     }
 
-    let quick_scroll = div()
-        .px(px(24.0))
-        .py(px(8.0))
-        .border_b_1()
-        .border_color(Hsla {
-            a: 0.70,
-            ..colors.border
-        })
-        .flex()
-        .items_center()
-        .gap(px(10.0))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(72.0))
-                .h(px(5.0))
-                .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                .bg(colors.progress_track)
-                .overflow_hidden()
-                .child(
-                    div()
-                        .h_full()
-                        .w(relative(scroll_progress))
-                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                        .bg(colors.accent),
-                ),
-        )
-        .child(
-            div()
-                .flex_none()
-                .w(px(38.0))
-                .text_right()
-                .text_size(px(10.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors.text_muted)
-                .child(format!("{:.0}%", scroll_progress * 100.0)),
-        )
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .child(scroll_action_button(
-                    "agreement-scroll-top",
-                    AgreementScrollAction::Top,
-                    agreement_scroll_handle.clone(),
-                    colors,
-                    options.show_accept_button,
-                ))
-                .child(scroll_action_button(
-                    "agreement-scroll-page-up",
-                    AgreementScrollAction::PageUp,
-                    agreement_scroll_handle.clone(),
-                    colors,
-                    options.show_accept_button,
-                ))
-                .child(scroll_action_button(
-                    "agreement-scroll-page-down",
-                    AgreementScrollAction::PageDown,
-                    agreement_scroll_handle.clone(),
-                    colors,
-                    options.show_accept_button,
-                ))
-                .child(scroll_action_button(
-                    "agreement-scroll-bottom",
-                    AgreementScrollAction::Bottom,
-                    agreement_scroll_handle.clone(),
-                    colors,
-                    options.show_accept_button,
-                )),
-        );
-
     let scroll_area = div()
         .id("agreement-scroll")
-        .size_full()
-        .overflow_y_scrollbar()
-        .scrollbar_width(px(10.0))
+        .flex_1()
+        .min_w(px(0.))
+        .h_full()
+        .overflow_y_scroll()
         .track_scroll(&agreement_scroll_handle)
         .when(options.show_accept_button, |this| {
             this.on_scroll_wheel(|_, window, _cx| {
-                window.on_next_frame(|_window, cx| {
-                    cx.update_global(|agreement: &mut AgreementState, _cx| {
-                        agreement.unlock_accept_if_scrolled_to_end();
-                    });
-                });
+                window.on_next_frame(check_acceptance);
             })
-            .on_mouse_up(MouseButton::Left, |_, window, _cx| {
-                window.on_next_frame(|_, cx| {
-                    cx.update_global(|agreement: &mut AgreementState, _cx| {
-                        agreement.unlock_accept_if_scrolled_to_end();
-                    });
-                });
-            })
+            .child(
+                canvas(
+                    |_, window, cx| {
+                        let agreement = cx.global::<AgreementState>();
+                        let handle = &agreement.agreement_scroll_handle;
+                        if !agreement.accept_unlocked
+                            && handle.bounds().size.height > px(1.)
+                            && handle.max_offset().height <= px(1.)
+                        {
+                            window.on_next_frame(check_acceptance);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
         })
         .child(
             div()
-                .pr(px(10.0))
+                .pr(px(4.0))
                 .text_size(px(14.))
                 .line_height(px(22.))
                 .text_color(colors.text_secondary)
@@ -356,13 +172,20 @@ pub fn render_user_agreement_modal(
                 .child(content),
         );
 
+    let scrollbar = Scrollbar::new("agreement-scrollbar", &agreement_scroll_handle, &colors)
+        .when(options.show_accept_button, |this| {
+            this.on_scroll(check_acceptance)
+        });
+
     let body = div()
         .flex_1()
         .min_h(px(0.))
+        .flex()
         .px(px(24.))
         .pt(px(12.))
         .pb(px(10.))
-        .child(scroll_area);
+        .child(scroll_area)
+        .child(scrollbar);
 
     let accept_button = if accept_unlocked {
         div()
@@ -454,7 +277,6 @@ pub fn render_user_agreement_modal(
         .flex()
         .flex_col()
         .child(header)
-        .child(quick_scroll)
         .child(body)
         .when(options.show_accept_button, |this| this.child(footer));
 
