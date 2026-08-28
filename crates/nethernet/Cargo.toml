@@ -2,7 +2,7 @@
 name = "nethernet"
 version = "0.2.0"
 edition = "2024"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 rust-version = "1.85"
 description = "Minecraft 基岩版 NetherNet（WebRTC）传输的 Rust 实现"
 

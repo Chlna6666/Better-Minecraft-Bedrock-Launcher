@@ -1326,7 +1326,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 authors: vec!["BMCBL".to_string()],
                 description: Some("Core example plugin for BMCBL.".to_string()),
-                license: Some("GPL-3.0-only".to_string()),
+                license: Some("GPL-3.0".to_string()),
                 metadata: CargoPackageMetadata {
                     bmcbl_plugin: Some(BmcblPluginMetadata {
                         id: "bmcbl-essentials".to_string(),

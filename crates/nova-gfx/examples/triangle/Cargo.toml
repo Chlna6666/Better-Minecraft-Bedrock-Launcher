@@ -2,7 +2,7 @@
 name = "nova-triangle"
 version = "0.1.0"
 edition = "2024"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 description = "nova-gfx Vulkan triangle baseline"
 publish = false
 

@@ -7,7 +7,7 @@ publish = false
 build = "build.rs"
 authors = ["BMCBL"]
 description = "Shows Minecraft Bedrock patch notes on the BMCBL home page."
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 
 [workspace]
 

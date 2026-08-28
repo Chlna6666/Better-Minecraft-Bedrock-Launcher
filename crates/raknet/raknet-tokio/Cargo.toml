@@ -2,7 +2,7 @@
 name = "raknet-tokio"
 version = "0.2.0"
 edition = "2024"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 authors = ["Chlna6666"]
 description = "自研 RakNet 的 tokio 异步驱动：客户端、服务端与会话"
 

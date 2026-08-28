@@ -7,20 +7,55 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 架构完全迁移到 GPUI 原生界面，核心目标是在 Windows 上提供可下载、可管理、可联机、
 可编辑地图的单体桌面启动器。
 
-> 当前支持平台：Windows。Linux 仅保留部分源码路径，暂不作为发布目标；macOS 现在和
-> 后续都不在支持计划内。
+> 当前状态：Windows 是主要支持平台；Linux 的 GDK 游戏启动链路处于测试阶段，已经可以
+> 通过 Proton / Wine 正常运行 GDK 游戏，但 Xbox 成就、在线状态等在线能力仍存在问题。
+> macOS 现在和后续都不在支持计划内。
 
 ## 项目状态
 
 | 项目 | 状态 |
 | --- | --- |
 | UI 框架 | GPUI 原生界面，非 WebView |
-| 主要平台 | Windows 10 / Windows 11 |
+| 主要平台 | Windows 10 / Windows 11（主要支持平台） |
+| Linux | 测试阶段：支持通过 Proton / Wine 运行 GDK 游戏；成就、在线状态等不完整 |
 | Minecraft 版本类型 | UWP、GDK，含正式版 / 预览版 / 教育版相关分支 |
 | 渲染后端 | GPUI nova-gfx 路径，Windows 默认 Nova DX12，可配置 Nova Vulkan |
 | 插件系统 | WASM 沙箱插件，API 版本 `0.4` |
-| 许可证 | GPL-3.0-only |
+| 许可证 | GPL-3.0 |
 | 变更记录 | [CHANGELOG.md](CHANGELOG.md) |
+
+## 功能支持图表
+
+下表按当前代码中的实际模块和启动路径整理；“测试阶段”表示功能已经接入，但仍需要更多
+真实环境验证，不等同于稳定发布承诺。
+
+| 功能 | 状态 | 说明 |
+| --- | --- | --- |
+| Windows UWP / GDK 启动 | ✅ 支持 | 支持正式版、预览版、教育版等版本分支 |
+| Linux GDK 游戏启动 | 🧪 测试阶段 | 通过 Proton / Wine 运行；基本游戏运行可用，目前仅 RoundMCDev / UMU 登录路径有明确支持，在线能力仍有问题 |
+| 游戏版本下载与安装 | ✅ 支持 | 版本搜索、筛选、本地包识别、重新下载和完整性检查 |
+| CurseForge 资源 | ✅ 支持 | 浏览、筛选、分页、详情、分享导入和 Bedrock 资源安装 |
+| 资源与存档管理 | ✅ 支持 | Mod、资源包、行为包、地图、截图、服务器和备份操作 |
+| 皮肤管理与预览 | ✅ 支持 | 管理皮肤包，预览普通皮肤和 4D / 自定义几何体皮肤，适配 UWP / GDK 版本 |
+| 高级地图窗口 | ✅ 支持 | 2D / 3D 预览、区块与记录编辑、玩家操作、撤销/重做 |
+| Windows 多用户登录 | ✅ 支持 | 支持 Windows 系统本地 Xbox 账号和 BMCBL 托管的多个账号 |
+| BMCBL 托管账号的 Xbox 成就/在线状态 | ⚠️ 不可用 | 非 Windows 系统本地账号登录时，成就和在线状态无效 |
+| BMCBL 托管账号的新版本云存档 | ⚠️ 不可用 | 新版本游戏的云存档不支持；系统本地账号走微软官方登录路径 |
+| EasyTier 联机 | ✅ Windows / 🧪 Linux | 房间、节点、NAT、端口和连接日志；Linux 仍在测试 |
+| WASM 插件 | ✅ Windows / 🧪 Linux | 沙箱插件、页面/窗口注入、权限和任务能力 |
+| macOS | ❌ 不支持 | 当前及后续都不在支持计划内 |
+
+### 登录、账号与在线服务限制
+
+- Windows 支持多个 Xbox 账号。Windows 系统本地 Xbox 账号由微软官方 XUser 处理；BMCBL
+  托管账号可以在应用内登录、切换、保存和移除。
+- BMCBL 托管的非本地账号只在 Windows Win32 GDK 路径中通过 BLoader XUser Bridge
+  传递会话。该路径的 Xbox 成就和在线状态无效，新版本游戏的云存档也不可用。
+- UWP / AppContainer 不使用 BLoader XUser Bridge；没有有效的 BMCBL 托管会话时，游戏继续
+  使用微软官方登录。
+- Linux 不使用 BLoader XUser Bridge，而是通过 WineGDK / Proton 准备 GDK 登录。当前仅
+  RoundMCDev / UMU 路径有明确的登录支持标记，其他 ProtonGDK 来源可能无法登录。游戏
+  本体可以正常运行，但成就、在线状态等 Xbox 在线能力仍处于问题排查和测试阶段。
 
 ## 版本与发布
 
@@ -40,7 +75,9 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 - 启动前检查 UWP 开发者模式、UWP 运行依赖、GDK GameInput 等必要条件。
 - 支持启动参数、启动器启动后保持 / 最小化 / 关闭、UWP 最小化修复等行为配置。
 - 支持调试控制台、隔离模式、编辑器模式、禁用 Mod 加载、鼠标锁定和自定义解锁热键。
-- 内置 `BLoader.dll` 相关 Mod 注入能力，支持注入延迟和多种 Mod 类型配置。
+- 使用 BMCBL 自有的 [BLoader](https://github.com/Chlna6666/BLoader) 项目提供的 `BLoader.dll` 加载器，支持
+  原生 Mod 注入、注入延迟和多种 Mod 类型配置；Windows Win32 GDK 的托管 Xbox 会话也
+  通过其 XUser Bridge 传递。
 
 ### 下载中心
 
@@ -59,6 +96,8 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 - 地图条目支持启动地图、导出地图、编辑 NBT / `level.dat`。
 - 截图页支持 GDK 用户目录扫描和截图列表管理。
 - 服务器页支持读取服务器列表并查询 MOTD、版本、在线人数和延迟。
+- 皮肤页支持按版本管理皮肤包，读取皮肤纹理、模型几何信息并生成预览。
+- 支持普通皮肤与 4D / 自定义几何体皮肤预览；GDK 版本按对应游戏目录读取皮肤资源。
 
 ### 高级地图窗口
 
@@ -161,6 +200,16 @@ EGPUI --> GPUI
 GPUI 渲染细节见 [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.md)。
 路由和 hooks 见 [docs/GPUI_ROUTER_HOOKS.md](docs/GPUI_ROUTER_HOOKS.md)。
 
+## 实现与加载器说明
+
+- BMCBL 的启动器、GPUI 界面、版本管理、下载、账号流程、世界编辑器、联机和 Linux
+  Proton / Wine 启动适配均在本仓库中以 Rust 模块独立实现。
+- 本项目不是对其他启动器页面或业务代码的 1:1 搬运；BedrockBoot、BedrockLauncher.Core
+  等项目只作为协议、文件格式和兼容性研究参考，BMCBL 的代码和模块结构独立维护。
+- BMCBL 使用自有的 [BLoader](https://github.com/Chlna6666/BLoader) 原生加载器项目，构建时
+  嵌入 `BLoader.dll`。BLoader 负责原生 Mod 加载以及 Windows Win32 GDK 的 XUser Bridge，
+  BMCBL 负责启动编排、配置、账号会话准备和 UI 集成。
+
 ## 开发环境
 
 ### 必要条件
@@ -247,7 +296,13 @@ cargo build --manifest-path examples/plugins/bedrock-notes/Cargo.toml --release 
 
 ```powershell
 scripts/check_i18n_lang.ps1
+scripts/check_i18n_ui.ps1
 ```
+
+`check_i18n_ui.ps1` 默认输出 UI 中常见文本出口（包括 `child`、按钮标签、输入框
+占位符，以及这些出口中的 `SharedString::from` 和带空格的 `format!`）的硬编码候选，
+以及不存在的静态翻译键；完成迁移后可使用 `-Strict` 将发现项作为验证失败处理。扫描
+结果需要人工排除元素 ID、协议值、路径、日志、字体名和其他非用户可见字符串。
 
 ## 开发注意事项
 
@@ -273,7 +328,8 @@ scripts/check_i18n_lang.ps1
 
 ## 版权与免责声明
 
-BMCBL 遵循 GPL-3.0-only。项目仅用于学习、研究和社区交流。
+BMCBL 遵循 GPL-3.0（GNU General Public License, version 3）。完整许可条款见
+[LICENSE](LICENSE)。项目仅用于学习、研究和社区交流。
 
 Minecraft、Minecraft Bedrock Edition 及相关商标、素材和服务归 Mojang Studios /
 Microsoft 所有。本项目不是 Mojang 或 Microsoft 的官方产品，也不与其存在从属关系。

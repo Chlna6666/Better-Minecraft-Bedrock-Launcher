@@ -167,7 +167,7 @@ Name:           $PACKAGE_NAME
 Version:        $RPM_VERSION
 Release:        $RPM_RELEASE%{?dist}
 Summary:        Better Minecraft Bedrock Launcher
-License:        GPL-3.0-only
+License:        GPL-3.0
 URL:            https://www.bmcbl.com/
 Source0:        bmcbl-payload.tar.gz
 BuildArch:      x86_64

@@ -2,7 +2,7 @@
 name = "raknet"
 version = "0.2.0"
 edition = "2024"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 authors = ["Chlna6666"]
 description = "自研 RakNet 协议核心：零拷贝编解码与可靠传输引擎（无 IO 依赖）"
 

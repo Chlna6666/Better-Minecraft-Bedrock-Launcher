@@ -2,7 +2,7 @@
 name = "nova-atlas-smoke-dx12"
 version = "0.1.0"
 edition = "2024"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 description = "nova-gfx Direct3D 12 atlas resource binding smoke test"
 publish = false
 

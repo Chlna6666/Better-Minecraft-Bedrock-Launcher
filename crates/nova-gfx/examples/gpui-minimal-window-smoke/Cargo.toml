@@ -2,7 +2,7 @@
 name = "nova-gpui-minimal-window-smoke"
 version = "0.1.0"
 edition = "2024"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 description = "GPUI nova-gfx present smoke test"
 publish = false
 

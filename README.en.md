@@ -8,20 +8,61 @@ Tauri / WebView / React stack. The current goal is a native Windows launcher
 that can download, manage, launch, connect, and edit Bedrock worlds from a
 single desktop application.
 
-> Supported platform: Windows. Linux source paths exist but are not a release
-> target yet. macOS is not supported and is not planned.
+> Current status: Windows is the primary supported platform. Linux GDK game
+> launching is in testing and can run GDK games normally through Proton / Wine,
+> but Xbox achievements, presence, and other online capabilities still have
+> known issues. macOS is not supported and is not planned.
 
 ## Status
 
 | Area | Status |
 | --- | --- |
 | UI framework | Native GPUI, no WebView |
-| Primary platform | Windows 10 / Windows 11 |
+| Primary platform | Windows 10 / Windows 11 (primary supported platform) |
+| Linux | Testing: GDK games run through Proton / Wine; achievements and presence are incomplete |
 | Minecraft version types | UWP and GDK, including release / preview / education branches |
 | Renderer | GPUI nova-gfx path, Nova DX12 by default on Windows, configurable Nova Vulkan |
 | Plugin system | WASM sandbox plugins, API version `0.4` |
-| License | GPL-3.0-only |
+| License | GPL-3.0 |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |
+
+## Feature Support Matrix
+
+This table is derived from the current code paths and distinguishes implemented
+features from platform paths that are still under real-world testing. “Testing”
+does not mean a stable release guarantee.
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Windows UWP / GDK launching | ✅ Supported | Release, preview, education, and related branches |
+| Linux GDK game launching | 🧪 Testing | Proton / Wine path; basic gameplay works; only the RoundMCDev / UMU sign-in path is explicitly supported, and online capabilities still have issues |
+| Game version download and installation | ✅ Supported | Search, filters, local package detection, redownload, and integrity checks |
+| CurseForge resources | ✅ Supported | Browse, filter, paginate, view details, import shares, and install Bedrock resources |
+| Resource and world management | ✅ Supported | Mods, packs, behavior packs, worlds, screenshots, servers, and backups |
+| Skin management and preview | ✅ Supported | Manage skin packs, preview standard and 4D / custom-geometry skins, and support UWP / GDK versions |
+| Advanced map window | ✅ Supported | 2D / 3D preview, chunk and record editing, player actions, undo / redo |
+| Windows multi-account sign-in | ✅ Supported | Windows system-local Xbox account plus multiple BMCBL-managed accounts |
+| Xbox achievements / presence for managed accounts | ⚠️ Unavailable | Achievements and presence are invalid for non-system-local account sign-in |
+| New-version cloud saves for managed accounts | ⚠️ Unavailable | New-version cloud saves are unsupported; system-local accounts use Microsoft's official path |
+| EasyTier online play | ✅ Windows / 🧪 Linux | Rooms, peers, NAT, ports, and connection logs; Linux remains in testing |
+| WASM plugins | ✅ Windows / 🧪 Linux | Sandboxed plugins, page/window injection, permissions, and task APIs |
+| macOS | ❌ Unsupported | Not in the current or planned support scope |
+
+### Sign-in, account, and online-service limitations
+
+- Windows supports multiple Xbox accounts. The Windows system-local Xbox account
+  is handled by Microsoft's official XUser path; BMCBL-managed accounts can be
+  signed in, switched, stored, and removed in the launcher.
+- BMCBL-managed non-system-local accounts are passed through the BLoader XUser
+  Bridge only on the Windows Win32 GDK path. Xbox achievements and presence are
+  invalid on this path, and cloud saves for newer game versions are unavailable.
+- UWP / AppContainer does not use the BLoader XUser Bridge. Without a valid
+  BMCBL-managed session, the game continues with Microsoft's official sign-in.
+- Linux does not use the BLoader XUser Bridge. It prepares GDK sign-in through
+  WineGDK / Proton; only the RoundMCDev / UMU path is explicitly marked as
+  sign-in capable, while other ProtonGDK sources may not sign in. The game
+  itself can run normally, while achievements, presence, and other Xbox online
+  features remain under testing.
 
 ## Versions And Releases
 
@@ -45,8 +86,10 @@ single desktop application.
   behavior.
 - Support debug console, isolated mode, editor mode, disabled mod loading, mouse
   locking, and custom unlock hotkeys.
-- Provide `BLoader.dll` based mod injection, injection delay, and mod type
-  configuration.
+- Use BMCBL's own [`BLoader`](https://github.com/Chlna6666/BLoader) project and its `BLoader.dll` loader
+  for native mod injection, injection delay, and mod type configuration. The
+  Windows Win32 GDK managed-account session is also passed through its XUser
+  Bridge.
 
 ### Downloads
 
@@ -71,6 +114,8 @@ single desktop application.
 - Launch worlds, export worlds, and edit NBT / `level.dat` from world entries.
 - Scan GDK user directories for screenshots.
 - Read server lists and query MOTD, version, player count, and latency.
+- Manage skin packs per game version, read skin textures and model geometry, and generate previews.
+- Preview standard and 4D / custom-geometry skins; GDK versions read skin resources from their corresponding game directories.
 
 ### Advanced Map Window
 
@@ -194,6 +239,20 @@ Async runtime and GPUI state model:
 GPUI renderer notes: [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.md).
 Router and hooks: [docs/GPUI_ROUTER_HOOKS.md](docs/GPUI_ROUTER_HOOKS.md).
 
+## Implementation And Loader Notes
+
+- BMCBL's launcher, GPUI interface, version management, downloads, account
+  flows, world editor, online play, and Linux Proton / Wine adapter are
+  independently implemented as Rust modules in this repository.
+- This project is not a 1:1 copy of another launcher's pages or business code.
+  BedrockBoot, BedrockLauncher.Core, and other projects are used only as
+  protocol, file-format, and compatibility references; BMCBL maintains its own
+  code and module structure.
+- BMCBL uses its own [`BLoader`](https://github.com/Chlna6666/BLoader) native loader
+  project and embeds `BLoader.dll` at build time. BLoader handles native mod
+  loading and the Windows Win32 GDK XUser Bridge; BMCBL owns launch orchestration,
+  configuration, account preparation, and UI integration.
+
 ## Development
 
 ### Requirements
@@ -285,7 +344,13 @@ and run:
 
 ```powershell
 scripts/check_i18n_lang.ps1
+scripts/check_i18n_ui.ps1
 ```
+
+`check_i18n_ui.ps1` reports common hard-coded UI text candidates and missing
+static translation keys. Review its output manually; element IDs, protocol
+values, paths, logs, font names, and other non-user-facing strings are expected
+to be filtered out. Use `-Strict` when the migration is complete.
 
 ## Development Notes
 
@@ -315,8 +380,9 @@ scripts/check_i18n_lang.ps1
 
 ## License And Disclaimer
 
-BMCBL is licensed under GPL-3.0-only. It is intended for learning, research, and
-community use.
+BMCBL is licensed under GPL-3.0 (the GNU General Public License, version 3).
+See [LICENSE](LICENSE) for the complete license terms. It is intended for
+learning, research, and community use.
 
 Minecraft, Minecraft Bedrock Edition, related trademarks, assets, and services
 belong to Mojang Studios / Microsoft. This project is not an official Mojang or
