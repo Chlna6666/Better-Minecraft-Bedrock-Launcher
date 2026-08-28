@@ -1,12 +1,13 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::{fmt, sync::Arc};
 
 use crate::{
     AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels, Rgba, ScaledPixels,
     TransitionProperty,
 };
 
-use super::{DrawOrder, PaintGpuMesh3d, Path, TransformationMatrix};
+use super::{DrawOrder, PaintGpuMesh3d, Path, Scene, TransformationMatrix};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
 #[cfg_attr(
@@ -26,6 +27,7 @@ pub(crate) enum PrimitiveKind {
     PolychromeSprite,
     Surface,
     BackdropBlur,
+    Blur,
     GpuMesh3d,
 }
 
@@ -45,6 +47,8 @@ pub(crate) enum PaintOperation {
     Primitive(Primitive),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
+    StartBlur(BlurCapture),
+    EndBlur,
 }
 
 #[derive(Clone)]
@@ -57,6 +61,7 @@ pub(crate) enum Primitive {
     PolychromeSprite(PolychromeSprite),
     Surface(PaintSurface),
     BackdropBlur(PaintBackdropBlur),
+    Blur(PaintBlur),
     GpuMesh3d(PaintGpuMesh3d),
 }
 
@@ -70,6 +75,7 @@ impl Primitive {
             (Self::MonochromeSprite(left), Self::MonochromeSprite(right)) => left == right,
             (Self::PolychromeSprite(left), Self::PolychromeSprite(right)) => left == right,
             (Self::BackdropBlur(left), Self::BackdropBlur(right)) => left == right,
+            (Self::Blur(left), Self::Blur(right)) => left == right,
             (Self::Surface(_), Self::Surface(_)) | (Self::GpuMesh3d(_), Self::GpuMesh3d(_)) => {
                 false
             }
@@ -88,6 +94,7 @@ impl Primitive {
                 };
                 shadow.bounds.dilate(margin)
             }
+            Self::Blur(blur) => blur.bounds,
             _ => *self.bounds(),
         };
         bounds.intersect(&self.content_mask().bounds)
@@ -103,6 +110,7 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => sprite.order,
             Primitive::Surface(surface) => surface.order,
             Primitive::BackdropBlur(blur) => blur.order,
+            Primitive::Blur(blur) => blur.order,
             Primitive::GpuMesh3d(mesh) => mesh.order,
         }
     }
@@ -117,6 +125,7 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => &sprite.bounds,
             Primitive::Surface(surface) => &surface.bounds,
             Primitive::BackdropBlur(blur) => &blur.bounds,
+            Primitive::Blur(blur) => &blur.bounds,
             Primitive::GpuMesh3d(mesh) => &mesh.bounds,
         }
     }
@@ -131,6 +140,7 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => sprite.order = order,
             Primitive::Surface(surface) => surface.order = order,
             Primitive::BackdropBlur(blur) => blur.order = order,
+            Primitive::Blur(blur) => blur.order = order,
             Primitive::GpuMesh3d(mesh) => mesh.order = order,
         }
     }
@@ -145,6 +155,7 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
             Primitive::Surface(surface) => &surface.content_mask,
             Primitive::BackdropBlur(blur) => &blur.content_mask,
+            Primitive::Blur(blur) => &blur.content_mask,
             Primitive::GpuMesh3d(mesh) => &mesh.content_mask,
         }
     }
@@ -159,6 +170,7 @@ impl Primitive {
             Primitive::Path(_)
             | Primitive::Underline(_)
             | Primitive::Surface(_)
+            | Primitive::Blur(_)
             | Primitive::GpuMesh3d(_) => None,
         }
     }
@@ -173,6 +185,7 @@ impl Primitive {
             Primitive::Path(_)
             | Primitive::Underline(_)
             | Primitive::Surface(_)
+            | Primitive::Blur(_)
             | Primitive::GpuMesh3d(_) => {}
         }
     }
@@ -184,6 +197,8 @@ impl PaintOperation {
             (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
             (Self::StartLayer(left), Self::StartLayer(right)) => left == right,
             (Self::EndLayer, Self::EndLayer) => true,
+            (Self::StartBlur(left), Self::StartBlur(right)) => left == right,
+            (Self::EndBlur, Self::EndBlur) => true,
             _ => false,
         }
     }
@@ -192,8 +207,78 @@ impl PaintOperation {
         match self {
             Self::Primitive(primitive) => Some(primitive.visual_bounds()),
             Self::StartLayer(bounds) => Some(*bounds),
-            Self::EndLayer => None,
+            Self::StartBlur(blur) => Some(
+                blur.bounds
+                    .dilate(blur_influence_radius(blur.radius))
+                    .intersect(&blur.content_mask.bounds),
+            ),
+            Self::EndLayer | Self::EndBlur => None,
         }
+    }
+}
+
+/// Capture parameters for a CSS `filter: blur(...)` element group.
+///
+/// `radius` is the CSS Gaussian standard deviation (sigma), expressed in scaled pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BlurCapture {
+    pub(crate) bounds: Bounds<ScaledPixels>,
+    pub(crate) content_mask: ContentMask<ScaledPixels>,
+    pub(crate) radius: ScaledPixels,
+    pub(crate) opacity: f32,
+}
+
+pub(crate) fn blur_influence_radius(radius: ScaledPixels) -> ScaledPixels {
+    let sigma = radius.0.abs();
+    if !sigma.is_finite() || sigma <= 0.0 {
+        return ScaledPixels(0.0);
+    }
+
+    // CSS blur uses the Gaussian standard deviation. Three sigma covers the practical filter
+    // support; the extra half pixel accounts for linear filtering at the target edge.
+    ScaledPixels(sigma * 3.0 + 0.5)
+}
+
+/// A scene subtree rendered through a CSS element blur filter.
+#[derive(Clone)]
+pub(crate) struct PaintBlur {
+    pub order: DrawOrder,
+    /// The capture bounds including the blur's 3-sigma and linear filtering support.
+    pub bounds: Bounds<ScaledPixels>,
+    pub content_mask: ContentMask<ScaledPixels>,
+    /// CSS Gaussian standard deviation (sigma), in scaled pixels.
+    pub radius: ScaledPixels,
+    pub opacity: f32,
+    pub content: Arc<Scene>,
+}
+
+impl fmt::Debug for PaintBlur {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PaintBlur")
+            .field("order", &self.order)
+            .field("bounds", &self.bounds)
+            .field("content_mask", &self.content_mask)
+            .field("radius", &self.radius)
+            .field("opacity", &self.opacity)
+            .field("content", &self.content.len())
+            .finish()
+    }
+}
+
+impl PartialEq for PaintBlur {
+    fn eq(&self, other: &Self) -> bool {
+        self.order == other.order
+            && self.bounds == other.bounds
+            && self.content_mask == other.content_mask
+            && self.radius == other.radius
+            && self.opacity == other.opacity
+    }
+}
+
+impl From<PaintBlur> for Primitive {
+    fn from(blur: PaintBlur) -> Self {
+        Primitive::Blur(blur)
     }
 }
 
@@ -343,7 +428,7 @@ impl From<PaintSurface> for Primitive {
 }
 
 /// Controls whether compatible overlapping backdrop blurs reuse one filtered target.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum BackdropBlurOverlapMode {
     /// Reuse one Gaussian result for compatible overlapping primitives. This is the default.
     #[default]
@@ -353,9 +438,9 @@ pub enum BackdropBlurOverlapMode {
 }
 
 /// Parameters for GPU-backed backdrop blur.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct BackdropBlurStyle {
-    /// Blur radius in logical pixels.
+    /// CSS Gaussian blur sigma (standard deviation) in logical pixels.
     pub radius: Pixels,
     /// Downsample factor used by backends that implement a separable GPU blur.
     pub downsample: u8,
@@ -460,6 +545,7 @@ pub(crate) struct PaintBackdropBlur {
     pub downsample: u8,
     pub levels: u8,
     pub saturation: f32,
+    pub opacity: f32,
     pub tint: Option<Hsla>,
     pub recompute_overlap: bool,
 }

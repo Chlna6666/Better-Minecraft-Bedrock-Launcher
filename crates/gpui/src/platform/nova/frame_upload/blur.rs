@@ -59,7 +59,7 @@ impl BackdropBlurConfig {
         // Keep it full-resolution and reserve downsampling for genuinely large kernels where the
         // bandwidth reduction outweighs reconstruction loss. This also makes application-level
         // auto_quality() a hint rather than a hard quality downgrade for titlebars/popovers.
-        let downsample = if radius <= 24.0 {
+        let downsample = if radius <= 8.0 {
             1
         } else {
             requested_downsample
@@ -193,14 +193,38 @@ impl FrameUpload {
         &self.backdrop_blur_configs
     }
 
+    pub(in crate::platform::nova) fn backdrop_blur_config_for_index(
+        &self,
+        index: u32,
+    ) -> Option<BackdropBlurConfig> {
+        self.backdrop_blur_config_at(index, index)
+    }
+
     pub(in crate::platform::nova) fn refresh_backdrop_blur_configs(&mut self) {
         let mut configs = std::mem::take(&mut self.backdrop_blur_configs);
         configs.clear();
         for batch in &self.batches {
-            let UploadedBatch::BackdropBlurs { first, count } = *batch else {
-                continue;
-            };
-            configs.extend(self.backdrop_blur_configs_for_range(first, count));
+            match *batch {
+                UploadedBatch::BackdropBlurs { first, count } => {
+                    configs.extend(self.backdrop_blur_configs_for_range(first, count));
+                }
+                UploadedBatch::CompositeBlur { index } => {
+                    if let Some(config) = self.backdrop_blur_config_for_index(index) {
+                        configs.push(config);
+                    }
+                }
+                UploadedBatch::SolidQuads { .. }
+                | UploadedBatch::Quads { .. }
+                | UploadedBatch::Shadows { .. }
+                | UploadedBatch::PathRasterization { .. }
+                | UploadedBatch::Paths { .. }
+                | UploadedBatch::MonoSprites { .. }
+                | UploadedBatch::PolySprites { .. }
+                | UploadedBatch::Underlines { .. }
+                | UploadedBatch::BeginBlur { .. }
+                | UploadedBatch::EndBlur { .. }
+                | UploadedBatch::CustomMesh3d { .. } => {}
+            }
         }
         self.backdrop_blur_configs = configs;
     }
@@ -303,7 +327,7 @@ impl FrameUpload {
 }
 
 fn source_regions_overlap(left: BackdropBlurConfig, right: BackdropBlurConfig) -> bool {
-    let support = left.radius().max(right.radius()).max(0.0) + 1.0;
+    let support = 3.0 * left.radius().max(right.radius()).max(0.0) + 1.0;
     let left = dilated_bounds(left.bounds(), support);
     let right = dilated_bounds(right.bounds(), support);
     rects_overlap(left, right)

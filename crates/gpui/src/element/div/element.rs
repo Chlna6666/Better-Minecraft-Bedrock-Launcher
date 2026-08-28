@@ -1,5 +1,5 @@
 use crate::{
-    AnyElement, App, BackdropBlurStyle, Bounds, Display, Element, ElementId, GlobalElementId,
+    AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId,
     Hitbox, ImageCacheProvider, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels,
     Point, StyleRefinement, Styled, Window, point,
 };
@@ -17,7 +17,6 @@ pub fn div() -> Div {
         children: SmallVec::default(),
         prepaint_listener: None,
         image_cache: None,
-        backdrop_blur: None,
     }
 }
 
@@ -27,7 +26,6 @@ pub struct Div {
     children: SmallVec<[StackSafe<AnyElement>; 2]>,
     prepaint_listener: Option<Box<dyn Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static>>,
     image_cache: Option<Box<dyn ImageCacheProvider>>,
-    backdrop_blur: Option<BackdropBlurStyle>,
 }
 
 impl Div {
@@ -47,11 +45,6 @@ impl Div {
         self
     }
 
-    /// Apply a GPU-backed backdrop blur behind this div.
-    pub fn backdrop_blur(mut self, style: impl Into<BackdropBlurStyle>) -> Self {
-        self.backdrop_blur = Some(style.into());
-        self
-    }
 }
 
 /// A frame state for a `Div` element, which contains layout IDs for its children.
@@ -246,14 +239,6 @@ impl Element for Div {
                     // skip children
                     if style.display == Display::None {
                         return;
-                    }
-
-                    if let Some(backdrop_blur) = self.backdrop_blur {
-                        let corner_radii = style
-                            .corner_radii
-                            .to_pixels(window.rem_size())
-                            .clamp_radii_for_quad_size(bounds.size);
-                        window.paint_backdrop_blur(bounds, corner_radii, backdrop_blur);
                     }
 
                     for child in &mut self.children {

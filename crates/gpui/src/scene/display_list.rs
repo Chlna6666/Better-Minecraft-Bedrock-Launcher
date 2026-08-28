@@ -6,10 +6,11 @@ use std::ops::Range;
 
 use super::geometry::{is_solid_quad, slice_range, trim_vec_capacity};
 use super::{
-    BatchIterator, DrawOrder, MonochromeSprite, PaintBackdropBlur, PaintGpuMesh3d, PaintOperation,
-    PaintSurface, Path, PathId, PolychromeSprite, PreparedBackdropBlurGroup, PreparedGpuMesh3dPass,
-    PreparedQuadRun, PreparedSceneBatch, PreparedSceneBatches, Primitive, PrimitiveBatch, Quad,
-    SceneAnimationId, SceneAnimationValue, Shadow, Underline,
+    BatchIterator, BlurCapture, DrawOrder, MonochromeSprite, PaintBackdropBlur, PaintBlur,
+    PaintGpuMesh3d, PaintOperation, PaintSurface, Path, PathId, PolychromeSprite,
+    PreparedBackdropBlurGroup, PreparedGpuMesh3dPass, PreparedQuadRun, PreparedSceneBatch,
+    PreparedSceneBatches, Primitive, PrimitiveBatch, Quad, SceneAnimationId, SceneAnimationValue,
+    Shadow, Underline, blur_influence_radius,
 };
 
 #[derive(Default)]
@@ -25,6 +26,7 @@ pub(crate) struct Scene {
     pub(crate) polychrome_sprites: Vec<PolychromeSprite>,
     pub(crate) surfaces: Vec<PaintSurface>,
     pub(crate) backdrop_blurs: Vec<PaintBackdropBlur>,
+    pub(crate) blurs: Vec<PaintBlur>,
     pub(crate) gpu_meshes_3d: Vec<PaintGpuMesh3d>,
     pub(crate) animation_values: Vec<SceneAnimationValue>,
     next_scene_animation_id: u32,
@@ -35,6 +37,12 @@ pub(crate) struct Scene {
     idle_clear_frames: u16,
     recent_peak_paint_operations: usize,
     recent_peak_primitives: usize,
+    blur_captures: Vec<BlurCaptureState>,
+}
+
+struct BlurCaptureState {
+    config: BlurCapture,
+    scene: Box<Scene>,
 }
 
 #[derive(Clone, Copy)]
@@ -47,6 +55,7 @@ enum ScenePrimitiveKind {
     PolychromeSprite,
     Surface,
     BackdropBlur,
+    Blur,
     GpuMesh3d,
 }
 
@@ -75,12 +84,14 @@ impl Scene {
         self.polychrome_sprites.clear();
         self.surfaces.clear();
         self.backdrop_blurs.clear();
+        self.blurs.clear();
         self.gpu_meshes_3d.clear();
         self.animation_values.clear();
         self.prepared_batches.clear();
         self.replayed_primitives = 0;
         self.retained_prefix_invalid = false;
         self.retained_prefix_verified_len = 0;
+        self.blur_captures.clear();
 
         if primitive_count_before_clear == 0 {
             self.idle_clear_frames = self.idle_clear_frames.saturating_add(1);
@@ -100,16 +111,29 @@ impl Scene {
 
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
         let mut bounds = None::<Bounds<ScaledPixels>>;
-        for operation in self.paint_operations.get(range)? {
+        for operation in self.paint_operations.get(range.clone())? {
             let operation_bounds = match operation {
                 PaintOperation::Primitive(primitive) => Some(primitive.visual_bounds()),
                 PaintOperation::StartLayer(layer_bounds) => Some(*layer_bounds),
-                PaintOperation::EndLayer => None,
+                PaintOperation::StartBlur(blur) => Some(
+                    blur.bounds
+                        .dilate(blur_influence_radius(blur.radius))
+                        .intersect(&blur.content_mask.bounds),
+                ),
+                PaintOperation::EndLayer | PaintOperation::EndBlur => None,
             };
             if let Some(operation_bounds) = operation_bounds {
                 bounds = Some(match bounds {
                     Some(bounds) => bounds.union(&operation_bounds),
                     None => operation_bounds,
+                });
+            }
+        }
+        for (group_range, group_bounds) in self.element_blur_groups() {
+            if group_range.start < range.end && range.start < group_range.end {
+                bounds = Some(match bounds {
+                    Some(bounds) => bounds.union(&group_bounds),
+                    None => group_bounds,
                 });
             }
         }
@@ -123,28 +147,34 @@ impl Scene {
         previous_range: Range<usize>,
         mut visit: impl FnMut(Bounds<ScaledPixels>),
     ) -> bool {
-        let Some(current) = self.paint_operations.get(current_range) else {
+        let Some(current) = self.paint_operations.get(current_range.clone()) else {
             return false;
         };
-        let Some(previous) = previous.paint_operations.get(previous_range) else {
+        let Some(previous_operations) = previous.paint_operations.get(previous_range.clone())
+        else {
             return false;
         };
 
         let prefix_len = current
             .iter()
-            .zip(previous)
+            .zip(previous_operations)
             .take_while(|(current, previous)| current.visually_eq(previous))
             .count();
-        let max_suffix_len = current.len().min(previous.len()).saturating_sub(prefix_len);
+        let max_suffix_len = current
+            .len()
+            .min(previous_operations.len())
+            .saturating_sub(prefix_len);
         let suffix_len = current
             .iter()
             .rev()
-            .zip(previous.iter().rev())
+            .zip(previous_operations.iter().rev())
             .take(max_suffix_len)
             .take_while(|(current, previous)| current.visually_eq(previous))
             .count();
 
-        for operation in &previous[prefix_len..previous.len().saturating_sub(suffix_len)] {
+        for operation in
+            &previous_operations[prefix_len..previous_operations.len().saturating_sub(suffix_len)]
+        {
             if let Some(bounds) = operation.visual_bounds() {
                 visit(bounds);
             }
@@ -154,15 +184,85 @@ impl Scene {
                 visit(bounds);
             }
         }
+
+        let current_changed_range =
+            current_range.start + prefix_len..current_range.end.saturating_sub(suffix_len);
+        self.for_each_element_blur_damage(current_changed_range, &mut visit);
+
+        let previous_changed_range =
+            previous_range.start + prefix_len..previous_range.end.saturating_sub(suffix_len);
+        previous.for_each_element_blur_damage(previous_changed_range, &mut visit);
         true
     }
 
+    fn for_each_element_blur_damage(
+        &self,
+        changed_range: Range<usize>,
+        visit: &mut impl FnMut(Bounds<ScaledPixels>),
+    ) {
+        if changed_range.start >= changed_range.end {
+            return;
+        }
+        for (group_range, bounds) in self.element_blur_groups() {
+            if group_range.start < changed_range.end && changed_range.start < group_range.end {
+                visit(bounds);
+            }
+        }
+    }
+
+    fn element_blur_groups(&self) -> Vec<(Range<usize>, Bounds<ScaledPixels>)> {
+        let mut groups = Vec::new();
+        let mut stack = Vec::<(usize, BlurCapture, Bounds<ScaledPixels>)>::new();
+
+        for (index, operation) in self.paint_operations.iter().enumerate() {
+            match operation {
+                PaintOperation::StartBlur(config) => {
+                    stack.push((index, config.clone(), config.bounds));
+                }
+                PaintOperation::Primitive(primitive) => {
+                    let primitive_bounds = primitive.visual_bounds();
+                    for (_, _, bounds) in &mut stack {
+                        *bounds = bounds.union(&primitive_bounds);
+                    }
+                }
+                PaintOperation::StartLayer(bounds) => {
+                    for (_, _, group_bounds) in &mut stack {
+                        *group_bounds = group_bounds.union(bounds);
+                    }
+                }
+                PaintOperation::EndBlur => {
+                    let Some((start, config, bounds)) = stack.pop() else {
+                        continue;
+                    };
+                    let bounds = bounds
+                        .dilate(blur_influence_radius(config.radius))
+                        .intersect(&config.content_mask.bounds);
+                    for (_, _, parent_bounds) in &mut stack {
+                        *parent_bounds = parent_bounds.union(&bounds);
+                    }
+                    groups.push((start..index + 1, bounds));
+                }
+                PaintOperation::EndLayer => {}
+            }
+        }
+        groups
+    }
+
     pub(crate) fn requires_full_redraw_fallback(&self) -> bool {
-        !self.surfaces.is_empty() || !self.gpu_meshes_3d.is_empty()
+        !self.surfaces.is_empty()
+            || !self.gpu_meshes_3d.is_empty()
+            || self
+                .blurs
+                .iter()
+                .any(|blur| blur.content.requires_full_redraw_fallback())
     }
 
     pub(crate) fn has_backdrop_blurs(&self) -> bool {
         !self.backdrop_blurs.is_empty()
+            || self
+                .blurs
+                .iter()
+                .any(|blur| blur.content.has_backdrop_blurs())
     }
 
     /// Returns whether any pixels sampled by any backdrop group changed.
@@ -172,7 +272,7 @@ impl Scene {
     /// its own sampling footprint. The old implementation compared one global prefix before the
     /// first blur and forced every filter target to rebuild together.
     pub(crate) fn backdrop_blur_refresh_required(&self, previous: &Self) -> bool {
-        if self.backdrop_blurs.is_empty() {
+        if !self.has_backdrop_blurs() && !previous.has_backdrop_blurs() {
             return false;
         }
 
@@ -212,7 +312,7 @@ impl Scene {
         &self,
         next_values: &[SceneAnimationValue],
     ) -> bool {
-        if self.backdrop_blurs.is_empty() {
+        if !self.has_backdrop_blurs() {
             return false;
         }
 
@@ -249,7 +349,17 @@ impl Scene {
         &self,
         damage: Bounds<ScaledPixels>,
     ) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
-        self.backdrop_blurs.iter().filter_map(move |blur| {
+        let mut damage_regions = Vec::new();
+        self.collect_backdrop_blur_damage(damage, &mut damage_regions);
+        damage_regions.into_iter()
+    }
+
+    fn collect_backdrop_blur_damage(
+        &self,
+        damage: Bounds<ScaledPixels>,
+        damage_regions: &mut Vec<Bounds<ScaledPixels>>,
+    ) {
+        for blur in &self.backdrop_blurs {
             // Each blur carries its own kernel support. A 0.1px background filter must never inherit
             // the 18px titlebar's damage expansion merely because both exist in the same scene.
             let influence_radius = backdrop_blur_influence_radius(blur);
@@ -257,12 +367,24 @@ impl Scene {
                 .dilate(influence_radius)
                 .intersect(&blur.bounds)
                 .intersect(&blur.content_mask.bounds);
-            (!affected.is_empty()).then_some(affected)
-        })
+            if !affected.is_empty() {
+                damage_regions.push(affected);
+            }
+        }
+        for blur in &self.blurs {
+            blur.content
+                .collect_backdrop_blur_damage(damage, damage_regions);
+        }
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
-        self.push_replayed_layer(bounds);
+        if let Some(capture) = self.blur_captures.last_mut() {
+            capture.scene.push_layer(bounds);
+            self.paint_operations
+                .push(PaintOperation::StartLayer(bounds));
+        } else {
+            self.push_replayed_layer(bounds);
+        }
     }
 
     fn push_replayed_layer(&mut self, bounds: Bounds<ScaledPixels>) {
@@ -273,7 +395,12 @@ impl Scene {
     }
 
     pub fn pop_layer(&mut self) {
-        self.pop_replayed_layer();
+        if let Some(capture) = self.blur_captures.last_mut() {
+            capture.scene.pop_layer();
+            self.paint_operations.push(PaintOperation::EndLayer);
+        } else {
+            self.pop_replayed_layer();
+        }
     }
 
     fn pop_replayed_layer(&mut self) {
@@ -283,10 +410,83 @@ impl Scene {
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
         let primitive = primitive.into();
+        if let Some(capture) = self.blur_captures.last_mut() {
+            let operation_start = capture.scene.paint_operations.len();
+            capture.scene.insert_primitive(primitive);
+            let captured_primitive = capture
+                .scene
+                .paint_operations
+                .get(operation_start)
+                .and_then(|operation| match operation {
+                    PaintOperation::Primitive(primitive) => Some(primitive.clone()),
+                    PaintOperation::StartLayer(_)
+                    | PaintOperation::EndLayer
+                    | PaintOperation::StartBlur(_)
+                    | PaintOperation::EndBlur => None,
+                });
+            if let Some(primitive) = captured_primitive {
+                self.paint_operations
+                    .push(PaintOperation::Primitive(primitive));
+            }
+            return;
+        }
+
+        self.insert_primitive_direct(primitive);
+    }
+
+    fn insert_primitive_direct(&mut self, primitive: Primitive) {
         let Some(order) = self.order_for_primitive(&primitive) else {
             return;
         };
-        self.push_ordered_primitive(primitive, order);
+        self.push_ordered_primitive(primitive, order, true);
+    }
+
+    pub(crate) fn begin_blur(&mut self, config: BlurCapture) {
+        self.paint_operations
+            .push(PaintOperation::StartBlur(config.clone()));
+        self.blur_captures.push(BlurCaptureState {
+            config,
+            scene: Box::default(),
+        });
+    }
+
+    pub(crate) fn end_blur(&mut self) {
+        let Some(capture) = self.blur_captures.pop() else {
+            debug_assert!(false, "ending an element blur without a matching begin");
+            return;
+        };
+
+        let mut content = *capture.scene;
+        let Some(content_bounds) = content
+            .bounds_for_range(0..content.len())
+            .map(|bounds| bounds.union(&capture.config.bounds))
+        else {
+            self.paint_operations.push(PaintOperation::EndBlur);
+            return;
+        };
+        let effect_bounds = content_bounds.dilate(blur_influence_radius(capture.config.radius));
+        let config = capture.config;
+        content.finish();
+        let blur = PaintBlur {
+            order: 0,
+            bounds: effect_bounds,
+            content_mask: config.content_mask,
+            radius: config.radius,
+            opacity: config.opacity,
+            content: std::sync::Arc::new(content),
+        };
+
+        if let Some(parent) = self.blur_captures.last_mut() {
+            parent.scene.insert_primitive(blur);
+        } else {
+            let primitive = Primitive::from(blur);
+            let Some(order) = self.order_for_primitive(&primitive) else {
+                self.paint_operations.push(PaintOperation::EndBlur);
+                return;
+            };
+            self.push_ordered_primitive(primitive, order, false);
+        }
+        self.paint_operations.push(PaintOperation::EndBlur);
     }
 
     pub(crate) fn allocate_animation_id(&mut self) -> SceneAnimationId {
@@ -322,7 +522,10 @@ impl Scene {
             .iter()
             .filter_map(|operation| match operation {
                 PaintOperation::Primitive(primitive) => primitive.animation_id(),
-                PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+                PaintOperation::StartLayer(_)
+                | PaintOperation::EndLayer
+                | PaintOperation::StartBlur(_)
+                | PaintOperation::EndBlur => None,
             })
             .collect()
     }
@@ -344,7 +547,12 @@ impl Scene {
         )
     }
 
-    fn push_ordered_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
+    fn push_ordered_primitive(
+        &mut self,
+        mut primitive: Primitive,
+        order: DrawOrder,
+        record_operation: bool,
+    ) {
         match &mut primitive {
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
@@ -379,13 +587,19 @@ impl Scene {
                 blur.order = order;
                 self.backdrop_blurs.push(blur.clone());
             }
+            Primitive::Blur(blur) => {
+                blur.order = order;
+                self.blurs.push(blur.clone());
+            }
             Primitive::GpuMesh3d(mesh) => {
                 mesh.order = order;
                 self.gpu_meshes_3d.push(mesh.clone());
             }
         }
-        self.paint_operations
-            .push(PaintOperation::Primitive(primitive));
+        if record_operation {
+            self.paint_operations
+                .push(PaintOperation::Primitive(primitive));
+        }
     }
 
     fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
@@ -475,6 +689,12 @@ impl Scene {
                 self.backdrop_blurs.push(blur);
                 ScenePrimitiveKind::BackdropBlur
             }
+            Primitive::Blur(blur) => {
+                let mut blur = blur.clone();
+                blur.order = order;
+                self.blurs.push(blur);
+                ScenePrimitiveKind::Blur
+            }
             Primitive::GpuMesh3d(mesh) => {
                 let mut mesh = mesh.clone();
                 mesh.order = order;
@@ -505,10 +725,47 @@ impl Scene {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
-                    self.replay_primitive(primitive, retain_order)
+                    if let Some(capture) = self.blur_captures.last_mut() {
+                        let operation_start = capture.scene.paint_operations.len();
+                        capture.scene.replay_primitive(primitive, retain_order);
+                        let captured_primitive = capture
+                            .scene
+                            .paint_operations
+                            .get(operation_start)
+                            .and_then(|operation| match operation {
+                                PaintOperation::Primitive(primitive) => Some(primitive.clone()),
+                                PaintOperation::StartLayer(_)
+                                | PaintOperation::EndLayer
+                                | PaintOperation::StartBlur(_)
+                                | PaintOperation::EndBlur => None,
+                            });
+                        if let Some(primitive) = captured_primitive {
+                            self.paint_operations
+                                .push(PaintOperation::Primitive(primitive));
+                        }
+                    } else {
+                        self.replay_primitive(primitive, retain_order);
+                    }
                 }
-                PaintOperation::StartLayer(bounds) => self.push_replayed_layer(*bounds),
-                PaintOperation::EndLayer => self.pop_replayed_layer(),
+                PaintOperation::StartLayer(bounds) => {
+                    if let Some(capture) = self.blur_captures.last_mut() {
+                        capture.scene.push_replayed_layer(*bounds);
+                        self.paint_operations
+                            .push(PaintOperation::StartLayer(*bounds));
+                    } else {
+                        self.push_replayed_layer(*bounds);
+                    }
+                }
+                PaintOperation::EndLayer => {
+                    if let Some(capture) = self.blur_captures.last_mut() {
+                        capture.scene.pop_replayed_layer();
+                        self.paint_operations.push(PaintOperation::EndLayer);
+                    } else {
+                        self.pop_replayed_layer();
+                    }
+                }
+                PaintOperation::StartBlur(config) => self.begin_blur(config.clone()),
+                PaintOperation::EndBlur => self.end_blur(),
             }
         }
         if retain_order && self.paint_operations.len() == range_end {
@@ -535,6 +792,10 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        debug_assert!(
+            self.blur_captures.is_empty(),
+            "element blur capture must be closed before finishing a scene"
+        );
         self.shadows.sort_unstable_by_key(|shadow| shadow.order);
         self.quads.sort_unstable_by_key(|quad| quad.order);
         self.paths.sort_unstable_by_key(|path| path.order);
@@ -546,6 +807,7 @@ impl Scene {
             .sort_unstable_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
         self.surfaces.sort_unstable_by_key(|surface| surface.order);
         self.backdrop_blurs.sort_unstable_by_key(|blur| blur.order);
+        self.blurs.sort_unstable_by_key(|blur| blur.order);
         self.gpu_meshes_3d.sort_unstable_by_key(|mesh| mesh.order);
         self.prepare_batches();
     }
@@ -587,6 +849,9 @@ impl Scene {
             backdrop_blurs: &self.backdrop_blurs,
             backdrop_blurs_start: 0,
             backdrop_blurs_iter: self.backdrop_blurs.iter().peekable(),
+            blurs: &self.blurs,
+            blurs_start: 0,
+            blurs_iter: self.blurs.iter().peekable(),
             gpu_meshes_3d: &self.gpu_meshes_3d,
             gpu_meshes_3d_start: 0,
             gpu_meshes_3d_iter: self.gpu_meshes_3d.iter().peekable(),
@@ -602,6 +867,7 @@ impl Scene {
             + self.polychrome_sprites.len()
             + self.surfaces.len()
             + self.backdrop_blurs.len()
+            + self.blurs.len()
             + self.gpu_meshes_3d.len()
     }
 
@@ -615,6 +881,7 @@ impl Scene {
             + self.polychrome_sprites.capacity()
             + self.surfaces.capacity()
             + self.backdrop_blurs.capacity()
+            + self.blurs.capacity()
             + self.gpu_meshes_3d.capacity()
             + self.animation_values.capacity()
             + self.prepared_batches.batches.capacity()
@@ -668,6 +935,11 @@ impl Scene {
         );
         trim_vec_capacity(
             &mut self.backdrop_blurs,
+            primitive_floor,
+            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        trim_vec_capacity(
+            &mut self.blurs,
             primitive_floor,
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
@@ -757,6 +1029,9 @@ impl Scene {
                         range: slice_range(&self.backdrop_blurs, blurs),
                     })
                 }
+                PrimitiveBatch::Blurs(blurs) => {
+                    PreparedSceneBatch::Blurs(slice_range(&self.blurs, blurs))
+                }
                 PrimitiveBatch::GpuMeshes3d(meshes) => {
                     PreparedSceneBatch::GpuMeshes3d(PreparedGpuMesh3dPass {
                         range: slice_range(&self.gpu_meshes_3d, meshes),
@@ -780,7 +1055,9 @@ fn backdrop_blur_operations(operations: &[PaintOperation]) -> Vec<(usize, &Paint
             PaintOperation::Primitive(Primitive::BackdropBlur(blur)) => Some((index, blur)),
             PaintOperation::Primitive(_)
             | PaintOperation::StartLayer(_)
-            | PaintOperation::EndLayer => None,
+            | PaintOperation::EndLayer
+            | PaintOperation::StartBlur(_)
+            | PaintOperation::EndBlur => None,
         })
         .collect()
 }
@@ -837,11 +1114,10 @@ fn backdrop_blur_influence_radius(blur: &PaintBackdropBlur) -> ScaledPixels {
         return ScaledPixels(0.0);
     }
 
-    // The separable Gaussian kernel samples exactly through ±radius. Add half of the source texel
-    // footprint to account for linear filtering and downsampled sources. No additional pyramid
-    // expansion is needed because the separable Gaussian filter has finite sampling support.
+    // CSS blur radius is the Gaussian standard deviation. Three sigma contains the practical
+    // filter support; add half of the source texel footprint for linear filtering and downsampling.
     let linear_footprint = 0.5 * f32::from(blur.downsample.max(1));
-    ScaledPixels(radius + linear_footprint)
+    ScaledPixels(radius * 3.0 + linear_footprint)
 }
 
 fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation) -> bool {
@@ -854,7 +1130,11 @@ fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation
         (PaintOperation::StartLayer(current), PaintOperation::StartLayer(previous)) => {
             current == previous
         }
-        (PaintOperation::EndLayer, PaintOperation::EndLayer) => true,
+        (PaintOperation::EndLayer, PaintOperation::EndLayer)
+        | (PaintOperation::EndBlur, PaintOperation::EndBlur) => true,
+        (PaintOperation::StartBlur(current), PaintOperation::StartBlur(previous)) => {
+            current == previous
+        }
         _ => false,
     }
 }

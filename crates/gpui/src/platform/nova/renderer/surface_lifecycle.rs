@@ -413,10 +413,19 @@ impl NovaRenderer {
         &self,
         size: Extent2d,
     ) -> BackdropBlurTargetDescriptor {
+        let mut isolated_source_indices: Vec<_> = self
+            .frame_upload
+            .blur_content_ranges()
+            .into_iter()
+            .map(|range| range.index)
+            .collect();
+        isolated_source_indices.sort_unstable();
+        isolated_source_indices.dedup();
         BackdropBlurTargetDescriptor {
             size,
             format: self.surface_format,
             configs: self.frame_upload.backdrop_blur_configs().to_vec(),
+            isolated_source_indices,
             pass_resource_set_layout: self.backdrop_blur_pass_resource_set_layout,
             blur_resource_set_layout: self.backdrop_blur_resource_set_layout,
             frame_buffers: self.frame_resource_buffers(),

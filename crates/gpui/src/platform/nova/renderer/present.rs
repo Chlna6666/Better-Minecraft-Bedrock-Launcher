@@ -1,4 +1,4 @@
-use super::draw_steps::PreparedBackdropBlurGroup;
+use super::draw_steps::{PreparedBackdropBlurGroup, PreparedElementBlurLayer};
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -193,6 +193,63 @@ where
     Ok(())
 }
 
+fn render_element_blur_layers<D>(
+    device: &mut D,
+    render_pass: RenderPassId,
+    depth_attachment: RenderPassDepthAttachment,
+    layers: &[PreparedElementBlurLayer],
+) -> Result<()>
+where
+    D: BackendPresentationCompat,
+{
+    for layer in layers {
+        let filter_depth_attachment = RenderPassDepthAttachment {
+            target: depth_attachment.target,
+            depth_load_op: LoadOp::Load,
+        };
+        for (group_index, group) in layer.source_groups.iter().enumerate() {
+            let source_depth_attachment = RenderPassDepthAttachment {
+                target: depth_attachment.target,
+                depth_load_op: if group_index == 0 {
+                    LoadOp::Clear(1.0)
+                } else {
+                    LoadOp::Load
+                },
+            };
+            device.render_steps_to_texture(
+                layer.source_texture_view,
+                render_pass,
+                &group.source_steps,
+                if group_index == 0 {
+                    LoadOp::Clear(clear_color())
+                } else {
+                    LoadOp::Load
+                },
+                Some(source_depth_attachment),
+            )?;
+            for pass in &group.filter_passes {
+                device.render_step_list_to_texture(
+                    pass.target_texture_view,
+                    render_pass,
+                    RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                    LoadOp::Clear(clear_color()),
+                    Some(filter_depth_attachment),
+                )?;
+            }
+        }
+        for pass in &layer.filter_passes {
+            device.render_step_list_to_texture(
+                pass.target_texture_view,
+                render_pass,
+                RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                LoadOp::Clear(clear_color()),
+                Some(filter_depth_attachment),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 impl NovaRenderer {
     fn drawable_pixels(&self) -> usize {
         (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
@@ -246,6 +303,7 @@ impl NovaRenderer {
             self.backend.supports_partial_presentation(self.swapchain);
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
+        let has_element_blurs = self.frame_upload.has_element_blurs();
 
         let backdrop_source_atlas_textures = if has_backdrop_blurs {
             self.frame_upload.backdrop_source_atlas_texture_ids()
@@ -262,7 +320,8 @@ impl NovaRenderer {
             && (render_plan.backdrop_blur_refresh_required
                 || !self.backdrop_blur_cache_valid
                 || backdrop_source_atlas_dirty
-                || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality));
+                || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality)
+                || has_element_blurs);
         if backdrop_blur_refresh_required {
             self.backdrop_blur_cache_valid = false;
         }
@@ -284,6 +343,11 @@ impl NovaRenderer {
         } else {
             Vec::new()
         };
+        let element_blur_layers = if backdrop_blur_refresh_required {
+            self.prepare_element_blur_layers(true)
+        } else {
+            Vec::new()
+        };
         let draw_step_count = self.draw_step_scratch.draw_steps.len();
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
         let mask_pass_count = usize::from(path_mask_step_count != 0);
@@ -292,8 +356,16 @@ impl NovaRenderer {
         let blur_group_pass_count = backdrop_blur_groups.iter().fold(0usize, |total, group| {
             total.saturating_add(1usize.saturating_add(group.filter_passes.len()))
         });
+        let element_blur_pass_count = element_blur_layers.iter().fold(0usize, |total, layer| {
+            let source_passes = layer.source_groups.iter().fold(0usize, |total, group| {
+                total.saturating_add(1usize.saturating_add(group.filter_passes.len()))
+            });
+            total
+                .saturating_add(source_passes)
+                .saturating_add(layer.filter_passes.len())
+        });
         let composite_pass_count = if backdrop_blur_refresh_required {
-            blur_group_pass_count
+            blur_group_pass_count.saturating_add(element_blur_pass_count)
         } else {
             0
         };
@@ -464,6 +536,14 @@ impl NovaRenderer {
                 }
                 let refresh_backdrop_blur = backdrop_blur_refresh_required;
                 backdrop_blur_refreshed = refresh_backdrop_blur;
+                if refresh_backdrop_blur {
+                    render_element_blur_layers(
+                        device,
+                        self.render_pass,
+                        depth_attachment,
+                        &element_blur_layers,
+                    )?;
+                }
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
@@ -555,6 +635,14 @@ impl NovaRenderer {
                 }
                 let refresh_backdrop_blur = backdrop_blur_refresh_required;
                 backdrop_blur_refreshed = refresh_backdrop_blur;
+                if refresh_backdrop_blur {
+                    render_element_blur_layers(
+                        device,
+                        self.render_pass,
+                        depth_attachment,
+                        &element_blur_layers,
+                    )?;
+                }
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
@@ -630,6 +718,14 @@ impl NovaRenderer {
                 }
                 let refresh_backdrop_blur = backdrop_blur_refresh_required;
                 backdrop_blur_refreshed = refresh_backdrop_blur;
+                if refresh_backdrop_blur {
+                    render_element_blur_layers(
+                        device,
+                        self.render_pass,
+                        depth_attachment,
+                        &element_blur_layers,
+                    )?;
+                }
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
@@ -729,8 +825,12 @@ impl NovaRenderer {
         }
         self.swapchain_warmup_frames = self.swapchain_warmup_frames.saturating_sub(1);
         crate::diagnostics::performance_metrics::record_direct_present();
-        let (blur_source_pixels, blur_level_pixels) =
-            self.backdrop_blur_pixel_metrics(backdrop_blur_refreshed, backdrop_blur_groups.len());
+        let (blur_source_pixels, blur_level_pixels) = self.backdrop_blur_pixel_metrics(
+            backdrop_blur_refreshed,
+            backdrop_blur_groups
+                .len()
+                .saturating_add(element_blur_layers.len()),
+        );
         crate::diagnostics::performance_metrics::record_backdrop_blur_frame(
             blur_source_pixels,
             blur_level_pixels,

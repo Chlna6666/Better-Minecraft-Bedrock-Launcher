@@ -132,8 +132,38 @@ fn backdrop_blur(order: DrawOrder) -> PaintBackdropBlur {
         levels: 3,
         recompute_overlap: false,
         saturation: 1.0,
+        opacity: 1.0,
         tint: None,
     }
+}
+
+fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
+    let bounds = Bounds::new(
+        point(ScaledPixels(10.0), ScaledPixels(10.0)),
+        size(ScaledPixels(20.0), ScaledPixels(20.0)),
+    );
+    let content_mask = ContentMask {
+        bounds: Bounds::new(
+            point(ScaledPixels(0.0), ScaledPixels(0.0)),
+            size(ScaledPixels(100.0), ScaledPixels(100.0)),
+        ),
+        ..Default::default()
+    };
+    let mut scene = Scene::default();
+    scene.begin_blur(BlurCapture {
+        bounds,
+        content_mask: content_mask.clone(),
+        radius: ScaledPixels(4.0),
+        opacity: 0.5,
+    });
+    scene.insert_primitive(Quad {
+        bounds: child_bounds,
+        content_mask,
+        ..Quad::default()
+    });
+    scene.end_blur();
+    scene.finish();
+    scene
 }
 
 #[test]
@@ -184,6 +214,7 @@ fn backdrop_blur_damage_uses_gaussian_support_without_full_redraw() {
         levels: 3,
         recompute_overlap: false,
         saturation: 1.0,
+        opacity: 1.0,
         tint: None,
     });
 
@@ -288,6 +319,67 @@ fn scene_diff_includes_shadow_shader_margin() {
 }
 
 #[test]
+fn element_blur_replay_keeps_one_isolated_content_scene() {
+    let child_bounds = Bounds::new(
+        point(ScaledPixels(14.0), ScaledPixels(16.0)),
+        size(ScaledPixels(8.0), ScaledPixels(6.0)),
+    );
+    let first = element_blur_scene(child_bounds);
+    let mut second = Scene::default();
+    second.replay(0..first.len(), &first);
+    second.finish();
+    let mut third = Scene::default();
+    third.replay(0..second.len(), &second);
+    third.finish();
+
+    let expected_bounds = first.blurs[0].bounds;
+    for scene in [&first, &second, &third] {
+        assert_eq!(scene.blurs.len(), 1);
+        assert_eq!(scene.blurs[0].content.quads.len(), 1);
+        assert!(scene.blurs[0].content.blurs.is_empty());
+        assert_eq!(scene.blurs[0].bounds, expected_bounds);
+        assert!(!scene.paint_operations.iter().any(|operation| {
+            matches!(operation, PaintOperation::Primitive(Primitive::Blur(_)))
+        }));
+    }
+}
+
+#[test]
+fn element_blur_child_damage_and_unmount_include_gaussian_edge() {
+    let previous = element_blur_scene(Bounds::new(
+        point(ScaledPixels(14.0), ScaledPixels(16.0)),
+        size(ScaledPixels(8.0), ScaledPixels(6.0)),
+    ));
+    let current = element_blur_scene(Bounds::new(
+        point(ScaledPixels(18.0), ScaledPixels(20.0)),
+        size(ScaledPixels(8.0), ScaledPixels(6.0)),
+    ));
+    let gaussian_edge = previous.blurs[0].bounds.intersect(&Bounds::new(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(100.0), ScaledPixels(100.0)),
+    ));
+
+    let mut child_damage = Vec::new();
+    assert!(current.for_each_changed_bounds(
+        0..current.len(),
+        &previous,
+        0..previous.len(),
+        |bounds| child_damage.push(bounds),
+    ));
+    assert!(child_damage.contains(&gaussian_edge));
+
+    let mut unmount_damage = Vec::new();
+    let empty = Scene::default();
+    assert!(empty.for_each_changed_bounds(
+        0..empty.len(),
+        &previous,
+        0..previous.len(),
+        |bounds| unmount_damage.push(bounds),
+    ));
+    assert!(unmount_damage.contains(&gaussian_edge));
+}
+
+#[test]
 fn monochrome_sprite_batches_split_by_sampling() {
     let mut scene = Scene::default();
     scene.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
@@ -387,7 +479,10 @@ fn retained_prefix_replay_preserves_draw_orders() {
         .iter()
         .filter_map(|operation| match operation {
             PaintOperation::Primitive(primitive) => Some(primitive.order()),
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+            PaintOperation::StartLayer(_)
+            | PaintOperation::EndLayer
+            | PaintOperation::StartBlur(_)
+            | PaintOperation::EndBlur => None,
         })
         .collect::<Vec<_>>();
 
@@ -398,7 +493,10 @@ fn retained_prefix_replay_preserves_draw_orders() {
         .iter()
         .filter_map(|operation| match operation {
             PaintOperation::Primitive(primitive) => Some(primitive.order()),
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+            PaintOperation::StartLayer(_)
+            | PaintOperation::EndLayer
+            | PaintOperation::StartBlur(_)
+            | PaintOperation::EndBlur => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(actual_replayed_orders, expected_replayed_orders);

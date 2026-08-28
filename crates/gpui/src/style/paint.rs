@@ -268,6 +268,35 @@ impl Style {
             .to_pixels(rem_size)
             .clamp_radii_for_quad_size(bounds.size);
 
+        // Sample only earlier elements, never this element's own fill or shadow.
+        if let Some(blur) = self.backdrop_blur {
+            window.paint_backdrop_blur(bounds, corner_radii, blur);
+        }
+        if let Some(sigma) = self.blur {
+            window.paint_element_blur(bounds, sigma, |window| {
+                self.paint_contents(bounds, corner_radii, window, cx, continuation);
+            });
+        } else {
+            self.paint_contents(bounds, corner_radii, window, cx, continuation);
+        }
+
+        crate::window::debug_visualization::paint_layout_bounds(self, bounds, window, cx);
+
+        #[cfg(debug_assertions)]
+        if self.debug_below {
+            cx.remove_global::<DebugBelow>();
+        }
+    }
+
+    fn paint_contents(
+        &self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+        continuation: impl FnOnce(&mut Window, &mut App),
+    ) {
+        let rem_size = window.rem_size();
         window.paint_shadows(bounds, corner_radii, &self.box_shadow);
 
         let background_color = self.background.as_ref().and_then(Fill::color);
@@ -366,13 +395,6 @@ impl Style {
                     window.paint_quad(quad);
                 },
             );
-        }
-
-        crate::window::debug_visualization::paint_layout_bounds(self, bounds, window, cx);
-
-        #[cfg(debug_assertions)]
-        if self.debug_below {
-            cx.remove_global::<DebugBelow>();
         }
     }
 

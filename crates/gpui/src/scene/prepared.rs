@@ -42,6 +42,7 @@ pub(crate) enum PreparedSceneBatch {
     },
     Surfaces(Range<usize>),
     BackdropBlurs(PreparedBackdropBlurGroup),
+    Blurs(Range<usize>),
     GpuMeshes3d(PreparedGpuMesh3dPass),
 }
 

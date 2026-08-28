@@ -1027,13 +1027,72 @@ fn inherited_transparent_surface_uses_premultiplied_output() {
 }
 
 #[test]
+fn backdrop_blur_kernel_uses_css_radius_as_sigma() {
+    const SIGMA: f32 = 12.0;
+    const FIRST_PAIR_CENTROID_IN_TAPS: f32 = 1.4474603;
+    const GAUSSIAN_PAIR_RATIOS: [f32; 4] = [0.8098247, 0.6112877, 0.4614242, 0.3483013];
+
+    let mut bytes = Vec::new();
+    write_backdrop_blur_pass(&mut bytes, SIGMA);
+
+    assert_eq!(bytes.len(), BACKDROP_BLUR_PASS_BYTES);
+    let offsets = [
+        read_f32_at(&bytes, 0),
+        read_f32_at(&bytes, 4),
+        read_f32_at(&bytes, 8),
+        read_f32_at(&bytes, 12),
+    ];
+    let pair_weights = [
+        read_f32_at(&bytes, 16),
+        read_f32_at(&bytes, 20),
+        read_f32_at(&bytes, 24),
+        read_f32_at(&bytes, 28),
+    ];
+    let center_weight = read_f32_at(&bytes, 32);
+    let total_weight = center_weight + 2.0 * pair_weights.into_iter().sum::<f32>();
+    assert!((total_weight - 1.0).abs() < 1e-5);
+
+    let tap_step = offsets[0] / FIRST_PAIR_CENTROID_IN_TAPS;
+    let second_moment = GAUSSIAN_PAIR_RATIOS
+        .into_iter()
+        .enumerate()
+        .map(|(pair, ratio)| {
+            let pair_weight = pair_weights[pair];
+            let first_weight = pair_weight / (1.0 + ratio);
+            let second_weight = pair_weight - first_weight;
+            let first_tap = (pair * 2 + 1) as f32 * tap_step;
+            let second_tap = (pair * 2 + 2) as f32 * tap_step;
+            2.0 * (first_weight * first_tap * first_tap + second_weight * second_tap * second_tap)
+        })
+        .sum::<f32>();
+
+    assert!((second_moment / (SIGMA * SIGMA) - 1.0).abs() <= 0.05);
+}
+
+#[test]
+fn tiny_backdrop_blur_kernel_is_identity() {
+    let mut bytes = Vec::new();
+    write_backdrop_blur_pass(&mut bytes, 0.1);
+
+    assert_eq!(bytes.len(), BACKDROP_BLUR_PASS_BYTES);
+    assert_eq!(read_f32_at(&bytes, 32), 1.0);
+    assert_eq!(read_f32_at(&bytes, 36), 1.0);
+    for pair in 0..4 {
+        assert_eq!(read_f32_at(&bytes, 16 + pair * 4), 0.0);
+    }
+}
+
+#[test]
 fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
-    let scene = backdrop_blur_scene(Some(crate::Hsla {
-        h: 0.0,
-        s: 0.0,
-        l: 1.0,
-        a: 0.5,
-    }));
+    let scene = backdrop_blur_scene(
+        Some(crate::Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 0.5,
+        }),
+        0.625,
+    );
     let mut upload = FrameUpload::default();
 
     let summary = upload.encode(
@@ -1052,6 +1111,7 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
     assert_eq!(summary.quad_count, 0);
     assert_eq!(summary.backdrop_blur_count, 1);
     assert_eq!(upload.quads.len(), 0);
+    assert_eq!(read_f32_at(&upload.backdrop_blurs, 128), 0.625);
     assert_eq!(
         upload.backdrop_blur_passes.len(),
         BACKDROP_BLUR_PASS_BYTES * 2
@@ -1072,12 +1132,15 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
 
 #[test]
 fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
-    let scene = backdrop_blur_scene(Some(crate::Hsla {
-        h: 0.0,
-        s: 0.0,
-        l: 1.0,
-        a: 0.5,
-    }));
+    let scene = backdrop_blur_scene(
+        Some(crate::Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 0.5,
+        }),
+        0.4,
+    );
     let mut upload = FrameUpload::default();
 
     let summary = upload.encode(
@@ -1093,6 +1156,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
 
     assert_eq!(summary.quad_count, 1);
     assert_eq!(upload.backdrop_blurs.len(), 0);
+    assert_eq!(read_f32_at(&upload.quads, 92), 0.2);
     assert!(matches!(
         upload.batches.as_slice(),
         [UploadedBatch::Quads { first: 0, count: 1 }]
@@ -1809,6 +1873,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
             texture_view: test_texture_view_id(1),
         },
         source_pass_resource_sets: vec![test_resource_set_id(11)],
+        isolated_sources: Vec::new(),
         variants: vec![BackdropBlurVariantTargets {
             config,
             levels: vec![
@@ -1869,6 +1934,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
             texture_view: test_texture_view_id(1),
         },
         source_pass_resource_sets: vec![test_resource_set_id(11)],
+        isolated_sources: Vec::new(),
         variants: Vec::new(),
     };
 
@@ -2084,8 +2150,8 @@ fn nova_fragment_shaders_skip_work_before_sampling_transparent_pixels() {
         ],
     );
     assert_fragment_contains_in_order(
-        "backdrop_blur.wgsl",
-        include_str!("shaders/backdrop_blur.wgsl"),
+        "blur.wgsl",
+        include_str!("shaders/blur.wgsl"),
         "fs_backdrop_blur",
         &[
             "if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0)",
@@ -2430,8 +2496,8 @@ fn nova_shader_edge_guards_cover_degenerate_inputs() {
         ],
     );
     assert_shader_contains(
-        "backdrop_blur.wgsl",
-        include_str!("shaders/backdrop_blur.wgsl"),
+        "blur.wgsl",
+        include_str!("shaders/blur.wgsl"),
         &[
             "let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0))",
             "screen_position / max(blur.blurred_size, vec2<f32>(1.0))",
@@ -2472,8 +2538,8 @@ fn nova_fragment_shaders_avoid_redundant_instance_ssbo_reads() {
     assert_fragment_storage_reads_are_allowlisted(&allowed_fragment_reads);
 
     assert_fragment_function_omits(
-        "backdrop_blur.wgsl",
-        include_str!("shaders/backdrop_blur.wgsl"),
+        "blur.wgsl",
+        include_str!("shaders/blur.wgsl"),
         "fs_backdrop_blur",
         "b_backdrop_blurs",
     );
@@ -2757,10 +2823,7 @@ fn nova_runtime_source() -> String {
 
 fn nova_shader_sources() -> [(&'static str, &'static str); 15] {
     [
-        (
-            "backdrop_blur.wgsl",
-            include_str!("shaders/backdrop_blur.wgsl"),
-        ),
+        ("blur.wgsl", include_str!("shaders/blur.wgsl")),
         ("core.wgsl", include_str!("shaders/core.wgsl")),
         ("mono_sprite.wgsl", include_str!("shaders/mono_sprite.wgsl")),
         ("path.wgsl", include_str!("shaders/path.wgsl")),
@@ -2995,14 +3058,14 @@ fn test_texture_view_id(index: u32) -> TextureViewId {
     TextureViewId::from_parts(index, 1)
 }
 
-fn backdrop_blur_scene(tint: Option<crate::Hsla>) -> crate::Scene {
+fn backdrop_blur_scene(tint: Option<crate::Hsla>, opacity: f32) -> crate::Scene {
     let mut scene = crate::Scene::default();
-    scene.insert_primitive(test_backdrop_blur(tint));
+    scene.insert_primitive(test_backdrop_blur(tint, opacity));
     scene.finish();
     scene
 }
 
-fn test_backdrop_blur(tint: Option<crate::Hsla>) -> crate::PaintBackdropBlur {
+fn test_backdrop_blur(tint: Option<crate::Hsla>, opacity: f32) -> crate::PaintBackdropBlur {
     let bounds = Bounds {
         origin: Point {
             x: crate::ScaledPixels(0.0),
@@ -3024,6 +3087,7 @@ fn test_backdrop_blur(tint: Option<crate::Hsla>) -> crate::PaintBackdropBlur {
         levels: 3,
         recompute_overlap: false,
         saturation: 1.0,
+        opacity,
         tint,
     }
 }
@@ -3031,7 +3095,7 @@ fn test_backdrop_blur(tint: Option<crate::Hsla>) -> crate::PaintBackdropBlur {
 fn append_test_backdrop_blur(upload: &mut FrameUpload) {
     write_backdrop_blur(
         &mut upload.backdrop_blurs,
-        &test_backdrop_blur(None),
+        &test_backdrop_blur(None, 1.0),
         DrawableSize {
             width: 640,
             height: 480,

@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
-    AnimationDriver, AnimationSequence, AnimationSpec, RepeatMode, TestAppContext,
-    TransitionProperty, WindowOptions, performance_metrics_snapshot, point, px, size,
+    AnimationDriver, AnimationSequence, AnimationSpec, PaintOperation, Primitive, RepeatMode,
+    TestAppContext, TransitionProperty, WindowOptions, performance_metrics_snapshot, point, px,
+    size,
 };
 
 #[cfg(test)]
@@ -23,6 +24,70 @@ struct PaintedTestView;
 impl Render for PaintedTestView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         crate::div().w(px(1.)).h(px(1.)).bg(crate::white())
+    }
+}
+
+#[cfg(test)]
+struct BackdropBlurTestView {
+    show_blur: bool,
+}
+
+struct ElementBlurTestView {
+    show_blur: bool,
+}
+
+impl Render for ElementBlurTestView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div()
+            .size_full()
+            .opacity(0.5)
+            .child(crate::div().size(px(10.)).bg(crate::rgb(0x00ff00)))
+            .when(self.show_blur, |root| {
+                root.child(
+                    crate::div()
+                        .id("element-blur-target")
+                        .size(px(40.))
+                        .opacity(0.4)
+                        .blur(px(3.))
+                        .bg(crate::red())
+                        .child(
+                            crate::div()
+                                .size(px(10.))
+                                .opacity(0.5)
+                                .blur(px(1.))
+                                .bg(crate::rgb(0x0000ff)),
+                        ),
+                )
+            })
+    }
+}
+
+#[cfg(test)]
+impl Render for BackdropBlurTestView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let target = crate::div()
+            .id("backdrop-blur-target")
+            .debug_selector(|| "backdrop-blur-target".to_string())
+            .absolute()
+            .left(px(10.))
+            .top(px(10.))
+            .w(px(40.))
+            .h(px(20.))
+            .opacity(0.4)
+            .scale(1.5)
+            .bg(crate::red());
+        let target = if self.show_blur {
+            target.backdrop_blur(px(3.))
+        } else {
+            target
+        };
+
+        let root = crate::div().relative().size_full().opacity(0.5);
+        if self.show_blur {
+            root.child(target)
+        } else {
+            root
+        }
     }
 }
 
@@ -2062,5 +2127,137 @@ fn dirty_region_full_redraw_for_large_area(cx: &mut TestAppContext) {
         region.coalesce_if_large(viewport, DIRTY_REGION_FULL_REDRAW_RATIO);
 
         assert!(region.is_full());
+    });
+}
+
+#[gpui::test]
+fn backdrop_blur_scene_preserves_opacity_scale_and_order(cx: &mut TestAppContext) {
+    let (_view, cx) = cx.add_window_view(|_, _| BackdropBlurTestView { show_blur: true });
+    let logical_bounds = cx
+        .debug_bounds("backdrop-blur-target")
+        .expect("backdrop blur target should render");
+    assert_eq!(logical_bounds.size.width, px(40.));
+    assert_eq!(logical_bounds.size.height, px(20.));
+
+    let (
+        blur_bounds,
+        blur_radius,
+        blur_opacity,
+        blur_index,
+        blur_order,
+        background_index,
+        background_order,
+        window_scale,
+    ) = cx.update(|window, _cx| {
+        let scene = &window.rendered_frame.scene;
+        assert_eq!(scene.backdrop_blurs.len(), 1);
+        let blur = scene
+            .backdrop_blurs
+            .first()
+            .expect("backdrop blur should be emitted into the scene");
+        let (blur_index, blur_bounds, blur_radius, blur_opacity, blur_order) = scene
+            .paint_operations
+            .iter()
+            .enumerate()
+            .find_map(|(index, operation)| match operation {
+                PaintOperation::Primitive(Primitive::BackdropBlur(blur)) => {
+                    Some((index, blur.bounds, blur.radius, blur.opacity, blur.order))
+                }
+                _ => None,
+            })
+            .expect("backdrop blur operation should be present");
+        assert_eq!(blur.bounds, blur_bounds);
+
+        let (background_index, background_order) = scene
+            .paint_operations
+            .iter()
+            .enumerate()
+            .skip(blur_index + 1)
+            .find_map(|(index, operation)| match operation {
+                PaintOperation::Primitive(Primitive::Quad(quad)) if quad.bounds == blur_bounds => {
+                    Some((index, quad.order))
+                }
+                _ => None,
+            })
+            .expect("same-element background should be emitted after backdrop blur");
+
+        (
+            blur_bounds,
+            blur_radius,
+            blur_opacity,
+            blur_index,
+            blur_order,
+            background_index,
+            background_order,
+            window.scale_factor,
+        )
+    });
+
+    let visual_scale = 1.5 * window_scale;
+    assert!((blur_bounds.size.width.0 - logical_bounds.size.width.0 * visual_scale).abs() < 0.001);
+    assert!(
+        (blur_bounds.size.height.0 - logical_bounds.size.height.0 * visual_scale).abs() < 0.001
+    );
+    let logical_center_x = logical_bounds.origin.x.0 + logical_bounds.size.width.0 / 2.0;
+    let logical_center_y = logical_bounds.origin.y.0 + logical_bounds.size.height.0 / 2.0;
+    let blur_center_x = blur_bounds.origin.x.0 + blur_bounds.size.width.0 / 2.0;
+    let blur_center_y = blur_bounds.origin.y.0 + blur_bounds.size.height.0 / 2.0;
+    assert!((blur_center_x - logical_center_x * window_scale).abs() < 0.001);
+    assert!((blur_center_y - logical_center_y * window_scale).abs() < 0.001);
+    assert!((blur_radius.0 - 3.0 * visual_scale).abs() < 0.001);
+    assert!((blur_opacity - 0.2).abs() < 0.001);
+    assert!(blur_index < background_index);
+    assert!(blur_order < background_order);
+}
+
+#[gpui::test]
+fn backdrop_blur_unmount_clears_next_frame(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_, _| BackdropBlurTestView { show_blur: true });
+    cx.update(|window, _cx| {
+        assert_eq!(window.rendered_frame.scene.backdrop_blurs.len(), 1);
+    });
+
+    view.update(cx, |view, cx| {
+        view.show_blur = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(window.rendered_frame.scene.backdrop_blurs.is_empty());
+    });
+}
+
+#[gpui::test]
+fn element_blur_isolates_nested_content_and_group_opacity(cx: &mut TestAppContext) {
+    let (_view, cx) = cx.add_window_view(|_, _| ElementBlurTestView { show_blur: true });
+    cx.update(|window, _| {
+        let scene = &window.rendered_frame.scene;
+        assert_eq!(scene.blurs.len(), 1);
+        // The outside sibling stays in the main scene; neither filtered fill leaks into it.
+        assert_eq!(scene.quads.len(), 1);
+        let outer = &scene.blurs[0];
+        assert!((outer.opacity - 0.2).abs() < 0.001);
+        assert_eq!(outer.content.quads.len(), 1);
+        assert_eq!(outer.content.quads[0].background.solid.a, 1.0);
+        assert_eq!(outer.content.blurs.len(), 1);
+        let inner = &outer.content.blurs[0];
+        assert_eq!(inner.opacity, 0.5);
+        assert_eq!(inner.content.quads.len(), 1);
+        assert_eq!(inner.content.quads[0].background.solid.a, 1.0);
+        assert!(outer.bounds.size.width.0 > 40.0 * window.scale_factor());
+    });
+}
+
+#[gpui::test]
+fn element_blur_unmount_clears_nested_filters(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_, _| ElementBlurTestView { show_blur: true });
+    view.update(cx, |view, cx| {
+        view.show_blur = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(window.rendered_frame.scene.blurs.is_empty());
+        assert_eq!(window.rendered_frame.scene.quads.len(), 1);
     });
 }

@@ -454,18 +454,18 @@ impl Window {
         let visual_scale = self.visual_scale();
         let bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
+        let opacity = self.element_opacity();
         self.next_frame.scene.insert_primitive(PaintBackdropBlur {
             order: 0,
             animation_id: None,
-            bounds: bounds
-                .map_origin(|origin| origin.floor())
-                .map_size(|size| size.ceil()),
+            bounds,
             content_mask,
             corner_radii: corner_radii.scale(scale_factor * visual_scale),
             radius: ScaledPixels::from(f32::from(style.radius) * scale_factor * visual_scale),
             downsample: style.downsample.max(1),
             levels: style.levels.clamp(1, 6),
             saturation: style.saturation.max(0.0),
+            opacity,
             tint: style.tint,
             recompute_overlap: matches!(
                 style.overlap_mode,

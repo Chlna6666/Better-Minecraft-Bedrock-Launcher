@@ -191,7 +191,7 @@ where
                 ResourceSetLayoutEntry {
                     binding: 15,
                     binding_type: ResourceBindingType::StorageBuffer,
-                    stages: ShaderStages::VERTEX,
+                    stages: ShaderStages::FRAGMENT,
                 },
             ],
         })?;

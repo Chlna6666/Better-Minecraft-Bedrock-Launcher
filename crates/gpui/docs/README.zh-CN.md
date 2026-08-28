@@ -29,7 +29,7 @@
   backend selection 和 winit frame delivery。
 - [运行时 WGSL shaders](runtime_wgsl_shaders.zh-CN.md)：运行时 shader 校验和自
   定义 GPU shader modules。
-- [Backdrop blur](backdrop_blur.zh-CN.md)：GPU backdrop blur pipeline 行为。
+- [模糊](backdrop_blur.zh-CN.md)：CSS 风格元素/背景滤镜、透明度及 GPU 管线。
 - [默认字体](default_fonts.zh-CN.md)：font setup boundaries 和平台 defaults。
 - [Performance pipeline](performance_pipeline.zh-CN.md)：frame metrics 和 retained
   resource trimming。

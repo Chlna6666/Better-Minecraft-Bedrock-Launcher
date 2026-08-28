@@ -107,11 +107,12 @@ impl FrameUpload {
     pub(in crate::platform::nova) fn backdrop_source_atlas_texture_ids(
         &self,
     ) -> FxHashSet<AtlasTextureId> {
-        let Some(last_blur_batch) = self
-            .batches
-            .iter()
-            .rposition(|batch| matches!(batch, UploadedBatch::BackdropBlurs { .. }))
-        else {
+        let Some(last_blur_batch) = self.batches.iter().rposition(|batch| {
+            matches!(
+                batch,
+                UploadedBatch::BackdropBlurs { .. } | UploadedBatch::CompositeBlur { .. }
+            )
+        }) else {
             return FxHashSet::default();
         };
 
@@ -129,6 +130,9 @@ impl FrameUpload {
                 | UploadedBatch::Paths { .. }
                 | UploadedBatch::Underlines { .. }
                 | UploadedBatch::BackdropBlurs { .. }
+                | UploadedBatch::BeginBlur { .. }
+                | UploadedBatch::EndBlur { .. }
+                | UploadedBatch::CompositeBlur { .. }
                 | UploadedBatch::CustomMesh3d { .. } => {}
             }
         }

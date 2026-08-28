@@ -12,20 +12,32 @@ pub(super) enum DrawStepMode {
         batch_start: usize,
         batch_end: usize,
     },
+    /// Draw only an element-blur content range. Nested blur markers are interpreted so their
+    /// composites remain in the parent source while their raw content is omitted.
+    BlurContent {
+        batch_start: usize,
+        batch_end: usize,
+    },
 }
 
 impl DrawStepMode {
     fn is_past_end(self, batch_index: usize) -> bool {
-        matches!(
-            self,
-            Self::BackdropSegment { batch_end, .. } if batch_index >= batch_end
-        )
+        match self {
+            Self::Present => false,
+            Self::BackdropSegment { batch_end, .. } | Self::BlurContent { batch_end, .. } => {
+                batch_index >= batch_end
+            }
+        }
     }
 
     fn includes_batch(self, batch_index: usize) -> bool {
         match self {
             Self::Present => true,
             Self::BackdropSegment {
+                batch_start,
+                batch_end,
+            }
+            | Self::BlurContent {
                 batch_start,
                 batch_end,
             } => batch_index >= batch_start && batch_index < batch_end,
@@ -90,12 +102,37 @@ pub(super) fn draw_steps_for_upload_into(
 ) {
     steps.clear();
     steps.reserve(upload.batches.len().saturating_add(1));
+    let mut blur_depth = 0usize;
     for (batch_index, batch) in upload.batches.iter().enumerate() {
         if mode.is_past_end(batch_index) {
             break;
         }
         if !mode.includes_batch(batch_index) {
             continue;
+        }
+        match *batch {
+            UploadedBatch::BeginBlur { .. } => {
+                blur_depth = blur_depth.saturating_add(1);
+                continue;
+            }
+            UploadedBatch::EndBlur { .. } => {
+                blur_depth = blur_depth.saturating_sub(1);
+                continue;
+            }
+            UploadedBatch::CompositeBlur { index } => {
+                if blur_depth == 0 {
+                    push_blur_composite_step(
+                        upload,
+                        blend_pipelines.backdrop_blurs,
+                        &mut backdrop_blur_resource_set,
+                        index,
+                        steps,
+                    );
+                }
+                continue;
+            }
+            _ if blur_depth != 0 => continue,
+            _ => {}
         }
         match *batch {
             UploadedBatch::SolidQuads { first, count } => push_draw_step(
@@ -226,6 +263,9 @@ pub(super) fn draw_steps_for_upload_into(
                     );
                 });
             }
+            UploadedBatch::BeginBlur { .. }
+            | UploadedBatch::EndBlur { .. }
+            | UploadedBatch::CompositeBlur { .. } => unreachable!("blur markers handled above"),
             UploadedBatch::CustomMesh3d {
                 mesh_id,
                 generation,
@@ -278,6 +318,33 @@ pub(super) fn draw_steps_for_upload_into(
             scissor: None,
         }));
     }
+}
+
+fn push_blur_composite_step(
+    upload: &FrameUpload,
+    pipeline: RenderPipelineId,
+    backdrop_blur_resource_set: &mut impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
+    index: u32,
+    steps: &mut Vec<RenderStepDescriptor>,
+) {
+    let Some(config) = upload.backdrop_blur_config_for_index(index) else {
+        return;
+    };
+    let Some(resource_set) = backdrop_blur_resource_set(config) else {
+        return;
+    };
+    push_draw_step(
+        steps,
+        DrawStepDescriptor {
+            pipeline,
+            resource_sets: resource_set_list([resource_set]),
+            vertex_count: 4,
+            first_vertex: 0,
+            instance_count: 1,
+            first_instance: index,
+            scissor: None,
+        },
+    );
 }
 
 fn custom_mesh_3d_index_byte_offset(entry: MeshCacheEntry) -> u32 {
@@ -402,6 +469,32 @@ pub(super) fn backdrop_blur_render_passes_for_configs_into(
     configs: &[BackdropBlurConfig],
     passes: &mut Vec<BackdropBlurRenderPass>,
 ) {
+    let Some(source_resource_set) = targets
+        .source_pass_resource_sets
+        .get(frame_resource_index)
+        .copied()
+    else {
+        passes.clear();
+        return;
+    };
+    backdrop_blur_render_passes_for_configs_with_source_into(
+        pipelines,
+        targets,
+        frame_resource_index,
+        configs,
+        source_resource_set,
+        passes,
+    );
+}
+
+pub(super) fn backdrop_blur_render_passes_for_configs_with_source_into(
+    pipelines: &Pipelines,
+    targets: &BackdropBlurTargets,
+    frame_resource_index: usize,
+    configs: &[BackdropBlurConfig],
+    source_resource_set: ResourceSetId,
+    passes: &mut Vec<BackdropBlurRenderPass>,
+) {
     passes.clear();
     passes.reserve(configs.len().saturating_mul(2));
 
@@ -415,13 +508,6 @@ pub(super) fn backdrop_blur_render_passes_for_configs_into(
             continue;
         };
         let [horizontal, vertical] = variant.levels.as_slice() else {
-            continue;
-        };
-        let Some(source_resource_set) = targets
-            .source_pass_resource_sets
-            .get(frame_resource_index)
-            .copied()
-        else {
             continue;
         };
         let Some(horizontal_resource_set) = horizontal
@@ -511,6 +597,9 @@ pub(super) fn path_mask_draw_steps_for_upload_into(
             | UploadedBatch::PolySprites { .. }
             | UploadedBatch::Underlines { .. }
             | UploadedBatch::BackdropBlurs { .. }
+            | UploadedBatch::BeginBlur { .. }
+            | UploadedBatch::EndBlur { .. }
+            | UploadedBatch::CompositeBlur { .. }
             | UploadedBatch::CustomMesh3d { .. } => {}
         }
     }

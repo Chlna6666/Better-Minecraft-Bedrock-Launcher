@@ -157,6 +157,39 @@ impl Window {
         result
     }
 
+    /// Paint an element subtree into an offscreen scene and composite it through a CSS blur.
+    ///
+    /// This keeps the capture in the display list rather than swapping the frame scene, so
+    /// retained paint ranges continue to refer to the same root operation stream.
+    pub(crate) fn paint_element_blur<R>(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        sigma: Pixels,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint();
+
+        let sigma = f32::from(sigma);
+        if !sigma.is_finite() || sigma <= 0.0 {
+            return f(self);
+        }
+
+        let scale_factor = self.scale_factor();
+        let visual_scale = self.visual_scale();
+        let previous_opacity = self.element_opacity;
+        self.next_frame.scene.begin_blur(crate::scene::BlurCapture {
+            bounds: self.visual_bounds(bounds).scale(scale_factor),
+            content_mask: self.visual_content_mask().scale(scale_factor),
+            radius: ScaledPixels(sigma * scale_factor * visual_scale),
+            opacity: previous_opacity,
+        });
+        self.element_opacity = 1.0;
+        let result = f(self);
+        self.element_opacity = previous_opacity;
+        self.next_frame.scene.end_blur();
+        result
+    }
+
     /// Paint one or more drop shadows into the scene for the next frame at the current z-index.
     ///
     /// This method should only be called as part of the paint phase of element drawing.

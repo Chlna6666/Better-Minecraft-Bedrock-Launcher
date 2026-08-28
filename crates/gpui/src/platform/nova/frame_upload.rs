@@ -8,6 +8,7 @@ mod blur;
 mod capacity;
 mod encode;
 mod frame;
+mod layers;
 mod path_cache;
 mod quality;
 pub(super) mod upload_encoding;

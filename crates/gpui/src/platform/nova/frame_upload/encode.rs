@@ -9,66 +9,95 @@ impl FrameUpload {
         premultiplied_alpha: bool,
         backdrop_blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
-        self.globals.clear();
-        self.text_raster_params.clear();
-        self.quads.clear();
-        self.shadows.clear();
-        self.path_rasterization_vertices.clear();
-        self.path_sprites.clear();
-        self.mono_sprites.clear();
-        self.poly_sprites.clear();
-        self.underlines.clear();
-        self.backdrop_blur_passes.clear();
-        self.backdrop_blurs.clear();
-        self.backdrop_blur_configs.clear();
-        self.animation_bindings.clear();
-        self.animation_values.clear();
-        self.custom_mesh_3d_parameters.clear();
-        self.custom_mesh_3d_meshes.clear();
-        self.custom_mesh_3d_shaders.clear();
-        self.custom_mesh_3d_ids.clear();
-        self.custom_mesh_3d_shader_ids.clear();
-        self.batches.clear();
-        self.globals.reserve(GLOBAL_UPLOAD_BYTES);
-        self.text_raster_params.reserve(TEXT_RASTER_UPLOAD_BYTES);
-        self.path_rasterization_vertices
-            .reserve(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
-        self.path_sprites.reserve(PACKED_PATH_SPRITE_BYTES);
-        self.backdrop_blur_passes.reserve(BACKDROP_BLUR_PASS_BYTES);
-        self.backdrop_blurs.reserve(PACKED_BACKDROP_BLUR_BYTES);
-        self.animation_bindings
-            .reserve(PACKED_ANIMATION_BINDING_BYTES);
-        self.animation_values.reserve(PACKED_ANIMATION_VALUE_BYTES);
-        self.custom_mesh_3d_parameters
-            .reserve(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES);
-        write_f32_vec(&mut self.globals, drawable_size.width as f32);
-        write_f32_vec(&mut self.globals, drawable_size.height as f32);
-        write_u32_vec(&mut self.globals, u32::from(premultiplied_alpha));
-        write_u32_vec(&mut self.globals, 0);
-        for value in rendering_parameters.gamma_ratios {
-            write_f32_vec(&mut self.text_raster_params, value);
+        self.encode_scene(
+            scene,
+            drawable_size,
+            rendering_parameters,
+            premultiplied_alpha,
+            backdrop_blur_quality,
+            true,
+        )
+    }
+
+    fn encode_scene(
+        &mut self,
+        scene: &crate::Scene,
+        drawable_size: DrawableSize,
+        rendering_parameters: &RenderingParameters,
+        premultiplied_alpha: bool,
+        backdrop_blur_quality: BackdropBlurQuality,
+        reset: bool,
+    ) -> FrameUploadSummary {
+        if reset {
+            self.globals.clear();
+            self.text_raster_params.clear();
+            self.quads.clear();
+            self.shadows.clear();
+            self.path_rasterization_vertices.clear();
+            self.path_sprites.clear();
+            self.mono_sprites.clear();
+            self.poly_sprites.clear();
+            self.underlines.clear();
+            self.backdrop_blur_passes.clear();
+            self.backdrop_blurs.clear();
+            self.backdrop_blur_configs.clear();
+            self.animation_bindings.clear();
+            self.animation_values.clear();
+            self.custom_mesh_3d_parameters.clear();
+            self.custom_mesh_3d_meshes.clear();
+            self.custom_mesh_3d_shaders.clear();
+            self.custom_mesh_3d_ids.clear();
+            self.custom_mesh_3d_shader_ids.clear();
+            self.batches.clear();
+            self.globals.reserve(GLOBAL_UPLOAD_BYTES);
+            self.text_raster_params.reserve(TEXT_RASTER_UPLOAD_BYTES);
+            self.path_rasterization_vertices
+                .reserve(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
+            self.path_sprites.reserve(PACKED_PATH_SPRITE_BYTES);
+            self.backdrop_blur_passes.reserve(BACKDROP_BLUR_PASS_BYTES);
+            self.backdrop_blurs.reserve(PACKED_BACKDROP_BLUR_BYTES);
+            self.animation_bindings
+                .reserve(PACKED_ANIMATION_BINDING_BYTES);
+            self.animation_values.reserve(PACKED_ANIMATION_VALUE_BYTES);
+            self.custom_mesh_3d_parameters
+                .reserve(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES);
+            write_f32_vec(&mut self.globals, drawable_size.width as f32);
+            write_f32_vec(&mut self.globals, drawable_size.height as f32);
+            write_u32_vec(&mut self.globals, u32::from(premultiplied_alpha));
+            write_u32_vec(&mut self.globals, 0);
+            for value in rendering_parameters.gamma_ratios {
+                write_f32_vec(&mut self.text_raster_params, value);
+            }
+            write_f32_vec(
+                &mut self.text_raster_params,
+                rendering_parameters.grayscale_enhanced_contrast,
+            );
+            write_f32_vec(
+                &mut self.text_raster_params,
+                rendering_parameters.subpixel_enhanced_contrast,
+            );
+            write_u32_vec(
+                &mut self.text_raster_params,
+                u32::from(rendering_parameters.is_bgr),
+            );
+            write_u32_vec(&mut self.text_raster_params, 0);
         }
-        write_f32_vec(
-            &mut self.text_raster_params,
-            rendering_parameters.grayscale_enhanced_contrast,
-        );
-        write_f32_vec(
-            &mut self.text_raster_params,
-            rendering_parameters.subpixel_enhanced_contrast,
-        );
-        write_u32_vec(
-            &mut self.text_raster_params,
-            u32::from(rendering_parameters.is_bgr),
-        );
-        write_u32_vec(&mut self.text_raster_params, 0);
 
         let mut summary = FrameUploadSummary::default();
         for value in &scene.animation_values {
             write_scene_animation_value(self, &mut summary, value);
         }
 
-        let mut custom_mesh_vertex_count = 0_usize;
-        let mut custom_mesh_index_count = 0_usize;
+        let mut custom_mesh_vertex_count: usize = self
+            .custom_mesh_3d_meshes
+            .iter()
+            .map(|mesh| mesh.vertices.len())
+            .sum();
+        let mut custom_mesh_index_count: usize = self
+            .custom_mesh_3d_meshes
+            .iter()
+            .map(|mesh| mesh.indices.len())
+            .sum();
         for batch in scene.prepared_batches() {
             match batch {
                 PreparedSceneBatch::Quads(quad_run) => {
@@ -271,9 +300,11 @@ impl FrameUpload {
                             if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
                                 break;
                             }
-                            let Some(tint) = blur.tint.filter(|tint| !tint.is_transparent()) else {
+                            let Some(mut tint) = blur.tint.filter(|tint| !tint.is_transparent())
+                            else {
                                 continue;
                             };
+                            tint.a *= blur.opacity;
                             let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
                             let quad = Quad {
                                 order: blur.order,
@@ -331,6 +362,47 @@ impl FrameUpload {
                             .push(UploadedBatch::BackdropBlurs { first, count });
                         summary.backdrop_blur_count =
                             summary.backdrop_blur_count.saturating_add(count);
+                    }
+                }
+                PreparedSceneBatch::Blurs(range) => {
+                    for blur in &scene.blurs[range.clone()] {
+                        let blur_index =
+                            (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
+                        if self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES
+                            >= MAX_BACKDROP_BLURS
+                        {
+                            summary.unsupported_batches.backdrop_blurs =
+                                summary.unsupported_batches.backdrop_blurs.saturating_add(1);
+                            continue;
+                        }
+
+                        write_paint_blur(&mut self.backdrop_blurs, blur, drawable_size);
+                        self.batches
+                            .push(UploadedBatch::BeginBlur { index: blur_index });
+                        let child_summary = self.encode_scene(
+                            &blur.content,
+                            drawable_size,
+                            rendering_parameters,
+                            premultiplied_alpha,
+                            backdrop_blur_quality,
+                            false,
+                        );
+                        summary.accumulate(child_summary);
+                        custom_mesh_vertex_count = self
+                            .custom_mesh_3d_meshes
+                            .iter()
+                            .map(|mesh| mesh.vertices.len())
+                            .sum();
+                        custom_mesh_index_count = self
+                            .custom_mesh_3d_meshes
+                            .iter()
+                            .map(|mesh| mesh.indices.len())
+                            .sum();
+                        self.batches
+                            .push(UploadedBatch::EndBlur { index: blur_index });
+                        self.batches
+                            .push(UploadedBatch::CompositeBlur { index: blur_index });
+                        summary.backdrop_blur_count = summary.backdrop_blur_count.saturating_add(1);
                     }
                 }
                 PreparedSceneBatch::GpuMeshes3d(group) => {
@@ -448,8 +520,10 @@ impl FrameUpload {
                 }
             }
         }
-        self.refresh_backdrop_blur_configs();
-        self.rebuild_backdrop_blur_passes_for_current_frame();
+        if reset {
+            self.refresh_backdrop_blur_configs();
+            self.rebuild_backdrop_blur_passes_for_current_frame();
+        }
         summary
     }
 

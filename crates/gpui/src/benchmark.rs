@@ -219,6 +219,7 @@ impl FrameUploadBenchmark {
                 levels: 1,
                 recompute_overlap: false,
                 saturation: 1.0,
+                opacity: 1.0,
                 tint: None,
             });
         }

@@ -1,10 +1,8 @@
-// --- compositor backdrop blur --- //
+// Shared GPU Gaussian filter and filtered-layer compositor.
 //
-// Nova uses a separable 17-tap Gaussian filter. The CPU precomputes four pair centroids and pair
-// weight sums, but the shader expands those pairs back into the two exact logical taps before
-// sampling. This preserves the intended Gaussian kernel for large/subpixel radii: hardware linear
-// filtering can only combine adjacent texels and is not mathematically equivalent to merging two
-// logical taps that may be several source pixels apart.
+// Small kernels use adjacent texels: four bilinear pairs on each side plus the center (9 fetches).
+// Wider kernels expand each pair back into two logical taps (17 fetches). Hardware linear
+// filtering cannot correctly merge taps that are several source pixels apart.
 
 struct BackdropBlurPass {
     offsets: vec4<f32>,
@@ -24,7 +22,8 @@ struct BackdropBlur {
     radius: f32,
     saturation: f32,
     blurred_size: vec2<f32>,
-    pad: vec2<u32>,
+    opacity: f32,
+    pad: u32,
 }
 
 @group(0) @binding(15) var<storage, read> b_backdrop_blur_passes: array<BackdropBlurPass>;
@@ -46,9 +45,10 @@ struct BackdropBlurVarying {
     @location(5) @interpolate(flat) tint: vec4<f32>,
     @location(6) @interpolate(flat) content_mask_bounds: vec4<f32>,
     @location(7) @interpolate(flat) content_mask_radii: vec4<f32>,
+    @location(8) @interpolate(flat) opacity: f32,
 }
 
-// write_backdrop_blur_pass() uses sigma = radius / 3 and tap_step = radius / 8. Therefore the
+// For wide kernels write_backdrop_blur_pass() uses sigma = radius and tap_step = 3 * sigma / 8. The
 // Gaussian ratio between tap n+1 and n depends only on n, not on radius. The first packed pair
 // centroid is likewise a fixed multiple of tap_step. Keeping those constants here lets us recover
 // the exact 17 logical taps without per-fragment exp().
@@ -90,6 +90,17 @@ fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
     let tap_step = blur_pass.offsets.x / GAUSSIAN_PAIR0_CENTROID_IN_TAPS;
 
     var color = sample_backdrop_blur_texture(input.texture_coords) * blur_pass.center_and_pad.x;
+    if (blur_pass.center_and_pad.y != 0.0) {
+        for (var pair: u32 = 0u; pair < 4u; pair = pair + 1u) {
+            let weight = blur_pass.weights[pair];
+            if (weight > 0.0) {
+                let delta = texel_axis * blur_pass.offsets[pair];
+                color += sample_backdrop_blur_texture(input.texture_coords + delta) * weight;
+                color += sample_backdrop_blur_texture(input.texture_coords - delta) * weight;
+            }
+        }
+        return color;
+    }
     for (var pair: u32 = 0u; pair < 4u; pair = pair + 1u) {
         let first_tap = f32(pair * 2u + 1u);
         let second_tap = first_tap + 1.0;
@@ -150,6 +161,7 @@ fn vs_backdrop_blur(
         blur.corner_radii.bottom_left,
     );
     out.saturation = blur.saturation;
+    out.opacity = blur.opacity;
     out.tint = hsla_to_rgba(blur.tint);
     return out;
 }
@@ -161,6 +173,9 @@ fn saturate_color(color: vec3<f32>, saturation: f32) -> vec3<f32> {
 
 @fragment
 fn fs_backdrop_blur(input: BackdropBlurVarying) -> @location(0) vec4<f32> {
+    if (input.opacity <= 0.0) {
+        return vec4<f32>(0.0);
+    }
     let clip_coverage = content_mask_coverage_from_packed(
         input.position.xy,
         input.content_mask_bounds,
@@ -179,11 +194,15 @@ fn fs_backdrop_blur(input: BackdropBlurVarying) -> @location(0) vec4<f32> {
     if (color.a <= 0.0 && input.tint.a <= 0.0) {
         return vec4<f32>(0.0);
     }
+    // Render targets contain premultiplied color, regardless of the swapchain output convention.
+    // Filter premultiplied RGBA together, then recover straight color only for tint/compositing.
+    // Multiplying a filtered premultiplied color by alpha again produces dark transparent edges.
+    color = vec4<f32>(color.rgb / max(color.a, SHADER_EPSILON), color.a);
     if (input.saturation != 1.0) {
         color = vec4<f32>(saturate_color(color.rgb, input.saturation), color.a);
     }
     if (input.tint.a > 0.0) {
         color = over(color, input.tint);
     }
-    return blend_color(color, alpha * clip_coverage);
+    return blend_color(color, alpha * clip_coverage * input.opacity);
 }

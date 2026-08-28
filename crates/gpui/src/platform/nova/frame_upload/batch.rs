@@ -59,6 +59,19 @@ pub(in crate::platform::nova) enum UploadedBatch {
         first: u32,
         count: u32,
     },
+    /// Opens an isolated blur content region in the flattened upload stream.
+    ///
+    /// The matching [`EndBlur`] and [`CompositeBlur`] carry the same index. The
+    /// index addresses the blur record in `FrameUpload::backdrop_blurs`.
+    BeginBlur {
+        index: u32,
+    },
+    EndBlur {
+        index: u32,
+    },
+    CompositeBlur {
+        index: u32,
+    },
     CustomMesh3d {
         mesh_id: GpuMesh3dId,
         generation: u64,

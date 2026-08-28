@@ -2,8 +2,8 @@ use crate::{AtlasTextureId, ScaledPixels};
 use std::{iter::Peekable, slice};
 
 use super::{
-    DrawOrder, MonochromeSprite, MonochromeSpriteSampling, PaintBackdropBlur, PaintGpuMesh3d,
-    PaintSurface, Path, PolychromeSprite, PrimitiveKind, Quad, Shadow, Underline,
+    DrawOrder, MonochromeSprite, MonochromeSpriteSampling, PaintBackdropBlur, PaintBlur,
+    PaintGpuMesh3d, PaintSurface, Path, PolychromeSprite, PrimitiveKind, Quad, Shadow, Underline,
 };
 
 type BatchCandidate = (Option<DrawOrder>, PrimitiveKind);
@@ -13,7 +13,9 @@ fn batch_sort_key((order, kind): BatchCandidate) -> BatchSortKey {
     (order.unwrap_or(u32::MAX), kind)
 }
 
-fn first_two_batch_candidates(candidates: [BatchCandidate; 9]) -> (BatchCandidate, BatchCandidate) {
+fn first_two_batch_candidates(
+    candidates: [BatchCandidate; 10],
+) -> (BatchCandidate, BatchCandidate) {
     let [first, second, rest @ ..] = candidates;
     let (mut first, mut second) = if batch_sort_key(second) < batch_sort_key(first) {
         (second, first)
@@ -59,6 +61,9 @@ pub(super) struct BatchIterator<'a> {
     pub(super) backdrop_blurs: &'a [PaintBackdropBlur],
     pub(super) backdrop_blurs_start: usize,
     pub(super) backdrop_blurs_iter: Peekable<slice::Iter<'a, PaintBackdropBlur>>,
+    pub(super) blurs: &'a [PaintBlur],
+    pub(super) blurs_start: usize,
+    pub(super) blurs_iter: Peekable<slice::Iter<'a, PaintBlur>>,
     pub(super) gpu_meshes_3d: &'a [PaintGpuMesh3d],
     pub(super) gpu_meshes_3d_start: usize,
     pub(super) gpu_meshes_3d_iter: Peekable<slice::Iter<'a, PaintGpuMesh3d>>,
@@ -94,6 +99,10 @@ impl<'a> Iterator for BatchIterator<'a> {
             (
                 self.backdrop_blurs_iter.peek().map(|blur| blur.order),
                 PrimitiveKind::BackdropBlur,
+            ),
+            (
+                self.blurs_iter.peek().map(|blur| blur.order),
+                PrimitiveKind::Blur,
             ),
             (
                 self.gpu_meshes_3d_iter.peek().map(|mesh| mesh.order),
@@ -246,6 +255,20 @@ impl<'a> Iterator for BatchIterator<'a> {
                     &self.backdrop_blurs[blurs_start..blurs_end],
                 ))
             }
+            PrimitiveKind::Blur => {
+                let blurs_start = self.blurs_start;
+                let mut blurs_end = blurs_start + 1;
+                self.blurs_iter.next();
+                while self
+                    .blurs_iter
+                    .next_if(|blur| (blur.order, batch_kind) < max_order_and_kind)
+                    .is_some()
+                {
+                    blurs_end += 1;
+                }
+                self.blurs_start = blurs_end;
+                Some(PrimitiveBatch::Blurs(&self.blurs[blurs_start..blurs_end]))
+            }
             PrimitiveKind::GpuMesh3d => {
                 let meshes_start = self.gpu_meshes_3d_start;
                 let mut meshes_end = meshes_start + 1;
@@ -290,5 +313,6 @@ pub(crate) enum PrimitiveBatch<'a> {
     },
     Surfaces(&'a [PaintSurface]),
     BackdropBlurs(&'a [PaintBackdropBlur]),
+    Blurs(&'a [PaintBlur]),
     GpuMeshes3d(&'a [PaintGpuMesh3d]),
 }

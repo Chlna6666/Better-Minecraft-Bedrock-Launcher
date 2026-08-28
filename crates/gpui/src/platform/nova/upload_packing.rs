@@ -86,7 +86,7 @@ pub(super) fn write_custom_mesh_3d_index(bytes: &mut Vec<u8>, index: u32) {
     write_u32_vec(bytes, index);
 }
 
-/// Packs a normalized 17-tap Gaussian kernel as four bilinear sample pairs plus the center tap.
+/// Packs a normalized Gaussian kernel as four sample pairs plus the center tap.
 ///
 /// The old shader recomputed eight exponentials, four paired offsets, and normalization for every
 /// fragment. These values depend only on the blur radius, so compute them once per pass on the CPU.
@@ -96,9 +96,18 @@ pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
     } else {
         1.0 / 4096.0
     };
-    let sigma = (radius / 3.0).max(1.0 / 4096.0);
-    let tap_step = radius / 8.0;
-    let gaussian = |distance: f32| (-(distance * distance) / (2.0 * sigma * sigma).max(1e-8)).exp();
+    // CSS blur() measures the Gaussian standard deviation, not the kernel support.
+    let sigma = radius;
+    let support = 3.0 * sigma;
+    let adjacent_taps = support <= 8.0;
+    let tap_step = if adjacent_taps { 1.0 } else { support / 8.0 };
+    let gaussian = |distance: f32| {
+        if adjacent_taps && distance > support {
+            0.0
+        } else {
+            (-(distance * distance) / (2.0 * sigma * sigma).max(1e-8)).exp()
+        }
+    };
 
     let center_weight = gaussian(0.0);
     let mut offsets = [0.0_f32; 4];
@@ -127,7 +136,7 @@ pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
         write_f32_vec(bytes, weight * normalization);
     }
     write_f32_vec(bytes, center_weight * normalization);
-    write_f32_vec(bytes, 0.0);
+    write_f32_vec(bytes, if adjacent_taps { 1.0 } else { 0.0 });
     write_f32_vec(bytes, 0.0);
     write_f32_vec(bytes, 0.0);
 }
@@ -152,7 +161,33 @@ pub(super) fn write_backdrop_blur(
     write_f32_vec(bytes, blur.saturation);
     write_f32_vec(bytes, drawable_size.width as f32);
     write_f32_vec(bytes, drawable_size.height as f32);
+    write_f32_vec(bytes, blur.opacity);
     write_u32_vec(bytes, 0);
+}
+
+/// Packs an element blur into the shared blur primitive layout.
+///
+/// Element blur uses the same Gaussian and composite pipelines as backdrop blur, but its source
+/// is the isolated content range rendered between the matching upload markers. The composite has
+/// no tint or saturation adjustment; the element opacity is applied by the shared shader.
+pub(super) fn write_paint_blur(
+    bytes: &mut Vec<u8>,
+    blur: &crate::PaintBlur,
+    drawable_size: DrawableSize,
+) {
+    write_u32_vec(bytes, blur.order);
+    write_u32_vec(bytes, 1);
+    write_u32_vec(bytes, 1);
+    write_u32_vec(bytes, 0);
+    write_bounds_scaled(bytes, &blur.bounds);
+    write_content_mask(bytes, &blur.content_mask);
+    write_corners(bytes, &Default::default());
+    write_hsla(bytes, crate::Hsla::transparent_black());
+    write_f32_vec(bytes, blur.radius.0);
+    write_f32_vec(bytes, 1.0);
+    write_f32_vec(bytes, drawable_size.width as f32);
+    write_f32_vec(bytes, drawable_size.height as f32);
+    write_f32_vec(bytes, blur.opacity);
     write_u32_vec(bytes, 0);
 }
 

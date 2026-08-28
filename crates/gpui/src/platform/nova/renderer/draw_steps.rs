@@ -8,6 +8,13 @@ pub(super) struct PreparedBackdropBlurGroup {
     pub(super) filter_passes: Vec<BackdropBlurRenderPass>,
 }
 
+pub(super) struct PreparedElementBlurLayer {
+    pub(super) index: u32,
+    pub(super) source_texture_view: TextureViewId,
+    pub(super) source_groups: Vec<PreparedBackdropBlurGroup>,
+    pub(super) filter_passes: Vec<BackdropBlurRenderPass>,
+}
+
 impl NovaRenderer {
     pub(super) fn prepare_draw_steps(&mut self) {
         let blend_pipelines = self.current_blend_pipelines();
@@ -59,21 +66,21 @@ impl NovaRenderer {
         let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
 
-        let blur_groups: Vec<_> = self
-            .frame_upload
-            .batches
-            .iter()
-            .enumerate()
-            .filter_map(|(batch_index, batch)| {
-                let UploadedBatch::BackdropBlurs { first, count } = *batch else {
-                    return None;
-                };
-                let configs = self
-                    .frame_upload
-                    .backdrop_blur_configs_for_range(first, count);
-                (!configs.is_empty()).then_some((batch_index, configs))
-            })
-            .collect();
+        let blur_groups: Vec<_> =
+            direct_backdrop_barriers(&self.frame_upload, 0, self.frame_upload.batches.len())
+                .into_iter()
+                .filter_map(|batch_index| {
+                    let UploadedBatch::BackdropBlurs { first, count } =
+                        self.frame_upload.batches[batch_index]
+                    else {
+                        return None;
+                    };
+                    let configs = self
+                        .frame_upload
+                        .backdrop_blur_configs_for_range(first, count);
+                    (!configs.is_empty()).then_some((batch_index, configs))
+                })
+                .collect();
         if blur_groups.is_empty() {
             return Vec::new();
         }
@@ -160,6 +167,184 @@ impl NovaRenderer {
         apply_filter_pass_scissors(&configs, self.current_size, passes);
     }
 
+    pub(super) fn prepare_element_blur_layers(
+        &self,
+        enabled: bool,
+    ) -> Vec<PreparedElementBlurLayer> {
+        if !enabled {
+            return Vec::new();
+        }
+        let Some(targets) = self.backdrop_blur_targets.as_ref() else {
+            return Vec::new();
+        };
+        let blend_pipelines = self.current_blend_pipelines();
+        let frame_resource_index = self.current_frame_resource_index;
+        let gpu_atlas_textures = &self.gpu_atlas_textures;
+        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
+        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
+        let mut layers = Vec::new();
+
+        for range in self.frame_upload.blur_content_ranges() {
+            let Some(config) = self
+                .frame_upload
+                .backdrop_blur_config_for_index(range.index)
+            else {
+                continue;
+            };
+            let Some(source_texture_view) = targets.isolated_source_texture_view(range.index)
+            else {
+                continue;
+            };
+            let Some(source_resource_set) =
+                targets.isolated_source_resource_set(range.index, frame_resource_index)
+            else {
+                continue;
+            };
+
+            let mut source_groups = Vec::new();
+            let mut segment_start = range.content_start;
+            for batch_index in
+                direct_backdrop_barriers(&self.frame_upload, range.content_start, range.content_end)
+            {
+                let UploadedBatch::BackdropBlurs { first, count } =
+                    self.frame_upload.batches[batch_index]
+                else {
+                    continue;
+                };
+                let configs = self
+                    .frame_upload
+                    .backdrop_blur_configs_for_range(first, count);
+                if configs.is_empty() {
+                    continue;
+                }
+                source_groups.push(self.prepare_element_blur_group(
+                    segment_start,
+                    batch_index,
+                    &configs,
+                    source_resource_set,
+                    targets,
+                ));
+                segment_start = batch_index;
+            }
+
+            let mut final_source_steps = Vec::new();
+            draw_steps_for_upload_into(
+                &self.frame_upload,
+                &self.pipelines,
+                blend_pipelines,
+                self.quad_resource_set,
+                self.shadow_resource_set,
+                self.path_resource_set,
+                |texture_id| {
+                    sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
+                },
+                |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
+                |mesh_id, generation| {
+                    custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
+                },
+                self.underline_resource_set,
+                |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index),
+                self.custom_mesh_3d_resource_set,
+                self.custom_mesh_3d_indices_buffer,
+                DrawStepMode::BlurContent {
+                    batch_start: segment_start,
+                    batch_end: range.content_end,
+                },
+                &mut final_source_steps,
+            );
+            if let Some(scissor) = blur_source_scissor(config, self.current_size) {
+                apply_scissor_to_steps(&mut final_source_steps, scissor);
+            }
+
+            let mut filter_passes = Vec::new();
+            backdrop_blur_render_passes_for_configs_with_source_into(
+                &self.pipelines,
+                targets,
+                frame_resource_index,
+                std::slice::from_ref(&config),
+                source_resource_set,
+                &mut filter_passes,
+            );
+            apply_filter_pass_scissors(
+                std::slice::from_ref(&config),
+                self.current_size,
+                &mut filter_passes,
+            );
+            source_groups.push(PreparedBackdropBlurGroup {
+                source_steps: final_source_steps,
+                filter_passes: Vec::new(),
+            });
+            layers.push(PreparedElementBlurLayer {
+                index: range.index,
+                source_texture_view,
+                source_groups,
+                filter_passes,
+            });
+        }
+        layers
+    }
+
+    fn prepare_element_blur_group(
+        &self,
+        batch_start: usize,
+        batch_end: usize,
+        configs: &[BackdropBlurConfig],
+        source_resource_set: ResourceSetId,
+        targets: &BackdropBlurTargets,
+    ) -> PreparedBackdropBlurGroup {
+        let blend_pipelines = self.current_blend_pipelines();
+        let frame_resource_index = self.current_frame_resource_index;
+        let gpu_atlas_textures = &self.gpu_atlas_textures;
+        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
+        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
+        let mut source_steps = Vec::new();
+        draw_steps_for_upload_into(
+            &self.frame_upload,
+            &self.pipelines,
+            blend_pipelines,
+            self.quad_resource_set,
+            self.shadow_resource_set,
+            self.path_resource_set,
+            |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
+            |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
+            |mesh_id, generation| {
+                custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
+            },
+            self.underline_resource_set,
+            |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index),
+            self.custom_mesh_3d_resource_set,
+            self.custom_mesh_3d_indices_buffer,
+            DrawStepMode::BlurContent {
+                batch_start,
+                batch_end,
+            },
+            &mut source_steps,
+        );
+
+        let mut filter_passes = Vec::new();
+        backdrop_blur_render_passes_for_configs_with_source_into(
+            &self.pipelines,
+            targets,
+            frame_resource_index,
+            configs,
+            source_resource_set,
+            &mut filter_passes,
+        );
+        if let Some(scissor) = configs
+            .iter()
+            .copied()
+            .filter_map(|config| blur_source_scissor(config, self.current_size))
+            .reduce(union_scissor_rects)
+        {
+            apply_scissor_to_steps(&mut source_steps, scissor);
+        }
+        apply_filter_pass_scissors(configs, self.current_size, &mut filter_passes);
+        PreparedBackdropBlurGroup {
+            source_steps,
+            filter_passes,
+        }
+    }
+
     pub(super) fn has_backdrop_blurs(&self) -> bool {
         !self.frame_upload.backdrop_blurs.is_empty()
     }
@@ -229,6 +414,37 @@ fn apply_filter_pass_scissors(
     }
 }
 
+fn direct_backdrop_barriers(upload: &FrameUpload, start: usize, end: usize) -> Vec<usize> {
+    let mut barriers = Vec::new();
+    let mut depth = 0usize;
+    let end = end.min(upload.batches.len());
+    for batch_index in start.min(end)..end {
+        match upload.batches[batch_index] {
+            UploadedBatch::BeginBlur { .. } => {
+                depth = depth.saturating_add(1);
+            }
+            UploadedBatch::EndBlur { .. } => {
+                depth = depth.saturating_sub(1);
+            }
+            UploadedBatch::BackdropBlurs { .. } if depth == 0 => {
+                barriers.push(batch_index);
+            }
+            UploadedBatch::SolidQuads { .. }
+            | UploadedBatch::Quads { .. }
+            | UploadedBatch::Shadows { .. }
+            | UploadedBatch::PathRasterization { .. }
+            | UploadedBatch::Paths { .. }
+            | UploadedBatch::MonoSprites { .. }
+            | UploadedBatch::PolySprites { .. }
+            | UploadedBatch::Underlines { .. }
+            | UploadedBatch::BackdropBlurs { .. }
+            | UploadedBatch::CompositeBlur { .. }
+            | UploadedBatch::CustomMesh3d { .. } => {}
+        }
+    }
+    barriers
+}
+
 fn apply_scissor_to_steps(steps: &mut [RenderStepDescriptor], scissor: ScissorRect) {
     for step in steps {
         match step {
@@ -257,7 +473,7 @@ fn blur_source_scissor(
         return None;
     }
 
-    let support = config.radius().max(0.0) + 1.0;
+    let support = 3.0 * config.radius().max(0.0) + 1.0;
     let left = floor_clamped_u32(x - support, drawable_size.width);
     let top = floor_clamped_u32(y - support, drawable_size.height);
     let right = ceil_clamped_u32(x + width + support, drawable_size.width);

@@ -180,7 +180,19 @@ impl NovaRenderer {
 
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
         if self.backdrop_blur_targets.as_ref().is_some_and(|targets| {
-            targets.is_layout_compatible(self.frame_upload.backdrop_blur_configs())
+            let isolated_source_indices: Vec<_> = self
+                .frame_upload
+                .blur_content_ranges()
+                .into_iter()
+                .map(|range| range.index)
+                .collect();
+            let mut isolated_source_indices = isolated_source_indices;
+            isolated_source_indices.sort_unstable();
+            isolated_source_indices.dedup();
+            targets.is_layout_compatible(
+                self.frame_upload.backdrop_blur_configs(),
+                &isolated_source_indices,
+            )
         }) {
             return Ok(());
         }

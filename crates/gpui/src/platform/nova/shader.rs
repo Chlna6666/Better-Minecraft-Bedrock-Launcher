@@ -69,7 +69,7 @@ pub(super) const NOVA_SURFACE_SHADER_SOURCE: &str = concat!(
 pub(super) const NOVA_BACKDROP_BLUR_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
     include_str!("shaders/shape.wgsl"),
-    include_str!("shaders/backdrop_blur.wgsl"),
+    include_str!("shaders/blur.wgsl"),
 );
 
 #[derive(Clone)]

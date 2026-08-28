@@ -44,6 +44,26 @@ pub trait Styled: Sized {
     gpui_macros::border_style_methods!();
     gpui_macros::box_shadow_style_methods!();
 
+    /// Blurs content behind this element, like CSS `backdrop-filter: blur(3px)`.
+    ///
+    /// No background or tint is added automatically. The filtered backdrop follows
+    /// the element's opacity, ancestor opacity, scale, corner radii and clipping.
+    /// Its own background, border and children are painted after the filter and
+    /// remain sharp. Accepts a radius such as `px(3.0)` or a [`crate::BackdropBlurStyle`].
+    fn backdrop_blur(mut self, blur: impl Into<crate::BackdropBlurStyle>) -> Self {
+        self.style().backdrop_blur = Some(blur.into());
+        self
+    }
+
+    /// Applies a CSS `filter: blur(...)` to this element and all of its descendants.
+    ///
+    /// The value is the Gaussian standard deviation (sigma) in logical pixels. The element's
+    /// own background, border, text and children are captured together and blurred as one group.
+    fn blur(mut self, sigma: impl Into<crate::Pixels>) -> Self {
+        self.style().blur = Some(sigma.into());
+        self
+    }
+
     /// Sets the display type of the element to `block`.
     /// [Docs](https://tailwindcss.com/docs/display)
     fn block(mut self) -> Self {

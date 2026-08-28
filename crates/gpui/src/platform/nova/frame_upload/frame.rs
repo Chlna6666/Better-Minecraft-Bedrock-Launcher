@@ -15,6 +15,55 @@ pub(in crate::platform::nova) struct FrameUploadSummary {
     pub(in crate::platform::nova) unsupported_batches: UnsupportedBatchSummary,
 }
 
+impl FrameUploadSummary {
+    pub(in crate::platform::nova) fn accumulate(&mut self, other: Self) {
+        self.quad_count = self.quad_count.saturating_add(other.quad_count);
+        self.shadow_count = self.shadow_count.saturating_add(other.shadow_count);
+        self.animation_binding_count = self
+            .animation_binding_count
+            .saturating_add(other.animation_binding_count);
+        self.animation_value_count = self
+            .animation_value_count
+            .saturating_add(other.animation_value_count);
+        self.path_vertex_count = self
+            .path_vertex_count
+            .saturating_add(other.path_vertex_count);
+        self.path_sprite_count = self
+            .path_sprite_count
+            .saturating_add(other.path_sprite_count);
+        self.mono_sprite_count = self
+            .mono_sprite_count
+            .saturating_add(other.mono_sprite_count);
+        self.poly_sprite_count = self
+            .poly_sprite_count
+            .saturating_add(other.poly_sprite_count);
+        self.underline_count = self.underline_count.saturating_add(other.underline_count);
+        self.backdrop_blur_count = self
+            .backdrop_blur_count
+            .saturating_add(other.backdrop_blur_count);
+        self.unsupported_batches.paths = self
+            .unsupported_batches
+            .paths
+            .saturating_add(other.unsupported_batches.paths);
+        self.unsupported_batches.surfaces = self
+            .unsupported_batches
+            .surfaces
+            .saturating_add(other.unsupported_batches.surfaces);
+        self.unsupported_batches.backdrop_blurs = self
+            .unsupported_batches
+            .backdrop_blurs
+            .saturating_add(other.unsupported_batches.backdrop_blurs);
+        self.unsupported_batches.backdrop_blur_tint_fallbacks = self
+            .unsupported_batches
+            .backdrop_blur_tint_fallbacks
+            .saturating_add(other.unsupported_batches.backdrop_blur_tint_fallbacks);
+        self.unsupported_batches.gpu_meshes_3d = self
+            .unsupported_batches
+            .gpu_meshes_3d
+            .saturating_add(other.unsupported_batches.gpu_meshes_3d);
+    }
+}
+
 #[derive(Default)]
 pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) globals: Vec<u8>,

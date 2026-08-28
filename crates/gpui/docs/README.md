@@ -29,7 +29,7 @@ directory.
   backend selection and frame delivery.
 - [Runtime WGSL shaders](runtime_wgsl_shaders.md): runtime shader validation
   and custom shader modules.
-- [Backdrop blur](backdrop_blur.md): backdrop blur pipeline behavior.
+- [Blur](backdrop_blur.md): CSS-style element/backdrop filters, opacity and GPU pipeline.
 - [Default fonts](default_fonts.md): font setup boundaries and platform
   defaults.
 - [Performance pipeline](performance_pipeline.md): frame metrics and retained

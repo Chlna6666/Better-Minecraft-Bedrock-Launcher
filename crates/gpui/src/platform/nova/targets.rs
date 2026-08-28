@@ -20,7 +20,17 @@ pub(super) struct BackdropBlurTargets {
     /// Shared accumulated scene color used as the ordered backdrop source.
     pub(super) source: TextureTarget,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
+    /// Per-element sources. Each CSS blur group starts from a clean attachment so one group's
+    /// content can never become the backdrop source of a sibling group.
+    pub(super) isolated_sources: Vec<IsolatedBlurSource>,
     pub(super) variants: Vec<BackdropBlurVariantTargets>,
+}
+
+#[derive(Clone)]
+pub(super) struct IsolatedBlurSource {
+    pub(super) index: u32,
+    pub(super) target: TextureTarget,
+    pub(super) pass_resource_sets: Vec<ResourceSetId>,
 }
 
 #[derive(Clone)]
@@ -45,6 +55,7 @@ pub(super) struct BackdropBlurTargetDescriptor {
     pub(super) size: Extent2d,
     pub(super) format: Format,
     pub(super) configs: Vec<BackdropBlurConfig>,
+    pub(super) isolated_source_indices: Vec<u32>,
     pub(super) pass_resource_set_layout: ResourceSetLayoutId,
     pub(super) blur_resource_set_layout: ResourceSetLayoutId,
     pub(super) frame_buffers: Vec<FrameResourceBuffers>,
@@ -75,8 +86,37 @@ impl BackdropBlurTargets {
     ///
     /// Bounds are intentionally ignored. Moving/resizing an animated glass surface updates only
     /// CPU metadata and scissors instead of destroying and recreating GPU textures.
-    pub(super) fn is_layout_compatible(&self, next: &[BackdropBlurConfig]) -> bool {
+    pub(super) fn isolated_source_texture_view(&self, index: u32) -> Option<TextureViewId> {
+        self.isolated_sources
+            .iter()
+            .find(|source| source.index == index)
+            .map(|source| source.target.texture_view)
+    }
+
+    pub(super) fn isolated_source_resource_set(
+        &self,
+        index: u32,
+        frame_resource_index: usize,
+    ) -> Option<ResourceSetId> {
+        self.isolated_sources
+            .iter()
+            .find(|source| source.index == index)?
+            .pass_resource_sets
+            .get(frame_resource_index)
+            .copied()
+    }
+
+    pub(super) fn is_layout_compatible(
+        &self,
+        next: &[BackdropBlurConfig],
+        next_isolated_source_indices: &[u32],
+    ) -> bool {
         self.variants.len() == next.len()
+            && self
+                .isolated_sources
+                .iter()
+                .map(|source| source.index)
+                .eq(next_isolated_source_indices.iter().copied())
             && self.variants.iter().zip(next).all(|(variant, config)| {
                 variant.config.reuse_key() == config.reuse_key()
                     && variant.config.downsample() == config.downsample()
@@ -188,6 +228,38 @@ where
         })?);
     }
 
+    let mut isolated_source_indices = descriptor.isolated_source_indices;
+    isolated_source_indices.sort_unstable();
+    isolated_source_indices.dedup();
+    let mut isolated_sources = Vec::with_capacity(isolated_source_indices.len());
+    for index in isolated_source_indices {
+        let target = create_render_texture_target(
+            device,
+            &format!("{label} element blur {index} scene color"),
+            descriptor.size,
+            descriptor.format,
+        )?;
+        let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+        for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+            pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                label: Some(format!(
+                    "{label} element blur {index} scene color frame {frame_index} resource set"
+                )),
+                layout: descriptor.pass_resource_set_layout,
+                bindings: backdrop_blur_pass_resource_bindings(
+                    target.texture_view,
+                    descriptor.sampler,
+                    buffers.backdrop_blur_pass_buffer,
+                ),
+            })?);
+        }
+        isolated_sources.push(IsolatedBlurSource {
+            index,
+            target,
+            pass_resource_sets,
+        });
+    }
+
     let mut variants = Vec::with_capacity(configs.len());
     for (variant_index, config) in configs.iter().copied().enumerate() {
         let downsample = u32::from(config.downsample().max(1));
@@ -258,6 +330,7 @@ where
     Ok(BackdropBlurTargets {
         source,
         source_pass_resource_sets,
+        isolated_sources,
         variants,
     })
 }
@@ -275,6 +348,16 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
                 "failed to destroy {backend_name} backdrop blur source resource set: {error}"
             );
         }
+    }
+    for source in targets.isolated_sources {
+        for resource_set in source.pass_resource_sets {
+            if let Err(error) = device.destroy_resource_set(resource_set) {
+                log::debug!(
+                    "failed to destroy {backend_name} element blur source resource set: {error}"
+                );
+            }
+        }
+        destroy_render_texture_target(device, source.target, backend_name);
     }
     for variant in targets.variants {
         for resource_set in variant.target_resource_sets {
