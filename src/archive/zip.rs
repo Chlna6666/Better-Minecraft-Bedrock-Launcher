@@ -491,7 +491,6 @@ pub async fn extract_zip_from_path(
     force_replace: bool,
     task_id: String,
 ) -> Result<CoreResult<()>, CoreError> {
-    crate::archive::register_archive_task_stage_labels();
     let archive_path = archive_path.as_ref().to_path_buf();
     let dest_string = destination.to_string();
     let task_id_for_block = task_id.clone();
@@ -526,7 +525,6 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
     force_replace: bool,
     task_id: String,
 ) -> Result<CoreResult<()>, CoreError> {
-    crate::archive::register_archive_task_stage_labels();
     // spawn_blocking 内执行实际解压（IO 密集）
     let dest_string = destination.to_string();
     let task_id_clone_for_block = task_id.clone();

@@ -421,7 +421,6 @@ pub async fn download_and_apply_update(
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
 
-    crate::downloads::register_download_task_stage_labels();
     let task_id = create_task_with_details(
         args.task_id,
         "下载更新",

@@ -41,17 +41,6 @@ const LAUNCH_TOTAL_STEPS: u64 = 5;
 const GAME_INFO_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
 const LEGACY_UWP_RUNTIME_INJECTION_CUTOFF: &str = "1.21.0.0";
-const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 5] = [
-    ("parsing", "解析中"),
-    ("preparing_files", "准备安装"),
-    ("patching", "处理中"),
-    ("initializing", "初始化中"),
-    ("launching", "启动游戏"),
-];
-
-fn register_launcher_task_stage_labels() {
-    crate::tasks::task_manager::register_task_stage_labels(LAUNCHER_TASK_STAGE_LABELS);
-}
 
 #[derive(Clone, Debug)]
 pub struct LaunchRequest {
@@ -82,7 +71,6 @@ impl LaunchRequest {
 }
 
 pub fn start_launch_task(request: LaunchRequest) -> String {
-    register_launcher_task_stage_labels();
     let title = format!("启动 {}", request.display_name);
     let detail = Some(request.version.to_string());
     let task_id = create_task_with_details(

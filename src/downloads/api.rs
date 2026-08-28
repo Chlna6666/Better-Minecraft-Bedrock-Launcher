@@ -113,7 +113,6 @@ pub async fn download_appx(
     force_download: Option<bool>,
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
-    crate::downloads::register_download_task_stage_labels();
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
@@ -257,7 +256,6 @@ pub async fn download_resource(
     force_download: Option<bool>,
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
-    crate::downloads::register_download_task_stage_labels();
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
@@ -359,7 +357,6 @@ pub async fn download_resource_to_cache(
     md5: Option<String>,
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
-    crate::downloads::register_download_task_stage_labels();
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 

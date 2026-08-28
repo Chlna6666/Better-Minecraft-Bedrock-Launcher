@@ -3,8 +3,8 @@ use crate::core::linux_runtime::{
     RunnerKind, resolve_runner, runner_runtime_root, validate_proton_game_runtime,
 };
 use crate::tasks::task_manager::{
-    append_task_log, create_task_with_details, finish_task, register_task_abort_handle,
-    register_task_stage_labels, set_total, update_progress,
+    append_task_log, create_task_with_details, finish_task, register_task_abort_handle, set_total,
+    update_progress,
 };
 use std::collections::VecDeque;
 use std::env;
@@ -31,12 +31,6 @@ const ROUNDMCDEV_PREFIX_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const ROUNDMCDEV_PREFIX_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RECENT_RUNNER_OUTPUT_LIMIT: usize = 32;
 const GDK_GNUTLS_PRIORITY: &[u8] = b"[priorities]\nSYSTEM = NORMAL:-VERS-TLS1.3:%COMPAT\n";
-const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 4] = [
-    ("resolving_runner", "检测兼容环境"),
-    ("preparing_prefix", "准备 Proton Prefix"),
-    ("launching", "启动游戏"),
-    ("running_game", "游戏运行中"),
-];
 
 #[derive(Clone, Debug)]
 pub struct LaunchRequest {
@@ -500,7 +494,6 @@ async fn ensure_gdk_data_directories(
 }
 
 pub fn start_launch_task(request: LaunchRequest) -> String {
-    register_task_stage_labels(LAUNCHER_TASK_STAGE_LABELS);
     let task_id = create_task_with_details(
         None,
         format!("启动 {}", request.display_name),

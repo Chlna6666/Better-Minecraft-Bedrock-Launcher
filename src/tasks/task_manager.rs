@@ -30,8 +30,6 @@ static TASK_ABORT_HANDLES: Lazy<Mutex<HashMap<String, AbortHandle>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static TASK_CANCEL_HOOKS: Lazy<Mutex<HashMap<String, TaskCancelHook>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static TASK_STAGE_LABELS: Lazy<RwLock<HashMap<Arc<str>, Arc<str>>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
 static TASK_LOGS: Lazy<Mutex<HashMap<Arc<str>, VecDeque<Arc<str>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -318,7 +316,10 @@ impl Task {
             id: self.id.clone(),
             title: self.title.clone(),
             detail: self.detail.clone(),
-            stage: localize_task_stage(self.stage.as_ref()),
+            // Keep the semantic stage code in the domain snapshot. Rendering
+            // owns the locale-specific label so switching language can
+            // re-render existing tasks without recreating the task.
+            stage: self.stage.clone(),
             total: self.total,
             done: done_clamped,
             speed_bytes_per_sec: self.speed_ema,
@@ -346,28 +347,8 @@ impl Task {
     }
 }
 
-fn localize_task_stage(stage: &str) -> Arc<str> {
-    if let Ok(stage_labels) = TASK_STAGE_LABELS.read()
-        && let Some(label) = stage_labels.get(stage)
-    {
-        return label.clone();
-    }
-
-    // 常见内置阶段用共享 Arc，避免每次快照都重新分配。
-    static STAGE_LABEL_READY: Lazy<Arc<str>> = Lazy::new(|| Arc::<str>::from("等待开始"));
-    static STAGE_LABEL_QUEUED: Lazy<Arc<str>> = Lazy::new(|| Arc::<str>::from("排队中"));
-    static STAGE_LABEL_STARTING: Lazy<Arc<str>> = Lazy::new(|| Arc::<str>::from("准备中"));
-
-    match stage {
-        "ready" => STAGE_LABEL_READY.clone(),
-        "queued" => STAGE_LABEL_QUEUED.clone(),
-        "starting" => STAGE_LABEL_STARTING.clone(),
-        other => Arc::<str>::from(other),
-    }
-}
-
 fn default_task_title(_stage: &str) -> Arc<str> {
-    Arc::<str>::from("后台任务")
+    Arc::<str>::from("background task")
 }
 
 pub fn is_terminal_status(status: &str) -> bool {
@@ -477,15 +458,6 @@ pub async fn wait_for_task_terminal(task_id: &str) -> Result<Arc<TaskSnapshot>, 
 
 pub fn task_visualization_enabled() -> bool {
     TASK_VISUALIZATION_ENABLED
-}
-
-pub fn register_task_stage_labels(labels: impl IntoIterator<Item = (&'static str, &'static str)>) {
-    let Ok(mut stage_labels) = TASK_STAGE_LABELS.write() else {
-        return;
-    };
-    for (stage, label) in labels {
-        stage_labels.insert(Arc::<str>::from(stage), Arc::<str>::from(label));
-    }
 }
 
 pub fn register_task_abort_handle(task_id: impl Into<String>, abort_handle: AbortHandle) {
@@ -1498,14 +1470,12 @@ mod tests {
     }
 
     #[test]
-    fn registered_task_stage_label_localizes_snapshot() {
+    fn task_snapshot_keeps_semantic_stage_code() {
         let task_id = format!(
             "task-manager-stage-label-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let stage = "task_manager_registered_stage_label_test";
-        register_task_stage_labels([(stage, "注册阶段文案")]);
-
         let created_task_id = create_task_with_details(
             Some(task_id.clone()),
             "阶段文案测试",
@@ -1520,7 +1490,7 @@ mod tests {
                 .expect("task snapshot")
                 .stage
                 .as_ref(),
-            "注册阶段文案"
+            stage
         );
         assert!(remove_task(&task_id));
     }

@@ -77,6 +77,10 @@ where
     super::storage::update_config(mutator)
 }
 
+pub fn persist_language(code: &str) -> std::io::Result<()> {
+    super::storage::persist_language(code)
+}
+
 /// 立即把内存中未落盘的配置写入磁盘（供应用退出路径调用）。
 pub fn flush_config_now() {
     super::storage::flush_config_now()

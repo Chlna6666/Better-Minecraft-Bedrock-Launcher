@@ -1,8 +1,7 @@
 use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    append_task_log, create_task_with_details, finish_task, register_task_stage_labels,
-    set_task_message, update_progress,
+    append_task_log, create_task_with_details, finish_task, set_task_message, update_progress,
 };
 use crate::utils::file_ops;
 use std::env;
@@ -15,21 +14,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tracing::{info, warn};
 
-const INSTALL_STAGE_LABELS: [(&str, &str); 2] = [
-    ("awaiting_linux_authorization", "等待管理员授权"),
-    ("installing_linux_packages", "安装兼容环境依赖"),
-];
-
 pub(crate) const PROTON_GDK_RELEASE_SOURCES: [&str; 3] = [
     "RoundMCDev/ProtonGDK-Release",
     "Weather-OS/GDK-Proton",
     "LukasPAH/GDK-Proton-Custom",
-];
-
-const PROTON_GDK_INSTALL_STAGE_LABELS: [(&str, &str); 3] = [
-    ("resolving_proton_gdk", "获取 Proton-GDK 版本"),
-    ("downloading_proton_gdk", "下载 Proton-GDK"),
-    ("extracting_proton_gdk", "安装 Proton-GDK"),
 ];
 
 const PROTON_GDK_METADATA_FILE: &str = ".bmcbl-proton-gdk.json";
@@ -394,7 +382,6 @@ fn find_bundle_root_for_path(path: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String {
-    register_task_stage_labels(PROTON_GDK_INSTALL_STAGE_LABELS);
     let release_label = match source {
         ProtonGdkSource::RoundMcDev => ROUNDMCDEV_RELEASE_TAG,
         ProtonGdkSource::WeatherOs | ProtonGdkSource::LukasPah => "latest",
@@ -1392,7 +1379,6 @@ fn infer_proton_gdk_source_from_directory(directory_name: &str) -> Option<Proton
 }
 
 pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
-    register_task_stage_labels(INSTALL_STAGE_LABELS);
     let command_preview = plan.command_preview();
     let task_id = create_task_with_details(
         None,

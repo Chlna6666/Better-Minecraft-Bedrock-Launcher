@@ -338,8 +338,6 @@ impl DownloaderManager {
         dest: PathBuf,
         options: &DownloadOptions,
     ) -> Result<CoreResult<PathBuf>, CoreError> {
-        crate::downloads::register_download_task_stage_labels();
-
         let configured_threads = resolve_thread_count(options.threads);
         let task_control = task_control(task_id)
             .ok_or_else(|| CoreError::Other(format!("Task control missing for {task_id}")))?;
@@ -547,7 +545,6 @@ impl DownloaderManager {
 
     /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
     pub fn start_download(&self, url: String, dest: PathBuf, options: DownloadOptions) -> String {
-        crate::downloads::register_download_task_stage_labels();
         let task_id = create_task_with_details(
             None,
             "下载任务",

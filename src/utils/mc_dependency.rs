@@ -31,7 +31,7 @@ use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 
 use crate::http::proxy::get_client_for_proxy;
 use crate::http::request::GLOBAL_CLIENT;
-use crate::i18n::{Locale, Translator};
+use crate::i18n::LocalizedText;
 #[cfg(windows)]
 use crate::utils::developer_mode;
 
@@ -98,13 +98,13 @@ pub struct GameInputInstallPlan {
 
 #[derive(Debug, Clone)]
 pub enum DependencyEvent {
-    Log(String),
+    Log(LocalizedText),
     Progress {
         percent: u32,
-        stage: String,
+        stage: LocalizedText,
         target: Option<String>,
     },
-    AdminRequired(String),
+    AdminRequired(LocalizedText),
 }
 
 fn extract_version(input: &str) -> Option<String> {
@@ -390,7 +390,6 @@ pub fn plan_game_input_install(package_folder: &str) -> Option<GameInputInstallP
 }
 
 pub async fn install_missing_uwp_dependencies(
-    locale: Locale,
     missing_dependencies: Vec<MissingUwpDependency>,
     sender: Option<UnboundedSender<DependencyEvent>>,
 ) -> Result<()> {
@@ -400,7 +399,6 @@ pub async fn install_missing_uwp_dependencies(
     }
 
     info!(
-        locale = ?locale,
         missing_count = missing_dependencies.len(),
         dependencies = ?missing_dependencies
             .iter()
@@ -409,14 +407,10 @@ pub async fn install_missing_uwp_dependencies(
         "开始安装缺失的 UWP 依赖"
     );
 
-    let translator = translator_for(locale);
     let client = get_client_for_proxy().unwrap_or_else(|_| GLOBAL_CLIENT.clone());
     let anchor_regex = Regex::new(r#"<a\s+href=\"(?P<href>[^\"]+)\"[^>]*>(?P<name>[^<]+)</a>"#)?;
 
-    emit_log(
-        sender.as_ref(),
-        translator.translate("McDeps.logs.start").into_owned(),
-    );
+    emit_log(sender.as_ref(), crate::localized_text!("McDeps.logs.start"));
 
     for dependency in missing_dependencies {
         info!(
@@ -452,12 +446,10 @@ pub async fn install_missing_uwp_dependencies(
         if !status.is_success() {
             emit_log(
                 sender.as_ref(),
-                translator
-                    .translate_args(
-                        "McDeps.logs.source_http_error",
-                        crate::i18n_args![("pkg", &dependency.name)],
-                    )
-                    .into_owned(),
+                crate::localized_text!(
+                    "McDeps.logs.source_http_error",
+                    pkg = dependency.name.clone(),
+                ),
             );
             return Err(anyhow!("依赖源请求失败: {} ({status})", dependency.name));
         }
@@ -482,12 +474,7 @@ pub async fn install_missing_uwp_dependencies(
         else {
             emit_log(
                 sender.as_ref(),
-                translator
-                    .translate_args(
-                        "McDeps.logs.no_candidates",
-                        crate::i18n_args![("pkg", &dependency.name)],
-                    )
-                    .into_owned(),
+                crate::localized_text!("McDeps.logs.no_candidates", pkg = dependency.name.clone(),),
             );
             return Err(anyhow!("未找到可用依赖安装包: {}", dependency.name));
         };
@@ -500,12 +487,7 @@ pub async fn install_missing_uwp_dependencies(
 
         emit_log(
             sender.as_ref(),
-            translator
-                .translate_args(
-                    "McDeps.logs.download_start",
-                    crate::i18n_args![("name", &asset_name)],
-                )
-                .into_owned(),
+            crate::localized_text!("McDeps.logs.download_start", name = asset_name.clone(),),
         );
 
         let download_path = env::temp_dir().join(&asset_name);
@@ -513,7 +495,7 @@ pub async fn install_missing_uwp_dependencies(
             &client,
             &asset_url,
             &download_path,
-            translator.translate("McDeps.stages.download").into_owned(),
+            crate::localized_text!("McDeps.stages.download"),
             Some(asset_name.clone()),
             sender.as_ref(),
             None,
@@ -523,9 +505,7 @@ pub async fn install_missing_uwp_dependencies(
         emit_progress(
             sender.as_ref(),
             80,
-            translator
-                .translate("McDeps.stages.installing")
-                .into_owned(),
+            crate::localized_text!("McDeps.stages.installing"),
             Some(asset_name.clone()),
         );
 
@@ -534,9 +514,7 @@ pub async fn install_missing_uwp_dependencies(
         emit_progress(
             sender.as_ref(),
             90,
-            translator
-                .translate("McDeps.stages.installing")
-                .into_owned(),
+            crate::localized_text!("McDeps.stages.installing"),
             Some(dependency.name.clone()),
         );
 
@@ -548,17 +526,15 @@ pub async fn install_missing_uwp_dependencies(
 
         emit_log(
             sender.as_ref(),
-            translator
-                .translate_args(
-                    "McDeps.logs.detect_installed",
-                    crate::i18n_args![("pkg", &dependency.name)],
-                )
-                .into_owned(),
+            crate::localized_text!(
+                "McDeps.logs.detect_installed",
+                pkg = dependency.name.clone(),
+            ),
         );
         emit_progress(
             sender.as_ref(),
             100,
-            translator.translate("McDeps.stages.done-one").into_owned(),
+            crate::localized_text!("McDeps.stages.done-one"),
             Some(dependency.name.clone()),
         );
         info!(dependency = %dependency.name, "UWP 依赖安装并校验完成");
@@ -569,11 +545,9 @@ pub async fn install_missing_uwp_dependencies(
 }
 
 pub async fn install_game_input_runtime(
-    locale: Locale,
     plan: GameInputInstallPlan,
     sender: Option<UnboundedSender<DependencyEvent>>,
 ) -> Result<()> {
-    let translator = translator_for(locale);
     let client = get_client_for_proxy().unwrap_or_else(|_| GLOBAL_CLIENT.clone());
     let installer_name = plan
         .installer_path
@@ -582,7 +556,6 @@ pub async fn install_game_input_runtime(
         .unwrap_or("GameInputRedist.msi")
         .to_string();
     info!(
-        locale = ?locale,
         installer_name = %installer_name,
         installer_path = %plan.installer_path.display(),
         installer_source = ?plan.source,
@@ -592,18 +565,13 @@ pub async fn install_game_input_runtime(
     if matches!(plan.source, GameInputInstallerSource::Download) {
         emit_log(
             sender.as_ref(),
-            translator
-                .translate_args(
-                    "McDeps.logs.download_start",
-                    crate::i18n_args![("name", &installer_name)],
-                )
-                .into_owned(),
+            crate::localized_text!("McDeps.logs.download_start", name = installer_name.clone(),),
         );
         download_file_with_progress(
             &client,
             GAMEINPUT_LATEST_DOWNLOAD_URL,
             &plan.installer_path,
-            translator.translate("McDeps.stages.download").into_owned(),
+            crate::localized_text!("McDeps.stages.download"),
             Some(installer_name.clone()),
             sender.as_ref(),
             None,
@@ -611,14 +579,12 @@ pub async fn install_game_input_runtime(
         .await?;
     }
 
-    emit_game_input_admin_notice(sender.as_ref(), &translator, &plan);
+    emit_game_input_admin_notice(sender.as_ref(), &plan);
 
     emit_progress(
         sender.as_ref(),
         85,
-        translator
-            .translate("McDeps.stages.installing")
-            .into_owned(),
+        crate::localized_text!("McDeps.stages.installing"),
         Some(installer_name.clone()),
     );
 
@@ -639,7 +605,7 @@ pub async fn install_game_input_runtime(
     emit_progress(
         sender.as_ref(),
         100,
-        translator.translate("McDeps.stages.done-one").into_owned(),
+        crate::localized_text!("McDeps.stages.done-one"),
         Some(installer_name),
     );
     info!("GameInput Runtime 安装并校验完成");
@@ -647,13 +613,7 @@ pub async fn install_game_input_runtime(
     Ok(())
 }
 
-fn translator_for(locale: Locale) -> Translator {
-    let mut translator = Translator::new();
-    translator.set_locale(locale);
-    translator
-}
-
-fn emit_log(sender: Option<&UnboundedSender<DependencyEvent>>, message: String) {
+fn emit_log(sender: Option<&UnboundedSender<DependencyEvent>>, message: LocalizedText) {
     if let Some(sender) = sender {
         let _ = sender.send(DependencyEvent::Log(message));
     }
@@ -662,7 +622,7 @@ fn emit_log(sender: Option<&UnboundedSender<DependencyEvent>>, message: String) 
 fn emit_progress(
     sender: Option<&UnboundedSender<DependencyEvent>>,
     percent: u32,
-    stage: String,
+    stage: LocalizedText,
     target: Option<String>,
 ) {
     if let Some(sender) = sender {
@@ -674,7 +634,7 @@ fn emit_progress(
     }
 }
 
-fn emit_admin_required(sender: Option<&UnboundedSender<DependencyEvent>>, message: String) {
+fn emit_admin_required(sender: Option<&UnboundedSender<DependencyEvent>>, message: LocalizedText) {
     if let Some(sender) = sender {
         let _ = sender.send(DependencyEvent::AdminRequired(message));
     }
@@ -683,7 +643,6 @@ fn emit_admin_required(sender: Option<&UnboundedSender<DependencyEvent>>, messag
 #[cfg(windows)]
 fn emit_game_input_admin_notice(
     sender: Option<&UnboundedSender<DependencyEvent>>,
-    translator: &Translator,
     plan: &GameInputInstallPlan,
 ) {
     if !developer_mode::is_process_elevated() {
@@ -693,9 +652,7 @@ fn emit_game_input_admin_notice(
         );
         emit_admin_required(
             sender,
-            translator
-                .translate("LaunchPrereq.adminRunRequired")
-                .into_owned(),
+            crate::localized_text!("LaunchPrereq.adminRunRequired"),
         );
     }
 }
@@ -703,7 +660,6 @@ fn emit_game_input_admin_notice(
 #[cfg(not(windows))]
 fn emit_game_input_admin_notice(
     _sender: Option<&UnboundedSender<DependencyEvent>>,
-    _translator: &Translator,
     _plan: &GameInputInstallPlan,
 ) {
 }
@@ -712,7 +668,7 @@ async fn download_file_with_progress(
     client: &Client,
     url: &str,
     destination: &Path,
-    stage_label: String,
+    stage_label: LocalizedText,
     target: Option<String>,
     sender: Option<&UnboundedSender<DependencyEvent>>,
     request_headers: Option<&HeaderMap>,

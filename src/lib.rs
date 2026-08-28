@@ -7,6 +7,7 @@ mod config;
 mod core;
 mod downloads;
 mod http;
+#[macro_use]
 mod i18n;
 mod launch;
 mod plugins;

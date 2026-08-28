@@ -1417,7 +1417,7 @@ entry = "plugin.wasm"
 authors = ["BMCBL"]
 description = "Core example plugin for BMCBL."
 website = "https://bmcbl.com"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 load_order = "startup"
 tags = ["essentials", "example", "wasm"]
 readme = "README.md"
@@ -1431,7 +1431,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
             .expect("professional metadata should parse");
 
         assert_eq!(manifest.website.as_deref(), Some("https://bmcbl.com"));
-        assert_eq!(manifest.license.as_deref(), Some("GPL-3.0-only"));
+        assert_eq!(manifest.license.as_deref(), Some("GPL-3.0"));
         assert_eq!(manifest.load_order, PluginLoadOrder::Startup);
         assert_eq!(
             manifest.tags,
@@ -1487,7 +1487,7 @@ entry = "plugin.wasm"
 authors = ["BMCBL"]
 description = "Core example plugin for BMCBL."
 website = "https://bmcbl.com"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 load_order = "startup"
 tags = ["essentials", "example", "wasm"]
 package_hash = "sha256:{hash}"
@@ -1757,7 +1757,7 @@ entry = "plugin.wasm"
 authors = ["BMCBL"]
 description = "Core example plugin for BMCBL."
 website = "https://bmcbl.com"
-license = "GPL-3.0-only"
+license = "GPL-3.0"
 load_order = "startup"
 tags = ["essentials", "example", "wasm"]
 readme = "README.md"

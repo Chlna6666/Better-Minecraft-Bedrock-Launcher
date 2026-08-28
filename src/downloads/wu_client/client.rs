@@ -106,7 +106,6 @@ impl WuClient {
         revision: &str,
         task_id: &str,
     ) -> Result<CoreResult<Vec<WuDownloadFile>>, CoreError> {
-        crate::downloads::register_download_task_stage_labels();
         let request_xml = self.protocol.build_download_request(update_id, revision);
 
         // 把阶段标为 resolving_url

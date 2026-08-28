@@ -11,9 +11,8 @@ use tracing::{info, warn};
 
 use super::{
     DependencyEvent, download_file_with_progress, emit_log, emit_progress, is_installed_with_min,
-    translator_for, wait_for_condition,
+    wait_for_condition,
 };
-use crate::i18n::{Locale, Translator};
 
 pub const WINDOWS_APP_SDK_RELEASES_URL: &str =
     "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive";
@@ -121,11 +120,9 @@ pub fn plan_windows_app_sdk_install(package_folder: &str) -> Option<WindowsAppSd
 }
 
 pub async fn install_windows_app_sdk_runtime(
-    locale: Locale,
     plan: WindowsAppSdkInstallPlan,
     sender: Option<UnboundedSender<DependencyEvent>>,
 ) -> Result<()> {
-    let translator = translator_for(locale);
     let client = crate::http::proxy::get_download_client_for_proxy()
         .unwrap_or_else(|_| crate::http::request::GLOBAL_CLIENT.clone());
     let installer_name = plan
@@ -135,7 +132,6 @@ pub async fn install_windows_app_sdk_runtime(
         .unwrap_or("windowsappruntimeinstall.exe")
         .to_string();
     info!(
-        locale = ?locale,
         installer_name = %installer_name,
         installer_path = %plan.installer_path.display(),
         installer_source = ?plan.source,
@@ -143,22 +139,14 @@ pub async fn install_windows_app_sdk_runtime(
         "开始安装 Windows App SDK Runtime 1.8"
     );
 
-    download_windows_app_sdk_installer_if_needed(
-        &client,
-        &plan,
-        &installer_name,
-        &translator,
-        sender.as_ref(),
-    )
-    .await?;
-    emit_windows_app_sdk_admin_notice(sender.as_ref(), &translator, &plan);
+    download_windows_app_sdk_installer_if_needed(&client, &plan, &installer_name, sender.as_ref())
+        .await?;
+    emit_windows_app_sdk_admin_notice(sender.as_ref(), &plan);
 
     emit_progress(
         sender.as_ref(),
         85,
-        translator
-            .translate("McDeps.stages.installing")
-            .into_owned(),
+        crate::localized_text!("McDeps.stages.installing"),
         Some(installer_name.clone()),
     );
 
@@ -175,7 +163,7 @@ pub async fn install_windows_app_sdk_runtime(
     emit_progress(
         sender.as_ref(),
         100,
-        translator.translate("McDeps.stages.done-one").into_owned(),
+        crate::localized_text!("McDeps.stages.done-one"),
         Some(installer_name),
     );
     info!("Windows App SDK Runtime 1.8 安装并校验完成");
@@ -187,7 +175,6 @@ async fn download_windows_app_sdk_installer_if_needed(
     client: &Client,
     plan: &WindowsAppSdkInstallPlan,
     installer_name: &str,
-    translator: &Translator,
     sender: Option<&UnboundedSender<DependencyEvent>>,
 ) -> Result<()> {
     if matches!(plan.source, WindowsAppSdkInstallerSource::Local) {
@@ -196,12 +183,10 @@ async fn download_windows_app_sdk_installer_if_needed(
 
     emit_log(
         sender,
-        translator
-            .translate_args(
-                "McDeps.logs.download_start",
-                crate::i18n_args![("name", installer_name)],
-            )
-            .into_owned(),
+        crate::localized_text!(
+            "McDeps.logs.download_start",
+            name = installer_name.to_string(),
+        ),
     );
     let Some(download_sources) = windows_app_sdk_installer_download_sources() else {
         return Err(anyhow::anyhow!(
@@ -217,7 +202,7 @@ async fn download_windows_app_sdk_installer_if_needed(
             client,
             source.url,
             &plan.installer_path,
-            translator.translate("McDeps.stages.download").into_owned(),
+            crate::localized_text!("McDeps.stages.download"),
             Some(target_label),
             sender,
             Some(&request_headers),
@@ -304,7 +289,6 @@ fn target_arch() -> Option<&'static str> {
 #[cfg(windows)]
 fn emit_windows_app_sdk_admin_notice(
     sender: Option<&UnboundedSender<DependencyEvent>>,
-    translator: &crate::i18n::Translator,
     plan: &WindowsAppSdkInstallPlan,
 ) {
     if !crate::utils::developer_mode::is_process_elevated() {
@@ -314,9 +298,7 @@ fn emit_windows_app_sdk_admin_notice(
         );
         super::emit_admin_required(
             sender,
-            translator
-                .translate("LaunchPrereq.adminRunRequired")
-                .into_owned(),
+            crate::localized_text!("LaunchPrereq.adminRunRequired"),
         );
     }
 }
@@ -324,7 +306,6 @@ fn emit_windows_app_sdk_admin_notice(
 #[cfg(not(windows))]
 fn emit_windows_app_sdk_admin_notice(
     _sender: Option<&UnboundedSender<DependencyEvent>>,
-    _translator: &crate::i18n::Translator,
     _plan: &WindowsAppSdkInstallPlan,
 ) {
 }

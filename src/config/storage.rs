@@ -97,6 +97,26 @@ fn flush_cached_config_to_disk() {
     }
 }
 
+/// Persist only the language preference with an observable disk result.
+///
+/// The in-memory cache is committed after the atomic file replacement. This
+/// keeps a failed language save from making the cache disagree with disk while
+/// leaving unrelated in-memory settings untouched.
+pub fn persist_language(code: &str) -> io::Result<()> {
+    let _sync_guard = CONFIG_SYNC_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut candidate = read_cached_config().ok_or_else(config_cache_not_initialized_error)?;
+    candidate.launcher.language = code.to_string();
+    persist_config_to_disk(&candidate)?;
+    store_cached_config(&candidate);
+
+    let (lock, _) = &*CONFIG_FLUSH;
+    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.dirty_at = None;
+    Ok(())
+}
+
 /// 立即把内存中未落盘的配置写入磁盘（供应用退出路径调用）。
 pub fn flush_config_now() {
     let (lock, _) = &*CONFIG_FLUSH;
