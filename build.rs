@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,9 @@ use pelite::pe64::{Pe, PeFile};
 #[path = "build/entity_avatar.rs"]
 mod entity_avatar;
 
-type LocaleTable = Vec<(String, String)>;
+mod build {
+    pub mod locales;
+}
 
 const CIK_MIN_BYTES: usize = 0x30;
 const RELEASE_CIK_GUID_BYTES_LE_HEX: &str = "91e7b9bd7cc93437e1a8bc602552df06";
@@ -73,12 +75,7 @@ fn compile_windows_resources() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
 
     let icon_path = manifest_dir.join("assets").join("icons").join("icon.ico");
-    let dpi_manifest_path = manifest_dir
-        .join("crates")
-        .join("gpui")
-        .join("resources")
-        .join("windows")
-        .join("gpui.manifest.xml");
+    let windows_manifest_path = manifest_dir.join("assets").join("windows.manifest.xml");
 
     // 获取包信息
     let pkg_version = resolve_build_version();
@@ -123,16 +120,15 @@ fn compile_windows_resources() {
         println!("cargo:warning=Missing icon at {}", icon_path.display());
     }
 
-    if dpi_manifest_path.exists() {
-        println!("cargo:rerun-if-changed={}", dpi_manifest_path.display());
-        let dpi_manifest_path = dpi_manifest_path.to_string_lossy().into_owned();
-        res.set_manifest_file(&dpi_manifest_path);
-    } else {
-        println!(
-            "cargo:warning=Missing Windows DPI manifest at {}",
-            dpi_manifest_path.display()
+    if !windows_manifest_path.is_file() {
+        panic!(
+            "BMCBL Windows manifest is required at {}",
+            windows_manifest_path.display()
         );
     }
+    println!("cargo:rerun-if-changed={}", windows_manifest_path.display());
+    let windows_manifest_path = windows_manifest_path.to_string_lossy().into_owned();
+    res.set_manifest_file(&windows_manifest_path);
 
     // 设置版本信息
     res.set("FileVersion", &file_version);
@@ -158,9 +154,8 @@ fn compile_windows_resources() {
     res.set("Comments", &format!("Git: {}", git_hash));
 
     // 编译资源
-    if let Err(e) = res.compile() {
-        println!("cargo:warning=Failed to compile Windows resources: {}", e);
-    }
+    res.compile()
+        .unwrap_or_else(|error| panic!("Failed to compile Windows resources: {error}"));
 }
 
 /// 递归扫描目录，收集所有文件及其相对路径
@@ -320,143 +315,6 @@ fn escape_rust_string(text: &str) -> String {
         }
     }
     escaped
-}
-
-fn load_locale_lang_table(path: &Path) -> LocaleTable {
-    let content = fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("failed to read locale lang {}: {error}", path.display()));
-    let mut out = Vec::new();
-    let mut seen_keys = BTreeSet::new();
-
-    for (line_index, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-            continue;
-        }
-
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            continue;
-        }
-        if !seen_keys.insert(key.to_string()) {
-            panic!(
-                "duplicate locale key in {} at line {}: {}",
-                path.display(),
-                line_index + 1,
-                key
-            );
-        }
-
-        out.push((key.to_string(), value.trim().to_string()));
-    }
-
-    out.sort_by(|left, right| left.0.cmp(&right.0));
-    out
-}
-
-fn load_locale_source(locales_dir: &Path, locale_code: &str) -> LocaleTable {
-    let lang_path = locales_dir.join(format!("{locale_code}.lang"));
-    println!("cargo:rerun-if-changed={}", lang_path.display());
-    if !lang_path.exists() {
-        panic!(
-            "missing locale source {}; .lang is now required",
-            lang_path.display()
-        );
-    }
-    load_locale_lang_table(&lang_path)
-}
-
-fn validate_locale_tables(locale_tables: &[(String, LocaleTable)]) {
-    let Some((base_locale, base_table)) = locale_tables.first() else {
-        return;
-    };
-    let base_keys = base_table
-        .iter()
-        .map(|(key, _)| key.clone())
-        .collect::<BTreeSet<_>>();
-
-    for (locale_code, table) in &locale_tables[1..] {
-        let locale_keys = table
-            .iter()
-            .map(|(key, _)| key.clone())
-            .collect::<BTreeSet<_>>();
-        let missing = base_keys
-            .difference(&locale_keys)
-            .cloned()
-            .collect::<Vec<_>>();
-        let extra = locale_keys
-            .difference(&base_keys)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if !missing.is_empty() || !extra.is_empty() {
-            let missing_preview = missing
-                .iter()
-                .take(12)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            let extra_preview = extra
-                .iter()
-                .take(12)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            panic!(
-                "locale key mismatch: base={} target={} missing={} [{}] extra={} [{}]",
-                base_locale,
-                locale_code,
-                missing.len(),
-                missing_preview,
-                extra.len(),
-                extra_preview
-            );
-        }
-    }
-}
-
-fn generate_i18n_tables_rs() {
-    let manifest_dir =
-        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let locales_dir = manifest_dir.join("assets").join("locales");
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let out_rs = out_dir.join("generated_locales.rs");
-
-    let locale_codes = ["zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR"];
-    let mut locale_tables = Vec::new();
-    for locale_code in locale_codes {
-        locale_tables.push((
-            locale_code.to_string(),
-            load_locale_source(&locales_dir, locale_code),
-        ));
-    }
-    validate_locale_tables(&locale_tables);
-
-    let mut static_defs = String::new();
-    let mut match_arms = String::new();
-
-    for (locale_code, table) in locale_tables {
-        let static_name = locale_code.replace('-', "_").to_ascii_uppercase();
-        static_defs.push_str(&format!("pub static {static_name}: &[(&str, &str)] = &[\n"));
-        for (key, value) in table {
-            static_defs.push_str(&format!(
-                "    (\"{}\", \"{}\"),\n",
-                escape_rust_string(&key),
-                escape_rust_string(&value)
-            ));
-        }
-        static_defs.push_str("];\n\n");
-        match_arms.push_str(&format!("        \"{locale_code}\" => {static_name},\n"));
-    }
-
-    let generated = format!(
-        "// Auto-generated by build.rs. Do not edit.\n\n{static_defs}pub fn locale_entries(locale: &str) -> &'static [(&'static str, &'static str)] {{\n    match locale {{\n{match_arms}        _ => EN_US,\n    }}\n}}\n"
-    );
-
-    fs::write(&out_rs, generated).expect("write generated_locales.rs");
 }
 
 #[derive(Clone, Debug)]
@@ -910,13 +768,15 @@ fn main() {
     generate_asset_bundles_rs();
     entity_avatar::generate();
     generate_embedded_bloader();
-    generate_i18n_tables_rs();
+
     generate_dependency_metadata_rs();
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("secrets.rs");
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    build::locales::generate(&manifest_dir, Path::new(&out_dir))
+        .expect("failed to pack embedded language files");
     let key_dir = manifest_dir
         .join("src")
         .join("core")

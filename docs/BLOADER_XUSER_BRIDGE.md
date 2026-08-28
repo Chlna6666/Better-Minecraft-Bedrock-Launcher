@@ -1,7 +1,7 @@
-# BLoader 0.2.7 XUser Bridge
+# BLoader XUser Bridge
 
-BMCBL 的 Windows 主机 Win32 GDK 启动链路支持通过 BLoader 0.2.7 切换 Xbox
-用户。Linux 不使用该桥；Linux 登录由 RoundMCDev GDK-Proton/WineGDK 完成，
+BMCBL 的 Windows 主机 Win32 GDK 启动链路支持通过 BLoader 切换 Xbox 用户。
+Linux 不使用该桥；Linux 登录由 RoundMCDev GDK-Proton/WineGDK 完成，
 BLoader 在 Linux 启动链路中只负责加载原生 Mod。
 
 ```text
@@ -46,15 +46,17 @@ BMCBL 选择不同 Xbox 会话后，每次启动都会为新的 Minecraft PID �
 
 ## BLoader 资源
 
-BMCBL 应使用：
+BMCBL 从 `assets/bin/BLoader.dll` 嵌入当前加载器。`build.rs` 在构建时读取 DLL 的
+PE 版本信息并生成 `BMCBL_BLOADER_VERSION`，因此版本以实际内嵌文件为准。
+当前仓库内的内嵌负载为：
 
 ```text
-BLoader version: 0.2.7
-BLoader.dll size: 1,344,000 bytes
-SHA-256: de046e7ef2518856dbd04ca8786b2234c593aa2c51a8a76913270afff8257344
+BLoader version: 0.2.77.0
+BLoader.dll size: 1,483,776 bytes
+SHA-256: 6e79d1514cee054a07515172fd46e18563c21e28a38dc82101dbf6fb7f0b5f65
 ```
 
-仓库内版本元数据位于 `assets/bin/BLoader.version`。
+加载器项目：[Chlna6666/BLoader](https://github.com/Chlna6666/BLoader)。
 
 ## 诊断日志
 

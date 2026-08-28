@@ -114,9 +114,16 @@ and core modules for those responsibilities.
 ### Localization
 
 - Use `I18n` (`src/ui/state/i18n.rs`) as a GPUI `Global`.
-- Read translations in render code through `cx.global::<I18n>().t("key")`.
+- Read built-in translations in render code through `t!("key")` or
+  `t!("key", value)` for positional parameters (or the
+  `t_key`/`t_key_args` methods) on the global I18n state.
 - Update language through global state updates and refresh affected windows.
 - Keep translation source files under `assets/locales/`.
+- Pack `.lang` files into an uncompressed binary resource and embed it with
+  `include_bytes!`. Its shared key index and placeholder offsets are read
+  directly, without allocating translation maps during `I18n` initialization.
+  Builds do not validate language content or generate Rust translation code.
+  Missing translations fall back to English, then to the key.
 
 ### Embedded Assets
 
@@ -234,9 +241,13 @@ Render 方法不应执行网络 IO、持久缓存、解析、解码或长期工�
 ### 本地化
 
 - 使用 `I18n` (`src/ui/state/i18n.rs`) 作为 GPUI `Global`。
-- render 代码通过 `cx.global::<I18n>().t("key")` 读取翻译。
+- render 代码通过 `t!("key")` 或 `t!("key", value)`（或
+  `t_key`/`t_key_args`）读取翻译。
 - 通过 global state 更新语言，并刷新受影响窗口。
 - 翻译源文件保存在 `assets/locales/`。
+- 将 `.lang` 打包为未压缩的二进制资源，通过 `include_bytes!` 嵌入。
+  直接读取共享 key 索引和占位符偏移，`I18n` 初始化不再分配翻译映射表。
+  编译时不校验语言内容，不生成 Rust 翻译代码；缺失翻译依次回退到英文和 key。
 
 ### 嵌入资源
 
