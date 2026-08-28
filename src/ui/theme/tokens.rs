@@ -48,6 +48,8 @@ pub mod font {
 ///   同一条时间线，仅允许 `STAGGER_STEP` 的级联延迟。
 /// - 展开类交互（下拉、抽屉、导航胶囊）：`spring_bouncy()`；收起方向
 ///   一律 `spring_snappy()`，不回弹。
+/// - 高频紧凑弹层例外：以触发点为原点轻微缩放，使用 `POPOVER_RESPONSE`
+///   的临界阻尼弹簧，不级联、不回弹，避免页面入场节奏拖慢操作。
 /// - 按压反馈：`.active(scale(PRESS_SCALE))`，即时生效不加动画。
 /// - hover 只做即时颜色切换，禁止位移/缩放/阴影动画。
 pub mod motion {
@@ -63,4 +65,11 @@ pub mod motion {
     pub const BOUNCY_WINDOW: Duration = Duration::from_millis(840);
     /// 按压缩放比例。
     pub const PRESS_SCALE: f32 = 0.97;
+    /// 紧凑弹层的临界阻尼弹簧周期（秒），不是收稳时长。
+    /// 配合 position 0.01 / velocity 0.5 的阈值，静止展开约 170ms 收稳。
+    pub const POPOVER_RESPONSE: f32 = 0.16;
+    /// 选中和短列表反馈的弹簧周期；相同阈值下约 130ms 收稳。
+    pub const FEEDBACK_RESPONSE: f32 = 0.12;
+    /// 触发点锚定的小弹层只缩放 3%。
+    pub const POPOVER_SCALE: f32 = 0.97;
 }

@@ -226,9 +226,9 @@ fn background_uses_gpu_blur(blur: f32) -> bool {
 }
 
 fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
-    // Background blur is capped at 10px by configuration, so keep it full-resolution. The new
-    // separable Gaussian uses exactly two passes and no longer needs Dual-Kawase levels.
-    BackdropBlurStyle::new(px(blur)).downsample(1).levels(2)
+    // Preserve the configured visual strength: the setting uses kernel support, while GPUI
+    // blur now takes CSS Gaussian sigma. Three standard deviations cover that support.
+    BackdropBlurStyle::new(px(blur / 3.0)).downsample(1).levels(2)
 }
 
 fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {

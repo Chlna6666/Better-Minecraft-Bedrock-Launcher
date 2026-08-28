@@ -77,7 +77,7 @@ impl Default for EasterEggState {
 }
 
 impl EasterEggState {
-    fn is_active(&self) -> bool {
+    pub(super) fn is_active(&self) -> bool {
         !matches!(self.phase, EasterEggPhase::Idle)
     }
 

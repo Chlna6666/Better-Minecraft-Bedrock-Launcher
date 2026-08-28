@@ -1,10 +1,35 @@
-use crate::core::bedrock_auth::AuthSnapshot;
+use crate::core::bedrock_auth::{AuthPhase, AuthSnapshot, XboxProfile};
+use crate::ui::animation::{SpringValue, apple_spring};
+use crate::ui::theme::tokens::motion;
 use gpui::{App, BorrowAppContext as _, Global};
+use std::time::Instant;
+
+fn account_motion(value: f32, response: f32) -> SpringValue {
+    // A 1% remainder is subpixel at this small popover's 3% scale range.
+    // Avoid retaining imperceptible tails with the page-animation thresholds.
+    let spring = gpui::Spring {
+        settle_position: 0.01,
+        settle_velocity: 0.5,
+        ..apple_spring(response, 1.0)
+    };
+    SpringValue::new(value).with_spring(spring)
+}
+
+pub(crate) struct AccountRow {
+    pub(crate) profile: XboxProfile,
+    pub(crate) presence: SpringValue,
+    pub(crate) selection: SpringValue,
+}
 
 pub(crate) struct BedrockAuthState {
     pub(crate) snapshot: AuthSnapshot,
     pub(crate) dialog_open: bool,
     pub(crate) pending_delete_account_id: Option<String>,
+    pub(crate) dialog_motion: SpringValue,
+    pub(crate) rows: Vec<AccountRow>,
+    pub(crate) feedback: Option<String>,
+    pub(crate) copied: Option<&'static str>,
+    pub(crate) keyboard_navigation: bool,
 }
 
 impl Default for BedrockAuthState {
@@ -13,6 +38,11 @@ impl Default for BedrockAuthState {
             snapshot: AuthSnapshot::signed_out(),
             dialog_open: false,
             pending_delete_account_id: None,
+            dialog_motion: account_motion(0.0, motion::POPOVER_RESPONSE),
+            rows: Vec::new(),
+            feedback: None,
+            copied: None,
+            keyboard_navigation: false,
         }
     }
 }
@@ -21,12 +51,27 @@ impl Global for BedrockAuthState {}
 
 impl BedrockAuthState {
     pub(crate) fn toggle_dialog(&mut self) {
-        self.dialog_open = !self.dialog_open;
+        if self.dialog_open {
+            self.close_dialog();
+        } else {
+            self.dialog_open = true;
+            self.update_dialog_motion(Instant::now());
+        }
     }
 
     pub(crate) fn close_dialog(&mut self) {
         self.dialog_open = false;
         self.pending_delete_account_id = None;
+        self.update_dialog_motion(Instant::now());
+    }
+
+    fn update_dialog_motion(&mut self, now: Instant) {
+        let target = f32::from(self.dialog_open);
+        if self.keyboard_navigation {
+            self.dialog_motion.snap_to(target);
+        } else {
+            self.dialog_motion.retarget(target, now);
+        }
     }
 
     pub(crate) fn request_account_deletion(&mut self, account_id: String) {
@@ -39,6 +84,64 @@ impl BedrockAuthState {
 
     pub(crate) fn clear_account_deletion(&mut self) {
         self.pending_delete_account_id = None;
+    }
+
+    fn apply_snapshot(&mut self, snapshot: AuthSnapshot, now: Instant) {
+        // Open once when a flow needs attention, never from render: explicit dismissal wins.
+        if self.snapshot.phase != snapshot.phase {
+            self.copied = None;
+            self.feedback = None;
+            self.pending_delete_account_id = None;
+            if matches!(snapshot.phase, AuthPhase::WaitingForUser | AuthPhase::Error) {
+                self.dialog_open = true;
+                self.update_dialog_motion(now);
+            }
+        }
+        self.sync_rows(&snapshot, now);
+        if self
+            .pending_delete_account_id
+            .as_ref()
+            .is_some_and(|id| !snapshot.accounts.iter().any(|profile| &profile.xuid == id))
+        {
+            self.pending_delete_account_id = None;
+        }
+        self.snapshot = snapshot;
+    }
+
+    fn sync_rows(&mut self, snapshot: &AuthSnapshot, now: Instant) {
+        self.rows
+            .retain(|row| row.presence.target() > 0.0 || row.presence.is_animating(now));
+        for row in &mut self.rows {
+            let profile = snapshot
+                .accounts
+                .iter()
+                .find(|profile| profile.xuid == row.profile.xuid);
+            row.presence.retarget(f32::from(profile.is_some()), now);
+            row.selection.retarget(
+                f32::from(snapshot.active_account_id.as_deref() == Some(row.profile.xuid.as_str())),
+                now,
+            );
+            if let Some(profile) = profile {
+                row.profile = profile.clone();
+            }
+        }
+        for profile in &snapshot.accounts {
+            if !self.rows.iter().any(|row| row.profile.xuid == profile.xuid) {
+                let mut presence =
+                    account_motion(f32::from(!self.dialog_open), motion::FEEDBACK_RESPONSE);
+                presence.retarget(1.0, now);
+                self.rows.push(AccountRow {
+                    profile: profile.clone(),
+                    presence,
+                    selection: account_motion(
+                        f32::from(
+                            snapshot.active_account_id.as_deref() == Some(profile.xuid.as_str()),
+                        ),
+                        motion::FEEDBACK_RESPONSE,
+                    ),
+                });
+            }
+        }
     }
 }
 
@@ -63,6 +166,9 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
     cx.spawn_stream(crate::core::xbox_avatar_cache::event_stream(), |_, cx| {
         cx.update_global(|state: &mut BedrockAuthState, _cx| {
             apply_cached_avatar_paths(&mut state.snapshot);
+            for row in &mut state.rows {
+                apply_profile_avatar_path(&mut row.profile);
+            }
         });
         cx.refresh_windows();
     })
@@ -83,19 +189,7 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
             apply_cached_avatar_paths(&mut snapshot);
 
             cx.update_global(|state: &mut BedrockAuthState, _cx| {
-                if state
-                    .pending_delete_account_id
-                    .as_deref()
-                    .is_some_and(|account_id| {
-                        !snapshot
-                            .accounts
-                            .iter()
-                            .any(|profile| profile.xuid == account_id)
-                    })
-                {
-                    state.pending_delete_account_id = None;
-                }
-                state.snapshot = snapshot;
+                state.apply_snapshot(snapshot, Instant::now());
             });
         },
     )
@@ -104,3 +198,6 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
     // Startup schedules both independent account preloads before GPUI starts.
     // The UI layer only subscribes to the retained watch-channel results.
 }
+
+#[cfg(test)]
+mod tests;

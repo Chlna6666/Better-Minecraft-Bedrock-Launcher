@@ -5,6 +5,37 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+/// Read the native client-area animation preference during UI initialization.
+/// Platforms without a preference adapter use the conservative, static presentation.
+pub(crate) fn reduced_motion() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+        };
+        use windows::core::BOOL;
+        let mut enabled = BOOL(0);
+        // SAFETY: GETCLIENTAREAANIMATION writes one BOOL to a valid, aligned local value.
+        let result = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                Some(std::ptr::from_mut(&mut enabled).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, "could not read system animation preference");
+            return true;
+        }
+        !enabled.as_bool()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadUiPrefs {

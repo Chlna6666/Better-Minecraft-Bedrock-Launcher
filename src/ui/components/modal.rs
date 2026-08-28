@@ -8,8 +8,8 @@ use std::{
 
 const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.56;
 const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.72;
-const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 14.0;
-const MIN_MODAL_BACKDROP_BLUR_PX: f32 = 0.2;
+const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 14.0 / 3.0;
+const MIN_MODAL_BACKDROP_BLUR_PX: f32 = 0.2 / 3.0;
 const MODAL_MIN_SCALE: f32 = 0.94;
 const MODAL_OPEN_DURATION: Duration = Duration::from_millis(240);
 const MODAL_CLOSE_DURATION: Duration = Duration::from_millis(220);

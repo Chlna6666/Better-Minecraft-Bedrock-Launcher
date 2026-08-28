@@ -144,16 +144,13 @@ struct AgreementRenderState {
 }
 
 struct TopbarRenderState {
-    i18n: I18n,
     theme_k: f32,
     theme_target_dark: bool,
     theme_animating: bool,
     theme_accent: Option<Hsla>,
     window_width: Pixels,
     window_height: Pixels,
-    auth_snapshot: crate::core::bedrock_auth::AuthSnapshot,
-    auth_dialog_open: bool,
-    auth_pending_delete_account_id: Option<String>,
+    auth: chrome::auth::RenderState,
     update_available: bool,
     visual_active_index: usize,
     pill_left_steps: f32,
@@ -477,7 +474,8 @@ impl MainWindowView {
         page: AnyElement,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> (Div, bool) {
+        let mut auth_blocked = false;
         let mut root = div()
             .relative()
             .size_full()
@@ -504,6 +502,7 @@ impl MainWindowView {
             && let Some(download_overlay) =
                 crate::ui::views::download::render_download_overlay(&model.theme_colors, cx)
         {
+            auth_blocked = true;
             root = root.child(download_overlay);
         }
 
@@ -519,6 +518,7 @@ impl MainWindowView {
                 model.agreement_render_state.document.clone(),
             )
         {
+            auth_blocked = true;
             root = root.child(settings_overlay);
         }
 
@@ -531,6 +531,7 @@ impl MainWindowView {
                 cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
             )
         {
+            auth_blocked = true;
             root = root.child(tools_overlay);
         }
 
@@ -543,6 +544,7 @@ impl MainWindowView {
                 cx,
             )
         {
+            auth_blocked = true;
             root = root.child(manage_overlay);
         }
 
@@ -554,10 +556,12 @@ impl MainWindowView {
                 cx,
             )
         {
+            auth_blocked = true;
             root = root.child(tasks_overlay);
         }
 
         if model.agreement_render_state.visible {
+            auth_blocked = true;
             let agreement_title = t!("UserAgreement.title");
             let agreement_accept_label = t!("UserAgreement.accept_button");
             root = root.child(
@@ -591,6 +595,7 @@ impl MainWindowView {
                     cx.global::<crate::ui::state::diagnostics::DiagnosticsState>(),
                 )
         {
+            auth_blocked = true;
             root = root.child(diagnostics_overlay);
         }
 
@@ -620,6 +625,7 @@ impl MainWindowView {
             };
 
             if let Some(release) = release {
+                auth_blocked = true;
                 let update_modal_factor =
                     cx.global::<UpdateState>().modal_animation_factor(model.now);
                 let markdown_view = if downloading {
@@ -666,6 +672,7 @@ impl MainWindowView {
                 .global::<crate::ui::state::linux_runtime::LinuxRuntimeState>()
                 .visible
             {
+                auth_blocked = true;
                 root = root.child(
                     crate::ui::overlays::linux_runtime::render_linux_runtime_overlay(
                         cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(),
@@ -676,6 +683,7 @@ impl MainWindowView {
             }
 
             if model.launcher_snapshot.show_modal {
+                auth_blocked = true;
                 root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
                     &model.launcher_snapshot,
                     window,
@@ -685,6 +693,7 @@ impl MainWindowView {
 
             #[cfg(target_os = "windows")]
             if model.launch_prereq_visible {
+                auth_blocked = true;
                 if let Some(deadline) = model.launch_prereq_busy_deadline {
                     window.request_invalidation_at(deadline, cx);
                 }
@@ -704,6 +713,7 @@ impl MainWindowView {
         if !model.agreement_render_state.visible
             && let Some(modal) = crate::plugins::runtime::active_modal(cx)
         {
+            auth_blocked = true;
             root = root.child(self.render_plugin_modal(modal, model, window, cx));
         }
 
@@ -715,6 +725,7 @@ impl MainWindowView {
                     cx.global::<I18n>(),
                 )
         {
+            auth_blocked = true;
             root = root.child(dialog);
         }
 
@@ -730,6 +741,7 @@ impl MainWindowView {
         }
 
         if model.dropdown_visible {
+            auth_blocked = true;
             let dropdown_state =
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             root = root.child(crate::ui::components::dropdown::render_overlay(
@@ -779,7 +791,7 @@ impl MainWindowView {
                     .overflow_hidden();
             }
         }
-        root
+        (root, auth_blocked)
     }
 
     fn render_plugin_modal(
@@ -1711,20 +1723,31 @@ impl Render for MainWindowView {
         }
 
         let page = self.render_active_page(&model.route, model.route_transition_direction);
-        let root = self.compose_root(&model, page, window, cx);
+        let (root, mut auth_blocked) = self.compose_root(&model, page, window, cx);
         let root = self
             .compose_easter_egg(root, &model, window, cx)
             .on_drop(cx.listener(|_, paths: &ExternalPaths, window, cx| {
                 crate::ui::window::import::open_dropped_import_any(paths.paths(), window, cx);
             }));
+        auth_blocked |= self.easter_egg.is_active();
 
         let root = if let Some(import_overlay) =
             crate::ui::window::import::render_import_overlay(&model.theme_colors, cx)
         {
+            auth_blocked = true;
             root.child(import_overlay)
         } else {
             root
         };
+
+        if let Some(chrome) = &self.chrome_view {
+            chrome.update(cx, |chrome, cx| {
+                chrome.set_auth_blocked(auth_blocked, window, cx)
+            });
+        }
+        let root = root.when(!auth_blocked, |root| {
+            root.on_key_down(chrome_view::navigate_focus)
+        });
 
         let render_elapsed = render_started.elapsed();
         if render_elapsed >= Duration::from_millis(16) {
