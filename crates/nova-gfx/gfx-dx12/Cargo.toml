@@ -37,3 +37,4 @@ harness = false
 gfx-memory = { version = "0.1.0", path = "../gfx-memory", default-features = false, features = ["dx12"] }
 raw-window-handle = "0.6"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D12", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Threading"] }
+windows-numerics = "0.3"

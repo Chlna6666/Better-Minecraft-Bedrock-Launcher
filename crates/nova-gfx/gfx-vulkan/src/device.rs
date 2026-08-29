@@ -336,6 +336,30 @@ impl VulkanDevice {
         Ok(self.swapchains.insert(swapchain))
     }
 
+    /// Reports whether any tracked frame submission or in-flight swapchain frame
+    /// is still executing on the GPU.
+    ///
+    /// Mirrors the DX12 query so callers gate interactive swapchain resizes on the
+    /// same backend-independent semantic instead of assuming Vulkan is always idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when a swapchain handle is invalid.
+    pub fn has_pending_gpu_work(&self) -> Result<bool> {
+        let mut pending = false;
+        self.submissions.for_each_live(|submission| {
+            pending |= !fence_is_complete(&self.device, submission.fence);
+        });
+        if !pending {
+            self.swapchains.for_each_live(|swapchain| {
+                for fence in swapchain.in_flight_fences {
+                    pending |= fence != vk::Fence::null() && !fence_is_complete(&self.device, fence);
+                }
+            });
+        }
+        Ok(pending)
+    }
+
     /// Recreates an existing swapchain.
     ///
     /// # Errors

@@ -115,8 +115,9 @@ mod platform {
                 ID3D12PipelineState, ID3D12QueryHeap, ID3D12Resource, ID3D12RootSignature,
             },
             DirectComposition::{
-                DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, DCompositionCreateDevice2,
-                IDCompositionDesktopDevice, IDCompositionTarget, IDCompositionVisual,
+                DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR, DCompositionCreateDevice2,
+                IDCompositionDesktopDevice, IDCompositionMatrixTransform, IDCompositionTarget,
+                IDCompositionVisual,
             },
             Dxgi::{
                 Common::{
@@ -142,6 +143,7 @@ mod platform {
         },
         core::{BOOL, Error as WindowsError, Interface, PCSTR, PCWSTR},
     };
+    use windows_numerics::Matrix3x2;
 
     const BACK_BUFFER_COUNT: u32 = 3;
     const DX12_MAX_FRAME_LATENCY: u32 = 1;
@@ -449,7 +451,7 @@ mod platform {
                 surface,
                 config,
                 swapchain,
-                _composition: composition,
+                composition,
                 rtv_heap: None,
                 render_targets: Vec::new(),
                 rtv_descriptor_size: 0,
@@ -495,12 +497,33 @@ mod platform {
                 unsafe { composition_device.CreateVisual() }.map_err(|error| {
                     GfxError::Backend(format!("IDCompositionDevice::CreateVisual failed: {error}"))
                 })?;
-            // SAFETY: The visual, target, and swapchain are live; Commit applies the root tree.
+            // SAFETY: The composition device is valid and owns the transform it creates.
+            let composition_transform: IDCompositionMatrixTransform =
+                unsafe { composition_device.CreateMatrixTransform() }.map_err(|error| {
+                    GfxError::Backend(format!(
+                        "IDCompositionDevice::CreateMatrixTransform failed: {error}"
+                    ))
+                })?;
+            // SAFETY: The visual, transform, target, and swapchain are live; Commit applies the root tree.
+            let identity = Matrix3x2 {
+                M11: 1.0,
+                M12: 0.0,
+                M21: 0.0,
+                M22: 1.0,
+                M31: 0.0,
+                M32: 0.0,
+            };
             unsafe {
+                // Set the initial matrix explicitly instead of relying on the DComp
+                // default so the visual can never compose with a collapsed transform.
+                composition_transform
+                    .SetMatrix(&raw const identity)
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
                 composition_visual
-                    .SetBitmapInterpolationMode(
-                        DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-                    )
+                    .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR)
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                composition_visual
+                    .SetTransform(&composition_transform)
                     .map_err(|error| GfxError::Backend(error.to_string()))?;
                 composition_visual.SetContent(&swapchain).map_err(|error| {
                     GfxError::Backend(format!("IDCompositionVisual::SetContent failed: {error}"))
@@ -519,7 +542,8 @@ mod platform {
                 Some(Dx12Composition {
                     _device: composition_device,
                     _target: composition_target,
-                    _visual: composition_visual.into(),
+                    visual: composition_visual.into(),
+                    transform: composition_transform,
                 }),
             ))
         }
@@ -528,6 +552,36 @@ mod platform {
             // SAFETY: The composition device remains alive through Dx12Composition.
             unsafe { composition._device.Commit() }
                 .map_err(|error| GfxError::Backend(error.to_string()))
+        }
+
+        /// Resets any live-resize stretch on a composition visual to identity.
+        ///
+        /// Runs right after `ResizeBuffers`. The new back buffers hold undefined
+        /// content, so this commit must only publish the transform reset; the next
+        /// `Present` publishes the freshly rendered frame. Resetting before that
+        /// frame also keeps DWM from scaling the new buffer by the old stretch ratio.
+        fn reset_composition_stretch(composition: &Dx12Composition) -> Result<()> {
+            let identity = Matrix3x2 {
+                M11: 1.0,
+                M12: 0.0,
+                M21: 0.0,
+                M22: 1.0,
+                M31: 0.0,
+                M32: 0.0,
+            };
+            // SAFETY: The composition device, visual, and transform are live members
+            // of the swapchain record and outlive this call.
+            unsafe {
+                composition
+                    .transform
+                    .SetMatrix(&raw const identity)
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                composition
+                    .visual
+                    .SetTransform(&composition.transform)
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                Self::commit_composition(composition)
+            }
         }
 
         fn build_hwnd_swapchain(
@@ -708,8 +762,8 @@ mod platform {
                 return Err(error);
             }
 
-            if let Some(composition) = swapchain._composition.as_ref() {
-                Self::commit_composition(composition)?;
+            if let Some(composition) = swapchain.composition.as_ref() {
+                Self::reset_composition_stretch(composition)?;
             }
 
             Ok(())
@@ -4076,6 +4130,40 @@ mod platform {
                 .is_ok_and(|swapchain| swapchain.partial_presentation)
         }
 
+        fn set_swapchain_content_stretch(
+            &mut self,
+            swapchain: SwapchainId,
+            scale: Option<[f32; 2]>,
+        ) -> Result<()> {
+            let record = self.swapchains.get(swapchain)?;
+            let Some(composition) = record.composition.as_ref() else {
+                return Ok(());
+            };
+            let [scale_x, scale_y] = scale.unwrap_or([1.0, 1.0]);
+            let matrix = Matrix3x2 {
+                M11: scale_x,
+                M12: 0.0,
+                M21: 0.0,
+                M22: scale_y,
+                M31: 0.0,
+                M32: 0.0,
+            };
+            // SAFETY: The composition device, visual, and transform are live members
+            // of the swapchain record and outlive this call.
+            unsafe {
+                composition
+                    .transform
+                    .SetMatrix(&raw const matrix)
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                composition
+                    .visual
+                    .SetTransform(&composition.transform)
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                Self::commit_composition(composition)?;
+            }
+            Ok(())
+        }
+
         fn draw_steps_and_present(
             &mut self,
             swapchain: SwapchainId,
@@ -5718,7 +5806,10 @@ mod platform {
     struct Dx12Composition {
         _device: IDCompositionDesktopDevice,
         _target: IDCompositionTarget,
-        _visual: IDCompositionVisual,
+        visual: IDCompositionVisual,
+        /// Visual transform used to stretch previous-frame content over a
+        /// pending window resize; identity outside live resizes.
+        transform: IDCompositionMatrixTransform,
     }
 
     #[derive(Clone)]
@@ -5758,7 +5849,7 @@ mod platform {
         surface: SurfaceId,
         config: SurfaceConfig,
         swapchain: IDXGISwapChain3,
-        _composition: Option<Dx12Composition>,
+        composition: Option<Dx12Composition>,
         rtv_heap: Option<ID3D12DescriptorHeap>,
         render_targets: Vec<ID3D12Resource>,
         rtv_descriptor_size: u32,

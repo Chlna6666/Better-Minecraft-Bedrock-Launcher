@@ -599,6 +599,24 @@ pub trait GfxPresentationDevice {
         false
     }
 
+    /// Stretches the swapchain's composited content over a window larger than its buffers.
+    ///
+    /// `scale` holds the new client size divided by the current buffer size; `None` resets to
+    /// identity. Compositor-backed swapchains use this between a native window resize and the
+    /// next `ResizeBuffers` so the previous frame keeps covering the client area instead of
+    /// leaving uncomposited margins. Backends without such a visual ignore the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend fails to apply or reset the stretch.
+    fn set_swapchain_content_stretch(
+        &mut self,
+        _swapchain: SwapchainId,
+        _scale: Option<[f32; 2]>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Acquires a swapchain image, records draw steps, submits them, and presents.
     ///
     /// # Errors
