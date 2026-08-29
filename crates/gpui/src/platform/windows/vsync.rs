@@ -16,11 +16,13 @@ use std::{
 use windows::Win32::{
     Foundation::HWND,
     Graphics::Dwm::{DWM_TIMING_INFO, DwmFlush, DwmGetCompositionTimingInfo},
+    UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId},
 };
 
 use super::WindowsUserEvent;
 
 const DEFAULT_VSYNC_INTERVAL: Duration = Duration::from_micros(16_667);
+const BACKGROUND_FRAME_INTERVAL: Duration = Duration::from_micros(66_667);
 const EARLY_VSYNC_RETURN_THRESHOLD: Duration = Duration::from_millis(1);
 const MAX_REASONABLE_VSYNC_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -46,19 +48,16 @@ impl VSyncScheduler {
             return false;
         }
         self.frame_pending.store(true, Ordering::Release);
-        if let Some(thread) = self
-            .thread
-            .lock()
-            .expect("vsync thread lock poisoned")
-            .as_ref()
-        {
-            thread.unpark();
-        }
+        self.unpark();
         true
     }
 
     pub(super) fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        self.unpark();
+    }
+
+    fn unpark(&self) {
         if let Some(thread) = self
             .thread
             .lock()
@@ -81,15 +80,27 @@ pub(super) fn spawn_vsync_thread(
             let interval = dwm_refresh_interval().unwrap_or(DEFAULT_VSYNC_INTERVAL);
             let refresh_rate_hz = interval.as_secs_f64().recip();
             log::info!(
-                "GPUI Windows DWM frame pacing enabled: refresh_rate_hz={refresh_rate_hz:.3} interval={interval:?}"
+                "GPUI Windows DWM frame pacing enabled: refresh_rate_hz={refresh_rate_hz:.3} interval={interval:?} background_interval={BACKGROUND_FRAME_INTERVAL:?}"
             );
-            let mut last_tick = None;
+            let mut last_foreground_tick = None;
+            let mut last_background_tick = None;
             while !thread_scheduler.shutdown.load(Ordering::Acquire) {
                 if !thread_scheduler.frame_pending.swap(false, Ordering::AcqRel) {
                     std::thread::park();
                     continue;
                 }
-                wait_for_vsync(interval, &mut last_tick);
+
+                if process_owns_foreground_window() {
+                    last_background_tick = None;
+                    wait_for_vsync(interval, &mut last_foreground_tick);
+                } else {
+                    last_foreground_tick = None;
+                    wait_for_background_tick(&thread_scheduler, &mut last_background_tick);
+                }
+
+                if thread_scheduler.shutdown.load(Ordering::Acquire) {
+                    break;
+                }
                 if event_loop_proxy
                     .send_event(WindowsUserEvent::VSync)
                     .is_err()
@@ -105,6 +116,39 @@ pub(super) fn spawn_vsync_thread(
         join_handle.thread().unpark();
     }
     Ok(())
+}
+
+fn wait_for_background_tick(scheduler: &VSyncScheduler, last_tick: &mut Option<Instant>) {
+    if let Some(last_tick) = *last_tick {
+        let deadline = last_tick + BACKGROUND_FRAME_INTERVAL;
+        loop {
+            if scheduler.shutdown.load(Ordering::Acquire) || process_owns_foreground_window() {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            // Unlike `sleep`, park_timeout can be interrupted by a foreground frame request,
+            // so Alt-Tab/restore returns to DWM pacing without waiting for the 15 FPS deadline.
+            std::thread::park_timeout(deadline - now);
+        }
+    }
+    *last_tick = Some(Instant::now());
+}
+
+fn process_owns_foreground_window() -> bool {
+    // SAFETY: Both calls only inspect the current foreground HWND/process id. The PID output
+    // points to stack storage for the duration of GetWindowThreadProcessId.
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return false;
+        }
+        let mut process_id = 0_u32;
+        let _ = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+        process_id == std::process::id()
+    }
 }
 
 fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) {
@@ -159,5 +203,10 @@ mod tests {
         assert_eq!(refresh_interval(0, 1), None);
         assert_eq!(refresh_interval(60, 0), None);
         assert_eq!(refresh_interval(1, 2), None);
+    }
+
+    #[test]
+    fn background_frame_pacing_is_lower_than_normal_vsync() {
+        assert!(BACKGROUND_FRAME_INTERVAL > DEFAULT_VSYNC_INTERVAL);
     }
 }
