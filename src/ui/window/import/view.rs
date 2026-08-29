@@ -896,14 +896,12 @@ fn render_overlay_controls(
         .items_center()
         .child(
             titlebar_button(colors, lucide_icons::icon_x(), true, false)
+                .id("import-overlay-close")
                 .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.request_close(window, cx);
-                    }),
-                ),
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.request_close(window, cx);
+                })),
         )
 }
 
@@ -1038,9 +1036,10 @@ fn render_window_controls(
         )
         .child(
             titlebar_button(colors, lucide_icons::icon_x(), true, compact)
+                .id("import-window-close")
                 .occlude()
-                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                    cx.stop_propagation();
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(|_, window, _| {
                     window.remove_window();
                 }),
         )

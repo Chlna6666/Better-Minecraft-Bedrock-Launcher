@@ -65,10 +65,9 @@ pub mod motion {
     pub const BOUNCY_WINDOW: Duration = Duration::from_millis(840);
     /// 按压缩放比例。
     pub const PRESS_SCALE: f32 = 0.97;
-    /// 紧凑弹层的临界阻尼弹簧周期（秒），不是收稳时长。
-    /// 配合 position 0.01 / velocity 0.5 的阈值，静止展开约 170ms 收稳。
+    /// 紧凑弹层的弹簧周期（秒），不是收稳时长；结束由位置与速度阈值决定。
     pub const POPOVER_RESPONSE: f32 = 0.16;
-    /// 选中和短列表反馈的弹簧周期；相同阈值下约 130ms 收稳。
+    /// 选中和短列表反馈的弹簧周期，使用临界阻尼。
     pub const FEEDBACK_RESPONSE: f32 = 0.12;
     /// 触发点锚定的小弹层只缩放 3%。
     pub const POPOVER_SCALE: f32 = 0.97;

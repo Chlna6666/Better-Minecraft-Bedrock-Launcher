@@ -587,10 +587,10 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
             appears_transparent: true,
             ..Default::default()
         });
-        // The main view paints an opaque full-window background. Keeping the framebuffer opaque
-        // lets Vulkan use the widely supported Win32 OPAQUE composite mode while the titlebar and
-        // client-side chrome remain transparent/undecorated independently.
-        options.window_background = WindowBackgroundAppearance::Opaque;
+        // Keep newly exposed client pixels transparent while DirectComposition retains the last
+        // completed frame during interactive resize. The main view still paints its own opaque
+        // application background once the new drawable is ready.
+        options.window_background = WindowBackgroundAppearance::Transparent;
     }
 
     #[cfg(target_os = "linux")]

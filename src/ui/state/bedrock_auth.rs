@@ -5,14 +5,7 @@ use gpui::{App, BorrowAppContext as _, Global};
 use std::time::Instant;
 
 fn account_motion(value: f32, response: f32) -> SpringValue {
-    // A 1% remainder is subpixel at this small popover's 3% scale range.
-    // Avoid retaining imperceptible tails with the page-animation thresholds.
-    let spring = gpui::Spring {
-        settle_position: 0.01,
-        settle_velocity: 0.5,
-        ..apple_spring(response, 1.0)
-    };
-    SpringValue::new(value).with_spring(spring)
+    SpringValue::new(value).with_spring(apple_spring(response, 1.0))
 }
 
 pub(crate) struct AccountRow {
@@ -38,7 +31,8 @@ impl Default for BedrockAuthState {
             snapshot: AuthSnapshot::signed_out(),
             dialog_open: false,
             pending_delete_account_id: None,
-            dialog_motion: account_motion(0.0, motion::POPOVER_RESPONSE),
+            dialog_motion: SpringValue::new(0.0)
+                .with_spring(apple_spring(motion::POPOVER_RESPONSE, 0.72)),
             rows: Vec::new(),
             feedback: None,
             copied: None,

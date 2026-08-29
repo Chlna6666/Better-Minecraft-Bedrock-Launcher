@@ -73,7 +73,7 @@ impl RenderState {
             progress: if immediate {
                 f32::from(state.dialog_open)
             } else {
-                sample.value.clamp(0.0, 1.0)
+                sample.value
             },
             animating: !immediate
                 && (!sample.done
@@ -319,17 +319,17 @@ pub(super) fn panel(
         .max_h((viewport.height - px(82.)).max(px(0.)))
         .p(px(16.))
         .rounded(px(16.))
-        .bg(colors.surface.opacity(if glass_effect_enabled { 0.92 } else { 1.0 }))
-        .when(glass_effect_enabled, |panel| {
-            panel.backdrop_blur(px(6.))
-        })
+        .bg(colors
+            .surface
+            .opacity(if glass_effect_enabled { 0.92 } else { 1.0 }))
+        .when(glass_effect_enabled, |panel| panel.backdrop_blur(px(6.)))
         .id("xbox-auth-panel")
         .overflow_y_scrollbar()
         .text_color(colors.text_primary)
         .border_1()
         .border_color(colors.border.opacity(0.65))
         .shadow_lg()
-        .opacity(progress)
+        .opacity(progress.clamp(0.0, 1.0))
         .transform_origin(TransformOrigin::new(origin, 0.0))
         .when(!state.reduced_motion, |panel| {
             panel.scale(motion::POPOVER_SCALE + (1.0 - motion::POPOVER_SCALE) * progress)

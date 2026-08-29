@@ -223,6 +223,7 @@ pub(super) fn render_app_chrome(
             .window_control_area(WindowControlArea::Client)
             .text_color(colors.text_primary)
             .hover(|style| style.bg(colors.text_primary.opacity(0.07)))
+            .active(|style| style.bg(colors.text_primary.opacity(0.12)))
             .child(icon(path, colors.text_primary, px(16.)))
     };
     let controls = div()
@@ -254,13 +255,13 @@ pub(super) fn render_app_chrome(
             ),
         )
         .child(
-            icon_button("window-close-linux", lucide_icons::icon_x()).on_mouse_down(
-                MouseButton::Left,
-                |_, window, cx| {
+            icon_button("window-close-linux", lucide_icons::icon_x())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
+                })
+                .on_click(|_, window, _| {
                     window.remove_window();
-                },
-            ),
+                }),
         );
 
     let titlebar_mouse_down = |event: &MouseDownEvent, window: &mut Window, cx: &mut App| {
@@ -288,7 +289,11 @@ pub(super) fn render_app_chrome(
         .flex()
         .items_center()
         .justify_between()
-        .bg(colors.surface.opacity(if state.glass_effect_enabled { 0.78 } else { 1.0 }))
+        .bg(colors.surface.opacity(if state.glass_effect_enabled {
+            0.78
+        } else {
+            1.0
+        }))
         .when(state.glass_effect_enabled, |element| {
             element.backdrop_blur(px(6.))
         })

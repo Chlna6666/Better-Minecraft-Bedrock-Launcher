@@ -121,26 +121,34 @@ fn completed_exit_is_pruned_on_the_next_snapshot() {
 }
 
 #[test]
-fn popover_is_readable_early_and_finishes_without_a_long_tail() {
+fn popover_preserves_overshoot_until_position_and_velocity_settle() {
     let now = Instant::now();
     let mut state = BedrockAuthState::default();
     state.dialog_motion.retarget(1.0, now);
     assert!(state.dialog_motion.value(now + Duration::from_millis(80)) >= 0.8);
-    let settled = now + Duration::from_millis(180);
+    assert!(state.dialog_motion.value(now + Duration::from_millis(120)) > 1.0);
+    assert!(
+        !state
+            .dialog_motion
+            .sample(now + Duration::from_millis(180))
+            .done
+    );
+    let settled = now + Duration::from_millis(400);
     assert!(state.dialog_motion.sample(settled).done);
     state.dialog_motion.retarget(0.0, settled);
     assert!(
         state
             .dialog_motion
-            .sample(settled + Duration::from_millis(180))
+            .sample(settled + Duration::from_millis(400))
             .done
     );
 }
 
 #[test]
-fn account_feedback_finishes_within_140_milliseconds() {
+fn account_feedback_does_not_discard_a_moving_tail() {
     let now = Instant::now();
     let mut value = account_motion(0.0, motion::FEEDBACK_RESPONSE);
     value.retarget(1.0, now);
-    assert!(value.sample(now + Duration::from_millis(140)).done);
+    assert!(!value.sample(now + Duration::from_millis(140)).done);
+    assert!(value.sample(now + Duration::from_millis(400)).done);
 }

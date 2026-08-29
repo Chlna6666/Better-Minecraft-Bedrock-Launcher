@@ -387,12 +387,11 @@ impl Render for LevelDatCodeWindowView {
                                 ),
                             )
                             .child(
-                                action_button(&colors, false, t!("common.close")).on_mouse_down(
-                                    MouseButton::Left,
-                                    move |_, window, _cx| {
+                                action_button(&colors, false, t!("common.close"))
+                                    .id("level-dat-close")
+                                    .on_click(move |_, window, _cx| {
                                         window.remove_window();
-                                    },
-                                ),
+                                    }),
                             ),
                     ),
             )

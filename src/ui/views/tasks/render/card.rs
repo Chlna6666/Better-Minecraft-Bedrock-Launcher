@@ -10,11 +10,9 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::render_fingerprint;
 use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
-use std::time::Duration;
 
 // 与 tasks.rs 的 TASK_CARD_EXIT_ANIMATION_MS 对齐：过渡卡片会在该时刻被移除，
 // 弹簧窗口不能超过清理时限，否则卡片会在动画中途消失。
-const TASK_CARD_EXIT_WINDOW_MS: u64 = 600;
 
 fn stable_task_id(task_id: &str) -> u64 {
     render_fingerprint(task_id)
@@ -345,7 +343,7 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Enter => base_card
                 .with_animation(
                     ("task-card-motion-enter", stable_task_id(model.id.as_ref())),
-                    spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+                    spring_motion(spring_smooth()),
                     |card, progress| {
                         card.opacity(0.15 + progress * 0.85)
                             .relative()
@@ -359,7 +357,7 @@ pub(crate) fn render_task_card(
                         "task-card-motion-complete",
                         stable_task_id(model.id.as_ref()),
                     ),
-                    spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+                    spring_motion(spring_smooth()),
                     move |card, progress| {
                         let pulse = if progress < 0.5 {
                             progress * 2.0
@@ -381,7 +379,7 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Warn => base_card
                 .with_animation(
                     ("task-card-motion-warn", stable_task_id(model.id.as_ref())),
-                    spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+                    spring_motion(spring_smooth()),
                     move |card, progress| {
                         let pulse = if progress < 0.5 {
                             progress * 2.0
@@ -403,10 +401,7 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Exit => base_card
                 .with_animation(
                     ("task-card-motion-exit", stable_task_id(model.id.as_ref())),
-                    spring_motion(
-                        spring_snappy(),
-                        Duration::from_millis(TASK_CARD_EXIT_WINDOW_MS),
-                    ),
+                    spring_motion(spring_snappy()),
                     move |card, progress| {
                         let progress = progress.clamp(0.0, 1.0);
                         let fade = 1.0 - progress;

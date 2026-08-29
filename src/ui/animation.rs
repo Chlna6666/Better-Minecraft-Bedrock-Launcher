@@ -211,11 +211,9 @@ pub fn motion(duration: Duration, easing: Easing) -> Animation {
     element_motion_from_spec(AnimationSpec::new(duration).ease(easing))
 }
 
-/// 把弹簧采样为固定时长的元素动画（配合 `with_animation` 做一次性入场）。
-/// `window` 应覆盖弹簧的稳定时间（约 2×response）。
-pub fn spring_motion(spring: Spring, window: Duration) -> Animation {
-    let secs = window.max(MIN_ANIMATION_DURATION).as_secs_f32();
-    Animation::new(window.max(MIN_ANIMATION_DURATION)).with_easing(move |t| spring.sample(t * secs))
+/// 元素弹簧按真实时间采样，直到位置与速度同时收敛。
+pub fn spring_motion(spring: Spring) -> Animation {
+    Animation::spring(spring)
 }
 
 pub fn repeating_motion(duration: Duration, easing: Easing) -> Animation {

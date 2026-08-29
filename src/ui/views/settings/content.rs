@@ -7,7 +7,6 @@ use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::StatefulInteractiveElement as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use std::time::Duration;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod onboarding;
@@ -150,20 +149,15 @@ fn animated_settings_panel(
         SettingsTab::About => "settings-content-about",
     };
 
-    // AnimationProperty 走 GPU/paint 驱动时，animator 闭包只会用起始采样参与布局。
-    // 之前在闭包里写 opacity(0.58 + progress * 0.42)，因此整个页面会永久停在
-    // 0.58 alpha。这里只声明可合成的位移动画，让视觉属性由动画引擎连续采样。
-    let translation = AnimationProperty::translation(point(px(10.), px(0.)), point(px(0.), px(0.)));
+    // 整页位移必须包含文字、路径和嵌套裁剪；局部图元的 retained 动画尚不覆盖这些语义。
 
     div()
         .w_full()
         .min_w(px(0.))
         .when(fill_height, |this| this.h_full().min_h(px(0.)))
         .child(panel)
-        .with_animation(
-            key,
-            spring_motion(spring_smooth(), Duration::from_millis(420)).with_property(translation),
-            |panel, _progress| panel,
-        )
+        .with_animation(key, spring_motion(spring_smooth()), |panel, progress| {
+            panel.relative().left(px(10.0 * (1.0 - progress)))
+        })
         .into_any_element()
 }

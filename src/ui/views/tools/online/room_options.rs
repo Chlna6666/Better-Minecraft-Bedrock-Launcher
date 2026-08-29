@@ -71,7 +71,7 @@ fn render_advanced_panel(
         ))
         .with_animation(
             "online-room-advanced-panel",
-            spring_motion(spring_bouncy(), motion::BOUNCY_WINDOW),
+            spring_motion(spring_bouncy()),
             |panel, progress| {
                 panel
                     .opacity(progress.clamp(0.0, 1.0))

@@ -373,10 +373,13 @@ pub(super) fn render_connectivity_modal(
 
     let animated_card = card.with_animation(
         "launcher-connectivity-modal-card",
-        spring_motion(spring_smooth(), Duration::from_millis(520)).with_property(
-            AnimationProperty::translation(point(px(28.), px(6.)), point(px(0.), px(0.))),
-        ),
-        |card, progress| card.opacity(progress),
+        spring_motion(spring_smooth()),
+        |card, progress| {
+            card.opacity(progress.clamp(0.0, 1.0))
+                .relative()
+                .left(px(28.0 * (1.0 - progress)))
+                .top(px(6.0 * (1.0 - progress)))
+        },
     );
 
     Some(
@@ -583,26 +586,25 @@ fn render_connectivity_list(
                                     connectivity_item_row(colors, i18n, service, item)
                                         .with_animation(
                                             row_id,
-                                            spring_motion(
-                                                spring_smooth(),
-                                                Duration::from_millis(480),
-                                            )
-                                            .with_property(AnimationProperty::translation(
-                                                point(px(12.), px(0.)),
-                                                point(px(0.), px(0.)),
-                                            )),
-                                            |row, progress| row.opacity(0.72 + progress * 0.28),
+                                            spring_motion(spring_smooth()),
+                                            |row, progress| {
+                                                row.opacity(
+                                                    (0.72 + progress * 0.28).clamp(0.0, 1.0),
+                                                )
+                                                .relative()
+                                                .left(px(12.0 * (1.0 - progress)))
+                                            },
                                         )
                                 }
                                 _ => connectivity_item_row(colors, i18n, service, item)
                                     .with_animation(
                                         row_id,
-                                        spring_motion(spring_smooth(), Duration::from_millis(480))
-                                            .with_property(AnimationProperty::translation(
-                                                point(px(14.), px(0.)),
-                                                point(px(0.), px(0.)),
-                                            )),
-                                        |row, progress| row.opacity(0.58 + progress * 0.42),
+                                        spring_motion(spring_smooth()),
+                                        |row, progress| {
+                                            row.opacity((0.58 + progress * 0.42).clamp(0.0, 1.0))
+                                                .relative()
+                                                .left(px(14.0 * (1.0 - progress)))
+                                        },
                                     ),
                             }
                         }),
@@ -916,10 +918,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
 }
 
 fn loading_dot_motion(duration: Duration) -> Animation {
-    repeating_linear_motion(duration).with_property(AnimationProperty::translation(
-        point(px(0.), px(0.)),
-        point(px(0.), px(0.)),
-    ))
+    repeating_linear_motion(duration)
 }
 
 fn icon_button(

@@ -175,10 +175,7 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
         .child(render_welcome_footer(&colors, &i18n))
         .with_animation(
             "onboarding-welcome-card-enter",
-            crate::ui::animation::spring_motion(
-                crate::ui::animation::spring_snappy(),
-                Duration::from_millis(520),
-            ),
+            crate::ui::animation::spring_motion(crate::ui::animation::spring_snappy()),
             |this, progress| {
                 this.opacity(progress)
                     .scale(0.965 + 0.035 * progress)

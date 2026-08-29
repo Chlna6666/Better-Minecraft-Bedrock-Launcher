@@ -566,12 +566,9 @@ impl Render for SkinPreviewWindowView {
                                     lucide_gpui::icons::icon_x(),
                                     false,
                                 )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    |_event, window, _cx| {
-                                        window.remove_window();
-                                    },
-                                ),
+                                .on_click(|_event, window, _cx| {
+                                    window.remove_window();
+                                }),
                             ),
                     ),
             )

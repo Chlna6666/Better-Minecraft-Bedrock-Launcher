@@ -39,7 +39,7 @@ pub(super) fn render_settings_overlay(
     });
     let card = render_settings_card(colors, i18n, width, state, dismiss.clone()).with_animation(
         "online-settings-card-enter",
-        spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+        spring_motion(spring_smooth()),
         |card, progress| {
             card.opacity(progress.clamp(0.0, 1.0))
                 .relative()

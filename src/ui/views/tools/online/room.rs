@@ -125,7 +125,7 @@ fn render_abandoned_nodes(
         )
         .with_animation(
             "online-abandoned-nodes-enter",
-            spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+            spring_motion(spring_smooth()),
             |card, progress| {
                 card.opacity(progress.clamp(0.0, 1.0))
                     .relative()
@@ -270,7 +270,7 @@ fn render_blocking_issue(
         })
         .with_animation(
             "online-blocking-issue-enter",
-            spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+            spring_motion(spring_smooth()),
             |card, progress| {
                 card.opacity(progress.clamp(0.0, 1.0))
                     .relative()
