@@ -587,10 +587,12 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
             appears_transparent: true,
             ..Default::default()
         });
-        // Keep newly exposed client pixels transparent while DirectComposition retains the last
-        // completed frame during interactive resize. The main view still paints its own opaque
-        // application background once the new drawable is ready.
-        options.window_background = WindowBackgroundAppearance::Transparent;
+        // The main view paints every client pixel itself, so the native surface does not need an
+        // alpha channel. Keeping the WSI surface opaque lets DX12 use an HWND flip swapchain
+        // instead of DirectComposition and lets Vulkan request OPAQUE composite alpha. Both paths
+        // avoid forcing DWM to blend/copy a transparent full-window surface on every animation or
+        // live-resize present while GPUI's own in-window glass/backdrop effects remain unchanged.
+        options.window_background = WindowBackgroundAppearance::Opaque;
     }
 
     #[cfg(target_os = "linux")]
