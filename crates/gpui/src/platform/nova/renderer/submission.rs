@@ -87,7 +87,29 @@ impl NovaRenderer {
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         if self.current_size.width == width && self.current_size.height == height {
+            #[cfg(all(feature = "nova-gfx-vulkan", target_os = "windows"))]
+            if matches!(&self.backend, NovaBackend::Vulkan(_)) {
+                self.pending_drawable_size = None;
+            }
             return Ok(true);
+        }
+
+        // Win32 can enqueue a newer WM_SIZE after GPUI has already prepared the previous logical
+        // size. DXGI accepts that stale requested extent, but Vulkan/WIN32 commonly exposes the
+        // compositor-owned `currentExtent`; rebuilding the swapchain and size-dependent targets
+        // from two different resize generations can then produce incompatible attachments.
+        //
+        // Require the Vulkan target to survive one render boundary before replacing the
+        // swapchain. This is event coalescing rather than a time debounce: continuous dragging
+        // keeps replacing the candidate, while the first repeated latest size is committed.
+        #[cfg(all(feature = "nova-gfx-vulkan", target_os = "windows"))]
+        if matches!(&self.backend, NovaBackend::Vulkan(_)) {
+            if self.pending_drawable_size == Some(size) {
+                self.pending_drawable_size = None;
+            } else {
+                self.pending_drawable_size = Some(size);
+                return Ok(false);
+            }
         }
 
         self.poll_pending_submissions()?;

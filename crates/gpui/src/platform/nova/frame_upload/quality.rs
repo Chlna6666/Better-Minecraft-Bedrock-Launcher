@@ -4,7 +4,12 @@ use super::*;
 pub(in crate::platform::nova) enum BackdropBlurQuality {
     #[default]
     Full,
-    /// Preserve the visual blur radius while reducing offscreen bandwidth during live resize.
+    /// Keep the established target layout during live resize.
+    ///
+    /// BMCBL already controls blur downsampling and pass count at the style layer. Mutating those
+    /// values here changes the renderer target descriptor and forces the full blur texture chain to
+    /// be destroyed and recreated around every resize boundary, which is especially expensive for
+    /// Vulkan where descriptor/image-view retirement can synchronize with outstanding GPU work.
     Interactive,
     Disabled,
 }
@@ -15,13 +20,7 @@ impl BackdropBlurQuality {
         blur: &'a crate::PaintBackdropBlur,
     ) -> Option<Cow<'a, crate::PaintBackdropBlur>> {
         match self {
-            Self::Full => Some(Cow::Borrowed(blur)),
-            Self::Interactive => {
-                let mut adjusted = blur.clone();
-                adjusted.downsample = adjusted.downsample.saturating_mul(2).clamp(2, 4);
-                adjusted.levels = adjusted.levels.clamp(1, 2);
-                Some(Cow::Owned(adjusted))
-            }
+            Self::Full | Self::Interactive => Some(Cow::Borrowed(blur)),
             Self::Disabled => None,
         }
     }
@@ -49,13 +48,13 @@ mod tests {
     }
 
     #[test]
-    fn interactive_quality_preserves_radius_and_reduces_filter_bandwidth() {
+    fn interactive_quality_keeps_target_geometry_stable() {
         let blur = sample_blur();
         let adjusted = BackdropBlurQuality::Interactive
             .adjusted_blur(&blur)
             .expect("interactive quality should keep blur");
         assert_eq!(adjusted.radius, blur.radius);
-        assert_eq!(adjusted.downsample, 4);
-        assert_eq!(adjusted.levels, 2);
+        assert_eq!(adjusted.downsample, blur.downsample);
+        assert_eq!(adjusted.levels, blur.levels);
     }
 }
