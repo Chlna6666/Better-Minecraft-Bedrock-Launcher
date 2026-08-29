@@ -19,6 +19,7 @@
 mod atlas;
 mod atlas_resources;
 mod backend;
+mod blur_damage;
 mod diagnostics;
 mod draw;
 mod frame_upload;
@@ -38,10 +39,11 @@ mod targets;
 mod upload_metrics;
 mod upload_packing;
 
-use crate::ImageId;
+use crate::{DirtyRegion, ImageId};
 use atlas::*;
 use atlas_resources::*;
 use backend::*;
+use blur_damage::*;
 use diagnostics::*;
 use draw::*;
 use frame_upload::*;
