@@ -1948,6 +1948,7 @@ Tasks.empty=目前沒有任務
 Tasks.empty_hint=開始下載、安裝或更新後，任務會顯示在這裡。
 Tasks.eta=預計剩餘：
 Tasks.eta_value=預計 {{value}}
+Tasks.nav_title=任務
 Tasks.pause_unavailable=目前任務狀態不支援暫停或繼續
 Tasks.progress=進度：
 Tasks.status.cancelled=已取消

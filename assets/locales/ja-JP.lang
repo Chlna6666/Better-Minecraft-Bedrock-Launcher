@@ -1948,6 +1948,7 @@ Tasks.empty=タスクはありません
 Tasks.empty_hint=ダウンロード、インストール、更新を開始すると、ここに表示されます。
 Tasks.eta=残り時間：
 Tasks.eta_value=残り時間 {{value}}
+Tasks.nav_title=タスク
 Tasks.pause_unavailable=このタスクは一時停止または再開できません
 Tasks.progress=進捗：
 Tasks.status.cancelled=キャンセル済み

@@ -1948,6 +1948,7 @@ Tasks.empty=暂无任务
 Tasks.empty_hint=下载、安装和更新开始后，任务会在这里展示。
 Tasks.eta=预计剩余：
 Tasks.eta_value=预计 {{value}}
+Tasks.nav_title=任务
 Tasks.pause_unavailable=当前任务状态不支持暂停或继续
 Tasks.progress=进度：
 Tasks.status.cancelled=已取消
