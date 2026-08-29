@@ -16,6 +16,10 @@ pub(super) struct PreparedElementBlurLayer {
     pub(super) source_texture_view: TextureViewId,
     pub(super) source_groups: Vec<PreparedBackdropBlurGroup>,
     pub(super) filter_passes: Vec<BackdropBlurRenderPass>,
+    /// The isolated source remains scratch storage, but the Gaussian ping/final targets are
+    /// persistent. Partial element refreshes therefore load and overwrite only their dirty
+    /// convolution footprint instead of clearing the complete targets.
+    pub(super) preserve_filtered_pixels: bool,
 }
 
 impl NovaRenderer {
@@ -94,19 +98,7 @@ impl NovaRenderer {
         let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
         let dirty_configs: Vec<Vec<BackdropBlurConfig>> = blur_groups
             .iter()
-            .map(|(_, configs)| {
-                if force_full {
-                    configs.clone()
-                } else {
-                    configs
-                        .iter()
-                        .copied()
-                        .filter(|config| {
-                            blur_damage_scissors(*config, self.current_size, damage).is_some()
-                        })
-                        .collect()
-                }
-            })
+            .map(|(_, configs)| blur_configs_for_refresh(configs, self.current_size, damage, force_full))
             .collect();
 
         let Some(last_dirty_group) = dirty_configs
@@ -125,12 +117,7 @@ impl NovaRenderer {
             .iter()
             .flat_map(|configs| configs.iter().copied())
             .filter_map(|config| {
-                if force_full {
-                    blur_full_source_scissor(config, self.current_size)
-                } else {
-                    blur_damage_scissors(config, self.current_size, damage)
-                        .map(|damage| damage.source_capture)
-                }
+                blur_source_scissor_for_refresh(config, self.current_size, damage, force_full)
             })
             .reduce(union_scissor_rects);
 
@@ -180,16 +167,13 @@ impl NovaRenderer {
                     configs,
                     &mut filter_passes,
                 );
-                if force_full {
-                    apply_filter_pass_scissors(configs, self.current_size, &mut filter_passes);
-                } else {
-                    apply_filter_pass_damage_scissors(
-                        configs,
-                        self.current_size,
-                        damage,
-                        &mut filter_passes,
-                    );
-                }
+                apply_filter_refresh_scissors(
+                    configs,
+                    self.current_size,
+                    damage,
+                    force_full,
+                    &mut filter_passes,
+                );
             }
 
             groups.push(PreparedBackdropBlurGroup {
@@ -224,6 +208,14 @@ impl NovaRenderer {
         apply_filter_pass_scissors(&configs, self.current_size, passes);
     }
 
+    /// Builds isolated element-blur work using the same retained Gaussian contract as root
+    /// backdrop blur.
+    ///
+    /// The per-element scene-color texture is still scratch: it is cleared once and rebuilt in
+    /// draw order for the dependency halo required by the outer filter and any dirty nested
+    /// backdrops. Ping/final Gaussian textures are retained across frames. On a spatial partial
+    /// update only the dirty convolution footprint is rewritten; non-spatial invalidations rebuild
+    /// the complete filter chain.
     pub(super) fn prepare_element_blur_layers(
         &self,
         enabled: bool,
@@ -239,6 +231,8 @@ impl NovaRenderer {
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
+        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
+        let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
         let mut layers = Vec::new();
 
         for range in self.frame_upload.blur_content_ranges() {
@@ -246,6 +240,14 @@ impl NovaRenderer {
                 .frame_upload
                 .backdrop_blur_config_for_index(range.index)
             else {
+                continue;
+            };
+            let Some(outer_source_scissor) =
+                blur_source_scissor_for_refresh(config, self.current_size, damage, force_full)
+            else {
+                // The caller can conservatively select a layer whose effect bounds intersect a
+                // coarse dirty region. If the Gaussian dependency footprint itself is clean, the
+                // retained element result is already valid and no offscreen work is needed.
                 continue;
             };
             let Some(source_texture_view) = targets.isolated_source_texture_view(range.index)
@@ -258,28 +260,60 @@ impl NovaRenderer {
                 continue;
             };
 
-            let mut source_groups = Vec::new();
-            let mut segment_start = range.content_start;
-            for batch_index in
-                direct_backdrop_barriers(&self.frame_upload, range.content_start, range.content_end)
-            {
+            let barrier_groups: Vec<_> = direct_backdrop_barriers(
+                &self.frame_upload,
+                range.content_start,
+                range.content_end,
+            )
+            .into_iter()
+            .filter_map(|batch_index| {
                 let UploadedBatch::BackdropBlurs { first, count } =
                     self.frame_upload.batches[batch_index]
                 else {
-                    continue;
+                    return None;
                 };
                 let configs = self
                     .frame_upload
                     .backdrop_blur_configs_for_range(first, count);
-                if configs.is_empty() {
-                    continue;
-                }
+                (!configs.is_empty()).then_some((batch_index, configs))
+            })
+            .collect();
+            let dirty_barrier_configs: Vec<Vec<BackdropBlurConfig>> = barrier_groups
+                .iter()
+                .map(|(_, configs)| {
+                    blur_configs_for_refresh(configs, self.current_size, damage, force_full)
+                })
+                .collect();
+
+            // Every segment contributes to one accumulated isolated scene-color source. Use one
+            // common scissor for all segments so content drawn before a clean nested backdrop is
+            // still reconstructed where the outer filter needs it. Dirty nested filters may need a
+            // wider source halo than the outer filter, so include their dependency footprints too.
+            let source_scissor = dirty_barrier_configs
+                .iter()
+                .flat_map(|configs| configs.iter().copied())
+                .filter_map(|nested_config| {
+                    blur_source_scissor_for_refresh(
+                        nested_config,
+                        self.current_size,
+                        damage,
+                        force_full,
+                    )
+                })
+                .fold(outer_source_scissor, union_scissor_rects);
+
+            let mut source_groups = Vec::with_capacity(barrier_groups.len().saturating_add(1));
+            let mut segment_start = range.content_start;
+            for (group_index, (batch_index, _configs)) in barrier_groups.into_iter().enumerate() {
                 source_groups.push(self.prepare_element_blur_group(
                     segment_start,
                     batch_index,
-                    &configs,
+                    &dirty_barrier_configs[group_index],
                     source_resource_set,
                     targets,
+                    source_scissor,
+                    damage,
+                    force_full,
                 ));
                 segment_start = batch_index;
             }
@@ -309,9 +343,7 @@ impl NovaRenderer {
                 },
                 &mut final_source_steps,
             );
-            if let Some(scissor) = blur_full_source_scissor(config, self.current_size) {
-                apply_scissor_to_steps(&mut final_source_steps, scissor);
-            }
+            apply_scissor_to_steps(&mut final_source_steps, source_scissor);
 
             let mut filter_passes = Vec::new();
             backdrop_blur_render_passes_for_configs_with_source_into(
@@ -322,21 +354,24 @@ impl NovaRenderer {
                 source_resource_set,
                 &mut filter_passes,
             );
-            apply_filter_pass_scissors(
+            apply_filter_refresh_scissors(
                 std::slice::from_ref(&config),
                 self.current_size,
+                damage,
+                force_full,
                 &mut filter_passes,
             );
             source_groups.push(PreparedBackdropBlurGroup {
                 source_steps: final_source_steps,
                 filter_passes: Vec::new(),
-                preserve_filtered_pixels: false,
+                preserve_filtered_pixels: !force_full,
             });
             layers.push(PreparedElementBlurLayer {
                 index: range.index,
                 source_texture_view,
                 source_groups,
                 filter_passes,
+                preserve_filtered_pixels: !force_full,
             });
         }
         layers
@@ -349,6 +384,9 @@ impl NovaRenderer {
         configs: &[BackdropBlurConfig],
         source_resource_set: ResourceSetId,
         targets: &BackdropBlurTargets,
+        source_scissor: ScissorRect,
+        dirty_region: &DirtyRegion,
+        force_full: bool,
     ) -> PreparedBackdropBlurGroup {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
@@ -378,29 +416,30 @@ impl NovaRenderer {
             },
             &mut source_steps,
         );
+        apply_scissor_to_steps(&mut source_steps, source_scissor);
 
         let mut filter_passes = Vec::new();
-        backdrop_blur_render_passes_for_configs_with_source_into(
-            &self.pipelines,
-            targets,
-            frame_resource_index,
-            configs,
-            source_resource_set,
-            &mut filter_passes,
-        );
-        if let Some(scissor) = configs
-            .iter()
-            .copied()
-            .filter_map(|config| blur_full_source_scissor(config, self.current_size))
-            .reduce(union_scissor_rects)
-        {
-            apply_scissor_to_steps(&mut source_steps, scissor);
+        if !configs.is_empty() {
+            backdrop_blur_render_passes_for_configs_with_source_into(
+                &self.pipelines,
+                targets,
+                frame_resource_index,
+                configs,
+                source_resource_set,
+                &mut filter_passes,
+            );
+            apply_filter_refresh_scissors(
+                configs,
+                self.current_size,
+                dirty_region,
+                force_full,
+                &mut filter_passes,
+            );
         }
-        apply_filter_pass_scissors(configs, self.current_size, &mut filter_passes);
         PreparedBackdropBlurGroup {
             source_steps,
             filter_passes,
-            preserve_filtered_pixels: false,
+            preserve_filtered_pixels: !force_full,
         }
     }
 
@@ -451,6 +490,49 @@ fn custom_mesh_cache_entry(
         .get(&mesh_id)
         .copied()
         .filter(|entry| entry.generation == generation)
+}
+
+fn blur_configs_for_refresh(
+    configs: &[BackdropBlurConfig],
+    drawable_size: DrawableSize,
+    dirty_region: &DirtyRegion,
+    force_full: bool,
+) -> Vec<BackdropBlurConfig> {
+    if force_full {
+        return configs.to_vec();
+    }
+    configs
+        .iter()
+        .copied()
+        .filter(|config| blur_damage_scissors(*config, drawable_size, dirty_region).is_some())
+        .collect()
+}
+
+fn blur_source_scissor_for_refresh(
+    config: BackdropBlurConfig,
+    drawable_size: DrawableSize,
+    dirty_region: &DirtyRegion,
+    force_full: bool,
+) -> Option<ScissorRect> {
+    if force_full {
+        blur_full_source_scissor(config, drawable_size)
+    } else {
+        blur_damage_scissors(config, drawable_size, dirty_region).map(|damage| damage.source_capture)
+    }
+}
+
+fn apply_filter_refresh_scissors(
+    configs: &[BackdropBlurConfig],
+    drawable_size: DrawableSize,
+    dirty_region: &DirtyRegion,
+    force_full: bool,
+    passes: &mut [BackdropBlurRenderPass],
+) {
+    if force_full {
+        apply_filter_pass_scissors(configs, drawable_size, passes);
+    } else {
+        apply_filter_pass_damage_scissors(configs, drawable_size, dirty_region, passes);
+    }
 }
 
 fn apply_filter_pass_scissors(
@@ -657,5 +739,32 @@ mod tests {
             },
             &damage,
         ));
+    }
+
+    #[test]
+    fn partial_blur_source_scissor_is_smaller_than_full_refresh() {
+        let config = test_backdrop_blur_config(2, 1);
+        let drawable_size = DrawableSize {
+            width: 800,
+            height: 600,
+        };
+        let damage = dirty_region(24.0, 12.0, 2.0, 2.0);
+        let full = blur_source_scissor_for_refresh(
+            config,
+            drawable_size,
+            &damage,
+            true,
+        )
+        .expect("full blur source scissor");
+        let partial = blur_source_scissor_for_refresh(
+            config,
+            drawable_size,
+            &damage,
+            false,
+        )
+        .expect("partial blur source scissor");
+        assert!(partial.width <= full.width);
+        assert!(partial.height <= full.height);
+        assert!(partial.width < full.width || partial.height < full.height);
     }
 }

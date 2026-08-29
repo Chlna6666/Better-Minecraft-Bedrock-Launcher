@@ -214,6 +214,10 @@ where
     Ok(())
 }
 
+/// Rebuilds each dirty isolated element source, while retaining clean pixels in its Gaussian
+/// ping/final targets. The source attachment remains scratch because removal/transparency inside
+/// the dirty halo must start from a known clear value; only the filtered targets use Load on a
+/// spatial partial refresh.
 fn render_element_blur_layers<D>(
     device: &mut D,
     render_pass: RenderPassId,
@@ -248,22 +252,32 @@ where
                 },
                 Some(source_depth_attachment),
             )?;
+            let filter_load_op = if group.preserve_filtered_pixels {
+                LoadOp::Load
+            } else {
+                LoadOp::Clear(clear_color())
+            };
             for pass in &group.filter_passes {
                 device.render_step_list_to_texture(
                     pass.target_texture_view,
                     render_pass,
                     RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                    LoadOp::Clear(clear_color()),
+                    filter_load_op,
                     Some(filter_depth_attachment),
                 )?;
             }
         }
+        let filter_load_op = if layer.preserve_filtered_pixels {
+            LoadOp::Load
+        } else {
+            LoadOp::Clear(clear_color())
+        };
         for pass in &layer.filter_passes {
             device.render_step_list_to_texture(
                 pass.target_texture_view,
                 render_pass,
                 RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                LoadOp::Clear(clear_color()),
+                filter_load_op,
                 Some(filter_depth_attachment),
             )?;
         }
