@@ -360,6 +360,51 @@ impl VulkanDevice {
         Ok(pending)
     }
 
+    /// Reports whether work owned by one swapchain is still executing.
+    ///
+    /// Interactive resize only needs the target swapchain's frame fences. Unrelated texture
+    /// uploads and work targeting another surface must not turn a window resize into a device-wide
+    /// stall.
+    pub fn has_pending_swapchain_work(
+        &self,
+        swapchain_id: gfx_core::SwapchainId,
+    ) -> Result<bool> {
+        let swapchain = self.swapchains.get(swapchain_id)?;
+        Ok(swapchain.in_flight_fences.iter().copied().any(|fence| {
+            fence != vk::Fence::null() && !fence_is_complete(&self.device, fence)
+        }))
+    }
+
+    /// Waits only for resources that make replacing this swapchain unsafe.
+    ///
+    /// Frame fences cover graphics submissions that reference the old images. Vulkan 1.0 does
+    /// not provide a presentation-completion fence, so the present queue is then drained before
+    /// the retired swapchain is destroyed. This is intentionally narrower than
+    /// `vkDeviceWaitIdle`: queues unrelated to presentation are not stalled.
+    fn wait_for_swapchain_replacement(
+        &self,
+        swapchain_id: gfx_core::SwapchainId,
+    ) -> Result<()> {
+        let swapchain = self.swapchains.get(swapchain_id)?;
+        let fences = swapchain
+            .in_flight_fences
+            .iter()
+            .copied()
+            .filter(|fence| *fence != vk::Fence::null())
+            .collect::<Vec<_>>();
+        if !fences.is_empty() {
+            // SAFETY: Every fence belongs to this device and remains owned by the live swapchain
+            // for the duration of this wait.
+            unsafe { self.device.wait_for_fences(&fences, true, u64::MAX) }
+                .map_err(VulkanError::from)?;
+        }
+        // SAFETY: The present queue belongs to this logical device. Presentation has no completion
+        // fence in the currently enabled extension set, so draining this queue is the narrowest
+        // safe synchronization point before destroying the old native swapchain.
+        unsafe { self.device.queue_wait_idle(self.present_queue) }.map_err(VulkanError::from)?;
+        Ok(())
+    }
+
     /// Recreates an existing swapchain.
     ///
     /// # Errors
@@ -374,8 +419,7 @@ impl VulkanDevice {
         if width == 0 || height == 0 {
             return Ok(());
         }
-        // SAFETY: Device is valid and waiting before swapchain resource replacement is valid.
-        unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
+        self.wait_for_swapchain_replacement(swapchain_id)?;
         let old_swapchain = self.swapchains.get(swapchain_id)?;
         let mut config = old_swapchain.config;
         config.size = gfx_core::Extent2d::new(width, height)?;
@@ -398,8 +442,7 @@ impl VulkanDevice {
         swapchain_id: gfx_core::SwapchainId,
         config: SurfaceConfig,
     ) -> Result<()> {
-        // SAFETY: Device is valid and waiting before swapchain resource replacement is valid.
-        unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
+        self.wait_for_swapchain_replacement(swapchain_id)?;
         let old_swapchain = self.swapchains.get(swapchain_id)?;
         let surface = old_swapchain.surface;
         let old_native_swapchain = old_swapchain.swapchain;
@@ -772,60 +815,6 @@ impl VulkanDevice {
         Ok(self.samplers.insert(VulkanSampler { sampler }))
     }
 
-    /// Creates a resource set layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GfxError`] when validation or Vulkan descriptor set layout creation fails.
-    fn create_resource_set_layout(
-        &mut self,
-        desc: &ResourceSetLayoutDesc,
-    ) -> Result<ResourceSetLayoutId> {
-        desc.validate()?;
-        let bindings = desc
-            .entries
-            .iter()
-            .map(|entry| {
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(entry.binding)
-                    .descriptor_type(resource_binding_type_to_vk(entry.binding_type))
-                    .descriptor_count(1)
-                    .stage_flags(shader_stages_to_vk(entry.stages))
-            })
-            .collect::<Vec<_>>();
-        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        // SAFETY: Descriptor set layout create info references local binding metadata only.
-        let layout = unsafe { self.device.create_descriptor_set_layout(&create_info, None) }
-            .map_err(VulkanError::from)?;
-        Ok(self.resource_set_layouts.insert(VulkanResourceSetLayout {
-            layout,
-            desc: desc.clone(),
-        }))
-    }
-
-    /// Creates a pipeline layout from resource set layouts.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GfxError`] when any layout handle is invalid or Vulkan creation fails.
-    fn create_pipeline_layout(&mut self, desc: &PipelineLayoutDesc) -> Result<PipelineLayoutId> {
-        desc.validate()?;
-        let layouts = desc
-            .resource_set_layouts
-            .iter()
-            .copied()
-            .map(|layout| Ok(self.resource_set_layouts.get(layout)?.layout))
-            .collect::<Result<Vec<_>>>()?;
-        let create_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
-        // SAFETY: Descriptor set layouts belong to this device and remain live via registry handles.
-        let layout = unsafe { self.device.create_pipeline_layout(&create_info, None) }
-            .map_err(VulkanError::from)?;
-        Ok(self.pipeline_layouts.insert(VulkanPipelineLayout {
-            layout,
-            resource_set_layouts: desc.resource_set_layouts.clone(),
-        }))
-    }
-
     /// Creates a resource set and writes descriptor bindings.
     ///
     /// # Errors
@@ -968,6 +957,60 @@ impl VulkanDevice {
             module,
             stage: desc.binary.stage,
             entry_point: desc.binary.entry_point.clone(),
+        }))
+    }
+
+    /// Creates a resource set layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when validation or Vulkan descriptor set layout creation fails.
+    fn create_resource_set_layout(
+        &mut self,
+        desc: &ResourceSetLayoutDesc,
+    ) -> Result<ResourceSetLayoutId> {
+        desc.validate()?;
+        let bindings = desc
+            .entries
+            .iter()
+            .map(|entry| {
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(entry.binding)
+                    .descriptor_type(resource_binding_type_to_vk(entry.binding_type))
+                    .descriptor_count(1)
+                    .stage_flags(shader_stages_to_vk(entry.stages))
+            })
+            .collect::<Vec<_>>();
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        // SAFETY: Descriptor set layout create info references local binding metadata only.
+        let layout = unsafe { self.device.create_descriptor_set_layout(&create_info, None) }
+            .map_err(VulkanError::from)?;
+        Ok(self.resource_set_layouts.insert(VulkanResourceSetLayout {
+            layout,
+            desc: desc.clone(),
+        }))
+    }
+
+    /// Creates a pipeline layout from resource set layouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when any layout handle is invalid or Vulkan creation fails.
+    fn create_pipeline_layout(&mut self, desc: &PipelineLayoutDesc) -> Result<PipelineLayoutId> {
+        desc.validate()?;
+        let layouts = desc
+            .resource_set_layouts
+            .iter()
+            .copied()
+            .map(|layout| Ok(self.resource_set_layouts.get(layout)?.layout))
+            .collect::<Result<Vec<_>>>()?;
+        let create_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
+        // SAFETY: Descriptor set layouts belong to this device and remain live via registry handles.
+        let layout = unsafe { self.device.create_pipeline_layout(&create_info, None) }
+            .map_err(VulkanError::from)?;
+        Ok(self.pipeline_layouts.insert(VulkanPipelineLayout {
+            layout,
+            resource_set_layouts: desc.resource_set_layouts.clone(),
         }))
     }
 
@@ -2078,7 +2121,7 @@ impl VulkanDevice {
             .map_err(|error| GfxError::InvalidInput(format!("upload offset overflow: {error}")))?;
         let end = offset
             .checked_add(data.len())
-            .ok_or_else(|| GfxError::InvalidInput("upload range overflow".to_string()))?;
+            .ok_or_else(|| GfxError::InvalidInput("buffer write range overflow".to_string()))?;
         let target = mapped.get_mut(offset..end).ok_or_else(|| {
             GfxError::InvalidInput("upload range is out of upload page bounds".to_string())
         })?;
