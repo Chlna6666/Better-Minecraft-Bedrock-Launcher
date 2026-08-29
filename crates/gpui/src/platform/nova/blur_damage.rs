@@ -1,4 +1,5 @@
 use super::*;
+use crate::ScaledPixels;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BlurDamageScissors {
