@@ -188,14 +188,30 @@ impl NovaBackend {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    pub(super) fn has_pending_resize_work(&mut self) -> Result<bool> {
+    /// Returns whether the swapchain cannot be replaced without waiting.
+    ///
+    /// The query is deliberately swapchain-scoped for Vulkan so unrelated uploads or work on the
+    /// logical device do not stall interactive window resizing. Renderer-owned submissions are
+    /// checked separately before this method is called.
+    pub(super) fn has_pending_resize_work(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {
-            #[cfg(feature = "nova-gfx-dx12")]
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.has_pending_gpu_work()?),
-            #[cfg(feature = "nova-gfx-vulkan")]
-            Self::Vulkan(device) => Ok(device.has_pending_gpu_work()?),
-            #[cfg(not(any(feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan")))]
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(_) => Ok(false),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => Ok(device.has_pending_swapchain_work(swapchain)?),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
             Self::Unavailable => Ok(false),
         }
     }
