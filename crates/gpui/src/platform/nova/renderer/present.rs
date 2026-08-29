@@ -99,8 +99,6 @@ fn upload_animated_buffers<D: BackendResources>(
     buffers: FrameBufferTargets,
     frame_upload: &FrameUpload,
 ) -> Result<()> {
-    // Animation metadata is CPU input to materialization. Current Nova shaders
-    // only consume the patched primitive buffers; uploading metadata does no work.
     if frame_upload.has_animated_backdrop_blurs() {
         device.write_buffer(
             buffers.backdrop_blur_pass,
@@ -155,11 +153,6 @@ where
     )
 }
 
-/// Advances one shared scene-color source through each backdrop draw-order barrier.
-///
-/// Scene color is scratch storage and is rebuilt for the scissored dependency halo on every dirty
-/// refresh. Gaussian ping/final targets are persistent: a partial refresh loads their previous
-/// contents and overwrites only the pass scissors, while a full invalidation clears them once.
 fn render_backdrop_blur_groups<D>(
     device: &mut D,
     source_texture_view: TextureViewId,
@@ -214,10 +207,6 @@ where
     Ok(())
 }
 
-/// Rebuilds each dirty isolated element source, while retaining clean pixels in its Gaussian
-/// ping/final targets. The source attachment remains scratch because removal/transparency inside
-/// the dirty halo must start from a known clear value; only the filtered targets use Load on a
-/// spatial partial refresh.
 fn render_element_blur_layers<D>(
     device: &mut D,
     render_pass: RenderPassId,
@@ -285,9 +274,6 @@ where
     Ok(())
 }
 
-/// Returns whether the flattened upload contains a backdrop filter outside an element-blur
-/// capture. Nested backdrop filters belong to their element layer and must not make the root
-/// backdrop cache miss every time that layer exists.
 fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
     let mut element_depth = 0usize;
     for batch in &frame_upload.batches {
@@ -315,11 +301,6 @@ fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
     false
 }
 
-/// Determines which isolated element-blur targets actually depend on this frame's damage.
-///
-/// `PaintBlur.bounds` is packed as the effect bounds (content plus Gaussian support), so testing
-/// against it keeps unrelated animation outside the filtered subtree from invalidating the layer.
-/// A shared target/layout invalidation forces every element layer to rebuild once.
 fn dirty_element_blur_indices(
     frame_upload: &FrameUpload,
     dirty_region: &crate::DirtyRegion,
@@ -339,8 +320,6 @@ fn dirty_element_blur_indices(
     let mut dirty = Vec::new();
     for range in ranges {
         let Some(config) = frame_upload.backdrop_blur_config_for_index(range.index) else {
-            // Missing metadata is not a safe cache hit. Re-render this layer and let the normal
-            // preparation path decide whether a renderable target exists.
             dirty.push(range.index);
             continue;
         };
@@ -386,11 +365,6 @@ impl NovaRenderer {
         (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
     }
 
-    /// Counts the scissored pixel area of the blur work actually scheduled for this frame.
-    ///
-    /// Source passes are counted once per render pass by the union of their draw scissors instead
-    /// of once per primitive. Gaussian passes already carry target-space scissors, so their areas
-    /// are accumulated directly. A missing scissor is conservatively treated as a full drawable.
     fn backdrop_blur_pixel_metrics(
         &self,
         backdrop_groups: &[PreparedBackdropBlurGroup],
@@ -423,7 +397,6 @@ impl NovaRenderer {
                     source_scissor.map_or(0, scissor_pixel_area)
                 });
             }
-
             for (pass_index, pass) in group.filter_passes.iter().enumerate() {
                 let pixels = pass.step.scissor.map_or(drawable_pixels, scissor_pixel_area);
                 let level = pass_index & 1;
@@ -438,6 +411,9 @@ impl NovaRenderer {
             for group in &layer.source_groups {
                 record_group(group);
             }
+        }
+        drop(record_group);
+        for layer in element_layers {
             for (pass_index, pass) in layer.filter_passes.iter().enumerate() {
                 let pixels = pass.step.scissor.map_or(drawable_pixels, scissor_pixel_area);
                 let level = pass_index & 1;
