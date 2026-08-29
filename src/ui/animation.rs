@@ -4,6 +4,7 @@ use gpui::{
 use std::time::{Duration, Instant};
 
 const MIN_ANIMATION_DURATION: Duration = Duration::from_millis(1);
+const MAX_RETARGET_NORMALIZED_VELOCITY: f32 = 12.0;
 
 /// Apple 风格弹簧参数化：`response` 为周期（秒），`damping_fraction` 为阻尼比。
 /// 与 SwiftUI 的 `spring(response:dampingFraction:)` 对齐：
@@ -48,9 +49,9 @@ pub struct SpringValueSample {
 
 /// 可中断、可重定向的弹簧值。
 ///
-/// 与一次性的时长动画不同：目标在动画进行中改变时，弹簧会从“当前
-/// 位置 + 当前速度”继续运动，因此快速往复操作也能得到连续、自然的
-/// 轨迹（Apple 的 interruptible animation 模型）。
+/// 与一次性的时长动画不同：目标在动画进行中改变时，弹簧会从当前
+/// 位置继续运动；只有仍朝新目标运动的速度才会继承。快速反向操作会
+/// 丢弃旧目标方向的惯性，避免点击已经生效但画面短暂继续反向运动。
 #[derive(Clone, Copy, Debug)]
 pub struct SpringValue {
     from: f32,
@@ -88,16 +89,17 @@ impl SpringValue {
         self.started_at = None;
     }
 
-    /// 重定向到新目标，保留当前位置与速度（可中断动画的关键）。
+    /// 重定向到新目标，并仅保留朝新目标方向的当前速度。
     pub fn retarget(&mut self, target: f32, now: Instant) {
         if (target - self.to).abs() <= f32::EPSILON {
             return;
         }
         let current = self.sample(now);
+        let delta = target - current.value;
         self.from = current.value;
-        self.initial_velocity = current.velocity;
+        self.initial_velocity = responsive_retarget_velocity(current.velocity, delta);
         self.to = target;
-        if (target - current.value).abs() <= 1e-5 && current.velocity.abs() <= 1e-4 {
+        if delta.abs() <= 1e-5 && current.velocity.abs() <= 1e-4 {
             self.snap_to(target);
         } else {
             self.started_at = Some(now);
@@ -110,11 +112,12 @@ impl SpringValue {
             return;
         }
         let current = self.sample(now);
+        let delta = target - current.value;
         self.spring = spring;
         self.from = current.value;
-        self.initial_velocity = current.velocity;
+        self.initial_velocity = responsive_retarget_velocity(current.velocity, delta);
         self.to = target;
-        if (target - current.value).abs() <= 1e-5 && current.velocity.abs() <= 1e-4 {
+        if delta.abs() <= 1e-5 && current.velocity.abs() <= 1e-4 {
             self.snap_to(target);
         } else {
             self.started_at = Some(now);
@@ -163,6 +166,23 @@ impl SpringValue {
     pub fn is_animating(&self, now: Instant) -> bool {
         !self.sample(now).done
     }
+}
+
+/// 将中断时的物理速度映射到新目标。
+///
+/// 当速度仍朝向新目标时保留连续性；若速度背离新目标则立即清零，避免
+/// 反向点击后 UI 还沿旧方向运动数帧。对很短的剩余位移同时限制归一化
+/// 初速度，避免 `velocity / delta` 在目标附近被放大成异常大的弹簧冲量。
+fn responsive_retarget_velocity(current_velocity: f32, delta: f32) -> f32 {
+    if !current_velocity.is_finite() || !delta.is_finite() || delta.abs() <= f32::EPSILON {
+        return 0.0;
+    }
+    if current_velocity * delta <= 0.0 {
+        return 0.0;
+    }
+
+    let max_velocity = delta.abs() * MAX_RETARGET_NORMALIZED_VELOCITY;
+    current_velocity.clamp(-max_velocity, max_velocity)
 }
 
 pub fn ease_out_cubic(t: f32) -> f32 {
@@ -327,6 +347,27 @@ mod tests {
     }
 
     #[test]
+    fn spring_value_reverse_retarget_moves_toward_the_new_target_immediately() {
+        let now = Instant::now();
+        let mut spring = SpringValue::new(0.0).with_spring(spring_bouncy());
+        spring.retarget(1.0, now);
+
+        let reverse_at = now + Duration::from_millis(40);
+        let before = spring.sample(reverse_at);
+        assert!(before.value > 0.0);
+        assert!(before.velocity > 0.0);
+
+        spring.retarget_with_spring(0.0, spring_snappy(), reverse_at);
+        let after = spring.sample(reverse_at + Duration::from_millis(10));
+        assert!(
+            after.value < before.value,
+            "反向重定向后应立即朝新目标移动：before={} after={}",
+            before.value,
+            after.value
+        );
+    }
+
+    #[test]
     fn spring_value_retarget_to_same_target_is_a_no_op() {
         let now = Instant::now();
         let mut spring = SpringValue::new(0.0).with_spring(spring_snappy());
@@ -336,6 +377,17 @@ mod tests {
         let before = spring.value(mid);
         spring.retarget(1.0, mid);
         assert!((spring.value(mid) - before).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn retarget_velocity_drops_old_direction_and_caps_short_distance_momentum() {
+        assert_eq!(responsive_retarget_velocity(4.0, -0.5), 0.0);
+        assert_eq!(responsive_retarget_velocity(-4.0, 0.5), 0.0);
+
+        let capped = responsive_retarget_velocity(100.0, 0.25);
+        assert!((capped - 3.0).abs() < f32::EPSILON);
+        let capped_negative = responsive_retarget_velocity(-100.0, -0.25);
+        assert!((capped_negative + 3.0).abs() < f32::EPSILON);
     }
 
     #[test]
