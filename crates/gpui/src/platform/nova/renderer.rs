@@ -370,7 +370,11 @@ impl NovaRenderer {
     }
 
     fn backdrop_blur_quality(&self, _render_plan: FrameRenderPlan<'_>) -> BackdropBlurQuality {
-        BackdropBlurQuality::Full
+        if self.swapchain_warmup_frames > 0 {
+            BackdropBlurQuality::Interactive
+        } else {
+            BackdropBlurQuality::Full
+        }
     }
 
     fn destroy_backdrop_blur_targets(&mut self) {
