@@ -1,22 +1,5 @@
 use super::*;
 
-#[cfg(target_os = "windows")]
-const INTERACTIVE_RESIZE_SETTLE_GRACE: std::time::Duration = std::time::Duration::from_millis(48);
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy)]
-struct InteractiveResizePacing {
-    target_width: u32,
-    target_height: u32,
-    target_changed_at: Instant,
-}
-
-#[cfg(target_os = "windows")]
-thread_local! {
-    static INTERACTIVE_RESIZE_PACING: std::cell::RefCell<std::collections::HashMap<usize, InteractiveResizePacing>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
 impl NovaRenderer {
     pub(super) fn prepare_for_frame_submission(&mut self) -> Result<()> {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
@@ -89,21 +72,17 @@ impl NovaRenderer {
         self.wait_for_pending_submissions()
     }
 
-    /// Applies an exact swapchain resize only after the native resize target has settled.
+    /// Attempts to apply the latest drawable size at a frame boundary without blocking the
+    /// native resize event path.
     ///
-    /// Windows continuously emits resize targets while the pointer is moving. Rebuilding
-    /// the swapchain plus path/depth/blur attachments during that stream is much more
-    /// expensive than presenting a normal frame, and Vulkan additionally has to retire
-    /// swapchain-owned work before recreation. The previous implementation periodically
-    /// forced an exact rebuild every ~33 ms, which made both DX12 and Vulkan alternate
-    /// between a stretched compositor frame and a newly rebuilt surface. That cadence is
-    /// visible as resize judder even when the application itself is not dropping frames.
+    /// Window systems can emit resize/configure events substantially faster than either the
+    /// compositor or GPU can produce frames. The platform layer therefore coalesces those events
+    /// into one latest size. At the next frame boundary we retire completed submissions and only
+    /// rebuild the swapchain when the renderer and that swapchain are safe to replace.
     ///
-    /// Keep the last presented surface covering the client area while the target is moving
-    /// and perform one exact rebuild after the target has been stable for a short grace
-    /// period. Target tracking happens before the GPU-idle gate so a busy GPU can never hide
-    /// newer pointer resize events and accidentally make a moving target look settled.
-    #[cfg(target_os = "windows")]
+    /// This intentionally has no fixed debounce/settle interval: a fast GPU can follow nearly
+    /// every display frame, while a busy GPU naturally coalesces more native resize events. That
+    /// keeps layout feedback live instead of freezing it behind an arbitrary timer.
     pub(crate) fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
@@ -111,16 +90,12 @@ impl NovaRenderer {
             return Ok(true);
         }
 
-        let now = Instant::now();
-        if interactive_resize_should_defer(self, width, height, now) {
-            // Still retire completed submissions while live resize is compositor/WSI driven,
-            // but never block or recreate swapchain resources until the target settles.
-            self.poll_pending_submissions()?;
-            return Ok(false);
-        }
-
         self.poll_pending_submissions()?;
-        if !self.pending_submissions.is_empty() || self.backend.has_pending_resize_work()? {
+        if !self.pending_submissions.is_empty()
+            || self
+                .backend
+                .has_pending_resize_work(self.swapchain)?
+        {
             return Ok(false);
         }
 
@@ -193,68 +168,6 @@ impl NovaRenderer {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn interactive_resize_key(renderer: &NovaRenderer) -> usize {
-    renderer as *const NovaRenderer as usize
-}
-
-#[cfg(target_os = "windows")]
-fn interactive_resize_should_defer(
-    renderer: &NovaRenderer,
-    width: u32,
-    height: u32,
-    now: Instant,
-) -> bool {
-    let key = interactive_resize_key(renderer);
-    INTERACTIVE_RESIZE_PACING.with(|pacing| {
-        let mut pacing = pacing.borrow_mut();
-        if pacing.len() >= 64 && !pacing.contains_key(&key) {
-            pacing.clear();
-        }
-        let state = pacing.entry(key).or_insert(InteractiveResizePacing {
-            target_width: width,
-            target_height: height,
-            target_changed_at: now,
-        });
-
-        if state.target_width != width || state.target_height != height {
-            state.target_width = width;
-            state.target_height = height;
-            state.target_changed_at = now;
-        }
-
-        !interactive_resize_target_is_settled(state.target_changed_at, now)
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn interactive_resize_target_is_settled(target_changed_at: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(target_changed_at) >= INTERACTIVE_RESIZE_SETTLE_GRACE
-}
-
 fn is_real_submission(submission: SubmissionId) -> bool {
     submission.raw() != 0
-}
-
-#[cfg(all(test, target_os = "windows"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn interactive_resize_waits_until_target_has_settled() {
-        let started_at = Instant::now();
-        assert!(!interactive_resize_target_is_settled(
-            started_at,
-            started_at + INTERACTIVE_RESIZE_SETTLE_GRACE.saturating_sub(std::time::Duration::from_millis(1))
-        ));
-        assert!(interactive_resize_target_is_settled(
-            started_at,
-            started_at + INTERACTIVE_RESIZE_SETTLE_GRACE
-        ));
-    }
-
-    #[test]
-    fn interactive_resize_grace_spans_multiple_display_frames() {
-        assert!(INTERACTIVE_RESIZE_SETTLE_GRACE >= std::time::Duration::from_millis(32));
-    }
 }
