@@ -4,6 +4,9 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
+const BACKGROUND_GPU_BLUR_MIN_PX: f32 = 0.75;
+const BACKGROUND_BLUR_DOWNSAMPLE_2X_PX: f32 = 4.0;
+const BACKGROUND_BLUR_DOWNSAMPLE_4X_PX: f32 = 8.0;
 // Background blur is a full-background effect. Nova now isolates backdrop sources by draw order,
 // so the application no longer needs to carve a 60px hole around the titlebar to avoid sharing
 // filter results with the titlebar glass.
@@ -222,13 +225,26 @@ impl AppBackgroundView {
 }
 
 fn background_uses_gpu_blur(blur: f32) -> bool {
-    BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur.is_finite() && blur > 0.0
+    BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur.is_finite() && blur >= BACKGROUND_GPU_BLUR_MIN_PX
+}
+
+fn background_blur_downsample(blur: f32) -> u8 {
+    if blur >= BACKGROUND_BLUR_DOWNSAMPLE_4X_PX {
+        4
+    } else if blur >= BACKGROUND_BLUR_DOWNSAMPLE_2X_PX {
+        2
+    } else {
+        1
+    }
 }
 
 fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
-    // Preserve the configured visual strength: the setting uses kernel support, while GPUI
-    // blur now takes CSS Gaussian sigma. Three standard deviations cover that support.
-    BackdropBlurStyle::new(px(blur / 3.0)).downsample(1).levels(2)
+    // The background filter covers the complete drawable. Preserve the configured Gaussian
+    // strength while progressively reducing filter resolution for wide kernels; this cuts the
+    // offscreen bandwidth that otherwise scales directly with every live-resize pixel.
+    BackdropBlurStyle::new(px(blur / 3.0))
+        .downsample(background_blur_downsample(blur))
+        .levels(2)
 }
 
 fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
@@ -303,7 +319,8 @@ mod tests {
     use super::{
         BACKGROUND_ANIMATION_MAX_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
         BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, animation_suppression_changed,
-        background_animation_policy, background_blur_overlay_color, background_uses_gpu_blur,
+        background_animation_policy, background_blur_downsample, background_blur_overlay_color,
+        background_uses_gpu_blur,
     };
 
     #[test]
@@ -332,12 +349,15 @@ mod tests {
     }
 
     #[test]
-    fn subpixel_background_blur_enters_gaussian_gpu_filter() {
+    fn subpixel_background_blur_skips_invisible_gpu_work() {
         assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
         assert!(!background_uses_gpu_blur(0.0));
-        assert!(background_uses_gpu_blur(0.1));
-        assert!(background_uses_gpu_blur(0.5));
+        assert!(!background_uses_gpu_blur(0.1));
+        assert!(!background_uses_gpu_blur(0.5));
         assert!(background_uses_gpu_blur(1.0));
+        assert_eq!(background_blur_downsample(1.0), 1);
+        assert_eq!(background_blur_downsample(4.0), 2);
+        assert_eq!(background_blur_downsample(8.0), 4);
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
             background_blur_overlay_color(f32::MAX).a,
