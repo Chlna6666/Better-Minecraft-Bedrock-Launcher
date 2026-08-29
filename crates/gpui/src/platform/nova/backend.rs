@@ -188,11 +188,14 @@ impl NovaBackend {
         }
     }
 
-    /// Returns whether the swapchain cannot be replaced without waiting.
+    /// Returns whether size-dependent renderer resources cannot be replaced without waiting.
     ///
-    /// The query is deliberately swapchain-scoped for Vulkan so unrelated uploads or work on the
-    /// logical device do not stall interactive window resizing. Renderer-owned submissions are
-    /// checked separately before this method is called.
+    /// DX12 already treats resize as a device-work boundary because its size-dependent resources
+    /// are retired through fence-backed deferred releases. Vulkan must use the same semantic until
+    /// all descriptor sets and image views participate in deferred retirement: otherwise the
+    /// renderer can pass a swapchain-only readiness check and immediately block inside a generic
+    /// `vkDeviceWaitIdle` while destroying path/depth/blur targets. Keeping the readiness query
+    /// global makes both backends coalesce resize events instead of blocking the UI thread.
     pub(super) fn has_pending_resize_work(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
@@ -203,7 +206,10 @@ impl NovaBackend {
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => Ok(device.has_pending_swapchain_work(swapchain)?),
+            Self::Vulkan(device) => {
+                let _ = swapchain;
+                Ok(device.has_pending_gpu_work()?)
+            }
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
@@ -212,7 +218,10 @@ impl NovaBackend {
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
                 )
             )))]
-            Self::Unavailable => Ok(false),
+            Self::Unavailable => {
+                let _ = swapchain;
+                Ok(false)
+            }
         }
     }
 
