@@ -423,6 +423,13 @@ impl WindowsRenderer {
         }
     }
 
+    /// Stretches the previous frame over the new client size while a resize is pending.
+    pub(crate) fn stretch_for_pending_resize(&mut self, size: Size<DevicePixels>) {
+        match self {
+            Self::Nova(renderer) => renderer.stretch_surface_for_pending_resize(size),
+        }
+    }
+
     pub fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
         match self {
             Self::Nova(renderer) => renderer.draw(render_plan),
@@ -967,6 +974,16 @@ impl WindowsWindow {
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
+        // Compositor-backed swapchains do not scale on their own, so stretch the previous
+        // frame over the new client size right now, before the next frame applies the
+        // resize to the swapchain buffers. This mirrors the scaling DXGI performs for
+        // HWND flip swapchains and keeps the live-resize gap transparent instead of black.
+        {
+            let mut renderer_state = self.0.renderer.borrow_mut();
+            if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
+                renderer.stretch_for_pending_resize(resize.drawable_size);
+            }
+        }
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
         self.request_frame(RequestFrameOptions::from_refresh());
     }

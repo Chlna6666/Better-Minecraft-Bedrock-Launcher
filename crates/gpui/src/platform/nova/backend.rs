@@ -68,6 +68,34 @@ impl NovaBackend {
         }
     }
 
+    /// Stretches composited swapchain content over a pending window resize.
+    pub(super) fn set_swapchain_content_stretch(
+        &mut self,
+        swapchain: SwapchainId,
+        scale: Option<[f32; 2]>,
+    ) -> Result<()> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(_) => Ok(()),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(_) => Ok(()),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            Self::Unavailable => Ok(()),
+        }
+    }
+
     pub(super) fn label(&self) -> &'static str {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
@@ -166,7 +194,7 @@ impl NovaBackend {
             #[cfg(feature = "nova-gfx-dx12")]
             Self::Dx12(device) => Ok(device.has_pending_gpu_work()?),
             #[cfg(feature = "nova-gfx-vulkan")]
-            Self::Vulkan(_) => Ok(false),
+            Self::Vulkan(device) => Ok(device.has_pending_gpu_work()?),
             #[cfg(not(any(feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan")))]
             Self::Unavailable => Ok(false),
         }

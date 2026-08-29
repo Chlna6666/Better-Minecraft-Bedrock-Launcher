@@ -131,7 +131,38 @@ impl NovaRenderer {
         self.surface_config = surface_config;
         self.current_size = next_size;
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
+        if let Err(error) = self
+            .backend
+            .set_swapchain_content_stretch(self.swapchain, None)
+        {
+            log::warn!("failed to reset nova-gfx live-resize stretch: {error:#}");
+        }
         Ok(())
+    }
+
+    /// Stretches the previous frame over the client area while a native resize
+    /// is pending, mirroring the scaling HWND flip swapchains get from DXGI.
+    ///
+    /// Compositor-backed swapchains (DirectComposition) do not scale on their
+    /// own, so the platform layer calls this synchronously from the resize
+    /// event to keep the old frame covering the new client size until the
+    /// next frame applies the resize to the swapchain buffers.
+    pub(crate) fn stretch_surface_for_pending_resize(&mut self, size: Size<DevicePixels>) {
+        let width = size.width.0.max(1) as u32;
+        let height = size.height.0.max(1) as u32;
+        if width == self.current_size.width && height == self.current_size.height {
+            return;
+        }
+        let scale = [
+            width as f32 / self.current_size.width.max(1) as f32,
+            height as f32 / self.current_size.height.max(1) as f32,
+        ];
+        if let Err(error) = self
+            .backend
+            .set_swapchain_content_stretch(self.swapchain, Some(scale))
+        {
+            log::warn!("failed to stretch nova-gfx surface during live resize: {error:#}");
+        }
     }
 
     #[cfg(not(target_os = "windows"))]

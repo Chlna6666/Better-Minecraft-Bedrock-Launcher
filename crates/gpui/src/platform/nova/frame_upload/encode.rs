@@ -1,5 +1,13 @@
 use super::*;
 
+/// Primitives clipped to a zero-area mask are invisible on screen but can produce
+/// undefined shader coverage (white garbage) in the rasterizer, so they are culled
+/// before packing instead of being handed to the GPU.
+fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
+    mask.bounds.size.width <= crate::ScaledPixels(0.)
+        || mask.bounds.size.height <= crate::ScaledPixels(0.)
+}
+
 impl FrameUpload {
     pub(in crate::platform::nova) fn refresh_animation_values(
         &mut self,
@@ -122,6 +130,9 @@ impl FrameUpload {
                         if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
                             break;
                         }
+                        if clip_is_degenerate(&quad.content_mask) {
+                            continue;
+                        }
                         let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
                         write_quad(&mut self.quads, quad);
                         write_scene_animation_binding(
@@ -150,6 +161,9 @@ impl FrameUpload {
                         if self.shadows.len() / PACKED_SHADOW_BYTES >= MAX_SHADOWS {
                             break;
                         }
+                        if clip_is_degenerate(&shadow.content_mask) {
+                            continue;
+                        }
                         let primitive_index = (self.shadows.len() / PACKED_SHADOW_BYTES) as u32;
                         write_shadow(&mut self.shadows, shadow);
                         write_scene_animation_binding(
@@ -176,6 +190,9 @@ impl FrameUpload {
                     for sprite in &scene.monochrome_sprites[range.clone()] {
                         if self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES >= MAX_MONO_SPRITES {
                             break;
+                        }
+                        if clip_is_degenerate(&sprite.content_mask) {
+                            continue;
                         }
                         let primitive_index =
                             (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
@@ -207,6 +224,9 @@ impl FrameUpload {
                         if self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES >= MAX_POLY_SPRITES {
                             break;
                         }
+                        if clip_is_degenerate(&sprite.content_mask) {
+                            continue;
+                        }
                         let primitive_index =
                             (self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES) as u32;
                         write_polychrome_sprite(&mut self.poly_sprites, sprite);
@@ -236,6 +256,9 @@ impl FrameUpload {
                     for underline in &scene.underlines[range.clone()] {
                         if self.underlines.len() / PACKED_UNDERLINE_BYTES >= MAX_UNDERLINES {
                             break;
+                        }
+                        if clip_is_degenerate(&underline.content_mask) {
+                            continue;
                         }
                         write_underline(&mut self.underlines, underline);
                         count = count.saturating_add(1);

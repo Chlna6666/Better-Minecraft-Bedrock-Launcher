@@ -346,6 +346,19 @@ impl NovaRenderer {
             && upload.unsupported_batches.total() == 0)
             .then(|| partial_scissor_for_plan(render_plan, self.current_size))
             .flatten();
+        // Native dirty-rect presentation makes the OS preserve every pixel outside the
+        // dirty rects with copies, so large damage regions turn each present into a
+        // full-surface composition copy. Fall back to a full present once the damaged
+        // area stops being a minority of the surface, which is what typically happens
+        // during window-level animations and live resizes.
+        let present_damage = present_damage.filter(|damage| {
+            let drawable_pixels = self.drawable_pixels();
+            drawable_pixels == 0
+                || u64::from(damage.width)
+                    * u64::from(damage.height)
+                    * PARTIAL_PRESENT_MAX_DAMAGE_AREA_RECIPROCAL
+                    <= drawable_pixels as u64
+        });
         if present_damage.is_some() {
             crate::diagnostics::performance_metrics::record_partial_redraw();
         } else if render_plan.partial_present_mode == PartialPresentMode::Partial {

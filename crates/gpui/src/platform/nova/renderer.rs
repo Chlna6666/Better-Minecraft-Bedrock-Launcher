@@ -12,6 +12,13 @@ mod surface_lifecycle;
 
 const SWAPCHAIN_WARMUP_FRAME_COUNT: u8 = 1;
 
+/// Damaged-area reciprocal above which native dirty-rect presentation is skipped.
+///
+/// Dirty-rect `Present1` requires the OS to copy-preserve everything outside the
+/// dirty rects, so once damage covers more than `1 / RECIPROCAL` of the surface a
+/// full present is cheaper than the resulting per-frame composition copies.
+const PARTIAL_PRESENT_MAX_DAMAGE_AREA_RECIPROCAL: u64 = 4;
+
 pub(super) fn nova_present_mode_for_backend(
     _backend: RendererBackend,
     renderer_options: &RendererOptions,
