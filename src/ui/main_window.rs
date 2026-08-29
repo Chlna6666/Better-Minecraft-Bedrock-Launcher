@@ -739,7 +739,6 @@ impl MainWindowView {
         }
 
         if model.dropdown_visible {
-            auth_blocked = true;
             let dropdown_state =
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             root = root.child(crate::ui::components::dropdown::render_overlay(

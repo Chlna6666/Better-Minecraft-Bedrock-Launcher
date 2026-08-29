@@ -43,9 +43,7 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
             div()
                 .absolute()
                 .inset_0()
-                .backdrop_blur(
-                    crate::ui::theme::glass_backdrop_blur_style().saturation(1.05),
-                ),
+                .backdrop_blur(crate::ui::theme::glass_backdrop_blur_style().saturation(1.05)),
         )
         .child(div().absolute().inset_0().bg(overlay))
 }
@@ -184,11 +182,7 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
         .with_animation(
             "modal-layer-content-zoom",
             crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240)),
-            |inner, progress| {
-                inner
-                    .scale(modal_content_scale(progress))
-                    .opacity(progress)
-            },
+            |inner, progress| inner.scale(modal_content_scale(progress)).opacity(progress),
         );
 
     // The backdrop remains structurally stable while only the modal content animates. This keeps

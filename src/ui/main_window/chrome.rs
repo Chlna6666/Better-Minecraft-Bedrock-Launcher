@@ -73,7 +73,7 @@ pub(super) fn render_app_chrome(
         ),
         (
             lucide_icons::icon_activity(),
-            t!("Tasks.title"),
+            t!("Tasks.nav_title"),
             AppRoute::Tasks,
         ),
         (

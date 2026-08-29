@@ -2,6 +2,7 @@ use crate::core::bedrock_auth::{AuthPhase, AuthSnapshot, XboxProfile};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::bedrock_auth::BedrockAuthState;
 use crate::ui::theme::{ThemeColors, glass_backdrop_blur_style, tokens::motion};
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons;
@@ -331,11 +332,6 @@ pub(super) fn panel(
         .border_1()
         .border_color(colors.border.opacity(0.65))
         .shadow_lg()
-        .opacity(progress.clamp(0.0, 1.0))
-        .transform_origin(TransformOrigin::new(origin, 0.0))
-        .when(!state.reduced_motion, |panel| {
-            panel.scale(motion::POPOVER_SCALE + (1.0 - motion::POPOVER_SCALE) * progress)
-        })
         .occlude()
         .tab_group()
         .track_focus(&state.panel_focus)
@@ -372,5 +368,15 @@ pub(super) fn panel(
                     .child(message.clone()),
             )
         })
+        .with_sampled_animation(
+            AnimationProperty::scale_opacity(
+                motion::POPOVER_SCALE,
+                1.0,
+                0.0,
+                1.0,
+                TransformOrigin::new(origin, 0.0),
+            ),
+            progress,
+        )
         .into_any_element()
 }

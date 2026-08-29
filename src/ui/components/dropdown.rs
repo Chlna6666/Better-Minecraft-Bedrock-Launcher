@@ -399,14 +399,15 @@ pub fn render_overlay(
                                     cx.stop_propagation();
                                     (on_select)(ix, window, cx);
 
-                                    cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
-                                        overlay.clear_if_matches(&overlay_id);
-                                    });
-
                                     let now = Instant::now();
                                     if let Err(err) = state.update(cx, |s, _| {
                                         s.phase = DropdownPhase::Closing { at: now };
                                     }) {
+                                        cx.update_global(
+                                            |overlay: &mut DropdownOverlayState, _cx| {
+                                                overlay.clear_if_matches(&overlay_id);
+                                            },
+                                        );
                                         tracing::debug!(
                                             "dropdown close after selection skipped: {err:?}"
                                         );
@@ -419,32 +420,31 @@ pub fn render_overlay(
             ),
         );
 
-    let popup = popup.on_mouse_down_out({
-        let state = active.state.clone();
-        let parent_view_id = active.parent_view_id;
-        let trigger_bounds = active.trigger_bounds;
-        let overlay_id = active.id.clone();
-        move |ev, _window, cx| {
-            if trigger_bounds.is_some_and(|bounds| bounds.contains(&ev.position)) {
-                return;
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .on_any_mouse_down({
+            let state = active.state.clone();
+            let parent_view_id = active.parent_view_id;
+            let overlay_id = active.id.clone();
+            move |_, _window, cx| {
+                cx.stop_propagation();
+                let now = Instant::now();
+                if let Err(err) = state.update(cx, |s, _| {
+                    s.phase = DropdownPhase::Closing { at: now };
+                }) {
+                    cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
+                        overlay.clear_if_matches(&overlay_id);
+                    });
+                    tracing::debug!("dropdown close from outside click skipped: {err:?}");
+                } else {
+                    cx.notify(parent_view_id);
+                }
             }
-
-            cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
-                overlay.clear_if_matches(&overlay_id);
-            });
-
-            let now = Instant::now();
-            if let Err(err) = state.update(cx, |s, _| {
-                s.phase = DropdownPhase::Closing { at: now };
-            }) {
-                tracing::debug!("dropdown close from outside click skipped: {err:?}");
-            } else {
-                cx.notify(parent_view_id);
-            }
-        }
-    });
-
-    div().absolute().inset_0().child(popup).into_any_element()
+        })
+        .child(popup)
+        .into_any_element()
 }
 
 pub fn has_visible_overlay(now: Instant, state: &DropdownOverlayState) -> bool {
