@@ -154,7 +154,9 @@ impl NovaRenderer {
     }
 
     pub(crate) fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
-        self.apply_pending_drawable_size()?;
+        if !self.apply_pending_drawable_size()? {
+            return Ok(());
+        }
         self.observe_render_plan(render_plan);
         let supports_partial = self.swapchain_warmup_frames == 0
             && self.backend.supports_partial_presentation(self.swapchain);
@@ -251,7 +253,9 @@ impl NovaRenderer {
         &mut self,
         render_plan: FrameRenderPlan<'_>,
     ) -> Result<()> {
-        self.apply_pending_drawable_size()?;
+        if !self.apply_pending_drawable_size()? {
+            return Ok(());
+        }
         self.observe_render_plan(render_plan);
         let supports_partial = self.swapchain_warmup_frames == 0
             && self.backend.supports_partial_presentation(self.swapchain);
@@ -268,7 +272,9 @@ impl NovaRenderer {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn draw_scene_for_platform(&mut self, scene: &crate::Scene) -> Result<()> {
-        self.apply_pending_drawable_size()?;
+        if !self.apply_pending_drawable_size()? {
+            return Ok(());
+        }
         let backdrop_blur_quality = BackdropBlurQuality::Full;
         let upload = self.pack_scene(scene, backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
