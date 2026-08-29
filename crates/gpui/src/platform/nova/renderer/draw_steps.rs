@@ -45,11 +45,14 @@ impl NovaRenderer {
         );
     }
 
-    /// Builds a true draw-order compositor plan for backdrop blur.
+    /// Builds the root backdrop compositor plan while preserving clean filtered targets.
     ///
-    /// Unlike the old prefix-replay implementation, every scene batch belongs to at most one
-    /// backdrop source segment. Group 0 draws `[0, blur0)`, group 1 draws `[blur0, blur1)`, and so
-    /// on. The shared source render target is cleared once and then loaded between groups.
+    /// GPUI owns backdrop caching automatically. A normal partial frame only refreshes blur
+    /// configs whose Gaussian sampling footprint intersects this frame's damage. Clean configs keep
+    /// their previously filtered texture. We still replay source segments up to the last dirty
+    /// barrier because a later dirty backdrop may depend on cached backdrop composites before it.
+    /// Non-spatial invalidations (new targets, quality changes, relevant atlas uploads, first use)
+    /// set `force_full_backdrop_blur_refresh` and rebuild every root backdrop conservatively.
     pub(super) fn prepare_backdrop_blur_groups(
         &self,
         enabled: bool,
@@ -85,18 +88,51 @@ impl NovaRenderer {
             return Vec::new();
         }
 
-        // All sequential segments render the same union footprint. A later backdrop may sample
-        // pixels that an earlier backdrop did not need, so varying the source scissor per segment
-        // would leave holes in the accumulated scene-color texture.
-        let source_scissor = blur_groups
+        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
+        let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
+        let dirty_configs: Vec<Vec<BackdropBlurConfig>> = blur_groups
             .iter()
-            .flat_map(|(_, configs)| configs.iter().copied())
+            .map(|(_, configs)| {
+                if force_full {
+                    configs.clone()
+                } else {
+                    configs
+                        .iter()
+                        .copied()
+                        .filter(|config| {
+                            blur_config_intersects_dirty_region(*config, self.current_size, damage)
+                        })
+                        .collect()
+                }
+            })
+            .collect();
+
+        let Some(last_dirty_group) = dirty_configs
+            .iter()
+            .rposition(|configs| !configs.is_empty())
+        else {
+            // The scene-level draw-order dependency said that some root backdrop could be affected,
+            // but the actual frame damage does not touch any root sampling footprint. Reuse every
+            // cached target and execute no source/filter pass.
+            return Vec::new();
+        };
+
+        // Source replay only needs the union of dirty sampling footprints. Every source segment up
+        // to the final dirty barrier uses the same scissor so cached intermediate backdrop results
+        // can still be composited in correct draw order without repainting unrelated screen areas.
+        let source_scissor = dirty_configs[..=last_dirty_group]
+            .iter()
+            .flat_map(|configs| configs.iter().copied())
             .filter_map(|config| blur_source_scissor(config, self.current_size))
             .reduce(union_scissor_rects);
 
-        let mut groups = Vec::with_capacity(blur_groups.len());
+        let mut groups = Vec::with_capacity(last_dirty_group.saturating_add(1));
         let mut batch_start = 0usize;
-        for (batch_end, configs) in blur_groups {
+        for (group_index, (batch_end, _configs)) in blur_groups
+            .into_iter()
+            .enumerate()
+            .take(last_dirty_group.saturating_add(1))
+        {
             let mut source_steps = Vec::new();
             draw_steps_for_upload_into(
                 &self.frame_upload,
@@ -126,22 +162,25 @@ impl NovaRenderer {
                 apply_scissor_to_steps(&mut source_steps, scissor);
             }
 
+            let configs = &dirty_configs[group_index];
             let mut filter_passes = Vec::new();
-            backdrop_blur_render_passes_for_configs_into(
-                &self.pipelines,
-                targets,
-                frame_resource_index,
-                &configs,
-                &mut filter_passes,
-            );
-            apply_filter_pass_scissors(&configs, self.current_size, &mut filter_passes);
+            if !configs.is_empty() {
+                backdrop_blur_render_passes_for_configs_into(
+                    &self.pipelines,
+                    targets,
+                    frame_resource_index,
+                    configs,
+                    &mut filter_passes,
+                );
+                apply_filter_pass_scissors(configs, self.current_size, &mut filter_passes);
+            }
 
             groups.push(PreparedBackdropBlurGroup {
                 source_steps,
                 filter_passes,
             });
-            // Include this group's backdrop batch in the next segment. Its draw samples the final
-            // filtered target produced immediately after this source segment.
+            // Include this group's backdrop batch in the next segment. If this group was clean, the
+            // draw samples its retained filtered texture rather than recomputing the Gaussian pass.
             batch_start = batch_end;
         }
         groups
@@ -464,6 +503,43 @@ fn clip_scissor(previous: Option<ScissorRect>, scissor: ScissorRect) -> ScissorR
     })
 }
 
+fn blur_config_intersects_dirty_region(
+    config: BackdropBlurConfig,
+    drawable_size: DrawableSize,
+    dirty_region: &DirtyRegion,
+) -> bool {
+    if dirty_region.is_full() {
+        return true;
+    }
+    let Some(scissor) = blur_source_scissor(config, drawable_size) else {
+        return false;
+    };
+    scissor_intersects_dirty_region(scissor, dirty_region)
+}
+
+fn scissor_intersects_dirty_region(scissor: ScissorRect, dirty_region: &DirtyRegion) -> bool {
+    if dirty_region.is_full() {
+        return true;
+    }
+    if dirty_region.is_empty() || scissor.is_empty() {
+        return false;
+    }
+    let source_bounds = crate::Bounds::new(
+        crate::Point {
+            x: crate::ScaledPixels(scissor.x as f32),
+            y: crate::ScaledPixels(scissor.y as f32),
+        },
+        crate::Size {
+            width: crate::ScaledPixels(scissor.width as f32),
+            height: crate::ScaledPixels(scissor.height as f32),
+        },
+    );
+    dirty_region
+        .rects()
+        .iter()
+        .any(|rect| rect.bounds.intersects(&source_bounds))
+}
+
 fn blur_source_scissor(
     config: BackdropBlurConfig,
     drawable_size: DrawableSize,
@@ -596,5 +672,53 @@ fn ceil_clamped_u32(value: f32, limit: u32) -> u32 {
         limit
     } else {
         value.ceil() as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dirty_region(x: f32, y: f32, width: f32, height: f32) -> DirtyRegion {
+        let mut region = DirtyRegion::empty();
+        region.push(crate::Bounds::new(
+            crate::Point {
+                x: crate::ScaledPixels(x),
+                y: crate::ScaledPixels(y),
+            },
+            crate::Size {
+                width: crate::ScaledPixels(width),
+                height: crate::ScaledPixels(height),
+            },
+        ));
+        region
+    }
+
+    #[test]
+    fn backdrop_damage_rejects_disjoint_sampling_region() {
+        let damage = dirty_region(20.0, 20.0, 30.0, 30.0);
+        assert!(!scissor_intersects_dirty_region(
+            ScissorRect {
+                x: 400,
+                y: 300,
+                width: 120,
+                height: 80,
+            },
+            &damage,
+        ));
+    }
+
+    #[test]
+    fn backdrop_damage_accepts_sampling_overlap() {
+        let damage = dirty_region(430.0, 330.0, 20.0, 20.0);
+        assert!(scissor_intersects_dirty_region(
+            ScissorRect {
+                x: 400,
+                y: 300,
+                width: 120,
+                height: 80,
+            },
+            &damage,
+        ));
     }
 }

@@ -146,6 +146,8 @@ struct DrawStepScratch {
     draw_steps: Vec<RenderStepDescriptor>,
     path_mask_steps: Vec<DrawStepDescriptor>,
     backdrop_blur_passes: Vec<BackdropBlurRenderPass>,
+    backdrop_blur_damage_region: DirtyRegion,
+    force_full_backdrop_blur_refresh: bool,
 }
 
 impl NovaRenderer {
@@ -163,6 +165,7 @@ impl NovaRenderer {
         let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
         let upload = self.pack_scene(render_plan.scene, backdrop_blur_quality);
+        self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
         }
@@ -189,6 +192,9 @@ impl NovaRenderer {
         }) {
             return Ok(());
         }
+        // New target storage has no retained filtered pixels. The first frame using the new chain
+        // must therefore rebuild every root backdrop regardless of the current damage footprint.
+        self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
         let target_size = Extent2d::new(self.current_size.width, self.current_size.height)?;
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
@@ -262,6 +268,7 @@ impl NovaRenderer {
         let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
         let upload = self.pack_scene(render_plan.scene, backdrop_blur_quality);
+        self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
         }
@@ -276,17 +283,16 @@ impl NovaRenderer {
             return Ok(());
         }
         let backdrop_blur_quality = BackdropBlurQuality::Full;
+        let dirty_region = crate::DirtyRegion::default();
+        let render_plan = FrameRenderPlan::full_redraw(scene, &dirty_region);
+        self.observe_render_plan(render_plan);
         let upload = self.pack_scene(scene, backdrop_blur_quality);
+        self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
         }
         self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        let dirty_region = crate::DirtyRegion::default();
-        self.draw_present(
-            upload,
-            FrameRenderPlan::full_redraw(scene, &dirty_region),
-            backdrop_blur_quality,
-        )
+        self.draw_present(upload, render_plan, backdrop_blur_quality)
     }
 
     pub(crate) fn gpu_specs(&self) -> GpuSpecs {
@@ -361,12 +367,27 @@ impl NovaRenderer {
     }
 
     fn observe_render_plan(&mut self, render_plan: FrameRenderPlan<'_>) {
-        let _ = (
-            render_plan.dirty_region.is_full(),
-            render_plan.dirty_region.rect_count(),
-            render_plan.partial_present_mode,
-            render_plan.trim_policy,
-        );
+        self.draw_step_scratch.backdrop_blur_damage_region = render_plan.dirty_region.clone();
+        self.draw_step_scratch.force_full_backdrop_blur_refresh = !self.backdrop_blur_cache_valid
+            || render_plan.dirty_region.is_full()
+            || render_plan.dirty_region.is_empty();
+    }
+
+    fn update_backdrop_blur_cache_plan(&mut self, quality: BackdropBlurQuality) {
+        if self.backdrop_blur_cache_quality != Some(quality) {
+            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+        }
+        if self.frame_upload.backdrop_blurs.is_empty() {
+            return;
+        }
+
+        // Atlas content is shared. Until the atlas dependency tracker becomes tile-granular, a
+        // pending upload that is actually sampled below a backdrop is a non-spatial invalidation
+        // and must rebuild the corresponding cache family conservatively.
+        let source_atlases = self.frame_upload.backdrop_source_atlas_texture_ids();
+        if self.atlas.pending_uploads_touch_any(&source_atlases) {
+            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+        }
     }
 
     fn backdrop_blur_quality(&self, _render_plan: FrameRenderPlan<'_>) -> BackdropBlurQuality {
