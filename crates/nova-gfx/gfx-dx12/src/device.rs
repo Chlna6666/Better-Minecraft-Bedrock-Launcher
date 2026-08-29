@@ -547,7 +547,9 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                Scaling: DXGI_SCALING_NONE,
+                // Keep the last presented buffer covering the client area while a
+                // coalesced resize is pending, just like the composition swapchain.
+                Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
@@ -2118,6 +2120,14 @@ mod platform {
             self.upload_ring.complete_fence(completed_fence);
             let retained_page_count = self.upload_ring.trim_idle_pages();
             self.trim_upload_pages(retained_page_count);
+        }
+
+        /// Returns whether the graphics queue still owns work that must retire
+        /// before swapchain-dependent resources can be replaced.
+        pub fn has_pending_gpu_work(&mut self) -> Result<bool> {
+            self.poll_cleanup();
+            let completed = self.completed_fence_value("ID3D12Fence::GetCompletedValue")?;
+            Ok(completed < self.next_fence_value.saturating_sub(1))
         }
 
         fn trim_upload_pages(&mut self, retained_page_count: usize) {
