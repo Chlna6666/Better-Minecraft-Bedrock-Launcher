@@ -1,19 +1,11 @@
 use super::*;
 
 #[cfg(target_os = "windows")]
-const INTERACTIVE_RESIZE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
-#[cfg(target_os = "windows")]
-const INTERACTIVE_RESIZE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(40);
-#[cfg(target_os = "windows")]
-const INTERACTIVE_RESIZE_SETTLE_GRACE: std::time::Duration = std::time::Duration::from_millis(12);
-#[cfg(target_os = "windows")]
-const INTERACTIVE_RESIZE_MAX_STALE: std::time::Duration = std::time::Duration::from_millis(33);
+const INTERACTIVE_RESIZE_SETTLE_GRACE: std::time::Duration = std::time::Duration::from_millis(48);
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy)]
 struct InteractiveResizePacing {
-    last_applied_at: Instant,
-    min_interval: std::time::Duration,
     target_width: u32,
     target_height: u32,
     target_changed_at: Instant,
@@ -97,15 +89,20 @@ impl NovaRenderer {
         self.wait_for_pending_submissions()
     }
 
-    /// Resize only after every tracked frame submission has completed.
+    /// Applies an exact swapchain resize only after the native resize target has settled.
     ///
-    /// Interactive Windows resize uses this non-blocking gate so the event loop
-    /// can keep presenting the previous buffer while GPU work retires. Exact
-    /// swapchain/resource recreation is paced independently of monitor refresh rate
-    /// and coalesces a continuously moving resize target. Without this, a 120-240 Hz
-    /// desktop can rebuild DX12/Vulkan swapchains plus path/depth/blur attachments at
-    /// pointer-event frequency, which is substantially more expensive than drawing a
-    /// normal frame and manifests as resize judder despite otherwise stable FPS.
+    /// Windows continuously emits resize targets while the pointer is moving. Rebuilding
+    /// the swapchain plus path/depth/blur attachments during that stream is much more
+    /// expensive than presenting a normal frame, and Vulkan additionally has to retire
+    /// swapchain-owned work before recreation. The previous implementation periodically
+    /// forced an exact rebuild every ~33 ms, which made both DX12 and Vulkan alternate
+    /// between a stretched compositor frame and a newly rebuilt surface. That cadence is
+    /// visible as resize judder even when the application itself is not dropping frames.
+    ///
+    /// Keep the last presented surface covering the client area while the target is moving
+    /// and perform one exact rebuild after the target has been stable for a short grace
+    /// period. Target tracking happens before the GPU-idle gate so a busy GPU can never hide
+    /// newer pointer resize events and accidentally make a moving target look settled.
     #[cfg(target_os = "windows")]
     pub(crate) fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
         let width = size.width.0.max(1) as u32;
@@ -114,25 +111,20 @@ impl NovaRenderer {
             return Ok(true);
         }
 
+        let now = Instant::now();
+        if interactive_resize_should_defer(self, width, height, now) {
+            // Still retire completed submissions while live resize is compositor/WSI driven,
+            // but never block or recreate swapchain resources until the target settles.
+            self.poll_pending_submissions()?;
+            return Ok(false);
+        }
+
         self.poll_pending_submissions()?;
         if !self.pending_submissions.is_empty() || self.backend.has_pending_resize_work()? {
             return Ok(false);
         }
 
-        let now = Instant::now();
-        if interactive_resize_should_defer(self, width, height, now) {
-            return Ok(false);
-        }
-
-        let started_at = Instant::now();
         self.resize(size)?;
-        record_interactive_resize(
-            self,
-            width,
-            height,
-            started_at.elapsed(),
-            Instant::now(),
-        );
         Ok(true)
     }
 
@@ -220,10 +212,6 @@ fn interactive_resize_should_defer(
             pacing.clear();
         }
         let state = pacing.entry(key).or_insert(InteractiveResizePacing {
-            // Make the first resize after a long idle eligible immediately. Once the
-            // drag is active, subsequent targets are coalesced below.
-            last_applied_at: now.checked_sub(INTERACTIVE_RESIZE_MAX_STALE).unwrap_or(now),
-            min_interval: INTERACTIVE_RESIZE_MIN_INTERVAL,
             target_width: width,
             target_height: height,
             target_changed_at: now,
@@ -235,64 +223,13 @@ fn interactive_resize_should_defer(
             state.target_changed_at = now;
         }
 
-        let since_applied = now.saturating_duration_since(state.last_applied_at);
-        if since_applied < state.min_interval {
-            return true;
-        }
-
-        // If the target is still moving faster than an ordinary display frame, keep
-        // the last presented surface and let the compositor/WSI cover the live drag.
-        // Periodically force an exact resize so a long drag never leaves layout stale,
-        // then converge quickly as soon as the pointer settles.
-        let target_is_moving =
-            now.saturating_duration_since(state.target_changed_at) < INTERACTIVE_RESIZE_SETTLE_GRACE;
-        target_is_moving && since_applied < INTERACTIVE_RESIZE_MAX_STALE
+        !interactive_resize_target_is_settled(state.target_changed_at, now)
     })
 }
 
 #[cfg(target_os = "windows")]
-fn record_interactive_resize(
-    renderer: &NovaRenderer,
-    width: u32,
-    height: u32,
-    resize_cost: std::time::Duration,
-    completed_at: Instant,
-) {
-    let key = interactive_resize_key(renderer);
-    let min_interval = interactive_resize_interval(resize_cost);
-    INTERACTIVE_RESIZE_PACING.with(|pacing| {
-        let mut pacing = pacing.borrow_mut();
-        if pacing.len() >= 64 && !pacing.contains_key(&key) {
-            pacing.clear();
-        }
-        match pacing.get_mut(&key) {
-            Some(state) => {
-                state.last_applied_at = completed_at;
-                state.min_interval = min_interval;
-                state.target_width = width;
-                state.target_height = height;
-            }
-            None => {
-                pacing.insert(
-                    key,
-                    InteractiveResizePacing {
-                        last_applied_at: completed_at,
-                        min_interval,
-                        target_width: width,
-                        target_height: height,
-                        target_changed_at: completed_at,
-                    },
-                );
-            }
-        }
-    });
-}
-
-#[cfg(target_os = "windows")]
-fn interactive_resize_interval(resize_cost: std::time::Duration) -> std::time::Duration {
-    resize_cost
-        .saturating_mul(2)
-        .clamp(INTERACTIVE_RESIZE_MIN_INTERVAL, INTERACTIVE_RESIZE_MAX_INTERVAL)
+fn interactive_resize_target_is_settled(target_changed_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(target_changed_at) >= INTERACTIVE_RESIZE_SETTLE_GRACE
 }
 
 fn is_real_submission(submission: SubmissionId) -> bool {
@@ -304,22 +241,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interactive_resize_interval_has_a_refresh_rate_independent_floor() {
-        assert_eq!(
-            interactive_resize_interval(std::time::Duration::from_millis(1)),
-            INTERACTIVE_RESIZE_MIN_INTERVAL
-        );
+    fn interactive_resize_waits_until_target_has_settled() {
+        let started_at = Instant::now();
+        assert!(!interactive_resize_target_is_settled(
+            started_at,
+            started_at + INTERACTIVE_RESIZE_SETTLE_GRACE.saturating_sub(std::time::Duration::from_millis(1))
+        ));
+        assert!(interactive_resize_target_is_settled(
+            started_at,
+            started_at + INTERACTIVE_RESIZE_SETTLE_GRACE
+        ));
     }
 
     #[test]
-    fn interactive_resize_interval_tracks_expensive_swapchain_rebuilds() {
-        assert_eq!(
-            interactive_resize_interval(std::time::Duration::from_millis(12)),
-            std::time::Duration::from_millis(24)
-        );
-        assert_eq!(
-            interactive_resize_interval(std::time::Duration::from_millis(30)),
-            INTERACTIVE_RESIZE_MAX_INTERVAL
-        );
+    fn interactive_resize_grace_spans_multiple_display_frames() {
+        assert!(INTERACTIVE_RESIZE_SETTLE_GRACE >= std::time::Duration::from_millis(32));
     }
 }
