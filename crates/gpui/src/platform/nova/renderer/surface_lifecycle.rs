@@ -170,15 +170,29 @@ impl NovaRenderer {
         self.pending_drawable_size = Some(size);
     }
 
-    pub(super) fn apply_pending_drawable_size(&mut self) -> Result<()> {
+    /// Applies the newest coalesced drawable size only when the GPU/swapchain can be replaced
+    /// immediately. Returning `false` tells the caller to skip rendering this frame; importantly,
+    /// no new old-size GPU work is submitted while resize backpressure is active.
+    pub(super) fn apply_pending_drawable_size(&mut self) -> Result<bool> {
         let Some(size) = self.pending_drawable_size.take() else {
-            return Ok(());
+            return Ok(true);
         };
-        if let Err(error) = self.resize(size) {
-            self.pending_drawable_size = Some(size);
-            return Err(error);
+        match self.try_resize(size) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                self.pending_drawable_size = Some(size);
+                Ok(false)
+            }
+            Err(error) => {
+                self.pending_drawable_size = Some(size);
+                Err(error)
+            }
         }
-        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) fn has_pending_drawable_size(&self) -> bool {
+        self.pending_drawable_size.is_some()
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
