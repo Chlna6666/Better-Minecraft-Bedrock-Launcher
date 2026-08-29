@@ -1,5 +1,23 @@
 use super::*;
 
+#[cfg(target_os = "windows")]
+const INTERACTIVE_RESIZE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+#[cfg(target_os = "windows")]
+const INTERACTIVE_RESIZE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(40);
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+struct InteractiveResizePacing {
+    last_applied_at: Instant,
+    min_interval: std::time::Duration,
+}
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static INTERACTIVE_RESIZE_PACING: std::cell::RefCell<std::collections::HashMap<usize, InteractiveResizePacing>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 impl NovaRenderer {
     pub(super) fn prepare_for_frame_submission(&mut self) -> Result<()> {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
@@ -76,13 +94,31 @@ impl NovaRenderer {
     ///
     /// Interactive Windows resize uses this non-blocking gate so the event loop
     /// can keep presenting the stretched previous buffer instead of waiting on a fence.
+    /// Exact swapchain/resource recreation is additionally paced independently of
+    /// the monitor refresh rate. High-refresh displays can otherwise rebuild the
+    /// DX12/Vulkan swapchain and size-dependent attachments 120-240 times per second,
+    /// which produces the visible resize judder even when ordinary frame rendering is fast.
     #[cfg(target_os = "windows")]
     pub(crate) fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
+        let width = size.width.0.max(1) as u32;
+        let height = size.height.0.max(1) as u32;
+        if self.current_size.width == width && self.current_size.height == height {
+            return Ok(true);
+        }
+
         self.poll_pending_submissions()?;
         if !self.pending_submissions.is_empty() || self.backend.has_pending_resize_work()? {
             return Ok(false);
         }
+
+        let now = Instant::now();
+        if interactive_resize_should_defer(self, now) {
+            return Ok(false);
+        }
+
+        let started_at = Instant::now();
         self.resize(size)?;
+        record_interactive_resize(self, started_at.elapsed(), Instant::now());
         Ok(true)
     }
 
@@ -151,6 +187,82 @@ impl NovaRenderer {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn interactive_resize_key(renderer: &NovaRenderer) -> usize {
+    renderer as *const NovaRenderer as usize
+}
+
+#[cfg(target_os = "windows")]
+fn interactive_resize_should_defer(renderer: &NovaRenderer, now: Instant) -> bool {
+    let key = interactive_resize_key(renderer);
+    INTERACTIVE_RESIZE_PACING.with(|pacing| {
+        pacing
+            .borrow()
+            .get(&key)
+            .is_some_and(|state| {
+                now.saturating_duration_since(state.last_applied_at) < state.min_interval
+            })
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn record_interactive_resize(
+    renderer: &NovaRenderer,
+    resize_cost: std::time::Duration,
+    completed_at: Instant,
+) {
+    let key = interactive_resize_key(renderer);
+    let min_interval = interactive_resize_interval(resize_cost);
+    INTERACTIVE_RESIZE_PACING.with(|pacing| {
+        let mut pacing = pacing.borrow_mut();
+        // A normal desktop process only has a handful of GPUI windows. Guard against
+        // retaining stale renderer addresses forever if an application repeatedly
+        // creates and destroys transient windows.
+        if pacing.len() >= 64 && !pacing.contains_key(&key) {
+            pacing.clear();
+        }
+        pacing.insert(
+            key,
+            InteractiveResizePacing {
+                last_applied_at: completed_at,
+                min_interval,
+            },
+        );
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn interactive_resize_interval(resize_cost: std::time::Duration) -> std::time::Duration {
+    resize_cost
+        .saturating_mul(2)
+        .clamp(INTERACTIVE_RESIZE_MIN_INTERVAL, INTERACTIVE_RESIZE_MAX_INTERVAL)
+}
+
 fn is_real_submission(submission: SubmissionId) -> bool {
     submission.raw() != 0
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interactive_resize_interval_has_a_refresh_rate_independent_floor() {
+        assert_eq!(
+            interactive_resize_interval(std::time::Duration::from_millis(1)),
+            INTERACTIVE_RESIZE_MIN_INTERVAL
+        );
+    }
+
+    #[test]
+    fn interactive_resize_interval_tracks_expensive_swapchain_rebuilds() {
+        assert_eq!(
+            interactive_resize_interval(std::time::Duration::from_millis(12)),
+            std::time::Duration::from_millis(24)
+        );
+        assert_eq!(
+            interactive_resize_interval(std::time::Duration::from_millis(30)),
+            INTERACTIVE_RESIZE_MAX_INTERVAL
+        );
+    }
 }
