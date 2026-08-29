@@ -166,6 +166,10 @@ pub(super) fn render_app_chrome(
                         .into_any_element()
                 },
             );
+            // Collapsed labels must not enter the scene at all: a zero-width
+            // overflow-hidden text still emits clip/glyph primitives that show up
+            // as white blocks during interactive resize.
+            let show_label = labels_layout_factor > 0.02 && labels_opacity_factor > 0.02;
             div()
                 .id(SharedString::from(format!("main-nav-{index}")))
                 .relative()
@@ -195,7 +199,7 @@ pub(super) fn render_app_chrome(
                         .justify_center()
                         .child(icon_element),
                 )
-                .child(
+                .children(show_label.then(|| {
                     div()
                         .w(label_width)
                         .ml(label_gap)
@@ -204,8 +208,8 @@ pub(super) fn render_app_chrome(
                         .opacity(labels_opacity_factor)
                         .text_size(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(item.label),
-                )
+                        .child(item.label.clone())
+                }))
         }));
 
     let auth_inline = auth::trigger(&state.auth, &colors);
