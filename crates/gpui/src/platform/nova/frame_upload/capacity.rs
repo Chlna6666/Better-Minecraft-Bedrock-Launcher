@@ -108,7 +108,13 @@ impl FrameUpload {
         self.path_paint_key_scratch = Vec::new();
     }
 
-    /// Atlas textures that can contribute pixels to at least one backdrop source.
+    /// Atlas textures in the prefix that feeds the earliest backdrop barrier.
+    ///
+    /// This is only the conservative non-spatial fallback used while pending atlas uploads are
+    /// tracked at texture granularity. Textures drawn after the earliest backdrop cannot affect
+    /// that retained background result, so including everything before the last blur barrier would
+    /// let a foreground glyph/image upload invalidate an unrelated lower blur. Later blur barriers
+    /// are already refreshed through the normal draw-order + DirtyRegion dependency path.
     ///
     /// Keep this as a hash set all the way through invalidation: converting it to a temporary Vec
     /// would add another allocation and turn pending-upload lookup into an O(uploads * textures)
@@ -116,7 +122,7 @@ impl FrameUpload {
     pub(in crate::platform::nova) fn backdrop_source_atlas_texture_ids(
         &self,
     ) -> FxHashSet<AtlasTextureId> {
-        let Some(last_blur_batch) = self.batches.iter().rposition(|batch| {
+        let Some(first_blur_batch) = self.batches.iter().position(|batch| {
             matches!(
                 batch,
                 UploadedBatch::BackdropBlurs { .. } | UploadedBatch::CompositeBlur { .. }
@@ -126,7 +132,7 @@ impl FrameUpload {
         };
 
         let mut textures = FxHashSet::default();
-        for batch in &self.batches[..last_blur_batch] {
+        for batch in &self.batches[..first_blur_batch] {
             match *batch {
                 UploadedBatch::MonoSprites { texture_id, .. }
                 | UploadedBatch::PolySprites { texture_id, .. } => {
