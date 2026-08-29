@@ -267,6 +267,91 @@ where
     Ok(())
 }
 
+/// Returns whether the flattened upload contains a backdrop filter outside an element-blur
+/// capture. Nested backdrop filters belong to their element layer and must not make the root
+/// backdrop cache miss every time that layer exists.
+fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
+    let mut element_depth = 0usize;
+    for batch in &frame_upload.batches {
+        match batch {
+            UploadedBatch::BeginBlur { .. } => {
+                element_depth = element_depth.saturating_add(1);
+            }
+            UploadedBatch::EndBlur { .. } => {
+                element_depth = element_depth.saturating_sub(1);
+            }
+            UploadedBatch::BackdropBlurs { .. } if element_depth == 0 => return true,
+            UploadedBatch::SolidQuads { .. }
+            | UploadedBatch::Quads { .. }
+            | UploadedBatch::Shadows { .. }
+            | UploadedBatch::PathRasterization { .. }
+            | UploadedBatch::Paths { .. }
+            | UploadedBatch::MonoSprites { .. }
+            | UploadedBatch::PolySprites { .. }
+            | UploadedBatch::Underlines { .. }
+            | UploadedBatch::BackdropBlurs { .. }
+            | UploadedBatch::CompositeBlur { .. }
+            | UploadedBatch::CustomMesh3d { .. } => {}
+        }
+    }
+    false
+}
+
+/// Determines which isolated element-blur targets actually depend on this frame's damage.
+///
+/// `PaintBlur.bounds` is packed as the effect bounds (content plus Gaussian support), so testing
+/// against it keeps unrelated animation outside the filtered subtree from invalidating the layer.
+/// A shared target/layout invalidation forces every element layer to rebuild once.
+fn dirty_element_blur_indices(
+    frame_upload: &FrameUpload,
+    dirty_region: &crate::DirtyRegion,
+    force_all: bool,
+) -> Vec<u32> {
+    let ranges = frame_upload.blur_content_ranges();
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    if force_all || dirty_region.is_full() {
+        return ranges.into_iter().map(|range| range.index).collect();
+    }
+    if dirty_region.is_empty() {
+        return Vec::new();
+    }
+
+    let mut dirty = Vec::new();
+    for range in ranges {
+        let Some(config) = frame_upload.backdrop_blur_config_for_index(range.index) else {
+            // Missing metadata is not a safe cache hit. Re-render this layer and let the normal
+            // preparation path decide whether a renderable target exists.
+            dirty.push(range.index);
+            continue;
+        };
+        let [x, y, width, height] = config.bounds();
+        if ![x, y, width, height].into_iter().all(f32::is_finite) {
+            dirty.push(range.index);
+            continue;
+        }
+        let effect_bounds = Bounds {
+            origin: Point {
+                x: crate::ScaledPixels(x),
+                y: crate::ScaledPixels(y),
+            },
+            size: Size {
+                width: crate::ScaledPixels(width.max(0.0)),
+                height: crate::ScaledPixels(height.max(0.0)),
+            },
+        };
+        if dirty_region
+            .rects()
+            .iter()
+            .any(|rect| rect.bounds.intersects(&effect_bounds))
+        {
+            dirty.push(range.index);
+        }
+    }
+    dirty
+}
+
 impl NovaRenderer {
     fn drawable_pixels(&self) -> usize {
         (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
@@ -320,6 +405,7 @@ impl NovaRenderer {
             self.backend.supports_partial_presentation(self.swapchain);
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
+        let has_root_backdrop_blurs = has_root_backdrop_blurs(&self.frame_upload);
         let has_element_blurs = self.frame_upload.has_element_blurs();
 
         let backdrop_source_atlas_textures = if has_backdrop_blurs {
@@ -333,13 +419,22 @@ impl NovaRenderer {
                 || self
                     .atlas
                     .pending_uploads_touch_any(&backdrop_source_atlas_textures));
-        let backdrop_blur_refresh_required = has_backdrop_blurs
-            && (render_plan.backdrop_blur_refresh_required
-                || !self.backdrop_blur_cache_valid
+        // Target allocation/quality and source-atlas changes invalidate both cache families. Their
+        // ordinary frame-to-frame dirtiness is independent below: an element blur existing is no
+        // longer sufficient to rebuild the root backdrop source.
+        let shared_blur_cache_invalid = has_backdrop_blurs
+            && (!self.backdrop_blur_cache_valid
                 || backdrop_source_atlas_dirty
-                || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality)
-                || has_element_blurs);
-        if backdrop_blur_refresh_required {
+                || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality));
+        let backdrop_blur_refresh_required = has_root_backdrop_blurs
+            && (render_plan.backdrop_blur_refresh_required || shared_blur_cache_invalid);
+        let dirty_element_indices = dirty_element_blur_indices(
+            &self.frame_upload,
+            render_plan.dirty_region,
+            shared_blur_cache_invalid,
+        );
+        let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
+        if backdrop_blur_refresh_required || element_blur_refresh_required {
             self.backdrop_blur_cache_valid = false;
         }
         let present_damage = (native_partial_presentation
@@ -373,16 +468,20 @@ impl NovaRenderer {
         } else {
             Vec::new()
         };
-        let element_blur_layers = if backdrop_blur_refresh_required {
+        let mut element_blur_layers = if element_blur_refresh_required {
             self.prepare_element_blur_layers(true)
         } else {
             Vec::new()
         };
+        if element_blur_refresh_required && !shared_blur_cache_invalid {
+            element_blur_layers.retain(|layer| dirty_element_indices.contains(&layer.index));
+        }
         let draw_step_count = self.draw_step_scratch.draw_steps.len();
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
         let mask_pass_count = usize::from(path_mask_step_count != 0);
         let main_pass_count = 1;
         let backdrop_blur_refreshed;
+        let element_blur_refreshed;
         let blur_group_pass_count = backdrop_blur_groups.iter().fold(0usize, |total, group| {
             total.saturating_add(1usize.saturating_add(group.filter_passes.len()))
         });
@@ -394,11 +493,8 @@ impl NovaRenderer {
                 .saturating_add(source_passes)
                 .saturating_add(layer.filter_passes.len())
         });
-        let composite_pass_count = if backdrop_blur_refresh_required {
-            blur_group_pass_count.saturating_add(element_blur_pass_count)
-        } else {
-            0
-        };
+        let composite_pass_count =
+            blur_group_pass_count.saturating_add(element_blur_pass_count);
         crate::diagnostics::performance_metrics::record_gpu_pass_metrics(
             mask_pass_count,
             main_pass_count,
@@ -457,7 +553,8 @@ impl NovaRenderer {
                     "async_submission={} async_wait={} async_presentation={} ",
                     "async_partial_presentation={} native_partial_presentation={} ",
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
-                    "dirty_area={} blur_cache_refresh={} blur_source_atlas_dirty={} ",
+                    "dirty_area={} backdrop_blur_refresh={} element_blur_refresh={} ",
+                    "element_blur_dirty_layers={} blur_source_atlas_dirty={} ",
                     "blur_source_atlas_textures={} blur_groups={} animation_bindings={} ",
                     "animation_values={} threading={:?}"
                 ),
@@ -489,6 +586,8 @@ impl NovaRenderer {
                 render_plan.dirty_region.rect_count(),
                 render_plan.dirty_region.area(),
                 backdrop_blur_refresh_required,
+                element_blur_refresh_required,
+                dirty_element_indices.len(),
                 backdrop_source_atlas_dirty,
                 backdrop_source_atlas_textures.len(),
                 backdrop_blur_groups.len(),
@@ -583,9 +682,9 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                let refresh_backdrop_blur = backdrop_blur_refresh_required;
-                backdrop_blur_refreshed = refresh_backdrop_blur;
-                if refresh_backdrop_blur {
+                backdrop_blur_refreshed = backdrop_blur_refresh_required;
+                element_blur_refreshed = element_blur_refresh_required;
+                if element_blur_refresh_required {
                     render_element_blur_layers(
                         device,
                         self.render_pass,
@@ -593,7 +692,7 @@ impl NovaRenderer {
                         &element_blur_layers,
                     )?;
                 }
-                if refresh_backdrop_blur
+                if backdrop_blur_refresh_required
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
                     render_backdrop_blur_groups(
@@ -628,7 +727,7 @@ impl NovaRenderer {
                             "nova-gfx frame stages: backend={} total_ms={} ",
                             "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
                             "present_ms={} submission_mode={:?} atlas_uploads={} ",
-                            "atlas_bytes={} blur_groups={}"
+                            "atlas_bytes={} blur_groups={} element_blur_layers={}"
                         ),
                         backend_label,
                         total_elapsed_ms,
@@ -640,6 +739,7 @@ impl NovaRenderer {
                         atlas_stats.upload_count,
                         atlas_stats.uploaded_bytes,
                         backdrop_blur_groups.len(),
+                        element_blur_layers.len(),
                     );
                 }
                 Ok(())
@@ -683,9 +783,9 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                let refresh_backdrop_blur = backdrop_blur_refresh_required;
-                backdrop_blur_refreshed = refresh_backdrop_blur;
-                if refresh_backdrop_blur {
+                backdrop_blur_refreshed = backdrop_blur_refresh_required;
+                element_blur_refreshed = element_blur_refresh_required;
+                if element_blur_refresh_required {
                     render_element_blur_layers(
                         device,
                         self.render_pass,
@@ -693,7 +793,7 @@ impl NovaRenderer {
                         &element_blur_layers,
                     )?;
                 }
-                if refresh_backdrop_blur
+                if backdrop_blur_refresh_required
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
                     render_backdrop_blur_groups(
@@ -767,9 +867,9 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                let refresh_backdrop_blur = backdrop_blur_refresh_required;
-                backdrop_blur_refreshed = refresh_backdrop_blur;
-                if refresh_backdrop_blur {
+                backdrop_blur_refreshed = backdrop_blur_refresh_required;
+                element_blur_refreshed = element_blur_refresh_required;
+                if element_blur_refresh_required {
                     render_element_blur_layers(
                         device,
                         self.render_pass,
@@ -777,7 +877,7 @@ impl NovaRenderer {
                         &element_blur_layers,
                     )?;
                 }
-                if refresh_backdrop_blur
+                if backdrop_blur_refresh_required
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
                     render_backdrop_blur_groups(
@@ -812,7 +912,7 @@ impl NovaRenderer {
                             "nova-gfx frame stages: backend={} total_ms={} ",
                             "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
                             "present_ms={} submission_mode={:?} atlas_uploads={} ",
-                            "atlas_bytes={} blur_groups={}"
+                            "atlas_bytes={} blur_groups={} element_blur_layers={}"
                         ),
                         backend_label,
                         total_elapsed_ms,
@@ -824,6 +924,7 @@ impl NovaRenderer {
                         atlas_stats.upload_count,
                         atlas_stats.uploaded_bytes,
                         backdrop_blur_groups.len(),
+                        element_blur_layers.len(),
                     );
                 }
                 Ok(())
@@ -878,8 +979,9 @@ impl NovaRenderer {
         }
         self.swapchain_warmup_frames = self.swapchain_warmup_frames.saturating_sub(1);
         crate::diagnostics::performance_metrics::record_direct_present();
+        let blur_refreshed = backdrop_blur_refreshed || element_blur_refreshed;
         let (blur_source_pixels, blur_level_pixels) = self.backdrop_blur_pixel_metrics(
-            backdrop_blur_refreshed,
+            blur_refreshed,
             backdrop_blur_groups
                 .len()
                 .saturating_add(element_blur_layers.len()),
@@ -890,11 +992,8 @@ impl NovaRenderer {
         );
         crate::diagnostics::performance_metrics::record_present();
         if self.diagnostics.should_log_frame_details() {
-            let blur_render_passes = if backdrop_blur_refreshed {
-                blur_group_pass_count
-            } else {
-                0
-            };
+            let blur_render_passes =
+                blur_group_pass_count.saturating_add(element_blur_pass_count);
             log::warn!(
                 concat!(
                     "nova-gfx copy attribution: backend={} frame={} ",
@@ -902,6 +1001,7 @@ impl NovaRenderer {
                     "atlas_texture_bytes={} mapped_frame_upload_bytes={} ",
                     "mapped_frame_upload_is_gpu_copy=false retained_present_copy_regions={} ",
                     "path_mask_render_passes={} blur_render_passes={} blur_groups={} ",
+                    "element_blur_layers={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "blur_source_atlas_dirty={} blur_source_atlas_textures={} ",
                     "blur_source_mode=sequential-segments main_render_passes=1 present_damage={:?} ",
                     "dirty_mode={:?} dirty_full={} dirty_rects={} dirty_area={}"
@@ -915,6 +1015,9 @@ impl NovaRenderer {
                 mask_pass_count,
                 blur_render_passes,
                 backdrop_blur_groups.len(),
+                element_blur_layers.len(),
+                backdrop_blur_refreshed,
+                element_blur_refreshed,
                 backdrop_source_atlas_dirty,
                 backdrop_source_atlas_textures.len(),
                 present_damage,
