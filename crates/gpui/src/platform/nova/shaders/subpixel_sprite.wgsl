@@ -14,7 +14,11 @@ fn vs_subpixel_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_i
 fn fs_subpixel_sprite(input: MonoSpriteVarying) -> SubpixelSpriteFragmentOutput {
     let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0 || input.color.a <= 0.0) {
-        return SubpixelSpriteFragmentOutput(vec4<f32>(0.0), vec4<f32>(0.0));
+        // The Windows RGB text pipeline uses dual-source blending. Its alpha lane
+        // overwrites the destination alpha, so returning zero here would punch a
+        // transparent glyph-sized hole through a premultiplied composition surface.
+        // Discarding a clipped fragment leaves both destination RGB and alpha intact.
+        discard;
     }
 
     var sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0).rgb;
