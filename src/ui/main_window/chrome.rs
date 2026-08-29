@@ -250,13 +250,17 @@ pub(super) fn render_app_chrome(
             }),
         )
         .child(
-            icon_button("window-minimize-linux", lucide_icons::icon_minus()).on_mouse_down(
-                MouseButton::Left,
-                |_, window, cx| {
+            icon_button("window-minimize-linux", lucide_icons::icon_minus())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    // Do not hide the native window on mouse-down. GPUI must first receive the
+                    // corresponding mouse-up so the transient :active state cannot survive a
+                    // minimize/restore cycle.
                     cx.stop_propagation();
+                })
+                .on_click(|_, window, _| {
+                    window.refresh();
                     window.minimize_window();
-                },
-            ),
+                }),
         )
         .child(
             icon_button("window-close-linux", lucide_icons::icon_x())
