@@ -157,10 +157,9 @@ where
 
 /// Advances one shared scene-color source through each backdrop draw-order barrier.
 ///
-/// The first segment clears scene color and depth. Later segments load both, preserving 3D
-/// occlusion as well as color across backdrop barriers. Gaussian filter pipelines have depth
-/// disabled, but still bind the shared depth view with `LoadOp::Load` because the renderer's
-/// render-pass contract requires a depth attachment whenever the pass declares a depth format.
+/// Scene color is scratch storage and is rebuilt for the scissored dependency halo on every dirty
+/// refresh. Gaussian ping/final targets are persistent: a partial refresh loads their previous
+/// contents and overwrites only the pass scissors, while a full invalidation clears them once.
 fn render_backdrop_blur_groups<D>(
     device: &mut D,
     source_texture_view: TextureViewId,
@@ -197,12 +196,17 @@ where
             target: depth_attachment.target,
             depth_load_op: LoadOp::Load,
         };
+        let filter_load_op = if group.preserve_filtered_pixels {
+            LoadOp::Load
+        } else {
+            LoadOp::Clear(clear_color())
+        };
         for pass in &group.filter_passes {
             device.render_step_list_to_texture(
                 pass.target_texture_view,
                 render_pass,
                 RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                LoadOp::Clear(clear_color()),
+                filter_load_op,
                 Some(filter_depth_attachment),
             )?;
         }
@@ -416,18 +420,10 @@ impl NovaRenderer {
         let atlas_content_generation = self.atlas.content_generation();
         let atlas_generation_changed =
             self.backdrop_blur_cache_atlas_generation != atlas_content_generation;
-        // Atlas generation is global to every glyph/image texture. It is useful diagnostics, but
-        // must not invalidate a backdrop whose sampled texture set was untouched: animated text
-        // or icons above the glass can otherwise force a full-window Gaussian refresh every tick.
-        // Relevant pending uploads are observed before `upload_pending_atlas` below and therefore
-        // still invalidate the cache in the same frame in which their new pixels become visible.
         let backdrop_source_atlas_dirty = has_backdrop_blurs
             && self
                 .atlas
                 .pending_uploads_touch_any(&backdrop_source_atlas_textures);
-        // Target allocation/quality and source-atlas changes invalidate both cache families. Their
-        // ordinary frame-to-frame dirtiness is independent below: an element blur existing is no
-        // longer sufficient to rebuild the root backdrop source.
         let shared_blur_cache_invalid = has_backdrop_blurs
             && (!self.backdrop_blur_cache_valid
                 || backdrop_source_atlas_dirty
@@ -447,11 +443,6 @@ impl NovaRenderer {
             && upload.unsupported_batches.total() == 0)
             .then(|| partial_scissor_for_plan(render_plan, self.current_size))
             .flatten();
-        // Native dirty-rect presentation makes the OS preserve every pixel outside the
-        // dirty rects with copies, so large damage regions turn each present into a
-        // full-surface composition copy. Fall back to a full present once the damaged
-        // area stops being a minority of the surface, which is what typically happens
-        // during window-level animations and live resizes.
         let present_damage = present_damage.filter(|damage| {
             let drawable_pixels = self.drawable_pixels();
             drawable_pixels == 0
@@ -520,8 +511,6 @@ impl NovaRenderer {
         let uploaded_bytes = mapped_upload_bytes;
         let breakdown = if upload_static {
             let mut breakdown = self.frame_upload.upload_breakdown();
-            // Metadata is CPU-only and animated primitives are already counted in
-            // their full static buffers on the first upload for each frame slot.
             breakdown.animation_bytes = 0;
             breakdown
         } else {
@@ -689,9 +678,9 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                backdrop_blur_refreshed = backdrop_blur_refresh_required;
-                element_blur_refreshed = element_blur_refresh_required;
-                if element_blur_refresh_required {
+                backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
+                element_blur_refreshed = !element_blur_layers.is_empty();
+                if element_blur_refreshed {
                     render_element_blur_layers(
                         device,
                         self.render_pass,
@@ -699,7 +688,7 @@ impl NovaRenderer {
                         &element_blur_layers,
                     )?;
                 }
-                if backdrop_blur_refresh_required
+                if backdrop_blur_refreshed
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
                     render_backdrop_blur_groups(
@@ -790,9 +779,9 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                backdrop_blur_refreshed = backdrop_blur_refresh_required;
-                element_blur_refreshed = element_blur_refresh_required;
-                if element_blur_refresh_required {
+                backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
+                element_blur_refreshed = !element_blur_layers.is_empty();
+                if element_blur_refreshed {
                     render_element_blur_layers(
                         device,
                         self.render_pass,
@@ -800,7 +789,7 @@ impl NovaRenderer {
                         &element_blur_layers,
                     )?;
                 }
-                if backdrop_blur_refresh_required
+                if backdrop_blur_refreshed
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
                     render_backdrop_blur_groups(
@@ -874,9 +863,9 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                backdrop_blur_refreshed = backdrop_blur_refresh_required;
-                element_blur_refreshed = element_blur_refresh_required;
-                if element_blur_refresh_required {
+                backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
+                element_blur_refreshed = !element_blur_layers.is_empty();
+                if element_blur_refreshed {
                     render_element_blur_layers(
                         device,
                         self.render_pass,
@@ -884,7 +873,7 @@ impl NovaRenderer {
                         &element_blur_layers,
                     )?;
                 }
-                if backdrop_blur_refresh_required
+                if backdrop_blur_refreshed
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
                 {
                     render_backdrop_blur_groups(
@@ -1011,7 +1000,7 @@ impl NovaRenderer {
                     "element_blur_layers={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "blur_source_atlas_dirty={} blur_atlas_generation_changed={} ",
                     "blur_source_atlas_textures={} ",
-                    "blur_source_mode=sequential-segments main_render_passes=1 present_damage={:?} ",
+                    "blur_source_mode=damage-local-retained-filter main_render_passes=1 present_damage={:?} ",
                     "dirty_mode={:?} dirty_full={} dirty_rects={} dirty_area={}"
                 ),
                 backend_label,
