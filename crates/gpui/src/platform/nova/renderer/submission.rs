@@ -7,7 +7,7 @@ const INTERACTIVE_RESIZE_MAX_INTERVAL: std::time::Duration = std::time::Duration
 #[cfg(target_os = "windows")]
 const INTERACTIVE_RESIZE_SETTLE_GRACE: std::time::Duration = std::time::Duration::from_millis(12);
 #[cfg(target_os = "windows")]
-const INTERACTIVE_RESIZE_MAX_STALE: std::time::Duration = std::time::Duration::from_millis(50);
+const INTERACTIVE_RESIZE_MAX_STALE: std::time::Duration = std::time::Duration::from_millis(33);
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy)]
