@@ -18,13 +18,13 @@ use std::sync::OnceLock;
 /// approximately `2px` here.
 pub const GLASS_BACKDROP_BLUR_SIGMA_PX: f32 = 2.0;
 
-/// Stable, low-bandwidth glass configuration used by the application chrome and popovers.
-/// Keeping one layout across BMCBL UI surfaces lets Nova reuse the same target geometry instead
-/// of creating a different blur variant for every component.
+/// Shared BMCBL glass style.
+///
+/// Sampling quality is selected by GPUI from the blur sigma. BMCBL deliberately does not pin a
+/// downsample factor or pass count here, so backend quality policy can evolve without duplicating
+/// renderer tuning in every application surface.
 pub fn glass_backdrop_blur_style() -> gpui::BackdropBlurStyle {
-    gpui::BackdropBlurStyle::new(gpui::px(GLASS_BACKDROP_BLUR_SIGMA_PX))
-        .downsample(2)
-        .levels(2)
+    gpui::BackdropBlurStyle::new(gpui::px(GLASS_BACKDROP_BLUR_SIGMA_PX)).auto_quality()
 }
 
 /// 缓存的浅色主题色板（`LightColors::colors()` 每次调用都会重建，渲染热路径改用本函数）。
