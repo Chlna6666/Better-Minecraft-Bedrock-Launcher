@@ -356,37 +356,98 @@ fn dirty_element_blur_indices(
     dirty
 }
 
+fn scissor_pixel_area(scissor: ScissorRect) -> usize {
+    (scissor.width as usize).saturating_mul(scissor.height as usize)
+}
+
+fn render_step_scissor(step: &RenderStepDescriptor) -> Option<ScissorRect> {
+    match step {
+        RenderStepDescriptor::Draw(step) => step.scissor,
+        RenderStepDescriptor::DrawIndexed(step) => step.scissor,
+    }
+}
+
 impl NovaRenderer {
     fn drawable_pixels(&self) -> usize {
         (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
     }
 
+    /// Counts the scissored pixel area of the blur work actually scheduled for this frame.
+    ///
+    /// Source passes are counted once per render pass by the union of their draw scissors instead
+    /// of once per primitive. Gaussian passes already carry target-space scissors, so their areas
+    /// are accumulated directly. A missing scissor is conservatively treated as a full drawable.
     fn backdrop_blur_pixel_metrics(
         &self,
-        enabled: bool,
-        source_group_count: usize,
+        backdrop_groups: &[PreparedBackdropBlurGroup],
+        element_layers: &[PreparedElementBlurLayer],
     ) -> (usize, [usize; 6]) {
-        if !enabled {
-            return (0, [0; 6]);
-        }
-        let source_pixels = if source_group_count == 0 {
-            0
-        } else {
-            self.drawable_pixels()
-        };
+        let drawable_pixels = self.drawable_pixels();
+        let mut source_pixels = 0usize;
         let mut level_pixels = [0usize; 6];
+
+        let mut record_group = |group: &PreparedBackdropBlurGroup| {
+            if !group.source_steps.is_empty() {
+                let mut source_scissor = None::<ScissorRect>;
+                let mut unbounded = false;
+                for step in &group.source_steps {
+                    let Some(scissor) = render_step_scissor(step) else {
+                        unbounded = true;
+                        break;
+                    };
+                    if scissor.is_empty() {
+                        continue;
+                    }
+                    source_scissor = Some(match source_scissor {
+                        Some(current) => union_scissor_rects(current, scissor),
+                        None => scissor,
+                    });
+                }
+                source_pixels = source_pixels.saturating_add(if unbounded {
+                    drawable_pixels
+                } else {
+                    source_scissor.map_or(0, scissor_pixel_area)
+                });
+            }
+
+            for (pass_index, pass) in group.filter_passes.iter().enumerate() {
+                let pixels = pass.step.scissor.map_or(drawable_pixels, scissor_pixel_area);
+                let level = pass_index & 1;
+                level_pixels[level] = level_pixels[level].saturating_add(pixels);
+            }
+        };
+
+        for group in backdrop_groups {
+            record_group(group);
+        }
+        for layer in element_layers {
+            for group in &layer.source_groups {
+                record_group(group);
+            }
+            for (pass_index, pass) in layer.filter_passes.iter().enumerate() {
+                let pixels = pass.step.scissor.map_or(drawable_pixels, scissor_pixel_area);
+                let level = pass_index & 1;
+                level_pixels[level] = level_pixels[level].saturating_add(pixels);
+            }
+        }
+
+        (source_pixels, level_pixels)
+    }
+
+    fn backdrop_blur_full_target_pixels(&self) -> usize {
         let source_width = self.current_size.width as usize;
         let source_height = self.current_size.height as usize;
-        for &config in self.frame_upload.backdrop_blur_configs() {
-            let factor = usize::from(config.downsample().max(1));
-            let filtered_width = source_width.div_ceil(factor).max(1);
-            let filtered_height = source_height.div_ceil(factor).max(1);
-            level_pixels[0] =
-                level_pixels[0].saturating_add(filtered_width.saturating_mul(source_height));
-            level_pixels[1] =
-                level_pixels[1].saturating_add(filtered_width.saturating_mul(filtered_height));
-        }
-        (source_pixels, level_pixels)
+        self.frame_upload
+            .backdrop_blur_configs()
+            .iter()
+            .fold(0usize, |total, config| {
+                let factor = usize::from(config.downsample().max(1));
+                let filtered_width = source_width.div_ceil(factor).max(1);
+                let filtered_height = source_height.div_ceil(factor).max(1);
+                total
+                    .saturating_add(filtered_width.saturating_mul(source_height))
+                    .saturating_add(filtered_width.saturating_mul(filtered_height))
+            })
     }
 
     pub(super) fn draw_present(
@@ -473,6 +534,10 @@ impl NovaRenderer {
         if element_blur_refresh_required && !shared_blur_cache_invalid {
             element_blur_layers.retain(|layer| dirty_element_indices.contains(&layer.index));
         }
+        let (blur_source_pixels, blur_level_pixels) =
+            self.backdrop_blur_pixel_metrics(&backdrop_blur_groups, &element_blur_layers);
+        let blur_target_pixels = blur_level_pixels.iter().copied().sum::<usize>();
+        let blur_full_target_pixels = self.backdrop_blur_full_target_pixels();
         let draw_step_count = self.draw_step_scratch.draw_steps.len();
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
         let mask_pass_count = usize::from(path_mask_step_count != 0);
@@ -551,6 +616,8 @@ impl NovaRenderer {
                     "dirty_area={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "element_blur_dirty_layers={} blur_source_atlas_dirty={} ",
                     "blur_atlas_generation_changed={} blur_source_atlas_textures={} blur_groups={} ",
+                    "blur_source_pixels={} blur_horizontal_pixels={} blur_final_pixels={} ",
+                    "blur_target_pixels={} blur_full_target_pixels={} ",
                     "animation_bindings={} animation_values={} threading={:?}"
                 ),
                 backend_label,
@@ -587,6 +654,11 @@ impl NovaRenderer {
                 atlas_generation_changed,
                 backdrop_source_atlas_textures.len(),
                 backdrop_blur_groups.len(),
+                blur_source_pixels,
+                blur_level_pixels[0],
+                blur_level_pixels[1],
+                blur_target_pixels,
+                blur_full_target_pixels,
                 upload.animation_binding_count,
                 upload.animation_value_count,
                 async_capabilities.threading_mode,
@@ -975,13 +1047,6 @@ impl NovaRenderer {
         }
         self.swapchain_warmup_frames = self.swapchain_warmup_frames.saturating_sub(1);
         crate::diagnostics::performance_metrics::record_direct_present();
-        let blur_refreshed = backdrop_blur_refreshed || element_blur_refreshed;
-        let (blur_source_pixels, blur_level_pixels) = self.backdrop_blur_pixel_metrics(
-            blur_refreshed,
-            backdrop_blur_groups
-                .len()
-                .saturating_add(element_blur_layers.len()),
-        );
         crate::diagnostics::performance_metrics::record_backdrop_blur_frame(
             blur_source_pixels,
             blur_level_pixels,
@@ -999,7 +1064,9 @@ impl NovaRenderer {
                     "path_mask_render_passes={} blur_render_passes={} blur_groups={} ",
                     "element_blur_layers={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "blur_source_atlas_dirty={} blur_atlas_generation_changed={} ",
-                    "blur_source_atlas_textures={} ",
+                    "blur_source_atlas_textures={} blur_source_pixels={} ",
+                    "blur_horizontal_pixels={} blur_final_pixels={} blur_target_pixels={} ",
+                    "blur_full_target_pixels={} ",
                     "blur_source_mode=damage-local-retained-filter main_render_passes=1 present_damage={:?} ",
                     "dirty_mode={:?} dirty_full={} dirty_rects={} dirty_area={}"
                 ),
@@ -1018,6 +1085,11 @@ impl NovaRenderer {
                 backdrop_source_atlas_dirty,
                 atlas_generation_changed,
                 backdrop_source_atlas_textures.len(),
+                blur_source_pixels,
+                blur_level_pixels[0],
+                blur_level_pixels[1],
+                blur_target_pixels,
+                blur_full_target_pixels,
                 present_damage,
                 render_plan.partial_present_mode,
                 render_plan.dirty_region.is_full(),
