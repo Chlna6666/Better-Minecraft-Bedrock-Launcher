@@ -92,6 +92,7 @@ impl Scene {
         self.blurs.clear();
         self.gpu_meshes_3d.clear();
         self.animation_values.clear();
+        self.next_scene_animation_id = 0;
         self.prepared_batches.clear();
         self.replayed_primitives = 0;
         self.retained_prefix_invalid = false;
@@ -163,7 +164,9 @@ impl Scene {
         let prefix_len = current
             .iter()
             .zip(previous_operations)
-            .take_while(|(current, previous)| current.visually_eq(previous))
+            .take_while(|(current, previous_operation)| {
+                paint_operations_match_for_damage(self, current, previous, previous_operation)
+            })
             .count();
         let max_suffix_len = current
             .len()
@@ -174,7 +177,9 @@ impl Scene {
             .rev()
             .zip(previous_operations.iter().rev())
             .take(max_suffix_len)
-            .take_while(|(current, previous)| current.visually_eq(previous))
+            .take_while(|(current, previous_operation)| {
+                paint_operations_match_for_damage(self, current, previous, previous_operation)
+            })
             .count();
 
         for operation in
@@ -856,11 +861,11 @@ impl Scene {
         self.prepare_batches();
         if let Some(previous) = previous
             && self.paint_operations.len() == previous.paint_operations.len()
-                && self
-                    .paint_operations
-                    .iter()
-                    .zip(&previous.paint_operations)
-                    .all(|(current, previous)| paint_operations_visually_match(current, previous))
+            && self
+                .paint_operations
+                .iter()
+                .zip(&previous.paint_operations)
+                .all(|(current, previous)| paint_operations_visually_match(current, previous))
         {
             self.revision = previous.revision;
             return;
@@ -1211,4 +1216,32 @@ fn paint_operations_visually_match(current: &PaintOperation, previous: &PaintOpe
         }
         _ => false,
     }
+}
+
+fn paint_operations_match_for_damage(
+    current_scene: &Scene,
+    current: &PaintOperation,
+    previous_scene: &Scene,
+    previous: &PaintOperation,
+) -> bool {
+    if !current.visually_eq(previous) {
+        return false;
+    }
+
+    let (
+        PaintOperation::Primitive(current_primitive),
+        PaintOperation::Primitive(previous_primitive),
+    ) = (current, previous)
+    else {
+        return true;
+    };
+    let Some(current_animation_id) = current_primitive.animation_id() else {
+        return true;
+    };
+    let Some(previous_animation_id) = previous_primitive.animation_id() else {
+        return false;
+    };
+
+    current_scene.animation_value(current_animation_id)
+        == previous_scene.animation_value(previous_animation_id)
 }

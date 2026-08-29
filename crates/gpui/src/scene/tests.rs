@@ -25,6 +25,87 @@ fn scene_revision_tracks_static_commits_not_animation_samples() {
 }
 
 #[test]
+fn equivalent_static_scene_retains_revision_across_sampled_animation_frames() {
+    let mut previous = Scene::default();
+    let previous_id = previous.allocate_animation_id();
+    previous.insert_animated_primitive(Quad::default(), previous_id);
+    previous.push_animation_value(SceneAnimationValue {
+        animation_id: previous_id,
+        property: crate::TransitionProperty::Transform,
+        progress: 0.0,
+        from: [0.97, 0.0, 0.0, 0.0],
+        to: [1.0, 1.0, 0.0, 0.0],
+    });
+    previous.finish();
+
+    let mut current = Scene::default();
+    let current_id = current.allocate_animation_id();
+    current.insert_animated_primitive(Quad::default(), current_id);
+    current.push_animation_value(SceneAnimationValue {
+        animation_id: current_id,
+        property: crate::TransitionProperty::Transform,
+        progress: 0.5,
+        from: [0.97, 0.0, 0.0, 0.0],
+        to: [1.0, 1.0, 0.0, 0.0],
+    });
+    current.finish_retaining_revision(&previous);
+
+    assert_eq!(current.revision, previous.revision);
+    assert_eq!(current.animation_values[0].progress, 0.5);
+}
+
+#[test]
+fn sampled_animation_value_changes_report_primitive_damage() {
+    let primitive_bounds = bounds(
+        point(ScaledPixels(10.0), ScaledPixels(20.0)),
+        size(ScaledPixels(30.0), ScaledPixels(40.0)),
+    );
+    let mut previous = Scene::default();
+    let previous_id = previous.allocate_animation_id();
+    previous.insert_animated_primitive(
+        Quad {
+            bounds: primitive_bounds,
+            content_mask: ContentMask::new(primitive_bounds),
+            ..Default::default()
+        },
+        previous_id,
+    );
+    previous.push_animation_value(SceneAnimationValue {
+        animation_id: previous_id,
+        property: crate::TransitionProperty::Opacity,
+        progress: 0.25,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    });
+
+    let mut current = Scene::default();
+    let current_id = current.allocate_animation_id();
+    current.insert_animated_primitive(
+        Quad {
+            bounds: primitive_bounds,
+            content_mask: ContentMask::new(primitive_bounds),
+            ..Default::default()
+        },
+        current_id,
+    );
+    current.push_animation_value(SceneAnimationValue {
+        animation_id: current_id,
+        property: crate::TransitionProperty::Opacity,
+        progress: 0.75,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    });
+
+    let mut damage = Vec::new();
+    assert!(
+        current.for_each_changed_bounds(0..1, &previous, 0..1, |bounds| {
+            damage.push(bounds);
+        })
+    );
+    assert_eq!(damage, vec![primitive_bounds, primitive_bounds]);
+}
+
+#[test]
 fn backdrop_blur_animation_refreshes_when_source_enters_region() {
     let mut scene = Scene::default();
     let animation_id = scene.allocate_animation_id();

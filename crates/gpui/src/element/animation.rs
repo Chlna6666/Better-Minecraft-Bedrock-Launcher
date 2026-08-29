@@ -82,26 +82,12 @@ impl AnimationProperty {
     ) -> Self {
         Self {
             property: TransitionProperty::Transform,
-            from: [
-                from_scale,
-                from_opacity.clamp(0.0, 1.0),
-                origin.x,
-                origin.y,
-            ],
-            to: [
-                to_scale,
-                to_opacity.clamp(0.0, 1.0),
-                origin.x,
-                origin.y,
-            ],
+            from: [from_scale, from_opacity.clamp(0.0, 1.0), origin.x, origin.y],
+            to: [to_scale, to_opacity.clamp(0.0, 1.0), origin.x, origin.y],
         }
     }
 
-    fn resolved_values(
-        self,
-        bounds: Bounds<Pixels>,
-        scale_factor: f32,
-    ) -> ([f32; 4], [f32; 4]) {
+    fn resolved_values(self, bounds: Bounds<Pixels>, scale_factor: f32) -> ([f32; 4], [f32; 4]) {
         if self.property != TransitionProperty::Transform {
             return (self.from, self.to);
         }
@@ -226,7 +212,6 @@ pub trait AnimationExt {
         }
     }
 
-
     /// Paint this element into a retained scene animation using a caller-sampled progress value.
     fn with_sampled_animation(
         self,
@@ -310,9 +295,7 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (from, to) = self
-            .property
-            .resolved_values(bounds, window.scale_factor());
+        let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
         window.with_sampled_scene_animation(
             self.property.property,
             self.progress,

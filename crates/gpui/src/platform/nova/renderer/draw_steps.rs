@@ -98,7 +98,9 @@ impl NovaRenderer {
         let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
         let dirty_configs: Vec<Vec<BackdropBlurConfig>> = blur_groups
             .iter()
-            .map(|(_, configs)| blur_configs_for_refresh(configs, self.current_size, damage, force_full))
+            .map(|(_, configs)| {
+                blur_configs_for_refresh(configs, self.current_size, damage, force_full)
+            })
             .collect();
 
         let Some(last_dirty_group) = dirty_configs
@@ -517,7 +519,8 @@ fn blur_source_scissor_for_refresh(
     if force_full {
         blur_full_source_scissor(config, drawable_size)
     } else {
-        blur_damage_scissors(config, drawable_size, dirty_region).map(|damage| damage.source_capture)
+        blur_damage_scissors(config, drawable_size, dirty_region)
+            .map(|damage| damage.source_capture)
     }
 }
 
@@ -749,20 +752,10 @@ mod tests {
             height: 600,
         };
         let damage = dirty_region(24.0, 12.0, 2.0, 2.0);
-        let full = blur_source_scissor_for_refresh(
-            config,
-            drawable_size,
-            &damage,
-            true,
-        )
-        .expect("full blur source scissor");
-        let partial = blur_source_scissor_for_refresh(
-            config,
-            drawable_size,
-            &damage,
-            false,
-        )
-        .expect("partial blur source scissor");
+        let full = blur_source_scissor_for_refresh(config, drawable_size, &damage, true)
+            .expect("full blur source scissor");
+        let partial = blur_source_scissor_for_refresh(config, drawable_size, &damage, false)
+            .expect("partial blur source scissor");
         assert!(partial.width <= full.width);
         assert!(partial.height <= full.height);
         assert!(partial.width < full.width || partial.height < full.height);

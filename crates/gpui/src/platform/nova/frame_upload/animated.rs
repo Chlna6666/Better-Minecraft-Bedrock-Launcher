@@ -300,6 +300,36 @@ mod tests {
     }
 
     #[test]
+    fn retained_transform_scales_around_shared_origin_and_applies_opacity() {
+        let mut primitive = Primitive::Quad(Quad {
+            bounds: crate::bounds(
+                crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+                crate::size(crate::ScaledPixels(30.0), crate::ScaledPixels(40.0)),
+            ),
+            border_color: crate::rgba(0xffffffff).into(),
+            ..Default::default()
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(1),
+                property: TransitionProperty::Transform,
+                progress: 0.5,
+                from: [0.5, 0.0, 0.0, 0.0],
+                to: [1.0, 1.0, 0.0, 0.0],
+            },
+        );
+        let Primitive::Quad(quad) = primitive else {
+            panic!("quad");
+        };
+        assert_eq!(quad.bounds.origin.x, crate::ScaledPixels(7.5));
+        assert_eq!(quad.bounds.origin.y, crate::ScaledPixels(15.0));
+        assert_eq!(quad.bounds.size.width, crate::ScaledPixels(22.5));
+        assert_eq!(quad.bounds.size.height, crate::ScaledPixels(30.0));
+        assert_eq!(quad.border_color.a, 0.5);
+    }
+
+    #[test]
     fn retained_rotation_keeps_the_sprite_center_fixed() {
         let mut primitive = Primitive::MonochromeSprite(MonochromeSprite {
             order: 0,

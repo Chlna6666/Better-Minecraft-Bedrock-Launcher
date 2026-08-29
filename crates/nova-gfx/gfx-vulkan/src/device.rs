@@ -353,7 +353,8 @@ impl VulkanDevice {
         if !pending {
             self.swapchains.for_each_live(|swapchain| {
                 for fence in swapchain.in_flight_fences {
-                    pending |= fence != vk::Fence::null() && !fence_is_complete(&self.device, fence);
+                    pending |=
+                        fence != vk::Fence::null() && !fence_is_complete(&self.device, fence);
                 }
             });
         }

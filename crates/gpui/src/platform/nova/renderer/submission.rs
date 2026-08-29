@@ -100,9 +100,7 @@ impl NovaRenderer {
 
         self.poll_pending_submissions()?;
         if !self.pending_submissions.is_empty()
-            || self
-                .backend
-                .has_pending_resize_work(self.swapchain)?
+            || self.backend.has_pending_resize_work(self.swapchain)?
         {
             return Ok(false);
         }

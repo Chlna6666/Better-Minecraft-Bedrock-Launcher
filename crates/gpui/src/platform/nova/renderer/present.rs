@@ -398,7 +398,10 @@ impl NovaRenderer {
                 });
             }
             for (pass_index, pass) in group.filter_passes.iter().enumerate() {
-                let pixels = pass.step.scissor.map_or(drawable_pixels, scissor_pixel_area);
+                let pixels = pass
+                    .step
+                    .scissor
+                    .map_or(drawable_pixels, scissor_pixel_area);
                 let level = pass_index & 1;
                 level_pixels[level] = level_pixels[level].saturating_add(pixels);
             }
@@ -415,7 +418,10 @@ impl NovaRenderer {
         drop(record_group);
         for layer in element_layers {
             for (pass_index, pass) in layer.filter_passes.iter().enumerate() {
-                let pixels = pass.step.scissor.map_or(drawable_pixels, scissor_pixel_area);
+                let pixels = pass
+                    .step
+                    .scissor
+                    .map_or(drawable_pixels, scissor_pixel_area);
                 let level = pass_index & 1;
                 level_pixels[level] = level_pixels[level].saturating_add(pixels);
             }
@@ -532,8 +538,8 @@ impl NovaRenderer {
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
         let mask_pass_count = usize::from(path_mask_step_count != 0);
         let main_pass_count = 1;
-        let backdrop_blur_refreshed;
-        let element_blur_refreshed;
+        let backdrop_blur_refreshed: bool;
+        let element_blur_refreshed: bool;
         let blur_group_pass_count = backdrop_blur_groups.iter().fold(0usize, |total, group| {
             total.saturating_add(1usize.saturating_add(group.filter_passes.len()))
         });
@@ -545,8 +551,7 @@ impl NovaRenderer {
                 .saturating_add(source_passes)
                 .saturating_add(layer.filter_passes.len())
         });
-        let composite_pass_count =
-            blur_group_pass_count.saturating_add(element_blur_pass_count);
+        let composite_pass_count = blur_group_pass_count.saturating_add(element_blur_pass_count);
         crate::diagnostics::performance_metrics::record_gpu_pass_metrics(
             mask_pass_count,
             main_pass_count,
@@ -1043,8 +1048,7 @@ impl NovaRenderer {
         );
         crate::diagnostics::performance_metrics::record_present();
         if self.diagnostics.should_log_frame_details() {
-            let blur_render_passes =
-                blur_group_pass_count.saturating_add(element_blur_pass_count);
+            let blur_render_passes = blur_group_pass_count.saturating_add(element_blur_pass_count);
             log::warn!(
                 concat!(
                     "nova-gfx copy attribution: backend={} frame={} ",

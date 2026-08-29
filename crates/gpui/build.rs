@@ -1,4 +1,4 @@
-﻿#![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
+#![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 #![cfg_attr(any(not(target_os = "macos"), feature = "macos-blade"), allow(unused))]
 
 // TODO: consider generating shader code for WGSL.
@@ -105,11 +105,7 @@ fn check_nova_wgsl_shaders() {
         (
             "nova backdrop blur shader",
             "",
-            &[
-                CORE,
-                SHAPE,
-                "./src/platform/nova/shaders/blur.wgsl",
-            ][..],
+            &[CORE, SHAPE, "./src/platform/nova/shaders/blur.wgsl"][..],
         ),
     ];
 

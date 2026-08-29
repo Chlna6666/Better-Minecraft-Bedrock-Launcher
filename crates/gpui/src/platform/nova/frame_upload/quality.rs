@@ -37,7 +37,7 @@ mod tests {
             bounds: Default::default(),
             content_mask: Default::default(),
             corner_radii: Default::default(),
-            radius: ScaledPixels(6.0),
+            radius: crate::ScaledPixels(6.0),
             downsample: 2,
             levels: 3,
             saturation: 1.0,

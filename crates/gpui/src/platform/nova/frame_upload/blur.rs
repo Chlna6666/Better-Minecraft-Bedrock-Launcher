@@ -506,16 +506,7 @@ mod tests {
 
     #[test]
     fn requested_downsample_is_preserved_for_ui_glass() {
-        let config = BackdropBlurConfig::new(
-            0,
-            0,
-            10,
-            4,
-            2,
-            2.0,
-            [0.0, 0.0, 1200.0, 80.0],
-            false,
-        );
+        let config = BackdropBlurConfig::new(0, 0, 10, 4, 2, 2.0, [0.0, 0.0, 1200.0, 80.0], false);
         assert_eq!(config.downsample(), 4);
     }
 

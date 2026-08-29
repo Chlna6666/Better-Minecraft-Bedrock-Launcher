@@ -1,7 +1,7 @@
 use crate::{
-    AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId,
-    Hitbox, ImageCacheProvider, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels,
-    Point, StyleRefinement, Styled, Window, point,
+    AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId, Hitbox,
+    ImageCacheProvider, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point,
+    StyleRefinement, Styled, Window, point,
 };
 use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
@@ -44,7 +44,6 @@ impl Div {
         self.image_cache = Some(Box::new(cache));
         self
     }
-
 }
 
 /// A frame state for a `Div` element, which contains layout IDs for its children.
