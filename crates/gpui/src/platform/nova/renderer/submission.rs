@@ -4,12 +4,19 @@ use super::*;
 const INTERACTIVE_RESIZE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 #[cfg(target_os = "windows")]
 const INTERACTIVE_RESIZE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(40);
+#[cfg(target_os = "windows")]
+const INTERACTIVE_RESIZE_SETTLE_GRACE: std::time::Duration = std::time::Duration::from_millis(12);
+#[cfg(target_os = "windows")]
+const INTERACTIVE_RESIZE_MAX_STALE: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy)]
 struct InteractiveResizePacing {
     last_applied_at: Instant,
     min_interval: std::time::Duration,
+    target_width: u32,
+    target_height: u32,
+    target_changed_at: Instant,
 }
 
 #[cfg(target_os = "windows")]
@@ -93,11 +100,12 @@ impl NovaRenderer {
     /// Resize only after every tracked frame submission has completed.
     ///
     /// Interactive Windows resize uses this non-blocking gate so the event loop
-    /// can keep presenting the stretched previous buffer instead of waiting on a fence.
-    /// Exact swapchain/resource recreation is additionally paced independently of
-    /// the monitor refresh rate. High-refresh displays can otherwise rebuild the
-    /// DX12/Vulkan swapchain and size-dependent attachments 120-240 times per second,
-    /// which produces the visible resize judder even when ordinary frame rendering is fast.
+    /// can keep presenting the previous buffer while GPU work retires. Exact
+    /// swapchain/resource recreation is paced independently of monitor refresh rate
+    /// and coalesces a continuously moving resize target. Without this, a 120-240 Hz
+    /// desktop can rebuild DX12/Vulkan swapchains plus path/depth/blur attachments at
+    /// pointer-event frequency, which is substantially more expensive than drawing a
+    /// normal frame and manifests as resize judder despite otherwise stable FPS.
     #[cfg(target_os = "windows")]
     pub(crate) fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
         let width = size.width.0.max(1) as u32;
@@ -112,13 +120,19 @@ impl NovaRenderer {
         }
 
         let now = Instant::now();
-        if interactive_resize_should_defer(self, now) {
+        if interactive_resize_should_defer(self, width, height, now) {
             return Ok(false);
         }
 
         let started_at = Instant::now();
         self.resize(size)?;
-        record_interactive_resize(self, started_at.elapsed(), Instant::now());
+        record_interactive_resize(
+            self,
+            width,
+            height,
+            started_at.elapsed(),
+            Instant::now(),
+        );
         Ok(true)
     }
 
@@ -193,21 +207,54 @@ fn interactive_resize_key(renderer: &NovaRenderer) -> usize {
 }
 
 #[cfg(target_os = "windows")]
-fn interactive_resize_should_defer(renderer: &NovaRenderer, now: Instant) -> bool {
+fn interactive_resize_should_defer(
+    renderer: &NovaRenderer,
+    width: u32,
+    height: u32,
+    now: Instant,
+) -> bool {
     let key = interactive_resize_key(renderer);
     INTERACTIVE_RESIZE_PACING.with(|pacing| {
-        pacing
-            .borrow()
-            .get(&key)
-            .is_some_and(|state| {
-                now.saturating_duration_since(state.last_applied_at) < state.min_interval
-            })
+        let mut pacing = pacing.borrow_mut();
+        if pacing.len() >= 64 && !pacing.contains_key(&key) {
+            pacing.clear();
+        }
+        let state = pacing.entry(key).or_insert(InteractiveResizePacing {
+            // Make the first resize after a long idle eligible immediately. Once the
+            // drag is active, subsequent targets are coalesced below.
+            last_applied_at: now.checked_sub(INTERACTIVE_RESIZE_MAX_STALE).unwrap_or(now),
+            min_interval: INTERACTIVE_RESIZE_MIN_INTERVAL,
+            target_width: width,
+            target_height: height,
+            target_changed_at: now,
+        });
+
+        if state.target_width != width || state.target_height != height {
+            state.target_width = width;
+            state.target_height = height;
+            state.target_changed_at = now;
+        }
+
+        let since_applied = now.saturating_duration_since(state.last_applied_at);
+        if since_applied < state.min_interval {
+            return true;
+        }
+
+        // If the target is still moving faster than an ordinary display frame, keep
+        // the last presented surface and let the compositor/WSI cover the live drag.
+        // Periodically force an exact resize so a long drag never leaves layout stale,
+        // then converge quickly as soon as the pointer settles.
+        let target_is_moving =
+            now.saturating_duration_since(state.target_changed_at) < INTERACTIVE_RESIZE_SETTLE_GRACE;
+        target_is_moving && since_applied < INTERACTIVE_RESIZE_MAX_STALE
     })
 }
 
 #[cfg(target_os = "windows")]
 fn record_interactive_resize(
     renderer: &NovaRenderer,
+    width: u32,
+    height: u32,
     resize_cost: std::time::Duration,
     completed_at: Instant,
 ) {
@@ -215,19 +262,29 @@ fn record_interactive_resize(
     let min_interval = interactive_resize_interval(resize_cost);
     INTERACTIVE_RESIZE_PACING.with(|pacing| {
         let mut pacing = pacing.borrow_mut();
-        // A normal desktop process only has a handful of GPUI windows. Guard against
-        // retaining stale renderer addresses forever if an application repeatedly
-        // creates and destroys transient windows.
         if pacing.len() >= 64 && !pacing.contains_key(&key) {
             pacing.clear();
         }
-        pacing.insert(
-            key,
-            InteractiveResizePacing {
-                last_applied_at: completed_at,
-                min_interval,
-            },
-        );
+        match pacing.get_mut(&key) {
+            Some(state) => {
+                state.last_applied_at = completed_at;
+                state.min_interval = min_interval;
+                state.target_width = width;
+                state.target_height = height;
+            }
+            None => {
+                pacing.insert(
+                    key,
+                    InteractiveResizePacing {
+                        last_applied_at: completed_at,
+                        min_interval,
+                        target_width: width,
+                        target_height: height,
+                        target_changed_at: completed_at,
+                    },
+                );
+            }
+        }
     });
 }
 
