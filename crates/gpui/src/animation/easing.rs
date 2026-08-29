@@ -163,11 +163,9 @@ impl Easing {
         finite_sample_or_progress(sampled, progress)
     }
 
-    pub(crate) fn sample_bounded(&self, progress: f32) -> f32 {
-        self.sample(progress).clamp(0.0, 1.0)
-    }
-
     pub(crate) fn requires_cpu_driver(&self) -> bool {
+        // Nova materializes these samples into retained primitive ranges. Paint
+        // does not require relayout or uploading the unchanged scene.
         matches!(self, Self::Custom(_) | Self::Spring(_))
     }
 
@@ -281,9 +279,9 @@ fn finite_sample_or_progress(sampled: f32, progress: f32) -> f32 {
     }
 }
 
-pub(crate) fn sample_legacy_easing_bounded(easing: &dyn Fn(f32) -> f32, progress: f32) -> f32 {
+pub(crate) fn sample_legacy_easing(easing: &dyn Fn(f32) -> f32, progress: f32) -> f32 {
     let progress = normalize_progress(progress);
-    finite_sample_or_progress(easing(progress), progress).clamp(0.0, 1.0)
+    finite_sample_or_progress(easing(progress), progress)
 }
 
 /// Serializable easing metadata stored in styles.

@@ -475,7 +475,7 @@ impl Window {
             .backdrop_blur_source_animation_values_changed(&tick.scene_values);
         self.rendered_frame
             .scene
-            .replace_animation_values(tick.scene_values);
+            .replace_engine_animation_values(tick.scene_values);
         let viewport = Bounds::new(Point::default(), self.viewport_size);
         if !tick.dirty_bounds.is_empty() {
             self.render_dirty_region = DirtyRegion::empty();

@@ -17,7 +17,6 @@ fn animated_webp_target_render_resizes_streamed_frames() {
     let bytes = animated_webp_bytes(8, 6);
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
-        max_resident_bytes: 4 * 3 * 4,
         ..AnimatedImageConfig::default()
     };
     let target = ImageRenderSize::new(4, 3).unwrap();
@@ -34,7 +33,6 @@ fn animated_webp_streaming_sequences_remain_monotonic_across_cycles() {
     let config = AnimatedImageConfig {
         prefetch_frames: 2,
         max_resident_frames: 1,
-        max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
     let image = render_image(&bytes, ImageFormat::WebP, config).unwrap();

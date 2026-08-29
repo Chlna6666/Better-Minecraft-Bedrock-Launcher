@@ -1,6 +1,19 @@
 use super::*;
 
 impl FrameUpload {
+    pub(in crate::platform::nova) fn refresh_animation_values(
+        &mut self,
+        scene: &crate::Scene,
+        summary: &mut FrameUploadSummary,
+    ) {
+        self.animation_values.clear();
+        self.sampled_animation_values.clear();
+        summary.animation_value_count = 0;
+        for value in &scene.animation_values {
+            write_scene_animation_value(self, summary, value);
+        }
+    }
+
     pub(in crate::platform::nova) fn encode(
         &mut self,
         scene: &crate::Scene,
@@ -43,6 +56,8 @@ impl FrameUpload {
             self.backdrop_blur_configs.clear();
             self.animation_bindings.clear();
             self.animation_values.clear();
+            self.animated_primitives.clear();
+            self.sampled_animation_values.clear();
             self.custom_mesh_3d_parameters.clear();
             self.custom_mesh_3d_meshes.clear();
             self.custom_mesh_3d_shaders.clear();
@@ -112,7 +127,8 @@ impl FrameUpload {
                         write_scene_animation_binding(
                             self,
                             &mut summary,
-                            quad.animation_id,
+                            quad.animation_id
+                                .map(|_| crate::Primitive::Quad(quad.clone())),
                             AnimatedPrimitiveKind::Quad,
                             primitive_index,
                         );
@@ -139,7 +155,9 @@ impl FrameUpload {
                         write_scene_animation_binding(
                             self,
                             &mut summary,
-                            shadow.animation_id,
+                            shadow
+                                .animation_id
+                                .map(|_| crate::Primitive::Shadow(shadow.clone())),
                             AnimatedPrimitiveKind::Shadow,
                             primitive_index,
                         );
@@ -165,7 +183,9 @@ impl FrameUpload {
                         write_scene_animation_binding(
                             self,
                             &mut summary,
-                            sprite.animation_id,
+                            sprite
+                                .animation_id
+                                .map(|_| crate::Primitive::MonochromeSprite(sprite.clone())),
                             AnimatedPrimitiveKind::MonochromeSprite,
                             primitive_index,
                         );
@@ -193,7 +213,9 @@ impl FrameUpload {
                         write_scene_animation_binding(
                             self,
                             &mut summary,
-                            sprite.animation_id,
+                            sprite
+                                .animation_id
+                                .map(|_| crate::Primitive::PolychromeSprite(sprite.clone())),
                             AnimatedPrimitiveKind::PolychromeSprite,
                             primitive_index,
                         );
@@ -321,7 +343,8 @@ impl FrameUpload {
                             write_scene_animation_binding(
                                 self,
                                 &mut summary,
-                                quad.animation_id,
+                                quad.animation_id
+                                    .map(|_| crate::Primitive::Quad(quad.clone())),
                                 AnimatedPrimitiveKind::Quad,
                                 primitive_index,
                             );
@@ -351,7 +374,8 @@ impl FrameUpload {
                         write_scene_animation_binding(
                             self,
                             &mut summary,
-                            blur.animation_id,
+                            blur.animation_id
+                                .map(|_| crate::Primitive::BackdropBlur(blur.clone())),
                             AnimatedPrimitiveKind::BackdropBlur,
                             primitive_index,
                         );
@@ -695,11 +719,14 @@ fn mesh_range_within_vertices(
 fn write_scene_animation_binding(
     upload: &mut FrameUpload,
     summary: &mut FrameUploadSummary,
-    animation_id: Option<crate::SceneAnimationId>,
+    primitive: Option<crate::Primitive>,
     primitive_kind: AnimatedPrimitiveKind,
     primitive_index: u32,
 ) {
-    let Some(animation_id) = animation_id else {
+    let Some(primitive) = primitive else {
+        return;
+    };
+    let Some(animation_id) = primitive.animation_id() else {
         return;
     };
     if upload.animation_bindings.len() / PACKED_ANIMATION_BINDING_BYTES >= MAX_ANIMATION_BINDINGS {
@@ -712,6 +739,11 @@ fn write_scene_animation_binding(
         primitive_index,
     );
     summary.animation_binding_count = summary.animation_binding_count.saturating_add(1);
+    upload.animated_primitives.push(AnimatedUpload::new(
+        primitive,
+        primitive_kind,
+        primitive_index,
+    ));
 }
 
 fn write_scene_animation_value(
@@ -734,4 +766,5 @@ fn write_scene_animation_value(
         value.to,
     );
     summary.animation_value_count = summary.animation_value_count.saturating_add(1);
+    upload.sampled_animation_values.push(*value);
 }

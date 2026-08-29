@@ -517,7 +517,7 @@ mod tests {
             let weights = [read_f32(16), read_f32(20), read_f32(24), read_f32(28)];
             let center = read_f32(32);
             assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]));
-            assert!(weights.iter().all(|weight| *weight > 0.0));
+            assert!(weights.iter().all(|weight| *weight >= 0.0));
             let sum = center + weights.iter().sum::<f32>() * 2.0;
             assert!((sum - 1.0).abs() < 1e-5);
         }

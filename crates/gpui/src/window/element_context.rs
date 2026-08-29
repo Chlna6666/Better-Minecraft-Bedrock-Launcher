@@ -174,6 +174,28 @@ impl Window {
         result
     }
 
+    pub(crate) fn with_sampled_scene_animation<R>(
+        &mut self,
+        property: crate::TransitionProperty,
+        progress: f32,
+        from: [f32; 4],
+        to: [f32; 4],
+        paint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint();
+        let animation_id = self.next_frame.scene.allocate_animation_id();
+        self.next_frame
+            .scene
+            .push_animation_value(crate::SceneAnimationValue {
+                animation_id,
+                property,
+                progress: if progress.is_finite() { progress } else { 0.0 },
+                from,
+                to,
+            });
+        self.with_scene_animation(animation_id, property, paint)
+    }
+
     pub(crate) fn with_element_scale<R>(
         &mut self,
         bounds: Bounds<Pixels>,

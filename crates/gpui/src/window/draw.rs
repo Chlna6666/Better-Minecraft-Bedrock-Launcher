@@ -136,7 +136,7 @@ impl Window {
             .scene_values(self.animation_time());
         self.next_frame
             .scene
-            .replace_animation_values(scene_animation_values);
+            .replace_engine_animation_values(scene_animation_values);
         self.backdrop_blur_refresh_required = self
             .next_frame
             .scene

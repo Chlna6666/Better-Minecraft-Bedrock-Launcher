@@ -20,11 +20,7 @@ pub(super) fn write_animation_value(
     from: [f32; 4],
     to: [f32; 4],
 ) {
-    let progress = if progress.is_finite() {
-        progress.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let progress = if progress.is_finite() { progress } else { 0.0 };
 
     write_u32_vec(bytes, animation_id.0);
     write_u32_vec(bytes, property as u32);

@@ -646,7 +646,7 @@ fn animation_value_packer_matches_shader_storage_stride() {
     assert_eq!(bytes.len(), PACKED_ANIMATION_VALUE_BYTES);
     assert_eq!(read_u32_at(&bytes, 0), 7);
     assert_eq!(read_u32_at(&bytes, 4), AnimationProperty::Opacity as u32);
-    assert_eq!(read_f32_at(&bytes, 8), 1.0);
+    assert_eq!(read_f32_at(&bytes, 8), 1.25);
     assert_eq!(read_f32_at(&bytes, 16), 0.0);
     assert_eq!(read_f32_at(&bytes, 28), 3.0);
     assert_eq!(read_f32_at(&bytes, 32), 4.0);
@@ -2367,6 +2367,7 @@ fn nova_shader_divisions_are_guarded_or_constant() {
         "/ max(clip_position.w, 0.0001)",
         "/ max(globals.viewport_size, vec2<f32>(1.0))",
         "/ max(safe_alpha * safe_k + 1.0, SHADER_EPSILON)",
+        "/ max(color.a, SHADER_EPSILON)",
         "/ underline_height",
         "/ sqrt(1.0 + dSine * dSine)",
     ];
@@ -2694,7 +2695,7 @@ fn nova_path_rasterization_has_solid_background_fast_path() {
 #[test]
 fn nova_vertex_only_storage_buffers_are_not_visible_to_fragment_stage() {
     let renderer_source = nova_runtime_source();
-    for binding in [2_u32, 3, 6, 7, 8, 9, 15, 16] {
+    for binding in [2_u32, 3, 6, 7, 8, 9, 16] {
         let binding_marker = format!("binding: {binding},");
         let entry_source = renderer_source
             .match_indices(&binding_marker)

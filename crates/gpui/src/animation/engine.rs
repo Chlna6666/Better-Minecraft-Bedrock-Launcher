@@ -20,10 +20,26 @@ struct AnimationTimelineKey {
 #[derive(Clone, Debug)]
 struct AnimationTimeline {
     spec: AnimationSpec,
+    spring: Option<super::Spring>,
     started_at: Instant,
     driver: AnimationDriver,
     bounds: Option<Bounds<Pixels>>,
     scene_animation: Option<SceneAnimation>,
+}
+
+impl AnimationTimeline {
+    fn sample(&self, now: Instant) -> TimelineSample {
+        let elapsed = now.saturating_duration_since(self.started_at);
+        if let Some(spring) = self.spring {
+            let sample = spring.sample_with_velocity(elapsed.as_secs_f32(), 0.0);
+            return TimelineSample {
+                raw_progress: sample.progress,
+                eased_progress: if sample.done { 1.0 } else { sample.progress },
+                done: sample.done,
+            };
+        }
+        self.spec.sample_elapsed(elapsed)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -115,6 +131,7 @@ pub struct AnimationTick {
 #[derive(Default)]
 pub struct AnimationEngine {
     timelines: FxHashMap<AnimationTimelineKey, AnimationTimeline>,
+    completed_scene_values: FxHashMap<AnimationTimelineKey, SceneAnimationValue>,
     timelines_by_element: FxHashMap<Rc<GlobalElementId>, SmallVec<[TransitionProperty; 4]>>,
     visual_timeline_keys: FxHashSet<AnimationTimelineKey>,
     layout_timeline_keys: FxHashSet<AnimationTimelineKey>,
@@ -162,13 +179,14 @@ impl AnimationEngine {
             element_id: element_id.clone(),
             property,
         };
+        self.completed_scene_values.remove(&key);
         self.remove_driver_index(&key);
         let started_at = self
             .timelines
             .get(&key)
             .and_then(|timeline| {
                 let elapsed = now.saturating_duration_since(timeline.started_at);
-                let sample = timeline.spec.sample_elapsed(elapsed);
+                let sample = timeline.sample(now);
                 let reference_iteration = timeline.spec.active_iteration_at_elapsed(elapsed);
                 now.checked_sub(
                     spec.elapsed_for_raw_progress(sample.raw_progress, reference_iteration),
@@ -183,6 +201,7 @@ impl AnimationEngine {
             key.clone(),
             AnimationTimeline {
                 spec,
+                spring: None,
                 started_at,
                 driver,
                 bounds,
@@ -258,6 +277,8 @@ impl AnimationEngine {
 
     /// Cancel all timelines for an element.
     pub fn cancel_element(&mut self, element_id: &GlobalElementId) {
+        self.completed_scene_values
+            .retain(|key, _| key.element_id.as_ref() != element_id);
         let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
             return;
         };
@@ -292,11 +313,7 @@ impl AnimationEngine {
                 element_id: indexed_element_id.clone(),
                 property,
             })
-            .map(|timeline| {
-                timeline
-                    .spec
-                    .sample_elapsed(now.saturating_duration_since(timeline.started_at))
-            })
+            .map(|timeline| timeline.sample(now))
     }
 
     /// Update the visual bounds associated with an element property timeline.
@@ -340,6 +357,23 @@ impl AnimationEngine {
         true
     }
 
+    pub(crate) fn set_transition_spring(
+        &mut self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        spring: super::Spring,
+    ) {
+        let Some(element_id) = self.indexed_element_id(element_id).cloned() else {
+            return;
+        };
+        if let Some(timeline) = self.timelines.get_mut(&AnimationTimelineKey {
+            element_id,
+            property,
+        }) {
+            timeline.spring = Some(spring);
+        }
+    }
+
     pub(crate) fn transition_driver(
         &self,
         element_id: &GlobalElementId,
@@ -355,6 +389,8 @@ impl AnimationEngine {
     }
 
     pub(crate) fn retain_scene_animations(&mut self, live_ids: &FxHashSet<SceneAnimationId>) {
+        self.completed_scene_values
+            .retain(|_, value| live_ids.contains(&value.animation_id));
         let stale_keys = self
             .timelines
             .iter()
@@ -375,9 +411,7 @@ impl AnimationEngine {
             .iter()
             .filter_map(|(key, timeline)| {
                 let animation = timeline.scene_animation?;
-                let sample = timeline
-                    .spec
-                    .sample_elapsed(now.saturating_duration_since(timeline.started_at));
+                let sample = timeline.sample(now);
                 Some(SceneAnimationValue {
                     animation_id: animation.id,
                     property: key.property,
@@ -386,6 +420,7 @@ impl AnimationEngine {
                     to: animation.to,
                 })
             })
+            .chain(self.completed_scene_values.values().copied())
             .collect()
     }
 
@@ -444,24 +479,29 @@ impl AnimationEngine {
         let mut has_gpu_or_paint = false;
         let mut has_layout = false;
         let mut dirty_bounds = SmallVec::new();
-        let mut scene_values = SmallVec::new();
+        let mut scene_values: SmallVec<[SceneAnimationValue; 4]> =
+            self.completed_scene_values.values().copied().collect();
         for key in keys {
             let Some(timeline) = self.timelines.get(&key) else {
                 self.remove_driver_index(&key);
                 continue;
             };
-            let sample = timeline
-                .spec
-                .sample_elapsed(now.saturating_duration_since(timeline.started_at));
+            let sample = timeline.sample(now);
+            let repeats = timeline.spring.is_some()
+                && matches!(timeline.spec.repeat, super::RepeatMode::Forever);
 
             if let Some(animation) = timeline.scene_animation {
-                scene_values.push(SceneAnimationValue {
+                let value = SceneAnimationValue {
                     animation_id: animation.id,
                     property: key.property,
                     progress: sample.eased_progress,
                     from: animation.from,
                     to: animation.to,
-                });
+                };
+                scene_values.push(value);
+                if sample.done && !repeats {
+                    self.completed_scene_values.insert(key.clone(), value);
+                }
             }
 
             match timeline.driver {
@@ -475,7 +515,13 @@ impl AnimationEngine {
             }
 
             if sample.done {
-                self.remove_timeline(&key);
+                if repeats {
+                    if let Some(timeline) = self.timelines.get_mut(&key) {
+                        timeline.started_at = now;
+                    }
+                } else {
+                    self.remove_timeline(&key);
+                }
                 continue;
             }
         }

@@ -6,6 +6,7 @@ mod init;
 mod mesh_cache;
 mod mesh_cache_release;
 mod present;
+mod retained_upload;
 mod submission;
 mod surface_lifecycle;
 
@@ -112,6 +113,7 @@ pub(crate) struct NovaRenderer {
     path_texture: TextureId,
     path_texture_view: TextureViewId,
     frame_upload: FrameUpload,
+    retained_upload: retained_upload::RetainedUpload,
     draw_step_scratch: DrawStepScratch,
     current_size: DrawableSize,
     pending_drawable_size: Option<Size<DevicePixels>>,
@@ -142,24 +144,6 @@ struct DrawStepScratch {
 impl NovaRenderer {
     pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
-    }
-
-    fn pack_scene(
-        &mut self,
-        scene: &crate::Scene,
-        backdrop_blur_quality: BackdropBlurQuality,
-    ) -> FrameUploadSummary {
-        crate::diagnostics::performance_metrics::reset_frame_upload_metrics();
-        let started_at = Instant::now();
-        let upload = self.frame_upload.encode(
-            scene,
-            self.current_size,
-            &self.rendering_parameters,
-            self.surface_alpha.outputs_premultiplied_alpha(),
-            backdrop_blur_quality,
-        );
-        crate::diagnostics::performance_metrics::record_scene_pack_time(started_at.elapsed());
-        upload
     }
 
     pub(crate) fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {

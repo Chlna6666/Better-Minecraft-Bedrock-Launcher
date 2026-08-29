@@ -417,9 +417,9 @@ impl WindowsRenderer {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no Windows nova renderer candidates")))
     }
 
-    pub fn resize(&mut self, size: Size<DevicePixels>) -> Result<()> {
+    pub fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
         match self {
-            Self::Nova(renderer) => renderer.resize(size),
+            Self::Nova(renderer) => renderer.try_resize(size),
         }
     }
 
@@ -967,6 +967,8 @@ impl WindowsWindow {
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
+        // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
+        self.request_frame(RequestFrameOptions::from_refresh());
     }
 
     pub(crate) fn dispatch_pending_resize(&self) {
@@ -989,13 +991,23 @@ impl WindowsWindow {
         };
 
         self.0.renderer_resize_retry_pending.set(false);
-        if let Err(error) = renderer.resize(size) {
-            log::warn!("failed to resize Windows renderer: {error:#}");
-            self.0.pending_renderer_size.set(Some(size));
-            if !self.0.renderer_resize_retry_pending.replace(true) {
-                self.request_frame(RequestFrameOptions::from_refresh());
+        match renderer.try_resize(size) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.0.pending_renderer_size.set(Some(size));
+                if !self.0.renderer_resize_retry_pending.replace(true) {
+                    self.request_frame(RequestFrameOptions::from_refresh());
+                }
+                return false;
             }
-            return false;
+            Err(error) => {
+                log::warn!("failed to resize Windows renderer: {error:#}");
+                self.0.pending_renderer_size.set(Some(size));
+                if !self.0.renderer_resize_retry_pending.replace(true) {
+                    self.request_frame(RequestFrameOptions::from_refresh());
+                }
+                return false;
+            }
         }
 
         self.0.renderer_resize_retry_pending.set(false);

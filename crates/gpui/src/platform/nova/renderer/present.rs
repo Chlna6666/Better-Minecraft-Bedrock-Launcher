@@ -14,8 +14,6 @@ struct FrameBufferTargets {
     underline: BufferId,
     backdrop_blur_pass: BufferId,
     backdrop_blur: BufferId,
-    animation_binding: BufferId,
-    animation_value: BufferId,
     custom_mesh_3d_parameters: BufferId,
 }
 
@@ -33,8 +31,6 @@ impl NovaRenderer {
             underline: self.underline_buffer,
             backdrop_blur_pass: self.backdrop_blur_pass_buffer,
             backdrop_blur: self.backdrop_blur_buffer,
-            animation_binding: self.animation_binding_buffer,
-            animation_value: self.animation_value_buffer,
             custom_mesh_3d_parameters: self.custom_mesh_3d_parameters_buffer,
         }
     }
@@ -45,10 +41,14 @@ fn upload_frame_buffers<D>(
     buffers: FrameBufferTargets,
     frame_upload: &FrameUpload,
     has_backdrop_blurs: bool,
+    upload_static: bool,
 ) -> Result<()>
 where
     D: BackendResources,
 {
+    if !upload_static {
+        return upload_animated_buffers(device, buffers, frame_upload);
+    }
     device.write_buffer(buffers.global, 0, &frame_upload.globals)?;
     device.write_buffer(buffers.text_raster, 0, &frame_upload.text_raster_params)?;
     if !frame_upload.quads.is_empty() {
@@ -84,22 +84,39 @@ where
         )?;
         device.write_buffer(buffers.backdrop_blur, 0, &frame_upload.backdrop_blurs)?;
     }
-    if !frame_upload.animation_bindings.is_empty() {
-        device.write_buffer(
-            buffers.animation_binding,
-            0,
-            &frame_upload.animation_bindings,
-        )?;
-    }
-    if !frame_upload.animation_values.is_empty() {
-        device.write_buffer(buffers.animation_value, 0, &frame_upload.animation_values)?;
-    }
     if !frame_upload.custom_mesh_3d_parameters.is_empty() {
         device.write_buffer(
             buffers.custom_mesh_3d_parameters,
             0,
             &frame_upload.custom_mesh_3d_parameters,
         )?;
+    }
+    Ok(())
+}
+
+fn upload_animated_buffers<D: BackendResources>(
+    device: &mut D,
+    buffers: FrameBufferTargets,
+    frame_upload: &FrameUpload,
+) -> Result<()> {
+    // Animation metadata is CPU input to materialization. Current Nova shaders
+    // only consume the patched primitive buffers; uploading metadata does no work.
+    if frame_upload.has_animated_backdrop_blurs() {
+        device.write_buffer(
+            buffers.backdrop_blur_pass,
+            0,
+            &frame_upload.backdrop_blur_passes,
+        )?;
+    }
+    for primitive in &frame_upload.animated_primitives {
+        let buffer = match primitive.kind {
+            AnimatedPrimitiveKind::Quad => buffers.quad,
+            AnimatedPrimitiveKind::Shadow => buffers.shadow,
+            AnimatedPrimitiveKind::MonochromeSprite => buffers.mono_sprite,
+            AnimatedPrimitiveKind::PolychromeSprite => buffers.poly_sprite,
+            AnimatedPrimitiveKind::BackdropBlur => buffers.backdrop_blur,
+        };
+        device.write_buffer(buffer, primitive.offset(), &primitive.bytes)?;
     }
     Ok(())
 }
@@ -376,11 +393,29 @@ impl NovaRenderer {
         );
 
         let unsupported = upload.unsupported_batches;
-        let uploaded_bytes = self.frame_upload.uploaded_bytes();
-        let mapped_upload_bytes = self.frame_upload.mapped_upload_bytes(has_backdrop_blurs);
-        crate::diagnostics::performance_metrics::record_frame_upload_breakdown(
-            self.frame_upload.upload_breakdown(),
-        );
+        let upload_static = self
+            .retained_upload
+            .needs_static_upload(self.current_frame_resource_index);
+        let animated_upload_bytes = self.frame_upload.animated_upload_bytes();
+        let mapped_upload_bytes = if upload_static {
+            self.frame_upload.mapped_upload_bytes(has_backdrop_blurs)
+        } else {
+            animated_upload_bytes
+        };
+        let uploaded_bytes = mapped_upload_bytes;
+        let breakdown = if upload_static {
+            let mut breakdown = self.frame_upload.upload_breakdown();
+            // Metadata is CPU-only and animated primitives are already counted in
+            // their full static buffers on the first upload for each frame slot.
+            breakdown.animation_bytes = 0;
+            breakdown
+        } else {
+            crate::diagnostics::performance_metrics::FrameUploadBreakdown {
+                animation_bytes: mapped_upload_bytes,
+                ..Default::default()
+            }
+        };
+        crate::diagnostics::performance_metrics::record_frame_upload_breakdown(breakdown);
         crate::diagnostics::performance_metrics::record_backdrop_blur_primitive_count(
             upload.backdrop_blur_count as usize,
         );
@@ -499,6 +534,7 @@ impl NovaRenderer {
                     frame_buffers,
                     &self.frame_upload,
                     has_backdrop_blurs,
+                    upload_static,
                 )?;
                 let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
                 let atlas_started = Instant::now();
@@ -518,7 +554,7 @@ impl NovaRenderer {
                 atlas_texture_region_count = atlas_stats.upload_count;
                 atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
-                    self.frame_upload.uploaded_bytes(),
+                    (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
                     mesh_upload_bytes,
                     mesh_retained_bytes,
                     mesh_buffer_count,
@@ -602,6 +638,7 @@ impl NovaRenderer {
                     frame_buffers,
                     &self.frame_upload,
                     has_backdrop_blurs,
+                    upload_static,
                 )?;
                 let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
                     self.gpu_atlas_textures
@@ -618,7 +655,7 @@ impl NovaRenderer {
                 atlas_texture_region_count = atlas_stats.upload_count;
                 atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
-                    self.frame_upload.uploaded_bytes(),
+                    (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
                     mesh_upload_bytes,
                     mesh_retained_bytes,
                     mesh_buffer_count,
@@ -681,6 +718,7 @@ impl NovaRenderer {
                     frame_buffers,
                     &self.frame_upload,
                     has_backdrop_blurs,
+                    upload_static,
                 )?;
                 let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
                 let atlas_started = Instant::now();
@@ -700,7 +738,7 @@ impl NovaRenderer {
                 atlas_texture_region_count = atlas_stats.upload_count;
                 atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
-                    self.frame_upload.uploaded_bytes(),
+                    (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
                     mesh_upload_bytes,
                     mesh_retained_bytes,
                     mesh_buffer_count,
@@ -816,6 +854,8 @@ impl NovaRenderer {
             );
         }
         render_result?;
+        self.retained_upload
+            .mark_uploaded(self.current_frame_resource_index);
         if has_backdrop_blurs {
             self.backdrop_blur_cache_valid = true;
             self.backdrop_blur_cache_quality = Some(backdrop_blur_quality);

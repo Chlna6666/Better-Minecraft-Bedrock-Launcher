@@ -160,6 +160,18 @@ impl NovaBackend {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    pub(super) fn has_pending_resize_work(&mut self) -> Result<bool> {
+        match self {
+            #[cfg(feature = "nova-gfx-dx12")]
+            Self::Dx12(device) => Ok(device.has_pending_gpu_work()?),
+            #[cfg(feature = "nova-gfx-vulkan")]
+            Self::Vulkan(_) => Ok(false),
+            #[cfg(not(any(feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan")))]
+            Self::Unavailable => Ok(false),
+        }
+    }
+
     pub(super) fn trim_memory(&mut self, level: GfxMemoryTrimLevel) -> Result<()> {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]

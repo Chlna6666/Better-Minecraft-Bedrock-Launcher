@@ -72,6 +72,20 @@ impl NovaRenderer {
         self.wait_for_pending_submissions()
     }
 
+    /// Resize only after every tracked frame submission has completed.
+    ///
+    /// Interactive Windows resize uses this non-blocking gate so the event loop
+    /// can keep presenting the stretched previous buffer instead of waiting on a fence.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
+        self.poll_pending_submissions()?;
+        if !self.pending_submissions.is_empty() || self.backend.has_pending_resize_work()? {
+            return Ok(false);
+        }
+        self.resize(size)?;
+        Ok(true)
+    }
+
     pub(super) fn submit_present_frame<D>(
         submission_mode: GpuSubmissionMode,
         async_capabilities: BackendAsyncCapabilities,

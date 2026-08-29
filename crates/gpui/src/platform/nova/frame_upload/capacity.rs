@@ -17,6 +17,13 @@ impl FrameUpload {
             self.backdrop_blurs.capacity(),
             self.animation_bindings.capacity(),
             self.animation_values.capacity(),
+            self.animated_primitives.capacity() * std::mem::size_of::<AnimatedUpload>(),
+            self.animated_primitives
+                .iter()
+                .map(|primitive| primitive.bytes.capacity())
+                .sum(),
+            self.sampled_animation_values.capacity()
+                * std::mem::size_of::<crate::SceneAnimationValue>(),
             self.custom_mesh_3d_parameters.capacity(),
             self.path_paint_key_scratch.capacity(),
         ]
@@ -84,6 +91,8 @@ impl FrameUpload {
             64 * PACKED_ANIMATION_VALUE_BYTES,
             multiplier,
         );
+        trim_upload_vec(&mut self.animated_primitives, 64, multiplier);
+        trim_upload_vec(&mut self.sampled_animation_values, 64, multiplier);
         trim_upload_vec(
             &mut self.custom_mesh_3d_parameters,
             16 * PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES,
@@ -158,7 +167,10 @@ impl FrameUpload {
     }
 
     pub(in crate::platform::nova) fn mapped_upload_bytes(&self, has_backdrop_blurs: bool) -> usize {
-        let mut bytes = self.uploaded_bytes();
+        let mut bytes = self
+            .uploaded_bytes()
+            .saturating_sub(self.animation_bindings.len())
+            .saturating_sub(self.animation_values.len());
         if !has_backdrop_blurs {
             bytes = bytes
                 .saturating_sub(self.backdrop_blur_passes.len())

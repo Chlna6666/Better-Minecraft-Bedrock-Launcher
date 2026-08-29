@@ -1208,6 +1208,21 @@ fn click_notify_requests_dirty_frame_without_animation(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn click_is_cancelled_when_pointer_is_released_outside(cx: &mut TestAppContext) {
+    let (view, mut cx) = cx.add_window_view(|_, _| ClickNotifyTestView::default());
+    let bounds = cx
+        .debug_bounds("click-notify-target")
+        .expect("click target should render");
+    let outside = point(bounds.right() + px(20.0), bounds.bottom() + px(20.0));
+
+    cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+
+    view.read_with(cx, |view, _| assert_eq!(view.clicks, 0));
+}
+
+#[gpui::test]
 fn on_next_frame_requests_animation_frame(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {

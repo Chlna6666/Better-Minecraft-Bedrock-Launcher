@@ -199,9 +199,15 @@ impl Window {
         property: TransitionProperty,
         spec: AnimationSpec,
         bounds: Bounds<Pixels>,
-        from: [f32; 4],
-        to: [f32; 4],
+        mut from: [f32; 4],
+        mut to: [f32; 4],
     ) -> SceneAnimationId {
+        if property == TransitionProperty::Translation {
+            for index in 0..2 {
+                from[index] *= self.scale_factor();
+                to[index] *= self.scale_factor();
+            }
+        }
         let animation_id = SceneAnimationId(self.next_scene_animation_id.get());
         self.next_scene_animation_id
             .set(self.next_scene_animation_id.get().wrapping_add(1));
@@ -215,6 +221,17 @@ impl Window {
         drop(engine);
         self.request_animation_engine_frame(driver);
         animation_id
+    }
+
+    pub(crate) fn set_scene_animation_spring(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        spring: crate::Spring,
+    ) {
+        self.animation_engine
+            .borrow_mut()
+            .set_transition_spring(element_id, property, spring);
     }
 
     /// Notify the current view at or after the given deadline without requesting

@@ -622,7 +622,7 @@ impl LegacyAnimationTimeline {
         });
         let progress = specs
             .get(sample.animation_index)
-            .map_or(1.0, |spec| spec.easing.sample_bounded(sample.raw_progress));
+            .map_or(1.0, |spec| spec.easing.sample(sample.raw_progress));
         LegacyAnimationSample {
             animation_index: sample.animation_index,
             progress,
@@ -647,7 +647,7 @@ impl LegacyAnimationTimeline {
         });
         let progress = easing
             .as_ref()
-            .map_or(1.0, |easing| easing.sample_bounded(sample.raw_progress));
+            .map_or(1.0, |easing| easing.sample(sample.raw_progress));
         LegacyAnimationSample {
             animation_index: sample.animation_index,
             progress,

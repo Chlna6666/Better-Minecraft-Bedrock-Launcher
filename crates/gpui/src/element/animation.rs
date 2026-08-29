@@ -6,12 +6,14 @@ use std::{
 use crate::{
     AnimationDriver, AnimationSpec, AnyElement, App, Bounds, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LegacyAnimationTimeline, LegacyAnimationTiming, Pixels, Point,
-    Radians, RepeatMode, SceneAnimationId, TransitionProperty, Window,
-    sample_legacy_easing_bounded,
+    Radians, RepeatMode, SceneAnimationId, TransformOrigin, TransitionProperty, Window,
+    sample_legacy_easing,
 };
 
 pub use easing::*;
+mod timing;
 use smallvec::SmallVec;
+use timing::sample_element_animation;
 
 const REPEATING_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(3);
 
@@ -22,11 +24,12 @@ pub struct Animation {
     pub duration: Duration,
     /// Whether to repeat this animation when it finishes
     pub oneshot: bool,
-    /// A function that takes a delta between 0 and 1 and returns a new delta
-    /// between 0 and 1 based on the given easing function.
+    /// A function that takes a delta between 0 and 1 and returns finite eased
+    /// progress, which may overshoot. Clamp bounded properties at application.
     pub easing: Rc<dyn Fn(f32) -> f32>,
     spec: AnimationSpec,
     property: Option<AnimationProperty>,
+    spring: Option<crate::Spring>,
 }
 
 /// A renderer-owned visual property animated by [`AnimationExt::with_animation`].
@@ -69,6 +72,49 @@ impl AnimationProperty {
         }
     }
 
+    /// Animate scale and opacity around one normalized transform origin.
+    pub fn scale_opacity(
+        from_scale: f32,
+        to_scale: f32,
+        from_opacity: f32,
+        to_opacity: f32,
+        origin: TransformOrigin,
+    ) -> Self {
+        Self {
+            property: TransitionProperty::Transform,
+            from: [
+                from_scale,
+                from_opacity.clamp(0.0, 1.0),
+                origin.x,
+                origin.y,
+            ],
+            to: [
+                to_scale,
+                to_opacity.clamp(0.0, 1.0),
+                origin.x,
+                origin.y,
+            ],
+        }
+    }
+
+    fn resolved_values(
+        self,
+        bounds: Bounds<Pixels>,
+        scale_factor: f32,
+    ) -> ([f32; 4], [f32; 4]) {
+        if self.property != TransitionProperty::Transform {
+            return (self.from, self.to);
+        }
+        let origin = TransformOrigin::new(self.from[2], self.from[3]).resolve(bounds);
+        let mut from = self.from;
+        let mut to = self.to;
+        from[2] = origin.x.0 * scale_factor;
+        from[3] = origin.y.0 * scale_factor;
+        to[2] = from[2];
+        to[3] = from[3];
+        (from, to)
+    }
+
     fn dirty_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
         match self.property {
             TransitionProperty::Translation => {
@@ -87,6 +133,15 @@ impl Animation {
         Self::from_spec(AnimationSpec::new(duration))
     }
 
+    /// Animate a spring in physical seconds until both position and velocity settle.
+    /// Unlike a duration-based easing curve, this does not truncate the spring's tail.
+    pub fn spring(spring: crate::Spring) -> Self {
+        let mut animation =
+            Self::from_spec(AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint));
+        animation.spring = Some(spring);
+        animation
+    }
+
     /// Create an element animation from an engine timing specification.
     pub fn from_spec(spec: AnimationSpec) -> Self {
         let easing = spec.easing.clone();
@@ -96,6 +151,7 @@ impl Animation {
             easing: Rc::new(move |progress| easing.sample(progress)),
             spec,
             property: None,
+            spring: None,
         }
     }
 
@@ -108,8 +164,9 @@ impl Animation {
 
     /// Set the easing function to use for this animation.
     /// The easing function will take a time delta between 0 and 1 and return a new delta
-    /// between 0 and 1
+    /// that may overshoot the 0 to 1 range.
     pub fn with_easing(mut self, easing: impl Fn(f32) -> f32 + 'static) -> Self {
+        self.spring = None;
         let easing = Rc::new(easing);
         self.easing = easing.clone();
         self.spec.easing = crate::Easing::Custom(easing);
@@ -117,6 +174,9 @@ impl Animation {
     }
 
     /// Declare a visual property that GPUI can animate without relayout.
+    /// The animator callback is evaluated only for the initial scene, so it must
+    /// not animate additional properties. Leave such combined animations on the
+    /// layout path, or declare only the property owned by the renderer.
     pub fn with_property(mut self, property: AnimationProperty) -> Self {
         self.property = Some(property);
         self
@@ -165,9 +225,103 @@ pub trait AnimationExt {
             animations: animations.into(),
         }
     }
+
+
+    /// Paint this element into a retained scene animation using a caller-sampled progress value.
+    fn with_sampled_animation(
+        self,
+        property: AnimationProperty,
+        progress: f32,
+    ) -> SampledAnimationElement<Self>
+    where
+        Self: Sized,
+    {
+        SampledAnimationElement {
+            element: Some(self),
+            property,
+            progress,
+        }
+    }
 }
 
 impl<E: IntoElement + 'static> AnimationExt for E {}
+
+/// An element whose static primitives are retained while the caller supplies motion progress.
+pub struct SampledAnimationElement<E> {
+    element: Option<E>,
+    property: AnimationProperty,
+    progress: f32,
+}
+
+impl<E: IntoElement + 'static> IntoElement for SampledAnimationElement<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (crate::LayoutId, Self::RequestLayoutState) {
+        let mut element = self
+            .element
+            .take()
+            .expect("sampled animation element should only be laid out once")
+            .into_any_element();
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let (from, to) = self
+            .property
+            .resolved_values(bounds, window.scale_factor());
+        window.with_sampled_scene_animation(
+            self.property.property,
+            self.progress,
+            from,
+            to,
+            |window| element.paint(window, cx),
+        );
+    }
+}
 
 /// A GPUI element that applies an animation to another element
 pub struct AnimationElement<E> {
@@ -201,6 +355,7 @@ struct SceneAnimationState {
     animation_id: SceneAnimationId,
     property: AnimationProperty,
     spec: AnimationSpec,
+    spring: Option<crate::Spring>,
 }
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
@@ -241,24 +396,10 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
             let now = window.animation_time();
             let mut state =
                 state.unwrap_or_else(|| AnimationState(LegacyAnimationTimeline::new(now)));
-            let sample = state
-                .0
-                .sample_raw_with(self.animations.len(), now, |animation_ix| {
-                    let animation = &self.animations[animation_ix];
-                    LegacyAnimationTiming {
-                        duration: animation.duration,
-                        oneshot: animation.oneshot,
-                    }
-                });
-            let animation_ix = sample.animation_index;
-            let delta = self.animations.get(animation_ix).map_or(1.0, |animation| {
-                sample_legacy_easing_bounded(animation.easing.as_ref(), sample.raw_progress)
-            });
+            let (animation_ix, delta, done) =
+                sample_element_animation(&mut state.0, &self.animations, now);
 
-            debug_assert!(
-                (0.0..=1.0).contains(&delta),
-                "delta should always be between 0 and 1"
-            );
+            debug_assert!(delta.is_finite(), "eased progress must be finite");
 
             let element = self.element.take().expect("should only be called once");
             let mut element = (self.animator)(element, animation_ix, delta).into_any_element();
@@ -267,7 +408,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                 .animations
                 .get(animation_ix)
                 .is_some_and(|animation| !animation.oneshot);
-            schedule_next_animation_frame(window, cx, now, sample.done, repeats);
+            schedule_next_animation_frame(window, cx, now, done, repeats);
 
             ((element.request_layout(window, cx), element), state)
         })
@@ -304,22 +445,43 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         };
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
+        let spring = self.animations[0].spring;
+        // Custom and physical curves may overshoot either endpoint by any amount.
+        // A viewport damage bound keeps retained motion correct under partial presentation.
+        let dirty_bounds = if property.property == TransitionProperty::Translation {
+            Bounds::new(Point::default(), window.viewport_size())
+        } else {
+            property.dirty_bounds(bounds)
+        };
         let animation_id =
             window.with_element_state(global_id, |state: Option<SceneAnimationState>, window| {
                 let state = match state {
-                    Some(state) if state.property == property && state.spec == spec => state,
-                    _ => SceneAnimationState {
-                        animation_id: window.start_scene_animation(
+                    Some(state)
+                        if state.property == property
+                            && state.spec == spec
+                            && state.spring == spring =>
+                    {
+                        state
+                    }
+                    _ => {
+                        let animation_id = window.start_scene_animation(
                             global_id,
                             property.property,
                             spec.clone(),
-                            property.dirty_bounds(bounds),
+                            dirty_bounds,
                             property.from,
                             property.to,
-                        ),
-                        property,
-                        spec,
-                    },
+                        );
+                        if let Some(spring) = spring {
+                            window.set_scene_animation_spring(global_id, property.property, spring);
+                        }
+                        SceneAnimationState {
+                            animation_id,
+                            property,
+                            spec,
+                            spring,
+                        }
+                    }
                 };
                 (state.animation_id, state)
             });
@@ -338,7 +500,14 @@ impl<E> AnimationElement<E> {
 
     fn initial_scene_animation_sample(&self) -> Option<(usize, f32)> {
         let (_, spec) = self.scene_animation()?;
-        Some((0, spec.sample_elapsed(Duration::ZERO).eased_progress))
+        Some((
+            0,
+            if self.animations[0].spring.is_some() {
+                0.0
+            } else {
+                spec.sample_elapsed(Duration::ZERO).eased_progress
+            },
+        ))
     }
 }
 

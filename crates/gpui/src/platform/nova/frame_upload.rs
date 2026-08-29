@@ -1,5 +1,6 @@
 use super::*;
 
+mod animated;
 mod animation;
 #[cfg(test)]
 mod atlas_pixels_tests;
@@ -13,6 +14,7 @@ mod path_cache;
 mod quality;
 pub(super) mod upload_encoding;
 pub(super) mod upload_queue;
+pub(super) use animated::*;
 pub(super) use animation::*;
 pub(super) use batch::*;
 pub(super) use blur::*;

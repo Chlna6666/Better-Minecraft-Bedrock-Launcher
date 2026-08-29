@@ -49,6 +49,19 @@ struct ImagePaintContext {
     animation_config: crate::AnimatedImageConfig,
 }
 
+fn image_sprite_bounds(
+    bounds: Bounds<ScaledPixels>,
+    visual_transform: ElementVisualTransform,
+) -> Bounds<ScaledPixels> {
+    if visual_transform.scale == 1.0 && visual_transform.translation == Point::default() {
+        bounds
+            .map_origin(|origin| origin.floor())
+            .map_size(|size| size.ceil())
+    } else {
+        bounds
+    }
+}
+
 fn source_crop_axis(
     source_length: i32,
     image_origin: Pixels,
@@ -156,13 +169,13 @@ impl Window {
         let content_mask = self.visual_content_mask().scale(scale_factor);
 
         let animation_id = animation_id.or_else(|| {
-            self.scene_animation.and_then(|(animation_id, property)| {
-                matches!(
-                    property,
-                    crate::TransitionProperty::Rotation | crate::TransitionProperty::Translation
-                )
-                .then_some(animation_id)
-            })
+            self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Rotation,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ])
         });
         self.next_frame.scene.insert_primitive(MonochromeSprite {
             order: 0,
@@ -420,10 +433,13 @@ impl Window {
             order: 0,
             pad: 0,
             grayscale,
-            animation_id: None,
-            bounds: bounds
-                .map_origin(|origin| origin.floor())
-                .map_size(|size| size.ceil()),
+            animation_id: self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]),
+            bounds: image_sprite_bounds(bounds, context.visual_transform),
             content_mask: context.content_mask.clone(),
             corner_radii,
             tile,
@@ -457,7 +473,12 @@ impl Window {
         let opacity = self.element_opacity();
         self.next_frame.scene.insert_primitive(PaintBackdropBlur {
             order: 0,
-            animation_id: None,
+            animation_id: self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]),
             bounds,
             content_mask,
             corner_radii: corner_radii.scale(scale_factor * visual_scale),
@@ -600,8 +621,43 @@ fn releases_resident_image_element_bitmaps(level: GpuiMemoryTrimLevel) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{releases_resident_image_element_bitmaps, source_crop_axis};
-    use crate::{GpuiMemoryTrimLevel, px};
+    use super::{
+        ElementVisualTransform, image_sprite_bounds, releases_resident_image_element_bitmaps,
+        source_crop_axis,
+    };
+    use crate::{GpuiMemoryTrimLevel, ScaledPixels, bounds, point, px, size};
+
+    #[test]
+    fn transformed_image_bounds_keep_subpixel_precision() {
+        let input_bounds = bounds(
+            point(ScaledPixels(10.25), ScaledPixels(20.5)),
+            size(ScaledPixels(31.25), ScaledPixels(41.5)),
+        );
+
+        assert_eq!(
+            image_sprite_bounds(
+                input_bounds,
+                ElementVisualTransform::identity().then_scale(0.97, point(px(100.0), px(50.0))),
+            ),
+            input_bounds,
+        );
+    }
+
+    #[test]
+    fn untransformed_image_bounds_remain_pixel_aligned() {
+        let input_bounds = bounds(
+            point(ScaledPixels(10.25), ScaledPixels(20.5)),
+            size(ScaledPixels(31.25), ScaledPixels(41.5)),
+        );
+
+        assert_eq!(
+            image_sprite_bounds(input_bounds, ElementVisualTransform::identity()),
+            bounds(
+                point(ScaledPixels(10.0), ScaledPixels(20.0)),
+                size(ScaledPixels(32.0), ScaledPixels(42.0)),
+            ),
+        );
+    }
 
     #[test]
     fn only_aggressive_trim_releases_resident_image_element_bitmaps() {

@@ -211,7 +211,12 @@ impl Window {
             self.next_frame.scene.insert_primitive(Shadow {
                 order: 0,
                 blur_radius: shadow.blur_radius.scale(scale_factor * visual_scale),
-                animation_id: None,
+                animation_id: self.scene_animation_id_for(&[
+                    crate::TransitionProperty::Opacity,
+                    crate::TransitionProperty::Scale,
+                    crate::TransitionProperty::Transform,
+                    crate::TransitionProperty::Translation,
+                ]),
                 bounds: shadow_bounds.scale(scale_factor),
                 content_mask: content_mask.scale(scale_factor),
                 corner_radii: corner_radii.scale(scale_factor * visual_scale),
@@ -245,9 +250,12 @@ impl Window {
         let visual_scale = self.visual_scale();
         let opacity = self.element_opacity();
         let animation_id = animation_id.or_else(|| {
-            self.scene_animation.and_then(|(animation_id, property)| {
-                matches!(property, crate::TransitionProperty::Translation).then_some(animation_id)
-            })
+            self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ])
         });
         self.next_frame.scene.insert_primitive(Quad {
             order: 0,
@@ -415,7 +423,12 @@ impl Window {
             self.next_frame.scene.insert_primitive(MonochromeSprite {
                 order: 0,
                 pad: MonochromeSpriteSampling::Glyph as u32,
-                animation_id: None,
+                animation_id: self.scene_animation_id_for(&[
+                    crate::TransitionProperty::Opacity,
+                    crate::TransitionProperty::Scale,
+                    crate::TransitionProperty::Transform,
+                    crate::TransitionProperty::Translation,
+                ]),
                 bounds,
                 content_mask,
                 color: color.opacity(element_opacity).into(),
@@ -486,7 +499,12 @@ impl Window {
                 order: 0,
                 pad: 0,
                 grayscale: false,
-                animation_id: None,
+                animation_id: self.scene_animation_id_for(&[
+                    crate::TransitionProperty::Opacity,
+                    crate::TransitionProperty::Scale,
+                    crate::TransitionProperty::Transform,
+                    crate::TransitionProperty::Translation,
+                ]),
                 bounds,
                 corner_radii: Default::default(),
                 content_mask,
@@ -495,5 +513,14 @@ impl Window {
             });
         }
         Ok(())
+    }
+
+    pub(super) fn scene_animation_id_for(
+        &self,
+        properties: &[crate::TransitionProperty],
+    ) -> Option<SceneAnimationId> {
+        self.scene_animation.and_then(|(animation_id, property)| {
+            properties.contains(&property).then_some(animation_id)
+        })
     }
 }

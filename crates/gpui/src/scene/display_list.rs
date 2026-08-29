@@ -3,6 +3,7 @@ use collections::FxHashSet;
 
 use super::BoundsTree;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::geometry::{is_solid_quad, slice_range, trim_vec_capacity};
 use super::{
@@ -15,6 +16,8 @@ use super::{
 
 #[derive(Default)]
 pub(crate) struct Scene {
+    /// Identity of the last completed static display list. Animation values are independent.
+    pub(crate) revision: u64,
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
@@ -62,9 +65,11 @@ enum ScenePrimitiveKind {
 const SCENE_IDLE_TRIM_FRAMES: u16 = 45;
 const SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER: usize = 2;
 const SCENE_MIN_RETAINED_CAPACITY: usize = 24;
+const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
 
 impl Scene {
     pub fn clear(&mut self) {
+        self.revision = 0;
         let primitive_count_before_clear = self.primitive_count();
         self.recent_peak_paint_operations = self
             .recent_peak_paint_operations
@@ -328,11 +333,27 @@ impl Scene {
                 let PaintOperation::Primitive(primitive) = operation else {
                     continue;
                 };
-                if !primitive.visual_bounds().intersects(&source_region) {
-                    continue;
-                }
                 if animation_value_changed(self, primitive.animation_id(), next_values) {
-                    return true;
+                    // Geometry can enter the sampling region from outside its static bounds.
+                    // Keep spatial isolation for opacity/color changes, but conservatively
+                    // invalidate earlier transformed sources until swept bounds are available.
+                    let moves_bounds =
+                        self.animation_values
+                            .iter()
+                            .chain(next_values)
+                            .any(|value| {
+                                Some(value.animation_id) == primitive.animation_id()
+                                    && matches!(
+                                        value.property,
+                                        crate::TransitionProperty::Translation
+                                            | crate::TransitionProperty::Transform
+                                            | crate::TransitionProperty::Scale
+                                            | crate::TransitionProperty::Rotation
+                                    )
+                            });
+                    if moves_bounds || primitive.visual_bounds().intersects(&source_region) {
+                        return true;
+                    }
                 }
             }
         }
@@ -378,6 +399,7 @@ impl Scene {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
+        self.revision = 0;
         if let Some(capture) = self.blur_captures.last_mut() {
             capture.scene.push_layer(bounds);
             self.paint_operations
@@ -395,6 +417,7 @@ impl Scene {
     }
 
     pub fn pop_layer(&mut self) {
+        self.revision = 0;
         if let Some(capture) = self.blur_captures.last_mut() {
             capture.scene.pop_layer();
             self.paint_operations.push(PaintOperation::EndLayer);
@@ -409,6 +432,7 @@ impl Scene {
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
+        self.revision = 0;
         let primitive = primitive.into();
         if let Some(capture) = self.blur_captures.last_mut() {
             let operation_start = capture.scene.paint_operations.len();
@@ -442,6 +466,7 @@ impl Scene {
     }
 
     pub(crate) fn begin_blur(&mut self, config: BlurCapture) {
+        self.revision = 0;
         self.paint_operations
             .push(PaintOperation::StartBlur(config.clone()));
         self.blur_captures.push(BlurCaptureState {
@@ -451,6 +476,7 @@ impl Scene {
     }
 
     pub(crate) fn end_blur(&mut self) {
+        self.revision = 0;
         let Some(capture) = self.blur_captures.pop() else {
             debug_assert!(false, "ending an element blur without a matching begin");
             return;
@@ -514,6 +540,15 @@ impl Scene {
         values: impl IntoIterator<Item = SceneAnimationValue>,
     ) {
         self.animation_values.clear();
+        self.animation_values.extend(values);
+    }
+
+    pub(crate) fn replace_engine_animation_values(
+        &mut self,
+        values: impl IntoIterator<Item = SceneAnimationValue>,
+    ) {
+        self.animation_values
+            .retain(|value| value.animation_id.0 < ENGINE_ANIMATION_ID_START);
         self.animation_values.extend(values);
     }
 
@@ -715,6 +750,7 @@ impl Scene {
     }
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+        self.revision = 0;
         let range_end = range.end;
         let retain_order = !self.retained_prefix_invalid
             && self.paint_operations.len() == range.start
@@ -792,6 +828,14 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        self.finish_with_previous(None);
+    }
+
+    pub(crate) fn finish_retaining_revision(&mut self, previous: &Scene) {
+        self.finish_with_previous(Some(previous));
+    }
+
+    fn finish_with_previous(&mut self, previous: Option<&Scene>) {
         debug_assert!(
             self.blur_captures.is_empty(),
             "element blur capture must be closed before finishing a scene"
@@ -810,6 +854,19 @@ impl Scene {
         self.blurs.sort_unstable_by_key(|blur| blur.order);
         self.gpu_meshes_3d.sort_unstable_by_key(|mesh| mesh.order);
         self.prepare_batches();
+        if let Some(previous) = previous
+            && self.paint_operations.len() == previous.paint_operations.len()
+                && self
+                    .paint_operations
+                    .iter()
+                    .zip(&previous.paint_operations)
+                    .all(|(current, previous)| paint_operations_visually_match(current, previous))
+        {
+            self.revision = previous.revision;
+            return;
+        }
+        static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
+        self.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn prepared_batches(&self) -> &[PreparedSceneBatch] {
@@ -1126,6 +1183,23 @@ fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation
             current.order() == previous.order()
                 && current.bounds().intersect(&current.content_mask().bounds)
                     == previous.bounds().intersect(&previous.content_mask().bounds)
+        }
+        (PaintOperation::StartLayer(current), PaintOperation::StartLayer(previous)) => {
+            current == previous
+        }
+        (PaintOperation::EndLayer, PaintOperation::EndLayer)
+        | (PaintOperation::EndBlur, PaintOperation::EndBlur) => true,
+        (PaintOperation::StartBlur(current), PaintOperation::StartBlur(previous)) => {
+            current == previous
+        }
+        _ => false,
+    }
+}
+
+fn paint_operations_visually_match(current: &PaintOperation, previous: &PaintOperation) -> bool {
+    match (current, previous) {
+        (PaintOperation::Primitive(current), PaintOperation::Primitive(previous)) => {
+            current.visually_eq(previous)
         }
         (PaintOperation::StartLayer(current), PaintOperation::StartLayer(previous)) => {
             current == previous

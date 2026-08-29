@@ -156,7 +156,7 @@ impl Transition {
         spec.driver = resolve_driver_with_cpu_policy(
             spec.driver,
             self.properties.iter().copied(),
-            self.spec.easing.requires_cpu_driver(),
+            spec.easing.requires_cpu_driver(),
         );
 
         TransitionStyle {

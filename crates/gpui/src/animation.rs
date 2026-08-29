@@ -27,7 +27,7 @@ pub use timeline::{
 pub use transition::{Transition, TransitionProperty, TransitionStyle};
 pub use tween::Tween;
 
-pub(crate) use easing::sample_legacy_easing_bounded;
+pub(crate) use easing::sample_legacy_easing;
 pub(crate) use scheduler::merge_requested_drivers;
 
 #[cfg(test)]
@@ -521,6 +521,54 @@ mod tests {
     }
 
     #[test]
+    fn legacy_sampling_preserves_overshoot_and_sanitizes_nonfinite_values() {
+        let now = Instant::now();
+        let spec = LegacyAnimationSpec {
+            duration: Duration::from_secs(1),
+            oneshot: true,
+            easing: Easing::OutBack,
+        };
+        let sample =
+            LegacyAnimationTimeline::new(now).sample(&[spec], now + Duration::from_millis(800));
+        assert!(sample.progress > 1.0);
+        assert!(!sample.done);
+        assert!(sample_legacy_easing(&|t| Easing::OutBack.sample(t), 0.8) > 1.0);
+        assert_eq!(sample_legacy_easing(&|_| -0.2, 0.5), -0.2);
+        assert_eq!(sample_legacy_easing(&|_| f32::NAN, 0.5), 0.5);
+    }
+
+    #[test]
+    fn completed_scene_animation_holds_its_endpoint_without_scheduling_more_frames() {
+        let now = Instant::now();
+        let element = test_global_element_id("retained-endpoint");
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element,
+            TransitionProperty::Translation,
+            AnimationSpec::new(Duration::from_millis(100)),
+            now,
+        );
+        let id = crate::SceneAnimationId(7);
+        engine.bind_scene_animation(
+            &element,
+            TransitionProperty::Translation,
+            id,
+            [0.0; 4],
+            [10.0, 0.0, 0.0, 0.0],
+        );
+        let tick = engine.tick(now + Duration::from_millis(100));
+        assert_eq!(tick.active_count, 0);
+        assert_eq!(tick.scene_values[0].progress, 1.0);
+        assert_eq!(
+            engine.tick(now + Duration::from_millis(200)).scene_values[0].progress,
+            1.0
+        );
+        assert_eq!(engine.scene_values(now).len(), 1);
+        engine.retain_scene_animations(&Default::default());
+        assert!(engine.scene_values(now).is_empty());
+    }
+
+    #[test]
     fn keyframe_track_interpolates_between_keyframes() {
         let track = KeyframeTrack::new(vec![Keyframe::new(0.0, 0.0), Keyframe::new(1.0, 10.0)]);
         assert_eq!(track.sample(0.25), Some(2.5));
@@ -850,5 +898,51 @@ mod tests {
         engine.cancel_element(&element);
         assert_eq!(engine.test_index_counts(), (0, 0, 0));
         assert_eq!(engine.active_count(), 0);
+    }
+
+    #[test]
+    fn scene_spring_uses_physical_time_and_preserves_completed_value() {
+        let now = Instant::now();
+        let mut engine = AnimationEngine::new();
+        let element = test_global_element_id("physical-spring");
+        let property = TransitionProperty::Translation;
+        let spring = Spring::default();
+        engine.start_transition(
+            &element,
+            property,
+            AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
+            now,
+        );
+        engine.set_transition_spring(&element, property, spring);
+        engine.bind_scene_animation(
+            &element,
+            property,
+            crate::SceneAnimationId(9),
+            [0.0; 4],
+            [1.0; 4],
+        );
+        for milliseconds in [0, 100, 520] {
+            let elapsed = Duration::from_millis(milliseconds);
+            let expected = spring.sample_with_velocity(elapsed.as_secs_f32(), 0.0);
+            let sample = engine
+                .sample_transition(&element, property, now + elapsed)
+                .unwrap();
+            assert_eq!(sample.done, expected.done);
+            assert_eq!(
+                sample.eased_progress,
+                if expected.done {
+                    1.0
+                } else {
+                    expected.progress
+                }
+            );
+        }
+        let tick = engine.tick(now + Duration::from_secs(30));
+        assert_eq!(tick.active_count, 0);
+        assert_eq!(tick.scene_values[0].progress, 1.0);
+        assert_eq!(
+            engine.scene_values(now + Duration::from_secs(31))[0].progress,
+            1.0
+        );
     }
 }

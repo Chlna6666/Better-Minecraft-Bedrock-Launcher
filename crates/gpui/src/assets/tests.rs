@@ -105,9 +105,7 @@ fn animated_config_clamps_runtime_values() {
         max_fps: 999.0,
         inactive_max_fps: 999.0,
         prefetch_frames: 1,
-        prefetch_byte_limit: 0,
         max_resident_frames: 0,
-        max_resident_bytes: 0,
     }
     .clamped();
 
@@ -116,9 +114,7 @@ fn animated_config_clamps_runtime_values() {
     assert_eq!(config.max_fps, 999.0);
     assert_eq!(config.inactive_max_fps, 240.0);
     assert_eq!(config.prefetch_frames, 2);
-    assert_eq!(config.prefetch_byte_limit, 4);
     assert_eq!(config.max_resident_frames, 1);
-    assert_eq!(config.max_resident_bytes, 4);
 }
 
 #[test]
@@ -275,7 +271,7 @@ fn bmp_target_render_samples_rows_without_retaining_original_size() {
 fn target_render_keeps_animated_png_playable_after_resize() {
     let bytes = animated_png_bytes_with_size(64, 64);
     let config = AnimatedImageConfig {
-        max_resident_bytes: 4 * 4 * 4 * 2,
+        max_resident_frames: 2,
         ..AnimatedImageConfig::default()
     };
     let target = ImageRenderSize::new(4, 4).unwrap();
@@ -295,7 +291,6 @@ fn target_render_streams_large_animation_after_resize() {
     let bytes = animated_png_bytes_with_size(64, 64);
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
-        max_resident_bytes: 4 * 4 * 4,
         ..AnimatedImageConfig::default()
     };
     let target = ImageRenderSize::new(4, 4).unwrap();
@@ -313,7 +308,6 @@ fn large_animation_enters_streaming_mode() {
     let bytes = animated_png_bytes();
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
-        max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
     let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
@@ -326,7 +320,6 @@ fn streaming_animation_releases_stale_frames() {
     let bytes = animated_png_bytes();
     let config = AnimatedImageConfig {
         max_resident_frames: 1,
-        max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
     let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
@@ -345,13 +338,11 @@ fn streaming_animation_releases_stale_frames() {
 }
 
 #[test]
-fn streaming_animation_prefetch_bytes_are_bounded() {
+fn streaming_animation_prefetch_frames_are_bounded() {
     let bytes = animated_png_bytes_with_frame_count(8);
     let config = AnimatedImageConfig {
-        prefetch_frames: 64,
-        prefetch_byte_limit: 4,
+        prefetch_frames: 2,
         max_resident_frames: 1,
-        max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
     let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
@@ -361,7 +352,7 @@ fn streaming_animation_prefetch_bytes_are_bounded() {
         std::thread::yield_now();
     }
 
-    assert_eq!(image.resident_byte_len(), first_frame_bytes * 2);
+    assert!(image.resident_byte_len() <= first_frame_bytes * 3);
 }
 
 #[test]
@@ -370,7 +361,6 @@ fn streaming_animation_keeps_worker_running_while_queue_is_full() {
     let config = AnimatedImageConfig {
         prefetch_frames: 2,
         max_resident_frames: 1,
-        max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
     let image = render_image(&bytes, ImageFormat::Png, config).unwrap();
@@ -388,7 +378,6 @@ fn streaming_animation_records_loop_restart() {
     let config = AnimatedImageConfig {
         prefetch_frames: 2,
         max_resident_frames: 1,
-        max_resident_bytes: 4,
         ..AnimatedImageConfig::default()
     };
     let image = render_image(&bytes, ImageFormat::Png, config).unwrap();

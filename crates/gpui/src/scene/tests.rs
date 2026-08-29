@@ -5,6 +5,64 @@ use crate::{
 };
 use std::sync::{Arc, OnceLock};
 
+#[test]
+fn scene_revision_tracks_static_commits_not_animation_samples() {
+    let mut scene = Scene::default();
+    let mut other = Scene::default();
+    scene.finish();
+    other.finish();
+    let revision = scene.revision;
+    assert_ne!(revision, 0);
+    assert_ne!(revision, other.revision);
+    scene.replace_animation_values([]);
+    assert_eq!(scene.revision, revision);
+    scene.insert_primitive(Quad::default());
+    assert_eq!(scene.revision, 0);
+    scene.finish();
+    assert_ne!(scene.revision, revision);
+    scene.clear();
+    assert_eq!(scene.revision, 0);
+}
+
+#[test]
+fn backdrop_blur_animation_refreshes_when_source_enters_region() {
+    let mut scene = Scene::default();
+    let animation_id = scene.allocate_animation_id();
+    let mut source = monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32);
+    source.animation_id = Some(animation_id);
+    source.bounds = bounds(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(10.0), ScaledPixels(10.0)),
+    );
+    source.content_mask.bounds = bounds(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(500.0), ScaledPixels(500.0)),
+    );
+    let mut blur = backdrop_blur(1);
+    blur.bounds = bounds(
+        point(ScaledPixels(100.0), ScaledPixels(0.0)),
+        size(ScaledPixels(100.0), ScaledPixels(100.0)),
+    );
+    blur.content_mask.bounds = blur.bounds;
+    scene.insert_primitive(source);
+    scene.insert_primitive(blur);
+    let value = SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::Translation,
+        progress: 0.0,
+        from: [0.0; 4],
+        to: [120.0, 0.0, 0.0, 0.0],
+    };
+    scene.push_animation_value(value);
+    assert!(!scene.backdrop_blur_source_animation_values_changed(&[value]));
+    assert!(
+        scene.backdrop_blur_source_animation_values_changed(&[SceneAnimationValue {
+            progress: 1.0,
+            ..value
+        }])
+    );
+}
+
 const TEST_GPU_MESH_3D_SHADER_SOURCE: &str = r#"
 struct GlobalParams {
     viewport_size: vec2<f32>,
@@ -226,8 +284,9 @@ fn backdrop_blur_damage_uses_gaussian_support_without_full_redraw() {
     assert_eq!(
         scene.backdrop_blur_damage(damage).collect::<Vec<_>>(),
         vec![Bounds::new(
-            point(ScaledPixels(391.0), ScaledPixels(391.0)),
-            size(ScaledPixels(28.0), ScaledPixels(28.0)),
+            // Three sigma (24px) plus one source texel for 2x downsampling.
+            point(ScaledPixels(375.0), ScaledPixels(375.0)),
+            size(ScaledPixels(60.0), ScaledPixels(60.0)),
         )]
     );
     assert!(!scene.requires_full_redraw_fallback());

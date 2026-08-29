@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(in crate::platform::nova) struct FrameUploadSummary {
     pub(in crate::platform::nova) quad_count: u32,
     pub(in crate::platform::nova) shadow_count: u32,
@@ -80,6 +80,8 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
     pub(in crate::platform::nova) animation_bindings: Vec<u8>,
     pub(in crate::platform::nova) animation_values: Vec<u8>,
+    pub(in crate::platform::nova) animated_primitives: Vec<AnimatedUpload>,
+    pub(in crate::platform::nova) sampled_animation_values: Vec<crate::SceneAnimationValue>,
     pub(in crate::platform::nova) custom_mesh_3d_parameters: Vec<u8>,
     pub(in crate::platform::nova) custom_mesh_3d_meshes: Vec<Arc<GpuMesh3d>>,
     pub(in crate::platform::nova) custom_mesh_3d_shaders: Vec<Arc<GpuMesh3dShader>>,

@@ -203,7 +203,7 @@ impl Frame {
             }
         }
 
-        self.scene.finish();
+        self.scene.finish_retaining_revision(&prev_frame.scene);
     }
 
     pub(super) fn retained_capacity(&self) -> usize {
