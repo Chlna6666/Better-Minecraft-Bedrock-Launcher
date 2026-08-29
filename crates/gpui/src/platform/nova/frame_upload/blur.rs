@@ -10,20 +10,23 @@ const BLUR_BOUNDS_WIDTH_OFFSET: usize = 24;
 const BLUR_BOUNDS_HEIGHT_OFFSET: usize = 28;
 const BLUR_RADIUS_OFFSET: usize = 112;
 
-/// Renderer filter identity shared by compatible blur primitives in one source group.
+/// Renderer target-layout identity for one blur slot.
+///
+/// Radius is deliberately excluded: it changes the convolution coefficients, not the texture
+/// dimensions/resource bindings. Keeping it out of the target key lets animated radius reuse the
+/// same ping/pong allocation instead of tearing down GPU resources every frame.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::platform::nova) struct BackdropBlurReuseKey {
     source_group: u32,
     downsample: u8,
     levels: u8,
-    radius_bits: u32,
 }
 
 /// One renderer-side canonical blur configuration.
 ///
 /// `member_first..=member_last` identifies the primitive span owned by one reusable GPU target.
-/// Bounds deliberately do not participate in target identity, so an animated popover can move
-/// without destroying and recreating its ping/pong textures every frame.
+/// Bounds and radius deliberately do not participate in target-layout identity, so animated
+/// glass can move or change sigma without destroying and recreating ping/pong textures.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::platform::nova) struct BackdropBlurConfig {
     source_group: u32,
@@ -96,11 +99,10 @@ impl BackdropBlurConfig {
             source_group: self.source_group,
             downsample: self.downsample,
             levels: self.levels,
-            radius_bits: self.radius_bits,
         }
     }
 
-    /// Stable GPU-target identity. Animated bounds and draw order are intentionally excluded.
+    /// Stable GPU-target identity. Animated bounds, radius and draw order are intentionally excluded.
     pub(in crate::platform::nova) fn same_target_slot(self, other: Self) -> bool {
         self.reuse_key() == other.reuse_key()
             && self.member_first == other.member_first
@@ -124,6 +126,9 @@ impl BackdropBlurConfig {
     fn should_merge_with(self, other: Self) -> bool {
         !self.recompute_overlap
             && !other.recompute_overlap
+            // Separate simultaneously visible filters with different kernels. Radius is excluded
+            // only from allocation identity, not from filtered-result reuse.
+            && self.radius_bits == other.radius_bits
             && self.reuse_key() == other.reuse_key()
             && self.member_last.saturating_add(1) == other.member_first
             && source_regions_overlap(self, other)
@@ -416,6 +421,27 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_blurs_with_different_radii_do_not_share_filter_results() {
+        let mut upload = FrameUpload::default();
+        push_blur_record(&mut upload, 10, 1, 2, 12.0, [0.0, 0.0, 300.0, 80.0], false);
+        push_blur_record(
+            &mut upload,
+            10,
+            1,
+            2,
+            18.0,
+            [200.0, 20.0, 300.0, 80.0],
+            false,
+        );
+        upload
+            .batches
+            .push(UploadedBatch::BackdropBlurs { first: 0, count: 2 });
+
+        upload.refresh_backdrop_blur_configs();
+        assert_eq!(upload.backdrop_blur_configs().len(), 2);
+    }
+
+    #[test]
     fn disjoint_equal_blurs_keep_separate_filter_targets() {
         let mut upload = FrameUpload::default();
         push_blur_record(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 100.0, 60.0], false);
@@ -461,6 +487,13 @@ mod tests {
     fn target_set_equality_ignores_animated_bounds() {
         let left = BackdropBlurConfig::new(0, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false);
         let right = BackdropBlurConfig::new(0, 0, 10, 1, 2, 18.0, [12.0, 4.0, 320.0, 80.0], false);
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn target_set_equality_ignores_animated_radius() {
+        let left = BackdropBlurConfig::new(0, 0, 10, 1, 2, 12.0, [0.0, 0.0, 300.0, 80.0], false);
+        let right = BackdropBlurConfig::new(0, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false);
         assert_eq!(left, right);
     }
 

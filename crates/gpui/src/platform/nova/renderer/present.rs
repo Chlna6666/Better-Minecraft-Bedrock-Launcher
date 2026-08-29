@@ -414,11 +414,17 @@ impl NovaRenderer {
             Default::default()
         };
         let atlas_content_generation = self.atlas.content_generation();
+        let atlas_generation_changed =
+            self.backdrop_blur_cache_atlas_generation != atlas_content_generation;
+        // Atlas generation is global to every glyph/image texture. It is useful diagnostics, but
+        // must not invalidate a backdrop whose sampled texture set was untouched: animated text
+        // or icons above the glass can otherwise force a full-window Gaussian refresh every tick.
+        // Relevant pending uploads are observed before `upload_pending_atlas` below and therefore
+        // still invalidate the cache in the same frame in which their new pixels become visible.
         let backdrop_source_atlas_dirty = has_backdrop_blurs
-            && (self.backdrop_blur_cache_atlas_generation != atlas_content_generation
-                || self
-                    .atlas
-                    .pending_uploads_touch_any(&backdrop_source_atlas_textures));
+            && self
+                .atlas
+                .pending_uploads_touch_any(&backdrop_source_atlas_textures);
         // Target allocation/quality and source-atlas changes invalidate both cache families. Their
         // ordinary frame-to-frame dirtiness is independent below: an element blur existing is no
         // longer sufficient to rebuild the root backdrop source.
@@ -555,8 +561,8 @@ impl NovaRenderer {
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
                     "dirty_area={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "element_blur_dirty_layers={} blur_source_atlas_dirty={} ",
-                    "blur_source_atlas_textures={} blur_groups={} animation_bindings={} ",
-                    "animation_values={} threading={:?}"
+                    "blur_atlas_generation_changed={} blur_source_atlas_textures={} blur_groups={} ",
+                    "animation_bindings={} animation_values={} threading={:?}"
                 ),
                 backend_label,
                 self.surface_alpha.swapchain_mode,
@@ -589,6 +595,7 @@ impl NovaRenderer {
                 element_blur_refresh_required,
                 dirty_element_indices.len(),
                 backdrop_source_atlas_dirty,
+                atlas_generation_changed,
                 backdrop_source_atlas_textures.len(),
                 backdrop_blur_groups.len(),
                 upload.animation_binding_count,
@@ -1002,7 +1009,8 @@ impl NovaRenderer {
                     "mapped_frame_upload_is_gpu_copy=false retained_present_copy_regions={} ",
                     "path_mask_render_passes={} blur_render_passes={} blur_groups={} ",
                     "element_blur_layers={} backdrop_blur_refresh={} element_blur_refresh={} ",
-                    "blur_source_atlas_dirty={} blur_source_atlas_textures={} ",
+                    "blur_source_atlas_dirty={} blur_atlas_generation_changed={} ",
+                    "blur_source_atlas_textures={} ",
                     "blur_source_mode=sequential-segments main_render_passes=1 present_damage={:?} ",
                     "dirty_mode={:?} dirty_full={} dirty_rects={} dirty_area={}"
                 ),
@@ -1019,6 +1027,7 @@ impl NovaRenderer {
                 backdrop_blur_refreshed,
                 element_blur_refreshed,
                 backdrop_source_atlas_dirty,
+                atlas_generation_changed,
                 backdrop_source_atlas_textures.len(),
                 present_damage,
                 render_plan.partial_present_mode,

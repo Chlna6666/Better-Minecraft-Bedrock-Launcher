@@ -4,7 +4,7 @@ pub(super) mod auth;
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
+use crate::ui::theme::{dark_colors, glass_backdrop_blur_style, lerp_theme_colors, light_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
@@ -42,8 +42,8 @@ pub(super) fn render_app_chrome(
     update_modal_open: bool,
 ) -> AnyElement {
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        light_colors(),
+        dark_colors(),
         state.theme_k,
         state.theme_accent,
     );
@@ -303,7 +303,7 @@ pub(super) fn render_app_chrome(
             1.0
         }))
         .when(state.glass_effect_enabled, |element| {
-            element.backdrop_blur(px(6.))
+            element.backdrop_blur(glass_backdrop_blur_style())
         })
         .border_b_1()
         .border_color(colors.border.opacity(0.55))

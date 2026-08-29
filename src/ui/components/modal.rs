@@ -8,8 +8,6 @@ use std::{
 
 const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.56;
 const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.72;
-const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 14.0 / 3.0;
-const MIN_MODAL_BACKDROP_BLUR_PX: f32 = 0.2 / 3.0;
 const MODAL_MIN_SCALE: f32 = 0.94;
 const MODAL_OPEN_DURATION: Duration = Duration::from_millis(240);
 const MODAL_CLOSE_DURATION: Duration = Duration::from_millis(220);
@@ -33,18 +31,23 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
     };
 
     let backdrop = div().absolute().inset_0().occlude();
-    let blur_progress = crate::ui::animation::ease_out_cubic(progress);
-    let blur_radius = px(DEFAULT_MODAL_BACKDROP_BLUR_PX * blur_progress);
-    if blur_radius >= px(MIN_MODAL_BACKDROP_BLUR_PX) {
-        backdrop.backdrop_blur(
-            BackdropBlurStyle::new(blur_radius)
-                .auto_quality()
-                .saturation(1.05)
-                .tint(overlay),
-        )
-    } else {
-        backdrop.bg(overlay)
+    if progress <= 0.001 {
+        return backdrop.bg(overlay);
     }
+
+    // Keep the GPU filter geometry fixed throughout the modal animation. Only the cheap overlay
+    // quad changes opacity; animating blur radius/tint would invalidate Nova's filter target every
+    // frame and turn a small UI transition into full-screen offscreen work.
+    backdrop
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .backdrop_blur(
+                    crate::ui::theme::glass_backdrop_blur_style().saturation(1.05),
+                ),
+        )
+        .child(div().absolute().inset_0().bg(overlay))
 }
 
 /// Fullscreen backdrop that intercepts mouse interaction "outside" a modal.
@@ -181,19 +184,20 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
         .with_animation(
             "modal-layer-content-zoom",
             crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240)),
-            |inner, progress| inner.scale(modal_content_scale(progress)),
+            |inner, progress| {
+                inner
+                    .scale(modal_content_scale(progress))
+                    .opacity(progress)
+            },
         );
 
+    // The backdrop remains structurally stable while only the modal content animates. This keeps
+    // the cached backdrop-filter result reusable instead of changing the blur primitive each tick.
     div()
         .absolute()
         .inset_0()
         .child(modal_backdrop(background))
         .child(animated_inner)
-        .with_animation(
-            "modal-layer-fade",
-            crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240)),
-            |outer, progress| outer.opacity(progress),
-        )
         .into_any_element()
 }
 

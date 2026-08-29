@@ -1,7 +1,7 @@
 use crate::core::bedrock_auth::{AuthPhase, AuthSnapshot, XboxProfile};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::bedrock_auth::BedrockAuthState;
-use crate::ui::theme::{ThemeColors, tokens::motion};
+use crate::ui::theme::{ThemeColors, glass_backdrop_blur_style, tokens::motion};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons;
@@ -322,7 +322,9 @@ pub(super) fn panel(
         .bg(colors
             .surface
             .opacity(if glass_effect_enabled { 0.92 } else { 1.0 }))
-        .when(glass_effect_enabled, |panel| panel.backdrop_blur(px(6.)))
+        .when(glass_effect_enabled, |panel| {
+            panel.backdrop_blur(glass_backdrop_blur_style())
+        })
         .id("xbox-auth-panel")
         .overflow_y_scrollbar()
         .text_color(colors.text_primary)

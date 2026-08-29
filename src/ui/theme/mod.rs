@@ -11,6 +11,22 @@ pub use colors::{
 
 use std::sync::OnceLock;
 
+/// Shared sigma for BMCBL glass surfaces.
+///
+/// GPUI backdrop blur follows CSS semantics: this is Gaussian sigma, not the old
+/// three-sigma support radius. The previous `6px` glass values therefore map to
+/// approximately `2px` here.
+pub const GLASS_BACKDROP_BLUR_SIGMA_PX: f32 = 2.0;
+
+/// Stable, low-bandwidth glass configuration used by the application chrome and popovers.
+/// Keeping one layout across BMCBL UI surfaces lets Nova reuse the same target geometry instead
+/// of creating a different blur variant for every component.
+pub fn glass_backdrop_blur_style() -> gpui::BackdropBlurStyle {
+    gpui::BackdropBlurStyle::new(gpui::px(GLASS_BACKDROP_BLUR_SIGMA_PX))
+        .downsample(2)
+        .levels(2)
+}
+
 /// 缓存的浅色主题色板（`LightColors::colors()` 每次调用都会重建，渲染热路径改用本函数）。
 pub fn light_colors() -> &'static ThemeColors {
     static LIGHT: OnceLock<ThemeColors> = OnceLock::new();
