@@ -48,22 +48,17 @@ impl BackdropBlurConfig {
         bounds: [f32; 4],
         recompute_overlap: bool,
     ) -> Self {
-        let requested_downsample = downsample.max(1);
+        let downsample = downsample.max(1);
         let levels = levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS);
         let radius = if radius.is_finite() {
             radius.max(0.0)
         } else {
             0.0
         };
-        // Medium-radius UI glass is sensitive to half-resolution reconstruction at thin edges.
-        // Keep it full-resolution and reserve downsampling for genuinely large kernels where the
-        // bandwidth reduction outweighs reconstruction loss. This also makes application-level
-        // auto_quality() a hint rather than a hard quality downgrade for titlebars/popovers.
-        let downsample = if radius <= 8.0 {
-            1
-        } else {
-            requested_downsample
-        };
+        // The style layer owns the quality policy. Respect its explicit downsample request instead
+        // of silently forcing small/medium-radius glass back to full resolution. This keeps Nova's
+        // bandwidth policy identical on DX12 and Vulkan and allows full-window effects to opt into
+        // lower-resolution separable filtering without changing their visual radius.
         let bounds = bounds.map(|value| if value.is_finite() { value } else { 0.0 });
         Self {
             source_group,
@@ -474,6 +469,21 @@ mod tests {
         let left = BackdropBlurConfig::new(0, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false);
         let right = BackdropBlurConfig::new(2, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false);
         assert_ne!(left.reuse_key(), right.reuse_key());
+    }
+
+    #[test]
+    fn requested_downsample_is_preserved_for_ui_glass() {
+        let config = BackdropBlurConfig::new(
+            0,
+            0,
+            10,
+            4,
+            2,
+            2.0,
+            [0.0, 0.0, 1200.0, 80.0],
+            false,
+        );
+        assert_eq!(config.downsample(), 4);
     }
 
     #[test]
