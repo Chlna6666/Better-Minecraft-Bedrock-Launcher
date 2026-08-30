@@ -159,8 +159,10 @@ impl Window {
 
     /// Paint an element subtree into an offscreen scene and composite it through a CSS blur.
     ///
-    /// This keeps the capture in the display list rather than swapping the frame scene, so
-    /// retained paint ranges continue to refer to the same root operation stream.
+    /// When an outer renderer-owned visual animation is active, promote that animation to the
+    /// final filtered composite instead of binding it to every primitive in the captured subtree.
+    /// The child scene therefore remains a stable raster/filter input while translation, scale and
+    /// opacity update only one tiny composite record.
     pub(crate) fn paint_element_blur<R>(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -177,14 +179,33 @@ impl Window {
         let scale_factor = self.scale_factor();
         let visual_scale = self.visual_scale();
         let previous_opacity = self.element_opacity;
+        let composite_animation = self.scene_animation.and_then(|(animation_id, property)| {
+            matches!(
+                property,
+                crate::TransitionProperty::Opacity
+                    | crate::TransitionProperty::Scale
+                    | crate::TransitionProperty::Transform
+                    | crate::TransitionProperty::Translation
+            )
+            .then_some((animation_id, property))
+        });
         self.next_frame.scene.begin_blur(crate::scene::BlurCapture {
+            animation_id: composite_animation.map(|(animation_id, _)| animation_id),
             bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: self.visual_content_mask().scale(scale_factor),
             radius: ScaledPixels(sigma * scale_factor * visual_scale),
             opacity: previous_opacity,
         });
         self.element_opacity = 1.0;
+        let previous_animation = if composite_animation.is_some() {
+            self.scene_animation.take()
+        } else {
+            None
+        };
         let result = f(self);
+        if composite_animation.is_some() {
+            self.scene_animation = previous_animation;
+        }
         self.element_opacity = previous_opacity;
         self.next_frame.scene.end_blur();
         result
