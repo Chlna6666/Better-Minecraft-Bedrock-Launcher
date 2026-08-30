@@ -5,10 +5,9 @@ pub(in crate::platform::nova) enum AnimatedPrimitiveKind {
     Shadow = 1,
     MonochromeSprite = 2,
     PolychromeSprite = 3,
+    /// Shared filtered-composite buffer kind. Root backdrop and retained element blur composites
+    /// both use the same 136-byte GPU record; their Primitive variant determines filter semantics.
     BackdropBlur = 4,
-    /// Retained element/compositor blur. Its static filter/source geometry stays fixed while
-    /// translation/scale/opacity only update the final composite record.
-    Blur = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
