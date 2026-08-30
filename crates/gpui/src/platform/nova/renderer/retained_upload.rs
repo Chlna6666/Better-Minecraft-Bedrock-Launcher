@@ -46,15 +46,15 @@ impl NovaRenderer {
             premultiplied_alpha: self.surface_alpha.outputs_premultiplied_alpha(),
             blur_quality,
         };
-        // RenderingParameters are immutable for this renderer. Nested blur captures
-        // have their own value arrays and keep the full encoder until flattened.
-        let reusable = scene.revision != 0
-            && self.retained_upload.key == Some(key)
-            && !self.frame_upload.has_element_blurs();
+        // RenderingParameters are immutable for this renderer. Element-blur child scenes are
+        // flattened into the same static upload, and retained-animation refresh now recursively
+        // rebuilds their animation-value stream. Their presence therefore no longer invalidates
+        // otherwise identical static primitive/batch data.
+        let reusable = scene.revision != 0 && self.retained_upload.key == Some(key);
         let mut summary = self.retained_upload.summary;
         if reusable {
             self.frame_upload
-                .refresh_animation_values(scene, &mut summary);
+                .refresh_retained_animation_values(scene, &mut summary);
         } else {
             summary = self.frame_upload.encode(
                 scene,
