@@ -167,10 +167,10 @@ impl Primitive {
             Primitive::MonochromeSprite(sprite) => sprite.animation_id,
             Primitive::PolychromeSprite(sprite) => sprite.animation_id,
             Primitive::BackdropBlur(blur) => blur.animation_id,
+            Primitive::Blur(blur) => blur.animation_id,
             Primitive::Path(_)
             | Primitive::Underline(_)
             | Primitive::Surface(_)
-            | Primitive::Blur(_)
             | Primitive::GpuMesh3d(_) => None,
         }
     }
@@ -182,10 +182,10 @@ impl Primitive {
             Primitive::MonochromeSprite(sprite) => sprite.animation_id = Some(animation_id),
             Primitive::PolychromeSprite(sprite) => sprite.animation_id = Some(animation_id),
             Primitive::BackdropBlur(blur) => blur.animation_id = Some(animation_id),
+            Primitive::Blur(blur) => blur.animation_id = Some(animation_id),
             Primitive::Path(_)
             | Primitive::Underline(_)
             | Primitive::Surface(_)
-            | Primitive::Blur(_)
             | Primitive::GpuMesh3d(_) => {}
         }
     }
@@ -231,6 +231,7 @@ impl PaintOperation {
 /// `radius` is the CSS Gaussian standard deviation (sigma), expressed in scaled pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BlurCapture {
+    pub(crate) animation_id: Option<SceneAnimationId>,
     pub(crate) bounds: Bounds<ScaledPixels>,
     pub(crate) content_mask: ContentMask<ScaledPixels>,
     pub(crate) radius: ScaledPixels,
@@ -252,6 +253,9 @@ pub(crate) fn blur_influence_radius(radius: ScaledPixels) -> ScaledPixels {
 #[derive(Clone)]
 pub(crate) struct PaintBlur {
     pub order: DrawOrder,
+    /// Renderer-owned visual animation promoted from the captured subtree. The child scene keeps
+    /// its raster/filter geometry static; only this final composite primitive is sampled per frame.
+    pub animation_id: Option<SceneAnimationId>,
     /// The capture bounds including the blur's 3-sigma and linear filtering support.
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
@@ -266,6 +270,7 @@ impl fmt::Debug for PaintBlur {
         formatter
             .debug_struct("PaintBlur")
             .field("order", &self.order)
+            .field("animation_id", &self.animation_id)
             .field("bounds", &self.bounds)
             .field("content_mask", &self.content_mask)
             .field("radius", &self.radius)
@@ -278,6 +283,7 @@ impl fmt::Debug for PaintBlur {
 impl PartialEq for PaintBlur {
     fn eq(&self, other: &Self) -> bool {
         self.order == other.order
+            && self.animation_id == other.animation_id
             && self.bounds == other.bounds
             && self.content_mask == other.content_mask
             && self.radius == other.radius
