@@ -50,16 +50,18 @@ impl FrameUpload {
             {
                 break;
             }
+            // Root backdrop and element blur composites share the same GPU buffer/record kind.
+            // AnimatedUpload's Primitive variant keeps their filter semantics distinct on the CPU.
             write_animation_binding(
                 &mut self.animation_bindings,
                 animation_id,
-                AnimatedPrimitiveKind::Blur,
+                AnimatedPrimitiveKind::BackdropBlur,
                 index,
             );
             summary.animation_binding_count = summary.animation_binding_count.saturating_add(1);
             self.animated_primitives.push(AnimatedUpload::new(
                 crate::Primitive::Blur(blur.clone()),
-                AnimatedPrimitiveKind::Blur,
+                AnimatedPrimitiveKind::BackdropBlur,
                 index,
             ));
         }
@@ -80,9 +82,6 @@ impl FrameUpload {
         self.animated_primitives
             .iter()
             .filter_map(|primitive| {
-                if primitive.kind != AnimatedPrimitiveKind::Blur {
-                    return None;
-                }
                 let blur = primitive.base_paint_blur()?;
                 let animation_id = blur.animation_id?;
                 if !active_animation_ids.contains(&animation_id)
