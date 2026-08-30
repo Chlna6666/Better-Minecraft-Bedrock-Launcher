@@ -72,6 +72,19 @@ impl NovaRenderer {
         self.frame_upload.retained_static_reused = reusable;
         self.frame_upload
             .sample_animated_primitives(self.current_size);
+
+        if self.diagnostics.should_log_frame_details() {
+            log::warn!(
+                "nova-gfx retained upload: scene_revision={} retained_reused={} static_slot_upload={} element_blurs={} animation_values={}",
+                scene.revision,
+                reusable,
+                self.retained_upload
+                    .needs_static_upload(self.current_frame_resource_index),
+                self.frame_upload.has_element_blurs(),
+                summary.animation_value_count,
+            );
+        }
+
         crate::diagnostics::performance_metrics::record_scene_pack_time(started_at.elapsed());
         summary
     }
