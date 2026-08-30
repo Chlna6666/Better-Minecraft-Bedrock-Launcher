@@ -1238,12 +1238,138 @@ fn collect_paint_operation_damage(
         .take_while(|(current, previous)| current.visually_eq(previous))
         .count();
 
-    current[prefix_len..current.len().saturating_sub(suffix_len)]
+    let current_changed = &current[prefix_len..current.len().saturating_sub(suffix_len)];
+    let previous_changed = &previous[prefix_len..previous.len().saturating_sub(suffix_len)];
+
+    if current_changed.len() == previous_changed.len() {
+        for (current_operation, previous_operation) in
+            current_changed.iter().zip(previous_changed)
+        {
+            if visit_opaque_solid_quad_move_damage(
+                current_operation,
+                previous_operation,
+                region,
+                &mut visit,
+            ) {
+                continue;
+            }
+            visit_operation_damage(current_operation, region, &mut visit);
+            visit_operation_damage(previous_operation, region, &mut visit);
+        }
+        return;
+    }
+
+    current_changed
         .iter()
-        .chain(&previous[prefix_len..previous.len().saturating_sub(suffix_len)])
-        .filter_map(PaintOperation::visual_bounds)
-        .filter(|bounds| bounds.intersects(&region))
-        .for_each(|bounds| visit(bounds.intersect(&region)));
+        .chain(previous_changed)
+        .for_each(|operation| visit_operation_damage(operation, region, &mut visit));
+}
+
+fn visit_operation_damage(
+    operation: &PaintOperation,
+    region: Bounds<ScaledPixels>,
+    visit: &mut impl FnMut(Bounds<ScaledPixels>),
+) {
+    let Some(bounds) = operation.visual_bounds() else {
+        return;
+    };
+    let damage = bounds.intersect(&region);
+    if !damage.is_empty() {
+        visit(damage);
+    }
+}
+
+/// A moved opaque rectangular fill only changes pixels in the symmetric difference of its old and
+/// new rectangles. The overlap is byte-for-byte identical and does not need to invalidate a
+/// backdrop source. Keep the predicate deliberately strict; any uncertainty falls back to the
+/// ordinary old+new bounds damage path.
+fn visit_opaque_solid_quad_move_damage(
+    current: &PaintOperation,
+    previous: &PaintOperation,
+    region: Bounds<ScaledPixels>,
+    visit: &mut impl FnMut(Bounds<ScaledPixels>),
+) -> bool {
+    let (
+        PaintOperation::Primitive(Primitive::Quad(current)),
+        PaintOperation::Primitive(Primitive::Quad(previous)),
+    ) = (current, previous)
+    else {
+        return false;
+    };
+
+    if !is_solid_quad(current)
+        || !is_solid_quad(previous)
+        || current.order != previous.order
+        || current.animation_id != previous.animation_id
+        || current.background != previous.background
+        || current.background.solid.a < 1.0
+        || current.border_style != previous.border_style
+        || current.border_color != previous.border_color
+        || current.corner_radii != previous.corner_radii
+        || current.border_widths != previous.border_widths
+        || current.content_mask != previous.content_mask
+    {
+        return false;
+    }
+
+    let current_bounds = current.bounds.intersect(&current.content_mask.bounds);
+    let previous_bounds = previous.bounds.intersect(&previous.content_mask.bounds);
+    if current_bounds.is_empty() || previous_bounds.is_empty() {
+        return false;
+    }
+
+    let overlap = current_bounds.intersect(&previous_bounds);
+    if overlap.is_empty() {
+        visit_clipped_damage(current_bounds, region, visit);
+        visit_clipped_damage(previous_bounds, region, visit);
+        return true;
+    }
+
+    visit_rect_difference(current_bounds, overlap, region, visit);
+    visit_rect_difference(previous_bounds, overlap, region, visit);
+    true
+}
+
+fn visit_rect_difference(
+    bounds: Bounds<ScaledPixels>,
+    overlap: Bounds<ScaledPixels>,
+    region: Bounds<ScaledPixels>,
+    visit: &mut impl FnMut(Bounds<ScaledPixels>),
+) {
+    let top = Bounds::new(
+        crate::point(bounds.left(), bounds.top()),
+        crate::size(bounds.size.width, overlap.top() - bounds.top()),
+    );
+    let bottom = Bounds::new(
+        crate::point(bounds.left(), overlap.bottom()),
+        crate::size(bounds.size.width, bounds.bottom() - overlap.bottom()),
+    );
+    let left = Bounds::new(
+        crate::point(bounds.left(), overlap.top()),
+        crate::size(overlap.left() - bounds.left(), overlap.size.height),
+    );
+    let right = Bounds::new(
+        crate::point(overlap.right(), overlap.top()),
+        crate::size(bounds.right() - overlap.right(), overlap.size.height),
+    );
+
+    for damage in [top, bottom, left, right] {
+        visit_clipped_damage(damage, region, visit);
+    }
+}
+
+fn visit_clipped_damage(
+    bounds: Bounds<ScaledPixels>,
+    region: Bounds<ScaledPixels>,
+    visit: &mut impl FnMut(Bounds<ScaledPixels>),
+) {
+    if bounds.is_empty() {
+        return;
+    }
+    let damage = bounds.intersect(&region);
+    if !damage.is_empty() {
+        visit(damage);
+    }
 }
 
 fn animation_value_changed(
