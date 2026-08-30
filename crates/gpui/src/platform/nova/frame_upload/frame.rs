@@ -78,6 +78,25 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_passes: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blurs: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
+    /// Animated backdrop indices whose current composite geometry fits entirely inside the
+    /// unanimated filter footprint. These use the base blur geometry for filter planning while
+    /// the GPU primitive buffer still receives the sampled composite geometry/opacity.
+    pub(in crate::platform::nova) backdrop_blur_use_base_filter_indices: FxHashSet<u32>,
+    /// Animated backdrop indices that sampled outside their base filter footprint on the previous
+    /// frame. The transition back into the base footprint performs one restoring filter refresh.
+    pub(in crate::platform::nova) backdrop_blur_filter_dirty_indices: FxHashSet<u32>,
+    /// Composite-only backdrop animations that may ignore the Scene-level self-animation
+    /// `mark_full` damage entry for this frame.
+    pub(in crate::platform::nova) backdrop_blur_ignore_animation_damage_indices: FxHashSet<u32>,
+    /// Whether animated backdrop state changed Gaussian pass/config data this frame.
+    pub(in crate::platform::nova) backdrop_blur_passes_dirty_this_frame: bool,
+    /// True when the static encoded display list was retained for the current frame. Composite-only
+    /// blur animation is only allowed to suppress self damage in this mode.
+    pub(in crate::platform::nova) retained_static_reused: bool,
+    /// Animation ids that were sampled on the previous frame. Keeping one frame of history makes
+    /// source-animation completion conservative instead of accidentally treating it as idle.
+    pub(in crate::platform::nova) backdrop_blur_previous_animation_ids:
+        FxHashSet<crate::SceneAnimationId>,
     pub(in crate::platform::nova) animation_bindings: Vec<u8>,
     pub(in crate::platform::nova) animation_values: Vec<u8>,
     pub(in crate::platform::nova) animated_primitives: Vec<AnimatedUpload>,

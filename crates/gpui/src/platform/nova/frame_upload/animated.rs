@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Primitive, SceneAnimationValue, TransitionProperty};
+use crate::{Primitive, SceneAnimationId, SceneAnimationValue, TransitionProperty};
 
 /// A retained primitive and its small, independently uploadable animated range.
 /// Nova's current shaders consume primitive buffers, not the animation metadata.
@@ -8,6 +8,37 @@ pub(in crate::platform::nova) struct AnimatedUpload {
     pub(in crate::platform::nova) index: u32,
     pub(in crate::platform::nova) bytes: Vec<u8>,
     primitive: Primitive,
+}
+
+#[derive(Clone, Copy)]
+struct BackdropBlurAnimationSample {
+    index: u32,
+    animation_id: Option<SceneAnimationId>,
+    order: u32,
+    base_bounds: crate::Bounds<crate::ScaledPixels>,
+    base_mask_bounds: crate::Bounds<crate::ScaledPixels>,
+    sampled_bounds: crate::Bounds<crate::ScaledPixels>,
+    sampled_mask_bounds: crate::Bounds<crate::ScaledPixels>,
+    radius: crate::ScaledPixels,
+}
+
+impl BackdropBlurAnimationSample {
+    fn can_use_base_filter(self) -> bool {
+        bounds_contains(self.base_bounds, self.sampled_bounds)
+            && bounds_contains(self.base_mask_bounds, self.sampled_mask_bounds)
+    }
+
+    fn base_source_region(self) -> crate::Bounds<crate::ScaledPixels> {
+        let sigma = self.radius.0.abs();
+        let support = if sigma.is_finite() && sigma > 0.0 {
+            crate::ScaledPixels(sigma * 3.0 + 0.5)
+        } else {
+            crate::ScaledPixels(0.0)
+        };
+        self.base_bounds
+            .intersect(&self.base_mask_bounds)
+            .dilate(support)
+    }
 }
 
 impl AnimatedUpload {
@@ -31,7 +62,11 @@ impl AnimatedUpload {
         u64::from(self.index) * stride as u64
     }
 
-    fn sample(&mut self, values: &[SceneAnimationValue], size: DrawableSize) {
+    fn sample(
+        &mut self,
+        values: &[SceneAnimationValue],
+        size: DrawableSize,
+    ) -> Option<BackdropBlurAnimationSample> {
         let mut primitive = self.primitive.clone();
         if let Some(value) = values
             .iter()
@@ -39,6 +74,21 @@ impl AnimatedUpload {
         {
             apply_value(&mut primitive, value);
         }
+        let blur_sample = match (&self.primitive, &primitive) {
+            (Primitive::BackdropBlur(base), Primitive::BackdropBlur(sampled)) => {
+                Some(BackdropBlurAnimationSample {
+                    index: self.index,
+                    animation_id: base.animation_id,
+                    order: base.order,
+                    base_bounds: base.bounds,
+                    base_mask_bounds: base.content_mask.bounds,
+                    sampled_bounds: sampled.bounds,
+                    sampled_mask_bounds: sampled.content_mask.bounds,
+                    radius: base.radius,
+                })
+            }
+            _ => None,
+        };
         self.bytes.clear();
         match primitive {
             Primitive::Quad(quad) => write_quad(&mut self.bytes, &quad),
@@ -52,15 +102,62 @@ impl AnimatedUpload {
             Primitive::BackdropBlur(blur) => write_backdrop_blur(&mut self.bytes, &blur, size),
             _ => {}
         }
+        blur_sample
+    }
+
+    fn animation_id(&self) -> Option<SceneAnimationId> {
+        self.primitive.animation_id()
+    }
+
+    fn order(&self) -> u32 {
+        self.primitive.order()
+    }
+
+    fn sampled_visual_bounds(
+        &self,
+        values: &[SceneAnimationValue],
+    ) -> crate::Bounds<crate::ScaledPixels> {
+        let mut primitive = self.primitive.clone();
+        if let Some(value) = values
+            .iter()
+            .find(|value| Some(value.animation_id) == primitive.animation_id())
+        {
+            apply_value(&mut primitive, value);
+        }
+        primitive.visual_bounds()
+    }
+
+    pub(in crate::platform::nova) fn base_backdrop_blur(
+        &self,
+    ) -> Option<&crate::PaintBackdropBlur> {
+        match &self.primitive {
+            Primitive::BackdropBlur(blur) => Some(blur),
+            _ => None,
+        }
     }
 }
 
 impl FrameUpload {
     pub(in crate::platform::nova) fn sample_animated_primitives(&mut self, size: DrawableSize) {
+        let previous_filter_dirty = self.backdrop_blur_filter_dirty_indices.clone();
+        self.backdrop_blur_use_base_filter_indices.clear();
+        self.backdrop_blur_ignore_animation_damage_indices.clear();
+        self.backdrop_blur_passes_dirty_this_frame = false;
+
+        let current_animation_ids: FxHashSet<_> = self
+            .sampled_animation_values
+            .iter()
+            .map(|value| value.animation_id)
+            .collect();
+        let mut relevant_animation_ids = self.backdrop_blur_previous_animation_ids.clone();
+        relevant_animation_ids.extend(current_animation_ids.iter().copied());
+
+        let mut blur_samples = Vec::new();
         for primitive in &mut self.animated_primitives {
-            primitive.sample(&self.sampled_animation_values, size);
-            // Draw preparation (not just shaders) reads these packed bounds, notably
-            // for backdrop filter regions. Keep it in sync with the GPU patch.
+            let blur_sample = primitive.sample(&self.sampled_animation_values, size);
+            // GPU composite state always receives the sampled primitive. Filter planning does not
+            // have to use these same bytes: backdrop blur configs can independently select the
+            // retained base geometry for composite-only animations.
             let buffer = match primitive.kind {
                 AnimatedPrimitiveKind::Quad => &mut self.quads,
                 AnimatedPrimitiveKind::Shadow => &mut self.shadows,
@@ -70,15 +167,76 @@ impl FrameUpload {
             };
             let offset = primitive.index as usize * primitive.bytes.len();
             buffer[offset..offset + primitive.bytes.len()].copy_from_slice(&primitive.bytes);
+            if let Some(sample) = blur_sample {
+                blur_samples.push(sample);
+            }
         }
-        if self
-            .animated_primitives
-            .iter()
-            .any(|primitive| primitive.kind == AnimatedPrimitiveKind::BackdropBlur)
-        {
+
+        let mut current_filter_dirty = FxHashSet::default();
+        for sample in &blur_samples {
+            if sample.can_use_base_filter() {
+                self.backdrop_blur_use_base_filter_indices
+                    .insert(sample.index);
+            } else {
+                current_filter_dirty.insert(sample.index);
+            }
+        }
+
+        // A filter that temporarily escaped the retained base footprint may have cleared pixels
+        // needed by the base result. The first frame that re-enters the base footprint therefore
+        // performs one restoring refresh using the base filter geometry.
+        let mut filter_refresh_indices = current_filter_dirty.clone();
+        for index in previous_filter_dirty.difference(&current_filter_dirty) {
+            filter_refresh_indices.insert(*index);
+        }
+        self.backdrop_blur_filter_dirty_indices = current_filter_dirty;
+
+        if !filter_refresh_indices.is_empty() {
+            // Keep ignore-self-damage empty while canonical configs are rebuilt so retained target
+            // identity continues to carry real draw orders. Dynamic draw-time configs apply the
+            // sentinel only after this refresh has completed.
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes_for_current_frame();
+            self.backdrop_blur_passes_dirty_this_frame = true;
         }
+
+        if self.retained_static_reused {
+            for sample in &blur_samples {
+                if !self
+                    .backdrop_blur_use_base_filter_indices
+                    .contains(&sample.index)
+                    || filter_refresh_indices.contains(&sample.index)
+                {
+                    continue;
+                }
+                let source_region = sample.base_source_region();
+                let blocked_by_other_animation = self.animated_primitives.iter().any(|other| {
+                    if other.kind == AnimatedPrimitiveKind::BackdropBlur
+                        && other.index == sample.index
+                    {
+                        return false;
+                    }
+                    let Some(other_animation_id) = other.animation_id() else {
+                        return false;
+                    };
+                    if Some(other_animation_id) == sample.animation_id
+                        || !relevant_animation_ids.contains(&other_animation_id)
+                        || other.order() >= sample.order
+                    {
+                        return false;
+                    }
+                    other
+                        .sampled_visual_bounds(&self.sampled_animation_values)
+                        .intersects(&source_region)
+                });
+                if !blocked_by_other_animation {
+                    self.backdrop_blur_ignore_animation_damage_indices
+                        .insert(sample.index);
+                }
+            }
+        }
+
+        self.backdrop_blur_previous_animation_ids = current_animation_ids;
     }
 
     pub(in crate::platform::nova) fn animated_upload_bytes(&self) -> usize {
@@ -95,11 +253,34 @@ impl FrameUpload {
             }
     }
 
+    /// Returns whether animated backdrop state changed Gaussian pass/config data this frame.
+    /// Composite-only backdrop animation still uploads its tiny primitive range, but it does not
+    /// rewrite the pass buffer and does not imply offscreen filter work.
     pub(in crate::platform::nova) fn has_animated_backdrop_blurs(&self) -> bool {
+        self.backdrop_blur_passes_dirty_this_frame
+    }
+
+    pub(in crate::platform::nova) fn base_animated_backdrop_blur(
+        &self,
+        index: u32,
+    ) -> Option<&crate::PaintBackdropBlur> {
         self.animated_primitives
             .iter()
-            .any(|primitive| primitive.kind == AnimatedPrimitiveKind::BackdropBlur)
+            .find(|primitive| {
+                primitive.kind == AnimatedPrimitiveKind::BackdropBlur && primitive.index == index
+            })
+            .and_then(AnimatedUpload::base_backdrop_blur)
     }
+}
+
+fn bounds_contains(
+    outer: crate::Bounds<crate::ScaledPixels>,
+    inner: crate::Bounds<crate::ScaledPixels>,
+) -> bool {
+    inner.left() >= outer.left()
+        && inner.top() >= outer.top()
+        && inner.right() <= outer.right()
+        && inner.bottom() <= outer.bottom()
 }
 
 fn apply_value(primitive: &mut Primitive, value: &SceneAnimationValue) {
@@ -201,10 +382,12 @@ fn apply_scale(
             sprite.corner_radii = sprite.corner_radii.map(|value| *value * scale);
         }
         Primitive::BackdropBlur(blur) => {
+            // Visual scale is a composite transform. It must not alter Gaussian sigma; changing
+            // sigma would rebuild H/V filter coefficients every animation frame even though the
+            // already-filtered backdrop texture can simply be sampled by a smaller composite quad.
             blur.bounds = scale_bounds(blur.bounds);
             scale_mask(&mut blur.content_mask);
             blur.corner_radii = blur.corner_radii.map(|value| *value * scale);
-            blur.radius *= scale;
         }
         _ => {}
     }
@@ -327,6 +510,48 @@ mod tests {
         assert_eq!(quad.bounds.size.width, crate::ScaledPixels(22.5));
         assert_eq!(quad.bounds.size.height, crate::ScaledPixels(30.0));
         assert_eq!(quad.border_color.a, 0.5);
+    }
+
+    #[test]
+    fn backdrop_transform_keeps_gaussian_radius_constant() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(80.0)),
+        );
+        let mut primitive = Primitive::BackdropBlur(crate::PaintBackdropBlur {
+            order: 1,
+            animation_id: Some(crate::SceneAnimationId(7)),
+            bounds,
+            content_mask: crate::ContentMask {
+                bounds,
+                ..Default::default()
+            },
+            corner_radii: Default::default(),
+            radius: crate::ScaledPixels(12.0),
+            downsample: 2,
+            levels: 2,
+            saturation: 1.0,
+            opacity: 1.0,
+            tint: None,
+            recompute_overlap: false,
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(7),
+                property: TransitionProperty::Transform,
+                progress: 0.5,
+                from: [0.5, 0.0, 60.0, 60.0],
+                to: [1.0, 1.0, 60.0, 60.0],
+            },
+        );
+        let Primitive::BackdropBlur(blur) = primitive else {
+            panic!("backdrop blur");
+        };
+        assert_eq!(blur.radius, crate::ScaledPixels(12.0));
+        assert_eq!(blur.opacity, 0.5);
+        assert!(blur.bounds.size.width < bounds.size.width);
+        assert!(bounds_contains(bounds, blur.bounds));
     }
 
     #[test]

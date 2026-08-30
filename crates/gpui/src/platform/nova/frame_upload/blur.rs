@@ -9,6 +9,11 @@ const BLUR_BOUNDS_Y_OFFSET: usize = 20;
 const BLUR_BOUNDS_WIDTH_OFFSET: usize = 24;
 const BLUR_BOUNDS_HEIGHT_OFFSET: usize = 28;
 const BLUR_RADIUS_OFFSET: usize = 112;
+/// Draw-order sentinel used only by renderer-side damage lookup. The packed GPU primitive keeps its
+/// real order; Nova's backdrop shader does not consume this config order. This lets a retained
+/// composite-only animation ignore Scene's conservative self-animation `mark_full` without hiding
+/// real source damage from other animations or static scene changes.
+const BLUR_IGNORE_ANIMATION_DAMAGE_ORDER: u32 = u32::MAX;
 
 /// Renderer target-layout identity for one blur slot.
 ///
@@ -129,9 +134,18 @@ impl BackdropBlurConfig {
         self.owns(other)
     }
 
+    fn ignores_animation_damage(self) -> bool {
+        self.order == BLUR_IGNORE_ANIMATION_DAMAGE_ORDER
+            && self.order_last == BLUR_IGNORE_ANIMATION_DAMAGE_ORDER
+    }
+
     fn should_merge_with(self, other: Self) -> bool {
         !self.recompute_overlap
             && !other.recompute_overlap
+            // Damage-order sentinels are draw-time metadata, not actual scene order. Never merge a
+            // composite-only sentinel config with a regular config or its order range would span
+            // real scene orders and accidentally re-enable the conservative full refresh.
+            && self.ignores_animation_damage() == other.ignores_animation_damage()
             // Separate simultaneously visible filters with different kernels. Radius is excluded
             // only from allocation identity, not from filtered-result reuse.
             && self.radius_bits == other.radius_bits
@@ -302,6 +316,39 @@ impl FrameUpload {
         primitive_index: u32,
         source_group: u32,
     ) -> Option<BackdropBlurConfig> {
+        // Composite-only animation uses the unanimated primitive as the filter description. The
+        // sampled primitive remains in `backdrop_blurs`/AnimatedUpload.bytes for the final GPU
+        // composite, so scale/opacity can move at frame rate without changing Gaussian coverage.
+        if self
+            .backdrop_blur_use_base_filter_indices
+            .contains(&primitive_index)
+            && let Some(blur) = self.base_animated_backdrop_blur(primitive_index)
+        {
+            let order = if self
+                .backdrop_blur_ignore_animation_damage_indices
+                .contains(&primitive_index)
+            {
+                BLUR_IGNORE_ANIMATION_DAMAGE_ORDER
+            } else {
+                blur.order
+            };
+            return Some(BackdropBlurConfig::new(
+                source_group,
+                primitive_index,
+                order,
+                blur.downsample,
+                blur.levels,
+                blur.radius.0,
+                [
+                    blur.bounds.origin.x.0,
+                    blur.bounds.origin.y.0,
+                    blur.bounds.size.width.0,
+                    blur.bounds.size.height.0,
+                ],
+                blur.recompute_overlap,
+            ));
+        }
+
         let primitive_usize = usize::try_from(primitive_index).ok()?;
         let offset = primitive_usize.checked_mul(PACKED_BACKDROP_BLUR_BYTES)?;
         let record = self
@@ -502,6 +549,31 @@ mod tests {
         let left = BackdropBlurConfig::new(0, 0, 10, 1, 2, 12.0, [0.0, 0.0, 300.0, 80.0], false);
         let right = BackdropBlurConfig::new(0, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false);
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn ignored_animation_damage_does_not_merge_with_regular_order() {
+        let ignored = BackdropBlurConfig::new(
+            0,
+            0,
+            BLUR_IGNORE_ANIMATION_DAMAGE_ORDER,
+            1,
+            2,
+            18.0,
+            [0.0, 0.0, 300.0, 80.0],
+            false,
+        );
+        let regular = BackdropBlurConfig::new(
+            0,
+            1,
+            10,
+            1,
+            2,
+            18.0,
+            [200.0, 20.0, 300.0, 80.0],
+            false,
+        );
+        assert!(!ignored.should_merge_with(regular));
     }
 
     #[test]

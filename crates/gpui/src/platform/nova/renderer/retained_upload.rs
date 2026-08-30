@@ -66,6 +66,10 @@ impl NovaRenderer {
             self.retained_upload
                 .replace(key, summary, self.frame_resources.len());
         }
+        // The animation sampler needs to know whether static scene pixels were retained. Only then
+        // may a composite-only backdrop animation suppress the Scene-level self-animation refresh;
+        // a rebuilt display list can contain real source changes before the same blur barrier.
+        self.frame_upload.retained_static_reused = reusable;
         self.frame_upload
             .sample_animated_primitives(self.current_size);
         crate::diagnostics::performance_metrics::record_scene_pack_time(started_at.elapsed());
