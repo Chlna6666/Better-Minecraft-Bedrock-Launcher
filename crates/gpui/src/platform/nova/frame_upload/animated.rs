@@ -1,6 +1,9 @@
 use super::*;
 use crate::{Primitive, SceneAnimationId, SceneAnimationValue, TransitionProperty};
 
+const BLUR_SOURCE_BOUNDS_OFFSET: usize = 16;
+const BLUR_DISPLAY_BOUNDS_OFFSET: usize = 96;
+
 /// A retained primitive and its small, independently uploadable animated range.
 /// Nova's current shaders consume primitive buffers, not the animation metadata.
 pub(in crate::platform::nova) struct AnimatedUpload {
@@ -57,7 +60,9 @@ impl AnimatedUpload {
             AnimatedPrimitiveKind::Shadow => PACKED_SHADOW_BYTES,
             AnimatedPrimitiveKind::MonochromeSprite => PACKED_MONO_SPRITE_BYTES,
             AnimatedPrimitiveKind::PolychromeSprite => PACKED_POLY_SPRITE_BYTES,
-            AnimatedPrimitiveKind::BackdropBlur => PACKED_BACKDROP_BLUR_BYTES,
+            AnimatedPrimitiveKind::BackdropBlur | AnimatedPrimitiveKind::Blur => {
+                PACKED_BACKDROP_BLUR_BYTES
+            }
         };
         u64::from(self.index) * stride as u64
     }
@@ -100,6 +105,19 @@ impl AnimatedUpload {
                 write_polychrome_sprite(&mut self.bytes, &sprite)
             }
             Primitive::BackdropBlur(blur) => write_backdrop_blur(&mut self.bytes, &blur, size),
+            Primitive::Blur(blur) => {
+                write_paint_blur(&mut self.bytes, &blur, size);
+                // Element/composite records deliberately use two geometries in one 136-byte record:
+                // the normal bounds slot remains the immutable source/filter footprint, while the
+                // auxiliary slot written by write_paint_blur contains the sampled display bounds.
+                if let Primitive::Blur(base) = &self.primitive {
+                    write_packed_bounds_at(
+                        &mut self.bytes,
+                        BLUR_SOURCE_BOUNDS_OFFSET,
+                        base.bounds,
+                    );
+                }
+            }
             _ => {}
         }
         blur_sample
@@ -135,6 +153,13 @@ impl AnimatedUpload {
             _ => None,
         }
     }
+
+    pub(in crate::platform::nova) fn base_paint_blur(&self) -> Option<&crate::PaintBlur> {
+        match &self.primitive {
+            Primitive::Blur(blur) => Some(blur),
+            _ => None,
+        }
+    }
 }
 
 impl FrameUpload {
@@ -156,14 +181,16 @@ impl FrameUpload {
         for primitive in &mut self.animated_primitives {
             let blur_sample = primitive.sample(&self.sampled_animation_values, size);
             // GPU composite state always receives the sampled primitive. Filter planning does not
-            // have to use these same bytes: backdrop blur configs can independently select the
-            // retained base geometry for composite-only animations.
+            // have to use these same bytes: root backdrop configs can independently select retained
+            // base geometry, while element blur records keep base source bounds inside the record.
             let buffer = match primitive.kind {
                 AnimatedPrimitiveKind::Quad => &mut self.quads,
                 AnimatedPrimitiveKind::Shadow => &mut self.shadows,
                 AnimatedPrimitiveKind::MonochromeSprite => &mut self.mono_sprites,
                 AnimatedPrimitiveKind::PolychromeSprite => &mut self.poly_sprites,
-                AnimatedPrimitiveKind::BackdropBlur => &mut self.backdrop_blurs,
+                AnimatedPrimitiveKind::BackdropBlur | AnimatedPrimitiveKind::Blur => {
+                    &mut self.backdrop_blurs
+                }
             };
             let offset = primitive.index as usize * primitive.bytes.len();
             buffer[offset..offset + primitive.bytes.len()].copy_from_slice(&primitive.bytes);
@@ -253,9 +280,9 @@ impl FrameUpload {
             }
     }
 
-    /// Returns whether animated backdrop state changed Gaussian pass/config data this frame.
-    /// Composite-only backdrop animation still uploads its tiny primitive range, but it does not
-    /// rewrite the pass buffer and does not imply offscreen filter work.
+    /// Returns whether animated root-backdrop state changed Gaussian pass/config data this frame.
+    /// Composite-only root or element blur animation still uploads its tiny primitive range, but it
+    /// does not rewrite the pass buffer and does not imply offscreen filter work.
     pub(in crate::platform::nova) fn has_animated_backdrop_blurs(&self) -> bool {
         self.backdrop_blur_passes_dirty_this_frame
     }
@@ -271,6 +298,29 @@ impl FrameUpload {
             })
             .and_then(AnimatedUpload::base_backdrop_blur)
     }
+}
+
+fn write_packed_bounds_at(
+    bytes: &mut [u8],
+    offset: usize,
+    bounds: crate::Bounds<crate::ScaledPixels>,
+) {
+    for (field_offset, value) in [
+        (0usize, bounds.origin.x.0),
+        (4, bounds.origin.y.0),
+        (8, bounds.size.width.0),
+        (12, bounds.size.height.0),
+    ] {
+        bytes[offset + field_offset..offset + field_offset + 4]
+            .copy_from_slice(&value.to_ne_bytes());
+    }
+}
+
+fn read_packed_bounds_at(bytes: &[u8], offset: usize) -> [f32; 4] {
+    std::array::from_fn(|index| {
+        let start = offset + index * 4;
+        f32::from_ne_bytes(bytes[start..start + 4].try_into().unwrap())
+    })
 }
 
 fn bounds_contains(
@@ -305,6 +355,11 @@ fn apply_value(primitive: &mut Primitive, value: &SceneAnimationValue) {
                 Primitive::MonochromeSprite(sprite) => sprite.bounds.origin += translation,
                 Primitive::PolychromeSprite(sprite) => sprite.bounds.origin += translation,
                 Primitive::BackdropBlur(blur) => blur.bounds.origin += translation,
+                Primitive::Blur(blur) => {
+                    blur.bounds.origin += translation;
+                    blur.content_mask.bounds.origin += translation;
+                    blur.content_mask.corner_bounds.origin += translation;
+                }
                 _ => {}
             }
         }
@@ -389,6 +444,12 @@ fn apply_scale(
             scale_mask(&mut blur.content_mask);
             blur.corner_radii = blur.corner_radii.map(|value| *value * scale);
         }
+        Primitive::Blur(blur) => {
+            // Same contract as a retained compositor layer: only final display geometry changes.
+            // Source/filter bounds and Gaussian sigma are restored/kept from the base primitive.
+            blur.bounds = scale_bounds(blur.bounds);
+            scale_mask(&mut blur.content_mask);
+        }
         _ => {}
     }
 }
@@ -403,6 +464,7 @@ fn apply_opacity(primitive: &mut Primitive, opacity: f32) {
         Primitive::MonochromeSprite(sprite) => sprite.color = sprite.color.opacity(opacity),
         Primitive::PolychromeSprite(sprite) => sprite.opacity *= opacity,
         Primitive::BackdropBlur(blur) => blur.opacity *= opacity,
+        Primitive::Blur(blur) => blur.opacity *= opacity,
         _ => {}
     }
 }
@@ -552,6 +614,64 @@ mod tests {
         assert_eq!(blur.opacity, 0.5);
         assert!(blur.bounds.size.width < bounds.size.width);
         assert!(bounds_contains(bounds, blur.bounds));
+    }
+
+    #[test]
+    fn element_blur_transform_changes_only_display_geometry_and_opacity() {
+        let id = crate::SceneAnimationId(11);
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(80.0)),
+        );
+        let blur = crate::PaintBlur {
+            order: 2,
+            animation_id: Some(id),
+            bounds,
+            content_mask: crate::ContentMask {
+                bounds,
+                corner_bounds: bounds,
+                ..Default::default()
+            },
+            radius: crate::ScaledPixels(14.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        };
+        let mut upload = AnimatedUpload::new(
+            Primitive::Blur(blur),
+            AnimatedPrimitiveKind::Blur,
+            4,
+        );
+        upload.sample(
+            &[SceneAnimationValue {
+                animation_id: id,
+                property: TransitionProperty::Transform,
+                progress: 0.5,
+                from: [0.5, 0.0, 60.0, 60.0],
+                to: [1.0, 1.0, 60.0, 60.0],
+            }],
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
+        );
+
+        assert_eq!(
+            read_packed_bounds_at(&upload.bytes, BLUR_SOURCE_BOUNDS_OFFSET),
+            [10.0, 20.0, 100.0, 80.0]
+        );
+        assert_ne!(
+            read_packed_bounds_at(&upload.bytes, BLUR_DISPLAY_BOUNDS_OFFSET),
+            [10.0, 20.0, 100.0, 80.0]
+        );
+        assert_eq!(
+            f32::from_ne_bytes(upload.bytes[112..116].try_into().unwrap()),
+            14.0
+        );
+        assert_eq!(
+            f32::from_ne_bytes(upload.bytes[128..132].try_into().unwrap()),
+            0.5
+        );
+        assert_eq!(upload.offset(), (4 * PACKED_BACKDROP_BLUR_BYTES) as u64);
     }
 
     #[test]
