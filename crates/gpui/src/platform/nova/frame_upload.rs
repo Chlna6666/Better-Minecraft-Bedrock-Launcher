@@ -12,6 +12,7 @@ mod frame;
 mod layers;
 mod path_cache;
 mod quality;
+mod retained_animation;
 pub(super) mod upload_encoding;
 pub(super) mod upload_queue;
 pub(super) use animated::*;
