@@ -74,7 +74,7 @@ impl Primitive {
             (Self::Underline(left), Self::Underline(right)) => left == right,
             (Self::MonochromeSprite(left), Self::MonochromeSprite(right)) => left == right,
             (Self::PolychromeSprite(left), Self::PolychromeSprite(right)) => left == right,
-            (Self::BackdropBlur(left), Self::BackdropBlur(right)) => left == right,
+            (Self::BackdropBlur(left), Self::BackdropBlur(right)) => left.visually_eq(right),
             (Self::Blur(left), Self::Blur(right)) => left == right,
             (Self::Surface(_), Self::Surface(_)) | (Self::GpuMesh3d(_), Self::GpuMesh3d(_)) => {
                 false
@@ -549,7 +549,12 @@ impl From<f64> for BackdropBlurStyle {
 }
 
 /// Backdrop blur primitive emitted into the scene.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// `PartialEq` intentionally represents the filter/source identity used by backdrop cache
+/// invalidation. Composite-only state (draw order, animation id, clipping corner geometry,
+/// saturation, opacity and tint) remains part of `visually_eq` so scene/static upload retention
+/// still notices those visual changes without throwing away an otherwise reusable Gaussian result.
+#[derive(Clone, Debug)]
 pub(crate) struct PaintBackdropBlur {
     pub order: DrawOrder,
     pub animation_id: Option<SceneAnimationId>,
@@ -563,6 +568,34 @@ pub(crate) struct PaintBackdropBlur {
     pub opacity: f32,
     pub tint: Option<Hsla>,
     pub recompute_overlap: bool,
+}
+
+impl PaintBackdropBlur {
+    pub(crate) fn visually_eq(&self, other: &Self) -> bool {
+        self.order == other.order
+            && self.animation_id == other.animation_id
+            && self.bounds == other.bounds
+            && self.content_mask == other.content_mask
+            && self.corner_radii == other.corner_radii
+            && self.radius == other.radius
+            && self.downsample == other.downsample
+            && self.levels == other.levels
+            && self.saturation == other.saturation
+            && self.opacity == other.opacity
+            && self.tint == other.tint
+            && self.recompute_overlap == other.recompute_overlap
+    }
+}
+
+impl PartialEq for PaintBackdropBlur {
+    fn eq(&self, other: &Self) -> bool {
+        self.bounds == other.bounds
+            && self.content_mask.bounds == other.content_mask.bounds
+            && self.radius == other.radius
+            && self.downsample == other.downsample
+            && self.levels == other.levels
+            && self.recompute_overlap == other.recompute_overlap
+    }
 }
 
 impl From<PaintBackdropBlur> for Primitive {
