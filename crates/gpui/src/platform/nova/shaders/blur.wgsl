@@ -15,11 +15,14 @@ struct BackdropBlur {
     downsample: u32,
     levels: u32,
     pad0: u32,
+    // Root backdrop records use this as both source and display geometry. Element/composite records
+    // keep this slot as the immutable source/filter geometry so renderer target planning remains
+    // independent from visual animation.
     bounds: Bounds,
     content_mask: ContentMask,
     corner_radii: Corners,
     // Shared 16-byte auxiliary slot. Root backdrop records store HSLA tint here; element/composite
-    // records store source bounds as (x, y, width, height) without changing the 136-byte ABI.
+    // records store animated display bounds as (x, y, width, height) without changing the 136-byte ABI.
     tint: Hsla,
     radius: f32,
     saturation: f32,
@@ -140,17 +143,20 @@ fn vs_backdrop_blur(
 ) -> BackdropBlurVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let blur = b_backdrop_blurs[instance_id];
-    let screen_position = blur.bounds.origin + unit_vertex * blur.bounds.size;
+    let source_position = blur.bounds.origin + unit_vertex * blur.bounds.size;
     let is_element_composite = blur.composite_kind == 1u;
-    let source_origin = vec2<f32>(blur.tint.h, blur.tint.s);
-    let source_size = vec2<f32>(blur.tint.l, blur.tint.a);
-    let source_position = source_origin + unit_vertex * source_size;
-    let sample_position = select(screen_position, source_position, is_element_composite);
+    var display_origin = blur.bounds.origin;
+    var display_size = blur.bounds.size;
+    if (is_element_composite) {
+        display_origin = vec2<f32>(blur.tint.h, blur.tint.s);
+        display_size = vec2<f32>(blur.tint.l, blur.tint.a);
+    }
+    let display_position = display_origin + unit_vertex * display_size;
 
     var out = BackdropBlurVarying();
-    out.position = to_device_position(unit_vertex, blur.bounds);
-    out.texture_coords = sample_position / max(blur.blurred_size, vec2<f32>(1.0));
-    out.clip_distances = distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask.bounds);
+    out.position = to_device_position_impl(display_position);
+    out.texture_coords = source_position / max(blur.blurred_size, vec2<f32>(1.0));
+    out.clip_distances = distance_from_clip_rect_impl(display_position, blur.content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(
         blur.content_mask.corner_bounds.origin,
         blur.content_mask.corner_bounds.size,
@@ -161,7 +167,7 @@ fn vs_backdrop_blur(
         blur.content_mask.corner_radii.bottom_right,
         blur.content_mask.corner_radii.bottom_left,
     );
-    out.bounds = vec4<f32>(blur.bounds.origin, blur.bounds.size);
+    out.bounds = vec4<f32>(display_origin, display_size);
     out.corner_radii = vec4<f32>(
         blur.corner_radii.top_left,
         blur.corner_radii.top_right,
