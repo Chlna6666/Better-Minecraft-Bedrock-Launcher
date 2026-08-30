@@ -195,7 +195,12 @@ impl PaintOperation {
     pub(crate) fn visually_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
-            (Self::StartLayer(left), Self::StartLayer(right)) => left == right,
+            // Paint layers are batching/order metadata and do not produce pixels themselves. Their
+            // spatial bounds may move with a layout animation while every actual pixel-producing
+            // primitive remains outside a backdrop sampling region. Treating that metadata motion
+            // as a visual mismatch prematurely terminates the unchanged prefix and makes all later
+            // primitives look dirty to backdrop/present damage tracking.
+            (Self::StartLayer(_), Self::StartLayer(_)) => true,
             (Self::EndLayer, Self::EndLayer) => true,
             (Self::StartBlur(left), Self::StartBlur(right)) => left == right,
             (Self::EndBlur, Self::EndBlur) => true,
@@ -324,7 +329,7 @@ impl From<Underline> for Primitive {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq)]
 #[repr(C)]
 pub(crate) struct Shadow {
     pub order: DrawOrder,
