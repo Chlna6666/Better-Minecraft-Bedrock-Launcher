@@ -7,6 +7,7 @@ mod atlas_pixels_tests;
 mod batch;
 mod blur;
 mod capacity;
+mod element_blur_animation;
 mod encode;
 mod frame;
 mod layers;
