@@ -6,6 +6,9 @@ pub(in crate::platform::nova) enum AnimatedPrimitiveKind {
     MonochromeSprite = 2,
     PolychromeSprite = 3,
     BackdropBlur = 4,
+    /// Retained element/compositor blur. Its static filter/source geometry stays fixed while
+    /// translation/scale/opacity only update the final composite record.
+    Blur = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
