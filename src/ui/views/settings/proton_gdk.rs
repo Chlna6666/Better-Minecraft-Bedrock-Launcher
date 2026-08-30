@@ -829,7 +829,7 @@ fn storage_footer(colors: &ThemeColors, i18n: &I18n, runner_root: std::path::Pat
 
 fn action_button(
     colors: &ThemeColors,
-    label: &'static str,
+    label: SharedString,
     icon: &'static str,
     primary: bool,
 ) -> Stateful<Div> {
