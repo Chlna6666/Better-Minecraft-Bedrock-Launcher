@@ -403,6 +403,7 @@ fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
     };
     let mut scene = Scene::default();
     scene.begin_blur(BlurCapture {
+        animation_id: None,
         bounds,
         content_mask: content_mask.clone(),
         radius: ScaledPixels(4.0),
