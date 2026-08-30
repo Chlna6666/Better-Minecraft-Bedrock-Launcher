@@ -206,7 +206,11 @@ impl PaintOperation {
     pub(crate) fn visual_bounds(&self) -> Option<Bounds<ScaledPixels>> {
         match self {
             Self::Primitive(primitive) => Some(primitive.visual_bounds()),
-            Self::StartLayer(bounds) => Some(*bounds),
+            // A paint layer is batching metadata, not a pixel-producing operation. Its bounds may
+            // cover the entire window while the actual primitives inside it occupy a small region.
+            // Counting the layer rectangle as visual damage makes unrelated backdrop filters
+            // re-sample whenever a layout/route animation moves a full-window batching container.
+            Self::StartLayer(_) => None,
             Self::StartBlur(blur) => Some(
                 blur.bounds
                     .dilate(blur_influence_radius(blur.radius))
@@ -427,7 +431,7 @@ impl From<PaintSurface> for Primitive {
     }
 }
 
-/// Controls whether compatible overlapping backdrop blurs reuse one filtered target.
+/// Controls whether compatible overlapping blur primitives reuse one filtered target.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum BackdropBlurOverlapMode {
     /// Reuse one Gaussian result for compatible overlapping primitives. This is the default.
