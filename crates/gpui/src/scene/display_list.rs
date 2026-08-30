@@ -411,14 +411,31 @@ impl Scene {
                 continue;
             }
             for operation in &self.paint_operations[..blur_index] {
-                let PaintOperation::Primitive(primitive) = operation else {
-                    continue;
-                };
-                if animation_value_changed(self, primitive.animation_id(), next_values) {
-                    let damage = animation_swept_bounds(self, primitive, next_values);
-                    if damage.intersects(&source_region) {
-                        plan.push(blur.order, damage.intersect(&source_region));
+                let damage = match operation {
+                    PaintOperation::Primitive(primitive)
+                        if animation_value_changed(self, primitive.animation_id(), next_values) =>
+                    {
+                        Some(animation_swept_bounds(self, primitive, next_values))
                     }
+                    PaintOperation::StartBlur(capture)
+                        if animation_value_changed(self, capture.animation_id, next_values) =>
+                    {
+                        Some(blur_capture_animation_swept_bounds(
+                            self,
+                            capture,
+                            next_values,
+                        ))
+                    }
+                    PaintOperation::Primitive(_)
+                    | PaintOperation::StartLayer(_)
+                    | PaintOperation::EndLayer
+                    | PaintOperation::StartBlur(_)
+                    | PaintOperation::EndBlur => None,
+                };
+                if let Some(damage) = damage
+                    && damage.intersects(&source_region)
+                {
+                    plan.push(blur.order, damage.intersect(&source_region));
                 }
             }
         }
@@ -588,6 +605,7 @@ impl Scene {
         content.finish();
         let blur = PaintBlur {
             order: 0,
+            animation_id: config.animation_id,
             bounds: effect_bounds,
             content_mask: config.content_mask,
             radius: config.radius,
@@ -650,9 +668,9 @@ impl Scene {
             .iter()
             .filter_map(|operation| match operation {
                 PaintOperation::Primitive(primitive) => primitive.animation_id(),
+                PaintOperation::StartBlur(blur) => blur.animation_id,
                 PaintOperation::StartLayer(_)
                 | PaintOperation::EndLayer
-                | PaintOperation::StartBlur(_)
                 | PaintOperation::EndBlur => None,
             })
             .collect()
@@ -1401,6 +1419,56 @@ fn animation_swept_bounds(
     animation_sampled_bounds(primitive, previous).union(&animation_sampled_bounds(primitive, next))
 }
 
+fn blur_capture_animation_swept_bounds(
+    scene: &Scene,
+    blur: &BlurCapture,
+    next_values: &[SceneAnimationValue],
+) -> Bounds<ScaledPixels> {
+    let Some(animation_id) = blur.animation_id else {
+        return blur_capture_visual_bounds(blur);
+    };
+    let previous = scene.animation_value(animation_id);
+    let next = next_values
+        .iter()
+        .find(|value| value.animation_id == animation_id);
+    animation_sampled_blur_capture_bounds(blur, previous)
+        .union(&animation_sampled_blur_capture_bounds(blur, next))
+}
+
+fn blur_capture_visual_bounds(blur: &BlurCapture) -> Bounds<ScaledPixels> {
+    blur.bounds
+        .dilate(blur_influence_radius(blur.radius))
+        .intersect(&blur.content_mask.bounds)
+}
+
+fn animation_sampled_blur_capture_bounds(
+    blur: &BlurCapture,
+    value: Option<&SceneAnimationValue>,
+) -> Bounds<ScaledPixels> {
+    let bounds = blur_capture_visual_bounds(blur);
+    let Some(value) = value else {
+        return bounds;
+    };
+    let sampled = sampled_animation_components(value);
+    match value.property {
+        TransitionProperty::Translation => Bounds {
+            origin: bounds.origin
+                + crate::point(ScaledPixels(sampled[0]), ScaledPixels(sampled[1])),
+            size: bounds.size,
+        },
+        TransitionProperty::Scale => scaled_animation_bounds(bounds, sampled[0], bounds.center()),
+        TransitionProperty::Transform => scaled_animation_bounds(
+            bounds,
+            sampled[0],
+            crate::point(ScaledPixels(sampled[2]), ScaledPixels(sampled[3])),
+        ),
+        // Opacity changes pixels but not geometry, so the whole composite output is source damage
+        // for a later backdrop barrier.
+        TransitionProperty::Opacity => bounds,
+        _ => bounds,
+    }
+}
+
 fn animation_sampled_bounds(
     primitive: &Primitive,
     value: Option<&SceneAnimationValue>,
@@ -1419,6 +1487,7 @@ fn animation_sampled_bounds(
                     | Primitive::MonochromeSprite(_)
                     | Primitive::PolychromeSprite(_)
                     | Primitive::BackdropBlur(_)
+                    | Primitive::Blur(_)
             ) =>
         {
             Bounds {
@@ -1586,20 +1655,30 @@ fn paint_operations_match_for_damage(
         return false;
     }
 
-    let (
-        PaintOperation::Primitive(current_primitive),
-        PaintOperation::Primitive(previous_primitive),
-    ) = (current, previous)
-    else {
-        return true;
-    };
-    let Some(current_animation_id) = current_primitive.animation_id() else {
-        return true;
-    };
-    let Some(previous_animation_id) = previous_primitive.animation_id() else {
-        return false;
-    };
-
-    current_scene.animation_value(current_animation_id)
-        == previous_scene.animation_value(previous_animation_id)
+    match (current, previous) {
+        (
+            PaintOperation::Primitive(current_primitive),
+            PaintOperation::Primitive(previous_primitive),
+        ) => {
+            let Some(current_animation_id) = current_primitive.animation_id() else {
+                return true;
+            };
+            let Some(previous_animation_id) = previous_primitive.animation_id() else {
+                return false;
+            };
+            current_scene.animation_value(current_animation_id)
+                == previous_scene.animation_value(previous_animation_id)
+        }
+        (PaintOperation::StartBlur(current_blur), PaintOperation::StartBlur(previous_blur)) => {
+            match (current_blur.animation_id, previous_blur.animation_id) {
+                (Some(current_animation_id), Some(previous_animation_id)) => {
+                    current_scene.animation_value(current_animation_id)
+                        == previous_scene.animation_value(previous_animation_id)
+                }
+                (None, None) => true,
+                _ => false,
+            }
+        }
+        _ => true,
+    }
 }
