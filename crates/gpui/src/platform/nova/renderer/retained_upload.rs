@@ -63,12 +63,17 @@ impl NovaRenderer {
                 key.premultiplied_alpha,
                 blur_quality,
             );
+            // Element blur composites are intentionally registered after recursive static encode.
+            // Their child batches remain ordinary retained source geometry, while only the final
+            // CompositeBlur record receives the promoted visual animation binding.
+            self.frame_upload
+                .register_element_blur_animations(scene, &mut summary);
             self.retained_upload
                 .replace(key, summary, self.frame_resources.len());
         }
         // The animation sampler needs to know whether static scene pixels were retained. Only then
-        // may a composite-only backdrop animation suppress the Scene-level self-animation refresh;
-        // a rebuilt display list can contain real source changes before the same blur barrier.
+        // may composite-only blur animation suppress self damage; a rebuilt display list can contain
+        // real source changes inside or before the same filter layer.
         self.frame_upload.retained_static_reused = reusable;
         self.frame_upload
             .sample_animated_primitives(self.current_size);
