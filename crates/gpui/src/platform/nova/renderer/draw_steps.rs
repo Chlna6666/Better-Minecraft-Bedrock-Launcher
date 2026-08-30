@@ -259,9 +259,21 @@ impl NovaRenderer {
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
         let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
         let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
+        let composite_only = if force_full {
+            FxHashSet::default()
+        } else {
+            self.frame_upload.composite_only_element_blur_indices()
+        };
         let mut layers = Vec::new();
 
         for range in self.frame_upload.blur_content_ranges() {
+            // A retained child scene whose only changing state is the promoted final composite has
+            // identical source pixels and Gaussian output. Keep the cached isolated/filter targets
+            // and submit no offscreen work. Non-spatial cache/atlas/quality invalidation sets
+            // `force_full`, which deliberately disables this fast path.
+            if composite_only.contains(&range.index) {
+                continue;
+            }
             let Some(config) = self
                 .frame_upload
                 .backdrop_blur_config_for_index(range.index)
