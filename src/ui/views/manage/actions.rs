@@ -138,12 +138,13 @@ impl ManagePageView {
         let Some(version) = self.selected_version(state).cloned() else {
             return;
         };
+        let supports_levilamina = version.is_gdk();
         self.version_settings_modal = Some(version_settings::VersionSettingsModalState {
             version: version.clone(),
             config: state.version_config.clone(),
             icon_source_path: None,
             saving: false,
-            levilamina_loading: true,
+            levilamina_loading: supports_levilamina,
             levilamina_busy: false,
             levilamina_error: None,
             levilamina_versions: Vec::new(),
@@ -151,7 +152,9 @@ impl ManagePageView {
             levilamina_installation: crate::core::levilamina::LeviLaminaInstallation::default(),
         });
         cx.notify();
-        self.load_levilamina_settings(version, cx);
+        if supports_levilamina {
+            self.load_levilamina_settings(version, cx);
+        }
     }
 
     pub fn select_version_icon(&mut self, window: &mut Window, cx: &mut Context<Self>) {

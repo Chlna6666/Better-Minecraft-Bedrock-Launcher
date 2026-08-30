@@ -12,6 +12,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::rc::Rc;
 
+mod compatibility;
 mod icon;
 mod levilamina;
 
@@ -104,28 +105,10 @@ pub fn render(
                                 i18n,
                                 view_handle.clone(),
                             ))
-                            .child(levilamina::render_card(
+                            .children(compatibility::render_cards(
                                 state,
                                 colors,
                                 i18n,
-                                view_handle.clone(),
-                            ))
-                            .child(render_toggle_card(
-                                "settings-debug-console",
-                                colors,
-                                t!("VersionSettingsModal.debug_console_label"),
-                                t!("VersionSettingsModal.debug_console_desc"),
-                                state.config.enable_debug_console,
-                                VersionSettingsToggle::DebugConsole,
-                                view_handle.clone(),
-                            ))
-                            .child(render_toggle_card(
-                                "settings-redirection",
-                                colors,
-                                t!("VersionSettingsModal.redirection_label"),
-                                t!("VersionSettingsModal.redirection_desc"),
-                                state.config.enable_redirection,
-                                VersionSettingsToggle::Redirection,
                                 view_handle.clone(),
                             ))
                             .when(!is_gdk, |this| {

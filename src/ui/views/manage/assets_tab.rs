@@ -170,9 +170,12 @@ fn append_skin_pack_asset_actions(
     asset: &ManageAssetEntry,
     action_key: &SharedString,
     is_default: bool,
+    supports_redirection: bool,
     cx: &mut Context<ManagePageView>,
 ) -> Div {
-    let actions = if is_default {
+    let actions = if !supports_redirection {
+        actions
+    } else if is_default {
         actions.child(
             skin_default_action_button(
                 colors,
@@ -964,6 +967,7 @@ pub(super) fn render_asset_row(
             asset,
             &action_key,
             is_default_skin_pack,
+            version.is_gdk(),
             cx,
         ),
         state::ManageAssetKind::Map => {

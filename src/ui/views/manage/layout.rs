@@ -383,7 +383,7 @@ pub(super) fn render_gdk_dropdown(
                 .position(|user| user.folder_name == *selected)
         })
         .or_else(|| {
-            ManagePageView::preferred_gdk_user(&state.gdk_users).and_then(|selected| {
+            preferred_gdk_user(&state.gdk_users, state.tab).and_then(|selected| {
                 state
                     .gdk_users
                     .iter()

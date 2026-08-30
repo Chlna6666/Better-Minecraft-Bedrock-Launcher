@@ -100,8 +100,11 @@ pub async fn load_gdk_users(
     Ok(manage_service::load_gdk_users(options)
         .await?
         .into_iter()
-        .map(|folder_name| ManageGdkUser {
-            folder_name: SharedString::from(folder_name),
+        .map(|user| ManageGdkUser {
+            folder_name: SharedString::from(user.folder_name),
+            has_worlds: user.has_worlds,
+            has_screenshots: user.has_screenshots,
+            has_servers: user.has_servers,
         })
         .collect())
 }

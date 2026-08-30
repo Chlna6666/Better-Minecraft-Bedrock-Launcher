@@ -584,18 +584,14 @@ impl ManagePageView {
                 state.gdk_users_loading = false;
                 match result {
                     Ok(users) => {
-                        let preferred_user = Self::preferred_gdk_user(&users);
+                        let preferred_user = preferred_gdk_user(&users, state.tab);
                         let has_selected =
                             state.selected_gdk_user.as_ref().is_some_and(|selected| {
                                 users
                                     .iter()
                                     .any(|user| user.folder_name.as_ref() == selected.as_ref())
                             });
-                        let selected_is_shared =
-                            state.selected_gdk_user.as_ref().is_some_and(|selected| {
-                                selected.as_ref().eq_ignore_ascii_case("shared")
-                            });
-                        if !has_selected || selected_is_shared {
+                        if !has_selected {
                             state.selected_gdk_user = preferred_user;
                         }
                         state.gdk_users = Arc::from(users);
@@ -618,14 +614,6 @@ impl ManagePageView {
             Ok::<(), anyhow::Error>(())
         })
         .detach();
-    }
-
-    pub(super) fn preferred_gdk_user(users: &[ManageGdkUser]) -> Option<SharedString> {
-        users
-            .iter()
-            .find(|user| !user.folder_name.as_ref().eq_ignore_ascii_case("shared"))
-            .or_else(|| users.first())
-            .map(|user| user.folder_name.clone())
     }
 
     pub(super) fn clear_active_user_scoped_data(&mut self, tab: ManageTab, cx: &mut Context<Self>) {
