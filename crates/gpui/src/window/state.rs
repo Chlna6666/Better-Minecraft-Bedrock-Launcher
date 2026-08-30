@@ -204,7 +204,7 @@ pub struct Window {
     pub(super) animation_dirty_region: DirtyRegion,
     pub(super) render_present_mode: PartialPresentMode,
     pub(super) render_trim_policy: RetainedResourceTrimPolicy,
-    pub(super) backdrop_blur_refresh_required: bool,
+    pub(super) backdrop_blur_damage_plan: BackdropBlurDamagePlan,
     pub(super) force_full_redraw: Cell<bool>,
     pub(super) force_view_cache_refresh: bool,
     pub(super) idle_render_frames: u16,

@@ -1,4 +1,4 @@
-use crate::{Bounds, ScaledPixels, SceneFrameMetrics};
+use crate::{Bounds, ScaledPixels, SceneFrameMetrics, TransitionProperty};
 use collections::FxHashSet;
 
 use super::BoundsTree;
@@ -66,6 +66,74 @@ const SCENE_IDLE_TRIM_FRAMES: u16 = 45;
 const SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER: usize = 2;
 const SCENE_MIN_RETAINED_CAPACITY: usize = 24;
 const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BackdropBlurDamagePlan {
+    entries: Vec<BackdropBlurSourceDamage>,
+}
+
+#[derive(Clone, Debug)]
+struct BackdropBlurSourceDamage {
+    order: DrawOrder,
+    source_damage: Vec<Bounds<ScaledPixels>>,
+    full_refresh: bool,
+}
+
+impl BackdropBlurDamagePlan {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(crate) fn refresh_required(&self) -> bool {
+        !self.is_empty()
+    }
+
+    pub(crate) fn source_damage_for_orders(
+        &self,
+        first: DrawOrder,
+        last: DrawOrder,
+    ) -> (bool, impl Iterator<Item = Bounds<ScaledPixels>> + '_) {
+        let full_refresh = self
+            .entries
+            .iter()
+            .any(|entry| entry.order >= first && entry.order <= last && entry.full_refresh);
+        let damage = self
+            .entries
+            .iter()
+            .filter(move |entry| entry.order >= first && entry.order <= last)
+            .flat_map(|entry| entry.source_damage.iter().copied());
+        (full_refresh, damage)
+    }
+
+    fn mark_full(&mut self, order: DrawOrder) {
+        let entry = self.entry_mut(order);
+        entry.full_refresh = true;
+        entry.source_damage.clear();
+    }
+
+    fn push(&mut self, order: DrawOrder, damage: Bounds<ScaledPixels>) {
+        if damage.is_empty() {
+            return;
+        }
+        let entry = self.entry_mut(order);
+        if !entry.full_refresh {
+            entry.source_damage.push(damage);
+        }
+    }
+
+    fn entry_mut(&mut self, order: DrawOrder) -> &mut BackdropBlurSourceDamage {
+        if let Some(index) = self.entries.iter().position(|entry| entry.order == order) {
+            return &mut self.entries[index];
+        }
+        let index = self.entries.len();
+        self.entries.push(BackdropBlurSourceDamage {
+            order,
+            source_damage: Vec::new(),
+            full_refresh: false,
+        });
+        &mut self.entries[index]
+    }
+}
 
 impl Scene {
     pub fn clear(&mut self) {
@@ -275,60 +343,68 @@ impl Scene {
                 .any(|blur| blur.content.has_backdrop_blurs())
     }
 
-    /// Returns whether any pixels sampled by any backdrop group changed.
-    ///
-    /// Backdrop filters are draw-order barriers: a background filter must not become dirty merely
-    /// because a later tab animates, and a titlebar filter only cares about source pixels inside
-    /// its own sampling footprint. The old implementation compared one global prefix before the
-    /// first blur and forced every filter target to rebuild together.
-    pub(crate) fn backdrop_blur_refresh_required(&self, previous: &Self) -> bool {
+    /// Computes spatial source damage independently for every backdrop draw-order barrier.
+    pub(crate) fn backdrop_blur_damage_plan(&self, previous: &Self) -> BackdropBlurDamagePlan {
+        let mut plan = BackdropBlurDamagePlan::default();
         if !self.has_backdrop_blurs() && !previous.has_backdrop_blurs() {
-            return false;
+            return plan;
         }
 
         let current_blurs = backdrop_blur_operations(&self.paint_operations);
         let previous_blurs = backdrop_blur_operations(&previous.paint_operations);
         if current_blurs.len() != previous_blurs.len() {
-            return true;
+            for (_, blur) in current_blurs {
+                plan.mark_full(blur.order);
+            }
+            return plan;
         }
 
         for ((current_index, current_blur), (previous_index, previous_blur)) in
             current_blurs.into_iter().zip(previous_blurs)
         {
             if current_blur != previous_blur {
-                return true;
+                plan.mark_full(current_blur.order);
+                continue;
             }
             let source_region = backdrop_blur_source_region(current_blur);
             if source_region.is_empty() {
                 continue;
             }
-            if paint_operations_changed_in_region(
+            collect_paint_operation_damage(
                 &self.paint_operations[..current_index],
                 &previous.paint_operations[..previous_index],
                 source_region,
-            ) {
-                return true;
-            }
+                |damage| plan.push(current_blur.order, damage),
+            );
         }
 
-        self.backdrop_blur_source_animation_values_changed(&previous.animation_values)
+        self.collect_backdrop_blur_animation_damage(&previous.animation_values, &mut plan);
+        plan
     }
 
-    /// Checks GPU-side animation values that can change pixels sampled by a backdrop group.
-    ///
-    /// This is used by animation-only frames where the CPU scene itself is retained. It applies
-    /// the same draw-order and spatial isolation as [`Self::backdrop_blur_refresh_required`].
-    pub(crate) fn backdrop_blur_source_animation_values_changed(
+    /// Computes per-backdrop source damage for an animation-only retained-scene frame.
+    pub(crate) fn backdrop_blur_animation_damage_plan(
         &self,
         next_values: &[SceneAnimationValue],
-    ) -> bool {
+    ) -> BackdropBlurDamagePlan {
+        let mut plan = BackdropBlurDamagePlan::default();
+        self.collect_backdrop_blur_animation_damage(next_values, &mut plan);
+        plan
+    }
+
+    fn collect_backdrop_blur_animation_damage(
+        &self,
+        next_values: &[SceneAnimationValue],
+        plan: &mut BackdropBlurDamagePlan,
+    ) {
         if !self.has_backdrop_blurs() {
-            return false;
+            return;
         }
 
         for (blur_index, blur) in backdrop_blur_operations(&self.paint_operations) {
             if animation_value_changed(self, blur.animation_id, next_values) {
-                return true;
+                plan.mark_full(blur.order);
+                continue;
             }
             let source_region = backdrop_blur_source_region(blur);
             if source_region.is_empty() {
@@ -339,30 +415,13 @@ impl Scene {
                     continue;
                 };
                 if animation_value_changed(self, primitive.animation_id(), next_values) {
-                    // Geometry can enter the sampling region from outside its static bounds.
-                    // Keep spatial isolation for opacity/color changes, but conservatively
-                    // invalidate earlier transformed sources until swept bounds are available.
-                    let moves_bounds =
-                        self.animation_values
-                            .iter()
-                            .chain(next_values)
-                            .any(|value| {
-                                Some(value.animation_id) == primitive.animation_id()
-                                    && matches!(
-                                        value.property,
-                                        crate::TransitionProperty::Translation
-                                            | crate::TransitionProperty::Transform
-                                            | crate::TransitionProperty::Scale
-                                            | crate::TransitionProperty::Rotation
-                                    )
-                            });
-                    if moves_bounds || primitive.visual_bounds().intersects(&source_region) {
-                        return true;
+                    let damage = animation_swept_bounds(self, primitive, next_values);
+                    if damage.intersects(&source_region) {
+                        plan.push(blur.order, damage.intersect(&source_region));
                     }
                 }
             }
         }
-        false
     }
 
     fn animation_value(&self, animation_id: SceneAnimationId) -> Option<&SceneAnimationValue> {
@@ -378,6 +437,35 @@ impl Scene {
         let mut damage_regions = Vec::new();
         self.collect_backdrop_blur_damage(damage, &mut damage_regions);
         damage_regions.into_iter()
+    }
+
+    pub(crate) fn backdrop_blur_output_damage(
+        &self,
+        plan: &BackdropBlurDamagePlan,
+    ) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
+        let mut output_damage = Vec::new();
+        for (_, blur) in backdrop_blur_operations(&self.paint_operations) {
+            let (full_refresh, source_damage) =
+                plan.source_damage_for_orders(blur.order, blur.order);
+            if full_refresh {
+                let bounds = blur.bounds.intersect(&blur.content_mask.bounds);
+                if !bounds.is_empty() {
+                    output_damage.push(bounds);
+                }
+                continue;
+            }
+            let influence_radius = backdrop_blur_influence_radius(blur);
+            for damage in source_damage {
+                let affected = damage
+                    .dilate(influence_radius)
+                    .intersect(&blur.bounds)
+                    .intersect(&blur.content_mask.bounds);
+                if !affected.is_empty() {
+                    output_damage.push(affected);
+                }
+            }
+        }
+        output_damage.into_iter()
     }
 
     fn collect_backdrop_blur_damage(
@@ -1130,11 +1218,12 @@ fn backdrop_blur_source_region(blur: &PaintBackdropBlur) -> Bounds<ScaledPixels>
         .dilate(backdrop_blur_influence_radius(blur))
 }
 
-fn paint_operations_changed_in_region(
+fn collect_paint_operation_damage(
     current: &[PaintOperation],
     previous: &[PaintOperation],
     region: Bounds<ScaledPixels>,
-) -> bool {
+    mut visit: impl FnMut(Bounds<ScaledPixels>),
+) {
     let prefix_len = current
         .iter()
         .zip(previous)
@@ -1153,7 +1242,8 @@ fn paint_operations_changed_in_region(
         .iter()
         .chain(&previous[prefix_len..previous.len().saturating_sub(suffix_len)])
         .filter_map(PaintOperation::visual_bounds)
-        .any(|bounds| bounds.intersects(&region))
+        .filter(|bounds| bounds.intersects(&region))
+        .for_each(|bounds| visit(bounds.intersect(&region)));
 }
 
 fn animation_value_changed(
@@ -1168,6 +1258,148 @@ fn animation_value_changed(
         != next_values
             .iter()
             .find(|value| value.animation_id == animation_id)
+}
+
+fn animation_swept_bounds(
+    scene: &Scene,
+    primitive: &Primitive,
+    next_values: &[SceneAnimationValue],
+) -> Bounds<ScaledPixels> {
+    let Some(animation_id) = primitive.animation_id() else {
+        return primitive.visual_bounds();
+    };
+    let previous = scene.animation_value(animation_id);
+    let next = next_values
+        .iter()
+        .find(|value| value.animation_id == animation_id);
+    animation_sampled_bounds(primitive, previous).union(&animation_sampled_bounds(primitive, next))
+}
+
+fn animation_sampled_bounds(
+    primitive: &Primitive,
+    value: Option<&SceneAnimationValue>,
+) -> Bounds<ScaledPixels> {
+    let Some(value) = value else {
+        return primitive.visual_bounds();
+    };
+    let sampled = sampled_animation_components(value);
+    let bounds = primitive.visual_bounds();
+    match value.property {
+        TransitionProperty::Translation
+            if matches!(
+                primitive,
+                Primitive::Quad(_)
+                    | Primitive::Shadow(_)
+                    | Primitive::MonochromeSprite(_)
+                    | Primitive::PolychromeSprite(_)
+                    | Primitive::BackdropBlur(_)
+            ) =>
+        {
+            Bounds {
+                origin: bounds.origin
+                    + crate::point(ScaledPixels(sampled[0]), ScaledPixels(sampled[1])),
+                size: bounds.size,
+            }
+        }
+        TransitionProperty::Scale => scaled_animation_bounds(bounds, sampled[0], bounds.center()),
+        TransitionProperty::Transform => scaled_animation_bounds(
+            bounds,
+            sampled[0],
+            crate::point(ScaledPixels(sampled[2]), ScaledPixels(sampled[3])),
+        ),
+        TransitionProperty::Rotation => rotated_animation_bounds(primitive, sampled[0]),
+        _ => bounds,
+    }
+}
+
+fn sampled_animation_components(value: &SceneAnimationValue) -> [f32; 4] {
+    let progress = if value.progress.is_finite() {
+        value.progress
+    } else {
+        0.0
+    };
+    std::array::from_fn(|index| {
+        value.from[index] + (value.to[index] - value.from[index]) * progress
+    })
+}
+
+fn scaled_animation_bounds(
+    bounds: Bounds<ScaledPixels>,
+    scale: f32,
+    origin: crate::Point<ScaledPixels>,
+) -> Bounds<ScaledPixels> {
+    let scale = if scale.is_finite() {
+        scale.max(0.0)
+    } else {
+        1.0
+    };
+    Bounds {
+        origin: origin + (bounds.origin - origin) * scale,
+        size: bounds.size.map(|value| value * scale),
+    }
+}
+
+fn rotated_animation_bounds(primitive: &Primitive, angle: f32) -> Bounds<ScaledPixels> {
+    let Primitive::MonochromeSprite(sprite) = primitive else {
+        return primitive.visual_bounds();
+    };
+    if !angle.is_finite() {
+        return primitive.visual_bounds();
+    }
+    let center = sprite.bounds.center();
+    let rotation = super::TransformationMatrix::unit()
+        .translate(center)
+        .rotate(crate::radians(angle))
+        .translate(crate::point(
+            ScaledPixels(-center.x.0),
+            ScaledPixels(-center.y.0),
+        ));
+    let transform = sprite.transformation.compose(rotation);
+    let left = sprite.bounds.left().0;
+    let right = sprite.bounds.right().0;
+    let top = sprite.bounds.top().0;
+    let bottom = sprite.bounds.bottom().0;
+    let corners = [[left, top], [right, top], [left, bottom], [right, bottom]];
+    let transformed = corners.map(|[x, y]| {
+        crate::point(
+            ScaledPixels(
+                transform.translation[0]
+                    + transform.rotation_scale[0][0] * x
+                    + transform.rotation_scale[0][1] * y,
+            ),
+            ScaledPixels(
+                transform.translation[1]
+                    + transform.rotation_scale[1][0] * x
+                    + transform.rotation_scale[1][1] * y,
+            ),
+        )
+    });
+    let min_x = transformed
+        .iter()
+        .map(|point| point.x)
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or_default();
+    let max_x = transformed
+        .iter()
+        .map(|point| point.x)
+        .max_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or_default();
+    let min_y = transformed
+        .iter()
+        .map(|point| point.y)
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or_default();
+    let max_y = transformed
+        .iter()
+        .map(|point| point.y)
+        .max_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or_default();
+    Bounds::new(
+        crate::point(min_x, min_y),
+        crate::size(max_x - min_x, max_y - min_y),
+    )
+    .dilate(ScaledPixels(1.0))
+    .intersect(&sprite.content_mask.bounds)
 }
 
 fn backdrop_blur_influence_radius(blur: &PaintBackdropBlur) -> ScaledPixels {

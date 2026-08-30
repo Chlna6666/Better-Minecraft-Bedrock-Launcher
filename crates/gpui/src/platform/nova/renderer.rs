@@ -147,6 +147,7 @@ struct DrawStepScratch {
     path_mask_steps: Vec<DrawStepDescriptor>,
     backdrop_blur_passes: Vec<BackdropBlurRenderPass>,
     backdrop_blur_damage_region: DirtyRegion,
+    backdrop_blur_damage_plan: crate::BackdropBlurDamagePlan,
     force_full_backdrop_blur_refresh: bool,
 }
 
@@ -284,7 +285,9 @@ impl NovaRenderer {
         }
         let backdrop_blur_quality = BackdropBlurQuality::Full;
         let dirty_region = crate::DirtyRegion::default();
-        let render_plan = FrameRenderPlan::full_redraw(scene, &dirty_region);
+        let backdrop_blur_damage_plan = crate::BackdropBlurDamagePlan::default();
+        let render_plan =
+            FrameRenderPlan::full_redraw(scene, &dirty_region, &backdrop_blur_damage_plan);
         self.observe_render_plan(render_plan);
         let upload = self.pack_scene(scene, backdrop_blur_quality);
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
@@ -368,9 +371,12 @@ impl NovaRenderer {
 
     fn observe_render_plan(&mut self, render_plan: FrameRenderPlan<'_>) {
         self.draw_step_scratch.backdrop_blur_damage_region = render_plan.dirty_region.clone();
-        self.draw_step_scratch.force_full_backdrop_blur_refresh = !self.backdrop_blur_cache_valid
-            || render_plan.dirty_region.is_full()
-            || render_plan.dirty_region.is_empty();
+        self.draw_step_scratch.backdrop_blur_damage_plan =
+            render_plan.backdrop_blur_damage_plan.clone();
+        self.draw_step_scratch.force_full_backdrop_blur_refresh = force_full_backdrop_blur_refresh(
+            self.backdrop_blur_cache_valid,
+            render_plan.force_full_backdrop_blur_refresh,
+        );
     }
 
     fn update_backdrop_blur_cache_plan(&mut self, quality: BackdropBlurQuality) {
@@ -584,6 +590,10 @@ fn gfx_memory_trim_level(level: GpuiMemoryTrimLevel) -> GfxMemoryTrimLevel {
     }
 }
 
+fn force_full_backdrop_blur_refresh(cache_valid: bool, explicitly_forced: bool) -> bool {
+    !cache_valid || explicitly_forced
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +608,15 @@ mod tests {
 
         assert!(scratch.draw_steps.capacity() <= 64);
         assert!(scratch.path_mask_steps.capacity() <= 32);
+    }
+
+    #[test]
+    fn empty_spatial_damage_does_not_force_full_blur_refresh() {
+        assert!(!force_full_backdrop_blur_refresh(true, false));
+    }
+
+    #[test]
+    fn invalid_cache_still_forces_full_blur_refresh() {
+        assert!(force_full_backdrop_blur_refresh(false, false));
     }
 }

@@ -137,10 +137,10 @@ impl Window {
         self.next_frame
             .scene
             .replace_engine_animation_values(scene_animation_values);
-        self.backdrop_blur_refresh_required = self
+        self.backdrop_blur_damage_plan = self
             .next_frame
             .scene
-            .backdrop_blur_refresh_required(&self.rendered_frame.scene);
+            .backdrop_blur_damage_plan(&self.rendered_frame.scene);
         self.prepare_render_plan_for_next_frame(
             previous_scene_was_empty || force_full_redraw || self.draw_was_degraded,
             directly_dirty_views,
@@ -298,17 +298,12 @@ impl Window {
                 dirty_region.push(rect.bounds);
             }
 
-            if !dirty_region.is_empty() && self.next_frame.scene.has_backdrop_blurs() {
-                let source_damage: SmallVec<[Bounds<ScaledPixels>; 4]> = dirty_region
-                    .rects()
-                    .iter()
-                    .map(|rect| rect.bounds)
-                    .collect();
-                for damage in source_damage {
-                    for bounds in self.next_frame.scene.backdrop_blur_damage(damage) {
-                        dirty_region.push(bounds);
-                    }
-                }
+            for bounds in self
+                .next_frame
+                .scene
+                .backdrop_blur_output_damage(&self.backdrop_blur_damage_plan)
+            {
+                dirty_region.push(bounds);
             }
 
             if dirty_region.is_empty() && self.next_frame.retained_scene_segments.is_empty() {
@@ -425,9 +420,10 @@ impl Window {
         FrameRenderPlan {
             scene: &self.rendered_frame.scene,
             dirty_region: &self.render_dirty_region,
+            backdrop_blur_damage_plan: &self.backdrop_blur_damage_plan,
             partial_present_mode: self.render_present_mode,
             trim_policy: self.render_trim_policy,
-            backdrop_blur_refresh_required: self.backdrop_blur_refresh_required,
+            force_full_backdrop_blur_refresh: false,
         }
     }
 

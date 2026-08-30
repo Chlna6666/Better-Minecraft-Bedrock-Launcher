@@ -469,10 +469,10 @@ impl Window {
             .animation_engine
             .borrow_mut()
             .tick_driver(driver, self.animation_time());
-        self.backdrop_blur_refresh_required = self
+        self.backdrop_blur_damage_plan = self
             .rendered_frame
             .scene
-            .backdrop_blur_source_animation_values_changed(&tick.scene_values);
+            .backdrop_blur_animation_damage_plan(&tick.scene_values);
         self.rendered_frame
             .scene
             .replace_engine_animation_values(tick.scene_values);
@@ -483,6 +483,17 @@ impl Window {
         for bounds in tick.dirty_bounds {
             self.record_animation_tick_dirty_bounds(bounds, viewport);
         }
+        for bounds in self
+            .rendered_frame
+            .scene
+            .backdrop_blur_output_damage(&self.backdrop_blur_damage_plan)
+        {
+            self.render_dirty_region.push(bounds);
+        }
+        self.render_dirty_region.coalesce_if_large(
+            viewport.scale(self.scale_factor),
+            DIRTY_REGION_FULL_REDRAW_RATIO,
+        );
         if tick.active_count > 0 && tick.has_gpu_or_paint {
             if self.active.get() && !self.platform_window.is_minimized() {
                 self.request_animation_engine_frame(driver);

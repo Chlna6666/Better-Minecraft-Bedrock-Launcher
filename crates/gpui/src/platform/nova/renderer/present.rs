@@ -486,7 +486,9 @@ impl NovaRenderer {
                 || backdrop_source_atlas_dirty
                 || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality));
         let backdrop_blur_refresh_required = has_root_backdrop_blurs
-            && (render_plan.backdrop_blur_refresh_required || shared_blur_cache_invalid);
+            && (render_plan.force_full_backdrop_blur_refresh
+                || render_plan.backdrop_blur_damage_plan.refresh_required()
+                || shared_blur_cache_invalid);
         let dirty_element_indices = dirty_element_blur_indices(
             &self.frame_upload,
             render_plan.dirty_region,

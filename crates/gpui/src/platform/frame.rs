@@ -1,4 +1,4 @@
-use crate::{Bounds, ScaledPixels, Scene};
+use crate::{BackdropBlurDamagePlan, Bounds, ScaledPixels, Scene};
 
 const MAX_DIRTY_RECTS: usize = 128;
 
@@ -201,27 +201,32 @@ pub(crate) enum RetainedResourceTrimPolicy {
 pub(crate) struct FrameRenderPlan<'a> {
     pub(crate) scene: &'a Scene,
     pub(crate) dirty_region: &'a DirtyRegion,
+    pub(crate) backdrop_blur_damage_plan: &'a BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
     pub(crate) trim_policy: RetainedResourceTrimPolicy,
-    pub(crate) backdrop_blur_refresh_required: bool,
+    pub(crate) force_full_backdrop_blur_refresh: bool,
 }
 
 impl<'a> FrameRenderPlan<'a> {
     #[cfg(target_os = "macos")]
-    pub(crate) fn full_redraw(scene: &'a Scene, dirty_region: &'a DirtyRegion) -> Self {
+    pub(crate) fn full_redraw(
+        scene: &'a Scene,
+        dirty_region: &'a DirtyRegion,
+        backdrop_blur_damage_plan: &'a BackdropBlurDamagePlan,
+    ) -> Self {
         Self {
             scene,
             dirty_region,
+            backdrop_blur_damage_plan,
             partial_present_mode: PartialPresentMode::FullRedraw,
             trim_policy: RetainedResourceTrimPolicy::None,
-            backdrop_blur_refresh_required: true,
+            force_full_backdrop_blur_refresh: true,
         }
     }
 
     pub(crate) fn surface_requires_full_redraw(self) -> Self {
         Self {
             partial_present_mode: PartialPresentMode::FullRedraw,
-            backdrop_blur_refresh_required: true,
             ..self
         }
     }

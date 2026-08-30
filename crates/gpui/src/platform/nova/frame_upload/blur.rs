@@ -33,6 +33,7 @@ pub(in crate::platform::nova) struct BackdropBlurConfig {
     member_first: u32,
     member_last: u32,
     order: u32,
+    order_last: u32,
     downsample: u8,
     levels: u8,
     radius_bits: u32,
@@ -68,6 +69,7 @@ impl BackdropBlurConfig {
             member_first: member_index,
             member_last: member_index,
             order,
+            order_last: order,
             downsample,
             levels,
             radius_bits: radius.to_bits(),
@@ -92,6 +94,10 @@ impl BackdropBlurConfig {
     /// Returns `[x, y, width, height]` in source/device pixels.
     pub(in crate::platform::nova) fn bounds(self) -> [f32; 4] {
         self.bounds_bits.map(f32::from_bits)
+    }
+
+    pub(in crate::platform::nova) fn order_range(self) -> std::ops::RangeInclusive<u32> {
+        self.order..=self.order_last
     }
 
     pub(in crate::platform::nova) fn reuse_key(self) -> BackdropBlurReuseKey {
@@ -152,6 +158,7 @@ impl BackdropBlurConfig {
             false,
         );
         merged.member_last = other.member_last.max(self.member_last);
+        merged.order_last = self.order_last.max(other.order_last);
         merged
     }
 }

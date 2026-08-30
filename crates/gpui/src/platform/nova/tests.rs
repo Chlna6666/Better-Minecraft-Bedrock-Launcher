@@ -1844,12 +1844,14 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
         },
         size(crate::ScaledPixels(20.0), crate::ScaledPixels(20.0)),
     ));
+    let backdrop_blur_damage_plan = crate::BackdropBlurDamagePlan::default();
     let partial_plan = FrameRenderPlan {
         scene: &scene,
         dirty_region: &dirty_region,
+        backdrop_blur_damage_plan: &backdrop_blur_damage_plan,
         partial_present_mode: PartialPresentMode::Partial,
         trim_policy: Default::default(),
-        backdrop_blur_refresh_required: false,
+        force_full_backdrop_blur_refresh: false,
     };
 
     assert_eq!(
@@ -1860,7 +1862,7 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
         resolve_surface_render_plan(partial_plan, true).partial_present_mode,
         PartialPresentMode::FullRedraw
     );
-    assert!(resolve_surface_render_plan(partial_plan, true).backdrop_blur_refresh_required);
+    assert!(!resolve_surface_render_plan(partial_plan, true).force_full_backdrop_blur_refresh);
 }
 
 #[test]

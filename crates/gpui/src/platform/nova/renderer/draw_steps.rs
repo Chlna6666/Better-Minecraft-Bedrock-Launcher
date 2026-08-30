@@ -95,11 +95,25 @@ impl NovaRenderer {
         }
 
         let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
-        let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
-        let dirty_configs: Vec<Vec<BackdropBlurConfig>> = blur_groups
+        let group_damage: Vec<_> = blur_groups
             .iter()
             .map(|(_, configs)| {
-                blur_configs_for_refresh(configs, self.current_size, damage, force_full)
+                backdrop_damage_for_configs(
+                    &self.draw_step_scratch.backdrop_blur_damage_plan,
+                    configs,
+                )
+            })
+            .collect();
+        let dirty_configs: Vec<Vec<BackdropBlurConfig>> = blur_groups
+            .iter()
+            .zip(&group_damage)
+            .map(|((_, configs), (group_full_refresh, damage))| {
+                blur_configs_for_refresh(
+                    configs,
+                    self.current_size,
+                    damage,
+                    force_full || *group_full_refresh,
+                )
             })
             .collect();
 
@@ -117,9 +131,17 @@ impl NovaRenderer {
         // union so later dirty barriers can safely composite earlier cached filters in draw order.
         let source_scissor = dirty_configs[..=last_dirty_group]
             .iter()
-            .flat_map(|configs| configs.iter().copied())
-            .filter_map(|config| {
-                blur_source_scissor_for_refresh(config, self.current_size, damage, force_full)
+            .zip(&group_damage[..=last_dirty_group])
+            .flat_map(|(configs, damage)| {
+                configs.iter().copied().map(move |config| (config, damage))
+            })
+            .filter_map(|(config, (group_full_refresh, damage))| {
+                blur_source_scissor_for_refresh(
+                    config,
+                    self.current_size,
+                    damage,
+                    force_full || *group_full_refresh,
+                )
             })
             .reduce(union_scissor_rects);
 
@@ -160,6 +182,8 @@ impl NovaRenderer {
             }
 
             let configs = &dirty_configs[group_index];
+            let (group_full_refresh, damage) = &group_damage[group_index];
+            let group_force_full = force_full || *group_full_refresh;
             let mut filter_passes = Vec::new();
             if !configs.is_empty() {
                 backdrop_blur_render_passes_for_configs_into(
@@ -173,7 +197,7 @@ impl NovaRenderer {
                     configs,
                     self.current_size,
                     damage,
-                    force_full,
+                    group_force_full,
                     &mut filter_passes,
                 );
             }
@@ -181,7 +205,7 @@ impl NovaRenderer {
             groups.push(PreparedBackdropBlurGroup {
                 source_steps,
                 filter_passes,
-                preserve_filtered_pixels: !force_full,
+                preserve_filtered_pixels: !group_force_full,
             });
             // Include this group's backdrop batch in the next segment. If this group was clean, the
             // draw samples its retained filtered texture rather than recomputing the Gaussian pass.
@@ -492,6 +516,30 @@ fn custom_mesh_cache_entry(
         .get(&mesh_id)
         .copied()
         .filter(|entry| entry.generation == generation)
+}
+
+fn backdrop_damage_for_configs(
+    plan: &crate::BackdropBlurDamagePlan,
+    configs: &[BackdropBlurConfig],
+) -> (bool, DirtyRegion) {
+    let Some(first_order) = configs
+        .iter()
+        .map(|config| *config.order_range().start())
+        .min()
+    else {
+        return (false, DirtyRegion::empty());
+    };
+    let last_order = configs
+        .iter()
+        .map(|config| *config.order_range().end())
+        .max()
+        .unwrap_or(first_order);
+    let (full_refresh, damage) = plan.source_damage_for_orders(first_order, last_order);
+    let mut region = DirtyRegion::empty();
+    for bounds in damage {
+        region.push(bounds);
+    }
+    (full_refresh, region)
 }
 
 fn blur_configs_for_refresh(
