@@ -60,9 +60,7 @@ impl AnimatedUpload {
             AnimatedPrimitiveKind::Shadow => PACKED_SHADOW_BYTES,
             AnimatedPrimitiveKind::MonochromeSprite => PACKED_MONO_SPRITE_BYTES,
             AnimatedPrimitiveKind::PolychromeSprite => PACKED_POLY_SPRITE_BYTES,
-            AnimatedPrimitiveKind::BackdropBlur | AnimatedPrimitiveKind::Blur => {
-                PACKED_BACKDROP_BLUR_BYTES
-            }
+            AnimatedPrimitiveKind::BackdropBlur => PACKED_BACKDROP_BLUR_BYTES,
         };
         u64::from(self.index) * stride as u64
     }
@@ -188,9 +186,7 @@ impl FrameUpload {
                 AnimatedPrimitiveKind::Shadow => &mut self.shadows,
                 AnimatedPrimitiveKind::MonochromeSprite => &mut self.mono_sprites,
                 AnimatedPrimitiveKind::PolychromeSprite => &mut self.poly_sprites,
-                AnimatedPrimitiveKind::BackdropBlur | AnimatedPrimitiveKind::Blur => {
-                    &mut self.backdrop_blurs
-                }
+                AnimatedPrimitiveKind::BackdropBlur => &mut self.backdrop_blurs,
             };
             let offset = primitive.index as usize * primitive.bytes.len();
             buffer[offset..offset + primitive.bytes.len()].copy_from_slice(&primitive.bytes);
@@ -238,9 +234,7 @@ impl FrameUpload {
                 }
                 let source_region = sample.base_source_region();
                 let blocked_by_other_animation = self.animated_primitives.iter().any(|other| {
-                    if other.kind == AnimatedPrimitiveKind::BackdropBlur
-                        && other.index == sample.index
-                    {
+                    if other.base_backdrop_blur().is_some() && other.index == sample.index {
                         return false;
                     }
                     let Some(other_animation_id) = other.animation_id() else {
@@ -293,9 +287,7 @@ impl FrameUpload {
     ) -> Option<&crate::PaintBackdropBlur> {
         self.animated_primitives
             .iter()
-            .find(|primitive| {
-                primitive.kind == AnimatedPrimitiveKind::BackdropBlur && primitive.index == index
-            })
+            .find(|primitive| primitive.index == index && primitive.base_backdrop_blur().is_some())
             .and_then(AnimatedUpload::base_backdrop_blur)
     }
 }
@@ -638,7 +630,7 @@ mod tests {
         };
         let mut upload = AnimatedUpload::new(
             Primitive::Blur(blur),
-            AnimatedPrimitiveKind::Blur,
+            AnimatedPrimitiveKind::BackdropBlur,
             4,
         );
         upload.sample(
