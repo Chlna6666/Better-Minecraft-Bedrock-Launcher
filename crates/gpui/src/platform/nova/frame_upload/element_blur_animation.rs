@@ -104,3 +104,87 @@ fn collect_element_blurs<'a>(scene: &'a crate::Scene, output: &mut Vec<&'a crate
         collect_element_blurs(&blur.content, output);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_blur(
+        animation_id: crate::SceneAnimationId,
+        content: crate::Scene,
+    ) -> crate::PaintBlur {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(120.0), crate::ScaledPixels(80.0)),
+        );
+        crate::PaintBlur {
+            order: 3,
+            animation_id: Some(animation_id),
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(12.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(content),
+        }
+    }
+
+    fn active_value(animation_id: crate::SceneAnimationId) -> crate::SceneAnimationValue {
+        crate::SceneAnimationValue {
+            animation_id,
+            property: crate::TransitionProperty::Translation,
+            progress: 0.5,
+            from: [0.0; 4],
+            to: [32.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    #[test]
+    fn retained_static_element_blur_with_only_composite_animation_skips_filter_work() {
+        let animation_id = crate::SceneAnimationId(7);
+        let blur = test_blur(animation_id, crate::Scene::default());
+        let upload = FrameUpload {
+            retained_static_reused: true,
+            sampled_animation_values: vec![active_value(animation_id)],
+            animated_primitives: vec![AnimatedUpload::new(
+                crate::Primitive::Blur(blur),
+                AnimatedPrimitiveKind::BackdropBlur,
+                9,
+            )],
+            ..Default::default()
+        };
+
+        assert!(upload.composite_only_element_blur_indices().contains(&9));
+    }
+
+    #[test]
+    fn animated_child_blocks_composite_only_element_blur_fast_path() {
+        let animation_id = crate::SceneAnimationId(7);
+        let child_animation_id = crate::SceneAnimationId(8);
+        let child_bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(20.0)),
+        );
+        let mut child = crate::Scene::default();
+        child.insert_animated_primitive(
+            crate::Quad {
+                bounds: child_bounds,
+                content_mask: crate::ContentMask::new(child_bounds),
+                ..Default::default()
+            },
+            child_animation_id,
+        );
+        let blur = test_blur(animation_id, child);
+        let upload = FrameUpload {
+            retained_static_reused: true,
+            sampled_animation_values: vec![active_value(animation_id)],
+            animated_primitives: vec![AnimatedUpload::new(
+                crate::Primitive::Blur(blur),
+                AnimatedPrimitiveKind::BackdropBlur,
+                9,
+            )],
+            ..Default::default()
+        };
+
+        assert!(!upload.composite_only_element_blur_indices().contains(&9));
+    }
+}
