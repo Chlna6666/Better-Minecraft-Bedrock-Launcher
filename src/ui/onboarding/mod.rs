@@ -261,7 +261,6 @@ fn build_platform_summary() -> OnboardingPlatformSummary {
         items: vec![
             OnboardingSummaryItem {
                 label: crate::i18n_key!("Onboarding.platform.distribution"),
-                value: check.distribution_name.to_string(),
                 warning: false,
             },
             OnboardingSummaryItem {
