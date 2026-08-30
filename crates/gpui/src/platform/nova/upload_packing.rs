@@ -158,14 +158,16 @@ pub(super) fn write_backdrop_blur(
     write_f32_vec(bytes, drawable_size.width as f32);
     write_f32_vec(bytes, drawable_size.height as f32);
     write_f32_vec(bytes, blur.opacity);
+    // Shared compositor kind: 0 keeps the auxiliary 16-byte slot interpreted as HSLA tint.
     write_u32_vec(bytes, 0);
 }
 
 /// Packs an element blur into the shared blur primitive layout.
 ///
 /// Element blur uses the same Gaussian and composite pipelines as backdrop blur, but its source
-/// is the isolated content range rendered between the matching upload markers. The composite has
-/// no tint or saturation adjustment; the element opacity is applied by the shared shader.
+/// is the isolated content range rendered between the matching upload markers. The 16-byte tint
+/// slot is unused for element blur, so retain the 136-byte ABI and store the source sampling bounds
+/// there. The final u32 tags the record so the shader can distinguish source bounds from HSLA tint.
 pub(super) fn write_paint_blur(
     bytes: &mut Vec<u8>,
     blur: &crate::PaintBlur,
@@ -175,16 +177,19 @@ pub(super) fn write_paint_blur(
     write_u32_vec(bytes, 1);
     write_u32_vec(bytes, 1);
     write_u32_vec(bytes, 0);
+    // Display bounds. Future composite-only animation may change these independently.
     write_bounds_scaled(bytes, &blur.bounds);
     write_content_mask(bytes, &blur.content_mask);
     write_corners(bytes, &Default::default());
-    write_hsla(bytes, crate::Hsla::transparent_black());
+    // Source bounds occupy the backdrop-tint slot for element/composite layers. They intentionally
+    // equal display bounds today, making this ABI groundwork behavior-preserving.
+    write_bounds_scaled(bytes, &blur.bounds);
     write_f32_vec(bytes, blur.radius.0);
     write_f32_vec(bytes, 1.0);
     write_f32_vec(bytes, drawable_size.width as f32);
     write_f32_vec(bytes, drawable_size.height as f32);
     write_f32_vec(bytes, blur.opacity);
-    write_u32_vec(bytes, 0);
+    write_u32_vec(bytes, 1);
 }
 
 pub(super) fn write_quad(bytes: &mut Vec<u8>, quad: &Quad) {

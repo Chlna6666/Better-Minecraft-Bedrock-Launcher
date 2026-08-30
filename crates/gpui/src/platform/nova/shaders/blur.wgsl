@@ -18,12 +18,14 @@ struct BackdropBlur {
     bounds: Bounds,
     content_mask: ContentMask,
     corner_radii: Corners,
+    // Shared 16-byte auxiliary slot. Root backdrop records store HSLA tint here; element/composite
+    // records store source bounds as (x, y, width, height) without changing the 136-byte ABI.
     tint: Hsla,
     radius: f32,
     saturation: f32,
     blurred_size: vec2<f32>,
     opacity: f32,
-    pad: u32,
+    composite_kind: u32,
 }
 
 @group(0) @binding(15) var<storage, read> b_backdrop_blur_passes: array<BackdropBlurPass>;
@@ -139,9 +141,15 @@ fn vs_backdrop_blur(
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let blur = b_backdrop_blurs[instance_id];
     let screen_position = blur.bounds.origin + unit_vertex * blur.bounds.size;
+    let is_element_composite = blur.composite_kind == 1u;
+    let source_origin = vec2<f32>(blur.tint.h, blur.tint.s);
+    let source_size = vec2<f32>(blur.tint.l, blur.tint.a);
+    let source_position = source_origin + unit_vertex * source_size;
+    let sample_position = select(screen_position, source_position, is_element_composite);
+
     var out = BackdropBlurVarying();
     out.position = to_device_position(unit_vertex, blur.bounds);
-    out.texture_coords = screen_position / max(blur.blurred_size, vec2<f32>(1.0));
+    out.texture_coords = sample_position / max(blur.blurred_size, vec2<f32>(1.0));
     out.clip_distances = distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(
         blur.content_mask.corner_bounds.origin,
@@ -162,7 +170,7 @@ fn vs_backdrop_blur(
     );
     out.saturation = blur.saturation;
     out.opacity = blur.opacity;
-    out.tint = hsla_to_rgba(blur.tint);
+    out.tint = select(hsla_to_rgba(blur.tint), vec4<f32>(0.0), is_element_composite);
     return out;
 }
 
