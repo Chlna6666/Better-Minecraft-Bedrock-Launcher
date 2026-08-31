@@ -16,6 +16,10 @@ use smallvec::SmallVec;
 use timing::sample_element_animation;
 
 const REPEATING_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(3);
+// A zero-initial-velocity damped spring step stays inside normalized progress [0, 2]. Keep a small
+// numerical guard so retained partial-presentation damage cannot clip an extremal undamped sample.
+const SPRING_TRANSLATION_PROGRESS_MIN: f32 = -0.05;
+const SPRING_TRANSLATION_PROGRESS_MAX: f32 = 2.05;
 
 /// An animation that can be applied to an element.
 #[derive(Clone)]
@@ -109,6 +113,25 @@ impl AnimationProperty {
             TransitionProperty::Rotation => rotation_bounds(bounds),
             _ => bounds,
         }
+    }
+
+    fn spring_translation_dirty_bounds(self, bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        if self.property != TransitionProperty::Translation {
+            return None;
+        }
+        let first = translated_bounds_at_progress(
+            bounds,
+            self.from,
+            self.to,
+            SPRING_TRANSLATION_PROGRESS_MIN,
+        );
+        let last = translated_bounds_at_progress(
+            bounds,
+            self.from,
+            self.to,
+            SPRING_TRANSLATION_PROGRESS_MAX,
+        );
+        Some(first.union(&last))
     }
 }
 
@@ -429,8 +452,8 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
         let spring = self.animations[0].spring;
-        // Custom and physical curves may overshoot either endpoint by any amount.
-        // A viewport damage bound keeps retained motion correct under partial presentation.
+        // Custom curves may overshoot by an arbitrary amount. Translation starts conservatively at
+        // viewport scope; a physical spring can be tightened after paint reveals actual scene bounds.
         let dirty_bounds = if property.property == TransitionProperty::Translation {
             Bounds::new(Point::default(), window.viewport_size())
         } else {
@@ -469,7 +492,18 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                 (state.animation_id, state)
             });
         window.with_scene_animation(animation_id, property.property, |window| {
-            element.paint(window, cx)
+            element.paint(window, cx);
+            if spring.is_some()
+                && property.property == TransitionProperty::Translation
+                && let Some(bounds) = window.scene_animation_visual_bounds(animation_id)
+                && let Some(dirty_bounds) = property.spring_translation_dirty_bounds(bounds)
+            {
+                let _ = window.set_scene_animation_dirty_bounds(
+                    global_id,
+                    property.property,
+                    dirty_bounds,
+                );
+            }
         });
     }
 }
@@ -499,6 +533,21 @@ fn translated_bounds(bounds: Bounds<Pixels>, translation: [f32; 4]) -> Bounds<Pi
         bounds.origin + Point::new(crate::px(translation[0]), crate::px(translation[1])),
         bounds.size,
     )
+}
+
+fn translated_bounds_at_progress(
+    bounds: Bounds<Pixels>,
+    from: [f32; 4],
+    to: [f32; 4],
+    progress: f32,
+) -> Bounds<Pixels> {
+    let translation = [
+        from[0] + (to[0] - from[0]) * progress,
+        from[1] + (to[1] - from[1]) * progress,
+        0.0,
+        0.0,
+    ];
+    translated_bounds(bounds, translation)
 }
 
 fn rotation_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -595,6 +644,27 @@ mod tests {
     }
 
     #[test]
+    fn spring_translation_dirty_bounds_cover_physical_overshoot_without_viewport_damage() {
+        let property = AnimationProperty::translation(
+            Point::new(crate::px(18.0), crate::px(0.0)),
+            Point::new(crate::px(0.0), crate::px(0.0)),
+        );
+        let bounds = Bounds::new(
+            Point::new(crate::px(100.0), crate::px(40.0)),
+            crate::size(crate::px(200.0), crate::px(120.0)),
+        );
+        let dirty = property
+            .spring_translation_dirty_bounds(bounds)
+            .expect("translation envelope");
+
+        assert!(dirty.origin.x < bounds.origin.x);
+        assert!(dirty.size.width > bounds.size.width);
+        assert!(dirty.size.width < crate::px(240.0));
+        assert_eq!(dirty.origin.y, bounds.origin.y);
+        assert_eq!(dirty.size.height, bounds.size.height);
+    }
+
+    #[test]
     fn explicit_layout_driver_keeps_legacy_animation_path() {
         let animation = Animation::from_spec(
             AnimationSpec::new(Duration::from_millis(100)).driver(AnimationDriver::Layout),
@@ -657,7 +727,7 @@ mod easing {
         move |delta| 1.0 - (1.0 - delta).powi(5)
     }
 
-    /// Apply the given easing function, first in the forward direction and then in the reverse direction
+    /// Apply the given easing function first in the forward direction and then in reverse.
     pub fn bounce(easing: impl Fn(f32) -> f32) -> impl Fn(f32) -> f32 {
         move |delta| {
             if delta < 0.5 {
