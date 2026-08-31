@@ -11,14 +11,34 @@ const VALUE_RECORD_LEN: usize = 16;
 const PART_RECORD_LEN: usize = 12;
 
 /// Read the five embedded language files and write the compact binary catalog.
+///
+/// Small feature-specific translations may live in `assets/locales/extra/<locale>.lang`. Extra
+/// entries are appended after the primary catalog, so the normal last-key-wins parser can both add
+/// new keys and intentionally override an existing translation without rewriting the large base
+/// language files.
 pub fn generate(manifest_dir: &Path, out_dir: &Path) -> io::Result<()> {
     let paths = locale_paths(manifest_dir);
-    for path in &paths {
+    let extra_paths = locale_extra_paths(manifest_dir);
+    for path in paths.iter().chain(extra_paths.iter()) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let sources = paths
         .iter()
-        .map(|path| fs::read_to_string(path))
+        .zip(extra_paths.iter())
+        .map(|(path, extra_path)| {
+            let mut source = fs::read_to_string(path)?;
+            match fs::read_to_string(extra_path) {
+                Ok(extra) => {
+                    if !source.ends_with('\n') {
+                        source.push('\n');
+                    }
+                    source.push_str(&extra);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            Ok(source)
+        })
         .collect::<io::Result<Vec<_>>>()?;
     let source_refs = sources.iter().map(String::as_str).collect::<Vec<_>>();
     let bytes = encode(&source_refs)?;
@@ -121,6 +141,19 @@ fn locale_paths(manifest_dir: &Path) -> Vec<PathBuf> {
             manifest_dir
                 .join("assets")
                 .join("locales")
+                .join(format!("{code}.lang"))
+        })
+        .collect()
+}
+
+fn locale_extra_paths(manifest_dir: &Path) -> Vec<PathBuf> {
+    LOCALE_CODES
+        .iter()
+        .map(|code| {
+            manifest_dir
+                .join("assets")
+                .join("locales")
+                .join("extra")
                 .join(format!("{code}.lang"))
         })
         .collect()
