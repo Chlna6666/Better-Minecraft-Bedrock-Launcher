@@ -3,6 +3,24 @@ use crate::{AbsoluteLength, Length, Timer, rgb};
 
 const SURFACE_FLASH_HOLD: Duration = Duration::from_millis(90);
 const ELEMENT_UPDATE_HOLD: Duration = Duration::from_millis(140);
+const MAX_VIEW_CACHE_MARKERS: usize = 512;
+
+/// Why an [`AnyView`](crate::AnyView) cache entry was reused or rebuilt in the current frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ViewCacheDebugStatus {
+    Hit,
+    DeferredDirtyReuse,
+    MissCold,
+    MissBounds,
+    MissContentMask,
+    MissTextStyle,
+    MissFingerprint,
+    MissRefresh,
+    MissDirty,
+    MissPrepaintRange,
+    MissPaintRange,
+    ReuseFailed,
+}
 
 /// Window-scoped visual diagnostics used by GUI debugging tools.
 ///
@@ -14,14 +32,21 @@ pub struct WindowDebugVisualization {
     pub flash_surface_updates: bool,
     /// Draw the box model and clipping boundary for styled elements.
     pub show_layout_bounds: bool,
-    /// Outline styled elements whose paint code actually executes in the current frame.
+    /// Outline styled elements whose paint code actually executes in the current frame and show
+    /// cached-view hit/miss markers.
     ///
     /// Retained/cached child elements are not traversed and therefore remain unhighlighted. This
     /// makes the overlay useful for spotting a cache miss that repaints an entire page subtree.
     pub show_element_updates: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
+struct ViewCacheDebugMarker {
+    bounds: Bounds<Pixels>,
+    status: ViewCacheDebugStatus,
+}
+
+#[derive(Clone, Debug, Default)]
 struct WindowDebugVisualizationRuntime {
     options: WindowDebugVisualization,
     surface_flash_generation: u64,
@@ -31,6 +56,7 @@ struct WindowDebugVisualizationRuntime {
     element_update_painted_this_frame: bool,
     cleanup_pending: bool,
     cleanup_this_frame: bool,
+    view_cache_markers: Vec<ViewCacheDebugMarker>,
 }
 
 #[derive(Default)]
@@ -64,6 +90,7 @@ impl Window {
                 runtime.element_update_painted_this_frame = false;
                 runtime.cleanup_pending = false;
                 runtime.cleanup_this_frame = false;
+                runtime.view_cache_markers.clear();
             }
         });
 
@@ -85,6 +112,38 @@ impl Window {
             .unwrap_or_default()
     }
 
+    /// Record the result of one cached-view lookup. This is intentionally a no-op unless visual
+    /// element diagnostics are enabled, so normal rendering does not allocate marker storage.
+    pub(crate) fn record_debug_view_cache_status(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        status: ViewCacheDebugStatus,
+        cx: &mut App,
+    ) {
+        if bounds.is_empty() || !cx.has_global::<WindowDebugVisualizationRegistry>() {
+            return;
+        }
+        let window_id = self.handle.window_id().as_u64();
+        cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+            let Some(runtime) = registry.windows.get_mut(&window_id) else {
+                return;
+            };
+            if !runtime.options.show_element_updates || runtime.cleanup_this_frame {
+                return;
+            }
+            if runtime.view_cache_markers.len() >= MAX_VIEW_CACHE_MARKERS {
+                return;
+            }
+            if !runtime.element_update_painted_this_frame {
+                runtime.element_update_painted_this_frame = true;
+                runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
+            }
+            runtime
+                .view_cache_markers
+                .push(ViewCacheDebugMarker { bounds, status });
+        });
+    }
+
     /// Prepares per-frame visual diagnostics and reports whether this frame must present the full
     /// window. Layout outlines and surface flashing intentionally require full presentation. The
     /// element-update overlay does not: it follows the real dirty frame so it does not turn a local
@@ -104,6 +163,7 @@ impl Window {
             runtime.cleanup_this_frame = runtime.cleanup_pending;
             runtime.cleanup_pending = false;
             runtime.element_update_painted_this_frame = false;
+            runtime.view_cache_markers.clear();
             runtime.flash_this_frame = runtime.options.flash_surface_updates
                 && !runtime.cleanup_this_frame;
 
@@ -123,37 +183,51 @@ impl Window {
         requires_full_redraw
     }
 
-    /// Paints the surface-update flash above the completed window tree.
+    /// Paints window-level debug overlays above the completed tree. Cache markers are painted last
+    /// so a green/yellow/purple cached-view outline remains visible over red child repaint outlines.
     pub(super) fn paint_debug_surface_update_flash(&mut self, cx: &App) {
         let window_id = self.handle.window_id().as_u64();
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
             return;
         }
-        let Some(runtime) = cx
-            .global::<WindowDebugVisualizationRegistry>()
-            .windows
-            .get(&window_id)
-            .copied()
-        else {
-            return;
+        let (flash_this_frame, surface_flash_generation, markers) = {
+            let registry = cx.global::<WindowDebugVisualizationRegistry>();
+            let Some(runtime) = registry.windows.get(&window_id) else {
+                return;
+            };
+            (
+                runtime.flash_this_frame,
+                runtime.surface_flash_generation,
+                runtime.view_cache_markers.clone(),
+            )
         };
-        if !runtime.flash_this_frame {
-            return;
+
+        if flash_this_frame {
+            // Alternate the tint so continuously updating surfaces still visibly pulse instead of
+            // settling into one permanent translucent overlay.
+            let (hex, alpha) = if surface_flash_generation & 1 == 0 {
+                (0xff2d55, 0.16)
+            } else {
+                (0xff9500, 0.12)
+            };
+            let mut color: Hsla = rgb(hex).into();
+            color.a = alpha;
+            self.paint_quad(fill(
+                Bounds::new(Point::default(), self.viewport_size),
+                color,
+            ));
         }
 
-        // Alternate the tint so continuously updating surfaces still visibly pulse instead of
-        // settling into one permanent translucent overlay.
-        let (hex, alpha) = if runtime.surface_flash_generation & 1 == 0 {
-            (0xff2d55, 0.16)
-        } else {
-            (0xff9500, 0.12)
-        };
-        let mut color: Hsla = rgb(hex).into();
-        color.a = alpha;
-        self.paint_quad(fill(
-            Bounds::new(Point::default(), self.viewport_size),
-            color,
-        ));
+        for marker in markers {
+            let (hex, alpha) = cache_marker_color(marker.status);
+            let edges = Edges {
+                top: px(2.0),
+                right: px(2.0),
+                bottom: px(2.0),
+                left: px(2.0),
+            };
+            paint_outline(self, expand_bounds(marker.bounds, &edges), hex, alpha);
+        }
     }
 
     /// Schedules one cleanup frame after the newest debug overlay. Cleanup frames deliberately do
@@ -164,20 +238,22 @@ impl Window {
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
             return;
         }
-        let Some(runtime) = cx
-            .global::<WindowDebugVisualizationRegistry>()
-            .windows
-            .get(&window_id)
-            .copied()
-        else {
-            return;
+        let (flash_this_frame, element_update_painted_this_frame, generation) = {
+            let registry = cx.global::<WindowDebugVisualizationRegistry>();
+            let Some(runtime) = registry.windows.get(&window_id) else {
+                return;
+            };
+            (
+                runtime.flash_this_frame,
+                runtime.element_update_painted_this_frame,
+                runtime.overlay_generation,
+            )
         };
-        if !runtime.flash_this_frame && !runtime.element_update_painted_this_frame {
+        if !flash_this_frame && !element_update_painted_this_frame {
             return;
         }
 
-        let generation = runtime.overlay_generation;
-        let hold = if runtime.element_update_painted_this_frame {
+        let hold = if element_update_painted_this_frame {
             ELEMENT_UPDATE_HOLD.max(SURFACE_FLASH_HOLD)
         } else {
             SURFACE_FLASH_HOLD
@@ -305,6 +381,23 @@ fn paint_element_update_bounds(bounds: Bounds<Pixels>, window: &mut Window, cx: 
     paint_outline(window, bounds, hex, alpha);
 }
 
+fn cache_marker_color(status: ViewCacheDebugStatus) -> (u32, f32) {
+    match status {
+        ViewCacheDebugStatus::Hit => (0x30d158, 0.98),
+        ViewCacheDebugStatus::DeferredDirtyReuse => (0x64d2ff, 0.98),
+        ViewCacheDebugStatus::MissBounds => (0xffcc00, 0.98),
+        ViewCacheDebugStatus::MissRefresh
+        | ViewCacheDebugStatus::MissDirty
+        | ViewCacheDebugStatus::ReuseFailed => (0xff453a, 0.98),
+        ViewCacheDebugStatus::MissCold
+        | ViewCacheDebugStatus::MissContentMask
+        | ViewCacheDebugStatus::MissTextStyle
+        | ViewCacheDebugStatus::MissFingerprint
+        | ViewCacheDebugStatus::MissPrepaintRange
+        | ViewCacheDebugStatus::MissPaintRange => (0xbf5af2, 0.98),
+    }
+}
+
 fn resolve_margin(
     margin: Edges<Length>,
     basis: Size<AbsoluteLength>,
@@ -375,5 +468,17 @@ mod tests {
             left: px(8.0),
         };
         assert_eq!(inset_bounds(expand_bounds(bounds, &edges), &edges), bounds);
+    }
+
+    #[test]
+    fn cache_status_palette_distinguishes_hit_bounds_and_dirty_miss() {
+        assert_ne!(
+            cache_marker_color(ViewCacheDebugStatus::Hit).0,
+            cache_marker_color(ViewCacheDebugStatus::MissBounds).0
+        );
+        assert_ne!(
+            cache_marker_color(ViewCacheDebugStatus::Hit).0,
+            cache_marker_color(ViewCacheDebugStatus::MissDirty).0
+        );
     }
 }
