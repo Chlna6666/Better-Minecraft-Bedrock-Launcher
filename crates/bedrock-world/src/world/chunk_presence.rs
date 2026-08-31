@@ -6,7 +6,7 @@
 
 use super::{BedrockWorld, WorldStorageHandle};
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::database::{StorageKeyBatchBuilder, StorageReadOptions, StorageVisitorControl};
+use crate::storage::{StorageKeyBatchBuilder, StorageReadOptions, StorageVisitorControl};
 use crate::error::Result;
 
 const CHUNK_PRESENCE_ANCHORS: [ChunkRecordTag; 8] = [
@@ -172,7 +172,7 @@ where
 mod tests {
     use super::*;
     use crate::chunk::Dimension;
-    use crate::database::{MemoryStorage, WorldStorage};
+    use crate::storage::{MemoryStorage, WorldStorage};
     use crate::world::{BedrockWorldOpenOptions, WorldFormat, WorldFormatHint};
     use std::path::PathBuf;
 
