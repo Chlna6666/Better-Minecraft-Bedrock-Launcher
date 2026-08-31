@@ -1,2 +1,3 @@
 Debug.show_element_updates=Show element updates
-Debug.show_element_updates_desc=Outline elements whose Paint path actually ran this frame in red/orange. If a page switch lights up the whole page, its cache missed; unoutlined static subtrees are typically retained/cache reuse.
+Debug.show_element_updates_desc=Highlight elements whose Paint lifecycle actually ran this frame and show cached-view reuse status. Page switches can be classified as local updates, cache reuse, or full-page repaint directly on the window.
+Debug.element_update_legend=Element diagnostics: red/orange=actual repaint · green=View cache hit · yellow=bounds cache miss · red outline=dirty/forced refresh/reuse failure · purple=other cache key or retained-range miss · cyan=progressive reuse
