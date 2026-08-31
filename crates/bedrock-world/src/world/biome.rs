@@ -4,7 +4,7 @@
 //! Ordinary height-map edits preserve the exact biome payload that follows those bytes instead of
 //! decoding and rebuilding unrelated persisted data.
 
-use super::bedrock_world::{BedrockWorld, WorldStorageHandle};
+use super::handle::{BedrockWorld, WorldStorageHandle};
 use crate::biome::Biome2dLegacy;
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion};
 use crate::error::{BedrockWorldError, Result};
