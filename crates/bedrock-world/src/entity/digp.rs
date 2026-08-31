@@ -1,7 +1,7 @@
 //! Minecraft Bedrock `digp<ChunkKey>` and `actorprefix<ActorUid>` actor records.
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::database::{StorageBatch, WorldStorage};
+use crate::storage::{StorageBatch, WorldStorage};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
@@ -213,7 +213,7 @@ fn actor_unique_id(root: &NbtTag) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::chunk::Dimension;
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
 
     fn actor(unique_id: i64) -> NbtTag {
