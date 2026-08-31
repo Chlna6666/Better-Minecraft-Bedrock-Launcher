@@ -1,2 +1,3 @@
 Debug.show_element_updates=顯示元素更新
-Debug.show_element_updates_desc=以紅／橙色外框標示本幀真正重新 Paint 的元素。若切換頁面時整頁都閃爍，表示頁面快取未命中；未標示的靜態子樹通常來自 retained/cache 重用。
+Debug.show_element_updates_desc=標示本幀真正執行 Paint 的元素，並顯示 cached view 的快取狀態。切換頁面時可直接判斷局部更新、快取重用或整頁重繪。
+Debug.element_update_legend=元素診斷：紅／橙=實際重新 Paint · 綠=View 快取命中 · 黃=bounds 變化導致快取失效 · 紅框=dirty／強制刷新／重用失敗 · 紫=其他快取鍵或 retained range 失效 · 青=progressive 重用
