@@ -1,3 +1,3 @@
 Debug.show_element_updates=要素の更新を表示
 Debug.show_element_updates_desc=このフレームで実際に Paint ライフサイクルが実行された要素と cached view の再利用状態を表示します。ページ切替が局所更新、キャッシュ再利用、または全ページ再描画かを直接判別できます。
-Debug.element_update_legend=要素診断：赤／橙=実際の再 Paint · 緑=View キャッシュヒット · 黄=bounds 変化によるミス · 赤枠=dirty／強制更新／再利用失敗 · 紫=その他のキャッシュキーまたは retained range ミス · 水色=progressive 再利用
+Debug.visual_legend=レイアウト：橙=margin · 青=border · 緑=padding · 紫=content · 赤=clip；要素キャッシュ：赤／橙=実際の再 Paint · 緑枠=View キャッシュヒット · 黄=bounds 変化によるミス · 赤枠=dirty／強制更新／再利用失敗 · 紫枠=その他のキャッシュキーまたは retained range ミス · 水色=progressive 再利用
