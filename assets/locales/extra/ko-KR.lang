@@ -1,0 +1,2 @@
+Debug.show_element_updates=요소 업데이트 표시
+Debug.show_element_updates_desc=이 프레임에서 실제로 Paint가 실행된 요소를 빨강/주황 테두리로 표시합니다. 페이지 전환 시 전체 페이지가 깜박이면 페이지 캐시가 빗나간 것이며, 테두리가 없는 정적 하위 트리는 일반적으로 retained/cache가 재사용된 것입니다.
