@@ -205,6 +205,7 @@ impl<E: Element> Drawable<E> {
                     debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
                 }
 
+                window.record_debug_element_paint(bounds, cx);
                 window.next_frame.dispatch_tree.set_active_node(node_id);
                 self.element.paint(
                     global_id.as_ref(),
