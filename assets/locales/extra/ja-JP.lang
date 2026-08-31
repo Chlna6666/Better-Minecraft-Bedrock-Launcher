@@ -1,2 +1,3 @@
 Debug.show_element_updates=要素の更新を表示
-Debug.show_element_updates_desc=このフレームで実際に Paint が実行された要素を赤／オレンジの枠で表示します。ページ切替時に画面全体が点滅する場合はページキャッシュがミスしています。枠のない静的サブツリーは通常 retained/cache が再利用されています。
+Debug.show_element_updates_desc=このフレームで実際に Paint ライフサイクルが実行された要素と cached view の再利用状態を表示します。ページ切替が局所更新、キャッシュ再利用、または全ページ再描画かを直接判別できます。
+Debug.element_update_legend=要素診断：赤／橙=実際の再 Paint · 緑=View キャッシュヒット · 黄=bounds 変化によるミス · 赤枠=dirty／強制更新／再利用失敗 · 紫=その他のキャッシュキーまたは retained range ミス · 水色=progressive 再利用
