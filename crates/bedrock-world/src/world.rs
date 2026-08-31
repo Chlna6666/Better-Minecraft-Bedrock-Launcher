@@ -6,6 +6,7 @@ mod biome_downgrade;
 mod biome_upgrade;
 mod block_entities;
 mod block_query;
+mod block_query_single;
 mod chunk_data;
 mod chunk_presence;
 mod create;
