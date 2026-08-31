@@ -2,7 +2,21 @@
 
 use super::*;
 
-/// Buffered atomic mutations for one Minecraft Bedrock world storage backend.
+#[derive(Debug, Clone)]
+struct StoragePrecondition {
+    key: Bytes,
+    expected: Option<Bytes>,
+}
+
+/// Buffered LevelDB mutations for one Minecraft Bedrock world.
+///
+/// A transaction can stage player, map, chunk, actor and raw-record mutations into one
+/// [`StorageBatch`]. Commits created from clones of the same [`BedrockWorld`] are serialized by the
+/// shared world mutation lock. Player update/create helpers also validate their source condition
+/// while that lock is held, preventing an older in-process read snapshot from silently replacing a
+/// newer LevelDB value.
+///
+/// `level.dat` is a separate file and is intentionally outside this atomic LevelDB boundary.
 pub struct WorldTransaction<'a, S = Arc<dyn WorldStorage>>
 where
     S: WorldStorageHandle,
@@ -11,28 +25,33 @@ where
     pub(super) batch: StorageBatch,
     pub(super) read_only: bool,
     pub(super) actor_ownership: Option<ActorOwnershipIndex>,
+    pub(super) preconditions: Vec<StoragePrecondition>,
+    pub(super) mutation_lock: &'a Mutex<()>,
 }
 
 impl<S> WorldTransaction<'_, S>
 where
     S: WorldStorageHandle,
 {
-    /// Stages a raw chunk record write.
+    /// Stages one exact raw chunk-record write in this transaction.
     pub fn put_raw_record(&mut self, key: &ChunkKey, value: impl Into<Bytes>) {
         self.batch.put(key.encode(), value.into());
     }
 
-    /// Stages a raw chunk record delete.
+    /// Stages deletion of one exact raw chunk record.
     pub fn delete_raw_record(&mut self, key: &ChunkKey) {
         self.batch.delete(key.encode());
     }
 
-    /// Stages a raw key/value write.
+    /// Stages one exact raw key/value write.
+    ///
+    /// This is a low-level escape hatch for real Bedrock records that do not yet have a typed
+    /// transaction API. Prefer typed methods when one exists.
     pub fn put_raw_key(&mut self, key: impl Into<Bytes>, value: impl Into<Bytes>) {
         self.batch.put(key.into(), value.into());
     }
 
-    /// Stages a raw key delete.
+    /// Stages deletion of one exact raw storage key.
     pub fn delete_raw_key(&mut self, key: impl Into<Bytes>) {
         self.batch.delete(key.into());
     }
@@ -78,7 +97,10 @@ where
         Ok(deleted)
     }
 
-    /// Stages a validated block-entity payload for one chunk.
+    /// Stages a validated BlockEntity payload for one chunk.
+    ///
+    /// The complete BlockEntity record is encoded and round-trip validated before it enters the
+    /// transaction batch.
     ///
     /// # Errors
     ///
@@ -120,24 +142,66 @@ where
         Ok(())
     }
 
-    /// Stages a player record write using the player's storage key.
+    /// Stages an update to an existing LevelDB-backed player record.
+    ///
+    /// The player's original raw bytes are treated as the source snapshot. During [`Self::commit`],
+    /// the current `~local_player` or `player_*` value must still equal that snapshot. The staged value
+    /// is produced by [`PlayerData::to_raw`], so edits made through `PlayerData` are persisted instead
+    /// of accidentally writing the old source bytes.
+    ///
+    /// This method does not accept historical `level.dat.Player`, because that record is not in
+    /// LevelDB and cannot participate in this atomic batch.
     ///
     /// # Errors
     ///
-    /// Returns validation errors when the player id does not map to a `LevelDB`
-    /// key.
-    pub fn put_player(&mut self, player: &PlayerData) -> Result<()> {
+    /// Returns a validation error for non-LevelDB player ids, serialization errors for invalid player
+    /// NBT, or [`BedrockWorldError::ConcurrentWrite`] at commit time when the stored player changed
+    /// after it was read.
+    pub fn update_player(&mut self, player: &PlayerData) -> Result<()> {
         let Some(key) = player.id.storage_key() else {
             return Err(BedrockWorldError::Validation(
                 "player id has no LevelDB key".to_string(),
             ));
         };
-        self.batch
-            .put(Bytes::copy_from_slice(key.as_ref()), player.raw.clone());
+        let key = Bytes::copy_from_slice(key.as_ref());
+        let value = player.to_raw()?;
+        self.preconditions.push(StoragePrecondition {
+            key: key.clone(),
+            expected: Some(player.raw.clone()),
+        });
+        self.batch.put(key, value);
         Ok(())
     }
 
-    /// Stages a typed map record write after roundtrip validation.
+    /// Stages creation of a LevelDB-backed player record only when the target key does not exist.
+    ///
+    /// Use this for a genuinely new `~local_player` or `player_*` record. Updating a record that was
+    /// read earlier must use [`Self::update_player`] so stale async reads cannot overwrite newer data.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation/serialization errors immediately, or
+    /// [`BedrockWorldError::ConcurrentWrite`] at commit time when the target key already exists.
+    pub fn create_player(&mut self, player: &PlayerData) -> Result<()> {
+        let Some(key) = player.id.storage_key() else {
+            return Err(BedrockWorldError::Validation(
+                "player id has no LevelDB key".to_string(),
+            ));
+        };
+        let key = Bytes::copy_from_slice(key.as_ref());
+        let value = player.to_raw()?;
+        self.preconditions.push(StoragePrecondition {
+            key: key.clone(),
+            expected: None,
+        });
+        self.batch.put(key, value);
+        Ok(())
+    }
+
+    /// Stages a typed map record write after round-trip validation.
+    ///
+    /// Player changes staged in the same transaction are committed in the same LevelDB batch, making
+    /// map/editor events and player inventory changes visible together to this storage backend.
     ///
     /// # Errors
     ///
@@ -149,12 +213,12 @@ where
         Ok(())
     }
 
-    /// Stages a typed map record delete.
+    /// Stages deletion of one typed map record.
     pub fn delete_map_record(&mut self, id: &MapRecordId) {
         self.batch.delete(id.storage_key());
     }
 
-    /// Stages a typed global record write after roundtrip validation.
+    /// Stages a typed global record write after round-trip validation.
     ///
     /// # Errors
     ///
@@ -166,12 +230,12 @@ where
         Ok(())
     }
 
-    /// Stages a typed global record delete.
+    /// Stages deletion of one typed global record.
     pub fn delete_global_record(&mut self, kind: &GlobalRecordKind) {
         self.batch.delete(kind.storage_key());
     }
 
-    /// Stages a modern actor write and updates the chunk `digp` digest.
+    /// Stages a modern actor write and updates the owning chunk's `digp` digest.
     ///
     /// # Errors
     ///
@@ -196,7 +260,7 @@ where
         Ok(())
     }
 
-    /// Stages a modern actor delete and removes it from the chunk `digp` digest.
+    /// Stages a modern actor delete and removes it from the owning chunk's `digp` digest.
     ///
     /// # Errors
     ///
@@ -213,17 +277,29 @@ where
         Ok(())
     }
 
-    /// Validates and commits all staged writes atomically through the storage backend.
+    /// Validates source conditions and commits all staged LevelDB mutations atomically.
+    ///
+    /// Commits from clones of the same world handle are serialized. Source conditions are checked
+    /// while that mutation lock is held and immediately before the backend batch write, which closes
+    /// the in-process read/validate/write race for `update_player` and `create_player`.
+    ///
+    /// This does not coordinate another independently opened world handle or an external Minecraft
+    /// process. Callers must still avoid editing a world that the game is actively writing.
     ///
     /// # Errors
     ///
-    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation
-    /// errors for unsafe key/value combinations, or storage errors.
+    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds,
+    /// [`BedrockWorldError::ConcurrentWrite`] when a source condition is stale, validation errors for
+    /// unsafe raw operations, or storage errors.
     pub fn commit(self) -> Result<()> {
         if self.read_only {
             return Err(BedrockWorldError::ReadOnly);
         }
         validate_batch(&self.batch)?;
+        let _mutation = self.mutation_lock.lock().map_err(|_| {
+            BedrockWorldError::ConcurrentWrite("world mutation lock poisoned".to_string())
+        })?;
+        validate_preconditions(self.storage.storage(), &self.preconditions)?;
         self.storage.storage().write_batch(&self.batch)
     }
 
@@ -263,6 +339,22 @@ where
             .as_mut()
             .expect("actor ownership is initialized"))
     }
+}
+
+fn validate_preconditions(
+    storage: &dyn WorldStorage,
+    preconditions: &[StoragePrecondition],
+) -> Result<()> {
+    for condition in preconditions {
+        let current = storage.get(condition.key.as_ref())?;
+        if current != condition.expected {
+            return Err(BedrockWorldError::ConcurrentWrite(format!(
+                "storage source changed before transaction commit for key {:?}",
+                condition.key
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_batch(batch: &StorageBatch) -> Result<()> {
