@@ -11,7 +11,7 @@ use crate::chunk::{
     BedrockDbKey, ChunkPos, ChunkRecordTag, ChunkVersion, Dimension, LegacyBlockExtraDataBuilder,
     LegacySubChunkBuilder, SubChunk, SubChunkDecodeMode, SubChunkFormat, SubChunkVersion,
 };
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::surface::is_air_block_name;
 use std::collections::{BTreeMap, BTreeSet};
@@ -400,7 +400,7 @@ mod tests {
         LegacyNumericBlockStateTable, LegacyNumericBlockUpgradeTable,
     };
     use crate::chunk::{BlockPalette, ChunkKey};
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use crate::nbt::{NbtTag, serialize_root_nbt};
     use indexmap::IndexMap;
 

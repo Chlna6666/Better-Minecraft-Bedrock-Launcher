@@ -5,7 +5,7 @@
 //! concrete caller evidence and only rewrite layouts whose historical shape is known.
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::database::{StorageBatch, WorldStorage};
+use crate::storage::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_root_nbt_with_consumed, serialize_root_nbt};
 use bytes::Bytes;
@@ -312,7 +312,7 @@ fn int_field(root: &IndexMap<String, NbtTag>, key: &str) -> Option<i32> {
 mod tests {
     use super::*;
     use crate::chunk::Dimension;
-    use crate::database::{MemoryStorage, WorldStorage};
+    use crate::storage::{MemoryStorage, WorldStorage};
 
     fn sign_with(entries: impl IntoIterator<Item = (String, NbtTag)>) -> NbtTag {
         let mut root = IndexMap::from([

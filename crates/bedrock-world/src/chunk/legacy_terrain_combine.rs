@@ -5,7 +5,7 @@ use crate::chunk::{
     BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, LegacySubChunk, LegacyTerrainBuilder,
     SubChunk, SubChunkDecodeMode, SubChunkFormat,
 };
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -225,7 +225,7 @@ mod tests {
     use super::*;
     use crate::biome::{Biome2dLegacy, LegacyBiomeSample};
     use crate::chunk::{Dimension, LegacySubChunkBuilder, LegacyTerrain};
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
 
     fn seed_exact_source(storage: &MemoryStorage, pos: ChunkPos) {
         for section in 0_i8..8 {

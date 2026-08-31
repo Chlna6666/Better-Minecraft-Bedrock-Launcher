@@ -10,7 +10,7 @@ use crate::chunk::{
     BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, LegacyBiomeSample, LegacySubChunkBuilder,
     LegacyTerrain, SubChunkVersion,
 };
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use std::collections::BTreeSet;
 
@@ -232,7 +232,7 @@ mod tests {
         Dimension, LegacyTerrainBuilder, POCKET_TERRAIN_VALUE_LEN, SubChunk, SubChunkDecodeMode,
         SubChunkFormat,
     };
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use bytes::Bytes;
 
     #[test]

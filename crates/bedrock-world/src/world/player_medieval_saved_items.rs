@@ -4,7 +4,7 @@
 //! or item data, but writing only that older representation into an otherwise newer source world is not
 //! exposed because it would create mixed-version player state.
 
-use crate::database::{StorageReadOptions, StorageVisitorControl};
+use crate::storage::{StorageReadOptions, StorageVisitorControl};
 use crate::error::{BedrockWorldError, Result};
 use crate::item::{
     LegacySavedItemBlockStateTables, LegacySavedItemIdTable, MedievalSavedItemCheckReport,

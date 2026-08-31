@@ -1,7 +1,7 @@
 //! Public Minecraft Bedrock world creation APIs.
 
 use super::{BedrockWorld, BedrockWorldOpenOptions, WorldFormatHint};
-use crate::database::create_bedrock_leveldb;
+use crate::storage::create_bedrock_leveldb;
 use crate::error::{BedrockWorldError, Result};
 use crate::level::{LevelDatDocument, write_level_dat_document};
 use crate::nbt::NbtTag;

@@ -5,7 +5,7 @@ use crate::chunk::{
     LegacyTerrainSplitReport, SubChunkVersion, stage_legacy_terrain_combine,
     stage_legacy_terrain_split,
 };
-use crate::database::{StorageBatch, StorageOp};
+use crate::storage::{StorageBatch, StorageOp};
 use crate::error::Result;
 use crate::nbt::NbtTag;
 use crate::world::{BedrockWorld, WorldStorageHandle};
@@ -110,7 +110,7 @@ mod tests {
     use super::*;
     use crate::block::BlockPos;
     use crate::chunk::{Dimension, LegacyTerrainBuilder};
-    use crate::database::{MemoryStorage, WorldStorage};
+    use crate::storage::{MemoryStorage, WorldStorage};
     use crate::world::BedrockWorldOpenOptions;
 
     #[test]

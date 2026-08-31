@@ -1,7 +1,7 @@
 //! Exact non-rectangular chunk selection primitives and queries.
 
 use crate::chunk::{ChunkPos, Dimension};
-use crate::database::{CancelFlag, MemoryStorage, WorldStorage};
+use crate::storage::{CancelFlag, MemoryStorage, WorldStorage};
 use crate::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 use crate::query::{
     ChunkRecordQuery, ParsedChunkRecordValue, RegionOverlayQueryOptions, SelectionStats,

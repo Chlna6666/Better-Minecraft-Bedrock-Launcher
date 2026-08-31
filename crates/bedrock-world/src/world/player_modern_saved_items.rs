@@ -5,7 +5,7 @@
 //! create a mixed world. Actual item transformation remains available on owned [`crate::player::PlayerData`]
 //! and item values for use by a complete target-version export/write flow.
 
-use crate::database::{StorageReadOptions, StorageVisitorControl};
+use crate::storage::{StorageReadOptions, StorageVisitorControl};
 use crate::error::{BedrockWorldError, Result};
 use crate::item::{
     ModernSavedItemCheckReport, ModernSavedItemTarget, check_saved_items_for_modern_target,

@@ -19,7 +19,7 @@ use crate::chunk::{
     BlockState, ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion, SubChunk, SubChunkDecodeMode,
     SubChunkFormat, parse_subchunk_with_mode,
 };
-use crate::database::{
+use crate::storage::{
     StorageCachePolicy, StorageKeyBatchBuilder, StoragePipelineOptions, StorageReadOptions,
     StorageScanMode, StorageThreadingOptions,
 };

@@ -7,7 +7,7 @@
 
 use super::pocket_entities_dat::read_pocket_entities_dat;
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, Dimension};
-use crate::database::{
+use crate::storage::{
     PocketChunksDatStorage, StorageBatch, StorageReadOptions, StorageScanOutcome,
     StorageVisitorControl, WorldStorage,
 };
@@ -273,7 +273,7 @@ fn emit_progress(options: &StorageReadOptions, outcome: StorageScanOutcome) {
     if let Some(progress) = &options.progress {
         let interval = options.pipeline.progress_interval.max(1);
         if outcome.visited.is_multiple_of(interval) {
-            progress.emit(crate::database::StorageScanProgress {
+            progress.emit(crate::storage::StorageScanProgress {
                 entries_seen: outcome.visited,
                 bytes_read: outcome.bytes_read,
             });

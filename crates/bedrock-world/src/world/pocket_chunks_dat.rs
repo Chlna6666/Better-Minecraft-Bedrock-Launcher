@@ -7,7 +7,7 @@
 
 use super::pocket_world_storage::PocketWorldStorage;
 use crate::chunk::{BedrockDbKey, ChunkRecordTag, LegacyTerrain};
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
 use std::path::Path;

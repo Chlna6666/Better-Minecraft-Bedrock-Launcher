@@ -7,7 +7,7 @@ use crate::block::{AuthoritativeBlockStateCatalog, BlockState, VanillaBlockState
 use crate::chunk::{
     BedrockDbKey, ChunkRecordTag, SubChunk, SubChunkDecodeMode, SubChunkFormat, SubChunkVersion,
 };
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use std::collections::BTreeMap;
 
@@ -169,7 +169,7 @@ mod tests {
     use super::*;
     use crate::block::BlockStateSchemaSource;
     use crate::chunk::{BlockPalette, ChunkKey, ChunkPos, Dimension};
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use crate::version::GameVersion;
     use std::collections::BTreeMap;
 

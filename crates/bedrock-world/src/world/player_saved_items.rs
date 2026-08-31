@@ -1,6 +1,6 @@
 //! World-level historical saved-item compatibility checks across all Bedrock player record families.
 
-use crate::database::{StorageReadOptions, StorageVisitorControl};
+use crate::storage::{StorageReadOptions, StorageVisitorControl};
 use crate::error::{BedrockWorldError, Result};
 use crate::item::{
     LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemIdTable,
@@ -202,7 +202,7 @@ fn check_nbt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::{MemoryStorage, WorldStorage};
+    use crate::storage::{MemoryStorage, WorldStorage};
     use crate::item::{SavedItemUpgradeSource, check_legacy_numeric_saved_items};
     use crate::nbt::{NbtTag, serialize_root_nbt};
     use indexmap::IndexMap;

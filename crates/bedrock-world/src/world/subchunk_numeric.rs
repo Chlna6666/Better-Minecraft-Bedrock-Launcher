@@ -4,7 +4,7 @@ use crate::block::LegacyNumericBlockUpgradeTable;
 use crate::chunk::{
     LegacyNumericSubChunkWriteReport, SubChunkVersion, stage_paletted_subchunks_as_legacy_numeric,
 };
-use crate::database::StorageOp;
+use crate::storage::StorageOp;
 use crate::error::Result;
 use crate::world::{BedrockWorld, WorldStorageHandle};
 

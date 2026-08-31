@@ -10,7 +10,7 @@ use crate::chunk::{
     BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LegacyTerrain, SubChunk,
     SubChunkDecodeMode, parse_subchunk_with_mode,
 };
-use crate::database::StorageKeyBatchBuilder;
+use crate::storage::StorageKeyBatchBuilder;
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use std::collections::BTreeMap;
@@ -355,7 +355,7 @@ fn legacy_block_state(id: u8, data: Option<u8>) -> BlockState {
 mod tests {
     use super::*;
     use crate::chunk::LEGACY_TERRAIN_VALUE_LEN;
-    use crate::database::{MemoryStorage, WorldStorage};
+    use crate::storage::{MemoryStorage, WorldStorage};
     use crate::world::{BedrockWorldOpenOptions, WorldFormatHint};
 
     #[test]

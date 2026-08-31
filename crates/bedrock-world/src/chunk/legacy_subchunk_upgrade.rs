@@ -8,7 +8,7 @@ use crate::chunk::{
     BedrockDbKey, BlockPalette, ChunkPos, ChunkRecordTag, LegacyBlockExtraData,
     LegacyBlockExtraDataEntry, SubChunk, SubChunkFormat, SubChunkVersion, block_storage_index,
 };
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
@@ -591,7 +591,7 @@ mod tests {
         ChunkKey, ChunkPos, Dimension, LegacyBlockExtraDataBuilder, LegacySubChunkBuilder,
         SubChunkDecodeMode,
     };
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use crate::nbt::{NbtTag, serialize_root_nbt};
     use crate::version::GameVersion;
     use indexmap::IndexMap;

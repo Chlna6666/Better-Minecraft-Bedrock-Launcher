@@ -6,7 +6,7 @@
 
 use super::pocket_world_storage::PocketWorldStorage;
 use crate::chunk::{BedrockDbKey, ChunkRecordTag, SubChunkVersion};
-use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::version::{GameVersion, LevelVersion};
 use crate::world::{BedrockWorld, BedrockWorldOpenOptions, WorldFormat, WorldStorageHandle};

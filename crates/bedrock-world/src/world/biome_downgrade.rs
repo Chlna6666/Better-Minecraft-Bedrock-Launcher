@@ -2,7 +2,7 @@
 
 use crate::biome::{Biome3d, data3d_to_data2d};
 use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::database::{
+use crate::storage::{
     StorageBatch, StorageOp, StorageReadOptions, StorageVisitorControl, WorldStorage,
 };
 use crate::error::{BedrockWorldError, Result};
@@ -108,7 +108,7 @@ mod tests {
     use super::*;
     use crate::biome::{Biome2d, data2d_to_data3d};
     use crate::chunk::{ChunkVersion, Dimension};
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
 
     #[test]
     fn uniform_data3d_world_downgrades_only_after_preflight() {

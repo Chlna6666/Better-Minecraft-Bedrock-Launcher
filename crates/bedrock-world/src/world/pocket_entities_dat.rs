@@ -6,7 +6,7 @@
 //! separate caller-requested operation.
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, Dimension};
-use crate::database::{StorageBatch, WorldStorage};
+use crate::storage::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtReader, NbtTag, serialize_root_nbt};
 use bytes::Bytes;
@@ -498,7 +498,7 @@ fn serialize_consecutive_roots(roots: &[&NbtTag]) -> Result<Bytes> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
 
     fn entity(x: f32, z: f32) -> NbtTag {

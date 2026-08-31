@@ -5,7 +5,7 @@
 //! owned [`crate::player::PlayerData`] first, then write it only through a complete concrete target
 //! version flow such as the confirmed MCPE 0.6.1 player writer.
 
-use crate::database::{StorageReadOptions, StorageVisitorControl};
+use crate::storage::{StorageReadOptions, StorageVisitorControl};
 use crate::error::{BedrockWorldError, Result};
 use crate::item::{
     ClassicSavedItemCheckReport, LegacySavedItemBlockStateTables, LegacySavedItemIdTable,

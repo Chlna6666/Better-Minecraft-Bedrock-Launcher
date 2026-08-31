@@ -5,7 +5,7 @@ use crate::chunk::{
     LegacySubChunkUpgradeWriteReport, SubChunkUpgradeWriteReport, SubChunkVersion,
     stage_legacy_subchunks_for_upgrade, stage_paletted_subchunks_for_upgrade,
 };
-use crate::database::{StorageBatch, StorageOp};
+use crate::storage::{StorageBatch, StorageOp};
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
 use crate::world::{BedrockWorld, WorldFormat, WorldStorageHandle};

@@ -6,7 +6,7 @@
 //! the library never merges two conflicting representations into a third state.
 
 use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
@@ -441,7 +441,7 @@ fn actor_unique_id(root: &NbtTag) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::chunk::Dimension;
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
 
     fn actor(unique_id: i64, identifier: &str) -> NbtTag {

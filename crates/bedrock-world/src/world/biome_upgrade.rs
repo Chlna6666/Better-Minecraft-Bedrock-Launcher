@@ -5,7 +5,7 @@
 
 use crate::biome::{Biome2d, Biome2dLegacy, data2d_to_data3d};
 use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion, Dimension};
-use crate::database::{
+use crate::storage::{
     StorageBatch, StorageOp, StorageReadOptions, StorageVisitorControl, WorldStorage,
 };
 use crate::error::{BedrockWorldError, Result};
@@ -169,7 +169,7 @@ mod tests {
     use super::*;
     use crate::biome::{Biome2dLegacy, LegacyBiomeSample};
     use crate::chunk::Dimension;
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
 
     #[test]
     fn data2d_old_target_keeps_pre_extended_overworld_range() {

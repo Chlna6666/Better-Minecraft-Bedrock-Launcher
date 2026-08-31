@@ -8,7 +8,7 @@ use crate::block::VanillaBlockStatePalette;
 use crate::chunk::{
     BedrockDbKey, ChunkRecordTag, SubChunk, SubChunkDecodeMode, SubChunkFormat, SubChunkVersion,
 };
-use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 
 /// Summary of staging every SubChunk for one explicitly selected persisted version.
@@ -215,7 +215,7 @@ mod tests {
     use super::*;
     use crate::block::VanillaBlockStatePalette;
     use crate::chunk::{BlockPalette, BlockState, ChunkKey, ChunkPos, Dimension};
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use crate::nbt::NbtTag;
     use crate::version::GameVersion;
     use std::collections::BTreeMap;
