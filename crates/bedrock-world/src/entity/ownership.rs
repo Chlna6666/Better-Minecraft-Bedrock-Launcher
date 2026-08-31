@@ -1,5 +1,5 @@
 use crate::chunk::{ActorUid, BedrockDbKey, ChunkPos};
-use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::Result;
 use crate::parsed::parse_actor_digest_ids;
 use std::collections::{BTreeMap, BTreeSet};
