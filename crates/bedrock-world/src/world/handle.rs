@@ -1,9 +1,9 @@
 //! High-level lazy world access built on top of the storage layer.
 //!
 //! Synchronous operations are the canonical implementation. Async APIs are adapters that offload
-//! blocking storage work without changing Minecraft Bedrock persistence semantics. All transactions
-//! created from clones of one world handle share a mutation lock so source validation and LevelDB
-//! batch commit cannot race with another transaction from the same handle family.
+//! blocking storage work without changing Minecraft Bedrock persistence semantics. Transactions for
+//! independently opened handles to the same world path share one in-process mutation lock so source
+//! validation and the LevelDB batch commit cannot race with each other.
 
 use crate::chunk::{
     ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPos, BlockState,
@@ -38,7 +38,7 @@ use bytes::Bytes;
 use rayon::{ThreadPoolBuilder, prelude::*};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -95,15 +95,13 @@ pub enum WorldFormat {
 /// Lazy handle to a Minecraft Bedrock world folder.
 ///
 /// A handle stores the world path and a storage backend. It does not scan or parse LevelDB until a
-/// query method is called. Clones created by this type share one in-process mutation lock so staged
-/// transactions validate and commit in a single authoritative order. This lock does not coordinate
-/// an external Minecraft process or independently opened world handles.
+/// query method is called. Transactions opened for the same path share an in-process mutation lock.
+/// This coordination does not extend to an external Minecraft process.
 pub struct BedrockWorld<S = Arc<dyn WorldStorage>> {
     pub(super) path: PathBuf,
     pub(super) options: BedrockWorldOpenOptions,
     pub(super) storage: S,
     pub(super) format: WorldFormat,
-    pub(super) mutation_lock: Arc<Mutex<()>>,
 }
 
 /// Storage handle accepted by generic [`BedrockWorld`] methods.
@@ -181,7 +179,6 @@ impl BedrockWorld<Arc<dyn WorldStorage>> {
             options,
             storage,
             format,
-            mutation_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -206,7 +203,6 @@ impl BedrockWorld<Arc<dyn WorldStorage>> {
             options,
             storage,
             format: WorldFormat::LevelDb,
-            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -223,7 +219,6 @@ impl BedrockWorld<Arc<dyn WorldStorage>> {
             options,
             storage,
             format,
-            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -249,7 +244,6 @@ impl BedrockWorld<BedrockLevelDbStorage> {
                     options,
                     storage,
                     format,
-                    mutation_lock: Arc::new(Mutex::new(())),
                 })
             }
             WorldFormat::PocketChunksDat => Err(BedrockWorldError::UnsupportedChunkFormat(
@@ -275,7 +269,6 @@ where
             options,
             storage,
             format: WorldFormat::LevelDb,
-            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -292,7 +285,6 @@ where
             options,
             storage,
             format,
-            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -373,7 +365,7 @@ where
             read_only: self.options.read_only,
             actor_ownership: None,
             preconditions: Vec::new(),
-            mutation_lock: self.mutation_lock.as_ref(),
+            mutation_lock: world_mutation_lock(&self.path),
         }
     }
 
@@ -393,6 +385,19 @@ pub use transaction::WorldTransaction;
 mod render_helpers;
 
 use render_helpers::*;
+
+fn world_mutation_lock(path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lock) = registry.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    registry.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(Mutex::new(()));
+    registry.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
 
 fn detect_world_format(path: &Path, hint: WorldFormatHint) -> Result<WorldFormat> {
     match hint {
