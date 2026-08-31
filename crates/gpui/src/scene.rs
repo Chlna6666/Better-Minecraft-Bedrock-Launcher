@@ -3,6 +3,7 @@
 
 mod batch;
 mod bounds_tree;
+mod composite;
 mod display_list;
 mod geometry;
 mod mesh;
