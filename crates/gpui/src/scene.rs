@@ -1,6 +1,7 @@
 // todo("windows"): remove
 #![cfg_attr(windows, allow(dead_code))]
 
+mod animation_bounds;
 mod batch;
 mod bounds_tree;
 mod composite;
