@@ -1,0 +1,2 @@
+Debug.show_element_updates=显示元素刷新
+Debug.show_element_updates_desc=用红/橙轮廓高亮本帧真正重新 Paint 的元素。若切换页面时整页都闪烁，说明页面缓存未命中；未高亮的静态子树通常来自 retained/cache 复用。
