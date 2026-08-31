@@ -97,8 +97,8 @@ impl SubChunk {
     /// Reads a SubChunk by its persisted leading version byte.
     pub fn read(y: i8, bytes: Bytes, mode: SubChunkDecodeMode) -> Result<Self> {
         match SubChunkVersion::detect(&bytes) {
-            Some(SubChunkVersion::V0) => crate::chunk::subchunk_v0::read(y, bytes, mode),
-            Some(SubChunkVersion::V1) => crate::chunk::subchunk_v1::read(y, bytes, mode),
+            Some(SubChunkVersion::V0) => crate::chunk::v0::read(y, bytes, mode),
+            Some(SubChunkVersion::V1) => crate::chunk::v1::read(y, bytes, mode),
             Some(
                 version @ (SubChunkVersion::V2
                 | SubChunkVersion::V3
@@ -106,9 +106,9 @@ impl SubChunk {
                 | SubChunkVersion::V5
                 | SubChunkVersion::V6
                 | SubChunkVersion::V7),
-            ) => crate::chunk::subchunk_v2_v7::read(version.byte(), y, bytes, mode),
-            Some(SubChunkVersion::V8) => crate::chunk::subchunk_v8::read(y, bytes, mode),
-            Some(SubChunkVersion::V9) => crate::chunk::subchunk_v9::read(y, bytes, mode),
+            ) => crate::chunk::v2_v7::read(version.byte(), y, bytes, mode),
+            Some(SubChunkVersion::V8) => crate::chunk::v8::read(y, bytes, mode),
+            Some(SubChunkVersion::V9) => crate::chunk::v9::read(y, bytes, mode),
             Some(SubChunkVersion::Unknown(version)) => Ok(Self {
                 y,
                 format: SubChunkFormat::Raw {
@@ -181,52 +181,52 @@ impl SubChunk {
 
     /// Writes this block data as SubChunk V0 when it is representable exactly.
     pub fn write_v0(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v0::write(self)
+        crate::chunk::v0::write(self)
     }
 
     /// Writes this block data as SubChunk V1 when it is representable exactly.
     pub fn write_v1(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v1::write(self)
+        crate::chunk::v1::write(self)
     }
 
     /// Writes this block data as SubChunk V2 when it is representable exactly.
     pub fn write_v2(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v2_v7::write(2, self)
+        crate::chunk::v2_v7::write(2, self)
     }
 
     /// Writes this block data as SubChunk V3 when it is representable exactly.
     pub fn write_v3(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v2_v7::write(3, self)
+        crate::chunk::v2_v7::write(3, self)
     }
 
     /// Writes this block data as SubChunk V4 when it is representable exactly.
     pub fn write_v4(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v2_v7::write(4, self)
+        crate::chunk::v2_v7::write(4, self)
     }
 
     /// Writes this block data as SubChunk V5 when it is representable exactly.
     pub fn write_v5(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v2_v7::write(5, self)
+        crate::chunk::v2_v7::write(5, self)
     }
 
     /// Writes this block data as SubChunk V6 when it is representable exactly.
     pub fn write_v6(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v2_v7::write(6, self)
+        crate::chunk::v2_v7::write(6, self)
     }
 
     /// Writes this block data as SubChunk V7 when it is representable exactly.
     pub fn write_v7(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v2_v7::write(7, self)
+        crate::chunk::v2_v7::write(7, self)
     }
 
     /// Writes this block data as SubChunk V8 when it is representable exactly.
     pub fn write_v8(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v8::write(self)
+        crate::chunk::v8::write(self)
     }
 
     /// Writes this block data as SubChunk V9 when it is representable exactly.
     pub fn write_v9(&self) -> Result<Bytes> {
-        crate::chunk::subchunk_v9::write(self)
+        crate::chunk::v9::write(self)
     }
 }
 
