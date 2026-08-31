@@ -1,0 +1,2 @@
+Debug.show_element_updates=顯示元素更新
+Debug.show_element_updates_desc=以紅／橙色外框標示本幀真正重新 Paint 的元素。若切換頁面時整頁都閃爍，表示頁面快取未命中；未標示的靜態子樹通常來自 retained/cache 重用。
