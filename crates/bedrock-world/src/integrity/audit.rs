@@ -8,11 +8,11 @@ use crate::chunk::{
     BedrockDbKey, ChunkRecordTag, LegacyTerrain, SubChunkDecodeMode, SubChunkFormat,
     parse_subchunk_with_mode,
 };
-use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::entity::parse_actor_digest_ids;
 use crate::error::{BedrockWorldError, Result};
 use crate::level::read_level_dat_document;
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt};
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::world::{BedrockWorld, WorldStorageHandle};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -207,7 +207,7 @@ impl WorldIntegrityReport {
 }
 
 /// Audits one world folder and raw storage backend without modifying either.
-pub fn audit_world_integrity_blocking(
+pub fn audit(
     world_path: &Path,
     storage: &dyn WorldStorage,
     options: WorldIntegrityOptions,
@@ -546,26 +546,24 @@ where
     S: WorldStorageHandle,
 {
     /// Runs a read-only integrity audit against this opened world.
-    pub fn audit_integrity_blocking(
+    pub fn audit_integrity(
         &self,
         options: WorldIntegrityOptions,
     ) -> Result<WorldIntegrityReport> {
-        audit_world_integrity_blocking(self.path(), self.storage(), options)
+        audit(self.path(), self.storage(), options)
     }
 
-    /// Async wrapper for [`Self::audit_integrity_blocking`].
+    /// Runs [`Self::audit_integrity`] on a blocking worker thread.
     #[cfg(feature = "async")]
-    pub async fn audit_integrity(
+    pub async fn audit_integrity_async(
         &self,
         options: WorldIntegrityOptions,
     ) -> Result<WorldIntegrityReport> {
         let path = self.path().to_path_buf();
         let storage = self.storage_backend().clone();
-        tokio::task::spawn_blocking(move || {
-            audit_world_integrity_blocking(&path, storage.storage(), options)
-        })
-        .await
-        .map_err(|error| BedrockWorldError::Join(error.to_string()))?
+        tokio::task::spawn_blocking(move || audit(&path, storage.storage(), options))
+            .await
+            .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
 }
 
@@ -573,9 +571,9 @@ where
 mod tests {
     use super::*;
     use crate::chunk::{ChunkPos, Dimension};
-    use crate::database::MemoryStorage;
     use crate::entity::{ActorDigestKey, ActorUid};
     use crate::level::{LevelDatDocument, write_level_dat_document};
+    use crate::storage::MemoryStorage;
     use bytes::Bytes;
     use indexmap::IndexMap;
     use std::fs;
@@ -610,7 +608,7 @@ mod tests {
         );
         write_level_dat_document(&temp.join("level.dat"), &document).expect("level.dat");
 
-        let report = audit_world_integrity_blocking(
+        let report = audit(
             &temp,
             &storage,
             WorldIntegrityOptions {
