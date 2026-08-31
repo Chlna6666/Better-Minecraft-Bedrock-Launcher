@@ -142,6 +142,10 @@ Rayon pool 或额外全局 executor：
 - `run_cpu` / `install_cpu`：应用 CPU/Rayon 工作；
 - `gpui_tokio::Tokio::spawn_result`：有界、view-scoped 的 Tokio 请求结果。
 
+这些 runtime 调度函数的 `blocking` 描述的是**调度执行方式**，不是领域 API 的同步版本，
+因此不属于下文“同步 API 禁止 `_blocking`”的范围。领域 API 不应通过这类 runtime 名称
+反向决定自身命名。
+
 新的 egpui host 使用 `egpui::ApplicationRuntime`/`RuntimeProvider`；不要把这套
 新 host 生命周期与现有 BMCBL AppRuntime 工作流混成一个 runtime owner。
 
@@ -185,11 +189,158 @@ Rust 命名整改必须遵循 [`docs/RUST_NAMING_CONVENTIONS.md`](docs/RUST_NAMI
 `Config`、`Error` 等 Rust 惯用角色名在职责明确时允许使用，不能机械禁用或替换为另一种
 泛词。命名需要增加单词时，新增部分必须表达真实、稳定且无法由路径或类型推断的区别。
 
-Minecraft 领域 API 仍应表达真实 Bedrock 对象。例如世界打开参数使用
-`BedrockWorldOpenOptions`；玩家、区块、SubChunk、实体、Biome、世界版本等上层接口优先
-采用 Minecraft Bedrock 术语。底层存储驱动使用其真实技术对象名称，例如
-`LevelDbOpenOptions`、WAL、manifest、table 和 batch，不得把 Minecraft 世界语义下沉到
-`bedrock-leveldb`。
+### 全仓同步与异步 API 命名
+
+这条规则适用于 BMCBL 根应用和全部 Rust crate，不只 `bedrock-world`。
+
+**默认同步 API 使用 canonical 短名称，不添加 `_blocking`、`_sync` 或其它线程模型后缀。**
+同步调用是普通 Rust API，不应被命名成特殊变体：
+
+```rust
+world.chunk(pos)
+world.block_state(dimension, pos)
+player.inventory()
+archive.extract(...)
+client.request(...)
+```
+
+禁止把普通同步 API 命名成：
+
+```rust
+chunk_blocking(...)
+block_state_sync(...)
+get_player_blocking(...)
+read_level_dat_blocking(...)
+```
+
+当同一领域操作确实同时提供同步和返回 `Future` 的异步版本时，**异步版本可以并优先使用
+`_async` 显式表达异步边界**：
+
+```rust
+world.chunk(pos)?;
+world.chunk_async(pos).await?;
+
+world.players()?;
+world.players_async().await?;
+```
+
+`async fn` 本身虽然在签名中可见，但调用点通常看不到函数声明；`_async` 在存在同步同名
+语义时提供有价值的调用侧区分，因此不是应被机械删除的实现细节。不要为了隐藏 `async`
+强行创建无领域价值的 `io()`/`async_world()` facade；只有职责本身确实独立时才引入新类型。
+
+如果所谓异步 API 只是 `tokio::task::spawn_blocking` 对同步实现的适配，文档必须明确：
+它只是异步调度适配器，不代表底层 LevelDB、文件系统或第三方 API 已变成原生 async I/O。
+
+`*_blocking` 仍可用于**运行时/执行器调度原语**，例如 `run_io_blocking`、
+`spawn_download_blocking`，因为这里 `blocking` 描述的是“把闭包投递到阻塞执行资源”这一
+稳定操作语义，而不是给某个领域同步 API 加后缀。两类名称不得混淆。
+
+### Getter、集合、Options 与控制流命名
+
+普通 getter 不机械使用 `get_`。receiver 和模块已经表达对象时直接使用名词，例如：
+
+```rust
+world.chunk(pos)
+world.player(id)
+world.block_state(dimension, pos)
+```
+
+只有真正的 keyed lookup / map-like API 或上游固定术语才保留 `get` / `get_mut`。
+集合读取优先使用集合名，例如 `players()`、`chunk_positions()`，而不是
+`list_players()`、`list_chunk_positions()`。
+
+不要通过 `with_options`、`with_control`、`if_*`、`using_*` 等函数名排列组合参数。
+可配置行为使用 typed options / conditions，并保留一个 canonical operation。禁止把整个
+控制流写进函数名，例如：
+
+```rust
+prepare_block_edits_if_primary_states_match_blocking(...)
+get_many_ordered_with_control(...)
+audit_world_integrity_blocking(...)
+```
+
+应收敛为 operation + typed argument，例如：
+
+```rust
+prepare_block_edits(..., conditions, options)
+audit(..., options)
+```
+
+`_repo`、`Repository`、`Service`、`Manager`、`Controller`、`Helper`、`Helpers`、
+`Operations`、`Utils`、`Common` 以及无实际语义的 `Data`、`Info`、`Result`、`Record`
+不能作为默认架构词。只有这些词确实表达稳定职责、外部协议/上游对象或 Rust 惯用角色时
+才能保留。删除单词后如果不会丢失真实语义，就应该删除。
+
+### Minecraft Bedrock 领域命名
+
+Minecraft 相关代码优先使用 Mojang/Minecraft Bedrock 已存在的领域名称和实际持久化名称，
+其次才采用通用软件术语。稳定领域词包括 `World`、`Dimension`、`Chunk`、`SubChunk`、
+`Block`、`BlockState`、`BlockEntity`、`Biome`、`Entity`、`Actor`、`Player`、`Item`、
+`Structure`、`LevelDat`、`LevelDB`、`LegacyTerrain`、`Data2D`、`Data3D`，以及真实 Bedrock
+key/record 名称如 `digp`、`actorprefix`、`SubChunkPrefix`。
+
+不要把这些领域对象改写成 `WorldRepository`、`PlayerService`、`ChunkManager`、
+`BlockStateHelper` 之类软件分层名，也不要在 crate/父模块已经提供上下文时重复 `Bedrock`、
+`World`、`Query`、`Storage` 前缀。例如在 `bedrock-world` crate 内优先：
+
+```rust
+World
+OpenOptions
+WorldFormat
+BlockState
+ChunkPos
+```
+
+而不是：
+
+```rust
+BedrockWorld
+BedrockWorldOpenOptions
+BedrockWorldChunkResult
+```
+
+只有在更宽的真实公共命名空间中会发生语义冲突时才增加限定词。
+
+`bedrock-world` 中原始 Bedrock key/value、backend adapter 和事务契约统一属于 `storage`；
+`database` 不是 Minecraft 世界领域边界。具体 Mojang LevelDB 引擎实现属于
+`bedrock-leveldb`，应使用 `LevelDB`、WAL、manifest、table、batch 等真实技术术语，不能
+把 Minecraft `World` 语义下沉到数据库引擎 crate。
+
+玩家是独立公共 Minecraft 领域，不应把解析、枚举、saved-item compatibility、持久化来源
+等能力散落为 `world/player_*` helper。`player` 模块应完整表达 `level.dat.Player`、
+`~local_player`、`player_*` 等真实来源；`World` 只负责 world lifecycle 与跨领域协调。
+
+### Bedrock 写入与并发边界
+
+读取允许同步或异步执行，异步读取不得因此获得直接覆盖 authoritative storage 的权限。
+所有基于旧快照产生的写入都必须在最终 mutation/transaction 边界验证 source state/version，
+避免 lost update。
+
+`~local_player`、`player_*`、map、chunk、entity 等同属 LevelDB 的修改应能够进入同一个
+`WorldTransaction` / `StorageBatch`，从而共享一个提交顺序和 LevelDB 原子 batch。玩家对象
+应保留读取时的 source snapshot；更新时序列化当前结构化值，并在提交锁内验证 source 仍然
+匹配，不能把旧 raw bytes 当成编辑后的值写回。
+
+`level.dat.Player` 位于独立的 `level.dat` 文件，不属于 LevelDB，不能伪装成与 LevelDB
+同一个物理原子事务。涉及 `level.dat` 与 LevelDB 的跨存储迁移/写入必须明确顺序、冲突检测、
+失败恢复和外部 Minecraft 进程并发边界。进程内锁只能协调本进程针对同一世界的写入，不能
+宣称可以阻止游戏本体或其它进程同时修改世界。
+
+### 公共 API 文档
+
+新增或整改 public type、trait、enum variant、public field、function、method 时必须补齐真实
+契约文档，不能只把名称换成一句英文。涉及存储、解析、修改或异步的 API，按适用范围说明：
+
+- 对应的 Minecraft/Bedrock 记录、文件或协议来源；
+- 是否只读，是否修改 LevelDB 或 `level.dat`；
+- 是否保留未知/未来字段与原始 bytes；
+- 原子性边界以及是否参与 transaction/batch；
+- 并发冲突与 lost-update 保护；
+- 是否发生版本转换，若不发生也要明确；
+- async 是否只是阻塞实现的调度适配；
+- `# Errors` 中列出有业务意义的错误类别。
+
+禁止 `/// Get X.`、`/// Put X.`、`/// Foo blocking.` 这类不增加契约信息的注释。
 
 API 删除、重命名或职责移动完成前，必须使用 `rg` 检查并同步更新以下位置，不能只让
 library target 通过：
@@ -216,7 +367,8 @@ library target 通过：
   名称。可恢复失败用 `Result`/`Option` 表达；生产代码不使用 `unwrap()`，`expect()`
   只能用于有明确不变量的场景。
 - 不用 `let _ =` 静默丢弃 fallible 操作；错误应传播、带上下文记录或转化为可见 UI 状态。
-- 新文件不要创建 `mod.rs` 路径；使用 `src/module.rs` 或已有的扁平模块布局。
+- 新模块使用标准 Rust 模块系统；`name.rs` 与 `name/mod.rs` 均可按职责选择，不机械禁止
+  `mod.rs`，也不为了偏好某种布局引入 `#[path]`。
 - 新增公共 API 前评估所有调用方、错误语义、可见性、平台/MSRV 和 breaking change。
 - 函数超过约 50 行、实现文件超过约 500 行、参数超过 5 个或职责混杂时，先拆分到
   合理的类型族/职责模块；不要通过 helper 碎片化掩盖边界问题。
@@ -230,9 +382,10 @@ library target 通过：
 目录结构、可见性、导入顺序或循环依赖使用 `#[path = "..."]`、`include!("*.rs")` 或
 其它文本拼接方式导入手写 `.rs` 文件。
 
-`#[path = "..."]` 只允许用于确有必要的构建/平台隔离边界，例如无法用普通 `cfg` 模块
-表达的目标平台 shim，并且必须在代码旁说明原因。普通源码、UI、core、renderer、world、
-LevelDB 和插件模块不得使用它代替标准模块声明。
+`#[path = "..."]` 只允许用于确有必要的测试/构建/平台隔离边界，例如测试 fixture、
+构建生成代码接入，或确实无法用普通 `cfg` 模块表达的目标平台 shim，并且必须在代码旁
+说明原因。普通源码、UI、core、renderer、world、LevelDB、player 和插件功能模块不得使用
+它代替标准模块声明。
 
 `include!` 只允许包含构建期生成代码，例如 `build.rs`、proc-macro 或 protobuf/codegen
 输出到 `OUT_DIR` 后通过 `include!(concat!(env!("OUT_DIR"), ...))` 接入；生成代码必须隔离
@@ -277,7 +430,9 @@ cargo check --manifest-path crates/gpui/Cargo.toml --no-default-features --featu
 ```
 
 文档-only 变更至少检查引用路径和链接；未运行的验证必须在交付摘要中说明。Windows
-是当前主要验证平台，Linux/macOS 兼容性不要在未实际验证时宣称已通过。
+仍是 BMCBL 应用的主要目标平台，但跨平台纯 Rust crate 的重构按受影响范围选择验证平台；
+当前 `bedrock-world` 命名/结构整改以 **Linux Rust 1.95** 的 storage-crates 检查作为继续
+下一批的默认门槛，不要求等待 Windows，除非改动涉及 Windows 专有实现或用户另行要求。
 
 ## Git 约定
 
