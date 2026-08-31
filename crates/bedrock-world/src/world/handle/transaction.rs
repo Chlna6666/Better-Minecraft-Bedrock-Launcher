@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-struct StoragePrecondition {
+pub(super) struct StoragePrecondition {
     key: Bytes,
     expected: Option<Bytes>,
 }
@@ -11,10 +11,9 @@ struct StoragePrecondition {
 /// Buffered LevelDB mutations for one Minecraft Bedrock world.
 ///
 /// A transaction can stage player, map, chunk, actor and raw-record mutations into one
-/// [`StorageBatch`]. Commits created from clones of the same [`BedrockWorld`] are serialized by the
-/// shared world mutation lock. Player update/create helpers also validate their source condition
-/// while that lock is held, preventing an older in-process read snapshot from silently replacing a
-/// newer LevelDB value.
+/// [`StorageBatch`]. Commits opened for the same world path are serialized by the shared mutation
+/// lock. Player update/create helpers also validate their source condition while that lock is held,
+/// preventing an older in-process read snapshot from silently replacing a newer LevelDB value.
 ///
 /// `level.dat` is a separate file and is intentionally outside this atomic LevelDB boundary.
 pub struct WorldTransaction<'a, S = Arc<dyn WorldStorage>>
@@ -26,7 +25,7 @@ where
     pub(super) read_only: bool,
     pub(super) actor_ownership: Option<ActorOwnershipIndex>,
     pub(super) preconditions: Vec<StoragePrecondition>,
-    pub(super) mutation_lock: &'a Mutex<()>,
+    pub(super) mutation_lock: Arc<Mutex<()>>,
 }
 
 impl<S> WorldTransaction<'_, S>
@@ -279,12 +278,12 @@ where
 
     /// Validates source conditions and commits all staged LevelDB mutations atomically.
     ///
-    /// Commits from clones of the same world handle are serialized. Source conditions are checked
+    /// Transactions opened for the same world path are serialized. Source conditions are checked
     /// while that mutation lock is held and immediately before the backend batch write, which closes
     /// the in-process read/validate/write race for `update_player` and `create_player`.
     ///
-    /// This does not coordinate another independently opened world handle or an external Minecraft
-    /// process. Callers must still avoid editing a world that the game is actively writing.
+    /// This does not coordinate an external Minecraft process. Callers must still avoid editing a
+    /// world that the game is actively writing.
     ///
     /// # Errors
     ///
