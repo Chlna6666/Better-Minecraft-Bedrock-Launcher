@@ -8,8 +8,8 @@
 use super::block_edit::{BlockEdit, BlockEditOptions, apply_block_edits_blocking};
 use crate::database::{MemoryStorage, StorageOp, WorldStorage};
 use crate::{
-    BedrockWorld, BedrockWorldError, BedrockWorldOpenOptions, ChunkPos, Result, WorldStorageHandle,
-    WorldTransaction, WriteGuard,
+    BedrockWorld, BedrockWorldError, BedrockWorldOpenOptions, BlockPos, BlockState, ChunkPos,
+    Dimension, Result, WorldStorageHandle, WorldTransaction, WriteGuard,
 };
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +18,34 @@ use std::collections::{BTreeMap, BTreeSet};
 struct PreparedChunkSource {
     pos: ChunkPos,
     records: BTreeMap<Bytes, Bytes>,
+}
+
+/// Exact primary-layer Bedrock block state that must exist in the preparation snapshot.
+///
+/// Expectations are evaluated only after every involved chunk has been copied into the isolated
+/// [`MemoryStorage`] snapshot. This closes the observation-to-preparation window for conditional
+/// edits such as paired-door breaking: the expected state and the encoded replacement are derived
+/// from the same immutable chunk snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrimaryBlockStateExpectation {
+    /// Dimension containing the expected block.
+    pub dimension: Dimension,
+    /// Absolute block position to match.
+    pub position: BlockPos,
+    /// Exact persisted primary-layer block state required at `position`.
+    pub expected: BlockState,
+}
+
+impl PrimaryBlockStateExpectation {
+    /// Creates one exact primary-layer block-state expectation.
+    #[must_use]
+    pub const fn new(dimension: Dimension, position: BlockPos, expected: BlockState) -> Self {
+        Self {
+            dimension,
+            position,
+            expected,
+        }
+    }
 }
 
 /// Result of revalidating the raw chunk records used by a prepared edit batch.
@@ -135,15 +163,51 @@ pub fn prepare_block_edits_blocking<S>(
 where
     S: WorldStorageHandle,
 {
+    prepare_block_edits_with_primary_expectations_blocking(world, edits, &[], guard, options)?
+        .ok_or_else(|| {
+            BedrockWorldError::Validation(
+                "an empty primary BlockState expectation set cannot mismatch".to_string(),
+            )
+        })
+}
+
+/// Prepares one atomic typed block-edit batch only when exact primary block states match the same
+/// source snapshot used by the typed editor.
+///
+/// `Ok(None)` means at least one expected primary [`BlockState`] did not match the isolated source
+/// snapshot. No persistent write occurs and no typed edit is encoded in that case. Expectation chunks
+/// are included in the batch's raw source snapshot even when an expectation is outside the edited
+/// positions, so a successful preparation also revalidates those chunks before staging.
+pub fn prepare_block_edits_if_primary_states_match_blocking<S>(
+    world: &BedrockWorld<S>,
+    edits: &[BlockEdit],
+    expectations: &[PrimaryBlockStateExpectation],
+    guard: &WriteGuard,
+    options: BlockEditOptions,
+) -> Result<Option<PreparedBlockEditBatch>>
+where
+    S: WorldStorageHandle,
+{
+    prepare_block_edits_with_primary_expectations_blocking(
+        world,
+        edits,
+        expectations,
+        guard,
+        options,
+    )
+}
+
+fn prepare_block_edits_with_primary_expectations_blocking<S>(
+    world: &BedrockWorld<S>,
+    edits: &[BlockEdit],
+    expectations: &[PrimaryBlockStateExpectation],
+    guard: &WriteGuard,
+    options: BlockEditOptions,
+) -> Result<Option<PreparedBlockEditBatch>>
+where
+    S: WorldStorageHandle,
+{
     guard.validate(world)?;
-    if edits.is_empty() {
-        return Ok(PreparedBlockEditBatch {
-            edited_blocks: 0,
-            affected_chunks: BTreeSet::new(),
-            source_chunks: Vec::new(),
-            operations: Vec::new(),
-        });
-    }
     if options.commit_batch_chunks == 0 {
         return Err(BedrockWorldError::Validation(
             "commit_batch_chunks must be greater than zero".to_string(),
@@ -154,15 +218,21 @@ where
         .iter()
         .map(|edit| edit.position.to_chunk_pos(edit.dimension))
         .collect::<BTreeSet<_>>();
-    if affected_chunks.len() > options.commit_batch_chunks {
+    let mut source_chunk_positions = affected_chunks.clone();
+    source_chunk_positions.extend(
+        expectations
+            .iter()
+            .map(|expectation| expectation.position.to_chunk_pos(expectation.dimension)),
+    );
+    if source_chunk_positions.len() > options.commit_batch_chunks {
         return Err(BedrockWorldError::Validation(format!(
-            "prepared block edit touches {} chunks but atomic batch limit is {}",
-            affected_chunks.len(),
+            "prepared block edit observes {} chunks but atomic batch limit is {}",
+            source_chunk_positions.len(),
             options.commit_batch_chunks
         )));
     }
 
-    let source_chunks = affected_chunks
+    let source_chunks = source_chunk_positions
         .iter()
         .copied()
         .map(|pos| {
@@ -186,6 +256,19 @@ where
         world.format(),
     );
 
+    if !primary_expectations_match_blocking(&prepared_world, expectations)? {
+        return Ok(None);
+    }
+
+    if edits.is_empty() {
+        return Ok(Some(PreparedBlockEditBatch {
+            edited_blocks: 0,
+            affected_chunks,
+            source_chunks,
+            operations: Vec::new(),
+        }));
+    }
+
     let result = apply_block_edits_blocking(
         &prepared_world,
         edits,
@@ -203,12 +286,48 @@ where
     }
     operations.sort_unstable_by(|left, right| operation_key(left).cmp(operation_key(right)));
 
-    Ok(PreparedBlockEditBatch {
+    Ok(Some(PreparedBlockEditBatch {
         edited_blocks: result.edited_blocks,
         affected_chunks: result.affected_chunks,
         source_chunks,
         operations,
-    })
+    }))
+}
+
+fn primary_expectations_match_blocking<S>(
+    world: &BedrockWorld<S>,
+    expectations: &[PrimaryBlockStateExpectation],
+) -> Result<bool>
+where
+    S: WorldStorageHandle,
+{
+    let mut grouped = BTreeMap::<Dimension, Vec<&PrimaryBlockStateExpectation>>::new();
+    for expectation in expectations {
+        grouped
+            .entry(expectation.dimension)
+            .or_default()
+            .push(expectation);
+    }
+
+    for (dimension, group) in grouped {
+        let positions = group.iter().map(|expectation| expectation.position);
+        let states = world.get_block_states_at_blocking(dimension, positions)?;
+        if states.len() != group.len() {
+            return Err(BedrockWorldError::CorruptWorld(format!(
+                "primary BlockState expectation query returned {} states for {} positions",
+                states.len(),
+                group.len()
+            )));
+        }
+        for (expectation, actual) in group.into_iter().zip(states) {
+            if actual.pos != expectation.position
+                || actual.state.as_ref() != Some(&expectation.expected)
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn raw_chunk_records<S>(

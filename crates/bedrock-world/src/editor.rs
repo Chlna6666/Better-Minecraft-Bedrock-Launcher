@@ -16,5 +16,6 @@ pub use block_edit::{
     apply_block_edits_blocking, set_block_state_blocking,
 };
 pub use prepared_block_edit::{
-    PreparedBlockEditBatch, PreparedBlockEditValidation, prepare_block_edits_blocking,
+    PreparedBlockEditBatch, PreparedBlockEditValidation, PrimaryBlockStateExpectation,
+    prepare_block_edits_blocking, prepare_block_edits_if_primary_states_match_blocking,
 };
