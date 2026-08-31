@@ -8,7 +8,7 @@ use crate::chunk::{
     BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, LEGACY_TERRAIN_VALUE_LEN,
     POCKET_TERRAIN_VALUE_LEN, SubChunkVersion,
 };
-use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::entity::parse_actor_digest_ids;
 use crate::error::Result;
 use crate::world::WorldFormat;
@@ -384,7 +384,7 @@ const fn worst_compatibility(
 mod tests {
     use super::*;
     use crate::chunk::{ActorUid, Dimension};
-    use crate::database::{MemoryStorage, StorageBatch};
+    use crate::storage::{MemoryStorage, StorageBatch};
     use crate::entity::encode_actor_digest_ids;
 
     #[test]
