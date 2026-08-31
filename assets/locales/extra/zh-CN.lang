@@ -1,2 +1,3 @@
 Debug.show_element_updates=显示元素刷新
-Debug.show_element_updates_desc=用红/橙轮廓高亮本帧真正重新 Paint 的元素。若切换页面时整页都闪烁，说明页面缓存未命中；未高亮的静态子树通常来自 retained/cache 复用。
+Debug.show_element_updates_desc=高亮本帧真正执行 Paint 的元素，并显示 cached view 的缓存状态。切换页面时可直接判断是局部更新、缓存复用还是整页重绘。
+Debug.element_update_legend=元素诊断：红/橙=实际重新 Paint · 绿=View 缓存命中 · 黄=bounds 变化导致缓存失效 · 红框=dirty/强制刷新/复用失败 · 紫=其它缓存键或 retained range 失效 · 青=progressive 复用
