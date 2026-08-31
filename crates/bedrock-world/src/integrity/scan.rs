@@ -8,16 +8,16 @@ use crate::chunk::{
     BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, LEGACY_TERRAIN_VALUE_LEN,
     POCKET_TERRAIN_VALUE_LEN, SubChunkVersion,
 };
-use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::entity::parse_actor_digest_ids;
 use crate::error::Result;
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::world::WorldFormat;
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Per-chunk data summary produced by a whole-world scan.
+/// Per-chunk compatibility summary produced by a whole-world scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChunkCompatibilitySummary {
+pub struct ChunkSummary {
     /// Chunk position including dimension.
     pub pos: ChunkPos,
     /// Persisted Bedrock data observed in this chunk.
@@ -31,7 +31,7 @@ pub struct ChunkCompatibilitySummary {
 
 /// Aggregate compatibility information derived from one complete world storage scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorldCompatibilityReport {
+pub struct CompatibilityReport {
     /// Baseline storage facts inferred from the selected physical world container.
     pub world: WorldCapabilities,
     /// Worst safety level observed across the scanned world.
@@ -79,10 +79,10 @@ pub struct WorldCompatibilityReport {
     /// Counts grouped by actual persisted SubChunk version.
     pub subchunk_versions: BTreeMap<String, usize>,
     /// Optional per-chunk summaries retained by the scan.
-    pub chunks: Vec<ChunkCompatibilitySummary>,
+    pub chunks: Vec<ChunkSummary>,
 }
 
-impl WorldCompatibilityReport {
+impl CompatibilityReport {
     /// Returns whether any future/unknown SubChunk representation was observed.
     #[must_use]
     pub const fn has_future_data(&self) -> bool {
@@ -109,12 +109,12 @@ impl WorldCompatibilityReport {
     }
 }
 
-/// Scans raw world storage once and derives world/chunk data information.
-pub fn scan_world_compatibility_blocking(
+/// Scans raw world storage once and derives world/chunk compatibility information.
+pub fn scan_compatibility(
     storage: &dyn WorldStorage,
     format: WorldFormat,
     options: StorageReadOptions,
-) -> Result<WorldCompatibilityReport> {
+) -> Result<CompatibilityReport> {
     let baseline = format.capabilities();
     let mut chunk_records = BTreeMap::<ChunkPos, Vec<ChunkRecord>>::new();
     let mut legacy_terrain_lengths = BTreeMap::<ChunkPos, usize>::new();
@@ -295,7 +295,7 @@ pub fn scan_world_compatibility_blocking(
             CompatibilityLevel::Corrupt => corrupt_chunks = corrupt_chunks.saturating_add(1),
         }
         compatibility = worst_compatibility(compatibility, capabilities.compatibility);
-        chunks.push(ChunkCompatibilitySummary {
+        chunks.push(ChunkSummary {
             pos,
             capabilities,
             legacy_terrain_payload_len,
@@ -316,7 +316,7 @@ pub fn scan_world_compatibility_blocking(
 
     chunks.sort_by_key(|entry| (entry.pos.dimension.id(), entry.pos.x, entry.pos.z));
     let chunks_scanned = chunks.len();
-    Ok(WorldCompatibilityReport {
+    Ok(CompatibilityReport {
         world: baseline,
         compatibility,
         actor_storage,
@@ -384,8 +384,8 @@ const fn worst_compatibility(
 mod tests {
     use super::*;
     use crate::chunk::{ActorUid, Dimension};
-    use crate::storage::{MemoryStorage, StorageBatch};
     use crate::entity::encode_actor_digest_ids;
+    use crate::storage::{MemoryStorage, StorageBatch};
 
     #[test]
     fn mixed_actor_and_future_subchunk_are_reported() {
@@ -410,7 +410,7 @@ mod tests {
         );
         storage.write_batch(&batch).expect("seed storage");
 
-        let report = scan_world_compatibility_blocking(
+        let report = scan_compatibility(
             &storage,
             WorldFormat::LevelDb,
             StorageReadOptions::default(),
@@ -449,7 +449,7 @@ mod tests {
         batch.put(uid.storage_key(), Bytes::from_static(b"actor"));
         storage.write_batch(&batch).expect("seed actor links");
 
-        let report = scan_world_compatibility_blocking(
+        let report = scan_compatibility(
             &storage,
             WorldFormat::LevelDb,
             StorageReadOptions::default(),
@@ -485,7 +485,7 @@ mod tests {
         );
         storage.write_batch(&batch).expect("seed legacy terrain");
 
-        let report = scan_world_compatibility_blocking(
+        let report = scan_compatibility(
             &storage,
             WorldFormat::LevelDbLegacyTerrain,
             StorageReadOptions::default(),
