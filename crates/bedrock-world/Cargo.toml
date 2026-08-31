@@ -30,10 +30,6 @@ include = [
     "benches/**/*.rs",
 ]
 
-[lib]
-name = "bedrock_world"
-path = "src/bedrock_world.rs"
-
 [package.metadata.docs.rs]
 all-features = true
 
