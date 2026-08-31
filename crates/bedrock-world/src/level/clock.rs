@@ -1,26 +1,27 @@
-//! Bedrock world clock metadata stored in `level.dat`.
+//! Minecraft Bedrock world clock metadata stored in `level.dat`.
 //!
-//! Minecraft Bedrock persists the visible day/night clock in `Time`, the game-tick counter in
-//! `currentTick`, and the daylight-cycle gamerule in `dodaylightcycle`. This module keeps those
-//! fields behind a typed public API so callers do not duplicate raw NBT field handling.
+//! Bedrock persists the visible world time in `Time`, the authoritative game-tick counter in
+//! `currentTick`, and daylight-cycle progression in the `dodaylightcycle` gamerule. This module is
+//! the single typed representation of those fields; higher-level world handles should delegate here
+//! instead of duplicating NBT handling.
 
 use super::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use std::path::Path;
 
-/// Typed Bedrock world clock metadata persisted in `level.dat`.
+/// Minecraft Bedrock world clock state persisted in `level.dat`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BedrockWorldClock {
-    /// Visible world time stored in `Time`.
+pub struct WorldClock {
+    /// Visible world time stored in the `Time` field, measured in game ticks.
     pub time: i64,
-    /// Monotonic world/game tick counter stored in `currentTick`.
+    /// Authoritative world tick counter stored in `currentTick`.
     pub current_tick: i64,
     /// Whether the `dodaylightcycle` gamerule advances [`Self::time`].
     pub daylight_cycle: bool,
 }
 
-impl Default for BedrockWorldClock {
+impl Default for WorldClock {
     fn default() -> Self {
         Self {
             time: 0,
@@ -30,11 +31,10 @@ impl Default for BedrockWorldClock {
     }
 }
 
-impl BedrockWorldClock {
+impl WorldClock {
     /// Advances one authoritative world tick.
     ///
-    /// `currentTick` always advances. `Time` advances only while daylight cycling is enabled,
-    /// matching the persisted Bedrock gamerule semantics.
+    /// `currentTick` always advances. `Time` advances only while the daylight cycle is enabled.
     pub fn advance(&mut self) {
         self.current_tick = self.current_tick.saturating_add(1);
         if self.daylight_cycle {
@@ -44,11 +44,11 @@ impl BedrockWorldClock {
 }
 
 impl LevelDatDocument {
-    /// Reads `Time`, `currentTick`, and `dodaylightcycle` from this document.
+    /// Reads the persisted Bedrock world clock from this `level.dat` document.
     ///
-    /// Missing fields use Bedrock-compatible creation defaults. Numeric fields accept historical
-    /// Byte/Short/Int/Long representations so old worlds remain readable without migration.
-    pub fn world_clock(&self) -> Result<BedrockWorldClock> {
+    /// Missing fields use Bedrock-compatible creation defaults. Historical integer widths are
+    /// accepted so older worlds remain readable without a migration pass.
+    pub fn clock(&self) -> Result<WorldClock> {
         let NbtTag::Compound(root) = &self.root else {
             return Err(BedrockWorldError::CorruptWorld(
                 "level.dat root is not a compound".to_string(),
@@ -71,15 +71,15 @@ impl LevelDatDocument {
             .transpose()?
             .unwrap_or(true);
 
-        Ok(BedrockWorldClock {
+        Ok(WorldClock {
             time,
             current_tick,
             daylight_cycle,
         })
     }
 
-    /// Replaces the typed world-clock fields while preserving all unrelated `level.dat` metadata.
-    pub fn set_world_clock(&mut self, clock: BedrockWorldClock) -> Result<()> {
+    /// Replaces the persisted clock fields while preserving unrelated `level.dat` metadata.
+    pub fn set_clock(&mut self, clock: WorldClock) -> Result<()> {
         let NbtTag::Compound(root) = &mut self.root else {
             return Err(BedrockWorldError::CorruptWorld(
                 "level.dat root is not a compound".to_string(),
@@ -95,17 +95,17 @@ impl LevelDatDocument {
     }
 }
 
-/// Reads typed world-clock metadata from an existing Bedrock `level.dat`.
-pub fn read_level_dat_world_clock(path: &Path) -> Result<BedrockWorldClock> {
-    read_level_dat_document(path)?.world_clock()
+/// Reads the typed Bedrock world clock from an existing `level.dat` file.
+pub fn read_clock(path: &Path) -> Result<WorldClock> {
+    read_level_dat_document(path)?.clock()
 }
 
-/// Atomically updates only the world-clock fields in an existing Bedrock `level.dat`.
+/// Atomically updates only the clock fields in an existing `level.dat` file.
 ///
-/// The complete document is parsed and rewritten so unknown/newer metadata remains preserved.
-pub fn write_level_dat_world_clock(path: &Path, clock: BedrockWorldClock) -> Result<()> {
+/// The complete document is round-tripped so unknown and newer metadata remains preserved.
+pub fn write_clock(path: &Path, clock: WorldClock) -> Result<()> {
     let mut document = read_level_dat_document(path)?;
-    document.set_world_clock(clock)?;
+    document.set_clock(clock)?;
     write_level_dat_document(path, &document)
 }
 
@@ -139,7 +139,7 @@ mod tests {
     use indexmap::IndexMap;
 
     #[test]
-    fn world_clock_accepts_historical_numeric_widths() {
+    fn clock_accepts_historical_numeric_widths() {
         let root = IndexMap::from([
             ("Time".to_string(), NbtTag::Int(6000)),
             ("currentTick".to_string(), NbtTag::Long(42)),
@@ -147,8 +147,8 @@ mod tests {
         ]);
         let document = LevelDatDocument::new(10, NbtTag::Compound(root));
         assert_eq!(
-            document.world_clock().expect("clock"),
-            BedrockWorldClock {
+            document.clock().expect("clock"),
+            WorldClock {
                 time: 6000,
                 current_tick: 42,
                 daylight_cycle: false,
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn advance_keeps_current_tick_running_when_daylight_is_frozen() {
-        let mut clock = BedrockWorldClock {
+        let mut clock = WorldClock {
             time: 13000,
             current_tick: 99,
             daylight_cycle: false,
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn set_world_clock_preserves_unrelated_level_metadata() {
+    fn set_clock_preserves_unrelated_level_metadata() {
         let mut root = IndexMap::new();
         root.insert(
             "LevelName".to_string(),
@@ -177,7 +177,7 @@ mod tests {
         );
         let mut document = LevelDatDocument::new(10, NbtTag::Compound(root));
         document
-            .set_world_clock(BedrockWorldClock {
+            .set_clock(WorldClock {
                 time: 123,
                 current_tick: 456,
                 daylight_cycle: true,

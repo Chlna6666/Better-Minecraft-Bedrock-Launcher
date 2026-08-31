@@ -27,7 +27,6 @@ mod subchunk_numeric;
 mod subchunk_upgrade;
 pub(crate) mod surface;
 mod surface_map;
-mod world_clock;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use handle::*;
