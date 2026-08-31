@@ -12,16 +12,6 @@ mod level_chunk;
 mod subchunk;
 mod subchunk_storage;
 mod subchunk_upgrade;
-#[path = "subchunk/v0.rs"]
-mod subchunk_v0;
-#[path = "subchunk/v1.rs"]
-mod subchunk_v1;
-#[path = "subchunk/v2_v7.rs"]
-mod subchunk_v2_v7;
-#[path = "subchunk/v8.rs"]
-mod subchunk_v8;
-#[path = "subchunk/v9.rs"]
-mod subchunk_v9;
 
 /// Bedrock LevelDB chunk and world-record keys.
 pub mod key;
