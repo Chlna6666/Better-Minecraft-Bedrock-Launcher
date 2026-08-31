@@ -12,6 +12,11 @@ mod level_chunk;
 mod subchunk;
 mod subchunk_storage;
 mod subchunk_upgrade;
+mod v0;
+mod v1;
+mod v2_v7;
+mod v8;
+mod v9;
 
 /// Bedrock LevelDB chunk and world-record keys.
 pub mod key;
