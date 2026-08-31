@@ -65,6 +65,7 @@ use uuid::Uuid;
 use winit::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 
 mod action_bindings;
+mod composite_layer;
 mod content_mask;
 pub(crate) mod debug_visualization;
 #[cfg(test)]
