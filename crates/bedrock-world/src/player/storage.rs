@@ -6,7 +6,7 @@
 
 use super::level_dat::read_level_dat_player;
 use super::local_player::read_local_player_with_level;
-use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::Result;
 use crate::level::LevelDatDocument;
 use crate::player::PlayerData;
@@ -120,7 +120,7 @@ pub fn inspect_player_storage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use crate::nbt::{NbtTag, serialize_root_nbt};
     use crate::player::PlayerId;
     use indexmap::IndexMap;
