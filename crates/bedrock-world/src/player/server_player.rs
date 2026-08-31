@@ -4,7 +4,7 @@
 //! that a `player_*` suffix is an Xbox XUID or valid UTF-8. The older string-suffix helpers remain for
 //! callers that already have a textual Bedrock player key.
 
-use crate::database::{StorageBatch, WorldStorage};
+use crate::storage::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::level::LevelDatDocument;
 use crate::nbt::{NbtTag, parse_root_nbt, serialize_root_nbt};
@@ -166,7 +166,7 @@ pub fn delete_server_player(storage: &dyn WorldStorage, id: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::MemoryStorage;
+    use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
 
     fn player_nbt(name: &str) -> NbtTag {
