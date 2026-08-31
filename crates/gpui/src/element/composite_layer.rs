@@ -1,13 +1,7 @@
 use crate::{
     AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Window, px,
+    LayoutId, Pixels, Window,
 };
-
-/// Gaussian sigma used only to route a retained composite layer through the existing isolated
-/// element-filter target. At this scale the packed Gaussian kernel is an identity kernel: only the
-/// center sample has a non-zero weight. The source is therefore preserved while the renderer can
-/// reuse the same retained filtered target for composite-only animation frames.
-const COMPOSITE_LAYER_IDENTITY_SIGMA: f32 = 1.0 / 4096.0;
 
 /// Extension trait for promoting an arbitrary GPUI subtree into one retained compositor layer.
 ///
@@ -19,7 +13,8 @@ const COMPOSITE_LAYER_IDENTITY_SIGMA: f32 = 1.0 / 4096.0;
 pub trait CompositeLayerExt: IntoElement + Sized + 'static {
     /// Capture this element's complete painted subtree into a retained compositor layer.
     ///
-    /// Place renderer-owned animations *outside* this wrapper, for example:
+    /// The capture is tightened to actual pixel-producing child operations rather than this
+    /// element's layout box. Place renderer-owned animations *outside* this wrapper, for example:
     /// `element.composite_layer().with_animation(...with_property(...), |element, _| element)`.
     fn composite_layer(self) -> CompositeLayerElement<Self> {
         CompositeLayerElement {
@@ -31,7 +26,7 @@ pub trait CompositeLayerExt: IntoElement + Sized + 'static {
 impl<E: IntoElement + Sized + 'static> CompositeLayerExt for E {}
 
 /// An element that preserves its child's layout while capturing the painted subtree into one
-/// retained composite target.
+/// retained zero-filter composite target.
 pub struct CompositeLayerElement<E> {
     element: Option<E>,
 }
@@ -94,7 +89,7 @@ impl<E: IntoElement + 'static> Element for CompositeLayerElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_element_blur(bounds, px(COMPOSITE_LAYER_IDENTITY_SIGMA), |window| {
+        window.paint_composite_layer(bounds, |window| {
             element.paint(window, cx);
         });
     }
