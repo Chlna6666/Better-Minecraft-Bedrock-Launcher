@@ -48,7 +48,7 @@ BedrockWorldChunkResult
 
 ### 同步与异步
 
-`bedrock-world` 的底层 LevelDB/NBT/SubChunk 操作以同步实现为 canonical API。同步函数和方法使用短语义名，不添加 `_blocking`：
+`bedrock-world` 的底层 LevelDB/NBT/SubChunk 操作以同步实现为 canonical API。默认同步函数和方法使用短语义名，不添加 `_blocking` 或 `_sync`：
 
 ```rust
 world.chunk(pos)
@@ -61,14 +61,19 @@ world.read_level_dat()
 world.apply_block_edits(...)
 ```
 
-只有 `tokio::task::spawn_blocking` 等异步适配器才添加 `_async`：
+异步 API 可以显式使用 `_async` 表达异步边界；这不是实现细节噪音，因为它区分了返回 `Future` 的另一套调用语义：
 
 ```rust
 world.chunk_async(pos).await
 world.players_async().await
+world.read_level_dat_async().await
 ```
 
-不得让 async wrapper 占据短名、迫使同步核心使用 `_blocking`。
+也允许在职责天然独立时使用专门的异步类型或 facade，但不要为了隐藏 `async` 强行制造额外层级。关键规则是：**默认同步 API 不使用 `_blocking`；异步 API 可以使用 `_async`。**
+
+如果 async 实现只是 `tokio::task::spawn_blocking` 适配同步核心，文档必须明确它是异步适配器而不是原生异步 LevelDB I/O。
+
+读取可以提供异步 API；权威写入不得因为“异步方便”绕开 world mutation / transaction 边界。后台读取出的旧快照在写回前必须经过源状态/版本验证，避免 lost update。
 
 ### Getter、集合与谓词
 
@@ -102,10 +107,22 @@ audit_world_integrity_blocking(...)
 
 ```rust
 prepare_block_edits(..., conditions, options)
-audit_world_integrity(..., options)
+audit(..., options)
 ```
 
 条件本身使用领域类型表达，例如 `BlockStateCondition`，不要把条件内容复制到函数名。
+
+## 玩家与世界写入边界
+
+`player` 是公开 Minecraft Bedrock 领域模块，不是 `world` 下的零散 helper 集合。与玩家有关的记录来源、解析、枚举、saved-item 检查和持久化规则应优先归入 `player/`。
+
+Bedrock 玩家可能来自 `level.dat.Player`、`~local_player` 和 `player_*`。读取可以同步或异步并行，但写入必须遵守以下规则：
+
+- `~local_player`、`player_*`、地图、chunk、entity 等同属 LevelDB 的修改应能够进入同一个 `WorldTransaction` / `StorageBatch`；
+- `PlayerData` 必须保留读取时的原始 source snapshot，提交修改时验证当前存储仍与该 snapshot 一致，旧异步读取结果不得静默覆盖较新的玩家数据；
+- `level.dat.Player` 不属于 LevelDB，不能伪装成与 LevelDB 同一物理原子事务；涉及它的移动/写入必须显式描述跨存储协调顺序、冲突检测和中断恢复语义；
+- UI 或后台任务不得直接拿旧 `PlayerData` 调低层 raw writer 覆盖 authoritative storage；
+- crate 内部 mutation lock 只能协调同一个进程/`World` 体系内的写入，不能宣称可以解决外部 Minecraft 进程同时打开世界造成的竞争。
 
 ## 禁止实现细节式命名
 
@@ -177,6 +194,22 @@ Minecraft world、chunk、storage、editor、query、renderer 等功能模块不
 - BMCBL 应用、`bedrock-render`、测试、bench、examples、文档及其它 workspace 调用点必须同批迁移；
 - 外部 dev 使用方（例如 Calcite）在新的 `bedrock-world` revision 落地后同步升级，不通过兼容层维持旧调用。
 
+## 公共 API 文档
+
+所有 public type、trait、enum variant、field（当 field 本身 public）、function 和 method 都必须说明稳定语义，而不是只把名称改写成一句英文。
+
+涉及存储/修改的 API 文档至少应覆盖适用项：
+
+- 对应的 Minecraft Bedrock 记录或文件来源；
+- 是否只读、是否修改 LevelDB、是否修改 `level.dat`；
+- 是否保留未知/未来字段与原始 bytes；
+- 原子性边界以及是否参与 `WorldTransaction`；
+- 并发冲突/lost-update 保护；
+- 版本转换是否发生，若不发生要明确说明；
+- `# Errors` 中列出有业务意义的错误类别。
+
+禁止 `/// Get X.`、`/// Put X.`、`/// Foo blocking.` 这类没有提供任何额外契约的信息。
+
 ## 审计与验证门槛
 
 每轮命名整改至少检查：
@@ -198,7 +231,7 @@ bedrock_world::database
 
 搜索结果必须逐项判断，不能机械替换 Minecraft 自身术语或 Rust 标准接口。
 
-修改完成后需要同时验证：
+修改完成后需要验证：
 
 1. `bedrock-world` 默认 feature；
 2. `bedrock-world` 的 `bedrock-leveldb` feature；
@@ -207,5 +240,7 @@ bedrock_world::database
 5. `bedrock-render` 及其它 workspace 调用方；
 6. 测试/bench/examples；
 7. 对旧 symbol/path 再搜索，确认没有残留兼容入口。
+
+当前命名重构阶段的默认 CI 门槛为 **Linux Rust 1.95**。除非改动涉及 Windows 专有实现或用户另行要求，不需要等待 Windows job 才继续下一批。
 
 编译通过只说明类型层一致；Minecraft 数据语义变更还必须保持原始 Bedrock 表示、未知记录保留策略、版本边界和写入原子性不变。
