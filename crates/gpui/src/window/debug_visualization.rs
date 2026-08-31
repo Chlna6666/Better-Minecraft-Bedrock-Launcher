@@ -2,24 +2,33 @@ use super::*;
 use crate::{AbsoluteLength, Length, Timer, rgb};
 
 const SURFACE_FLASH_HOLD: Duration = Duration::from_millis(90);
+const ELEMENT_UPDATE_HOLD: Duration = Duration::from_millis(140);
 
 /// Window-scoped visual diagnostics used by GUI debugging tools.
 ///
-/// These options deliberately add extra paint work and may force full-window presentation. They
-/// should only be enabled while diagnosing rendering or layout behavior.
+/// These options deliberately add extra paint work. They should only be enabled while diagnosing
+/// rendering, caching, or layout behavior.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WindowDebugVisualization {
     /// Flash the whole window whenever GPUI produces a new painted surface frame.
     pub flash_surface_updates: bool,
     /// Draw the box model and clipping boundary for styled elements.
     pub show_layout_bounds: bool,
+    /// Outline styled elements whose paint code actually executes in the current frame.
+    ///
+    /// Retained/cached child elements are not traversed and therefore remain unhighlighted. This
+    /// makes the overlay useful for spotting a cache miss that repaints an entire page subtree.
+    pub show_element_updates: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct WindowDebugVisualizationRuntime {
     options: WindowDebugVisualization,
     surface_flash_generation: u64,
+    element_update_generation: u64,
+    overlay_generation: u64,
     flash_this_frame: bool,
+    element_update_painted_this_frame: bool,
     cleanup_pending: bool,
     cleanup_this_frame: bool,
 }
@@ -48,7 +57,11 @@ impl Window {
             if runtime.options != options {
                 runtime.options = options;
                 runtime.surface_flash_generation = runtime.surface_flash_generation.wrapping_add(1);
+                runtime.element_update_generation =
+                    runtime.element_update_generation.wrapping_add(1);
+                runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
                 runtime.flash_this_frame = false;
+                runtime.element_update_painted_this_frame = false;
                 runtime.cleanup_pending = false;
                 runtime.cleanup_this_frame = false;
             }
@@ -73,8 +86,9 @@ impl Window {
     }
 
     /// Prepares per-frame visual diagnostics and reports whether this frame must present the full
-    /// window. Full presentation is intentional here: layout outlines can span the entire tree and
-    /// a surface flash is defined as a window-wide signal.
+    /// window. Layout outlines and surface flashing intentionally require full presentation. The
+    /// element-update overlay does not: it follows the real dirty frame so it does not turn a local
+    /// update into a full-window redraw while it is being measured.
     pub(super) fn begin_debug_visualization_frame(&mut self, cx: &mut App) -> bool {
         let window_id = self.handle.window_id().as_u64();
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
@@ -89,10 +103,17 @@ impl Window {
 
             runtime.cleanup_this_frame = runtime.cleanup_pending;
             runtime.cleanup_pending = false;
-            runtime.flash_this_frame =
-                runtime.options.flash_surface_updates && !runtime.cleanup_this_frame;
+            runtime.element_update_painted_this_frame = false;
+            runtime.flash_this_frame = runtime.options.flash_surface_updates
+                && !runtime.cleanup_this_frame;
+
             if runtime.flash_this_frame {
                 runtime.surface_flash_generation = runtime.surface_flash_generation.wrapping_add(1);
+                runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
+            }
+            if runtime.options.show_element_updates && !runtime.cleanup_this_frame {
+                runtime.element_update_generation =
+                    runtime.element_update_generation.wrapping_add(1);
             }
 
             requires_full_redraw = runtime.options.show_layout_bounds
@@ -135,8 +156,9 @@ impl Window {
         ));
     }
 
-    /// Schedules a single cleanup frame after the latest flash. A newer real surface update bumps
-    /// the generation and supersedes older cleanup timers, avoiding a timer-driven flash loop.
+    /// Schedules one cleanup frame after the newest debug overlay. Cleanup frames deliberately do
+    /// not call [`Window::refresh`]: doing so would set `force_view_cache_refresh` and make this
+    /// diagnostic manufacture the cache misses it is intended to reveal.
     pub(super) fn finish_debug_visualization_frame(&mut self, cx: &mut App) {
         let window_id = self.handle.window_id().as_u64();
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
@@ -150,35 +172,44 @@ impl Window {
         else {
             return;
         };
-        if !runtime.flash_this_frame {
+        if !runtime.flash_this_frame && !runtime.element_update_painted_this_frame {
             return;
         }
 
-        let generation = runtime.surface_flash_generation;
+        let generation = runtime.overlay_generation;
+        let hold = if runtime.element_update_painted_this_frame {
+            ELEMENT_UPDATE_HOLD.max(SURFACE_FLASH_HOLD)
+        } else {
+            SURFACE_FLASH_HOLD
+        };
         let handle = self.handle;
         cx.spawn(async move |cx| {
-            Timer::after(SURFACE_FLASH_HOLD).await;
+            Timer::after(hold).await;
             let _ = cx.update(|cx| {
                 if !cx.has_global::<WindowDebugVisualizationRegistry>() {
                     return;
                 }
 
-                let mut should_refresh = false;
+                let mut should_schedule = false;
                 cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
                     let Some(runtime) = registry.windows.get_mut(&window_id) else {
                         return;
                     };
-                    if runtime.options.flash_surface_updates
-                        && runtime.surface_flash_generation == generation
+                    if runtime.overlay_generation == generation
+                        && (runtime.options.flash_surface_updates
+                            || runtime.options.show_element_updates)
                     {
                         runtime.cleanup_pending = true;
-                        should_refresh = true;
+                        should_schedule = true;
                     }
                 });
 
-                if should_refresh {
+                if should_schedule {
                     let _ = ignore_window_not_found(handle.update(cx, |_root, window, _cx| {
-                        window.refresh();
+                        // Schedule a diagnostic cleanup frame without invalidating retained view
+                        // caches. `Window::refresh()` would force every cached AnyView to miss.
+                        window.invalidator.set_dirty(true);
+                        window.schedule_dirty_frame();
                     }));
                 }
             });
@@ -191,9 +222,13 @@ pub(crate) fn paint_layout_bounds(
     style: &Style,
     bounds: Bounds<Pixels>,
     window: &mut Window,
-    cx: &App,
+    cx: &mut App,
 ) {
-    if !window.debug_visualization(cx).show_layout_bounds || bounds.is_empty() {
+    let options = window.debug_visualization(cx);
+    if options.show_element_updates {
+        paint_element_update_bounds(bounds, window, cx);
+    }
+    if !options.show_layout_bounds || bounds.is_empty() {
         return;
     }
 
@@ -229,6 +264,45 @@ pub(crate) fn paint_layout_bounds(
     if let Some(mask) = style.overflow_mask(bounds, rem_size) {
         paint_outline(window, mask.bounds, 0xff453a, 0.98);
     }
+}
+
+/// Marks a styled element whose paint path really executed this frame. A subtree restored through
+/// `reuse_paint` never calls `Style::paint`, so it does not produce these outlines.
+fn paint_element_update_bounds(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+    if bounds.is_empty() {
+        return;
+    }
+    let window_id = window.handle.window_id().as_u64();
+    if !cx.has_global::<WindowDebugVisualizationRegistry>() {
+        return;
+    }
+
+    let mut generation = None;
+    cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+        let Some(runtime) = registry.windows.get_mut(&window_id) else {
+            return;
+        };
+        if !runtime.options.show_element_updates || runtime.cleanup_this_frame {
+            return;
+        }
+        if !runtime.element_update_painted_this_frame {
+            runtime.element_update_painted_this_frame = true;
+            runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
+        }
+        generation = Some(runtime.element_update_generation);
+    });
+
+    let Some(generation) = generation else {
+        return;
+    };
+    // Alternate red/orange per real draw frame. A continuously repainting subtree visibly pulses,
+    // while retained children stay completely unoutlined.
+    let (hex, alpha) = if generation & 1 == 0 {
+        (0xff3b30, 0.94)
+    } else {
+        (0xff9f0a, 0.94)
+    };
+    paint_outline(window, bounds, hex, alpha);
 }
 
 fn resolve_margin(
