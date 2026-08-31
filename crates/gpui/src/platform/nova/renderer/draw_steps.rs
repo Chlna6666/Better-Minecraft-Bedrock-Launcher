@@ -16,9 +16,9 @@ pub(super) struct PreparedElementBlurLayer {
     pub(super) source_texture_view: TextureViewId,
     pub(super) source_groups: Vec<PreparedBackdropBlurGroup>,
     pub(super) filter_passes: Vec<BackdropBlurRenderPass>,
-    /// The isolated source remains scratch storage, but the Gaussian ping/final targets are
-    /// persistent. Partial element refreshes therefore load and overwrite only their dirty
-    /// convolution footprint instead of clearing the complete targets.
+    /// Gaussian element filters retain ping/final targets across partial refreshes. Zero-filter
+    /// compositor layers render source pixels directly into the final retained target and submit
+    /// no filter passes at all.
     pub(super) preserve_filtered_pixels: bool,
 }
 
@@ -234,14 +234,10 @@ impl NovaRenderer {
         apply_filter_pass_scissors(&configs, self.current_size, passes);
     }
 
-    /// Builds isolated element-blur work using the same retained Gaussian contract as root
-    /// backdrop blur.
-    ///
-    /// The per-element scene-color texture is still scratch: it is cleared once and rebuilt in
-    /// draw order for the dependency halo required by the outer filter and any dirty nested
-    /// backdrops. Ping/final Gaussian textures are retained across frames. On a spatial partial
-    /// update only the dirty convolution footprint is rewritten; non-spatial invalidations rebuild
-    /// the complete filter chain.
+    /// Builds isolated element-filter work. Gaussian layers reconstruct their source scratch and
+    /// refresh retained ping/final targets. A zero-radius compositor layer instead renders the
+    /// complete dirty subtree directly into its retained final target, so it has no H/V passes and
+    /// no texture-copy stage. Composite-only animation is skipped above this path entirely.
     pub(super) fn prepare_element_blur_layers(
         &self,
         enabled: bool,
@@ -268,9 +264,9 @@ impl NovaRenderer {
 
         for range in self.frame_upload.blur_content_ranges() {
             // A retained child scene whose only changing state is the promoted final composite has
-            // identical source pixels and Gaussian output. Keep the cached isolated/filter targets
-            // and submit no offscreen work. Non-spatial cache/atlas/quality invalidation sets
-            // `force_full`, which deliberately disables this fast path.
+            // identical source pixels and Gaussian output. Keep the cached target and submit no
+            // offscreen work. Non-spatial cache/atlas/quality invalidation sets `force_full`, which
+            // deliberately disables this fast path.
             if composite_only.contains(&range.index) {
                 continue;
             }
@@ -280,23 +276,42 @@ impl NovaRenderer {
             else {
                 continue;
             };
-            let Some(outer_source_scissor) =
+
+            let direct_composite_target =
+                targets.direct_composite_target(config, frame_resource_index);
+            let direct_composite = direct_composite_target.is_some();
+            // A zero-filter layer is itself the retained pixel cache. Whenever its child pixels are
+            // genuinely dirty, rebuild the complete tight layer in-place. This deliberately avoids
+            // partial source preservation complexity while keeping the animation hot path at zero
+            // offscreen work.
+            let outer_source_scissor = if direct_composite {
+                blur_full_source_scissor(config, self.current_size)
+            } else {
                 blur_source_scissor_for_refresh(config, self.current_size, damage, force_full)
-            else {
+            };
+            let Some(outer_source_scissor) = outer_source_scissor else {
                 // The caller can conservatively select a layer whose effect bounds intersect a
-                // coarse dirty region. If the Gaussian dependency footprint itself is clean, the
-                // retained element result is already valid and no offscreen work is needed.
+                // coarse dirty region. If the actual dependency footprint itself is clean, the
+                // retained result is already valid and no offscreen work is needed.
                 continue;
             };
-            let Some(source_texture_view) = targets.isolated_source_texture_view(range.index)
-            else {
-                continue;
-            };
-            let Some(source_resource_set) =
-                targets.isolated_source_resource_set(range.index, frame_resource_index)
-            else {
-                continue;
-            };
+
+            let (source_texture_view, source_resource_set) =
+                if let Some(target) = direct_composite_target {
+                    (target.texture_view, target.source_resource_set)
+                } else {
+                    let Some(source_texture_view) =
+                        targets.isolated_source_texture_view(range.index)
+                    else {
+                        continue;
+                    };
+                    let Some(source_resource_set) =
+                        targets.isolated_source_resource_set(range.index, frame_resource_index)
+                    else {
+                        continue;
+                    };
+                    (source_texture_view, source_resource_set)
+                };
 
             let barrier_groups: Vec<_> = direct_backdrop_barriers(
                 &self.frame_upload,
@@ -323,10 +338,10 @@ impl NovaRenderer {
                 })
                 .collect();
 
-            // Every segment contributes to one accumulated isolated scene-color source. Use one
-            // common scissor for all segments so content drawn before a clean nested backdrop is
-            // still reconstructed where the outer filter needs it. Dirty nested filters may need a
-            // wider source halo than the outer filter, so include their dependency footprints too.
+            // Every segment contributes to one accumulated scene-color source. For a normal
+            // element filter this is isolated scratch storage; for a zero-filter compositor it is
+            // the retained final target itself. Zero-filter refreshes use the full tight layer
+            // scissor, while nested dirty filters can expand the source halo further if required.
             let source_scissor = dirty_barrier_configs
                 .iter()
                 .flat_map(|configs| configs.iter().copied())
@@ -384,21 +399,23 @@ impl NovaRenderer {
             apply_scissor_to_steps(&mut final_source_steps, source_scissor);
 
             let mut filter_passes = Vec::new();
-            backdrop_blur_render_passes_for_configs_with_source_into(
-                &self.pipelines,
-                targets,
-                frame_resource_index,
-                std::slice::from_ref(&config),
-                source_resource_set,
-                &mut filter_passes,
-            );
-            apply_filter_refresh_scissors(
-                std::slice::from_ref(&config),
-                self.current_size,
-                damage,
-                force_full,
-                &mut filter_passes,
-            );
+            if !direct_composite {
+                backdrop_blur_render_passes_for_configs_with_source_into(
+                    &self.pipelines,
+                    targets,
+                    frame_resource_index,
+                    std::slice::from_ref(&config),
+                    source_resource_set,
+                    &mut filter_passes,
+                );
+                apply_filter_refresh_scissors(
+                    std::slice::from_ref(&config),
+                    self.current_size,
+                    damage,
+                    force_full,
+                    &mut filter_passes,
+                );
+            }
             source_groups.push(PreparedBackdropBlurGroup {
                 source_steps: final_source_steps,
                 filter_passes: Vec::new(),
