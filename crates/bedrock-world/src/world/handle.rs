@@ -1,9 +1,9 @@
 //! High-level lazy world access built on top of the storage layer.
 //!
-//! The methods in this module are intentionally split into blocking and async
-//! forms. Blocking methods are the canonical implementation and are appropriate
-//! for CLI tools, background worker threads, and tests. Async methods are thin
-//! wrappers that offload the same work with `tokio::task::spawn_blocking`.
+//! Synchronous operations are the canonical implementation. Async APIs are adapters that offload
+//! blocking storage work without changing Minecraft Bedrock persistence semantics. All transactions
+//! created from clones of one world handle share a mutation lock so source validation and LevelDB
+//! batch commit cannot race with another transaction from the same handle family.
 
 use crate::chunk::{
     ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPos, BlockState,
@@ -94,13 +94,16 @@ pub enum WorldFormat {
 
 /// Lazy handle to a Minecraft Bedrock world folder.
 ///
-/// A handle stores the world path and a storage backend. It does not scan or
-/// parse the database until a query method is called.
+/// A handle stores the world path and a storage backend. It does not scan or parse LevelDB until a
+/// query method is called. Clones created by this type share one in-process mutation lock so staged
+/// transactions validate and commit in a single authoritative order. This lock does not coordinate
+/// an external Minecraft process or independently opened world handles.
 pub struct BedrockWorld<S = Arc<dyn WorldStorage>> {
     pub(super) path: PathBuf,
     pub(super) options: BedrockWorldOpenOptions,
     pub(super) storage: S,
     pub(super) format: WorldFormat,
+    pub(super) mutation_lock: Arc<Mutex<()>>,
 }
 
 /// Storage handle accepted by generic [`BedrockWorld`] methods.
@@ -178,6 +181,7 @@ impl BedrockWorld<Arc<dyn WorldStorage>> {
             options,
             storage,
             format,
+            mutation_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -202,6 +206,7 @@ impl BedrockWorld<Arc<dyn WorldStorage>> {
             options,
             storage,
             format: WorldFormat::LevelDb,
+            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -218,6 +223,7 @@ impl BedrockWorld<Arc<dyn WorldStorage>> {
             options,
             storage,
             format,
+            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -243,6 +249,7 @@ impl BedrockWorld<BedrockLevelDbStorage> {
                     options,
                     storage,
                     format,
+                    mutation_lock: Arc::new(Mutex::new(())),
                 })
             }
             WorldFormat::PocketChunksDat => Err(BedrockWorldError::UnsupportedChunkFormat(
@@ -268,6 +275,7 @@ where
             options,
             storage,
             format: WorldFormat::LevelDb,
+            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -284,6 +292,7 @@ where
             options,
             storage,
             format,
+            mutation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -310,18 +319,20 @@ where
         self.format
     }
 
-    /// Read level dat blocking.
+    /// Reads the current `level.dat` document from this world folder.
     pub fn read_level_dat_blocking(&self) -> Result<LevelDatDocument> {
         read_level_dat_document(&self.path.join("level.dat"))
     }
 
-    /// Write level dat blocking.
+    /// Replaces this world's `level.dat` document.
+    ///
+    /// This write is outside LevelDB and therefore outside [`WorldTransaction`] atomicity.
     pub fn write_level_dat_blocking(&self, document: &LevelDatDocument) -> Result<()> {
         self.ensure_writable()?;
         write_level_dat_document(&self.path.join("level.dat"), document)
     }
 
-    /// Compact the underlying world storage after writes.
+    /// Compacts the underlying world storage after writes.
     pub fn compact_storage_blocking(&self) -> Result<()> {
         self.ensure_writable()?;
         self.storage().compact()
@@ -338,26 +349,31 @@ where
     }
 
     // Chunk and terrain queries are implemented in chunk_queries.
-    /// Put raw record blocking.
+    /// Writes one exact raw chunk record directly to the storage backend.
     pub fn put_raw_record_blocking(&self, key: &ChunkKey, value: &[u8]) -> Result<()> {
         self.ensure_writable()?;
         self.storage().put(&key.encode(), value)
     }
 
-    /// Delete raw record blocking.
+    /// Deletes one exact raw chunk record directly from the storage backend.
     pub fn delete_raw_record_blocking(&self, key: &ChunkKey) -> Result<()> {
         self.ensure_writable()?;
         self.storage().delete(&key.encode())
     }
 
     #[must_use]
-    /// Starts a buffered world transaction.
+    /// Starts a buffered LevelDB transaction sharing this world's authoritative mutation boundary.
+    ///
+    /// Staged player, map, chunk, actor and raw-key changes can be committed in one backend batch.
+    /// `level.dat` is a separate file and is intentionally not part of this transaction.
     pub fn transaction(&self) -> WorldTransaction<'_, S> {
         WorldTransaction {
             storage: &self.storage,
             batch: StorageBatch::new(),
             read_only: self.options.read_only,
             actor_ownership: None,
+            preconditions: Vec::new(),
+            mutation_lock: self.mutation_lock.as_ref(),
         }
     }
 
@@ -369,7 +385,7 @@ where
     }
 }
 
-/// Batched raw record and player writes for a [`BedrockWorld`].
+/// Batched LevelDB mutations for a [`BedrockWorld`].
 mod transaction;
 
 pub use transaction::WorldTransaction;
