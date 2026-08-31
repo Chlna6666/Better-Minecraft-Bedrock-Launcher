@@ -4,8 +4,9 @@
 //! 82,176-byte terrain core instead of padding it to the later 83,200-byte LevelDB `LegacyTerrain`
 //! shape. Full Pocket world opening, including `entities.dat`, is composed by the world layer.
 
-use super::storage::{
-    StorageBatch, StorageReadOptions, StorageScanOutcome, StorageVisitorControl, WorldStorage,
+use super::{
+    StorageBatch, StorageReadOptions, StorageScanOutcome, StorageScanProgress, StorageVisitorControl,
+    WorldStorage,
 };
 use crate::chunk::{
     ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LEGACY_TERRAIN_VALUE_LEN,
@@ -284,7 +285,7 @@ fn emit_progress(options: &StorageReadOptions, outcome: StorageScanOutcome) {
     if let Some(progress) = &options.progress {
         let interval = options.pipeline.progress_interval.max(1);
         if outcome.visited.is_multiple_of(interval) {
-            progress.emit(super::storage::StorageScanProgress {
+            progress.emit(StorageScanProgress {
                 entries_seen: outcome.visited,
                 bytes_read: outcome.bytes_read,
             });

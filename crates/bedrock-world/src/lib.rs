@@ -61,8 +61,8 @@ pub mod nbt;
 /// `level.dat` document access and world-level metadata.
 pub mod level;
 
-/// Bedrock world database records, scanning and LevelDB-backed world storage.
-pub mod database;
+/// Raw Bedrock records, storage contracts and supported world-storage backends.
+pub mod storage;
 
 /// Bedrock world compatibility and integrity validation.
 pub mod integrity;
@@ -91,7 +91,6 @@ pub use chunk::{
     ActorDigestKey, ActorUid, Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
     Dimension, ParsedVillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat,
 };
-pub use database::*;
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub use integrity::{ChunkCapabilities, CompatibilityLevel};
 pub use item::ItemStack;
@@ -103,18 +102,11 @@ pub use query::{
     ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, WriteGuard,
     query_selection_stats_exact_blocking, rasterize_chunk_line,
 };
+pub use storage::*;
 pub use world::*;
 
 pub(crate) mod level_dat {
     pub(crate) use crate::level::{
         LevelDatDocument, read_level_dat_document, write_level_dat_document,
     };
-}
-
-pub(crate) mod storage {
-    pub(crate) use crate::database::*;
-
-    pub(crate) mod backend {
-        pub(crate) use crate::database::BedrockLevelDbStorage;
-    }
 }

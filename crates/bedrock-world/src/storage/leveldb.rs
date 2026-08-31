@@ -3,7 +3,7 @@
 use crate::error::{BedrockWorldError, Result};
 use std::path::Path;
 
-pub use super::storage::backend::BedrockLevelDbStorage;
+pub use super::backend::BedrockLevelDbStorage;
 
 #[cfg(feature = "bedrock-leveldb")]
 pub(crate) fn create_bedrock_leveldb(path: impl AsRef<Path>) -> Result<()> {
