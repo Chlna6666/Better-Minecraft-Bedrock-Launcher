@@ -18,6 +18,7 @@ pub struct DebugView {
     _i18n_subscription: Subscription,
     flash_surface_updates: bool,
     show_layout_bounds: bool,
+    show_element_updates: bool,
 }
 
 impl DebugView {
@@ -25,7 +26,7 @@ impl DebugView {
         let inner = cx.new(|cx| view::DebugView::new(window, cx));
         let i18n_subscription = cx.observe_global::<I18n>(|_this, cx| cx.notify());
         cx.on_release(|_, cx| {
-            apply_main_window_visual_debug(false, false, cx);
+            apply_main_window_visual_debug(false, false, false, cx);
         })
         .detach();
 
@@ -34,6 +35,7 @@ impl DebugView {
             _i18n_subscription: i18n_subscription,
             flash_surface_updates: false,
             show_layout_bounds: false,
+            show_element_updates: false,
         }
     }
 }
@@ -53,6 +55,7 @@ impl Render for DebugView {
 
         let flash_enabled = self.flash_surface_updates;
         let layout_enabled = self.show_layout_bounds;
+        let element_updates_enabled = self.show_element_updates;
         let flash_toggle = debug_toggle(
             "debug-flash-surface-updates",
             copy.flash_surface_updates,
@@ -67,6 +70,7 @@ impl Render for DebugView {
                 apply_main_window_visual_debug(
                     this.flash_surface_updates,
                     this.show_layout_bounds,
+                    this.show_element_updates,
                     cx,
                 );
                 cx.notify();
@@ -87,6 +91,28 @@ impl Render for DebugView {
                 apply_main_window_visual_debug(
                     this.flash_surface_updates,
                     this.show_layout_bounds,
+                    this.show_element_updates,
+                    cx,
+                );
+                cx.notify();
+            }),
+        );
+
+        let element_updates_toggle = debug_toggle(
+            "debug-show-element-updates",
+            copy.show_element_updates,
+            copy.show_element_updates_desc,
+            element_updates_enabled,
+            &colors,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.show_element_updates = !this.show_element_updates;
+                apply_main_window_visual_debug(
+                    this.flash_surface_updates,
+                    this.show_layout_bounds,
+                    this.show_element_updates,
                     cx,
                 );
                 cx.notify();
@@ -148,7 +174,8 @@ impl Render for DebugView {
                                 .flex_wrap()
                                 .gap(px(8.))
                                 .child(flash_toggle)
-                                .child(layout_toggle),
+                                .child(layout_toggle)
+                                .child(element_updates_toggle),
                         )
                         .child(
                             div()
@@ -173,6 +200,7 @@ impl Render for DebugView {
 fn apply_main_window_visual_debug(
     flash_surface_updates: bool,
     show_layout_bounds: bool,
+    show_element_updates: bool,
     cx: &mut App,
 ) {
     let main_window_id = cx.read_global(|debug: &DebugState, _cx| debug.main_window_id);
@@ -185,6 +213,7 @@ fn apply_main_window_visual_debug(
             WindowDebugVisualization {
                 flash_surface_updates,
                 show_layout_bounds,
+                show_element_updates,
             },
             cx,
         );
@@ -297,6 +326,8 @@ struct VisualDebugCopy {
     flash_surface_updates_desc: SharedString,
     show_layout_bounds: SharedString,
     show_layout_bounds_desc: SharedString,
+    show_element_updates: SharedString,
+    show_element_updates_desc: SharedString,
     legend: SharedString,
 }
 
@@ -309,6 +340,8 @@ impl VisualDebugCopy {
             flash_surface_updates_desc: t!("Debug.flash_surface_updates_desc"),
             show_layout_bounds: t!("Debug.show_layout_bounds"),
             show_layout_bounds_desc: t!("Debug.show_layout_bounds_desc"),
+            show_element_updates: t!("Debug.show_element_updates"),
+            show_element_updates_desc: t!("Debug.show_element_updates_desc"),
             legend: t!("Debug.visual_legend"),
         }
     }
