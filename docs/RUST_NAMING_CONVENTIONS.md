@@ -77,8 +77,12 @@ a rename. Token similarity alone is insufficient.
 ## Types and traits
 
 - Name a type for the value or capability it represents. Publicly re-exported
-  types may carry domain context, such as `WindowOptions`, `ImageRenderSize`, or
-  `BedrockWorldOpenOptions`.
+  types may carry domain context when callers genuinely need it, such as
+  `WindowOptions` or `ImageRenderSize`. Do not repeat a crate/module domain that
+  is already visible at the effective public path; in `bedrock_world::world`,
+  prefer `World` and `OpenOptions` over `BedrockWorld` and
+  `BedrockWorldOpenOptions` unless a broader re-export would make the shorter
+  name ambiguous.
 - Conventional suffixes such as `State`, `Context`, `Options`, `Config`,
   `Builder`, `Error`, and `Iterator` are valid when the type actually has that
   role. Do not replace them merely to avoid a suffix.
@@ -102,6 +106,88 @@ a rename. Token similarity alone is insufficient.
   getters omit `get_`; keyed lookup may use `get` and `get_mut`.
 - Name observable behavior, not the current codec, cache, thread, fallback, or
   algorithm used internally.
+
+## Sync and async APIs
+
+Synchronous domain APIs are the canonical default. Do not mark ordinary
+synchronous functions with `_blocking` or `_sync` merely because an async adapter
+also exists:
+
+```rust
+world.chunk(pos)?;
+world.player(id)?;
+world.read_level_dat()?;
+```
+
+When one semantic operation intentionally has both synchronous and asynchronous
+entry points, the asynchronous version may use `_async` so call sites clearly
+show that it returns a `Future`:
+
+```rust
+world.chunk(pos)?;
+world.chunk_async(pos).await?;
+```
+
+This convention applies across the BMCBL Rust workspace. Do not hide async
+behind an otherwise meaningless `io()` or `async_world()` facade solely to avoid
+an `_async` suffix.
+
+`blocking` remains appropriate for executor/runtime operations whose stable
+meaning is to schedule blocking work, such as `run_io_blocking` or
+`spawn_download_blocking`. That is an execution primitive, not a synchronous
+version of a domain operation.
+
+If an async API is only a `tokio::task::spawn_blocking` adapter over a synchronous
+implementation, document that fact. Do not imply that the underlying LevelDB,
+filesystem, FFI, or codec became native async I/O.
+
+## Domain terminology
+
+Use the real domain vocabulary before generic software-layer words. Minecraft
+code should prefer established Bedrock names such as `World`, `Dimension`,
+`Chunk`, `SubChunk`, `BlockState`, `BlockEntity`, `Biome`, `Actor`, `Player`,
+`Item`, `Structure`, `LevelDat`, and actual persisted record/key names.
+
+Do not replace those with architecture filler such as `Repository`, `Service`,
+`Manager`, `Controller`, `Helper`, or `Operations`. In `bedrock-world`, raw
+Bedrock records, storage contracts, and backend adapters belong to `storage`;
+the Mojang LevelDB engine itself belongs to `bedrock-leveldb`.
+
+Player parsing, record-source classification, saved-item compatibility, and
+player persistence semantics belong to the public `player` domain. `world`
+should contain world lifecycle and cross-domain coordination rather than a set of
+`world/player_*` helper modules.
+
+## Options and control flow
+
+Do not create families of functions whose names encode argument combinations,
+such as `with_options`, `with_control`, `if_*`, or `using_*`, when typed options
+or conditions can express the difference through one canonical operation.
+
+Reject sentence-shaped APIs such as:
+
+```rust
+prepare_block_edits_if_primary_states_match_blocking(...)
+audit_world_integrity_blocking(...)
+```
+
+Prefer an operation plus typed arguments:
+
+```rust
+prepare_block_edits(..., conditions, options)
+audit(..., options)
+```
+
+## Public API documentation
+
+Public API documentation must describe contracts, not merely restate names. For
+storage, parsing, mutation, or async APIs, document the applicable source format,
+read/write behavior, unknown-data preservation, transaction/atomicity boundary,
+conflict protection, version-conversion behavior, async adapter behavior, and
+meaningful error cases.
+
+Reject comments such as `Get X`, `Put X`, or `Foo blocking` when they add no
+contract information.
 
 ## Locals, fields, and tests
 
