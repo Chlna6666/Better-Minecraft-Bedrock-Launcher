@@ -1,0 +1,2 @@
+Debug.show_element_updates=要素の更新を表示
+Debug.show_element_updates_desc=このフレームで実際に Paint が実行された要素を赤／オレンジの枠で表示します。ページ切替時に画面全体が点滅する場合はページキャッシュがミスしています。枠のない静的サブツリーは通常 retained/cache が再利用されています。
