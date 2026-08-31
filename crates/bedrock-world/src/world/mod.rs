@@ -1,6 +1,6 @@
 //! High-level Minecraft Bedrock world lifecycle and data access.
 
-mod bedrock_world;
+mod handle;
 mod biome;
 mod biome_downgrade;
 mod biome_upgrade;
@@ -30,7 +30,7 @@ mod surface_map;
 mod world_clock;
 
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
-pub use bedrock_world::*;
+pub use handle::*;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use block_entities::ChunkBlockEntities;
