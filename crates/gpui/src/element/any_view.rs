@@ -7,6 +7,7 @@ use crate::{
     WeakEntity, div,
 };
 use crate::{Empty, Window};
+use crate::window::debug_visualization::ViewCacheDebugStatus;
 use anyhow::Result;
 use collections::FxHashSet;
 use refineable::Refineable;
@@ -309,6 +310,47 @@ impl Element for AnyView {
                         && self.progressive
                         && !self.critical
                         && window.draw_budget_exhausted();
+                    let can_reuse_prepaint = element_state
+                        .as_ref()
+                        .is_some_and(|state| window.can_reuse_prepaint(&state.prepaint_range));
+                    let can_reuse_paint = element_state
+                        .as_ref()
+                        .is_some_and(|state| window.can_reuse_paint(&state.paint_range));
+
+                    let cache_debug_status = match element_state.as_ref() {
+                        None => ViewCacheDebugStatus::MissCold,
+                        Some(state) if state.cache_key.bounds != bounds => {
+                            ViewCacheDebugStatus::MissBounds
+                        }
+                        Some(state) if state.cache_key.content_mask != content_mask => {
+                            ViewCacheDebugStatus::MissContentMask
+                        }
+                        Some(state) if state.cache_key.text_style != text_style => {
+                            ViewCacheDebugStatus::MissTextStyle
+                        }
+                        Some(state) if state.cache_key.fingerprint != cache_fingerprint => {
+                            ViewCacheDebugStatus::MissFingerprint
+                        }
+                        Some(_)
+                            if force_refresh && !can_reuse_refresh && !can_defer_dirty_view =>
+                        {
+                            ViewCacheDebugStatus::MissRefresh
+                        }
+                        Some(_) if view_dirty && !can_defer_dirty_view => {
+                            ViewCacheDebugStatus::MissDirty
+                        }
+                        Some(_) if !can_reuse_prepaint => {
+                            ViewCacheDebugStatus::MissPrepaintRange
+                        }
+                        Some(_) if !can_defer_dirty_view && !can_reuse_paint => {
+                            ViewCacheDebugStatus::MissPaintRange
+                        }
+                        Some(_) if can_defer_dirty_view => {
+                            ViewCacheDebugStatus::DeferredDirtyReuse
+                        }
+                        Some(_) => ViewCacheDebugStatus::Hit,
+                    };
+                    window.record_debug_view_cache_status(bounds, cache_debug_status, cx);
 
                     if let Some(mut element_state) = element_state
                         && element_state.cache_key.bounds == bounds
@@ -317,15 +359,19 @@ impl Element for AnyView {
                         && element_state.cache_key.fingerprint == cache_fingerprint
                         && (!force_refresh || can_reuse_refresh || can_defer_dirty_view)
                         && (!view_dirty || can_defer_dirty_view)
-                        && window.can_reuse_prepaint(&element_state.prepaint_range)
-                        && (can_defer_dirty_view
-                            || window.can_reuse_paint(&element_state.paint_range))
+                        && can_reuse_prepaint
+                        && (can_defer_dirty_view || can_reuse_paint)
                     {
                         if can_defer_dirty_view {
                             window.degrade_current_draw();
                         }
                         let prepaint_start = window.prepaint_index();
                         if !window.reuse_prepaint(element_state.prepaint_range.clone()) {
+                            window.record_debug_view_cache_status(
+                                bounds,
+                                ViewCacheDebugStatus::ReuseFailed,
+                                cx,
+                            );
                             window.degrade_current_draw();
                             return (None, element_state);
                         }
@@ -379,7 +425,7 @@ impl Element for AnyView {
         &mut self,
         global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         element: &mut Self::PrepaintState,
         window: &mut Window,
@@ -403,6 +449,11 @@ impl Element for AnyView {
                             });
                             window.refreshing = refreshing;
                         } else if !window.reuse_paint(element_state.paint_range.clone()) {
+                            window.record_debug_view_cache_status(
+                                bounds,
+                                ViewCacheDebugStatus::ReuseFailed,
+                                cx,
+                            );
                             window.degrade_current_draw();
                         }
 
@@ -434,12 +485,12 @@ impl<V: 'static + Render> IntoElement for Entity<V> {
 impl IntoElement for AnyView {
     type Element = Self;
 
-    fn into_element(self) -> Self::Element {
+    fn into_element(self) -> AnyView {
         self
     }
 }
 
-/// A weak, dynamically-typed view handle that does not prevent the view from being released.
+/// A weak, dynamically-typed handle to a view that does not prevent the view from being released.
 pub struct AnyWeakView {
     entity: AnyWeakEntity,
     render: fn(&AnyView, &mut Window, &mut App) -> AnyElement,
