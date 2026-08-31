@@ -9,4 +9,4 @@ pub use audit::{
     WorldIntegritySeverity, WorldIntegrityStatus, audit_world_integrity_blocking,
 };
 pub use compatibility::{ActorStorage, ChunkCapabilities, CompatibilityLevel, WorldCapabilities};
-pub use scan::{ChunkCompatibilitySummary, WorldCompatibilityReport, scan_world_compatibility_blocking};
+pub use scan::{ChunkSummary, CompatibilityReport, scan_compatibility};
