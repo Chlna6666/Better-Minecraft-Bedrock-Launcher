@@ -3,6 +3,7 @@ use crate::{AbsoluteLength, Length, Timer, rgb};
 
 const SURFACE_FLASH_HOLD: Duration = Duration::from_millis(90);
 const ELEMENT_UPDATE_HOLD: Duration = Duration::from_millis(140);
+const MAX_ELEMENT_PAINT_MARKERS: usize = 2048;
 const MAX_VIEW_CACHE_MARKERS: usize = 512;
 
 /// Why an [`AnyView`](crate::AnyView) cache entry was reused or rebuilt in the current frame.
@@ -32,11 +33,11 @@ pub struct WindowDebugVisualization {
     pub flash_surface_updates: bool,
     /// Draw the box model and clipping boundary for styled elements.
     pub show_layout_bounds: bool,
-    /// Outline styled elements whose paint code actually executes in the current frame and show
+    /// Outline elements whose paint lifecycle actually executes in the current frame and show
     /// cached-view hit/miss markers.
     ///
-    /// Retained/cached child elements are not traversed and therefore remain unhighlighted. This
-    /// makes the overlay useful for spotting a cache miss that repaints an entire page subtree.
+    /// A subtree restored through retained paint replay is not traversed, so its descendants do
+    /// not get repaint markers. Cached AnyView wrappers receive a cache-status outline on top.
     pub show_element_updates: bool,
 }
 
@@ -56,6 +57,7 @@ struct WindowDebugVisualizationRuntime {
     element_update_painted_this_frame: bool,
     cleanup_pending: bool,
     cleanup_this_frame: bool,
+    element_paint_markers: Vec<Bounds<Pixels>>,
     view_cache_markers: Vec<ViewCacheDebugMarker>,
 }
 
@@ -90,6 +92,7 @@ impl Window {
                 runtime.element_update_painted_this_frame = false;
                 runtime.cleanup_pending = false;
                 runtime.cleanup_this_frame = false;
+                runtime.element_paint_markers.clear();
                 runtime.view_cache_markers.clear();
             }
         });
@@ -110,6 +113,32 @@ impl Window {
             .get(&window_id)
             .map(|runtime| runtime.options)
             .unwrap_or_default()
+    }
+
+    /// Record one element whose paint lifecycle actually executes this frame. Called from the
+    /// type-erased Drawable lifecycle so custom Elements and canvas-like primitives are covered in
+    /// addition to styled divs.
+    pub(crate) fn record_debug_element_paint(&mut self, bounds: Bounds<Pixels>, cx: &mut App) {
+        if bounds.is_empty() || !cx.has_global::<WindowDebugVisualizationRegistry>() {
+            return;
+        }
+        let window_id = self.handle.window_id().as_u64();
+        cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+            let Some(runtime) = registry.windows.get_mut(&window_id) else {
+                return;
+            };
+            if !runtime.options.show_element_updates || runtime.cleanup_this_frame {
+                return;
+            }
+            if runtime.element_paint_markers.len() >= MAX_ELEMENT_PAINT_MARKERS {
+                return;
+            }
+            if !runtime.element_update_painted_this_frame {
+                runtime.element_update_painted_this_frame = true;
+                runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
+            }
+            runtime.element_paint_markers.push(bounds);
+        });
     }
 
     /// Record the result of one cached-view lookup. This is intentionally a no-op unless visual
@@ -163,6 +192,7 @@ impl Window {
             runtime.cleanup_this_frame = runtime.cleanup_pending;
             runtime.cleanup_pending = false;
             runtime.element_update_painted_this_frame = false;
+            runtime.element_paint_markers.clear();
             runtime.view_cache_markers.clear();
             runtime.flash_this_frame = runtime.options.flash_surface_updates
                 && !runtime.cleanup_this_frame;
@@ -190,7 +220,7 @@ impl Window {
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
             return;
         }
-        let (flash_this_frame, surface_flash_generation, markers) = {
+        let (flash_this_frame, surface_flash_generation, element_generation, elements, caches) = {
             let registry = cx.global::<WindowDebugVisualizationRegistry>();
             let Some(runtime) = registry.windows.get(&window_id) else {
                 return;
@@ -198,6 +228,8 @@ impl Window {
             (
                 runtime.flash_this_frame,
                 runtime.surface_flash_generation,
+                runtime.element_update_generation,
+                runtime.element_paint_markers.clone(),
                 runtime.view_cache_markers.clone(),
             )
         };
@@ -218,7 +250,16 @@ impl Window {
             ));
         }
 
-        for marker in markers {
+        let (element_hex, element_alpha) = if element_generation & 1 == 0 {
+            (0xff3b30, 0.92)
+        } else {
+            (0xff9f0a, 0.92)
+        };
+        for bounds in elements {
+            paint_outline(self, bounds, element_hex, element_alpha);
+        }
+
+        for marker in caches {
             let (hex, alpha) = cache_marker_color(marker.status);
             let edges = Edges {
                 top: px(2.0),
@@ -298,13 +339,9 @@ pub(crate) fn paint_layout_bounds(
     style: &Style,
     bounds: Bounds<Pixels>,
     window: &mut Window,
-    cx: &mut App,
+    cx: &App,
 ) {
-    let options = window.debug_visualization(cx);
-    if options.show_element_updates {
-        paint_element_update_bounds(bounds, window, cx);
-    }
-    if !options.show_layout_bounds || bounds.is_empty() {
+    if !window.debug_visualization(cx).show_layout_bounds || bounds.is_empty() {
         return;
     }
 
@@ -340,45 +377,6 @@ pub(crate) fn paint_layout_bounds(
     if let Some(mask) = style.overflow_mask(bounds, rem_size) {
         paint_outline(window, mask.bounds, 0xff453a, 0.98);
     }
-}
-
-/// Marks a styled element whose paint path really executed this frame. A subtree restored through
-/// `reuse_paint` never calls `Style::paint`, so it does not produce these outlines.
-fn paint_element_update_bounds(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-    if bounds.is_empty() {
-        return;
-    }
-    let window_id = window.handle.window_id().as_u64();
-    if !cx.has_global::<WindowDebugVisualizationRegistry>() {
-        return;
-    }
-
-    let mut generation = None;
-    cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
-        let Some(runtime) = registry.windows.get_mut(&window_id) else {
-            return;
-        };
-        if !runtime.options.show_element_updates || runtime.cleanup_this_frame {
-            return;
-        }
-        if !runtime.element_update_painted_this_frame {
-            runtime.element_update_painted_this_frame = true;
-            runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
-        }
-        generation = Some(runtime.element_update_generation);
-    });
-
-    let Some(generation) = generation else {
-        return;
-    };
-    // Alternate red/orange per real draw frame. A continuously repainting subtree visibly pulses,
-    // while retained children stay completely unoutlined.
-    let (hex, alpha) = if generation & 1 == 0 {
-        (0xff3b30, 0.94)
-    } else {
-        (0xff9f0a, 0.94)
-    };
-    paint_outline(window, bounds, hex, alpha);
 }
 
 fn cache_marker_color(status: ViewCacheDebugStatus) -> (u32, f32) {
