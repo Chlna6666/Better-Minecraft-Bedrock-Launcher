@@ -13,12 +13,15 @@ use super::{FontRun, LineLayout};
 pub(crate) struct LineLayoutCache {
     previous_frame: Mutex<FrameCache>,
     current_frame: RwLock<FrameCache>,
+    retained: Mutex<RetainedLayoutCache>,
     platform_text_system: Arc<dyn PlatformTextSystem>,
     frame_metrics: LineLayoutCacheMetrics,
 }
 
 const LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
 const LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER: usize = 4;
+const LINE_LAYOUT_CACHE_MAX_RETAINED_LINES: usize = 2_048;
+const LINE_LAYOUT_CACHE_MAX_RETAINED_WRAPPED_LINES: usize = 512;
 
 #[derive(Default)]
 struct FrameCache {
@@ -26,6 +29,12 @@ struct FrameCache {
     wrapped_lines: FxHashMap<Arc<CacheKey>, Arc<WrappedLineLayout>>,
     used_lines: Vec<Arc<CacheKey>>,
     used_wrapped_lines: Vec<Arc<CacheKey>>,
+}
+
+#[derive(Default)]
+struct RetainedLayoutCache {
+    lines: FxHashMap<Arc<CacheKey>, Arc<LineLayout>>,
+    wrapped_lines: FxHashMap<Arc<CacheKey>, Arc<WrappedLineLayout>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -84,6 +93,7 @@ impl LineLayoutCache {
         Self {
             previous_frame: Mutex::default(),
             current_frame: RwLock::default(),
+            retained: Mutex::default(),
             platform_text_system,
             frame_metrics: LineLayoutCacheMetrics::default(),
         }
@@ -144,23 +154,37 @@ impl LineLayoutCache {
     pub fn clear(&self) {
         let mut previous_frame = self.previous_frame.lock();
         let mut current_frame = self.current_frame.write();
+        let mut retained = self.retained.lock();
         previous_frame.clear();
         current_frame.clear();
+        retained.clear();
     }
 
     pub fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
         let mut previous_frame = self.previous_frame.lock();
         let mut current_frame = self.current_frame.write();
+        let mut retained = self.retained.lock();
         previous_frame.trim_retained_capacity_for_level(level);
         current_frame.trim_retained_capacity_for_level(level);
+        retained.trim_retained_capacity_for_level(level);
     }
 
     pub fn finish_frame(&self) -> LineLayoutFrameMetrics {
         let mut prev_frame = self.previous_frame.lock();
         let mut curr_frame = self.current_frame.write();
         std::mem::swap(&mut *prev_frame, &mut *curr_frame);
-        curr_frame.lines.clear();
-        curr_frame.wrapped_lines.clear();
+
+        // `curr_frame` now contains the frame that has just aged out of `previous_frame`.
+        // Keep its shaped layouts in a bounded secondary cache so transient invisibility,
+        // progressive rendering, overlays, and page transitions do not immediately force text
+        // shaping again. The hot current/previous-frame path remains unchanged.
+        let mut retained = self.retained.lock();
+        for (key, layout) in curr_frame.lines.drain() {
+            retained.insert_line(key, layout);
+        }
+        for (key, layout) in curr_frame.wrapped_lines.drain() {
+            retained.insert_wrapped_line(key, layout);
+        }
         curr_frame.used_lines.clear();
         curr_frame.used_wrapped_lines.clear();
         self.frame_metrics.finish_frame()
@@ -200,38 +224,49 @@ impl LineLayoutCache {
                 .insert(key.clone(), layout.clone());
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
-            layout
-        } else {
-            self.frame_metrics.miss();
-            drop(current_frame);
-            let text = SharedString::from(text);
-            let unwrapped_layout = self.layout_line::<&SharedString>(&text, font_size, runs, None);
-            let wrap_boundaries = if let Some(wrap_width) = wrap_width {
-                unwrapped_layout.compute_wrap_boundaries(text.as_ref(), wrap_width, max_lines)
-            } else {
-                SmallVec::new()
-            };
-            let layout = Arc::new(WrappedLineLayout {
-                unwrapped_layout,
-                wrap_boundaries,
-                wrap_width,
-            });
-            let key = Arc::new(CacheKey {
-                text,
-                font_size,
-                runs: SmallVec::from(runs),
-                wrap_width,
-                force_width: None,
-            });
+            return layout;
+        }
 
-            let mut current_frame = self.current_frame.write();
+        let retained_entry = self.retained.lock().wrapped_lines.remove_entry(key);
+        if let Some((key, layout)) = retained_entry {
+            let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame
                 .wrapped_lines
                 .insert(key.clone(), layout.clone());
             current_frame.used_wrapped_lines.push(key);
-
-            layout
+            self.frame_metrics.reuse();
+            return layout;
         }
+
+        self.frame_metrics.miss();
+        drop(current_frame);
+        let text = SharedString::from(text);
+        let unwrapped_layout = self.layout_line::<&SharedString>(&text, font_size, runs, None);
+        let wrap_boundaries = if let Some(wrap_width) = wrap_width {
+            unwrapped_layout.compute_wrap_boundaries(text.as_ref(), wrap_width, max_lines)
+        } else {
+            SmallVec::new()
+        };
+        let layout = Arc::new(WrappedLineLayout {
+            unwrapped_layout,
+            wrap_boundaries,
+            wrap_width,
+        });
+        let key = Arc::new(CacheKey {
+            text,
+            font_size,
+            runs: SmallVec::from(runs),
+            wrap_width,
+            force_width: None,
+        });
+
+        let mut current_frame = self.current_frame.write();
+        current_frame
+            .wrapped_lines
+            .insert(key.clone(), layout.clone());
+        current_frame.used_wrapped_lines.push(key);
+
+        layout
     }
 
     pub fn layout_line<Text>(
@@ -264,40 +299,48 @@ impl LineLayoutCache {
             current_frame.lines.insert(key.clone(), layout.clone());
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
-            layout
-        } else {
-            self.frame_metrics.miss();
-            drop(current_frame);
-            let text = SharedString::from(text);
-            let mut layout = self
-                .platform_text_system
-                .layout_line(&text, font_size, runs);
+            return layout;
+        }
 
-            if let Some(force_width) = force_width {
-                let mut glyph_pos = 0;
-                for run in layout.runs.iter_mut() {
-                    for glyph in run.glyphs.iter_mut() {
-                        if (glyph.position.x - glyph_pos * force_width).abs() > px(1.) {
-                            glyph.position.x = glyph_pos * force_width;
-                        }
-                        glyph_pos += 1;
-                    }
-                }
-            }
-
-            let key = Arc::new(CacheKey {
-                text,
-                font_size,
-                runs: SmallVec::from(runs),
-                wrap_width: None,
-                force_width,
-            });
-            let layout = Arc::new(layout);
-            let mut current_frame = self.current_frame.write();
+        if let Some((key, layout)) = self.retained.lock().lines.remove_entry(key) {
+            let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame.lines.insert(key.clone(), layout.clone());
             current_frame.used_lines.push(key);
-            layout
+            self.frame_metrics.reuse();
+            return layout;
         }
+
+        self.frame_metrics.miss();
+        drop(current_frame);
+        let text = SharedString::from(text);
+        let mut layout = self
+            .platform_text_system
+            .layout_line(&text, font_size, runs);
+
+        if let Some(force_width) = force_width {
+            let mut glyph_pos = 0;
+            for run in layout.runs.iter_mut() {
+                for glyph in run.glyphs.iter_mut() {
+                    if (glyph.position.x - glyph_pos * force_width).abs() > px(1.) {
+                        glyph.position.x = glyph_pos * force_width;
+                    }
+                    glyph_pos += 1;
+                }
+            }
+        }
+
+        let key = Arc::new(CacheKey {
+            text,
+            font_size,
+            runs: SmallVec::from(runs),
+            wrap_width: None,
+            force_width,
+        });
+        let layout = Arc::new(layout);
+        let mut current_frame = self.current_frame.write();
+        current_frame.lines.insert(key.clone(), layout.clone());
+        current_frame.used_lines.push(key);
+        layout
     }
 }
 
@@ -355,6 +398,76 @@ impl FrameCache {
         self.used_lines.shrink_to(floor);
         self.used_wrapped_lines.shrink_to(floor);
     }
+}
+
+impl RetainedLayoutCache {
+    fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
+        insert_bounded(
+            &mut self.lines,
+            key,
+            layout,
+            LINE_LAYOUT_CACHE_MAX_RETAINED_LINES,
+        );
+    }
+
+    fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
+        insert_bounded(
+            &mut self.wrapped_lines,
+            key,
+            layout,
+            LINE_LAYOUT_CACHE_MAX_RETAINED_WRAPPED_LINES,
+        );
+    }
+
+    fn clear(&mut self) {
+        self.lines.clear();
+        self.wrapped_lines.clear();
+    }
+
+    fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
+        match level {
+            GpuiMemoryTrimLevel::Light => {
+                trim_map_capacity(
+                    &mut self.lines,
+                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY,
+                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
+                );
+                trim_map_capacity(
+                    &mut self.wrapped_lines,
+                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY,
+                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
+                );
+            }
+            GpuiMemoryTrimLevel::Moderate => {
+                self.lines
+                    .shrink_to(LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.lines.len()));
+                self.wrapped_lines.shrink_to(
+                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.wrapped_lines.len()),
+                );
+            }
+            GpuiMemoryTrimLevel::Aggressive => {
+                self.clear();
+                self.lines.shrink_to(0);
+                self.wrapped_lines.shrink_to(0);
+            }
+        }
+    }
+}
+
+fn insert_bounded<K, V>(map: &mut FxHashMap<K, V>, key: K, value: V, max_entries: usize)
+where
+    K: Clone + Eq + Hash,
+{
+    if max_entries == 0 {
+        return;
+    }
+    if map.len() >= max_entries
+        && !map.contains_key(&key)
+        && let Some(evicted) = map.keys().next().cloned()
+    {
+        map.remove(&evicted);
+    }
+    map.insert(key, value);
 }
 
 fn trim_map_capacity<K, V>(map: &mut FxHashMap<K, V>, floor: usize, multiplier: usize)
@@ -419,6 +532,39 @@ mod tests {
     }
 
     #[test]
+    fn layout_line_reuses_retained_entry_after_idle_frame() {
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let runs = [FontRun {
+            len: 5,
+            font_id: FontId(1),
+        }];
+
+        let first = cache.layout_line("hello", px(14.), &runs, None);
+        cache.finish_frame();
+        cache.finish_frame();
+        let second = cache.layout_line("hello", px(14.), &runs, None);
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn retained_layout_cache_is_bounded() {
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let runs = [FontRun {
+            len: 1,
+            font_id: FontId(1),
+        }];
+
+        for index in 0..LINE_LAYOUT_CACHE_MAX_RETAINED_LINES + 64 {
+            cache.layout_line(format!("{index}"), px(14.), &runs, None);
+        }
+        cache.finish_frame();
+        cache.finish_frame();
+
+        assert!(cache.retained.lock().lines.len() <= LINE_LAYOUT_CACHE_MAX_RETAINED_LINES);
+    }
+
+    #[test]
     fn aggressive_trim_clears_layout_cache_entries() {
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
         let runs = [FontRun {
@@ -427,6 +573,8 @@ mod tests {
         }];
 
         let first = cache.layout_line("hello", px(14.), &runs, None);
+        cache.finish_frame();
+        cache.finish_frame();
         cache.trim_retained_capacity_for_level(GpuiMemoryTrimLevel::Aggressive);
         let second = cache.layout_line("hello", px(14.), &runs, None);
 
