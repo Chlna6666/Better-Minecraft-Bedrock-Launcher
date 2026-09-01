@@ -4,6 +4,44 @@ use crate::{Primitive, SceneAnimationId, SceneAnimationValue, TransitionProperty
 const BLUR_SOURCE_BOUNDS_OFFSET: usize = 16;
 const BLUR_DISPLAY_BOUNDS_OFFSET: usize = 96;
 
+#[derive(Clone, Copy)]
+struct ResolvedAnimationValue {
+    property: TransitionProperty,
+    sampled: [f32; 4],
+}
+
+type ResolvedAnimationValues = FxHashMap<SceneAnimationId, ResolvedAnimationValue>;
+
+impl ResolvedAnimationValue {
+    #[inline]
+    fn new(value: &SceneAnimationValue) -> Self {
+        let progress = if value.progress.is_finite() {
+            value.progress
+        } else {
+            0.0
+        };
+        Self {
+            property: value.property,
+            sampled: std::array::from_fn(|index| {
+                value.from[index] + (value.to[index] - value.from[index]) * progress
+            }),
+        }
+    }
+}
+
+fn resolve_animation_values(values: &[SceneAnimationValue]) -> ResolvedAnimationValues {
+    let mut resolved = ResolvedAnimationValues::default();
+    resolved.reserve(values.len());
+    for value in values {
+        // Preserve the previous `.iter().find(...)` semantics when malformed input contains the
+        // same animation id more than once: the first value wins.
+        resolved
+            .entry(value.animation_id)
+            .or_insert_with(|| ResolvedAnimationValue::new(value));
+    }
+    resolved
+}
+
 /// A retained primitive and its small, independently uploadable animated range.
 /// Nova's current shaders consume primitive buffers, not the animation metadata.
 pub(in crate::platform::nova) struct AnimatedUpload {
@@ -65,17 +103,27 @@ impl AnimatedUpload {
         u64::from(self.index) * stride as u64
     }
 
+    #[cfg(test)]
     fn sample(
         &mut self,
         values: &[SceneAnimationValue],
         size: DrawableSize,
     ) -> Option<BackdropBlurAnimationSample> {
+        let resolved = resolve_animation_values(values);
+        self.sample_resolved(&resolved, size)
+    }
+
+    fn sample_resolved(
+        &mut self,
+        values: &ResolvedAnimationValues,
+        size: DrawableSize,
+    ) -> Option<BackdropBlurAnimationSample> {
         let mut primitive = self.primitive.clone();
-        if let Some(value) = values
-            .iter()
-            .find(|value| Some(value.animation_id) == primitive.animation_id())
+        if let Some(value) = primitive
+            .animation_id()
+            .and_then(|animation_id| values.get(&animation_id))
         {
-            apply_value(&mut primitive, value);
+            apply_resolved_value(&mut primitive, *value);
         }
         let blur_sample = match (&self.primitive, &primitive) {
             (Primitive::BackdropBlur(base), Primitive::BackdropBlur(sampled)) => {
@@ -131,14 +179,14 @@ impl AnimatedUpload {
 
     fn sampled_visual_bounds(
         &self,
-        values: &[SceneAnimationValue],
+        values: &ResolvedAnimationValues,
     ) -> crate::Bounds<crate::ScaledPixels> {
         let mut primitive = self.primitive.clone();
-        if let Some(value) = values
-            .iter()
-            .find(|value| Some(value.animation_id) == primitive.animation_id())
+        if let Some(value) = primitive
+            .animation_id()
+            .and_then(|animation_id| values.get(&animation_id))
         {
-            apply_value(&mut primitive, value);
+            apply_resolved_value(&mut primitive, *value);
         }
         primitive.visual_bounds()
     }
@@ -167,17 +215,18 @@ impl FrameUpload {
         self.backdrop_blur_ignore_animation_damage_indices.clear();
         self.backdrop_blur_passes_dirty_this_frame = false;
 
-        let current_animation_ids: FxHashSet<_> = self
-            .sampled_animation_values
-            .iter()
-            .map(|value| value.animation_id)
-            .collect();
+        // Resolve each animation value once per frame. Animated primitives can heavily outnumber
+        // animation timelines (for example hundreds of glyphs sharing one retained transform), so
+        // the old per-primitive linear search and interpolation scaled as O(primitives * values).
+        let resolved_animation_values = resolve_animation_values(&self.sampled_animation_values);
+        let current_animation_ids: FxHashSet<_> =
+            resolved_animation_values.keys().copied().collect();
         let mut relevant_animation_ids = self.backdrop_blur_previous_animation_ids.clone();
         relevant_animation_ids.extend(current_animation_ids.iter().copied());
 
         let mut blur_samples = Vec::new();
         for primitive in &mut self.animated_primitives {
-            let blur_sample = primitive.sample(&self.sampled_animation_values, size);
+            let blur_sample = primitive.sample_resolved(&resolved_animation_values, size);
             // GPU composite state always receives the sampled primitive. Filter planning does not
             // have to use these same bytes: root backdrop configs can independently select retained
             // base geometry, while element blur records keep base source bounds inside the record.
@@ -247,7 +296,7 @@ impl FrameUpload {
                         return false;
                     }
                     other
-                        .sampled_visual_bounds(&self.sampled_animation_values)
+                        .sampled_visual_bounds(&resolved_animation_values)
                         .intersects(&source_region)
                 });
                 if !blocked_by_other_animation {
@@ -326,14 +375,11 @@ fn bounds_contains(
 }
 
 fn apply_value(primitive: &mut Primitive, value: &SceneAnimationValue) {
-    let progress = if value.progress.is_finite() {
-        value.progress
-    } else {
-        0.0
-    };
-    let sampled = std::array::from_fn::<_, 4, _>(|index| {
-        value.from[index] + (value.to[index] - value.from[index]) * progress
-    });
+    apply_resolved_value(primitive, ResolvedAnimationValue::new(value));
+}
+
+fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue) {
+    let sampled = value.sampled;
     match value.property {
         TransitionProperty::Opacity => apply_opacity(primitive, sampled[0].clamp(0.0, 1.0)),
         TransitionProperty::Translation => {
@@ -464,6 +510,29 @@ fn apply_opacity(primitive: &mut Primitive, opacity: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolved_animation_values_preserve_first_duplicate() {
+        let id = crate::SceneAnimationId(5);
+        let values = [
+            SceneAnimationValue {
+                animation_id: id,
+                property: TransitionProperty::Translation,
+                progress: 0.5,
+                from: [0.0; 4],
+                to: [10.0, 0.0, 0.0, 0.0],
+            },
+            SceneAnimationValue {
+                animation_id: id,
+                property: TransitionProperty::Translation,
+                progress: 1.0,
+                from: [0.0; 4],
+                to: [99.0, 0.0, 0.0, 0.0],
+            },
+        ];
+        let resolved = resolve_animation_values(&values);
+        assert_eq!(resolved.get(&id).unwrap().sampled[0], 5.0);
+    }
 
     #[test]
     fn retained_translation_preserves_overshoot_without_accumulating_deltas() {
