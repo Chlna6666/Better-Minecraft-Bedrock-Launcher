@@ -85,6 +85,11 @@ pub(in crate::platform::nova) struct FrameUpload {
     /// Animated backdrop indices that sampled outside their base filter footprint on the previous
     /// frame. The transition back into the base footprint performs one restoring filter refresh.
     pub(in crate::platform::nova) backdrop_blur_filter_dirty_indices: FxHashSet<u32>,
+    /// Reusable set used to build the next frame's filter-dirty state without allocating a fresh
+    /// hash table every animation frame.
+    pub(in crate::platform::nova) backdrop_blur_filter_dirty_scratch: FxHashSet<u32>,
+    /// Reusable union/difference scratch for one-shot restoring filter refreshes.
+    pub(in crate::platform::nova) backdrop_blur_filter_refresh_scratch: FxHashSet<u32>,
     /// Composite-only backdrop animations that may ignore the Scene-level self-animation
     /// `mark_full` damage entry for this frame.
     pub(in crate::platform::nova) backdrop_blur_ignore_animation_damage_indices: FxHashSet<u32>,
@@ -97,10 +102,21 @@ pub(in crate::platform::nova) struct FrameUpload {
     /// source-animation completion conservative instead of accidentally treating it as idle.
     pub(in crate::platform::nova) backdrop_blur_previous_animation_ids:
         FxHashSet<crate::SceneAnimationId>,
+    /// Reusable current-frame animation-id set. At frame end it is swapped with the previous set,
+    /// so both hash-table allocations stay hot across animation frames.
+    pub(in crate::platform::nova) backdrop_blur_current_animation_ids_scratch:
+        FxHashSet<crate::SceneAnimationId>,
     pub(in crate::platform::nova) animation_bindings: Vec<u8>,
     pub(in crate::platform::nova) animation_values: Vec<u8>,
     pub(in crate::platform::nova) animated_primitives: Vec<AnimatedUpload>,
     pub(in crate::platform::nova) sampled_animation_values: Vec<crate::SceneAnimationValue>,
+    /// One shared serialization scratch for all animated primitives. The largest current record is
+    /// 136 bytes, so this replaces thousands of per-primitive tiny Vec allocations in glyph-heavy
+    /// retained animations while keeping the packed GPU buffers contiguous.
+    pub(in crate::platform::nova) animated_primitive_staging: Vec<u8>,
+    /// Reused sampled visual bounds used by backdrop damage dependency checks.
+    pub(in crate::platform::nova) animated_visual_bounds_scratch:
+        Vec<crate::Bounds<crate::ScaledPixels>>,
     pub(in crate::platform::nova) custom_mesh_3d_parameters: Vec<u8>,
     pub(in crate::platform::nova) custom_mesh_3d_meshes: Vec<Arc<GpuMesh3d>>,
     pub(in crate::platform::nova) custom_mesh_3d_shaders: Vec<Arc<GpuMesh3dShader>>,
