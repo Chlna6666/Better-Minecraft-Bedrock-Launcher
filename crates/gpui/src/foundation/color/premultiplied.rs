@@ -1,10 +1,31 @@
 use super::rgba::swap_rgba_pa_to_bgra;
 use crate::{CpuVectorLevel, cpu_vector_level};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const VECTOR_MIN_BYTES: usize = 64;
 const PARALLEL_MIN_BYTES: usize = 16 * 1024 * 1024;
 const PARALLEL_MIN_BYTES_PER_WORKER: usize = 4 * 1024 * 1024;
 const MAX_PARALLEL_WORKERS: usize = 4;
+
+static PARALLEL_PIXEL_CONVERSION_IN_USE: AtomicBool = AtomicBool::new(false);
+
+struct ParallelPixelPermit;
+
+impl ParallelPixelPermit {
+    #[inline]
+    fn try_acquire() -> Option<Self> {
+        PARALLEL_PIXEL_CONVERSION_IN_USE
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for ParallelPixelPermit {
+    fn drop(&mut self) {
+        PARALLEL_PIXEL_CONVERSION_IN_USE.store(false, Ordering::Release);
+    }
+}
 
 const fn build_alpha_norm_lut() -> [f32; 256] {
     let mut lut = [0.0; 256];
@@ -22,19 +43,23 @@ const ALPHA_NORM_LUT: [f32; 256] = build_alpha_norm_lut();
 
 /// Converts an in-place RGBA premultiplied-alpha pixel buffer to BGRA straight alpha.
 ///
-/// Medium and large buffers use an ISA-specific vector path. Very large buffers are split across
+/// Medium and large buffers use an ISA-specific vector path. Very large buffers may be split across
 /// a small number of scoped workers, and each worker still uses the best available SIMD kernel.
-/// Small buffers and unsupported CPUs retain the exact scalar conversion used historically by
-/// GPUI. Trailing bytes that do not form a complete RGBA pixel are left untouched.
+/// Only one conversion may fan out at a time; concurrent huge conversions fall back immediately to
+/// single-threaded SIMD instead of oversubscribing the process. Small buffers and unsupported CPUs
+/// retain the exact scalar conversion used historically by GPUI. Trailing bytes that do not form a
+/// complete RGBA pixel are left untouched.
 pub(crate) fn swap_rgba_pa_to_bgra_buffer(buffer: &mut [u8]) {
     let pixel_bytes = buffer.len() & !3;
     let (pixels, _) = buffer.split_at_mut(pixel_bytes);
     let workers = parallel_worker_count(pixels.len());
     if workers > 1 {
-        parallel_buffer(pixels, workers);
-    } else {
-        serial_buffer(pixels);
+        if let Some(_permit) = ParallelPixelPermit::try_acquire() {
+            parallel_buffer(pixels, workers);
+            return;
+        }
     }
+    serial_buffer(pixels);
 }
 
 #[inline]
@@ -276,6 +301,14 @@ mod tests {
     fn parallel_policy_caps_workers_and_leaves_one_cpu_free() {
         assert_eq!(parallel_worker_count_for(PARALLEL_MIN_BYTES, 4), 3);
         assert_eq!(parallel_worker_count_for(64 * 1024 * 1024, 32), 4);
+    }
+
+    #[test]
+    fn parallel_permit_is_non_blocking_and_exclusive() {
+        let first = ParallelPixelPermit::try_acquire().expect("first permit should succeed");
+        assert!(ParallelPixelPermit::try_acquire().is_none());
+        drop(first);
+        assert!(ParallelPixelPermit::try_acquire().is_some());
     }
 
     #[test]
