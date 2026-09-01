@@ -463,7 +463,7 @@ impl ProfessionalDetail {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum EditTarget {
-    MapRecord(MapRecordId),
+    SavedData(MapItemId),
     GlobalRecord(GlobalRecordKind),
     Player(PlayerId),
     HsaChunk(ChunkPos),
@@ -478,7 +478,7 @@ pub(super) enum EditTarget {
 impl EditTarget {
     pub(super) fn operation_label(&self) -> String {
         match self {
-            Self::MapRecord(id) => format!("edit map record {}", id.as_str()),
+            Self::SavedData(id) => format!("edit map item {}", id.as_str()),
             Self::GlobalRecord(kind) => format!("edit global record {}", global_kind_label(kind)),
             Self::Player(id) => format!("edit player {}", player_id_label(id)),
             Self::HsaChunk(pos) => format!("edit HSA chunk {},{}", pos.x, pos.z),
@@ -961,29 +961,29 @@ pub(super) fn task_progress_units(value: usize) -> u64 {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct CopiedChunkSnapshot {
+pub(super) struct CopiedChunk {
     pub(super) chunk: ChunkPos,
     pub(super) records: Vec<ChunkRecord>,
-    pub(super) block_entities: Vec<ParsedBlockEntity>,
-    pub(super) hardcoded_spawn_areas: Vec<ParsedHardcodedSpawnArea>,
+    pub(super) block_entities: Vec<BlockEntity>,
+    pub(super) hardcoded_spawn_areas: Vec<HardcodedSpawnArea>,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct CopiedChunkData {
     pub(super) source: ChunkPos,
-    pub(super) chunks: Vec<CopiedChunkSnapshot>,
+    pub(super) chunks: Vec<CopiedChunk>,
 }
 
 impl CopiedChunkData {
     pub(super) fn from_single_chunk(
         source: ChunkPos,
         records: Vec<ChunkRecord>,
-        block_entities: Vec<ParsedBlockEntity>,
-        hardcoded_spawn_areas: Vec<ParsedHardcodedSpawnArea>,
+        block_entities: Vec<BlockEntity>,
+        hardcoded_spawn_areas: Vec<HardcodedSpawnArea>,
     ) -> Self {
         Self {
             source,
-            chunks: vec![CopiedChunkSnapshot {
+            chunks: vec![CopiedChunk {
                 chunk: source,
                 records,
                 block_entities,

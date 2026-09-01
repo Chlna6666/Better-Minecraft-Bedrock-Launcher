@@ -532,7 +532,7 @@ pub(crate) fn capture_before_with_progress(
 
 pub(crate) fn capture_before_with_world_and_progress(
     spec: MapHistoryCaptureSpec,
-    world: &BedrockWorld,
+    world: &World,
     mut progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryCapture, String> {
     let mut raw_keys = spec.raw_keys.clone();
@@ -602,7 +602,7 @@ pub(crate) fn complete_after_with_progress(
 
 pub(crate) fn complete_after_with_world_and_progress(
     capture: MapHistoryCapture,
-    world: &BedrockWorld,
+    world: &World,
     message: impl Into<String>,
     mut progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryEntry, String> {
@@ -1109,7 +1109,7 @@ fn decode_history_subchunk(
     let Some(bytes) = bytes else {
         return (None, true);
     };
-    let Ok(subchunk) = bedrock_world::chunk::parse_subchunk_with_mode(
+    let Ok(subchunk) = bedrock_world::SubChunk::read(
         y,
         bytes::Bytes::copy_from_slice(bytes),
         bedrock_world::SubChunkDecodeMode::PackedIndices,
@@ -1461,9 +1461,9 @@ fn apply_history_entry(
         completed: 0,
         total,
     });
-    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+    let mut options = bedrock_world::OpenOptions::default();
     options.read_only = false;
-    let world = BedrockWorld::open_blocking(world_path, options)
+    let world = World::open(world_path, options)
         .map_err(|error| format!("打开世界失败: {error}"))?;
     let mut completed = 0usize;
     for batch in change.raw_records.chunks(HISTORY_APPLY_BATCH_RECORDS) {
@@ -1666,12 +1666,12 @@ fn complete_snapshot(
 }
 
 fn collect_chunk_raw_keys(
-    world: &BedrockWorld,
+    world: &World,
     chunk: ChunkPos,
 ) -> Result<BTreeSet<Vec<u8>>, String> {
     let mut keys = BTreeSet::new();
     let records = world
-        .get_chunk_blocking(chunk)
+        .chunk(chunk)
         .map_err(|error| format!("读取 chunk 历史记录失败: {error}"))?
         .records;
     keys.extend(
@@ -1683,7 +1683,7 @@ fn collect_chunk_raw_keys(
     let digest_key = ActorDigestKey::new(chunk).storage_key();
     keys.insert(digest_key.to_vec());
     for actor in world
-        .actors_in_chunk_blocking(chunk)
+        .actors(chunk)
         .map_err(|error| format!("读取实体历史记录失败: {error}"))?
     {
         if let Some(uid) = actor.uid {
@@ -1693,10 +1693,10 @@ fn collect_chunk_raw_keys(
     Ok(keys)
 }
 
-fn open_world_readonly(world_path: &Path) -> Result<BedrockWorld, String> {
-    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+fn open_world_readonly(world_path: &Path) -> Result<World, String> {
+    let mut options = bedrock_world::OpenOptions::default();
     options.read_only = true;
-    BedrockWorld::open_blocking(world_path, options)
+    World::open(world_path, options)
         .map_err(|error| format!("打开世界失败: {error}"))
 }
 

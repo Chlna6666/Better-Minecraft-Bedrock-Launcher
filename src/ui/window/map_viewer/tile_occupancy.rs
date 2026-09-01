@@ -18,7 +18,7 @@ pub(super) fn load_tile_occupancy_index(
         dimension,
         layout,
     );
-    let result = load_or_build_tile_occupancy_index_blocking(request, &cancel)
+    let result = load_or_build_tile_occupancy_index(request, &cancel)
         .map_err(|error| format!("加载地图占用索引失败: {error}"))?;
     Ok(LoadedTileOccupancy {
         index: Arc::new(result.index),

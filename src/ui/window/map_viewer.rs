@@ -29,36 +29,37 @@ mod prelude;
 // or restore removed bedrock-world crate-root APIs: every binding originates from a public 0.7 domain.
 pub(crate) mod bedrock_world_domains {
     pub(crate) use ::bedrock_world::biome::{
-        Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeStorage,
+        Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, BiomeStorage,
     };
     pub(crate) use ::bedrock_world::block::{
-        BlockEntityRecord, BlockPalette, BlockPos, BlockState, ParsedBlockEntity,
+        BlockEntityRecord, BlockPalette, BlockPos, BlockState, BlockEntity,
         block_storage_index,
     };
     pub(crate) use ::bedrock_world::chunk::{
-        Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension,
-        HardcodedSpawnAreaKind, LegacyTerrain, ParsedChunkData, ParsedChunkRecord,
-        ParsedChunkRecordValue, ParsedHardcodedSpawnArea, SubChunk, SubChunkDecodeMode,
+        ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension, LevelChunk,
+        HardcodedSpawnAreaKind, LegacyTerrain, ChunkEntry,
+        ChunkValue, HardcodedSpawnArea, SubChunk, SubChunkDecodeMode,
         SubChunkFormat,
     };
-    pub(crate) use ::bedrock_world::database::{
+    pub(crate) use ::bedrock_world::storage::{
         BedrockDbKey, BedrockLevelDbStorage, MemoryStorage, PartitionedWorldStorage, StorageBatch,
-        StorageCachePolicy, StorageCancelFlag, StorageEntry, StorageEntryRef, StorageOp,
+        StorageCachePolicy, StorageCancelFlag, StorageEntry, StorageEntryView, StorageOp,
         StoragePipelineOptions, StorageProgressSink, StorageReadOptions, StorageScanMode,
         StorageScanOutcome, StorageScanProgress, StorageThreadingOptions, StorageVisitorControl,
         WorldStorage,
     };
     pub(crate) use ::bedrock_world::editor::McStructureWritePhase;
     pub(crate) use ::bedrock_world::entity::{
-        ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, ParsedEntity,
+        ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, Actor,
     };
     pub(crate) use ::bedrock_world::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
     pub(crate) use ::bedrock_world::item::ItemStack;
     pub(crate) use ::bedrock_world::level::*;
-    pub(crate) use ::bedrock_world::map::{MapKnownFields, MapPixels, MapRecordId, ParsedMapData};
+    pub(crate) use ::bedrock_world::map_item::{KnownFields, MapItemId, Pixels, SavedData};
     pub(crate) use ::bedrock_world::nbt::{NbtTag, NbtWriter};
     pub(crate) use ::bedrock_world::player::{PlayerData, PlayerId};
     pub(crate) use ::bedrock_world::query::*;
+    pub(crate) use ::bedrock_world::surface::*;
     pub(crate) use ::bedrock_world::structure::{
         McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
         McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
@@ -74,8 +75,8 @@ pub(crate) mod bedrock_world_domains {
     pub(crate) mod chunk {
         pub(crate) use ::bedrock_world::chunk::*;
     }
-    pub(crate) mod database {
-        pub(crate) use ::bedrock_world::database::*;
+    pub(crate) mod storage {
+        pub(crate) use ::bedrock_world::storage::*;
     }
     pub(crate) mod entity {
         pub(crate) use ::bedrock_world::entity::*;
@@ -89,25 +90,11 @@ pub(crate) mod bedrock_world_domains {
     pub(crate) mod level {
         pub(crate) use ::bedrock_world::level::*;
     }
-    pub(crate) mod map {
-        pub(crate) use ::bedrock_world::map::*;
+    pub(crate) mod map_item {
+        pub(crate) use ::bedrock_world::map_item::*;
     }
     pub(crate) mod nbt {
         pub(crate) use ::bedrock_world::nbt::*;
-    }
-    pub(crate) mod parsed {
-        pub(crate) use ::bedrock_world::chunk::{
-            ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue, parse_chunk_records,
-            parse_chunk_records_with_options,
-        };
-
-        pub(crate) fn parse_chunk_records_ref_with_options(
-            pos: ::bedrock_world::ChunkPos,
-            records: &[::bedrock_world::ChunkRecord],
-            options: ::bedrock_world::WorldParseOptions,
-        ) -> ::bedrock_world::chunk::ParsedChunkData {
-            ::bedrock_world::chunk::parse_chunk_records_with_options(pos, records.to_vec(), options)
-        }
     }
     pub(crate) mod player {
         pub(crate) use ::bedrock_world::player::*;
@@ -117,6 +104,9 @@ pub(crate) mod bedrock_world_domains {
     }
     pub(crate) mod structure {
         pub(crate) use ::bedrock_world::structure::*;
+    }
+    pub(crate) mod surface {
+        pub(crate) use ::bedrock_world::surface::*;
     }
     pub(crate) mod world {
         pub(crate) use ::bedrock_world::world::*;

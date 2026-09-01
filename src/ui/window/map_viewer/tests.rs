@@ -3953,13 +3953,13 @@ fn pasted_chunk_targets_keep_all_relative_offsets() {
     let copied_chunk = CopiedChunkData {
         source: source_anchor,
         chunks: vec![
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: source_anchor,
                 records: Vec::new(),
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: -1,
                     z: 5,
@@ -3969,7 +3969,7 @@ fn pasted_chunk_targets_keep_all_relative_offsets() {
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: -2,
                     z: 7,
@@ -4024,13 +4024,13 @@ fn pasted_chunk_targets_rotate_relative_offsets() {
     let copied_chunk = CopiedChunkData {
         source: source_anchor,
         chunks: vec![
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: source_anchor,
                 records: Vec::new(),
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: 6,
                     z: 10,
@@ -4040,7 +4040,7 @@ fn pasted_chunk_targets_rotate_relative_offsets() {
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: 4,
                     z: 13,
@@ -4147,13 +4147,13 @@ fn pasted_chunk_targets_mirror_relative_offsets() {
     let copied_chunk = CopiedChunkData {
         source: source_anchor,
         chunks: vec![
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: source_anchor,
                 records: Vec::new(),
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: 6,
                     z: 10,
@@ -4163,7 +4163,7 @@ fn pasted_chunk_targets_mirror_relative_offsets() {
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: 4,
                     z: 13,
@@ -4250,7 +4250,7 @@ fn copied_chunk_snapshot_structure_placement_uses_full_height_and_single_target(
     let copied_chunk = CopiedChunkData {
         source: source_anchor,
         chunks: vec![
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: 3,
                     z: 10,
@@ -4260,13 +4260,13 @@ fn copied_chunk_snapshot_structure_placement_uses_full_height_and_single_target(
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: source_anchor,
                 records: Vec::new(),
                 block_entities: Vec::new(),
                 hardcoded_spawn_areas: Vec::new(),
             },
-            CopiedChunkSnapshot {
+            CopiedChunk {
                 chunk: ChunkPos {
                     x: 5,
                     z: 12,
@@ -4316,7 +4316,7 @@ fn copied_chunk_snapshot_structure_placement_preserves_secondary_layer() {
         z: 10,
         dimension: Dimension::Overworld,
     };
-    let snapshot = CopiedChunkSnapshot {
+    let snapshot = CopiedChunk {
         chunk: source_chunk,
         records: vec![test_two_layer_subchunk_record(source_chunk, 0, (1, 2, 3))],
         block_entities: Vec::new(),
@@ -4520,7 +4520,7 @@ fn pasted_block_entity_updates_position_and_nbt_coordinates() {
     root.insert("x".to_string(), NbtTag::Int(source_position[0]));
     root.insert("y".to_string(), NbtTag::Int(source_position[1]));
     root.insert("z".to_string(), NbtTag::Int(source_position[2]));
-    let entity = ParsedBlockEntity {
+    let entity = BlockEntity {
         id: Some("Chest".to_string()),
         position: Some(source_position),
         is_movable: None,
@@ -4624,7 +4624,7 @@ fn mcstructure_export_y_range_uses_dimension_build_height() {
 
 #[::core::prelude::v1::test]
 fn hsa_structured_rows_keep_unknown_kind() {
-    let area = ParsedHardcodedSpawnArea {
+    let area = HardcodedSpawnArea {
         kind: HardcodedSpawnAreaKind::Unknown(99),
         min: [0, 1, 2],
         max: [3, 4, 5],
@@ -4656,7 +4656,7 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
                     z,
                     dimension: Dimension::Overworld,
                 };
-                CopiedChunkSnapshot {
+                CopiedChunk {
                     chunk,
                     records: vec![ChunkRecord {
                         key: ChunkKey::new(chunk, ChunkRecordTag::Version),
@@ -4673,12 +4673,12 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
         chunks,
     };
     let storage = Arc::new(bedrock_world::MemoryStorage::new());
-    let world = BedrockWorld::from_storage(
+    let world = World::from_storage(
         "memory",
         storage.clone(),
-        bedrock_world::BedrockWorldOpenOptions {
+        bedrock_world::OpenOptions {
             read_only: false,
-            ..bedrock_world::BedrockWorldOpenOptions::default()
+            ..bedrock_world::OpenOptions::default()
         },
     );
     let guard = WriteGuard::confirmed("memory", "paste 672 chunk test");
@@ -4749,7 +4749,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
     biome_indices[bedrock_world::block_storage_index(1, 2, 3)] = 1;
     let biome = Biome3d::new(
         vec![64; 256],
-        vec![bedrock_world::ParsedBiomeStorage {
+        vec![bedrock_world::BiomeStorage {
             y: Some(-64),
             palette: vec![1, 42],
             indices: Some(biome_indices),
@@ -4759,7 +4759,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
     .expect("test biome");
     let copied_chunk = CopiedChunkData {
         source,
-        chunks: vec![CopiedChunkSnapshot {
+        chunks: vec![CopiedChunk {
             chunk: source,
             records: vec![
                 ChunkRecord {
@@ -4777,12 +4777,12 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
         }],
     };
     let storage = Arc::new(bedrock_world::MemoryStorage::new());
-    let world = BedrockWorld::from_storage(
+    let world = World::from_storage(
         "memory",
         storage,
-        bedrock_world::BedrockWorldOpenOptions {
+        bedrock_world::OpenOptions {
             read_only: false,
-            ..bedrock_world::BedrockWorldOpenOptions::default()
+            ..bedrock_world::OpenOptions::default()
         },
     );
     let guard = WriteGuard::confirmed("memory", "rotated paste test");
@@ -4843,7 +4843,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
         .expect("transform and paste chunk");
 
         let subchunk = world
-            .get_subchunk_blocking(target, 0)
+            .subchunk(target, 0)
             .expect("read target subchunk")
             .expect("target subchunk exists");
         assert_eq!(
@@ -4853,7 +4853,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
             Some("minecraft:stone")
         );
         let heightmap = world
-            .get_heightmap_blocking(target)
+            .heightmap(target)
             .expect("read transformed target heightmap")
             .expect("transformed target heightmap exists");
         assert_ne!(
@@ -4862,7 +4862,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
         );
         assert!(
             world
-                .get_chunk_blocking(target)
+                .chunk(target)
                 .expect("read transformed target")
                 .records
                 .iter()
@@ -4872,7 +4872,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
         );
         assert_eq!(
             world
-                .get_biome_storage_blocking(target, -62)
+                .biome_storage(target, -62)
                 .expect("read transformed biome")
                 .and_then(|storage| storage.biome_id_at(target_x, 2, target_z)),
             Some(42)
@@ -4910,7 +4910,7 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
     };
     let copied_chunk = CopiedChunkData {
         source,
-        chunks: vec![CopiedChunkSnapshot {
+        chunks: vec![CopiedChunk {
             chunk: source,
             records: vec![ChunkRecord {
                 key: ChunkKey::new(source, ChunkRecordTag::Version),
@@ -4921,12 +4921,12 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
         }],
     };
     {
-        let world = BedrockWorld::open_blocking(
+        let world = World::open(
             &world_path,
-            bedrock_world::BedrockWorldOpenOptions {
+            bedrock_world::OpenOptions {
                 read_only: false,
                 format: bedrock_world::WorldFormatHint::LevelDb,
-                ..bedrock_world::BedrockWorldOpenOptions::default()
+                ..bedrock_world::OpenOptions::default()
             },
         )
         .expect("open temporary writable world");
@@ -4944,13 +4944,13 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
         .expect("paste into temporary world");
     }
     {
-        let reopened = BedrockWorld::open_blocking(
+        let reopened = World::open(
             &world_path,
-            bedrock_world::BedrockWorldOpenOptions::default(),
+            bedrock_world::OpenOptions::default(),
         )
         .expect("reopen temporary world");
         let target_chunk = reopened
-            .get_chunk_blocking(target)
+            .chunk(target)
             .expect("read persisted target chunk");
         assert!(target_chunk.records.iter().any(|record| {
             record.key.tag == ChunkRecordTag::Version && record.value.as_ref() == b"\x2a"
@@ -4965,7 +4965,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
     let source_world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let source_editor = MapWorldEditor::open_with_options(
         &source_world_path,
-        bedrock_world::BedrockWorldOpenOptions {
+        bedrock_world::OpenOptions {
             read_only: true,
             format: bedrock_world::WorldFormatHint::LevelDb,
         },
@@ -4981,7 +4981,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
         .find(|chunk| {
             source_editor
                 .world()
-                .get_chunk_blocking(*chunk)
+                .chunk(*chunk)
                 .is_ok_and(|data| {
                     data.records
                         .iter()
@@ -5019,9 +5019,9 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
         dimension: Dimension::Overworld,
     };
     {
-        let target_world = BedrockWorld::open_blocking(
+        let target_world = World::open(
             &world_path,
-            bedrock_world::BedrockWorldOpenOptions {
+            bedrock_world::OpenOptions {
                 read_only: false,
                 format: bedrock_world::WorldFormatHint::LevelDb,
             },
@@ -5052,16 +5052,16 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
         .expect("transform real chunk into temporary world");
     }
     {
-        let reopened = BedrockWorld::open_blocking(
+        let reopened = World::open(
             &world_path,
-            bedrock_world::BedrockWorldOpenOptions {
+            bedrock_world::OpenOptions {
                 read_only: true,
                 format: bedrock_world::WorldFormatHint::LevelDb,
             },
         )
         .expect("reopen temporary target world read-only");
         let actual = reopened
-            .get_chunk_blocking(target)
+            .chunk(target)
             .expect("read persisted real target chunk");
         for expected in &expected_records {
             assert!(actual.records.iter().any(|record| {
@@ -5071,7 +5071,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
             }));
         }
         let transformed = reopened
-            .get_chunk_blocking(transformed_target)
+            .chunk(transformed_target)
             .expect("read persisted transformed target chunk");
         for version_tag in [
             ChunkRecordTag::Version,
@@ -5104,7 +5104,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
             bedrock_render::RenderPalette::default(),
         );
         let bake = renderer
-            .bake_chunk_blocking(transformed_target, bedrock_render::BakeOptions::default())
+            .bake_chunk(transformed_target, bedrock_render::BakeOptions::default())
             .expect("bake persisted transformed chunk");
         assert_eq!(bake.pos, transformed_target);
     }

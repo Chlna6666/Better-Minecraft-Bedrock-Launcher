@@ -1,4 +1,4 @@
-use super::model::{CopiedChunkData, CopiedChunkSnapshot};
+use super::model::{CopiedChunkData, CopiedChunk};
 use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, GeometryBone, GeometryCube,
     ModelCuboid, ModelFamily, ModelPlane, ModelShape, ModelWarning,
@@ -10,9 +10,9 @@ use bedrock_block_model::{
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
 use bedrock_world::{
-    BedrockWorld, BiomeDataRequirement, BlockState, CancelFlag, ChunkData, ChunkDataRequest,
-    ChunkLoadOptions, ChunkLoadPriority, ExactSurfaceSubchunkPolicy, ParsedBiomeStorage,
-    ParsedChunkRecordValue, SlimeChunkBounds, SubChunkDecodeMode, TerrainColumnBiome,
+    World, BiomeDataRequirement, BlockState, CancelFlag, ChunkData, ChunkDataRequest,
+    ChunkLoadOptions, ChunkLoadPriority, ExactSurfaceSubchunkPolicy, BiomeStorage,
+    ChunkValue, SlimeChunkBounds, SubChunkDecodeMode, TerrainColumnBiome,
     WorldPipelineOptions, WorldThreadingOptions,
 };
 use gpui::{
@@ -808,9 +808,9 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let world = BedrockWorld::open_blocking(
+    let world = World::open(
         world_path,
-        bedrock_world::BedrockWorldOpenOptions::default(),
+        bedrock_world::OpenOptions::default(),
     )
     .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
@@ -824,7 +824,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
         let batch_size = preview_3d_incremental_batch_size(completed_chunks, chunk_total);
         let next_completed_chunks = completed_chunks.saturating_add(batch_size).min(chunk_total);
         let chunks = world
-            .query_chunk_data_many_blocking(
+            .query_chunk_data_many(
                 positions[completed_chunks..next_completed_chunks]
                     .iter()
                     .copied(),
@@ -861,9 +861,9 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let world = BedrockWorld::open_blocking(
+    let world = World::open(
         world_path,
-        bedrock_world::BedrockWorldOpenOptions::default(),
+        bedrock_world::OpenOptions::default(),
     )
     .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
@@ -874,7 +874,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
     for chunk_positions in positions.chunks(preview_3d_incremental_mesh_batch_size(chunk_total)) {
         check_preview_3d_cancelled(cancel.as_ref())?;
         let chunks = world
-            .query_chunk_data_many_blocking(chunk_positions.iter().copied(), options.clone())
+            .query_chunk_data_many(chunk_positions.iter().copied(), options.clone())
             .map_err(|error| error.to_string())?;
         let processed_chunks = chunks
             .into_par_iter()
@@ -1876,10 +1876,10 @@ fn preview_3d_collect_chunk_blocks_result_with_block_models(
     })
 }
 
-fn render_chunk_from_copied_snapshot(snapshot: &CopiedChunkSnapshot) -> ChunkData {
-    let parsed = bedrock_world::parsed::parse_chunk_records_with_options(
+fn render_chunk_from_copied_snapshot(snapshot: &CopiedChunk) -> ChunkData {
+    let parsed = ::bedrock_world::scan::Chunk::new(
         snapshot.chunk,
-        snapshot.records.clone(),
+        &snapshot.records,
         copied_chunk_preview_3d_parse_options(),
     );
     let mut subchunks = BTreeMap::new();
@@ -1887,14 +1887,14 @@ fn render_chunk_from_copied_snapshot(snapshot: &CopiedChunkSnapshot) -> ChunkDat
     let mut version = bedrock_world::ChunkVersion::New;
     for record in parsed.records {
         match record.value {
-            ParsedChunkRecordValue::SubChunk(subchunk) => {
+            ChunkValue::SubChunk(subchunk) => {
                 subchunks.insert(subchunk.y, subchunk);
             }
-            ParsedChunkRecordValue::LegacyTerrain(terrain) => {
+            ChunkValue::LegacyTerrain(terrain) => {
                 legacy_terrain = Some(terrain);
                 version = bedrock_world::ChunkVersion::Old;
             }
-            ParsedChunkRecordValue::Version(version_byte) => {
+            ChunkValue::Version(version_byte) => {
                 if version_byte < 25 {
                     version = bedrock_world::ChunkVersion::Old;
                 }
@@ -1938,9 +1938,9 @@ fn copied_chunk_3d_bounds(copied_chunk: &CopiedChunkData) -> Result<SlimeChunkBo
     Ok(bounds)
 }
 
-fn copied_chunk_preview_3d_parse_options() -> bedrock_world::WorldParseOptions {
-    bedrock_world::WorldParseOptions {
-        categories: bedrock_world::WorldParseCategories {
+fn copied_chunk_preview_3d_parse_options() -> bedrock_world::ScanOptions {
+    bedrock_world::ScanOptions {
+        categories: bedrock_world::ScanCategories {
             chunks: true,
             players: false,
             actors: false,
@@ -4332,7 +4332,7 @@ fn preview_3d_biome_id_at(chunk: &ChunkData, local_x: u8, local_z: u8, y: i32) -
 }
 
 fn preview_3d_biome_id_from_storage(
-    storage: &ParsedBiomeStorage,
+    storage: &BiomeStorage,
     local_x: u8,
     local_z: u8,
     y: i32,

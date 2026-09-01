@@ -52,9 +52,9 @@ pub(super) fn mcstructure_preview_images(
 }
 
 fn copied_chunk_preview_image_from_snapshot(
-    snapshot: &super::model::CopiedChunkSnapshot,
+    snapshot: &super::model::CopiedChunk,
 ) -> Result<Option<CopiedChunkPreviewImage>, String> {
-    let parsed = bedrock_world::parsed::parse_chunk_records_ref_with_options(
+    let parsed = ::bedrock_world::scan::Chunk::new(
         snapshot.chunk,
         &snapshot.records,
         import_preview_parse_options(),
@@ -62,10 +62,10 @@ fn copied_chunk_preview_image_from_snapshot(
     let mut columns = vec![None; 16 * 16];
     for record in parsed.records {
         match record.value {
-            bedrock_world::ParsedChunkRecordValue::SubChunk(subchunk) => {
+            bedrock_world::ChunkValue::SubChunk(subchunk) => {
                 sample_subchunk_columns(&subchunk, &mut columns);
             }
-            bedrock_world::ParsedChunkRecordValue::LegacyTerrain(terrain) => {
+            bedrock_world::ChunkValue::LegacyTerrain(terrain) => {
                 sample_legacy_terrain_columns(&terrain, &mut columns);
             }
             _ => {}
@@ -237,9 +237,9 @@ fn render_image_from_preview_pixels(pixels: Vec<u8>) -> Result<Arc<RenderImage>,
         .map_err(|error| format!("导入预览图片无效：{error}"))
 }
 
-fn import_preview_parse_options() -> bedrock_world::WorldParseOptions {
-    bedrock_world::WorldParseOptions {
-        categories: bedrock_world::WorldParseCategories {
+fn import_preview_parse_options() -> bedrock_world::ScanOptions {
+    bedrock_world::ScanOptions {
+        categories: bedrock_world::ScanCategories {
             chunks: true,
             players: false,
             actors: false,

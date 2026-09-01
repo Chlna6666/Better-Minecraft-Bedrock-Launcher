@@ -2447,9 +2447,9 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+                    let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = BedrockWorld::open_blocking(&world_path, options)
+                    let world = World::open(&world_path, options)
                         .map_err(|e| e.to_string())?;
                     let history = capture_player_history(
                         &world_path,
@@ -2457,7 +2457,7 @@ impl MapViewerWindowView {
                         format!("玩家物品：批量拖拽 {count} 项"),
                     );
                     let mut data = world
-                        .get_player_blocking(&id)
+                        .player(&id)
                         .map_err(|e| e.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     let mut items = Vec::new();
@@ -2498,7 +2498,7 @@ impl MapViewerWindowView {
                     }
                     data = PlayerData::from_nbt(id.clone(), data.nbt).map_err(|e| e.to_string())?;
                     world
-                        .put_player_blocking(&data)
+                        .save_player(&data)
                         .map_err(|e| e.to_string())?;
                     let detail = player_detail_from_data(data)?;
                     if let Ok(capture) = history {
@@ -2574,14 +2574,14 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+                    let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = BedrockWorld::open_blocking(&world_path, options)
+                    let world = World::open(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let history_capture =
                         capture_player_history(&world_path, &id, "玩家物品：拖拽移动/交换");
                     let mut data = world
-                        .get_player_blocking(&id)
+                        .player(&id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     let source_item = player_slot_item(&data.nbt, source)
@@ -2592,7 +2592,7 @@ impl MapViewerWindowView {
                     data = PlayerData::from_nbt(id.clone(), data.nbt)
                         .map_err(|error| error.to_string())?;
                     world
-                        .put_player_blocking(&data)
+                        .save_player(&data)
                         .map_err(|error| error.to_string())?;
                     let detail = player_detail_from_data(data)?;
                     if let Ok(capture) = history_capture {
@@ -2661,21 +2661,21 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+                    let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = BedrockWorld::open_blocking(&world_path, options)
+                    let world = World::open(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let history_capture =
                         capture_player_history(&world_path, &id, label_string.clone());
                     let mut data = world
-                        .get_player_blocking(&id)
+                        .player(&id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     replace_player_slot(&mut data.nbt, selection, replacement)?;
                     data = PlayerData::from_nbt(id.clone(), data.nbt)
                         .map_err(|error| error.to_string())?;
                     world
-                        .put_player_blocking(&data)
+                        .save_player(&data)
                         .map_err(|error| error.to_string())?;
                     let detail = player_detail_from_data(data)?;
                     if let Ok(capture) = history_capture {

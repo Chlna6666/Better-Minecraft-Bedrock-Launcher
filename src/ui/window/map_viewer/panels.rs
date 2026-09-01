@@ -540,7 +540,7 @@ impl MapViewerWindowView {
                         toolbar_button(colors, t!("MapViewer.selection_stats")).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
-                                this.query_selection_stats_exact(cx)
+                                this.exact_selection_stats(cx)
                             }),
                         ),
                     )

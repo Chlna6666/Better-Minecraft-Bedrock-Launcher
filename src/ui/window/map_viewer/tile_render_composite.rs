@@ -126,7 +126,7 @@ pub(super) fn render_viewport_composite_stream(
     let failed_tiles = Arc::new(AtomicUsize::new(0));
 
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_session.render_web_tiles_streaming_blocking_v2(
+        render_session.render_web_tiles_streaming_v2(
             &planned_tiles,
             render_options,
             output_options,

@@ -74,7 +74,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let editor = MapWorldEditor::open_with_options(
                         &world_path,
-                        bedrock_world::BedrockWorldOpenOptions::default(),
+                        bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     load_edit_detail_blocking(&editor, target_for_task)
@@ -423,12 +423,12 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = BedrockWorld::open_blocking(
+                    let world = World::open(
                         &world_path,
-                        bedrock_world::BedrockWorldOpenOptions::default(),
+                        bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
-                    let tip = query_block_tip_blocking(&world, block, dimension)
+                    let tip = block_tip(&world, block, dimension)
                         .map_err(|error| error.to_string())?;
                     Ok::<_, String>(block_tip_detail(tip))
                 })
@@ -474,12 +474,12 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = BedrockWorld::open_blocking(
+                    let world = World::open(
                         &world_path,
-                        bedrock_world::BedrockWorldOpenOptions::default(),
+                        bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
-                    let detail = query_chunk_detail_blocking(&world, chunk)
+                    let detail = chunk_detail(&world, chunk)
                         .map_err(|error| error.to_string())?;
                     Ok::<_, String>(chunk_detail_panel(detail))
                 })
@@ -507,7 +507,7 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    pub(super) fn query_selection_stats(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn selection_stats(&mut self, cx: &mut Context<Self>) {
         let Some(bounds) = self.professional_query_bounds() else {
             self.status = SharedString::from("当前没有可查询的视口或选区");
             cx.notify();
@@ -527,12 +527,12 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = BedrockWorld::open_blocking(
+                    let world = World::open(
                         &world_path,
-                        bedrock_world::BedrockWorldOpenOptions::default(),
+                        bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
-                    let stats = query_selection_stats_blocking(&world, bounds, options)
+                    let stats = selection_stats(&world, bounds, options)
                         .map_err(|error| error.to_string())?;
                     Ok::<_, String>((stats.clone(), selection_stats_panel(stats)))
                 })
@@ -620,9 +620,9 @@ impl MapViewerWindowView {
                 let cancel_for_task = cancel_for_background;
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+                    let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = BedrockWorld::open_blocking(&world_path, options)
+                    let world = World::open(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let operation = format!(
                         "clear chunks dim={} count={} bounds=x{}..{} z{}..{}",
@@ -913,9 +913,9 @@ impl MapViewerWindowView {
                             tracing::debug!("quick write progress receiver dropped");
                         }
                     };
-                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+                    let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = BedrockWorld::open_blocking(&world_path, options)
+                    let world = World::open(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let operation = format!("{} via BMCBL map_viewer", action_for_task.label());
                     let guard = WriteGuard::confirmed(world_path.clone(), operation);
@@ -1297,7 +1297,7 @@ pub(super) fn load_edit_detail_blocking(
     match target {
         EditTarget::HsaChunk(pos) => hsa_editor_detail(editor, pos),
         EditTarget::Player(id) => {
-            let data = editor.world().get_player_blocking(&id)?.ok_or_else(|| {
+            let data = editor.world().player(&id)?.ok_or_else(|| {
                 bedrock_render::BedrockRenderError::Validation(
                     "player record does not exist".to_string(),
                 )
@@ -1314,7 +1314,7 @@ pub(super) fn load_edit_detail_blocking(
         EditTarget::Actor { chunk, unique_id } => actor_editor_detail(editor, chunk, unique_id),
         EditTarget::HeightMap(pos) => heightmap_editor_detail(editor, pos),
         EditTarget::BiomeStorage(pos) => biome_storage_editor_detail(editor, pos),
-        EditTarget::MapRecord(id) => map_record_editor_detail(editor, &id),
+        EditTarget::SavedData(id) => map_item_editor_detail(editor, &id),
         EditTarget::GlobalRecord(kind) => global_record_editor_detail(editor, kind),
     }
 }
@@ -1327,7 +1327,7 @@ pub(super) fn run_edit_action_blocking(
 ) -> bedrock_render::Result<MapEditInvalidation> {
     let invalidation = match (target, action) {
         (EditTarget::Player(id), EditAction::Delete) => {
-            editor.world().delete_player_blocking(&id)?;
+            editor.world().delete_player(&id)?;
             Ok(MapEditInvalidation::metadata())
         }
         (EditTarget::Player(id), EditAction::Save) => {
@@ -1346,21 +1346,21 @@ pub(super) fn run_edit_action_blocking(
                     "player NBT serialize failed: {error}"
                 ))
             })?;
-            editor.world().put_player_blocking(&player)?;
+            editor.world().save_player(&player)?;
             Ok(MapEditInvalidation::metadata())
         }
         (EditTarget::HsaChunk(pos), EditAction::Save) => {
             let areas = editor
-                .scan_hsa_records(WorldScanOptions::default())?
+                .hardcoded_spawn_areas(WorldScanOptions::default())?
                 .into_iter()
                 .find_map(|(chunk, areas)| (chunk == pos).then_some(areas))
                 .unwrap_or_default();
-            editor.put_hsa_for_chunk(pos, &areas)
+            editor.save_hardcoded_spawn_areas(pos, &areas)
         }
-        (EditTarget::HsaChunk(pos), EditAction::Delete) => editor.delete_hsa_for_chunk(pos),
+        (EditTarget::HsaChunk(pos), EditAction::Delete) => editor.delete_hardcoded_spawn_areas(pos),
         (EditTarget::BlockEntities(pos), EditAction::Save) => {
             let entities = editor
-                .block_entities_in_chunk(pos)?
+                .block_entities(pos)?
                 .into_iter()
                 .map(|record| record.entity)
                 .collect::<Vec<_>>();
@@ -1371,7 +1371,7 @@ pub(super) fn run_edit_action_blocking(
         }
         (EditTarget::Actors(pos), EditAction::Delete) => {
             let Some(uid) = editor
-                .actors_in_chunk(pos)?
+                .actors(pos)?
                 .into_iter()
                 .find_map(|actor| actor.uid)
             else {
@@ -1394,13 +1394,13 @@ pub(super) fn run_edit_action_blocking(
             })?;
             let affected = editor
                 .world()
-                .edit_actor_nbt_by_unique_id_blocking(chunk, unique_id, nbt)?;
+                .edit_actor_nbt_by_unique_id(chunk, unique_id, nbt)?;
             Ok(MapEditInvalidation::chunks(affected).with_metadata())
         }
         (EditTarget::Actor { chunk, unique_id }, EditAction::Delete) => {
             editor
                 .world()
-                .delete_actor_by_unique_id_blocking(chunk, unique_id)?;
+                .delete_actor_by_unique_id(chunk, unique_id)?;
             Ok(MapEditInvalidation::chunk(chunk).with_metadata())
         }
         (EditTarget::HeightMap(pos), EditAction::Save) => {
@@ -1411,7 +1411,7 @@ pub(super) fn run_edit_action_blocking(
             let height_map = editor.heightmap(pos)?.unwrap_or_else(default_heightmap);
             let biome = Biome3d::new(
                 height_map.values,
-                vec![ParsedBiomeStorage {
+                vec![BiomeStorage {
                     y: Some(-64),
                     palette: vec![0],
                     indices: Some(vec![0; 4096]),
@@ -1420,8 +1420,8 @@ pub(super) fn run_edit_action_blocking(
             )?;
             editor.put_biome_storage(pos, biome)
         }
-        (EditTarget::MapRecord(id), EditAction::Delete) => editor.delete_map_record(&id),
-        (EditTarget::GlobalRecord(kind), EditAction::Delete) => editor.delete_global_record(kind),
+        (EditTarget::SavedData(id), EditAction::Delete) => editor.delete_map_item(&id),
+        (EditTarget::GlobalRecord(kind), EditAction::Delete) => editor.delete_global(kind),
         (target, action) => Err(bedrock_render::BedrockRenderError::Validation(format!(
             "{} does not support {} yet",
             target.operation_label(),
@@ -1439,7 +1439,7 @@ fn edit_history_spec(
     let mut chunks = BTreeSet::new();
     let mut raw_keys = BTreeSet::new();
     match target {
-        EditTarget::MapRecord(id) => {
+        EditTarget::SavedData(id) => {
             raw_keys.insert(id.storage_key().to_vec());
         }
         EditTarget::GlobalRecord(kind) => {
@@ -1481,7 +1481,7 @@ pub(super) fn hsa_editor_detail(
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
     let areas = editor
-        .scan_hsa_records(WorldScanOptions::default())?
+        .hardcoded_spawn_areas(WorldScanOptions::default())?
         .into_iter()
         .find_map(|(chunk, areas)| (chunk == pos).then_some(areas))
         .unwrap_or_default();
@@ -1512,7 +1512,7 @@ pub(super) fn block_entities_editor_detail(
     editor: &MapWorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let records = editor.block_entities_in_chunk(pos)?;
+    let records = editor.block_entities(pos)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BlockEntities(pos),
         title: SharedString::from(format!("方块实体 chunk {}, {}", pos.x, pos.z)),
@@ -1532,7 +1532,7 @@ pub(super) fn block_entity_at_editor_detail(
     chunk: ChunkPos,
     block: BlockPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let records = editor.block_entities_in_chunk(chunk)?;
+    let records = editor.block_entities(chunk)?;
     let matching = records
         .iter()
         .filter(|record| record.entity.position == Some([block.x, block.y, block.z]))
@@ -1557,7 +1557,7 @@ pub(super) fn actors_editor_detail(
     editor: &MapWorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let actors = editor.actors_in_chunk(pos)?;
+    let actors = editor.actors(pos)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::Actors(pos),
         title: SharedString::from(format!("Actors chunk {}, {}", pos.x, pos.z)),
@@ -1578,7 +1578,7 @@ pub(super) fn actor_editor_detail(
     unique_id: i64,
 ) -> bedrock_render::Result<ProfessionalDetail> {
     let actor = editor
-        .actors_in_chunk(chunk)?
+        .actors(chunk)?
         .into_iter()
         .find(|actor| actor.entity.unique_id == Some(unique_id))
         .ok_or_else(|| {
@@ -1671,16 +1671,16 @@ pub(super) fn biome_storage_editor_detail(
     })
 }
 
-pub(super) fn map_record_editor_detail(
+pub(super) fn map_item_editor_detail(
     editor: &MapWorldEditor,
-    id: &MapRecordId,
+    id: &MapItemId,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let record = editor.read_map_record(id)?;
+    let record = editor.map_item(id)?;
     let rows = record.as_ref().map_or_else(
         || vec![readonly_row("记录", "不存在")],
         |record| {
             vec![
-                readonly_row("id", record.record_id.as_str().to_string()),
+                readonly_row("id", record.id.as_str().to_string()),
                 readonly_row("roots", record.roots.len().to_string()),
                 readonly_row(
                     "pixels",
@@ -1695,13 +1695,13 @@ pub(super) fn map_record_editor_detail(
         },
     );
     Ok(ProfessionalDetail::Editor {
-        target: EditTarget::MapRecord(id.clone()),
+        target: EditTarget::SavedData(id.clone()),
         title: SharedString::from(format!("Map {}", id.as_str())),
         sections: vec![EditSection {
             title: SharedString::from("地图记录"),
             rows,
         }],
-        json: pretty_json(serde_json::json!(record.as_ref().map(map_record_json))),
+        json: pretty_json(serde_json::json!(record.as_ref().map(map_item_json))),
     })
 }
 
@@ -1709,7 +1709,7 @@ pub(super) fn global_record_editor_detail(
     editor: &MapWorldEditor,
     kind: GlobalRecordKind,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let record = editor.read_global_record(kind.clone())?;
+    let record = editor.global(kind.clone())?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::GlobalRecord(kind.clone()),
         title: SharedString::from(format!("Global {}", global_kind_label(&kind))),
@@ -1843,7 +1843,7 @@ pub(super) fn supports_editor_delete(target: &EditTarget) -> bool {
         EditTarget::HsaChunk(_)
             | EditTarget::BlockEntityAt { .. }
             | EditTarget::Actors(_)
-            | EditTarget::MapRecord(_)
+            | EditTarget::SavedData(_)
             | EditTarget::GlobalRecord(_)
     )
 }
@@ -1870,7 +1870,7 @@ pub(super) fn editable_row(
     }
 }
 
-pub(super) fn hsa_rows(index: usize, area: &ParsedHardcodedSpawnArea) -> Vec<EditRow> {
+pub(super) fn hsa_rows(index: usize, area: &HardcodedSpawnArea) -> Vec<EditRow> {
     vec![
         readonly_row(format!("#{index} kind"), hsa_kind_label(area.kind)),
         editable_row(
@@ -1999,7 +1999,7 @@ pub(super) fn block_json(pos: BlockPos) -> serde_json::Value {
     })
 }
 
-pub(super) fn hsa_json(area: &ParsedHardcodedSpawnArea) -> serde_json::Value {
+pub(super) fn hsa_json(area: &HardcodedSpawnArea) -> serde_json::Value {
     serde_json::json!({
         "kind": hsa_kind_label(area.kind),
         "min": area.min,
@@ -2030,9 +2030,9 @@ pub(super) fn actor_json(record: &ActorRecord) -> serde_json::Value {
     })
 }
 
-pub(super) fn map_record_json(record: &ParsedMapData) -> serde_json::Value {
+pub(super) fn map_item_json(record: &SavedData) -> serde_json::Value {
     serde_json::json!({
-        "id": record.record_id.as_str(),
+        "id": record.id.as_str(),
         "roots": record.roots.len(),
         "known_fields": {
             "dimension": record.known_fields.dimension,
@@ -2051,7 +2051,7 @@ pub(super) fn map_record_json(record: &ParsedMapData) -> serde_json::Value {
     })
 }
 
-pub(super) fn global_record_json(record: &ParsedGlobalData) -> serde_json::Value {
+pub(super) fn global_record_json(record: &Global) -> serde_json::Value {
     serde_json::json!({
         "name": record.name,
         "kind": global_kind_label(&record.kind),
@@ -2060,7 +2060,7 @@ pub(super) fn global_record_json(record: &ParsedGlobalData) -> serde_json::Value
 }
 
 pub(super) fn run_quick_write_action_blocking(
-    world: &BedrockWorld,
+    world: &World,
     action: QuickWriteAction,
     guard: &WriteGuard,
     copied_chunk: Option<&CopiedChunkData>,
@@ -2091,7 +2091,7 @@ pub(super) fn run_quick_write_action_blocking(
             };
             let (message, invalidation) =
                 if matches!(action, QuickWriteAction::ResetCurrentChunk(_)) {
-                    let deleted = delete_chunks_blocking(world, bounds, guard)?;
+                    let deleted = delete_chunks(world, bounds, guard)?;
                     check_bedrock_operation_cancelled(cancel)?;
                     (
                         format!("已重置当前 chunk，删除 {deleted} 条记录并允许游戏重新加载"),
@@ -2121,11 +2121,11 @@ pub(super) fn run_quick_write_action_blocking(
             ))
         }
         QuickWriteAction::DeleteCurrentChunkActors(_) => {
-            let actors = world.actors_in_chunk_blocking(chunk)?;
+            let actors = world.actors(chunk)?;
             let mut deleted = 0usize;
             for uid in actors.into_iter().filter_map(|actor| actor.uid) {
                 check_bedrock_operation_cancelled(cancel)?;
-                world.delete_actor_blocking(chunk, uid)?;
+                world.delete_actor(chunk, uid)?;
                 deleted = deleted.saturating_add(1);
             }
             check_bedrock_operation_cancelled(cancel)?;
@@ -2282,8 +2282,8 @@ pub(super) fn copy_chunks_blocking(
     let mut copied_chunks = Vec::with_capacity(total);
     for (index, chunk) in chunks.into_iter().enumerate() {
         check_bedrock_operation_cancelled(cancel)?;
-        let chunk_data = editor.world().get_chunk_blocking(chunk)?;
-        let parsed_chunk = bedrock_world::parsed::parse_chunk_records_ref_with_options(
+        let chunk_data = editor.world().chunk(chunk)?;
+        let parsed_chunk = ::bedrock_world::scan::Chunk::new(
             chunk,
             &chunk_data.records,
             copy_chunk_parse_options(),
@@ -2293,17 +2293,17 @@ pub(super) fn copy_chunks_blocking(
         let mut hardcoded_spawn_areas = Vec::new();
         for record in parsed_chunk.records {
             match record.value {
-                bedrock_world::ParsedChunkRecordValue::BlockEntities(entities) => {
+                bedrock_world::ChunkValue::BlockEntities(entities) => {
                     block_entities.extend(entities);
                 }
-                bedrock_world::ParsedChunkRecordValue::HardcodedSpawnAreas(areas) => {
+                bedrock_world::ChunkValue::HardcodedSpawnAreas(areas) => {
                     hardcoded_spawn_areas.extend(areas);
                 }
                 _ => {}
             }
         }
 
-        copied_chunks.push(CopiedChunkSnapshot {
+        copied_chunks.push(CopiedChunk {
             chunk,
             records,
             block_entities,
@@ -2332,7 +2332,7 @@ fn check_bedrock_operation_cancelled(cancel: Option<&CancelFlag>) -> bedrock_wor
 }
 
 pub(super) fn paste_copied_chunk_blocking(
-    world: &BedrockWorld,
+    world: &World,
     copied_chunk: &CopiedChunkData,
     source_anchor: ChunkPos,
     target_anchor: ChunkPos,
@@ -2374,7 +2374,7 @@ pub(super) fn paste_copied_chunk_blocking(
         for record in &snapshot.records {
             let mut key = record.key.clone();
             key.pos = target_chunk;
-            active_transaction.put_raw_record(&key, record.value.clone());
+            active_transaction.put_raw(&key, record.value.clone());
         }
 
         let shifted_block_entities = snapshot
@@ -2400,7 +2400,7 @@ pub(super) fn paste_copied_chunk_blocking(
             })
             .collect::<Vec<_>>();
         if !shifted_hsa.is_empty() {
-            active_transaction.put_hsa_for_chunk(target_chunk, &shifted_hsa)?;
+            active_transaction.save_hardcoded_spawn_areas(target_chunk, &shifted_hsa)?;
         }
 
         affected_chunks.insert(target_chunk);
@@ -2441,7 +2441,7 @@ pub(super) struct CopiedChunkStructurePlacement {
 }
 
 pub(super) fn copied_chunk_snapshot_structure_placement(
-    snapshot: &CopiedChunkSnapshot,
+    snapshot: &CopiedChunk,
     target_chunk: ChunkPos,
 ) -> bedrock_world::Result<CopiedChunkStructurePlacement> {
     let (min_y, max_y) = snapshot.chunk.y_range(ChunkVersion::New);
@@ -2454,7 +2454,7 @@ pub(super) fn copied_chunk_snapshot_structure_placement(
     let mut palette_indices = HashMap::default();
     let air_key = mcstructure_palette_key(&structure.palette[0]);
     palette_indices.insert(air_key, 0_i32);
-    let chunk = bedrock_world::Chunk {
+    let chunk = bedrock_world::LevelChunk {
         pos: snapshot.chunk,
         version: None,
         records: snapshot.records.clone(),
@@ -2519,7 +2519,7 @@ pub(super) fn copied_chunk_snapshot_structure_placement(
 }
 
 fn paste_transformed_copied_chunks_blocking(
-    world: &BedrockWorld,
+    world: &World,
     copied_chunk: &CopiedChunkData,
     source_anchor: ChunkPos,
     target_anchor: ChunkPos,
@@ -2560,7 +2560,7 @@ fn paste_transformed_copied_chunks_blocking(
                 transform,
                 guard,
             )?;
-            let result = structure_placement.structure.write_to_world_blocking(
+            let result = structure_placement.structure.write_to_world(
                 world,
                 bedrock_world::McStructurePlacement {
                     source_anchor: structure_placement.source_anchor,
@@ -2597,7 +2597,7 @@ fn paste_transformed_copied_chunks_blocking(
                 })
                 .collect::<Vec<_>>();
             if !shifted_hsa.is_empty() {
-                world.put_hsa_for_chunk_blocking(target_chunk, &shifted_hsa)?;
+                world.save_hardcoded_spawn_areas(target_chunk, &shifted_hsa)?;
             }
 
             affected_chunks.extend(result.affected_chunks);
@@ -2637,7 +2637,7 @@ const fn mcstructure_rotation_for_paste(
 }
 
 fn copied_chunk_decoded_subchunks(
-    chunk: &bedrock_world::Chunk,
+    chunk: &bedrock_world::LevelChunk,
     min_y: i32,
     max_y: i32,
 ) -> bedrock_world::Result<BTreeMap<i8, bedrock_world::SubChunk>> {
@@ -2648,7 +2648,7 @@ fn copied_chunk_decoded_subchunks(
                 "chunk copy source subchunk y={subchunk_y} cannot be represented as i8"
             ))
         })?;
-        if let Some(subchunk) = chunk.get_subchunk(subchunk_y)? {
+        if let Some(subchunk) = chunk.subchunk(subchunk_y)? {
             subchunks.insert(subchunk_y, subchunk);
         }
     }
@@ -2786,7 +2786,7 @@ fn mcstructure_palette_key(entry: &bedrock_world::McStructurePaletteEntry) -> St
 
 fn insert_copied_block_entity_into_structure(
     structure: &mut bedrock_world::McStructureFile,
-    entity: &ParsedBlockEntity,
+    entity: &BlockEntity,
     source_origin_x: i32,
     origin_y: i32,
     source_origin_z: i32,
@@ -2812,10 +2812,10 @@ fn insert_copied_block_entity_into_structure(
 }
 
 pub(super) fn pasted_block_entity_for_target(
-    entity: &ParsedBlockEntity,
+    entity: &BlockEntity,
     source_chunk: ChunkPos,
     target_chunk: ChunkPos,
-) -> ParsedBlockEntity {
+) -> BlockEntity {
     let mut pasted = entity.clone();
     let Some([x, y, z]) = pasted.position else {
         return pasted;
@@ -2831,11 +2831,11 @@ pub(super) fn pasted_block_entity_for_target(
 }
 
 pub(super) fn pasted_hardcoded_spawn_area_for_target(
-    area: ParsedHardcodedSpawnArea,
+    area: HardcodedSpawnArea,
     source_chunk: ChunkPos,
     target_chunk: ChunkPos,
     transform: PasteTransform,
-) -> ParsedHardcodedSpawnArea {
+) -> HardcodedSpawnArea {
     let corners = [
         [area.min[0], area.min[1], area.min[2]],
         [area.min[0], area.min[1], area.max[2]],
@@ -2856,7 +2856,7 @@ pub(super) fn pasted_hardcoded_spawn_area_for_target(
             max[axis] = max[axis].max(position[axis]);
         }
     }
-    ParsedHardcodedSpawnArea {
+    HardcodedSpawnArea {
         kind: area.kind,
         min,
         max,
@@ -2953,9 +2953,9 @@ pub(super) fn copy_safe_chunk_records(records: Vec<ChunkRecord>) -> Vec<ChunkRec
         .collect()
 }
 
-fn copy_chunk_parse_options() -> bedrock_world::WorldParseOptions {
-    bedrock_world::WorldParseOptions {
-        categories: bedrock_world::WorldParseCategories {
+fn copy_chunk_parse_options() -> bedrock_world::ScanOptions {
+    bedrock_world::ScanOptions {
+        categories: bedrock_world::ScanCategories {
             chunks: true,
             players: false,
             actors: false,
@@ -2970,17 +2970,17 @@ fn copy_chunk_parse_options() -> bedrock_world::WorldParseOptions {
 }
 
 pub(super) fn delete_chunk_record_with_guard(
-    world: &BedrockWorld,
+    world: &World,
     chunk: ChunkPos,
     tag: ChunkRecordTag,
     _guard: &WriteGuard,
 ) -> bedrock_world::Result<()> {
     let key = bedrock_world::ChunkKey::new(chunk, tag);
-    world.delete_raw_record_blocking(&key)
+    world.delete_raw(&key)
 }
 
 pub(super) fn clear_chunks_blocking(
-    world: &BedrockWorld,
+    world: &World,
     bounds: SlimeChunkBounds,
     guard: &WriteGuard,
 ) -> bedrock_world::Result<usize> {
@@ -3001,19 +3001,19 @@ pub(super) fn clear_chunks_blocking(
 }
 
 fn clear_chunk_blocking(
-    world: &BedrockWorld,
+    world: &World,
     chunk: ChunkPos,
     _guard: &WriteGuard,
 ) -> bedrock_world::Result<()> {
     let actor_uids = world
-        .actors_in_chunk_blocking(chunk)?
+        .actors(chunk)?
         .into_iter()
         .filter_map(|actor| actor.uid)
         .collect::<Vec<_>>();
     let mut transaction = world.transaction();
-    for record in world.get_chunk_blocking(chunk)?.records {
+    for record in world.chunk(chunk)?.records {
         if chunk_record_tag_is_clear_target(record.key.tag) {
-            transaction.delete_raw_record(&record.key);
+            transaction.delete_raw(&record.key);
         }
     }
     let actor_digest_key = ActorDigestKey::new(chunk).storage_key();
@@ -3036,18 +3036,18 @@ fn clear_chunk_blocking(
         ChunkVersion::Old => ChunkRecordTag::Data2D,
         ChunkVersion::New => ChunkRecordTag::Data3D,
     };
-    transaction.put_raw_record(&bedrock_world::ChunkKey::new(chunk, tag), value);
+    transaction.put_raw(&bedrock_world::ChunkKey::new(chunk, tag), value);
     let (min_subchunk_y, max_subchunk_y) = chunk.subchunk_index_range(chunk_version);
     if min_subchunk_y <= max_subchunk_y {
         let air_subchunk = air_subchunk_bytes()?;
         for subchunk_y in min_subchunk_y..=max_subchunk_y {
-            transaction.put_raw_record(
+            transaction.put_raw(
                 &bedrock_world::ChunkKey::subchunk(chunk, subchunk_y),
                 air_subchunk.clone(),
             );
         }
     }
-    transaction.put_raw_record(
+    transaction.put_raw(
         &bedrock_world::ChunkKey::new(chunk, ChunkRecordTag::FinalizedState),
         2_i32.to_le_bytes().to_vec(),
     );

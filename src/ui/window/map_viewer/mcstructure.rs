@@ -1,5 +1,5 @@
 use super::model::{
-    CopiedChunkData, CopiedChunkPreviewImage, CopiedChunkSnapshot, ImportedStructureData,
+    CopiedChunkData, CopiedChunkPreviewImage, CopiedChunk, ImportedStructureData,
     MAP_OPERATION_CANCELLED_MESSAGE, PasteRotation, PasteTransform,
 };
 use super::prelude::*;
@@ -57,9 +57,9 @@ pub(super) fn export_selection_mcstructure_blocking(
         total,
     });
 
-    let world = BedrockWorld::open_blocking(
+    let world = World::open(
         world_path,
-        bedrock_world::BedrockWorldOpenOptions::default(),
+        bedrock_world::OpenOptions::default(),
     )
     .map_err(|error| error.to_string())?;
     check_mcstructure_export_cancelled(cancel)?;
@@ -79,7 +79,7 @@ pub(super) fn export_selection_mcstructure_blocking(
     let height = max_y.saturating_sub(min_y).saturating_add(1);
     let size = bedrock_world::McStructureSize::new(width, height, depth)
         .map_err(|error| format!("选区结构尺寸超过当前安全上限：{error}"))?;
-    let structure = bedrock_world::McStructureFile::from_world_region_blocking(
+    let structure = bedrock_world::McStructureFile::from_world_region(
         &world,
         bounds.dimension,
         min_x,
@@ -165,7 +165,7 @@ fn structure_to_copied_chunk(
     }
     let mut chunks = Vec::with_capacity(targets.len());
     for chunk in targets {
-        chunks.push(CopiedChunkSnapshot {
+        chunks.push(CopiedChunk {
             chunk,
             records: Vec::new(),
             block_entities: Vec::new(),
@@ -197,7 +197,7 @@ pub(super) fn imported_structure_targets(
 }
 
 pub(super) fn paste_imported_structure_blocking(
-    world: &BedrockWorld,
+    world: &World,
     import: &ImportedStructureData,
     target_anchor: ChunkPos,
     transform: PasteTransform,
@@ -206,7 +206,7 @@ pub(super) fn paste_imported_structure_blocking(
     progress: &mut impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<(String, MapEditInvalidation)> {
     check_mcstructure_paste_cancelled(cancel)?;
-    let result = import.structure.write_to_world_blocking(
+    let result = import.structure.write_to_world(
         world,
         bedrock_world::McStructurePlacement {
             source_anchor: import.source_anchor,
@@ -245,8 +245,8 @@ pub(super) fn paste_imported_structure_blocking(
 }
 
 pub(super) fn replace_transformed_chunk_seed(
-    world: &BedrockWorld,
-    snapshot: &CopiedChunkSnapshot,
+    world: &World,
+    snapshot: &CopiedChunk,
     target_chunk: ChunkPos,
     transform: PasteTransform,
     guard: &WriteGuard,
@@ -260,7 +260,7 @@ pub(super) fn replace_transformed_chunk_seed(
         };
         let mut key = record.key.clone();
         key.pos = target_chunk;
-        transaction.put_raw_record(&key, value);
+        transaction.put_raw(&key, value);
     }
     transaction.commit()
 }
@@ -314,7 +314,7 @@ fn transform_horizontal_values<T: Copy>(
 }
 
 fn transform_biome_storage(
-    storage: &mut bedrock_world::ParsedBiomeStorage,
+    storage: &mut bedrock_world::BiomeStorage,
     transform: PasteTransform,
 ) -> bedrock_world::Result<()> {
     let Some(indices) = storage.indices.as_mut() else {

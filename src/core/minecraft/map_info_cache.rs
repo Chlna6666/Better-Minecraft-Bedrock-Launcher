@@ -1,12 +1,13 @@
 use anyhow::{Context, Result, bail};
 use bedrock_world::{
-    chunk::{ChunkPos, Dimension, ParsedChunkRecordValue},
+    chunk::{ChunkPos, Dimension, ChunkValue},
     query::{
         ChunkRecordFingerprint, ChunkRecordQuery, ChunkRecordQueryResult,
-        fingerprint_chunk_records_many_blocking_with_control,
-        query_chunk_records_many_blocking_with_control,
+        chunk_fingerprints,
+        load_chunks,
     },
-    world::{BedrockWorld, BedrockWorldOpenOptions, CancelFlag},
+    surface::CancelFlag,
+    world::{World, OpenOptions},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -186,7 +187,7 @@ pub fn load_map_info_tiles_blocking(
     // This makes cache hits reliable even when Minecraft or another editor changed the
     // world behind BMCBL's back.
     cancel_if_requested(cancel)?;
-    let world = BedrockWorld::open_blocking(world_path, BedrockWorldOpenOptions::default())
+    let world = World::open(world_path, OpenOptions::default())
         .context("open world for map information cache validation")?;
     let source_hashes = map_info_source_hashes(&world, &keys, cancel)?;
 
@@ -252,15 +253,15 @@ pub fn load_map_info_tiles_blocking(
 }
 
 fn map_info_source_hashes(
-    world: &BedrockWorld,
+    world: &World,
     keys: &[MapInfoTileKey],
     cancel: &CancelFlag,
 ) -> Result<BTreeMap<MapInfoTileKey, u128>> {
-    let fingerprints = fingerprint_chunk_records_many_blocking_with_control(
+    let fingerprints = chunk_fingerprints(
         world,
         chunks_for_keys(keys)?,
         map_info_record_query(),
-        cancel,
+        Some(cancel),
     )?;
     Ok(source_hashes_by_tile(
         fingerprints,
@@ -294,18 +295,18 @@ fn source_hashes_by_tile(
 }
 
 fn query_map_info_records_parallel(
-    world: &BedrockWorld,
+    world: &World,
     keys: &[MapInfoTileKey],
     cancel: &CancelFlag,
     max_workers: usize,
 ) -> Result<Vec<ChunkRecordQueryResult>> {
     let worker_count = map_info_query_worker_count(keys.len(), max_workers);
     if worker_count == 1 {
-        return query_chunk_records_many_blocking_with_control(
+        return load_chunks(
             world,
             chunks_for_keys(keys)?,
             map_info_record_query(),
-            cancel,
+            Some(cancel),
         )
         .map_err(Into::into);
     }
@@ -315,11 +316,11 @@ fn query_map_info_records_parallel(
         keys.par_chunks(batch_size)
             .map(|batch| {
                 cancel_if_requested(cancel)?;
-                query_chunk_records_many_blocking_with_control(
+                load_chunks(
                     world,
                     chunks_for_keys(batch)?,
                     map_info_record_query(),
-                    cancel,
+                    Some(cancel),
                 )
                 .map_err(Into::into)
             })
@@ -424,7 +425,7 @@ impl MapInfoTilePayload {
         for result in records {
             for record in &result.records {
                 match &record.value {
-                    ParsedChunkRecordValue::Entities(entities) => {
+                    ChunkValue::Entities(entities) => {
                         for entity in entities {
                             let Some(position) = entity.position else {
                                 payload.skipped_entity_count =
@@ -443,7 +444,7 @@ impl MapInfoTilePayload {
                             });
                         }
                     }
-                    ParsedChunkRecordValue::BlockEntities(block_entities) => {
+                    ChunkValue::BlockEntities(block_entities) => {
                         for entity in block_entities {
                             let Some(position) = entity.position else {
                                 continue;
@@ -454,14 +455,14 @@ impl MapInfoTilePayload {
                             });
                         }
                     }
-                    ParsedChunkRecordValue::PendingTicks(ticks) => {
+                    ChunkValue::PendingTicks(ticks) => {
                         let count = u32::try_from(ticks.len()).unwrap_or(u32::MAX);
                         let entry = pending_tick_counts
                             .entry((result.pos.x, result.pos.z))
                             .or_default();
                         *entry = entry.saturating_add(count);
                     }
-                    ParsedChunkRecordValue::HardcodedSpawnAreas(areas) => {
+                    ChunkValue::HardcodedSpawnAreas(areas) => {
                         for area in areas {
                             payload.hardcoded_spawn_areas.push(MapInfoBlockRect {
                                 min_block_x: area.min[0],

@@ -367,12 +367,12 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = BedrockWorld::open_blocking(
+                    let world = World::open(
                         &world_path,
-                        bedrock_world::BedrockWorldOpenOptions::default(),
+                        bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
-                    VillageOverlayIndex::build_blocking_with_control(&world, &cancel)
+                    VillageOverlayIndex::build(&world, &cancel)
                         .map(Arc::new)
                         .map_err(|error| error.to_string())
                 })

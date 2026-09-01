@@ -126,7 +126,7 @@ pub(super) fn render_chunk_patches_blocking(
         .map_err(|error| format!("局部 chunk 渲染布局无效: {error}"))?;
         render_session
             .renderer()
-            .render_tile_with_options_blocking(job, &render_options)
+            .render_tile(job, &render_options)
             .map_err(|error| format!("局部 chunk {},{} 渲染失败: {error}", chunk.x, chunk.z))?;
         stats.cpu_tiles = stats.cpu_tiles.saturating_add(1);
     }

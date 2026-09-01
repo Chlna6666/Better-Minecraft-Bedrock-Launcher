@@ -7,7 +7,7 @@ use super::preview_3d::{
 use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
-use ::bedrock_world::{ExactChunkSelection, query_selection_stats_exact_blocking};
+use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::ExactChunkRenderPlan;
 use std::collections::BTreeSet;
@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 impl MapViewerWindowView {
     /// Runs professional statistics against the exact selected chunk set instead
     /// of expanding the selection to its bounding rectangle.
-    pub(super) fn query_selection_stats_exact(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn exact_selection_stats(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
             self.status = SharedString::from("请先选择区块");
             cx.notify();
@@ -44,12 +44,12 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = BedrockWorld::open_blocking(
+                    let world = World::open(
                         &world_path,
-                        ::bedrock_world::BedrockWorldOpenOptions::default(),
+                        ::bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
-                    query_selection_stats_exact_blocking(&world, &exact_selection, options)
+                    exact_selection_stats(&world, &exact_selection, options)
                         .map_err(|error| error.to_string())
                 })
                 .await;

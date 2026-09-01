@@ -91,18 +91,19 @@ pub(super) use crate::utils::file_picker::{
 pub(super) use super::bedrock_world_domains as bedrock_world;
 
 pub(super) use ::bedrock_world::{
-    block::{BlockPos, ParsedBlockEntity},
+    block::{BlockPos, BlockEntity},
     chunk::{ChunkKey, ChunkRecord, ChunkRecordTag, ChunkVersion},
     entity::ActorDigestKey,
     player::{PlayerData, PlayerId},
     query::{
         ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
         SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, VillageOverlay, VillageOverlayIndex,
-        WriteGuard, delete_chunks_blocking, is_slime_chunk, query_block_tip_blocking,
-        query_chunk_detail_blocking, query_region_overlays_blocking_with_control,
-        query_selection_stats_blocking, query_slime_chunk_windows,
+        WriteGuard, delete_chunks, is_slime_chunk, block_tip,
+        chunk_detail, region_overlays,
+        selection_stats, query_slime_chunk_windows,
     },
-    world::{BedrockWorld, CancelFlag},
+    surface::CancelFlag,
+    world::World,
 };
 pub(super) use bedrock_render::{
     AtlasRenderOptions, BlockBoundaryRenderOptions, BlockVolumeRenderOptions, ChunkBounds,
@@ -118,11 +119,11 @@ pub(super) use bedrock_render::{
     TileStreamEventV2,
     editor::{
         ActorRecord, ActorSource, Biome3d, BlockEntityRecord, GlobalRecordKind,
-        HardcodedSpawnAreaKind, HeightMap2d, MapEditInvalidation, MapRecordId, MapWorldEditor,
-        ParsedBiomeStorage, ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData,
+        HardcodedSpawnAreaKind, HeightMap2d, MapEditInvalidation, MapItemId, MapWorldEditor,
+        BiomeStorage, Global, HardcodedSpawnArea, SavedData,
         WorldScanOptions,
     },
-    load_or_build_tile_occupancy_index_blocking,
+    load_or_build_tile_occupancy_index,
 };
 pub(super) use bytes::Bytes;
 pub(super) use futures::channel::mpsc::{UnboundedSender, unbounded};

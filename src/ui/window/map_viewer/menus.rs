@@ -172,7 +172,7 @@ impl MapViewerWindowView {
             vec![
                 ContextMenuEntry::item(ContextMenuItem::new("统计当前选区").on_click({
                     let entity = cx.entity();
-                    move |cx| entity.update(cx, |this, cx| this.query_selection_stats_exact(cx))
+                    move |cx| entity.update(cx, |this, cx| this.exact_selection_stats(cx))
                 })),
                 ContextMenuEntry::item(ContextMenuItem::new("导出选中区块 OBJ").on_click({
                     let entity = cx.entity();
@@ -792,7 +792,7 @@ impl MapViewerWindowView {
                         move |cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_top_more();
-                                this.query_selection_stats_exact(cx);
+                                this.exact_selection_stats(cx);
                             })
                         }
                     })),

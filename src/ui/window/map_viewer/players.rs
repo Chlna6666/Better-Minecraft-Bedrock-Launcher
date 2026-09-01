@@ -288,13 +288,13 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = BedrockWorld::open_blocking(
+                    let world = World::open(
                         &world_path,
-                        bedrock_world::BedrockWorldOpenOptions::default(),
+                        bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let ids = world
-                        .list_players_blocking()
+                        .players()
                         .map_err(|error| error.to_string())?;
 
                     let mut rows = Vec::with_capacity(ids.len());
@@ -302,7 +302,7 @@ impl MapViewerWindowView {
                     for id in ids {
                         let raw_label = player_id_label(&id);
                         let probe = world
-                            .get_player_blocking(&id)
+                            .player(&id)
                             .map_err(|error| error.to_string())
                             .and_then(|data| {
                                 let data = data.ok_or_else(|| "玩家记录不存在".to_string())?;
@@ -469,13 +469,13 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = BedrockWorld::open_blocking(
+                    let world = World::open(
                         &world_path,
-                        bedrock_world::BedrockWorldOpenOptions::default(),
+                        bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
                     let data = world
-                        .get_player_blocking(&id)
+                        .player(&id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     player_detail_from_data(data).map_err(|error| error.to_string())
@@ -642,22 +642,22 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+                    let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = BedrockWorld::open_blocking(&world_path, options)
+                    let world = World::open(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let history_capture =
                         capture_player_history(&world_path, &id, label.clone());
 
                     let mut data = world
-                        .get_player_blocking(&id)
+                        .player(&id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     apply_player_item_mutation(&mut data.nbt, &mutation)?;
                     data = PlayerData::from_nbt(id.clone(), data.nbt)
                         .map_err(|error| error.to_string())?;
                     world
-                        .put_player_blocking(&data)
+                        .save_player(&data)
                         .map_err(|error| error.to_string())?;
                     let detail = player_detail_from_data(data).map_err(|error| error.to_string());
 
@@ -739,20 +739,20 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let mut options = bedrock_world::BedrockWorldOpenOptions::default();
+                    let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = BedrockWorld::open_blocking(&world_path, options)
+                    let world = World::open(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let history_capture = capture_player_history(&world_path, &id, edit.label());
                     let mut data = world
-                        .get_player_blocking(&id)
+                        .player(&id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     apply_player_quick_edit(&mut data.nbt, &edit, center_block, dimension)?;
                     data = PlayerData::from_nbt(id.clone(), data.nbt)
                         .map_err(|error| error.to_string())?;
                     world
-                        .put_player_blocking(&data)
+                        .save_player(&data)
                         .map_err(|error| error.to_string())?;
                     let detail = player_detail_from_data(data).map_err(|error| error.to_string());
                     match (history_capture, detail) {

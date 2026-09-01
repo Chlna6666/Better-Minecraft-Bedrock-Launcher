@@ -91,7 +91,7 @@ impl RegionPackageDisk {
 }
 
 impl RegionChunkDisk {
-    fn from_snapshot(snapshot: &CopiedChunkSnapshot) -> Self {
+    fn from_snapshot(snapshot: &CopiedChunk) -> Self {
         Self {
             chunk: snapshot.chunk.into(),
             records: snapshot
@@ -115,7 +115,7 @@ impl RegionChunkDisk {
         }
     }
 
-    fn into_snapshot(self) -> Result<CopiedChunkSnapshot, String> {
+    fn into_snapshot(self) -> Result<CopiedChunk, String> {
         let chunk = self.chunk.into_chunk_pos();
         let mut records = Vec::with_capacity(self.records.len());
         for record in self.records {
@@ -139,7 +139,7 @@ impl RegionChunkDisk {
             .map(RegionHardcodedSpawnAreaDisk::into_area)
             .collect();
 
-        Ok(CopiedChunkSnapshot {
+        Ok(CopiedChunk {
             chunk,
             records,
             block_entities,
@@ -169,7 +169,7 @@ impl RegionChunkPosDisk {
 }
 
 impl RegionBlockEntityDisk {
-    fn from_entity(entity: &ParsedBlockEntity) -> Self {
+    fn from_entity(entity: &BlockEntity) -> Self {
         Self {
             id: entity.id.clone(),
             position: entity.position,
@@ -179,7 +179,7 @@ impl RegionBlockEntityDisk {
         }
     }
 
-    fn into_entity(self) -> ParsedBlockEntity {
+    fn into_entity(self) -> BlockEntity {
         let id = self.id.or_else(|| nbt_string_field(&self.nbt, "id"));
         let position = self.position.or_else(|| nbt_block_position(&self.nbt));
         let is_movable = self
@@ -188,7 +188,7 @@ impl RegionBlockEntityDisk {
         let custom_name = self
             .custom_name
             .or_else(|| nbt_string_field(&self.nbt, "CustomName"));
-        ParsedBlockEntity {
+        BlockEntity {
             id,
             position,
             is_movable,
@@ -200,7 +200,7 @@ impl RegionBlockEntityDisk {
 }
 
 impl RegionHardcodedSpawnAreaDisk {
-    fn from_area(area: &ParsedHardcodedSpawnArea) -> Self {
+    fn from_area(area: &HardcodedSpawnArea) -> Self {
         Self {
             kind: area.kind.byte(),
             min: area.min,
@@ -208,8 +208,8 @@ impl RegionHardcodedSpawnAreaDisk {
         }
     }
 
-    fn into_area(self) -> ParsedHardcodedSpawnArea {
-        ParsedHardcodedSpawnArea {
+    fn into_area(self) -> HardcodedSpawnArea {
+        HardcodedSpawnArea {
             kind: HardcodedSpawnAreaKind::from_byte(self.kind),
             min: self.min,
             max: self.max,
@@ -245,9 +245,9 @@ pub(super) fn export_region_package_blocking(
     cancel: Option<&CancelFlag>,
     mut progress: impl FnMut(ChunkTransferProgress),
 ) -> Result<Vec<u8>, String> {
-    let world = BedrockWorld::open_blocking(
+    let world = World::open(
         world_path,
-        bedrock_world::BedrockWorldOpenOptions::default(),
+        bedrock_world::OpenOptions::default(),
     )
     .map_err(|error| error.to_string())?;
     let editor = MapWorldEditor::from_world(world);
