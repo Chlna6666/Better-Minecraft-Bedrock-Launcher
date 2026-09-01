@@ -126,11 +126,11 @@ impl BackdropBlurTargets {
                 .eq(next_isolated_source_indices.iter().copied().filter(|index| {
                     blur_requires_isolated_source(next, *index)
                 }))
-            && self.variants.iter().zip(next).all(|(variant, config)| {
-                variant.config.reuse_key() == config.reuse_key()
-                    && variant.config.downsample() == config.downsample()
-                    && variant.config.levels() == config.levels()
-            })
+            && self
+                .variants
+                .iter()
+                .zip(next)
+                .all(|(variant, config)| variant.config.same_target_slot(*config))
     }
 }
 
