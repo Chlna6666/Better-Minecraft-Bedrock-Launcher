@@ -474,3 +474,15 @@ where
         texture_view,
     })
 }
+
+fn destroy_render_texture_target<D>(device: &mut D, target: TextureTarget, backend_name: &str)
+where
+    D: BackendResources + BackendPipelines,
+{
+    if let Err(error) = device.destroy_texture_view(target.texture_view) {
+        log::debug!("failed to destroy {backend_name} texture target view: {error}");
+    }
+    if let Err(error) = device.destroy_texture(target.texture) {
+        log::debug!("failed to destroy {backend_name} texture target: {error}");
+    }
+}
