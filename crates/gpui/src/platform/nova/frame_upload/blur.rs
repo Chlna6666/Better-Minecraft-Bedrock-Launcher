@@ -236,7 +236,7 @@ impl FrameUpload {
         for batch in &self.batches {
             match *batch {
                 UploadedBatch::BackdropBlurs { first, count } => {
-                    configs.extend(self.backdrop_blur_configs_for_range(first, count));
+                    self.append_backdrop_blur_configs_for_range(&mut configs, first, count);
                 }
                 UploadedBatch::CompositeBlur { index } => {
                     if let Some(config) = self.backdrop_blur_config_for_index(index) {
@@ -265,8 +265,18 @@ impl FrameUpload {
         count: u32,
     ) -> Vec<BackdropBlurConfig> {
         let mut configs = Vec::<BackdropBlurConfig>::new();
+        self.append_backdrop_blur_configs_for_range(&mut configs, first, count);
+        configs
+    }
+
+    fn append_backdrop_blur_configs_for_range(
+        &self,
+        configs: &mut Vec<BackdropBlurConfig>,
+        first: u32,
+        count: u32,
+    ) {
         let Some(end) = first.checked_add(count) else {
-            return configs;
+            return;
         };
         for primitive_index in first..end {
             let Some(config) = self.backdrop_blur_config_at(primitive_index, first) else {
@@ -280,7 +290,6 @@ impl FrameUpload {
                 configs.push(config);
             }
         }
-        configs
     }
 
     /// Rebuilds the two axis pass records. Both source axes are still full resolution at the point
@@ -292,10 +301,26 @@ impl FrameUpload {
                 .len()
                 .saturating_mul(BACKDROP_BLUR_PASS_BYTES * 2),
         );
+        let mut cached_radius_bits = None::<u32>;
+        let mut cached_pass = [0_u8; BACKDROP_BLUR_PASS_BYTES];
         for config in &self.backdrop_blur_configs {
             let radius = config.radius().max(1.0 / 4096.0);
+            let radius_bits = radius.to_bits();
+            if cached_radius_bits == Some(radius_bits) {
+                self.backdrop_blur_passes.extend_from_slice(&cached_pass);
+                self.backdrop_blur_passes.extend_from_slice(&cached_pass);
+                continue;
+            }
+
+            let start = self.backdrop_blur_passes.len();
             write_backdrop_blur_pass(&mut self.backdrop_blur_passes, radius);
-            write_backdrop_blur_pass(&mut self.backdrop_blur_passes, radius);
+            let end = self.backdrop_blur_passes.len();
+            debug_assert_eq!(end.saturating_sub(start), BACKDROP_BLUR_PASS_BYTES);
+            if let Some(record) = self.backdrop_blur_passes.get(start..end) {
+                cached_pass.copy_from_slice(record);
+                cached_radius_bits = Some(radius_bits);
+            }
+            self.backdrop_blur_passes.extend_from_within(start..end);
         }
     }
 
@@ -625,6 +650,10 @@ mod tests {
         assert_eq!(
             upload.backdrop_blur_passes.len(),
             BACKDROP_BLUR_PASS_BYTES * 2
+        );
+        assert_eq!(
+            &upload.backdrop_blur_passes[..BACKDROP_BLUR_PASS_BYTES],
+            &upload.backdrop_blur_passes[BACKDROP_BLUR_PASS_BYTES..]
         );
         for pass in 0..2 {
             let base = pass * BACKDROP_BLUR_PASS_BYTES;
