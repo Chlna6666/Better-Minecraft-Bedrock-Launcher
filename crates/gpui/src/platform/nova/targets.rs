@@ -68,6 +68,13 @@ pub(super) struct TextureTarget {
     pub(super) texture_view: TextureViewId,
 }
 
+fn blur_requires_isolated_source(configs: &[BackdropBlurConfig], index: u32) -> bool {
+    configs
+        .iter()
+        .copied()
+        .any(|config| config.contains_member_index(index) && config.radius() > 0.0)
+}
+
 impl BackdropBlurTargets {
     pub(super) fn resource_set_for_config(
         &self,
@@ -116,7 +123,9 @@ impl BackdropBlurTargets {
                 .isolated_sources
                 .iter()
                 .map(|source| source.index)
-                .eq(next_isolated_source_indices.iter().copied())
+                .eq(next_isolated_source_indices.iter().copied().filter(|index| {
+                    blur_requires_isolated_source(next, *index)
+                }))
             && self.variants.iter().zip(next).all(|(variant, config)| {
                 variant.config.reuse_key() == config.reuse_key()
                     && variant.config.downsample() == config.downsample()
@@ -231,6 +240,7 @@ where
     let mut isolated_source_indices = descriptor.isolated_source_indices;
     isolated_source_indices.sort_unstable();
     isolated_source_indices.dedup();
+    isolated_source_indices.retain(|index| blur_requires_isolated_source(configs, *index));
     let mut isolated_sources = Vec::with_capacity(isolated_source_indices.len());
     for index in isolated_source_indices {
         let target = create_render_texture_target(
