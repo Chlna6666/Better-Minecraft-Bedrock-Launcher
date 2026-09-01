@@ -305,9 +305,11 @@ impl Window {
         path.color = color.opacity(opacity);
         let transform = self.element_visual_transform;
         let translation = transform.translation.map(|value| value.scale(scale_factor));
-        let mut path = path
-            .scale(scale_factor)
-            .transform_uniform(transform.scale, translation);
+        let mut path = path.scale_and_transform_for_paint(
+            scale_factor,
+            transform.scale,
+            translation,
+        );
         path.content_mask = content_mask.scale(scale_factor);
         self.next_frame.scene.insert_primitive(path);
     }
