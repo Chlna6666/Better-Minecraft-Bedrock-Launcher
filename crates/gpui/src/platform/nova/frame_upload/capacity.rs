@@ -17,6 +17,7 @@ impl FrameUpload {
             self.backdrop_blurs.capacity(),
             self.backdrop_blur_configs.capacity() * std::mem::size_of::<BackdropBlurConfig>(),
             self.blur_content_ranges_cache.capacity() * std::mem::size_of::<BlurContentRange>(),
+            self.isolated_blur_source_indices_cache.capacity() * std::mem::size_of::<u32>(),
             self.backdrop_source_atlas_texture_ids_cache.capacity()
                 * std::mem::size_of::<AtlasTextureId>(),
             self.animation_bindings.capacity(),
@@ -85,6 +86,7 @@ impl FrameUpload {
         );
         trim_upload_vec(&mut self.backdrop_blur_configs, 8, multiplier);
         trim_upload_vec(&mut self.blur_content_ranges_cache, 8, multiplier);
+        trim_upload_vec(&mut self.isolated_blur_source_indices_cache, 8, multiplier);
         trim_upload_vec(
             &mut self.animation_bindings,
             64 * PACKED_ANIMATION_BINDING_BYTES,
