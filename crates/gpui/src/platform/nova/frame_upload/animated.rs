@@ -336,15 +336,10 @@ impl FrameUpload {
         let mut blur_samples: SmallVec<[BackdropBlurAnimationSample; 4]> = SmallVec::new();
         let mut sampled_visual_bounds = std::mem::take(&mut self.animated_visual_bounds_scratch);
         sampled_visual_bounds.clear();
-        sampled_visual_bounds.reserve(
-            self.animated_primitives
-                .len()
-                .saturating_sub(sampled_visual_bounds.capacity()),
-        );
+        sampled_visual_bounds.reserve(self.animated_primitives.len());
         let mut staging = std::mem::take(&mut self.animated_primitive_staging);
-        if staging.capacity() < PACKED_BACKDROP_BLUR_BYTES {
-            staging.reserve(PACKED_BACKDROP_BLUR_BYTES - staging.capacity());
-        }
+        staging.clear();
+        staging.reserve(PACKED_BACKDROP_BLUR_BYTES);
 
         for primitive in &self.animated_primitives {
             let sample = primitive.sample_resolved(&resolved_animation_values, size, &mut staging);
