@@ -64,14 +64,24 @@ impl ResolvedAnimationValues {
         let engine_len = engine_max
             .and_then(|max| dense_span_len(engine_count, engine_base, max))
             .unwrap_or(0);
+        let sparse_count = if scene_len == 0 { scene_count } else { 0 }
+            + if engine_len == 0 { engine_count } else { 0 };
+
+        let mut scene = SmallVec::new();
+        scene.resize(scene_len, None);
+        let mut engine = SmallVec::new();
+        engine.resize(engine_len, None);
+        let mut sparse = FxHashMap::default();
+        if sparse_count > 0 {
+            sparse.reserve(sparse_count);
+        }
 
         let mut resolved = Self {
-            scene: SmallVec::from_vec(vec![None; scene_len]),
+            scene,
             engine_base,
-            engine: SmallVec::from_vec(vec![None; engine_len]),
-            sparse: FxHashMap::default(),
+            engine,
+            sparse,
         };
-        resolved.sparse.reserve(values.len());
         for value in values {
             resolved.insert_first(value.animation_id, ResolvedAnimationValue::new(value));
         }
