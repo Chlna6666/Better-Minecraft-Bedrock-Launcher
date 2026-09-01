@@ -40,7 +40,7 @@ pub(crate) fn swap_rgba_pa_to_bgra_buffer(buffer: &mut [u8]) {
 #[inline]
 fn parallel_worker_count(buffer_len: usize) -> usize {
     let cpus = std::thread::available_parallelism()
-        .map(usize::from)
+        .map(|count| count.get())
         .unwrap_or(1);
     parallel_worker_count_for(buffer_len, cpus)
 }
@@ -280,8 +280,9 @@ mod tests {
 
     #[test]
     fn parallel_chunks_match_scalar_reference() {
-        let mut input = Vec::with_capacity(PARALLEL_MIN_BYTES);
-        while input.len() < PARALLEL_MIN_BYTES {
+        const TEST_BYTES: usize = 256 * 1024;
+        let mut input = Vec::with_capacity(TEST_BYTES);
+        while input.len() < TEST_BYTES {
             let alpha = ((input.len() / 4) % 256) as u8;
             input.extend_from_slice(&[
                 alpha / 3,
