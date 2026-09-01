@@ -15,6 +15,8 @@ impl FrameUpload {
             self.underlines.capacity(),
             self.backdrop_blur_passes.capacity(),
             self.backdrop_blurs.capacity(),
+            self.backdrop_blur_configs.capacity() * std::mem::size_of::<BackdropBlurConfig>(),
+            self.blur_content_ranges_cache.capacity() * std::mem::size_of::<BlurContentRange>(),
             self.animation_bindings.capacity(),
             self.animation_values.capacity(),
             self.animated_primitives.capacity() * std::mem::size_of::<AnimatedUpload>(),
@@ -80,6 +82,7 @@ impl FrameUpload {
             multiplier,
         );
         trim_upload_vec(&mut self.backdrop_blur_configs, 8, multiplier);
+        trim_upload_vec(&mut self.blur_content_ranges_cache, 8, multiplier);
         trim_upload_vec(
             &mut self.animation_bindings,
             64 * PACKED_ANIMATION_BINDING_BYTES,
