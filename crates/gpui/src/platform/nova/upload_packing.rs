@@ -6,10 +6,11 @@ pub(super) fn write_animation_binding(
     primitive_kind: AnimatedPrimitiveKind,
     primitive_index: u32,
 ) {
-    write_u32_vec(bytes, animation_id.0);
-    write_u32_vec(bytes, primitive_kind as u32);
-    write_u32_vec(bytes, primitive_index);
-    write_u32_vec(bytes, 0);
+    let mut record = [0_u8; PACKED_ANIMATION_BINDING_BYTES];
+    record[0..4].copy_from_slice(&animation_id.0.to_ne_bytes());
+    record[4..8].copy_from_slice(&(primitive_kind as u32).to_ne_bytes());
+    record[8..12].copy_from_slice(&primitive_index.to_ne_bytes());
+    bytes.extend_from_slice(&record);
 }
 
 pub(super) fn write_animation_value(
@@ -21,20 +22,18 @@ pub(super) fn write_animation_value(
     to: [f32; 4],
 ) {
     let progress = if progress.is_finite() { progress } else { 0.0 };
+    let mut record = [0_u8; PACKED_ANIMATION_VALUE_BYTES];
+    record[0..4].copy_from_slice(&animation_id.0.to_ne_bytes());
+    record[4..8].copy_from_slice(&(property as u32).to_ne_bytes());
+    record[8..12].copy_from_slice(&progress.to_ne_bytes());
 
-    write_u32_vec(bytes, animation_id.0);
-    write_u32_vec(bytes, property as u32);
-    write_f32_vec(bytes, progress);
-    write_u32_vec(bytes, 0);
-    for value in from {
-        write_f32_vec(bytes, value);
+    let mut offset = 16;
+    for value in from.into_iter().chain(to) {
+        record[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        offset += 4;
     }
-    for value in to {
-        write_f32_vec(bytes, value);
-    }
-    for _ in 0..4 {
-        write_u32_vec(bytes, 0);
-    }
+    // The final 16 bytes are ABI padding and remain zeroed.
+    bytes.extend_from_slice(&record);
 }
 
 pub(super) fn write_custom_mesh_3d_parameters(
