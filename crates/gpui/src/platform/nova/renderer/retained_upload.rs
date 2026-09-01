@@ -68,6 +68,10 @@ impl NovaRenderer {
             // CompositeBlur record receives the promoted visual animation binding.
             self.frame_upload
                 .register_element_blur_animations(scene, &mut summary);
+            // BeginBlur/EndBlur topology is a pure function of the static flattened batch stream.
+            // Parse it once here and reuse the retained slice throughout target planning, present
+            // damage and draw-step construction instead of rebuilding temporary Vecs per consumer.
+            self.frame_upload.refresh_blur_content_ranges();
             self.retained_upload
                 .replace(key, summary, self.frame_resources.len());
         }
