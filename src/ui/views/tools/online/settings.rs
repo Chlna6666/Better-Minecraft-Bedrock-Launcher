@@ -4,7 +4,6 @@ use crate::ui::components::modal;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
-use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::*;
@@ -231,8 +230,12 @@ fn render_bootstrap_input(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSt
         },
         |input| {
             Input::new(input)
-                .id("online-bootstrap-peers")
-                .placeholder(t!("Online.bootstrap_peers_placeholder"))
+                .appearance(false)
+                .bordered(false)
+                .focus_bordered(false)
+                .cleanable(true)
+                .w_full()
+                .h(px(42.))
                 .into_any_element()
         },
     )
@@ -240,52 +243,59 @@ fn render_bootstrap_input(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSt
 
 fn render_toggle_row(
     colors: &ThemeColors,
-    label: SharedString,
+    title: SharedString,
     description: SharedString,
-    toggle_id: &'static str,
-    checked: bool,
-    toggle: impl Fn(&mut ToolsPageState) + 'static,
+    id: &'static str,
+    enabled: bool,
+    toggle: fn(&mut ToolsPageState),
 ) -> Div {
     div()
         .w_full()
-        .min_h(px(58.))
-        .px(px(12.))
-        .py(px(10.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.12,
             ..colors.border
         })
-        .bg(colors.settings_field_bg)
+        .bg(Hsla {
+            a: 0.42,
+            ..colors.surface
+        })
+        .px(px(14.))
+        .py(px(12.))
         .flex()
         .items_center()
         .justify_between()
         .gap(px(16.))
+        .child(render_toggle_copy(colors, title, description))
+        .child(ToggleSwitch::new(
+            SharedString::from(id),
+            colors,
+            enabled,
+            move |cx| {
+                cx.update_global(|state: &mut ToolsPageState, _cx| toggle(state));
+                persist_tools_online_settings(cx);
+            },
+        ))
+}
+
+fn render_toggle_copy(colors: &ThemeColors, title: SharedString, description: SharedString) -> Div {
+    div()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap(px(3.))
         .child(
             div()
-                .min_w(px(0.))
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(colors.text_primary)
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.text_muted)
-                        .child(description),
-                ),
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child(title),
         )
-        .child(ToggleSwitch::new(toggle_id, checked).on_toggle(move |_checked, _window, cx| {
-            cx.update_global(|state: &mut ToolsPageState, cx| {
-                toggle(state);
-                persist_tools_online_settings(cx);
-            });
-        }))
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(colors.text_secondary)
+                .child(description),
+        )
 }
