@@ -134,8 +134,7 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) custom_mesh_3d_ids: FxHashSet<GpuMesh3dId>,
     pub(in crate::platform::nova) custom_mesh_3d_shader_ids: FxHashSet<GpuMesh3dShaderId>,
     pub(in crate::platform::nova) batches: Vec<UploadedBatch>,
-    pub(in crate::platform::nova) path_rasterization_cache:
-        FxHashMap<PathRasterizationCacheKey, PathRasterizationCacheEntry>,
+    pub(in crate::platform::nova) path_rasterization_cache: PathRasterizationCache,
     pub(in crate::platform::nova) path_rasterization_cache_hits: u64,
     pub(in crate::platform::nova) path_rasterization_cache_misses: u64,
     pub(in crate::platform::nova) path_geometry_hash_memo:
