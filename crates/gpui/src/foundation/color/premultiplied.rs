@@ -1,6 +1,11 @@
 use super::rgba::swap_rgba_pa_to_bgra;
-use fearless_simd::{Level, Simd, dispatch, f32x16, prelude::*, u8x16, u16x8, u32x4, u32x8, u32x16};
-use std::sync::atomic::{AtomicBool, Ordering};
+use fearless_simd::{
+    Level, Simd, dispatch, f32x16, prelude::*, u8x16, u16x8, u32x4, u32x8, u32x16,
+};
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 const VECTOR_MIN_BYTES: usize = 64;
 const SIMD_PIXELS_PER_CHUNK: usize = 16;
@@ -10,6 +15,7 @@ const PARALLEL_MIN_BYTES_PER_WORKER: usize = 4 * 1024 * 1024;
 const MAX_PARALLEL_WORKERS: usize = 4;
 
 static PARALLEL_PIXEL_CONVERSION_IN_USE: AtomicBool = AtomicBool::new(false);
+static PIXEL_SIMD_LEVEL: LazyLock<Level> = LazyLock::new(Level::new);
 
 struct ParallelPixelPermit;
 
@@ -117,7 +123,20 @@ fn serial_buffer(buffer: &mut [u8]) {
         return;
     }
 
-    let level = Level::new();
+    let level = *PIXEL_SIMD_LEVEL;
+    if level.is_fallback() {
+        scalar_buffer(buffer);
+        return;
+    }
+
+    // Keep AVX-512 out of the default UI path. Fearless SIMD still supplies the safe runtime
+    // feature proof, while AVX2 avoids the frequency and power trade-offs of wide AVX-512 code.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = level.as_avx2() {
+        dispatch!(Level::Avx2(avx2), simd => simd_buffer(simd, buffer));
+        return;
+    }
+
     dispatch!(level, simd => simd_buffer(simd, buffer));
 }
 
@@ -134,9 +153,7 @@ fn simd_buffer<S: Simd>(simd: S, buffer: &mut [u8]) {
     for chunk in &mut chunks {
         let [red, green, blue, alpha] = u8x16::load_four_interleaved(simd, chunk);
         let alpha_wide = widen_u8_to_u32x16(alpha);
-        let divisor = f32x16::from_fn(simd, |lane| {
-            ALPHA_DIVISOR_LUT[alpha_wide[lane] as usize]
-        });
+        let divisor = f32x16::from_fn(simd, |lane| ALPHA_DIVISOR_LUT[alpha_wide[lane] as usize]);
 
         let red = unpremultiply_channel(simd, red, divisor);
         let green = unpremultiply_channel(simd, green, divisor);
@@ -230,7 +247,12 @@ mod tests {
             );
             assert_eq!(
                 ALPHA_DIVISOR_LUT[usize::from(alpha)].to_bits(),
-                (if alpha == 0 { 1.0 } else { alpha as f32 / 255.0 }).to_bits()
+                (if alpha == 0 {
+                    1.0
+                } else {
+                    alpha as f32 / 255.0
+                })
+                .to_bits()
             );
         }
     }

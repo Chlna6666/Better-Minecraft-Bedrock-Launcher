@@ -1,14 +1,137 @@
 use crate::{Background, Bounds, ContentMask, Pixels, Point, ScaledPixels, point};
+use fearless_simd::{Level, Simd, dispatch, f32x4, prelude::*};
 use std::{
     fmt::Debug,
     ops::{Add, Sub},
-    sync::atomic::{AtomicUsize, Ordering::SeqCst},
+    sync::{
+        LazyLock,
+        atomic::{AtomicUsize, Ordering::SeqCst},
+    },
 };
 
 use super::{DrawOrder, Primitive};
 
 #[allow(non_camel_case_types, unused)]
 pub(crate) type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
+
+type PathVerticesTransformFn =
+    fn(&[PathVertex<Pixels>], f32, f32, Point<ScaledPixels>) -> Vec<PathVertex<ScaledPixels>>;
+
+static PATH_SIMD_LEVEL: LazyLock<Level> = LazyLock::new(Level::new);
+
+#[inline(always)]
+fn transform_point(
+    point: Point<Pixels>,
+    device_scale: f32,
+    visual_scale: f32,
+    translation: Point<ScaledPixels>,
+) -> Point<ScaledPixels> {
+    point.scale(device_scale) * visual_scale + translation
+}
+
+fn transform_path_vertices_scalar(
+    vertices: &[PathVertex<Pixels>],
+    device_scale: f32,
+    visual_scale: f32,
+    translation: Point<ScaledPixels>,
+) -> Vec<PathVertex<ScaledPixels>> {
+    vertices
+        .iter()
+        .map(|vertex| PathVertex {
+            xy_position: transform_point(
+                vertex.xy_position,
+                device_scale,
+                visual_scale,
+                translation,
+            ),
+            st_position: vertex.st_position,
+            content_mask: vertex.content_mask,
+        })
+        .collect()
+}
+
+fn transform_path_vertices_selected(
+    vertices: &[PathVertex<Pixels>],
+    device_scale: f32,
+    visual_scale: f32,
+    translation: Point<ScaledPixels>,
+) -> Vec<PathVertex<ScaledPixels>> {
+    let level = *PATH_SIMD_LEVEL;
+    if level.is_fallback() {
+        return transform_path_vertices_scalar(vertices, device_scale, visual_scale, translation);
+    }
+
+    // Cap x86 at AVX2 so a UI frame does not opt into AVX-512 frequency and power trade-offs.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = level.as_avx2() {
+        return dispatch!(
+            Level::Avx2(avx2),
+            simd => transform_path_vertices_simd(
+                simd,
+                vertices,
+                device_scale,
+                visual_scale,
+                translation
+            )
+        );
+    }
+
+    dispatch!(
+        level,
+        simd => transform_path_vertices_simd(
+            simd,
+            vertices,
+            device_scale,
+            visual_scale,
+            translation
+        )
+    )
+}
+
+#[inline(always)]
+fn transform_path_vertices_simd<S: Simd>(
+    simd: S,
+    vertices: &[PathVertex<Pixels>],
+    device_scale: f32,
+    visual_scale: f32,
+    translation: Point<ScaledPixels>,
+) -> Vec<PathVertex<ScaledPixels>> {
+    let mut transformed = Vec::with_capacity(vertices.len());
+    let device_scale_value = device_scale;
+    let visual_scale_value = visual_scale;
+    let device_scale = f32x4::splat(simd, device_scale_value);
+    let visual_scale = f32x4::splat(simd, visual_scale_value);
+    let translation_x = f32x4::splat(simd, translation.x.0);
+    let translation_y = f32x4::splat(simd, translation.y.0);
+    let mut chunks = vertices.chunks_exact(4);
+
+    for chunk in &mut chunks {
+        let x = f32x4::from_fn(simd, |index| chunk[index].xy_position.x.0);
+        let y = f32x4::from_fn(simd, |index| chunk[index].xy_position.y.0);
+        let x = (x * device_scale) * visual_scale + translation_x;
+        let y = (y * device_scale) * visual_scale + translation_y;
+        let mut transformed_x = [0.0; 4];
+        let mut transformed_y = [0.0; 4];
+        x.store_slice(&mut transformed_x);
+        y.store_slice(&mut transformed_y);
+
+        for ((vertex, x), y) in chunk.iter().zip(transformed_x).zip(transformed_y) {
+            transformed.push(PathVertex {
+                xy_position: point(ScaledPixels(x), ScaledPixels(y)),
+                st_position: vertex.st_position,
+                content_mask: vertex.content_mask,
+            });
+        }
+    }
+
+    transformed.extend(transform_path_vertices_scalar(
+        chunks.remainder(),
+        device_scale_value,
+        visual_scale_value,
+        translation,
+    ));
+    transformed
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PathId(pub(crate) usize);
@@ -97,16 +220,51 @@ impl Path<Pixels> {
         visual_scale: f32,
         translation: Point<ScaledPixels>,
     ) -> Path<ScaledPixels> {
-        #[inline]
-        fn transform_point(
-            point: Point<Pixels>,
-            device_scale: f32,
-            visual_scale: f32,
-            translation: Point<ScaledPixels>,
-        ) -> Point<ScaledPixels> {
-            point.scale(device_scale) * visual_scale + translation
-        }
+        self.scale_and_transform_for_paint_with(
+            device_scale,
+            visual_scale,
+            translation,
+            transform_path_vertices_scalar,
+        )
+    }
 
+    #[cfg(feature = "bench")]
+    pub(crate) fn scale_and_transform_for_paint_scalar(
+        &self,
+        device_scale: f32,
+        visual_scale: f32,
+        translation: Point<ScaledPixels>,
+    ) -> Path<ScaledPixels> {
+        self.scale_and_transform_for_paint_with(
+            device_scale,
+            visual_scale,
+            translation,
+            transform_path_vertices_scalar,
+        )
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn scale_and_transform_for_paint_simd(
+        &self,
+        device_scale: f32,
+        visual_scale: f32,
+        translation: Point<ScaledPixels>,
+    ) -> Path<ScaledPixels> {
+        self.scale_and_transform_for_paint_with(
+            device_scale,
+            visual_scale,
+            translation,
+            transform_path_vertices_selected,
+        )
+    }
+
+    fn scale_and_transform_for_paint_with(
+        &self,
+        device_scale: f32,
+        visual_scale: f32,
+        translation: Point<ScaledPixels>,
+        transform_vertices: PathVerticesTransformFn,
+    ) -> Path<ScaledPixels> {
         let scaled_bounds = self.bounds.scale(device_scale);
         let bounds = Bounds {
             origin: scaled_bounds.origin * visual_scale + translation,
@@ -125,9 +283,7 @@ impl Path<Pixels> {
                     .size
                     .map(|value| value * visual_scale),
             },
-            corner_radii: scaled_mask
-                .corner_radii
-                .map(|value| *value * visual_scale),
+            corner_radii: scaled_mask.corner_radii.map(|value| *value * visual_scale),
         };
 
         Path {
@@ -137,20 +293,7 @@ impl Path<Pixels> {
             order: self.order,
             bounds,
             content_mask,
-            vertices: self
-                .vertices
-                .iter()
-                .map(|vertex| PathVertex {
-                    xy_position: transform_point(
-                        vertex.xy_position,
-                        device_scale,
-                        visual_scale,
-                        translation,
-                    ),
-                    st_position: vertex.st_position,
-                    content_mask: vertex.content_mask,
-                })
-                .collect(),
+            vertices: transform_vertices(&self.vertices, device_scale, visual_scale, translation),
             start: transform_point(self.start, device_scale, visual_scale, translation),
             current: transform_point(self.current, device_scale, visual_scale, translation),
             contour_count: self.contour_count,
@@ -274,6 +417,50 @@ impl Path<ScaledPixels> {
         self.start = self.start * scale + translation;
         self.current = self.current * scale + translation;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::px;
+
+    #[test]
+    fn bulk_transform_matches_scalar_path() {
+        let mut path = Path::new(point(px(0.0), px(0.0)));
+        for index in 0..1_365 {
+            let x = index as f32;
+            path.push_triangle(
+                (
+                    point(px(x), px(x * 0.5)),
+                    point(px(x + 1.0), px(x * 0.5 + 1.0)),
+                    point(px(x + 2.0), px(x * 0.5)),
+                ),
+                (point(0.0, 0.0), point(0.5, 1.0), point(1.0, 0.0)),
+            );
+        }
+        path.content_mask = ContentMask::new(path.bounds);
+
+        let scalar_vertices = transform_path_vertices_scalar(
+            &path.vertices,
+            1.25,
+            0.875,
+            point(ScaledPixels(4.0), ScaledPixels(-3.0)),
+        );
+        let selected_vertices = transform_path_vertices_selected(
+            &path.vertices,
+            1.25,
+            0.875,
+            point(ScaledPixels(4.0), ScaledPixels(-3.0)),
+        );
+
+        assert_eq!(selected_vertices, scalar_vertices);
+        let transformed = path.scale_and_transform_for_paint(
+            1.25,
+            0.875,
+            point(ScaledPixels(4.0), ScaledPixels(-3.0)),
+        );
+        assert_eq!(transformed.vertices, scalar_vertices);
     }
 }
 

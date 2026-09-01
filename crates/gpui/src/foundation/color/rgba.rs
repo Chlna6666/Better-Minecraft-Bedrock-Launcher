@@ -1,11 +1,16 @@
 use super::hsla::Hsla;
 use anyhow::{Context as _, bail};
+use fearless_simd::{Level, Simd, dispatch, prelude::*, u8x16};
 use schemars::{JsonSchema, json_schema};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, Visitor},
 };
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, fmt, sync::LazyLock};
+
+const SIMD_RGBA_ROW_BYTES: usize = 64;
+
+static RGBA_SIMD_LEVEL: LazyLock<Level> = LazyLock::new(Level::new);
 
 /// Convert an RGB hex color code number to a color type.
 ///
@@ -117,6 +122,99 @@ impl From<Rgba> for u32 {
         let b = (rgba.b * 255.0).round() as u32;
         let a = (rgba.a * 255.0).round() as u32;
         (r << 24) | (g << 16) | (b << 8) | a
+    }
+}
+
+/// Converts straight-alpha RGBA rows to BGRA in place.
+///
+/// Rows shorter than one SIMD chunk remain on the scalar path. For larger rows, the Fearless
+/// SIMD backend is selected once for the whole upload and the selected token is reused for every
+/// row. Bytes after `row_bytes * row_count`, and incomplete pixels at the end of a row, remain
+/// untouched.
+pub(crate) fn swap_rgba_to_bgra_rows(buffer: &mut [u8], row_bytes: usize, row_count: usize) {
+    if row_bytes == 0 || row_count == 0 {
+        return;
+    }
+
+    let Some(total_bytes) = row_bytes.checked_mul(row_count) else {
+        return;
+    };
+    let Some(buffer) = buffer.get_mut(..total_bytes) else {
+        return;
+    };
+
+    if row_bytes < SIMD_RGBA_ROW_BYTES || total_bytes < SIMD_RGBA_ROW_BYTES {
+        scalar_rgba_rows(buffer, row_bytes, row_count);
+        return;
+    }
+
+    dispatch_rgba_rows(buffer, row_bytes, row_count);
+}
+
+#[cfg(any(test, feature = "bench"))]
+pub(crate) fn swap_rgba_to_bgra_rows_scalar(buffer: &mut [u8], row_bytes: usize, row_count: usize) {
+    let Some(total_bytes) = row_bytes.checked_mul(row_count) else {
+        return;
+    };
+    let Some(buffer) = buffer.get_mut(..total_bytes) else {
+        return;
+    };
+    scalar_rgba_rows(buffer, row_bytes, row_count);
+}
+
+#[cfg(feature = "bench")]
+pub(crate) fn swap_rgba_to_bgra_rows_simd(buffer: &mut [u8], row_bytes: usize, row_count: usize) {
+    if row_bytes == 0 || row_count == 0 {
+        return;
+    }
+    let Some(total_bytes) = row_bytes.checked_mul(row_count) else {
+        return;
+    };
+    let Some(buffer) = buffer.get_mut(..total_bytes) else {
+        return;
+    };
+    dispatch_rgba_rows(buffer, row_bytes, row_count);
+}
+
+#[inline]
+fn dispatch_rgba_rows(buffer: &mut [u8], row_bytes: usize, row_count: usize) {
+    let level = *RGBA_SIMD_LEVEL;
+    if level.is_fallback() {
+        scalar_rgba_rows(buffer, row_bytes, row_count);
+        return;
+    }
+
+    // Keep AVX-512 out of the default UI path. Fearless SIMD proves the selected feature level;
+    // AVX2 is the wider x86 path used here to avoid the frequency and power trade-offs of AVX-512.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = level.as_avx2() {
+        dispatch!(Level::Avx2(avx2), simd => simd_rgba_rows(simd, buffer, row_bytes, row_count));
+        return;
+    }
+
+    dispatch!(level, simd => simd_rgba_rows(simd, buffer, row_bytes, row_count));
+}
+
+#[inline]
+fn scalar_rgba_rows(buffer: &mut [u8], row_bytes: usize, row_count: usize) {
+    for row in buffer.chunks_exact_mut(row_bytes).take(row_count) {
+        for pixel in row.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+    }
+}
+
+#[inline(always)]
+fn simd_rgba_rows<S: Simd>(simd: S, buffer: &mut [u8], row_bytes: usize, row_count: usize) {
+    for row in buffer.chunks_exact_mut(row_bytes).take(row_count) {
+        let mut chunks = row.chunks_exact_mut(SIMD_RGBA_ROW_BYTES);
+        for chunk in &mut chunks {
+            let [red, green, blue, alpha] = u8x16::load_four_interleaved(simd, chunk);
+            u8x16::store_four_interleaved([blue, green, red, alpha], chunk);
+        }
+        for pixel in chunks.into_remainder().chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
     }
 }
 

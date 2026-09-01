@@ -18,5 +18,9 @@ pub use hsla::{
     yellow,
 };
 pub(crate) use premultiplied::swap_rgba_pa_to_bgra_buffer;
-pub(crate) use rgba::swap_rgba_pa_to_bgra;
+#[cfg(any(test, feature = "bench"))]
+pub(crate) use rgba::swap_rgba_to_bgra_rows_scalar;
+#[cfg(feature = "bench")]
+pub(crate) use rgba::swap_rgba_to_bgra_rows_simd;
 pub use rgba::{Rgba, rgb, rgba};
+pub(crate) use rgba::{swap_rgba_pa_to_bgra, swap_rgba_to_bgra_rows};

@@ -74,3 +74,19 @@ fn test_background_linear_gradient() {
     assert!(!background.is_transparent());
     assert!(background.opacity(0.0).is_transparent());
 }
+
+#[test]
+fn rgba_bulk_swap_matches_scalar_layout_and_preserves_tail() {
+    let row_bytes = 72;
+    let row_count = 2;
+    let mut actual = (0..(row_bytes * row_count + 3))
+        .map(|value| value as u8)
+        .collect::<Vec<_>>();
+    let mut expected = actual.clone();
+
+    swap_rgba_to_bgra_rows_scalar(&mut expected, row_bytes, row_count);
+    swap_rgba_to_bgra_rows(&mut actual, row_bytes, row_count);
+
+    assert_eq!(actual, expected);
+    assert_eq!(&actual[row_bytes * row_count..], &[144, 145, 146]);
+}
