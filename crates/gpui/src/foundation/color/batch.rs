@@ -50,9 +50,9 @@ pub fn hsla_to_rgba_batch(input: &[Hsla], output: &mut [Rgba]) {
 
 /// Interpolates two equally-sized HSLA batches using normalized shortest-path hue interpolation.
 ///
-/// `t` is clamped to `0..=1`. AVX2 performs two `Hsla` values per vector, SSE2 processes all
-/// four channels of one color per vector, and AArch64 uses a NEON-specialized codegen path.
-/// Unsupported architectures fall back to scalar code.
+/// `t` is clamped to `0..=1`. AVX2 performs two `Hsla` values per vector, SSE2 and AArch64 NEON
+/// process all four channels of one color per vector. Unsupported architectures fall back to
+/// scalar code.
 pub fn lerp_hsla_batch(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
     assert_eq!(from.len(), to.len(), "color batch lengths must match");
     assert_eq!(from.len(), output.len(), "color batch lengths must match");
@@ -295,9 +295,35 @@ unsafe fn lerp_hsla_sse2(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn lerp_hsla_neon(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
-    // AArch64 NEON is baseline. Keeping this in a NEON target-feature unit allows LLVM to
-    // vectorize the four-channel arithmetic while preserving the exact scalar hue semantics.
-    lerp_hsla_scalar(from, to, t, output);
+    use std::arch::aarch64::*;
+
+    unsafe {
+        let t4 = vdupq_n_f32(t);
+        let half = vdupq_n_f32(0.5);
+        let neg_half = vdupq_n_f32(-0.5);
+        let one = vdupq_n_f32(1.0);
+        let neg_one = vdupq_n_f32(-1.0);
+        let zero = vdupq_n_f32(0.0);
+        let hue_mask = vsetq_lane_u32(u32::MAX, vdupq_n_u32(0), 0);
+
+        for index in 0..from.len() {
+            let a = vld1q_f32(from.as_ptr().add(index).cast::<f32>());
+            let b = vld1q_f32(to.as_ptr().add(index).cast::<f32>());
+            let mut delta = vsubq_f32(b, a);
+
+            let gt = vandq_u32(vcgtq_f32(delta, half), hue_mask);
+            let lt = vandq_u32(vcltq_f32(delta, neg_half), hue_mask);
+            delta = vaddq_f32(delta, vbslq_f32(gt, neg_one, zero));
+            delta = vaddq_f32(delta, vbslq_f32(lt, one, zero));
+
+            let mut value = vaddq_f32(a, vmulq_f32(delta, t4));
+            let wrap_hi = vandq_u32(vcgeq_f32(value, one), hue_mask);
+            let wrap_lo = vandq_u32(vcltq_f32(value, zero), hue_mask);
+            value = vaddq_f32(value, vbslq_f32(wrap_hi, neg_one, zero));
+            value = vaddq_f32(value, vbslq_f32(wrap_lo, one, zero));
+            vst1q_f32(output.as_mut_ptr().add(index).cast::<f32>(), value);
+        }
+    }
 }
 
 #[cfg(test)]
