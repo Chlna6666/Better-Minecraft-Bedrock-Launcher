@@ -1,8 +1,12 @@
 use super::*;
 use crate::{Primitive, SceneAnimationId, SceneAnimationValue, TransitionProperty};
+use smallvec::SmallVec;
 
 const BLUR_SOURCE_BOUNDS_OFFSET: usize = 16;
 const BLUR_DISPLAY_BOUNDS_OFFSET: usize = 96;
+const ENGINE_ANIMATION_ID_BASE: u32 = 1 << 31;
+const DENSE_LOOKUP_MAX_SPAN: usize = 4096;
+const DENSE_LOOKUP_DENSITY_FACTOR: usize = 4;
 
 #[derive(Clone, Copy)]
 struct ResolvedAnimationValue {
@@ -10,7 +14,12 @@ struct ResolvedAnimationValue {
     sampled: [f32; 4],
 }
 
-type ResolvedAnimationValues = FxHashMap<SceneAnimationId, ResolvedAnimationValue>;
+struct ResolvedAnimationValues {
+    scene: SmallVec<[Option<ResolvedAnimationValue>; 16]>,
+    engine_base: u32,
+    engine: SmallVec<[Option<ResolvedAnimationValue>; 16]>,
+    sparse: FxHashMap<SceneAnimationId, ResolvedAnimationValue>,
+}
 
 impl ResolvedAnimationValue {
     #[inline]
@@ -29,17 +38,92 @@ impl ResolvedAnimationValue {
     }
 }
 
-fn resolve_animation_values(values: &[SceneAnimationValue]) -> ResolvedAnimationValues {
-    let mut resolved = ResolvedAnimationValues::default();
-    resolved.reserve(values.len());
-    for value in values {
-        // Preserve the previous `.iter().find(...)` semantics when malformed input contains the
-        // same animation id more than once: the first value wins.
+impl ResolvedAnimationValues {
+    fn new(values: &[SceneAnimationValue]) -> Self {
+        let mut scene_count = 0usize;
+        let mut scene_max = None::<u32>;
+        let mut engine_count = 0usize;
+        let mut engine_min = None::<u32>;
+        let mut engine_max = None::<u32>;
+        for value in values {
+            let id = value.animation_id.0;
+            if id < ENGINE_ANIMATION_ID_BASE {
+                scene_count += 1;
+                scene_max = Some(scene_max.map_or(id, |max| max.max(id)));
+            } else {
+                engine_count += 1;
+                engine_min = Some(engine_min.map_or(id, |min| min.min(id)));
+                engine_max = Some(engine_max.map_or(id, |max| max.max(id)));
+            }
+        }
+
+        let scene_len = scene_max
+            .and_then(|max| dense_span_len(scene_count, 0, max))
+            .unwrap_or(0);
+        let engine_base = engine_min.unwrap_or(ENGINE_ANIMATION_ID_BASE);
+        let engine_len = engine_max
+            .and_then(|max| dense_span_len(engine_count, engine_base, max))
+            .unwrap_or(0);
+
+        let mut resolved = Self {
+            scene: SmallVec::from_vec(vec![None; scene_len]),
+            engine_base,
+            engine: SmallVec::from_vec(vec![None; engine_len]),
+            sparse: FxHashMap::default(),
+        };
+        resolved.sparse.reserve(values.len());
+        for value in values {
+            resolved.insert_first(value.animation_id, ResolvedAnimationValue::new(value));
+        }
         resolved
-            .entry(value.animation_id)
-            .or_insert_with(|| ResolvedAnimationValue::new(value));
     }
-    resolved
+
+    #[inline]
+    fn get(&self, animation_id: &SceneAnimationId) -> Option<&ResolvedAnimationValue> {
+        let id = animation_id.0;
+        if id < ENGINE_ANIMATION_ID_BASE {
+            if let Some(value) = self.scene.get(id as usize).and_then(Option::as_ref) {
+                return Some(value);
+            }
+        } else if let Some(offset) = id.checked_sub(self.engine_base)
+            && let Some(value) = self.engine.get(offset as usize).and_then(Option::as_ref)
+        {
+            return Some(value);
+        }
+        self.sparse.get(animation_id)
+    }
+
+    fn insert_first(&mut self, animation_id: SceneAnimationId, value: ResolvedAnimationValue) {
+        let id = animation_id.0;
+        if id < ENGINE_ANIMATION_ID_BASE {
+            if let Some(slot) = self.scene.get_mut(id as usize) {
+                if slot.is_none() {
+                    *slot = Some(value);
+                }
+                return;
+            }
+        } else if let Some(offset) = id.checked_sub(self.engine_base)
+            && let Some(slot) = self.engine.get_mut(offset as usize)
+        {
+            if slot.is_none() {
+                *slot = Some(value);
+            }
+            return;
+        }
+        self.sparse.entry(animation_id).or_insert(value);
+    }
+}
+
+fn dense_span_len(count: usize, min: u32, max: u32) -> Option<usize> {
+    let span = max.checked_sub(min)?.checked_add(1)? as usize;
+    let density_limit = count
+        .saturating_mul(DENSE_LOOKUP_DENSITY_FACTOR)
+        .max(16);
+    (span <= density_limit && span <= DENSE_LOOKUP_MAX_SPAN).then_some(span)
+}
+
+fn resolve_animation_values(values: &[SceneAnimationValue]) -> ResolvedAnimationValues {
+    ResolvedAnimationValues::new(values)
 }
 
 /// A retained primitive and its small, independently uploadable animated range.
@@ -215,8 +299,11 @@ impl FrameUpload {
         // animation timelines (for example hundreds of glyphs sharing one retained transform), so
         // the old per-primitive linear search and interpolation scaled as O(primitives * values).
         let resolved_animation_values = resolve_animation_values(&self.sampled_animation_values);
-        let current_animation_ids: FxHashSet<_> =
-            resolved_animation_values.keys().copied().collect();
+        let current_animation_ids: FxHashSet<_> = self
+            .sampled_animation_values
+            .iter()
+            .map(|value| value.animation_id)
+            .collect();
         let mut relevant_animation_ids = self.backdrop_blur_previous_animation_ids.clone();
         relevant_animation_ids.extend(current_animation_ids.iter().copied());
 
@@ -532,6 +619,56 @@ mod tests {
         ];
         let resolved = resolve_animation_values(&values);
         assert_eq!(resolved.get(&id).unwrap().sampled[0], 5.0);
+    }
+
+    #[test]
+    fn resolved_animation_values_handle_dense_scene_and_engine_namespaces() {
+        let scene_id = crate::SceneAnimationId(3);
+        let engine_id = crate::SceneAnimationId(ENGINE_ANIMATION_ID_BASE + 7);
+        let values = [
+            SceneAnimationValue {
+                animation_id: scene_id,
+                property: TransitionProperty::Translation,
+                progress: 1.0,
+                from: [0.0; 4],
+                to: [3.0, 0.0, 0.0, 0.0],
+            },
+            SceneAnimationValue {
+                animation_id: engine_id,
+                property: TransitionProperty::Opacity,
+                progress: 0.5,
+                from: [0.0; 4],
+                to: [1.0, 0.0, 0.0, 0.0],
+            },
+        ];
+        let resolved = resolve_animation_values(&values);
+        assert_eq!(resolved.get(&scene_id).unwrap().sampled[0], 3.0);
+        assert_eq!(resolved.get(&engine_id).unwrap().sampled[0], 0.5);
+    }
+
+    #[test]
+    fn resolved_animation_values_fall_back_for_sparse_ids() {
+        let first = crate::SceneAnimationId(1);
+        let sparse = crate::SceneAnimationId(10_000);
+        let values = [
+            SceneAnimationValue {
+                animation_id: first,
+                property: TransitionProperty::Translation,
+                progress: 1.0,
+                from: [0.0; 4],
+                to: [1.0, 0.0, 0.0, 0.0],
+            },
+            SceneAnimationValue {
+                animation_id: sparse,
+                property: TransitionProperty::Translation,
+                progress: 1.0,
+                from: [0.0; 4],
+                to: [2.0, 0.0, 0.0, 0.0],
+            },
+        ];
+        let resolved = resolve_animation_values(&values);
+        assert_eq!(resolved.get(&first).unwrap().sampled[0], 1.0);
+        assert_eq!(resolved.get(&sparse).unwrap().sampled[0], 2.0);
     }
 
     #[test]
