@@ -19,24 +19,24 @@ historical fields. Generation-changing operations are explicit and preflighted.
 For normal read-only inspection, let the world layer detect the persisted format:
 
 ```rust
-use bedrock_world::{BedrockWorld, WorldScanOptions};
+use bedrock_world::{World, WorldScanOptions};
 
 fn inspect() -> bedrock_world::Result<()> {
-    let world = BedrockWorld::open_auto_blocking("path/to/minecraftWorld")?;
+    let world = World::open("path/to/minecraftWorld", OpenOptions::default())?;
     println!("format={:?}", world.format());
 
-    let versions = world.versions_blocking()?;
+    let versions = world.versions()?;
     println!("mixed={}", versions.has_mixed_version_storage());
     println!("future={}", versions.has_future_storage());
 
-    let chunks = world.list_chunk_positions_blocking(WorldScanOptions::default())?;
+    let chunks = world.chunk_positions(WorldScanOptions::default())?;
     println!("chunks={}", chunks.len());
     Ok(())
 }
 ```
 
-With the `async` feature, `BedrockWorld::open_auto` and async wrappers are
-available. Use `BedrockWorld::open_blocking(path, BedrockWorldOpenOptions)` when an explicit
+With the `async` feature, `World::open_async` and async wrappers are
+available. Use `World::open(path, OpenOptions)` when an explicit
 format hint or writable LevelDB world is required.
 
 ## Supported persisted generations
@@ -74,8 +74,8 @@ ids or colors.
 metadata, light, or height remains possible on the Pocket core; editing a biome
 sample is rejected when the persisted tail does not exist.
 
-Use `check_pocket_chunks_dat_leveldb_import_blocking` before an exact later-LevelDB
-copy. `import_pocket_chunks_dat_records_blocking` refuses lossy conversion before
+Use `check_pocket_chunks_dat_leveldb_import` before an exact later-LevelDB
+copy. `import_pocket_chunks_dat` refuses lossy conversion before
 mutating the target when required persisted data is absent.
 
 ## Pocket `entities.dat`
@@ -128,12 +128,12 @@ before mutation.
 
 Interactive tools should request only the data representation they need:
 
-- `list_render_chunk_positions_blocking`;
-- `list_chunk_positions_in_region_blocking`;
-- `query_chunk_data_blocking`;
-- `query_chunk_data_many_blocking`;
-- `query_chunk_region_blocking`;
-- `parse_chunk_blocking` for complete structured inspection.
+- `render_chunk_positions`;
+- `region_chunk_positions`;
+- `query_chunk_data`;
+- `query_chunk_data_many`;
+- `query_chunk_region`;
+- `scan_chunk` for complete structured inspection.
 
 `ChunkDataRequest` composes surface columns, fixed layers, cave slices, full 3D
 indices, height maps, biome data, and block entities. Render paths use exact
@@ -180,13 +180,13 @@ data before commit.
 
 ## Writing
 
-`BedrockWorldOpenOptions::default()` is read-only. Open a LevelDB world explicitly writable
+`OpenOptions::default()` is read-only. Open a LevelDB world explicitly writable
 for edits:
 
 ```rust
-let world = bedrock_world::BedrockWorld::open_blocking(
+let world = bedrock_world::World::open(
     "path/to/minecraftWorld",
-    bedrock_world::BedrockWorldOpenOptions {
+    bedrock_world::OpenOptions {
         read_only: false,
         ..Default::default()
     },

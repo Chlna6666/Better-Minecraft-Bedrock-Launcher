@@ -1,9 +1,9 @@
 //! MCPE <= 1.5 (Classic) saved-item representability and exact target writes.
 
-use super::legacy_saved_item::{
-    LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, NamedSavedItemId,
+use super::saved_item_history::{
+    ClassicSavedItemId, ClassicSavedItemMatch, NamedSavedItemId, SavedItemBlockStates,
+    SavedItemHistory,
 };
-use super::legacy_saved_item_check::LegacySavedItemBlockStateTables;
 use crate::block::{LegacyNumericBlock, LegacyNumericBlockMatch, read_block_state_nbt};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
@@ -38,39 +38,39 @@ pub enum ClassicSavedItemIssueKind {
         /// Named source item identity being reversed.
         item: NamedSavedItemId,
         /// First candidate Classic numeric item identity.
-        first: LegacySavedItemId,
+        first: ClassicSavedItemId,
         /// Second candidate Classic numeric item identity.
-        second: LegacySavedItemId,
+        second: ClassicSavedItemId,
     },
     /// The Classic numeric item ID cannot be persisted as TAG_Short `id`.
     IdOutOfRange {
         /// Candidate Classic item identity with an out-of-range numeric ID.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
     },
     /// The Classic metadata cannot be persisted as TAG_Short `Damage`.
     MetadataOutOfRange {
         /// Candidate Classic item identity with out-of-range metadata.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
     },
     /// A modern `Block` payload exists but no block reverse tables were supplied.
     BlockStateRequired {
         /// Classic item identity that needs block payload proof.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
     },
     /// The Classic item is not present in the authoritative item->block map.
     BlockItemMappingMissing {
         /// Classic item identity that could not be mapped to a historical block.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
     },
     /// The persisted modern BlockState has no historical numeric block representation.
     BlockNumericMissing {
         /// Classic item identity associated with the missing block mapping.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
     },
     /// More than one historical numeric block represents the persisted modern BlockState.
     BlockNumericAmbiguous {
         /// Classic item identity associated with the ambiguous block mapping.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
         /// First candidate historical numeric block.
         first: LegacyNumericBlock,
         /// Second candidate historical numeric block.
@@ -81,7 +81,7 @@ pub enum ClassicSavedItemIssueKind {
     /// The persisted BlockState resolves to a different historical block identifier.
     BlockIdentityMismatch {
         /// Classic item identity associated with the mismatched block payload.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
         /// Candidate historical numeric block resolved from the source BlockState.
         block: LegacyNumericBlock,
         /// Historical block identifier expected by the item->block map.
@@ -92,7 +92,7 @@ pub enum ClassicSavedItemIssueKind {
     /// The persisted BlockState resolves to a different metadata value than the Classic item.
     BlockMetadataMismatch {
         /// Classic item identity associated with the mismatched block metadata.
-        item: LegacySavedItemId,
+        item: ClassicSavedItemId,
         /// Candidate historical numeric block resolved from the source BlockState.
         block: LegacyNumericBlock,
     },
@@ -163,43 +163,26 @@ pub struct ClassicSavedItemConversionReport {
 /// Checks whether every recognised saved item can be written as Classic TAG_Short id + Damage.
 pub fn check_saved_items_for_classic(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
 ) -> Result<ClassicSavedItemCheckReport> {
-    check_saved_items_for_classic_inner(nbt, table, None)
-}
-
-/// Checks Classic representation including modern blockitem `Block` payloads.
-pub fn check_saved_items_for_classic_with_blocks(
-    nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: &LegacySavedItemBlockStateTables<'_>,
-) -> Result<ClassicSavedItemCheckReport> {
-    check_saved_items_for_classic_inner(nbt, table, Some(blocks))
+    check_saved_items_for_classic_inner(nbt, table, blocks)
 }
 
 /// Explicitly rewrites all recognised saved items to exact Classic representation.
 pub fn convert_saved_items_to_classic(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
 ) -> Result<ClassicSavedItemConversionOutcome> {
-    let check = check_saved_items_for_classic(nbt, table)?;
-    convert_after_check(nbt, table, false, check)
-}
-
-/// Explicitly rewrites all recognised saved items to Classic representation with blockitem proof.
-pub fn convert_saved_items_to_classic_with_blocks(
-    nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: &LegacySavedItemBlockStateTables<'_>,
-) -> Result<ClassicSavedItemConversionOutcome> {
-    let check = check_saved_items_for_classic_with_blocks(nbt, table, blocks)?;
-    convert_after_check(nbt, table, true, check)
+    let check = check_saved_items_for_classic(nbt, table, blocks)?;
+    convert_after_check(nbt, table, blocks.is_some(), check)
 }
 
 fn check_saved_items_for_classic_inner(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
 ) -> Result<ClassicSavedItemCheckReport> {
     let mut report = ClassicSavedItemCheckReport::default();
     check_tag(nbt, table, blocks, "$", &mut report)?;
@@ -208,8 +191,8 @@ fn check_saved_items_for_classic_inner(
 
 fn check_tag(
     tag: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
     path: &str,
     report: &mut ClassicSavedItemCheckReport,
 ) -> Result<()> {
@@ -249,8 +232,8 @@ fn check_tag(
 
 fn check_item(
     root: &IndexMap<String, NbtTag>,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
     path: &str,
     report: &mut ClassicSavedItemCheckReport,
 ) -> Result<()> {
@@ -268,8 +251,8 @@ fn check_item(
         }
         SourceItemId::Numeric(numeric_id) => {
             report.numeric_sources = report.numeric_sources.saturating_add(1);
-            let target = LegacySavedItemId { numeric_id, meta };
-            if table.legacy_item_name(target).is_none() {
+            let target = ClassicSavedItemId { numeric_id, meta };
+            if table.classic_item_name(target).is_none() {
                 report.missing = report.missing.saturating_add(1);
                 report.issues.push(ClassicSavedItemIssue {
                     path: path.to_string(),
@@ -283,7 +266,7 @@ fn check_item(
             report.string_sources = report.string_sources.saturating_add(1);
             let source = NamedSavedItemId { name, meta };
             match table.match_numeric(&source) {
-                LegacySavedItemMatch::Missing => {
+                ClassicSavedItemMatch::Missing => {
                     report.missing = report.missing.saturating_add(1);
                     report.issues.push(ClassicSavedItemIssue {
                         path: path.to_string(),
@@ -291,7 +274,7 @@ fn check_item(
                     });
                     return Ok(());
                 }
-                LegacySavedItemMatch::Ambiguous { first, second } => {
+                ClassicSavedItemMatch::Ambiguous { first, second } => {
                     report.ambiguous = report.ambiguous.saturating_add(1);
                     report.issues.push(ClassicSavedItemIssue {
                         path: path.to_string(),
@@ -303,7 +286,7 @@ fn check_item(
                     });
                     return Ok(());
                 }
-                LegacySavedItemMatch::Unique(target) => target,
+                ClassicSavedItemMatch::Unique(target) => target,
             }
         }
     };
@@ -350,13 +333,13 @@ fn check_item(
 
 fn check_block(
     block_tag: &NbtTag,
-    target: LegacySavedItemId,
-    table: &LegacySavedItemIdTable,
-    blocks: &LegacySavedItemBlockStateTables<'_>,
+    target: ClassicSavedItemId,
+    table: &SavedItemHistory,
+    blocks: &SavedItemBlockStates<'_>,
     path: &str,
     report: &mut ClassicSavedItemCheckReport,
 ) -> Result<()> {
-    let Some(expected) = table.legacy_block_id(target) else {
+    let Some(expected) = table.classic_block_id(target) else {
         return block_issue(
             report,
             path,
@@ -435,7 +418,7 @@ fn block_issue(
 
 fn convert_after_check(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
     remove_blocks: bool,
     check: ClassicSavedItemCheckReport,
 ) -> Result<ClassicSavedItemConversionOutcome> {
@@ -478,7 +461,7 @@ fn convert_after_check(
 
 fn convert_tag(
     tag: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
     remove_blocks: bool,
     items_changed: &mut usize,
     block_payloads_removed: &mut usize,
@@ -487,7 +470,7 @@ fn convert_tag(
         NbtTag::Compound(root) if looks_like_item_stack(root) => {
             let meta = read_item_meta(root)?;
             let target = match read_item_id(root)? {
-                SourceItemId::Numeric(numeric_id) => LegacySavedItemId { numeric_id, meta },
+                SourceItemId::Numeric(numeric_id) => ClassicSavedItemId { numeric_id, meta },
                 SourceItemId::Named(name) => table
                     .match_numeric(&NamedSavedItemId { name, meta })
                     .unique()
@@ -640,15 +623,14 @@ mod tests {
 
     #[test]
     fn existing_int_numeric_item_is_normalized_to_exact_classic_short_tags() {
-        let table =
-            LegacySavedItemIdTable::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
+        let table = SavedItemHistory::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Int(1)),
             ("Damage".to_string(), NbtTag::Int(3)),
             ("Count".to_string(), NbtTag::Byte(1)),
             ("FutureField".to_string(), NbtTag::Long(9)),
         ]));
-        let outcome = convert_saved_items_to_classic(&source, &table).unwrap();
+        let outcome = convert_saved_items_to_classic(&source, &table, None).unwrap();
         let NbtTag::Compound(root) = outcome.nbt else {
             panic!("compound")
         };
@@ -660,7 +642,7 @@ mod tests {
 
     #[test]
     fn named_item_uses_unique_forward_verified_numeric_identity() {
-        let table = LegacySavedItemIdTable::from_sources(
+        let table = SavedItemHistory::from_sources(
             r#"{"minecraft:old":4}"#,
             "{}",
             &[SavedItemUpgradeSource {
@@ -677,7 +659,7 @@ mod tests {
             ("Damage".to_string(), NbtTag::Short(2)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
-        let outcome = convert_saved_items_to_classic(&source, &table).unwrap();
+        let outcome = convert_saved_items_to_classic(&source, &table, None).unwrap();
         let NbtTag::Compound(root) = outcome.nbt else {
             panic!("compound")
         };
@@ -687,27 +669,25 @@ mod tests {
 
     #[test]
     fn unknown_existing_numeric_id_is_not_blessed_as_classic_vanilla_data() {
-        let table =
-            LegacySavedItemIdTable::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
+        let table = SavedItemHistory::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Short(777)),
             ("Damage".to_string(), NbtTag::Short(0)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
-        let report = check_saved_items_for_classic(&source, &table).unwrap();
+        let report = check_saved_items_for_classic(&source, &table, None).unwrap();
         assert_eq!(report.missing, 1);
-        assert!(convert_saved_items_to_classic(&source, &table).is_err());
+        assert!(convert_saved_items_to_classic(&source, &table, None).is_err());
     }
 
     #[test]
     fn classic_air_id_zero_is_refused() {
-        let table =
-            LegacySavedItemIdTable::from_sources(r#"{"minecraft:air":0}"#, "{}", &[]).unwrap();
+        let table = SavedItemHistory::from_sources(r#"{"minecraft:air":0}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Short(0)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
-        let report = check_saved_items_for_classic(&source, &table).unwrap();
+        let report = check_saved_items_for_classic(&source, &table, None).unwrap();
         assert_eq!(report.missing, 1);
         assert!(matches!(
             report.issues[0].kind,

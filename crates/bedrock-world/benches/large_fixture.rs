@@ -1,11 +1,15 @@
-use bedrock_world::integrity::scan_world_compatibility_blocking;
+use bedrock_world::integrity::scan_compatibility;
 use bedrock_world::nbt::NbtView;
+use bedrock_world::surface::{
+    BiomeDataRequirement, ChunkDataRequest, ChunkLoadOptions, ChunkLoadStats,
+    ExactSurfaceSubchunkPolicy, WorldScanOptions, WorldThreadingOptions,
+};
 use bedrock_world::{
-    BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, BiomeDataRequirement,
-    ChunkDataRequest, ChunkLoadOptions, ChunkPos, Dimension, ExactSurfaceSubchunkPolicy,
-    StorageCachePolicy, StorageReadOptions, StorageScanMode, StorageThreadingOptions,
-    StorageVisitorControl, WorldFormat, WorldParseOptions, WorldScanOptions, WorldStorage,
-    WorldThreadingOptions, read_level_dat_document,
+    BedrockLevelDbStorage, ChunkPos,
+    Dimension, OpenOptions, StorageCachePolicy, StorageReadOptions,
+    StorageScanMode, StorageThreadingOptions, StorageVisitorControl, World, WorldFormat,
+    ScanOptions, WorldStorage,
+    read_level_dat_document,
 };
 use std::fs::File;
 use std::io::Read;
@@ -62,19 +66,16 @@ fn main() {
         cfg!(feature = "leveldb-mmap")
     );
 
-    let dynamic_world = BedrockWorld::from_storage(
+    let dynamic_world = World::from_storage(
         world_path.clone(),
         Arc::new(storage.clone()) as Arc<dyn WorldStorage>,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     );
-    let generic_world = BedrockWorld::from_typed_storage(
-        world_path.clone(),
-        storage.clone(),
-        BedrockWorldOpenOptions::default(),
-    );
+    let generic_world =
+        World::from_typed_storage(world_path.clone(), storage.clone(), OpenOptions::default());
 
     let compatibility_started = Instant::now();
-    let compatibility_single = scan_world_compatibility_blocking(
+    let compatibility_single = scan_compatibility(
         &storage,
         WorldFormat::LevelDb,
         scan_options(StorageThreadingOptions::Single, StorageScanMode::Sequential),
@@ -91,7 +92,7 @@ fn main() {
     );
 
     let compatibility_started = Instant::now();
-    let compatibility = scan_world_compatibility_blocking(
+    let compatibility = scan_compatibility(
         &storage,
         WorldFormat::LevelDb,
         scan_options(
@@ -114,7 +115,7 @@ fn main() {
     );
 
     let parse_errors = dynamic_world
-        .parse_world_blocking(WorldParseOptions::summary())
+        .scan(ScanOptions::summary())
         .expect("parse world summary")
         .report
         .parse_errors
@@ -130,7 +131,7 @@ fn main() {
 
     let single_classify_started = Instant::now();
     let single_key_kinds = dynamic_world
-        .classify_keys_blocking(WorldScanOptions {
+        .classify_keys(WorldScanOptions {
             threading: WorldThreadingOptions::Single,
             ..WorldScanOptions::default()
         })
@@ -146,7 +147,7 @@ fn main() {
 
     let parallel_classify_started = Instant::now();
     let parallel_key_kinds = dynamic_world
-        .classify_keys_blocking(WorldScanOptions {
+        .classify_keys(WorldScanOptions {
             threading: WorldThreadingOptions::Auto,
             ..WorldScanOptions::default()
         })
@@ -246,7 +247,7 @@ fn main() {
     ] {
         let started = Instant::now();
         let (entities, report) = dynamic_world
-            .scan_entities_blocking(WorldScanOptions {
+            .scan_entities(WorldScanOptions {
                 threading,
                 ..WorldScanOptions::default()
             })
@@ -267,7 +268,7 @@ fn main() {
     ] {
         let started = Instant::now();
         let (block_entities, report) = dynamic_world
-            .scan_block_entities_blocking(WorldScanOptions {
+            .scan_block_entities(WorldScanOptions {
                 threading,
                 ..WorldScanOptions::default()
             })
@@ -283,7 +284,7 @@ fn main() {
     }
 
     let start = Instant::now();
-    let players = dynamic_world.list_players_blocking().expect("list players");
+    let players = dynamic_world.players().expect("list players");
     println!(
         "large_fixture.players.dynamic elapsed_ms={} count={}",
         start.elapsed().as_millis(),
@@ -292,7 +293,7 @@ fn main() {
 
     let start = Instant::now();
     let generic_players = generic_world
-        .list_players_blocking()
+        .players()
         .expect("list players generic");
     println!(
         "large_fixture.players.generic elapsed_ms={} count={}",
@@ -311,7 +312,7 @@ fn main() {
         });
     let start = Instant::now();
     let chunk = dynamic_world
-        .parse_chunk_blocking(pos)
+        .scan_chunk(pos, ScanOptions::full())
         .expect("parse chunk");
     println!(
         "large_fixture.sample_chunk elapsed_ms={} records={} subchunks={} block_entities={} parse_errors={}",
@@ -345,7 +346,7 @@ fn main() {
 
     let start = Instant::now();
     let (chunks, layer_stats) = generic_world
-        .query_chunk_data_with_stats_blocking(
+        .query_chunk_data_with_stats(
             render_positions,
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new().layer(64),
@@ -439,22 +440,14 @@ fn measure_render_cache_condition(
     let mut db_read_ms = 0_u128;
     let mut decode_ms = 0_u128;
     if let Some(storage) = &shared_storage {
-        let world = BedrockWorld::from_typed_storage(
-            world_path,
-            storage.clone(),
-            BedrockWorldOpenOptions::default(),
-        );
+        let world = World::from_typed_storage(world_path, storage.clone(), OpenOptions::default());
         let _ = run_render_sample(&world, positions, cache_policy);
     }
     for _ in 0..SAMPLE_COUNT {
         let storage = shared_storage.clone().unwrap_or_else(|| {
             BedrockLevelDbStorage::open_read_only(world_path.join("db")).expect("cold read-only db")
         });
-        let world = BedrockWorld::from_typed_storage(
-            world_path,
-            storage,
-            BedrockWorldOpenOptions::default(),
-        );
+        let world = World::from_typed_storage(world_path, storage, OpenOptions::default());
         let started = Instant::now();
         let stats = run_render_sample(&world, positions, cache_policy);
         elapsed.push(started.elapsed());
@@ -476,12 +469,12 @@ fn measure_render_cache_condition(
 }
 
 fn run_render_sample(
-    world: &BedrockWorld<BedrockLevelDbStorage>,
+    world: &World<BedrockLevelDbStorage>,
     positions: &[ChunkPos],
     cache_policy: StorageCachePolicy,
-) -> bedrock_world::ChunkLoadStats {
+) -> ChunkLoadStats {
     world
-        .query_chunk_data_with_stats_blocking(
+        .query_chunk_data_with_stats(
             positions.iter().copied(),
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new()

@@ -5,6 +5,10 @@ use super::legacy::{
 };
 use super::subchunk::packed_word_count;
 use super::*;
+
+fn read_subchunk(y: i8, bytes: Bytes) -> crate::error::Result<SubChunk> {
+    SubChunk::read(y, bytes, SubChunkDecodeMode::FullIndices)
+}
 use crate::nbt::{NbtTag, serialize_root_nbt};
 use bytes::Bytes;
 use indexmap::IndexMap;
@@ -86,10 +90,10 @@ fn bedrock_db_key_decodes_actor_and_digp_keys() {
 
 #[test]
 fn bedrock_db_key_encodes_documented_global_shapes() {
-    let map_id = MapRecordId::new("42").expect("map id");
+    let map_id = MapItemId::new("42").expect("map id");
     assert_eq!(map_id.storage_key().as_ref(), b"map_42");
     assert_eq!(
-        MapRecordId::from_storage_key(b"map_42"),
+        MapItemId::from_storage_key(b"map_42"),
         Some(map_id.clone())
     );
     assert_eq!(
@@ -238,7 +242,7 @@ fn legacy_subchunk_decodes_block_ids_metadata_and_light() {
     bytes[1 + LEGACY_SUBCHUNK_BLOCK_COUNT + index / 2] = 0xc0;
     bytes[1 + LEGACY_SUBCHUNK_BLOCK_COUNT + LEGACY_SUBCHUNK_BLOCK_COUNT / 2 + index / 2] = 0xe0;
     bytes[1 + LEGACY_SUBCHUNK_BLOCK_COUNT + LEGACY_SUBCHUNK_BLOCK_COUNT + index / 2] = 0xa0;
-    let subchunk = parse_subchunk(0, Bytes::from(bytes)).expect("parse legacy subchunk");
+    let subchunk = read_subchunk(0, Bytes::from(bytes)).expect("parse legacy subchunk");
     let SubChunkFormat::LegacySubChunk(legacy) = &subchunk.format else {
         panic!("expected legacy subchunk");
     };
@@ -255,7 +259,7 @@ fn paletted_subchunk_v1_uses_single_storage_without_count_byte() {
     let mut bytes = build_paletted_subchunk(8, None, 4, 4);
     bytes.remove(1);
     bytes[0] = 1;
-    let subchunk = parse_subchunk(0, Bytes::from(bytes)).expect("parse v1 palette");
+    let subchunk = read_subchunk(0, Bytes::from(bytes)).expect("parse v1 palette");
     let SubChunkFormat::Paletted { version, storages } = subchunk.format else {
         panic!("expected v1 paletted subchunk");
     };
@@ -268,7 +272,7 @@ fn paletted_subchunk_v1_uses_single_storage_without_count_byte() {
 fn paletted_subchunk_decodes_supported_bits_per_block() {
     for bits_per_block in [0, 1, 2, 3, 4, 5, 6, 8, 16] {
         let bytes = build_paletted_subchunk(8, None, bits_per_block, 4);
-        let subchunk = parse_subchunk(0, Bytes::from(bytes)).expect("parse");
+        let subchunk = read_subchunk(0, Bytes::from(bytes)).expect("parse");
         let SubChunkFormat::Paletted { storages, .. } = subchunk.format else {
             panic!("expected paletted subchunk for {bits_per_block} bits");
         };
@@ -289,8 +293,8 @@ fn paletted_subchunk_decodes_supported_bits_per_block() {
 #[test]
 fn paletted_subchunk_counts_only_drops_indices_but_keeps_counts() {
     let bytes = build_paletted_subchunk(8, None, 4, 4);
-    let subchunk = parse_subchunk_with_mode(0, Bytes::from(bytes), SubChunkDecodeMode::CountsOnly)
-        .expect("parse");
+    let subchunk =
+        SubChunk::read(0, Bytes::from(bytes), SubChunkDecodeMode::CountsOnly).expect("parse");
     let SubChunkFormat::Paletted { storages, .. } = subchunk.format else {
         panic!("expected paletted subchunk");
     };
@@ -309,15 +313,14 @@ fn paletted_subchunk_counts_only_drops_indices_but_keeps_counts() {
 #[test]
 fn surface_columns_keep_random_access_without_full_indices() {
     let bytes = build_paletted_subchunk(8, None, 4, 4);
-    let full = parse_subchunk_with_mode(
+    let full = SubChunk::read(
         0,
         Bytes::from(bytes.clone()),
         SubChunkDecodeMode::FullIndices,
     )
     .expect("parse full indices");
-    let surface =
-        parse_subchunk_with_mode(0, Bytes::from(bytes), SubChunkDecodeMode::SurfaceColumns)
-            .expect("parse surface columns");
+    let surface = SubChunk::read(0, Bytes::from(bytes), SubChunkDecodeMode::SurfaceColumns)
+        .expect("parse surface columns");
     let SubChunkFormat::Paletted {
         storages: surface_storages,
         ..
@@ -339,7 +342,7 @@ fn surface_columns_keep_random_access_without_full_indices() {
 #[test]
 fn paletted_subchunk_v9_accepts_embedded_y_byte() {
     let bytes = build_paletted_subchunk(9, Some(-4), 4, 4);
-    let subchunk = parse_subchunk(-4, Bytes::from(bytes)).expect("parse");
+    let subchunk = read_subchunk(-4, Bytes::from(bytes)).expect("parse");
     let SubChunkFormat::Paletted { storages, .. } = subchunk.format else {
         panic!("expected paletted v9 subchunk");
     };
@@ -349,7 +352,7 @@ fn paletted_subchunk_v9_accepts_embedded_y_byte() {
 #[test]
 fn paletted_subchunk_v9_accepts_positive_embedded_y_that_looks_like_storage_header() {
     let bytes = build_paletted_subchunk(9, Some(8), 4, 4);
-    let subchunk = parse_subchunk(8, Bytes::from(bytes)).expect("parse");
+    let subchunk = read_subchunk(8, Bytes::from(bytes)).expect("parse");
     let SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
         panic!("expected paletted v9 subchunk");
     };
@@ -363,7 +366,7 @@ fn paletted_subchunk_v9_accepts_positive_embedded_y_that_looks_like_storage_head
 #[test]
 fn paletted_subchunk_v9_falls_back_to_legacy_layout_without_embedded_y() {
     let bytes = build_paletted_subchunk(9, None, 4, 4);
-    let subchunk = parse_subchunk(8, Bytes::from(bytes)).expect("parse");
+    let subchunk = read_subchunk(8, Bytes::from(bytes)).expect("parse");
     let SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
         panic!("expected paletted v9 subchunk");
     };
@@ -378,26 +381,26 @@ fn paletted_subchunk_v9_falls_back_to_legacy_layout_without_embedded_y() {
 fn paletted_subchunk_rejects_trailing_bytes_after_storage_payload() {
     let mut bytes = build_paletted_subchunk(8, None, 4, 4);
     bytes.push(0);
-    assert!(parse_subchunk(0, Bytes::from(bytes)).is_err());
+    assert!(read_subchunk(0, Bytes::from(bytes)).is_err());
 }
 
 #[test]
 fn malformed_known_subchunk_versions_are_errors_not_raw_records() {
     for version in [0_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9] {
         assert!(
-            parse_subchunk(0, Bytes::from(vec![version])).is_err(),
+            read_subchunk(0, Bytes::from(vec![version])).is_err(),
             "SubChunk V{version}"
         );
     }
 
-    let unknown = parse_subchunk(0, Bytes::from_static(&[10, 1, 0])).expect("unknown raw");
+    let unknown = read_subchunk(0, Bytes::from_static(&[10, 1, 0])).expect("unknown raw");
     assert!(matches!(unknown.format, SubChunkFormat::Raw { .. }));
 }
 
 #[test]
 fn block_state_lookup_uses_xz_plane_storage_order() {
     let bytes = build_paletted_subchunk(8, None, 4, 8);
-    let subchunk = parse_subchunk(0, Bytes::from(bytes)).expect("parse");
+    let subchunk = read_subchunk(0, Bytes::from(bytes)).expect("parse");
     assert_eq!(block_storage_index(1, 2, 3), 306);
     let state = subchunk.block_state_at(1, 2, 3).expect("block state");
     assert_eq!(
@@ -408,7 +411,7 @@ fn block_state_lookup_uses_xz_plane_storage_order() {
 
 #[test]
 fn visible_block_state_lookup_uses_top_non_air_storage() {
-    let subchunk = parse_subchunk(
+    let subchunk = read_subchunk(
         0,
         Bytes::from(build_two_storage_paletted_subchunk(
             "minecraft:stone",
@@ -455,7 +458,7 @@ fn visible_surface_state_iterator_reports_palette_positions() {
         &["minecraft:air", "minecraft:stone"],
         |x, y, z| u16::from((x, y, z) == (1, 2, 3)),
     );
-    let subchunk = parse_subchunk(0, Bytes::from(bytes)).expect("parse layered subchunk");
+    let subchunk = read_subchunk(0, Bytes::from(bytes)).expect("parse layered subchunk");
     let SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
         panic!("expected paletted subchunk");
     };
@@ -483,7 +486,7 @@ fn paletted_subchunk_v9_decodes_zero_bit_secondary_storage_without_palette_len()
         |x, y, z| u16::from((x, y, z) == (4, 2, 4)),
     );
     append_zero_bit_palette_storage(&mut bytes, "minecraft:gold_block");
-    let subchunk = parse_subchunk(4, Bytes::from(bytes)).expect("parse v9 layered subchunk");
+    let subchunk = read_subchunk(4, Bytes::from(bytes)).expect("parse v9 layered subchunk");
     let SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
         panic!("expected paletted subchunk");
     };
@@ -514,7 +517,7 @@ fn chunk_get_block_reads_decoded_paletted_subchunk() {
         dimension: Dimension::Overworld,
     };
     let key = ChunkKey::subchunk(pos, 0);
-    let chunk = Chunk {
+    let chunk = LevelChunk {
         pos,
         version: Some(8),
         records: vec![ChunkRecord {

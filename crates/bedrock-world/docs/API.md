@@ -7,16 +7,16 @@
 只知道世界目录时优先使用自动识别：
 
 ```rust
-use bedrock_world::{BedrockWorld, Result};
+use bedrock_world::{World, Result};
 
 fn open_world(path: &str) -> Result<()> {
-    let world = BedrockWorld::open_auto_blocking(path)?;
+    let world = World::open(path, OpenOptions::default())?;
     println!("{:?}", world.format());
     Ok(())
 }
 ```
 
-需要控制只读、格式或扫描策略时使用 `BedrockWorldOpenOptions`。
+需要控制只读、格式或扫描策略时使用 `OpenOptions`。
 
 ## LevelDB 语义
 
@@ -29,7 +29,7 @@ fn open_world(path: &str) -> Result<()> {
 ## 世界版本证据
 
 ```rust
-let versions = world.versions_blocking()?;
+let versions = world.versions()?;
 ```
 
 版本证据来自实际 world data，而不是由单一版本字符串推导。报告可包含：
@@ -76,7 +76,7 @@ permutation 的状态；缺失必需字段或数值越界会报错。调用方�
 磁盘层始终保留真实数值 ID：
 
 ```rust
-let id: Option<u32> = world.get_biome_id_blocking(chunk, x, z, y)?;
+let id: Option<u32> = world.biome_id(chunk, x, z, y)?;
 ```
 
 `Data2D`、`Data2DLegacy`、`Data3D` 的解析和写回不依赖 biome 名称表。未知、未来版本或第三方世界中的 ID 仍按原数值保留。
@@ -111,7 +111,7 @@ V0 V1 V2 V3 V4 V5 V6 V7 V8 V9 Unknown(u8)
 跨版本 SubChunk 写出必须使用具体目标：
 
 - `upgrade_subchunks_blocking(target_game_version, upgrade_data, target_palette)`；
-- `write_subchunks_as_legacy_numeric_blocking(target_subchunk_version, numeric_table)`。
+- `downgrade_subchunks(target_subchunk_version, numeric_table)`。
 
 历史 numeric ID/meta 的反向写出必须通过正向升级结果验证，不能把 rename 表直接反转后猜值。
 
@@ -152,7 +152,7 @@ BlockEntity 没有统一的全局 schema version。公共 `BlockEntityRewriter` 
 
 ## pre-LevelDB Pocket 世界
 
-`open_auto_blocking()` 可以识别历史 `chunks.dat`，并在 world 层叠加 `entities.dat`。
+`open()` 可以识别历史 `chunks.dat`，并在 world 层叠加 `entities.dat`。
 
 必须区分：
 

@@ -6,11 +6,11 @@
 //! the library never merges two conflicting representations into a third state.
 
 use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
-use crate::parsed::{encode_actor_digest_ids, parse_actor_digest_ids};
+use crate::scan::{encode_actor_ids, decode_actor_ids};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -123,7 +123,7 @@ pub(crate) fn stage_actor_uid_repair(
     }
 
     for (pos, raw_digest) in digests {
-        let mut ids = parse_actor_digest_ids(&raw_digest)?;
+        let mut ids = decode_actor_ids(&raw_digest)?;
         let mut changed = false;
         for uid in &mut ids {
             if let Some(expected_uid) = replacements.get(uid) {
@@ -139,7 +139,7 @@ pub(crate) fn stage_actor_uid_repair(
             }
             batch.put(
                 ActorDigestKey::new(pos).storage_key(),
-                encode_actor_digest_ids(&ids),
+                encode_actor_ids(&ids),
             );
             report.digp_records_rewritten = report.digp_records_rewritten.saturating_add(1);
         }
@@ -213,7 +213,7 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
         report.actors = report.actors.saturating_add(source_ids.len());
 
         if let Some(existing_digest) = snapshot.digests.get(pos) {
-            let existing_ids = parse_actor_digest_ids(existing_digest)?;
+            let existing_ids = decode_actor_ids(existing_digest)?;
             if existing_ids != source_ids {
                 return Err(BedrockWorldError::ConcurrentWrite(format!(
                     "mixed actor storage for chunk {pos:?} disagrees: Entity UniqueID order does not exactly match existing digp"
@@ -222,7 +222,7 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
         } else {
             batch.put(
                 ActorDigestKey::new(*pos).storage_key(),
-                encode_actor_digest_ids(&source_ids),
+                encode_actor_ids(&source_ids),
             );
             report.digp_records_written = report.digp_records_written.saturating_add(1);
         }
@@ -320,7 +320,7 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
     };
 
     for (pos, raw_digest) in &snapshot.digests {
-        let ids = parse_actor_digest_ids(raw_digest)?;
+        let ids = decode_actor_ids(raw_digest)?;
         let mut encoded = Vec::new();
         for uid in &ids {
             let actor = actor_bytes.get(uid).ok_or_else(|| {
@@ -366,14 +366,14 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
 }
 
 #[derive(Default)]
-struct ActorStorageSnapshot {
+struct ActorStorageContents {
     entities: BTreeMap<ChunkPos, Bytes>,
     digests: BTreeMap<ChunkPos, Bytes>,
     actorprefix_records: usize,
 }
 
-fn scan_actor_storage(storage: &dyn WorldStorage) -> Result<ActorStorageSnapshot> {
-    let mut snapshot = ActorStorageSnapshot::default();
+fn scan_actor_storage(storage: &dyn WorldStorage) -> Result<ActorStorageContents> {
+    let mut snapshot = ActorStorageContents::default();
     storage.for_each_entry(StorageReadOptions::default(), &mut |raw_key, value| {
         match BedrockDbKey::decode(raw_key) {
             BedrockDbKey::Chunk(key) if key.tag == ChunkRecordTag::Entity => {
@@ -406,7 +406,7 @@ fn validate_digest_ownership(
 ) -> Result<BTreeMap<ActorUid, ChunkPos>> {
     let mut actor_owner = BTreeMap::<ActorUid, ChunkPos>::new();
     for (pos, raw) in digests {
-        let ids = parse_actor_digest_ids(raw)?;
+        let ids = decode_actor_ids(raw)?;
         let mut local = BTreeSet::new();
         for uid in ids {
             if !local.insert(uid) {
@@ -528,7 +528,7 @@ mod tests {
         storage
             .put(
                 &ActorDigestKey::new(pos).storage_key(),
-                &encode_actor_digest_ids(&[uid, ActorUid::from_unique_id(2)]),
+                &encode_actor_ids(&[uid, ActorUid::from_unique_id(2)]),
             )
             .unwrap();
 
@@ -583,7 +583,7 @@ mod tests {
         storage
             .put(
                 &ActorDigestKey::new(pos).storage_key(),
-                &encode_actor_digest_ids(&[uid]),
+                &encode_actor_ids(&[uid]),
             )
             .expect("seed digp");
         storage
@@ -646,7 +646,7 @@ mod tests {
             storage
                 .put(
                     &ActorDigestKey::new(pos).storage_key(),
-                    &encode_actor_digest_ids(&[obsolete]),
+                    &encode_actor_ids(&[obsolete]),
                 )
                 .unwrap();
         }
@@ -666,7 +666,7 @@ mod tests {
                 .get(&ActorDigestKey::new(pos).storage_key())
                 .unwrap()
                 .unwrap();
-            assert_eq!(parse_actor_digest_ids(&digest).unwrap(), vec![corrected]);
+            assert_eq!(decode_actor_ids(&digest).unwrap(), vec![corrected]);
         }
     }
 
@@ -678,7 +678,7 @@ mod tests {
         storage
             .put(
                 &ActorDigestKey::new(pos).storage_key(),
-                &encode_actor_digest_ids(&[uid]),
+                &encode_actor_ids(&[uid]),
             )
             .unwrap();
         storage

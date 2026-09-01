@@ -6,9 +6,9 @@ mod ownership;
 
 pub use crate::chunk::EntityData;
 pub use crate::chunk::key::{ActorDigestKey, ActorUid};
-pub use crate::parsed::{
-    ActorRecord, ActorResolution, ActorSource, ParsedActorDigest, ParsedEntity,
-    encode_actor_digest_ids, parse_actor_digest_ids,
+pub use crate::scan::{
+    ActorRecord, ActorResolution, ActorSource, ActorDigest, Actor,
+    encode_actor_ids, decode_actor_ids,
 };
 pub use actor_storage::{ActorStorageRewriteReport, ActorUidRepairReport};
 pub(crate) use actor_storage::{

@@ -2,10 +2,10 @@
 
 use super::level_dat::{read_level_dat_player, remove_level_dat_player, write_level_dat_player};
 use super::storage::{LocalPlayerRecords, classify_local_player_records};
-use crate::storage::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::level::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
 use crate::player::{PlayerData, PlayerId};
+use crate::storage::{StorageBatch, WorldStorage};
 use bytes::Bytes;
 use std::path::Path;
 
@@ -167,8 +167,8 @@ pub fn move_local_player_to_level_dat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::MemoryStorage;
     use crate::nbt::NbtTag;
+    use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};

@@ -4,7 +4,7 @@ use super::key::{ChunkKey, ChunkRecordTag};
 use super::legacy::LegacyTerrain;
 use super::palette::BlockState;
 use super::position::ChunkPos;
-use super::subchunk::{SubChunk, parse_subchunk};
+use super::subchunk::{SubChunk, SubChunkDecodeMode};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt};
 use bytes::Bytes;
@@ -28,7 +28,7 @@ pub struct EntityData {
 
 #[derive(Debug, Clone, PartialEq)]
 /// Parsed Bedrock LevelChunk with records grouped by position.
-pub struct Chunk {
+pub struct LevelChunk {
     /// Chunk position represented by this parsed chunk.
     pub pos: ChunkPos,
     /// Bedrock format or payload version.
@@ -37,15 +37,15 @@ pub struct Chunk {
     pub records: Vec<ChunkRecord>,
 }
 
-impl Chunk {
+impl LevelChunk {
     /// Returns a decoded subchunk by vertical index, when the record is present.
-    pub fn get_subchunk(&self, y: i8) -> Result<Option<SubChunk>> {
+    pub fn subchunk(&self, y: i8) -> Result<Option<SubChunk>> {
         let Some(record) = self.records.iter().find(|record| {
             record.key.tag == ChunkRecordTag::SubChunkPrefix && record.key.subchunk_y == Some(y)
         }) else {
             return Ok(None);
         };
-        parse_subchunk(y, record.value.clone()).map(Some)
+        SubChunk::read(y, record.value.clone(), SubChunkDecodeMode::FullIndices).map(Some)
     }
 
     /// Returns the decoded legacy terrain record, when present.
@@ -76,7 +76,7 @@ impl Chunk {
         let local_y = u8::try_from(i32::from(y).rem_euclid(16)).map_err(|_| {
             BedrockWorldError::Validation(format!("block y={y} has invalid local subchunk offset"))
         })?;
-        if let Some(subchunk) = self.get_subchunk(subchunk_y)? {
+        if let Some(subchunk) = self.subchunk(subchunk_y)? {
             if let Some(state) = subchunk.block_state_at(x, local_y, z) {
                 return Ok(state.clone());
             }

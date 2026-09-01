@@ -1,8 +1,8 @@
 #![cfg(feature = "bedrock-leveldb")]
 
 use bedrock_world::{
-    BedrockDbKey, BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, ChunkPos,
-    ChunkRecordTag, NbtTag, StorageReadOptions, StorageVisitorControl, WorldStorage,
+    BedrockDbKey, BedrockLevelDbStorage, ChunkPos, ChunkRecordTag, NbtTag, OpenOptions,
+    StorageReadOptions, StorageVisitorControl, World, ScanOptions, WorldStorage,
     read_level_dat_document,
 };
 use std::collections::BTreeMap;
@@ -52,12 +52,12 @@ fn parses_copied_bedrock_world_through_leveldb_backend() {
         "fixture db did not expose LevelChunkMetaDataDictionary"
     );
 
-    let world = BedrockWorld::from_storage(world_path, storage, BedrockWorldOpenOptions::default());
+    let world = World::from_storage(world_path, storage, OpenOptions::default());
     let first_chunk_pos = db_summary
         .first_data3d_pos
         .expect("fixture should contain a Data3D chunk");
     let parsed_chunk = world
-        .parse_chunk_blocking(first_chunk_pos)
+        .scan_chunk(first_chunk_pos, ScanOptions::full())
         .expect("parse sample chunk");
     print_parsed_chunk_summary(&parsed_chunk);
     assert!(
@@ -74,7 +74,7 @@ fn parses_copied_bedrock_world_through_leveldb_backend() {
         "fixture sample chunk should include parsed subchunks"
     );
 
-    let players = world.list_players_blocking().expect("list players");
+    let players = world.players().expect("list players");
     println!("players.count={}", players.len());
     for player in players.iter().take(16) {
         println!("player={player:?}");
@@ -119,7 +119,7 @@ fn print_level_dat_summary(
     }
 }
 
-fn print_parsed_chunk_summary(chunk: &bedrock_world::chunk::ParsedChunkData) {
+fn print_parsed_chunk_summary(chunk: &bedrock_world::scan::Chunk) {
     println!("parsed.sample_chunk.pos={:?}", chunk.pos);
     println!("parsed.sample_chunk.records={}", chunk.report.entry_count);
     println!(

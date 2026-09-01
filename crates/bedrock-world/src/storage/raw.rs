@@ -2,7 +2,7 @@
 //!
 //! Historical container-specific readers live beside this module rather than being normalized into
 //! later LevelDB representations. In particular, pre-LevelDB Pocket `chunks.dat` terrain is handled
-//! by `database::pocket_chunks`, so this file has no path that can synthesize missing biome bytes.
+//! by `storage::pocket_chunks`, so this file has no path that can synthesize missing biome bytes.
 
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
@@ -24,7 +24,7 @@ pub struct StorageEntry {
 
 /// Borrowed raw key/value storage entry view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StorageEntryRef<'a> {
+pub struct StorageEntryView<'a> {
     /// Exact persisted key bytes.
     pub key: &'a [u8],
     /// Exact persisted value bytes.
@@ -318,7 +318,7 @@ impl StorageBatch {
     }
 }
 
-/// Raw key/value storage abstraction used by [`crate::world::BedrockWorld`].
+/// Raw key/value storage abstraction used by [`crate::world::World`].
 pub trait WorldStorage: Send + Sync {
     /// Reads one exact raw value.
     fn get(&self, key: &[u8]) -> Result<Option<Bytes>>;
@@ -329,7 +329,7 @@ pub trait WorldStorage: Send + Sync {
     }
 
     /// Reads exact raw values with cooperative control while preserving input order.
-    fn get_many_ordered_with_control(
+    fn get_many_ordered(
         &self,
         keys: &[Bytes],
         options: StorageReadOptions,
@@ -369,10 +369,10 @@ pub trait WorldStorage: Send + Sync {
         &self,
         prefix: &[u8],
         options: StorageReadOptions,
-        visitor: &mut (dyn FnMut(StorageEntryRef<'_>) -> Result<StorageVisitorControl> + Send),
+        visitor: &mut (dyn FnMut(StorageEntryView<'_>) -> Result<StorageVisitorControl> + Send),
     ) -> Result<StorageScanOutcome> {
         self.for_each_prefix(prefix, options, &mut |key, value| {
-            visitor(StorageEntryRef {
+            visitor(StorageEntryView {
                 key,
                 value: value.as_ref(),
             })
@@ -675,7 +675,7 @@ pub mod backend {
                 .map_err(map_leveldb_error)
         }
 
-        fn get_many_ordered_with_control(
+        fn get_many_ordered(
             &self,
             keys: &[Bytes],
             options: StorageReadOptions,
@@ -755,13 +755,13 @@ pub mod backend {
             &self,
             prefix: &[u8],
             options: StorageReadOptions,
-            visitor: &mut (dyn FnMut(StorageEntryRef<'_>) -> Result<StorageVisitorControl> + Send),
+            visitor: &mut (dyn FnMut(StorageEntryView<'_>) -> Result<StorageVisitorControl> + Send),
         ) -> Result<StorageScanOutcome> {
             let mut read_options = to_leveldb_read_options(options);
             read_options.read_strategy = bedrock_leveldb::ReadStrategy::Borrowed;
             let mut visitor_error = None;
             let result = self.db.for_each_prefix_ref(prefix, read_options, |entry| {
-                match visitor(StorageEntryRef {
+                match visitor(StorageEntryView {
                     key: entry.key.as_bytes(),
                     value: entry.value.as_bytes(),
                 }) {

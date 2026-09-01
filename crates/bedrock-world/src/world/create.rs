@@ -1,17 +1,17 @@
 //! Public Minecraft Bedrock world creation APIs.
 
-use super::{BedrockWorld, BedrockWorldOpenOptions, WorldFormatHint};
-use crate::storage::create_bedrock_leveldb;
+use super::{OpenOptions, World, WorldFormatHint};
 use crate::error::{BedrockWorldError, Result};
 use crate::level::{LevelDatDocument, write_level_dat_document};
 use crate::nbt::NbtTag;
+use crate::storage::create_bedrock_leveldb;
 use indexmap::IndexMap;
 use std::fs;
 use std::path::Path;
 
 /// Spawn point stored in a newly-created Minecraft Bedrock world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BedrockWorldSpawn {
+pub struct Spawn {
     /// Absolute block X coordinate.
     pub x: i32,
     /// Absolute block Y coordinate.
@@ -20,7 +20,7 @@ pub struct BedrockWorldSpawn {
     pub z: i32,
 }
 
-impl Default for BedrockWorldSpawn {
+impl Default for Spawn {
     fn default() -> Self {
         Self { x: 0, y: 64, z: 0 }
     }
@@ -75,13 +75,13 @@ impl BedrockDifficulty {
 
 /// Metadata and gameplay defaults used to create a new Minecraft Bedrock world folder.
 #[derive(Debug, Clone)]
-pub struct BedrockWorldCreateOptions {
+pub struct CreateOptions {
     /// User-visible map name stored in `LevelName` and `levelname.txt`.
     pub level_name: String,
     /// Authoritative world generation seed stored in `RandomSeed`.
     pub seed: i64,
     /// Initial player spawn point.
-    pub spawn: BedrockWorldSpawn,
+    pub spawn: Spawn,
     /// Target Bedrock network version. `None` omits `NetworkVersion` from the new `level.dat`.
     pub network_version: Option<u32>,
     /// Bedrock storage version stored in `StorageVersion`.
@@ -100,14 +100,14 @@ pub struct BedrockWorldCreateOptions {
     pub last_opened_with_version: Option<[i32; 5]>,
 }
 
-impl BedrockWorldCreateOptions {
+impl CreateOptions {
     /// Creates standard modern-world options with a caller-owned map name and seed.
     #[must_use]
     pub fn new(level_name: impl Into<String>, seed: i64) -> Self {
         Self {
             level_name: level_name.into(),
             seed,
-            spawn: BedrockWorldSpawn::default(),
+            spawn: Spawn::default(),
             network_version: None,
             storage_version: 9,
             level_dat_version: 10,
@@ -120,16 +120,13 @@ impl BedrockWorldCreateOptions {
     }
 }
 
-impl BedrockWorld {
+impl World {
     /// Creates a new writable Minecraft Bedrock LevelDB world and opens it.
     ///
     /// The destination must be missing or an empty directory. LevelDB creation,
     /// `level.dat`, and `levelname.txt` are all owned by `bedrock-world`; callers
     /// do not need to depend on `bedrock-leveldb` directly.
-    pub fn create_blocking(
-        path: impl AsRef<Path>,
-        options: BedrockWorldCreateOptions,
-    ) -> Result<Self> {
+    pub fn create(path: impl AsRef<Path>, options: CreateOptions) -> Result<Self> {
         let path = path.as_ref();
         validate_create_options(path, &options)?;
         let root_existed = path.exists();
@@ -143,9 +140,9 @@ impl BedrockWorld {
                 path.join("levelname.txt"),
                 format!("{}\n", options.level_name),
             )?;
-            Self::open_blocking(
+            Self::open(
                 path,
-                BedrockWorldOpenOptions {
+                OpenOptions {
                     read_only: false,
                     format: WorldFormatHint::LevelDb,
                 },
@@ -158,20 +155,17 @@ impl BedrockWorld {
         create_result
     }
 
-    /// Async wrapper for [`Self::create_blocking`].
+    /// Async wrapper for [`Self::create`].
     #[cfg(feature = "async")]
-    pub async fn create(
-        path: impl AsRef<Path>,
-        options: BedrockWorldCreateOptions,
-    ) -> Result<Self> {
+    pub async fn create_async(path: impl AsRef<Path>, options: CreateOptions) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        tokio::task::spawn_blocking(move || Self::create_blocking(path, options))
+        tokio::task::spawn_blocking(move || Self::create(path, options))
             .await
             .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
 }
 
-fn validate_create_options(path: &Path, options: &BedrockWorldCreateOptions) -> Result<()> {
+fn validate_create_options(path: &Path, options: &CreateOptions) -> Result<()> {
     if options.level_name.trim().is_empty() {
         return Err(BedrockWorldError::Validation(
             "Bedrock world level_name must not be empty".to_string(),
@@ -193,7 +187,7 @@ fn validate_create_options(path: &Path, options: &BedrockWorldCreateOptions) -> 
     Ok(())
 }
 
-fn build_level_dat(options: &BedrockWorldCreateOptions) -> Result<LevelDatDocument> {
+fn build_level_dat(options: &CreateOptions) -> Result<LevelDatDocument> {
     let mut root = IndexMap::from([
         (
             "LevelName".to_string(),

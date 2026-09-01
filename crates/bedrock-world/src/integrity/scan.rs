@@ -8,7 +8,7 @@ use crate::chunk::{
     BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, LEGACY_TERRAIN_VALUE_LEN,
     POCKET_TERRAIN_VALUE_LEN, SubChunkVersion,
 };
-use crate::entity::parse_actor_digest_ids;
+use crate::entity::decode_actor_ids;
 use crate::error::Result;
 use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::world::WorldFormat;
@@ -172,7 +172,7 @@ pub fn scan_compatibility(
                 digp_records = digp_records.saturating_add(1);
                 actor_storage = actor_storage.merge(ActorStorage::DigpActorprefix);
                 chunk_records.entry(pos).or_default();
-                match parse_actor_digest_ids(value) {
+                match decode_actor_ids(value) {
                     Ok(ids) => {
                         let mut local = BTreeSet::<i64>::new();
                         for uid in ids {
@@ -384,7 +384,7 @@ const fn worst_compatibility(
 mod tests {
     use super::*;
     use crate::chunk::{ActorUid, Dimension};
-    use crate::entity::encode_actor_digest_ids;
+    use crate::entity::encode_actor_ids;
     use crate::storage::{MemoryStorage, StorageBatch};
 
     #[test]
@@ -440,11 +440,11 @@ mod tests {
         let mut batch = StorageBatch::new();
         batch.put(
             crate::entity::ActorDigestKey::new(first).storage_key(),
-            encode_actor_digest_ids(&[uid]),
+            encode_actor_ids(&[uid]),
         );
         batch.put(
             crate::entity::ActorDigestKey::new(second).storage_key(),
-            encode_actor_digest_ids(&[uid]),
+            encode_actor_ids(&[uid]),
         );
         batch.put(uid.storage_key(), Bytes::from_static(b"actor"));
         storage.write_batch(&batch).expect("seed actor links");

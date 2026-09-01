@@ -5,9 +5,9 @@
 //! concrete caller evidence and only rewrite layouts whose historical shape is known.
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::storage::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_root_nbt_with_consumed, serialize_root_nbt};
+use crate::storage::{StorageBatch, WorldStorage};
 use bytes::Bytes;
 use indexmap::IndexMap;
 
@@ -108,7 +108,7 @@ pub struct BlockEntityChunkRewriteReport {
 /// Every consecutive NBT root is parsed and processed before any storage write is issued. Roots marked
 /// `Unchanged` or `Preserved` are copied byte-for-byte from the source payload; only `Rewritten` roots
 /// are serialized again. An empty payload is treated as corrupt rather than deleted or replaced.
-pub fn rewrite_block_entity_chunk_blocking(
+pub fn rewrite_block_entity_chunk(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
     rewriter: &dyn BlockEntityRewriter,
@@ -179,12 +179,12 @@ pub fn rewrite_block_entity_chunk_blocking(
 }
 
 /// Rewrites confirmed historical Sign text layouts using the built-in vanilla rules.
-pub fn rewrite_block_entity_sign_text_blocking(
+pub fn rewrite_block_entity_sign_text(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
     context: BlockEntityRewriteContext,
 ) -> Result<BlockEntityChunkRewriteReport> {
-    rewrite_block_entity_chunk_blocking(storage, pos, &VanillaBlockEntityRewriter, context)
+    rewrite_block_entity_chunk(storage, pos, &VanillaBlockEntityRewriter, context)
 }
 
 fn rewrite_sign(root: &IndexMap<String, NbtTag>) -> Result<BlockEntityRewriteOutcome> {
@@ -402,7 +402,7 @@ mod tests {
         payload.extend_from_slice(&serialize_root_nbt(&sign).unwrap());
         storage.put(&key, &payload).unwrap();
 
-        let report = rewrite_block_entity_sign_text_blocking(
+        let report = rewrite_block_entity_sign_text(
             &storage,
             pos,
             BlockEntityRewriteContext::default(),
@@ -428,7 +428,7 @@ mod tests {
             .put(&key, &serialize_root_nbt(&root).unwrap())
             .unwrap();
 
-        let first = rewrite_block_entity_sign_text_blocking(
+        let first = rewrite_block_entity_sign_text(
             &storage,
             pos,
             BlockEntityRewriteContext::default(),
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(first.roots_rewritten, 1);
         assert!(first.payload_rewritten);
 
-        let second = rewrite_block_entity_sign_text_blocking(
+        let second = rewrite_block_entity_sign_text(
             &storage,
             pos,
             BlockEntityRewriteContext::default(),

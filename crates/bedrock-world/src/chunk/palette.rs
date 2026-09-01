@@ -114,7 +114,7 @@ impl BlockPalette {
         self.states.get(palette_index)
     }
 
-    pub(crate) fn block_state_with_palette_index_at(
+    pub(crate) fn block_state_entry_at(
         &self,
         local_x: u8,
         local_y: u8,

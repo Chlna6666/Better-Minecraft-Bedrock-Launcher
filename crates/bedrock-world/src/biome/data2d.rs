@@ -1,6 +1,6 @@
 //! Minecraft Bedrock `Data2D` biome data and explicit `Data3D` projection helpers.
 
-use crate::biome::{Biome2d, Biome3d, ParsedBiomeStorage};
+use crate::biome::{Biome2d, Biome3d, BiomeStorage};
 use crate::error::{BedrockWorldError, Result};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -48,7 +48,7 @@ pub fn data2d_to_data3d(source: &Biome2d, subchunk_y: RangeInclusive<i8>) -> Res
                 }
             }
         }
-        storages.push(ParsedBiomeStorage {
+        storages.push(BiomeStorage {
             y: Some(i32::from(section_y) * 16),
             palette,
             indices: Some(indices),

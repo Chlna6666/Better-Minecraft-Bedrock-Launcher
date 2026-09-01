@@ -2,13 +2,10 @@
 
 use crate::error::Result;
 use crate::item::{
-    ClassicSavedItemCheckReport, ClassicSavedItemConversionReport, LegacySavedItemBlockStateTables,
-    LegacySavedItemIdTable, MedievalSavedItemCheckReport, MedievalSavedItemConversionReport,
-    SavedItemFormatEvidence, check_saved_items_for_classic,
-    check_saved_items_for_classic_with_blocks, check_saved_items_for_medieval,
-    check_saved_items_for_medieval_with_blocks, convert_saved_items_to_classic,
-    convert_saved_items_to_classic_with_blocks, convert_saved_items_to_medieval,
-    convert_saved_items_to_medieval_with_blocks, inspect_saved_item_formats,
+    ClassicSavedItemCheckReport, ClassicSavedItemConversionReport, MedievalSavedItemCheckReport,
+    MedievalSavedItemConversionReport, SavedItemBlockStates, SavedItemFormatEvidence,
+    SavedItemHistory, check_saved_items_for_classic, check_saved_items_for_medieval,
+    convert_saved_items_to_classic, convert_saved_items_to_medieval, inspect_saved_item_formats,
 };
 use crate::player::PlayerData;
 
@@ -24,18 +21,10 @@ impl PlayerData {
     /// Checks whether every saved item has an exact MCPE <= 1.5 Classic representation.
     pub fn check_saved_items_for_classic(
         &self,
-        table: &LegacySavedItemIdTable,
+        table: &SavedItemHistory,
+        blocks: Option<&SavedItemBlockStates<'_>>,
     ) -> Result<ClassicSavedItemCheckReport> {
-        check_saved_items_for_classic(&self.nbt, table)
-    }
-
-    /// Checks exact Classic representation including modern blockitem `Block` payloads.
-    pub fn check_saved_items_for_classic_with_blocks(
-        &self,
-        table: &LegacySavedItemIdTable,
-        blocks: &LegacySavedItemBlockStateTables<'_>,
-    ) -> Result<ClassicSavedItemCheckReport> {
-        check_saved_items_for_classic_with_blocks(&self.nbt, table, blocks)
+        check_saved_items_for_classic(&self.nbt, table, blocks)
     }
 
     /// Explicitly rewrites every recognised saved item to exact Classic TAG_Short id + Damage.
@@ -45,21 +34,10 @@ impl PlayerData {
     /// changes, so an error leaves the player untouched.
     pub fn convert_saved_items_to_classic(
         &mut self,
-        table: &LegacySavedItemIdTable,
+        table: &SavedItemHistory,
+        blocks: Option<&SavedItemBlockStates<'_>>,
     ) -> Result<ClassicSavedItemConversionReport> {
-        let outcome = convert_saved_items_to_classic(&self.nbt, table)?;
-        self.nbt = outcome.nbt;
-        self.finish_edit();
-        Ok(outcome.report)
-    }
-
-    /// Explicitly rewrites saved items to exact Classic form with blockitem proof.
-    pub fn convert_saved_items_to_classic_with_blocks(
-        &mut self,
-        table: &LegacySavedItemIdTable,
-        blocks: &LegacySavedItemBlockStateTables<'_>,
-    ) -> Result<ClassicSavedItemConversionReport> {
-        let outcome = convert_saved_items_to_classic_with_blocks(&self.nbt, table, blocks)?;
+        let outcome = convert_saved_items_to_classic(&self.nbt, table, blocks)?;
         self.nbt = outcome.nbt;
         self.finish_edit();
         Ok(outcome.report)
@@ -67,22 +45,14 @@ impl PlayerData {
 
     /// Checks whether every saved item in this player has a proven MCPE 1.6-1.8 representation.
     ///
-    /// This is non-mutating. Modern blockitems carrying a `Block` payload remain unresolved until the
-    /// `_with_blocks` variant is supplied authoritative block reverse tables.
+    /// This is non-mutating. Pass authoritative block reverse tables when modern blockitems carry a
+    /// `Block` payload; without them those payloads remain unresolved.
     pub fn check_saved_items_for_medieval(
         &self,
-        table: &LegacySavedItemIdTable,
+        table: &SavedItemHistory,
+        blocks: Option<&SavedItemBlockStates<'_>>,
     ) -> Result<MedievalSavedItemCheckReport> {
-        check_saved_items_for_medieval(&self.nbt, table)
-    }
-
-    /// Checks the MCPE 1.6-1.8 representation including modern blockitem `Block` payloads.
-    pub fn check_saved_items_for_medieval_with_blocks(
-        &self,
-        table: &LegacySavedItemIdTable,
-        blocks: &LegacySavedItemBlockStateTables<'_>,
-    ) -> Result<MedievalSavedItemCheckReport> {
-        check_saved_items_for_medieval_with_blocks(&self.nbt, table, blocks)
+        check_saved_items_for_medieval(&self.nbt, table, blocks)
     }
 
     /// Explicitly rewrites this player's saved items to MCPE 1.6-1.8 string-ID representation.
@@ -92,24 +62,10 @@ impl PlayerData {
     /// `Block` payload makes this variant refuse the conversion rather than drop it.
     pub fn convert_saved_items_to_medieval(
         &mut self,
-        table: &LegacySavedItemIdTable,
+        table: &SavedItemHistory,
+        blocks: Option<&SavedItemBlockStates<'_>>,
     ) -> Result<MedievalSavedItemConversionReport> {
-        let outcome = convert_saved_items_to_medieval(&self.nbt, table)?;
-        self.nbt = outcome.nbt;
-        self.finish_edit();
-        Ok(outcome.report)
-    }
-
-    /// Explicitly rewrites this player's saved items to Medieval format with blockitem proof.
-    ///
-    /// Proven modern `Block` payloads are removed only after item and block mappings agree on the
-    /// same historical identity and metadata. The player remains unchanged on any error.
-    pub fn convert_saved_items_to_medieval_with_blocks(
-        &mut self,
-        table: &LegacySavedItemIdTable,
-        blocks: &LegacySavedItemBlockStateTables<'_>,
-    ) -> Result<MedievalSavedItemConversionReport> {
-        let outcome = convert_saved_items_to_medieval_with_blocks(&self.nbt, table, blocks)?;
+        let outcome = convert_saved_items_to_medieval(&self.nbt, table, blocks)?;
         self.nbt = outcome.nbt;
         self.finish_edit();
         Ok(outcome.report)
@@ -152,22 +108,21 @@ mod tests {
 
     #[test]
     fn player_exact_classic_normalizes_existing_numeric_width() {
-        let table =
-            LegacySavedItemIdTable::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
+        let table = SavedItemHistory::from_sources(r#"{"minecraft:stone":1}"#, "{}", &[]).unwrap();
         let item = NbtTag::Compound(IndexMap::from([
             ("id".to_string(), NbtTag::Int(1)),
             ("Damage".to_string(), NbtTag::Int(2)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
         let mut player = player_with_item(item);
-        let report = player.convert_saved_items_to_classic(&table).unwrap();
+        let report = player.convert_saved_items_to_classic(&table, None).unwrap();
         assert_eq!(report.items_changed, 1);
         assert!(player.is_modified());
     }
 
     #[test]
     fn player_classic_item_becomes_medieval_only_after_success() {
-        let table = LegacySavedItemIdTable::from_sources(
+        let table = SavedItemHistory::from_sources(
             r#"{"minecraft:nametag":421}"#,
             "{}",
             &[SavedItemUpgradeSource {
@@ -182,7 +137,9 @@ mod tests {
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
         let mut player = player_with_item(item);
-        let report = player.convert_saved_items_to_medieval(&table).unwrap();
+        let report = player
+            .convert_saved_items_to_medieval(&table, None)
+            .unwrap();
         assert_eq!(report.check.items_seen, 1);
         assert!(player.is_modified());
         let NbtTag::Compound(root) = &player.nbt else {

@@ -28,24 +28,19 @@ pub mod error;
 /// Bedrock saved-item identities, stacks and historical item data.
 pub mod item;
 mod mcstructure;
-mod nbt_ref;
 /// Structured Bedrock record parsing and consecutive-record encoding APIs.
-pub mod parsed;
+pub mod scan;
 pub mod player;
+/// Historical Pocket Edition world files.
+pub mod pocket;
 /// Minecraft Bedrock game and persisted data version information.
 pub mod version;
 
 /// Bedrock map item records.
-pub mod map {
-    pub use crate::chunk::key::MapRecordId;
-    pub use crate::parsed::{MapKnownFields, MapPixels, ParsedMapData};
-}
+pub mod map_item;
 
 /// Bedrock village database records.
-pub mod village {
-    pub use crate::chunk::key::{ParsedVillageKey, VillageRecordKind};
-    pub use crate::parsed::ParsedVillageData;
-}
+pub mod village;
 
 /// Bedrock `.mcstructure` files and structure placement.
 pub mod structure {
@@ -64,6 +59,9 @@ pub mod level;
 /// Raw Bedrock records, storage contracts and supported world-storage backends.
 pub mod storage;
 
+/// Terrain surface sampling and region loading.
+pub mod surface;
+
 /// Bedrock world compatibility and integrity validation.
 pub mod integrity;
 
@@ -80,27 +78,29 @@ pub mod discover {
     pub use crate::world::discover::*;
 }
 
-pub(crate) use world::surface;
-
 pub use biome::{
-    Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeData, ParsedBiomeStorage,
+    Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, BiomeData, BiomeStorage,
     encode_data3d_quart,
 };
-pub use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
+pub use block::{
+    BlockPalette, BlockPos, BlockState, BlockStateBatchStats, BlockStateQueryControl,
+    BlockStateQueryResult, BlockStateView, block_storage_index,
+};
 pub use chunk::{
-    ActorDigestKey, ActorUid, Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
-    Dimension, ParsedVillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat,
+    ActorDigestKey, ActorUid, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
+    ChunkBlockEntities, ChunkHeightMap, ChunkHeightMapStatus, LevelChunk,
+    Dimension, VillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat,
 };
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub use integrity::{ChunkCapabilities, CompatibilityLevel};
 pub use item::ItemStack;
 pub use level::*;
 pub use nbt::{NbtReader, NbtTag, NbtWriter};
-pub use parsed::ParsedChunkRecord;
+pub use scan::ChunkEntry;
 pub use player::{PlayerData, PlayerId};
 pub use query::{
     ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, WriteGuard,
-    query_selection_stats_exact_blocking, rasterize_chunk_line,
+    exact_selection_stats, rasterize_chunk_line,
 };
 pub use storage::*;
 pub use world::*;

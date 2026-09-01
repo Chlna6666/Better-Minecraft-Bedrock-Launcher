@@ -3,48 +3,30 @@
 mod classic_saved_item;
 mod format;
 mod format_evidence;
-mod legacy_saved_item;
-mod legacy_saved_item_check;
-mod legacy_saved_item_conversion;
 mod medieval_saved_item;
 mod modern_saved_item;
 mod modern_target;
 mod saved_item;
+mod saved_item_history;
 mod vanilla_saved_item_block_map;
 mod vanilla_saved_item_palette;
 mod version_target;
 
-pub use crate::parsed::ItemStack;
+pub use crate::scan::ItemStack;
 pub use classic_saved_item::{
     ClassicSavedItemCheckReport, ClassicSavedItemConversionOutcome,
     ClassicSavedItemConversionReport, ClassicSavedItemIssue, ClassicSavedItemIssueKind,
-    check_saved_items_for_classic, check_saved_items_for_classic_with_blocks,
-    convert_saved_items_to_classic, convert_saved_items_to_classic_with_blocks,
+    check_saved_items_for_classic, convert_saved_items_to_classic,
 };
 pub use format::SavedItemFormat;
 pub use format_evidence::{
     SavedItemFormatEvidence, SavedItemStorageForm, inspect_saved_item_formats,
     saved_item_storage_form,
 };
-pub use legacy_saved_item::{
-    LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, MedievalSavedItemId,
-    MedievalSavedItemMatch, NamedSavedItemId, SavedItemUpgradeSource,
-    load_pinned_legacy_saved_item_id_table_from_dir,
-};
-pub use legacy_saved_item_check::{
-    LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemIssue,
-    LegacySavedItemIssueKind, check_legacy_numeric_saved_items,
-    check_legacy_numeric_saved_items_with_blocks,
-};
-pub use legacy_saved_item_conversion::{
-    LegacySavedItemConversionOutcome, LegacySavedItemConversionReport,
-    convert_saved_items_to_legacy_numeric, convert_saved_items_to_legacy_numeric_with_blocks,
-};
 pub use medieval_saved_item::{
     MedievalSavedItemCheckReport, MedievalSavedItemConversionOutcome,
     MedievalSavedItemConversionReport, MedievalSavedItemIssue, MedievalSavedItemIssueKind,
-    check_saved_items_for_medieval, check_saved_items_for_medieval_with_blocks,
-    convert_saved_items_to_medieval, convert_saved_items_to_medieval_with_blocks,
+    check_saved_items_for_medieval, convert_saved_items_to_medieval,
 };
 pub use modern_saved_item::{
     ModernSavedItemCheckReport, ModernSavedItemConversionOutcome, ModernSavedItemConversionReport,
@@ -52,6 +34,11 @@ pub use modern_saved_item::{
     convert_saved_items_to_modern_target,
 };
 pub use modern_target::{ModernSavedItemTarget, ModernSavedItemTargetMatch};
+pub use saved_item_history::{
+    ClassicSavedItemId, ClassicSavedItemMatch, MedievalSavedItemId, MedievalSavedItemMatch,
+    NamedSavedItemId, SavedItemBlockStates, SavedItemHistory, SavedItemUpgradeSource,
+    load_pinned_saved_item_history_from_dir,
+};
 pub use vanilla_saved_item_block_map::{VanillaSavedItemBlockMap, VanillaSavedItemBlockMatch};
 pub use vanilla_saved_item_palette::{VanillaSavedItemEntry, VanillaSavedItemPalette};
 pub use version_target::{SavedItemVersionMatch, SavedItemVersionTable, SavedItemVersionTarget};

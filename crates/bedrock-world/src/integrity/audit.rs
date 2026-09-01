@@ -5,21 +5,20 @@
 //! is repairable, requires a schema upgrade, or should block writes entirely.
 
 use crate::chunk::{
-    BedrockDbKey, ChunkRecordTag, LegacyTerrain, SubChunkDecodeMode, SubChunkFormat,
-    parse_subchunk_with_mode,
+    BedrockDbKey, ChunkRecordTag, LegacyTerrain, SubChunk, SubChunkDecodeMode, SubChunkFormat,
 };
-use crate::entity::parse_actor_digest_ids;
+use crate::entity::decode_actor_ids;
 use crate::error::{BedrockWorldError, Result};
 use crate::level::read_level_dat_document;
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt};
 use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
-use crate::world::{BedrockWorld, WorldStorageHandle};
+use crate::world::{World, StorageBackend};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Overall integrity classification for a world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorldIntegrityStatus {
+pub enum Status {
     /// No known integrity problems were detected.
     Healthy,
     /// Metadata or index relationships can be repaired without semantic block-state migration.
@@ -32,7 +31,7 @@ pub enum WorldIntegrityStatus {
 
 /// Severity assigned to one audit issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum WorldIntegritySeverity {
+pub enum Severity {
     /// Informational diagnostic.
     Info,
     /// Recoverable or compatibility concern.
@@ -43,7 +42,7 @@ pub enum WorldIntegritySeverity {
 
 /// Stable issue category emitted by the integrity auditor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorldIntegrityIssueKind {
+pub enum IssueKind {
     /// `level.dat` could not be parsed.
     LevelDatUnreadable,
     /// `level.dat` does not contain a usable `RandomSeed`.
@@ -74,11 +73,11 @@ pub enum WorldIntegrityIssueKind {
 
 /// One integrity finding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorldIntegrityIssue {
+pub struct Issue {
     /// Finding severity.
-    pub severity: WorldIntegritySeverity,
+    pub severity: Severity,
     /// Stable issue category.
-    pub kind: WorldIntegrityIssueKind,
+    pub kind: IssueKind,
     /// Storage key/category or metadata location associated with the issue.
     pub location: String,
     /// Human-readable diagnostic detail.
@@ -87,7 +86,7 @@ pub struct WorldIntegrityIssue {
 
 /// Options controlling a world integrity scan.
 #[derive(Debug, Clone)]
-pub struct WorldIntegrityOptions {
+pub struct Options {
     /// Raw storage scan settings.
     pub storage: StorageReadOptions,
     /// Validate modern/legacy subchunk payloads and palette state metadata.
@@ -102,7 +101,7 @@ pub struct WorldIntegrityOptions {
     pub max_issues: usize,
 }
 
-impl Default for WorldIntegrityOptions {
+impl Default for Options {
     fn default() -> Self {
         Self {
             storage: StorageReadOptions::default(),
@@ -117,9 +116,9 @@ impl Default for WorldIntegrityOptions {
 
 /// Aggregate result of a whole-world integrity audit.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorldIntegrityReport {
+pub struct Report {
     /// Overall world classification.
-    pub status: WorldIntegrityStatus,
+    pub status: Status,
     /// Raw records visited.
     pub records_scanned: usize,
     /// Chunk-scoped records visited.
@@ -142,16 +141,16 @@ pub struct WorldIntegrityReport {
     pub orphan_actor_records: usize,
     /// Unknown/unclassified storage records encountered.
     pub unknown_records: usize,
-    /// Retained findings, bounded by [`WorldIntegrityOptions::max_issues`].
-    pub issues: Vec<WorldIntegrityIssue>,
+    /// Retained findings, bounded by [`Options::max_issues`].
+    pub issues: Vec<Issue>,
     /// Number of additional findings omitted after hitting the issue bound.
     pub omitted_issues: usize,
 }
 
-impl Default for WorldIntegrityReport {
+impl Default for Report {
     fn default() -> Self {
         Self {
-            status: WorldIntegrityStatus::Healthy,
+            status: Status::Healthy,
             records_scanned: 0,
             chunk_records: 0,
             subchunks: 0,
@@ -169,8 +168,8 @@ impl Default for WorldIntegrityReport {
     }
 }
 
-impl WorldIntegrityReport {
-    fn push_issue(&mut self, options: &WorldIntegrityOptions, issue: WorldIntegrityIssue) {
+impl Report {
+    fn push_issue(&mut self, options: &Options, issue: Issue) {
         if self.issues.len() < options.max_issues {
             self.issues.push(issue);
         } else {
@@ -182,37 +181,33 @@ impl WorldIntegrityReport {
         if self
             .issues
             .iter()
-            .any(|issue| issue.severity == WorldIntegritySeverity::Error)
+            .any(|issue| issue.severity == Severity::Error)
         {
-            self.status = WorldIntegrityStatus::Corrupt;
+            self.status = Status::Corrupt;
             return;
         }
         if self.legacy_block_states != 0
             || self
                 .issues
                 .iter()
-                .any(|issue| issue.kind == WorldIntegrityIssueKind::UnsupportedSubChunk)
+                .any(|issue| issue.kind == IssueKind::UnsupportedSubChunk)
         {
-            self.status = WorldIntegrityStatus::LegacyNeedsUpgrade;
+            self.status = Status::LegacyNeedsUpgrade;
             return;
         }
         if self
             .issues
             .iter()
-            .any(|issue| issue.severity == WorldIntegritySeverity::Warning)
+            .any(|issue| issue.severity == Severity::Warning)
         {
-            self.status = WorldIntegrityStatus::Repairable;
+            self.status = Status::Repairable;
         }
     }
 }
 
 /// Audits one world folder and raw storage backend without modifying either.
-pub fn audit(
-    world_path: &Path,
-    storage: &dyn WorldStorage,
-    options: WorldIntegrityOptions,
-) -> Result<WorldIntegrityReport> {
-    let mut report = WorldIntegrityReport::default();
+pub fn audit(world_path: &Path, storage: &dyn WorldStorage, options: Options) -> Result<Report> {
+    let mut report = Report::default();
     audit_level_dat(world_path, &options, &mut report);
 
     let mut actor_records = BTreeSet::<i64>::new();
@@ -227,9 +222,9 @@ pub fn audit(
         if value.is_empty() {
             report.push_issue(
                 &options,
-                WorldIntegrityIssue {
-                    severity: WorldIntegritySeverity::Error,
-                    kind: WorldIntegrityIssueKind::EmptyRecord,
+                Issue {
+                    severity: Severity::Error,
+                    kind: IssueKind::EmptyRecord,
                     location: location.clone(),
                     detail: "storage value is empty".to_string(),
                 },
@@ -243,17 +238,13 @@ pub fn audit(
                     ChunkRecordTag::SubChunkPrefix if options.validate_subchunks => {
                         report.subchunks = report.subchunks.saturating_add(1);
                         let y = chunk_key.subchunk_y.unwrap_or(0);
-                        match parse_subchunk_with_mode(
-                            y,
-                            value.clone(),
-                            SubChunkDecodeMode::CountsOnly,
-                        ) {
+                        match SubChunk::read(y, value.clone(), SubChunkDecodeMode::CountsOnly) {
                             Ok(subchunk) => match subchunk.format {
                                 SubChunkFormat::Raw { version, .. } => report.push_issue(
                                     &options,
-                                    WorldIntegrityIssue {
-                                        severity: WorldIntegritySeverity::Warning,
-                                        kind: WorldIntegrityIssueKind::UnsupportedSubChunk,
+                                    Issue {
+                                        severity: Severity::Warning,
+                                        kind: IssueKind::UnsupportedSubChunk,
                                         location: format!("{location}@y={y}"),
                                         detail: format!(
                                             "subchunk payload version {version:?} is preserved raw"
@@ -290,9 +281,9 @@ pub fn audit(
                             },
                             Err(error) => report.push_issue(
                                 &options,
-                                WorldIntegrityIssue {
-                                    severity: WorldIntegritySeverity::Error,
-                                    kind: WorldIntegrityIssueKind::UnsupportedSubChunk,
+                                Issue {
+                                    severity: Severity::Error,
+                                    kind: IssueKind::UnsupportedSubChunk,
                                     location: format!("{location}@y={y}"),
                                     detail: error.to_string(),
                                 },
@@ -303,9 +294,9 @@ pub fn audit(
                         if let Err(error) = LegacyTerrain::parse(value.clone()) {
                             report.push_issue(
                                 &options,
-                                WorldIntegrityIssue {
-                                    severity: WorldIntegritySeverity::Error,
-                                    kind: WorldIntegrityIssueKind::MalformedLegacyTerrain,
+                                Issue {
+                                    severity: Severity::Error,
+                                    kind: IssueKind::MalformedLegacyTerrain,
                                     location,
                                     detail: error.to_string(),
                                 },
@@ -318,9 +309,9 @@ pub fn audit(
                         if let Err(error) = parse_consecutive_root_nbt(value) {
                             report.push_issue(
                                 &options,
-                                WorldIntegrityIssue {
-                                    severity: WorldIntegritySeverity::Error,
-                                    kind: WorldIntegrityIssueKind::MalformedNbt,
+                                Issue {
+                                    severity: Severity::Error,
+                                    kind: IssueKind::MalformedNbt,
                                     location,
                                     detail: error.to_string(),
                                 },
@@ -337,9 +328,9 @@ pub fn audit(
                     if let Err(error) = parse_consecutive_root_nbt(value) {
                         report.push_issue(
                             &options,
-                            WorldIntegrityIssue {
-                                severity: WorldIntegritySeverity::Error,
-                                kind: WorldIntegrityIssueKind::MalformedNbt,
+                            Issue {
+                                severity: Severity::Error,
+                                kind: IssueKind::MalformedNbt,
                                 location,
                                 detail: error.to_string(),
                             },
@@ -350,7 +341,7 @@ pub fn audit(
             BedrockDbKey::ActorDigest { pos } => {
                 report.actor_digests = report.actor_digests.saturating_add(1);
                 if options.validate_actor_links {
-                    match parse_actor_digest_ids(value) {
+                    match decode_actor_ids(value) {
                         Ok(ids) => {
                             for uid in ids {
                                 *actor_references.entry(uid.0).or_insert(0) += 1;
@@ -361,9 +352,9 @@ pub fn audit(
                         }
                         Err(error) => report.push_issue(
                             &options,
-                            WorldIntegrityIssue {
-                                severity: WorldIntegritySeverity::Error,
-                                kind: WorldIntegrityIssueKind::DanglingActorDigest,
+                            Issue {
+                                severity: Severity::Error,
+                                kind: IssueKind::DanglingActorDigest,
                                 location,
                                 detail: error.to_string(),
                             },
@@ -375,9 +366,9 @@ pub fn audit(
                 if let Err(error) = parse_root_nbt(value) {
                     report.push_issue(
                         &options,
-                        WorldIntegrityIssue {
-                            severity: WorldIntegritySeverity::Error,
-                            kind: WorldIntegrityIssueKind::MalformedNbt,
+                        Issue {
+                            severity: Severity::Error,
+                            kind: IssueKind::MalformedNbt,
                             location,
                             detail: error.to_string(),
                         },
@@ -399,9 +390,9 @@ pub fn audit(
                     report.dangling_actor_references.saturating_add(*references);
                 report.push_issue(
                     &options,
-                    WorldIntegrityIssue {
-                        severity: WorldIntegritySeverity::Error,
-                        kind: WorldIntegrityIssueKind::DanglingActorDigest,
+                    Issue {
+                        severity: Severity::Error,
+                        kind: IssueKind::DanglingActorDigest,
                         location: actor_digest_locations
                             .get(actor_id)
                             .cloned()
@@ -415,9 +406,9 @@ pub fn audit(
             if *references > 1 {
                 report.push_issue(
                     &options,
-                    WorldIntegrityIssue {
-                        severity: WorldIntegritySeverity::Warning,
-                        kind: WorldIntegrityIssueKind::ActorReferencedByMultipleChunks,
+                    Issue {
+                        severity: Severity::Warning,
+                        kind: IssueKind::ActorReferencedByMultipleChunks,
                         location: format!("actorprefix:{actor_id}"),
                         detail: format!("actor is referenced by {references} chunk digests"),
                     },
@@ -429,9 +420,9 @@ pub fn audit(
                 report.orphan_actor_records = report.orphan_actor_records.saturating_add(1);
                 report.push_issue(
                     &options,
-                    WorldIntegrityIssue {
-                        severity: WorldIntegritySeverity::Warning,
-                        kind: WorldIntegrityIssueKind::OrphanActorRecord,
+                    Issue {
+                        severity: Severity::Warning,
+                        kind: IssueKind::OrphanActorRecord,
                         location: format!("actorprefix:{actor_id}"),
                         detail: "actor payload is not referenced by any digp record".to_string(),
                     },
@@ -443,9 +434,9 @@ pub fn audit(
     if report.legacy_block_states != 0 {
         report.push_issue(
             &options,
-            WorldIntegrityIssue {
-                severity: WorldIntegritySeverity::Warning,
-                kind: WorldIntegrityIssueKind::LegacyBlockState,
+            Issue {
+                severity: Severity::Warning,
+                kind: IssueKind::LegacyBlockState,
                 location: "SubChunk palettes".to_string(),
                 detail: format!(
                     "{} palette states are older than target version {:?}",
@@ -457,9 +448,9 @@ pub fn audit(
     if report.unknown_version_block_states != 0 {
         report.push_issue(
             &options,
-            WorldIntegrityIssue {
-                severity: WorldIntegritySeverity::Warning,
-                kind: WorldIntegrityIssueKind::UnknownBlockStateVersion,
+            Issue {
+                severity: Severity::Warning,
+                kind: IssueKind::UnknownBlockStateVersion,
                 location: "SubChunk palettes".to_string(),
                 detail: format!(
                     "{} palette states have no storage-version metadata",
@@ -472,20 +463,16 @@ pub fn audit(
     Ok(report)
 }
 
-fn audit_level_dat(
-    world_path: &Path,
-    options: &WorldIntegrityOptions,
-    report: &mut WorldIntegrityReport,
-) {
+fn audit_level_dat(world_path: &Path, options: &Options, report: &mut Report) {
     let level_dat = world_path.join("level.dat");
     match read_level_dat_document(&level_dat) {
         Ok(document) => {
             for warning in &document.warnings {
                 report.push_issue(
                     options,
-                    WorldIntegrityIssue {
-                        severity: WorldIntegritySeverity::Warning,
-                        kind: WorldIntegrityIssueKind::LevelDatWarning,
+                    Issue {
+                        severity: Severity::Warning,
+                        kind: IssueKind::LevelDatWarning,
                         location: "level.dat".to_string(),
                         detail: format!("{warning:?}"),
                     },
@@ -495,18 +482,18 @@ fn audit_level_dat(
                 Ok(Some(_)) => {}
                 Ok(None) => report.push_issue(
                     options,
-                    WorldIntegrityIssue {
-                        severity: WorldIntegritySeverity::Error,
-                        kind: WorldIntegrityIssueKind::MissingRandomSeed,
+                    Issue {
+                        severity: Severity::Error,
+                        kind: IssueKind::MissingRandomSeed,
                         location: "level.dat.RandomSeed".to_string(),
                         detail: "existing world has no authoritative RandomSeed".to_string(),
                     },
                 ),
                 Err(error) => report.push_issue(
                     options,
-                    WorldIntegrityIssue {
-                        severity: WorldIntegritySeverity::Error,
-                        kind: WorldIntegrityIssueKind::LevelDatUnreadable,
+                    Issue {
+                        severity: Severity::Error,
+                        kind: IssueKind::LevelDatUnreadable,
                         location: "level.dat.RandomSeed".to_string(),
                         detail: error.to_string(),
                     },
@@ -517,9 +504,9 @@ fn audit_level_dat(
                     if !matches!(root.get(name), Some(NbtTag::Int(_) | NbtTag::Short(_))) {
                         report.push_issue(
                             options,
-                            WorldIntegrityIssue {
-                                severity: WorldIntegritySeverity::Warning,
-                                kind: WorldIntegrityIssueKind::LevelDatWarning,
+                            Issue {
+                                severity: Severity::Warning,
+                                kind: IssueKind::LevelDatWarning,
                                 location: format!("level.dat.{name}"),
                                 detail: "spawn coordinate is missing or uses an unsupported type"
                                     .to_string(),
@@ -531,9 +518,9 @@ fn audit_level_dat(
         }
         Err(error) => report.push_issue(
             options,
-            WorldIntegrityIssue {
-                severity: WorldIntegritySeverity::Error,
-                kind: WorldIntegrityIssueKind::LevelDatUnreadable,
+            Issue {
+                severity: Severity::Error,
+                kind: IssueKind::LevelDatUnreadable,
                 location: "level.dat".to_string(),
                 detail: error.to_string(),
             },
@@ -541,24 +528,18 @@ fn audit_level_dat(
     }
 }
 
-impl<S> BedrockWorld<S>
+impl<S> World<S>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     /// Runs a read-only integrity audit against this opened world.
-    pub fn audit_integrity(
-        &self,
-        options: WorldIntegrityOptions,
-    ) -> Result<WorldIntegrityReport> {
+    pub fn audit_integrity(&self, options: Options) -> Result<Report> {
         audit(self.path(), self.storage(), options)
     }
 
     /// Runs [`Self::audit_integrity`] on a blocking worker thread.
     #[cfg(feature = "async")]
-    pub async fn audit_integrity_async(
-        &self,
-        options: WorldIntegrityOptions,
-    ) -> Result<WorldIntegrityReport> {
+    pub async fn audit_integrity_async(&self, options: Options) -> Result<Report> {
         let path = self.path().to_path_buf();
         let storage = self.storage_backend().clone();
         tokio::task::spawn_blocking(move || audit(&path, storage.storage(), options))
@@ -611,15 +592,15 @@ mod tests {
         let report = audit(
             &temp,
             &storage,
-            WorldIntegrityOptions {
+            Options {
                 validate_nbt: false,
-                ..WorldIntegrityOptions::default()
+                ..Options::default()
             },
         )
         .expect("audit");
         assert_eq!(report.dangling_actor_references, 1);
         assert_eq!(report.orphan_actor_records, 1);
-        assert_eq!(report.status, WorldIntegrityStatus::Corrupt);
+        assert_eq!(report.status, Status::Corrupt);
         let _ = fs::remove_dir_all(temp);
     }
 }

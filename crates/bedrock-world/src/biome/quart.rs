@@ -126,9 +126,9 @@ fn pack_quart_indices(bytes: &mut Vec<u8>, quart_palette: &[u8; QUART_VOLUME], b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parsed::{Biome3d, ParsedBiomeStorage};
+    use crate::scan::{Biome3d, BiomeStorage};
 
-    fn expanded_storage(y: i32, quart: &[u32; 64]) -> ParsedBiomeStorage {
+    fn expanded_storage(y: i32, quart: &[u32; 64]) -> BiomeStorage {
         let mut palette = Vec::<u32>::new();
         let mut quart_palette = [0_u16; 64];
         for (slot, id) in quart.iter().copied().enumerate() {
@@ -155,7 +155,7 @@ mod tests {
         for index in &indices {
             counts[usize::from(*index)] += 1;
         }
-        ParsedBiomeStorage {
+        BiomeStorage {
             y: Some(y),
             palette,
             indices: Some(indices),

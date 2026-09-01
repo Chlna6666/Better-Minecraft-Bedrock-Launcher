@@ -168,7 +168,7 @@ pub enum BedrockDbKey {
     /// Map data key with the `map_` prefix.
     Map(String),
     /// Village record key.
-    Village(ParsedVillageKey),
+    Village(VillageKey),
     /// Known global record key.
     Global(GlobalRecordKind),
     /// Nether/end portal tracking record.
@@ -204,7 +204,7 @@ pub enum VillageRecordKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Parsed village storage key components.
-pub struct ParsedVillageKey {
+pub struct VillageKey {
     /// Original raw value retained for inspection or roundtrip preservation.
     pub raw: String,
     /// Bedrock dimension encoded in the village key, when present.
@@ -216,11 +216,11 @@ pub struct ParsedVillageKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-/// Validated map record identifier without the `map_` storage prefix.
-pub struct MapRecordId(String);
+/// Validated Bedrock map item identifier without the `map_` storage prefix.
+pub struct MapItemId(String);
 
-impl MapRecordId {
-    /// Creates a map record id from a printable ASCII suffix.
+impl MapItemId {
+    /// Creates a map item id from a printable ASCII suffix.
     pub fn new(id: impl Into<String>) -> Result<Self> {
         let id = id.into();
         if id.is_empty() || !id.as_bytes().iter().all(u8::is_ascii_graphic) {
@@ -232,7 +232,7 @@ impl MapRecordId {
     }
 
     #[must_use]
-    /// Creates a map record id without validation.
+    /// Creates a map item id without validation.
     pub fn unchecked(id: impl Into<String>) -> Self {
         Self(id.into())
     }
@@ -256,13 +256,13 @@ impl MapRecordId {
     }
 }
 
-impl std::fmt::Display for MapRecordId {
+impl std::fmt::Display for MapItemId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl AsRef<str> for MapRecordId {
+impl AsRef<str> for MapItemId {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
@@ -500,7 +500,7 @@ impl BedrockDbKey {
             }
             Self::ActorPrefix { actor_id } => Some(ActorUid(*actor_id).storage_key()),
             Self::ActorDigest { pos } => Some(ActorDigestKey::new(*pos).storage_key()),
-            Self::Map(id) => Some(MapRecordId::unchecked(id.clone()).storage_key()),
+            Self::Map(id) => Some(MapItemId::unchecked(id.clone()).storage_key()),
             Self::Village(key) => Some(Bytes::copy_from_slice(key.raw.as_bytes())),
             Self::Global(kind) => Some(kind.storage_key()),
             Self::Portals => Some(Bytes::from_static(b"portals")),
@@ -527,7 +527,7 @@ pub enum BedrockDbKeyKind {
     ActorPrefix,
     /// Actor digest record.
     ActorDigest,
-    /// Map record.
+    /// Bedrock `map_<id>` item data.
     Map,
     /// Village record.
     Village,
@@ -800,7 +800,7 @@ fn ascii_suffix(key: &[u8], prefix: &[u8]) -> Option<String> {
     None
 }
 
-fn parse_village_key(key: &[u8]) -> Option<ParsedVillageKey> {
+fn parse_village_key(key: &[u8]) -> Option<VillageKey> {
     let raw = std::str::from_utf8(key).ok()?;
     let parts = raw.split('_').collect::<Vec<_>>();
     if !matches!(parts.as_slice(), ["VILLAGE", ..]) || !matches!(parts.len(), 3 | 4) {
@@ -830,7 +830,7 @@ fn parse_village_key(key: &[u8]) -> Option<ParsedVillageKey> {
         "POI" => VillageRecordKind::Poi,
         _ => VillageRecordKind::Unknown,
     };
-    Some(ParsedVillageKey {
+    Some(VillageKey {
         raw: raw.to_string(),
         dimension,
         uuid: uuid.to_string(),

@@ -111,7 +111,7 @@ All notable changes to `bedrock-world` are tracked here.
 
 ### Added
 
-- Added atomic `delete_chunk_positions_blocking` support for deduplicated
+- Added atomic `delete_selected_chunks` support for deduplicated
   multi-chunk deletion.
 - Added transaction helpers for replacing a chunk and staging validated block
   entities or hardcoded spawn areas in one commit.
@@ -167,7 +167,7 @@ All notable changes to `bedrock-world` are tracked here.
 
 - Replaced the render-specific chunk-loading API with general chunk-query types
   such as `ChunkLoadOptions`, `ChunkLoadPriority`, and
-  `WorldChunkQueryRegion`, so renderers and other consumers share one data
+  `Region`, so renderers and other consumers share one data
   loading contract.
 - Updated the README, API guide, benchmarks, and testing guidance for the new
   chunk-query and surface-data APIs.
@@ -180,7 +180,7 @@ All notable changes to `bedrock-world` are tracked here.
 - Added `.mcstructure` read/write and world placement helpers through the
   `mcstructure` module, including structure palette handling, chunk targeting,
   rotation/mirroring, block-entity preservation, and placement progress.
-- Added `BedrockWorld::compact_storage_blocking` and `WorldStorage::compact`
+- Added `World::compact_storage` and `WorldStorage::compact`
   so bulk-write tools can request explicit backend compaction after committing
   changes.
 

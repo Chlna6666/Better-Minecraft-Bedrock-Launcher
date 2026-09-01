@@ -1,8 +1,6 @@
 #![cfg(feature = "bedrock-leveldb")]
 
-use bedrock_world::{
-    BedrockWorld, BedrockWorldCreateOptions, ChunkKey, ChunkPos, ChunkRecordTag, Dimension,
-};
+use bedrock_world::{ChunkKey, ChunkPos, ChunkRecordTag, CreateOptions, Dimension, World};
 use bytes::Bytes;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,14 +20,13 @@ fn temporary_world_path() -> std::path::PathBuf {
 fn committed_chunk_anchor_is_immediately_visible_without_flush() {
     let path = temporary_world_path();
     let world =
-        BedrockWorld::create_blocking(&path, BedrockWorldCreateOptions::new("visibility", 7))
-            .expect("create world");
+        World::create(&path, CreateOptions::new("visibility", 7)).expect("create world");
     let pos = ChunkPos {
         x: 37,
         z: -29,
         dimension: Dimension::Overworld,
     };
-    assert!(!world.chunk_exists_blocking(pos).expect("initial presence"));
+    assert!(!world.is_chunk_saved(pos).expect("initial save state"));
 
     let mut transaction = world.transaction();
     transaction.put_raw_key(
@@ -39,13 +36,13 @@ fn committed_chunk_anchor_is_immediately_visible_without_flush() {
     transaction.commit().expect("commit chunk anchor");
 
     // No flush/compact/sleep is allowed between commit and these reads. The LevelDB WAL overlay is
-    // part of the current database view and public BedrockWorld exact reads must observe it now.
+    // part of the current database view and public World exact reads must observe it now.
     assert!(
         world
-            .chunk_exists_blocking(pos)
+            .is_chunk_saved(pos)
             .expect("presence after commit")
     );
-    let chunk = world.get_chunk_blocking(pos).expect("read committed chunk");
+    let chunk = world.chunk(pos).expect("read committed chunk");
     assert!(chunk.records.iter().any(|record| {
         record.key.tag == ChunkRecordTag::Version && record.value.as_ref() == [40]
     }));

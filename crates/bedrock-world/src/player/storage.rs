@@ -6,10 +6,10 @@
 
 use super::level_dat::read_level_dat_player;
 use super::local_player::read_local_player_with_level;
-use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::Result;
 use crate::level::LevelDatDocument;
 use crate::player::PlayerData;
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use bytes::Bytes;
 
 /// Explicit physical storage target for the Bedrock local player.
@@ -120,9 +120,9 @@ pub fn inspect_player_storage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::MemoryStorage;
     use crate::nbt::{NbtTag, serialize_root_nbt};
     use crate::player::PlayerId;
+    use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
 
     fn player(unique_id: i64, name: &str) -> NbtTag {

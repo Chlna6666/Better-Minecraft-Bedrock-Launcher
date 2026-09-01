@@ -10,8 +10,8 @@ use crate::chunk::{
     BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, LegacyBiomeSample, LegacySubChunkBuilder,
     LegacyTerrain, SubChunkVersion,
 };
-use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
+use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use std::collections::BTreeSet;
 
 const LEGACY_TERRAIN_SUBCHUNKS: usize = 8;

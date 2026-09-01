@@ -6,11 +6,11 @@
 //! or downgrade logic.
 
 use crate::nbt::NbtTag;
-use crate::parsed::encode_consecutive_roots;
+use crate::scan::encode_consecutive_roots;
 use crate::{
-    BedrockWorld, BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockPos, BlockState, Chunk,
+    BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockPos, BlockState, LevelChunk,
     ChunkCapabilities, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
-    CompatibilityLevel, Dimension, Result, SubChunkFormat, WorldStorageHandle, WriteGuard,
+    CompatibilityLevel, Dimension, Result, SubChunkFormat, World, StorageBackend, WriteGuard,
     block_storage_index,
 };
 use bytes::Bytes;
@@ -118,8 +118,8 @@ impl EditableSubchunk {
         }
     }
 
-    fn from_chunk(chunk: &Chunk, y: i8, state_version: i32) -> Result<Self> {
-        let Some(subchunk) = chunk.get_subchunk(y)? else {
+    fn from_chunk(chunk: &LevelChunk, y: i8, state_version: i32) -> Result<Self> {
+        let Some(subchunk) = chunk.subchunk(y)? else {
             return Ok(Self::new_air(
                 y,
                 DEFAULT_NEW_SUBCHUNK_VERSION,
@@ -188,14 +188,14 @@ impl EditableSubchunk {
 }
 
 /// Applies typed block edits while preserving unrelated chunk/world records.
-pub fn apply_block_edits_blocking<S>(
-    world: &BedrockWorld<S>,
+pub fn apply_block_edits<S>(
+    world: &World<S>,
     edits: &[BlockEdit],
     guard: &WriteGuard,
     options: BlockEditOptions,
 ) -> Result<BlockEditResult>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     guard.validate(world)?;
     if edits.is_empty() {
@@ -240,7 +240,7 @@ where
     let mut transaction = Some(world.transaction());
 
     for (chunk_index, (chunk_pos, chunk_edits)) in grouped.into_iter().enumerate() {
-        let existing = world.get_chunk_blocking(chunk_pos)?;
+        let existing = world.chunk(chunk_pos)?;
         if existing.records.is_empty() {
             return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
                 "typed block editing refuses to synthesize missing chunk {chunk_pos:?}; create/generate the chunk first"
@@ -305,13 +305,13 @@ where
         let active = transaction.as_mut().ok_or_else(|| {
             BedrockWorldError::ConcurrentWrite("block edit transaction is unavailable".to_string())
         })?;
-        active.put_raw_record(&ChunkKey::new(chunk_pos, height_tag), height_bytes);
+        active.put_raw(&ChunkKey::new(chunk_pos, height_tag), height_bytes);
         for (subchunk_y, subchunk) in &updated_subchunks {
             let key = ChunkKey::subchunk(chunk_pos, *subchunk_y);
             if options.compact_empty_subchunks && subchunk.is_empty() {
-                active.delete_raw_record(&key);
+                active.delete_raw(&key);
             } else {
-                active.put_raw_record(&key, subchunk.encode()?);
+                active.put_raw(&key, subchunk.encode()?);
             }
         }
         // FinalizedState is world-generation metadata. Ordinary block edits preserve the existing
@@ -364,17 +364,17 @@ fn validate_chunk_write_compatibility(chunk: ChunkPos, records: &[ChunkRecord]) 
 }
 
 /// Convenience wrapper for replacing one primary-layer block.
-pub fn set_block_state_blocking<S>(
-    world: &BedrockWorld<S>,
+pub fn set_block_state<S>(
+    world: &World<S>,
     dimension: Dimension,
     position: BlockPos,
     state: BlockState,
     guard: &WriteGuard,
 ) -> Result<BlockEditResult>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
-    apply_block_edits_blocking(
+    apply_block_edits(
         world,
         &[BlockEdit::new(dimension, position, state)],
         guard,
@@ -606,7 +606,7 @@ fn encode_height_map(
 }
 
 fn update_height_map(
-    existing: &Chunk,
+    existing: &LevelChunk,
     version: ChunkVersion,
     updated: &BTreeMap<i8, EditableSubchunk>,
     touched: &[bool; 256],
@@ -667,19 +667,19 @@ fn update_height_map(
 }
 
 fn apply_block_entity_edits<S>(
-    world: &BedrockWorld<S>,
+    world: &World<S>,
     transaction: &mut crate::WorldTransaction<'_, S>,
     chunk: ChunkPos,
     edits: &[&BlockEdit],
 ) -> Result<()>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     if edits.is_empty() {
         return Ok(());
     }
     let mut roots = world
-        .block_entities_in_chunk_blocking(chunk)?
+        .block_entities(chunk)?
         .into_iter()
         .map(|record| record.entity.nbt)
         .collect::<Vec<_>>();
@@ -693,9 +693,9 @@ where
 
     let key = ChunkKey::new(chunk, ChunkRecordTag::BlockEntity);
     if roots.is_empty() {
-        transaction.delete_raw_record(&key);
+        transaction.delete_raw(&key);
     } else {
-        transaction.put_raw_record(&key, encode_consecutive_roots(&roots)?);
+        transaction.put_raw(&key, encode_consecutive_roots(&roots)?);
     }
     Ok(())
 }
@@ -738,12 +738,9 @@ mod tests {
         let mut editable = EditableSubchunk::new_air(0, 9, 18_168_865);
         editable.primary[block_storage_index(1, 2, 3)] = stone.clone();
         let encoded = editable.encode().expect("encode");
-        let parsed = crate::chunk::parse_subchunk_with_mode(
-            0,
-            encoded,
-            crate::SubChunkDecodeMode::FullIndices,
-        )
-        .expect("parse");
+        let parsed =
+            crate::chunk::SubChunk::read(0, encoded, crate::SubChunkDecodeMode::FullIndices)
+                .expect("parse");
         assert_eq!(parsed.block_state_at(1, 2, 3), Some(&stone));
     }
 }

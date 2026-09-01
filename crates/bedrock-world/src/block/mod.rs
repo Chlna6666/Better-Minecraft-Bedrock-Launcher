@@ -1,19 +1,23 @@
 //! Minecraft Bedrock blocks, BlockStates, palettes and BlockEntity records.
 
 pub(crate) mod block_entity;
-pub(crate) mod block_state;
+pub(crate) mod state;
 pub(crate) mod version;
+mod query;
 
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
 pub use crate::chunk::position::BlockPos;
-pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
+pub use crate::scan::{BlockEntityRecord, BlockEntity};
 pub use block_entity::{
     BlockEntityChunkRewriteReport, BlockEntityRewriteContext, BlockEntityRewriteOutcome,
-    BlockEntityRewriteStatus, BlockEntityRewriter, rewrite_block_entity_chunk_blocking,
+    BlockEntityRewriteStatus, BlockEntityRewriter, rewrite_block_entity_chunk,
 };
-pub use block_state::{
+pub use state::{
     BlockFace, DoorBlockStates, HorizontalDirection, RedstoneBlockStates, SlabBlockStates,
     StairBlockStates, StairCorner, TrapdoorBlockStates, VerticalHalf, read_block_state_nbt,
+};
+pub use query::{
+    BlockStateBatchStats, BlockStateQueryControl, BlockStateQueryResult, BlockStateView,
 };
 pub use version::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
@@ -30,9 +34,9 @@ pub use version::{
 // `BlockEntityRewriter`, whose contract requires explicit caller evidence and preservation of fields it
 // does not own.
 pub(crate) use block_entity::{
-    VanillaBlockEntityRewriter, rewrite_block_entity_sign_text_blocking,
+    VanillaBlockEntityRewriter, rewrite_block_entity_sign_text,
 };
-pub(crate) use block_state::{
+pub(crate) use state::{
     BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator, BlockStateUpgradeResult,
     BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
 };

@@ -52,8 +52,8 @@ cargo test -p bedrock-world --all-features --test historical_compat -- --nocaptu
 ```
 
 Each historical world directory must contain `level.dat` plus either
-`db/CURRENT` or pre-LevelDB `chunks.dat`. `BedrockWorld::open_auto_blocking`
-must open each fixture, `versions_blocking` must agree with the detected storage
+`db/CURRENT` or pre-LevelDB `chunks.dat`. `World::open`
+must open each fixture, `versions` must agree with the detected storage
 family, and the storage must expose persisted records. `future-unknown` must
 retain at least one future/unknown record rather than normalising it into a
 known representation.
@@ -65,7 +65,7 @@ variables above.
 
 ## Pre-LevelDB Pocket Contract
 
-Pocket `chunks.dat` data is opened through `BedrockWorld::open_auto_blocking`;
+Pocket `chunks.dat` data is opened through `World::open`;
 there is no public `PocketChunksDatStorage` compatibility API.
 
 Tests must distinguish the two real terrain lengths:
@@ -122,10 +122,10 @@ the source has no biome/RGB tail. Missing data is different from biome id zero.
 Typed write tests should cover persistence semantics rather than presentation
 refresh policy:
 
-- `BedrockWorldOpenOptions::default()` remains read-only and high-level writes return
+- `OpenOptions::default()` remains read-only and high-level writes return
   `BedrockWorldErrorKind::ReadOnly` before mutating storage.
 - Writable worlds are opened with
-  `BedrockWorldOpenOptions { read_only: false, ..BedrockWorldOpenOptions::default() }`.
+  `OpenOptions { read_only: false, ..OpenOptions::default() }`.
 - map/global/HSA/heightmap/biome/block-entity writes serialize, parse back, and
   read back with semantic equivalence.
 - actor writes update `digp -> actorprefix` records atomically.

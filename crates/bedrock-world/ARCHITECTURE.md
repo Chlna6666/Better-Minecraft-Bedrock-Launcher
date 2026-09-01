@@ -1,6 +1,6 @@
 # bedrock-world 架构边界
 
-`bedrock-world` 是 Minecraft Bedrock 世界文件读写库。它面向游戏真实持久化数据：`level.dat`、Mojang LevelDB、pre-LevelDB Pocket `chunks.dat` / `entities.dat`、`LegacyTerrain`、SubChunk、Data2D/Data3D、Actor、Player、BlockEntity、SavedItem、Map、Village 与 `.mcstructure`。
+`bedrock-world` 是 Minecraft Bedrock 世界文件读写库。它面向游戏真实持久化数据：`level.dat`、Mojang LevelDB、pre-LevelDB Pocket `chunks.dat` / `entities.dat`、`LegacyTerrain`、SubChunk、Data2D/Data3D、Actor、Player、BlockEntity、SavedItem、Map、Entry 与 `.mcstructure`。
 
 核心原则是：**读取保存事实，普通编辑保持原表示，跨版本写出必须选择具体数据目标并完成可表达性证明。**
 
@@ -33,11 +33,11 @@ bedrock-leveldb
 只知道地图目录时优先：
 
 ```rust
-let world = bedrock_world::BedrockWorld::open_auto_blocking("world")?;
-let versions = world.versions_blocking()?;
+let world = bedrock_world::World::open("world", bedrock_world::OpenOptions::default())?;
+let versions = world.versions()?;
 ```
 
-`open_auto_blocking()` 区分：
+`open()` 区分：
 
 - 标准 Bedrock LevelDB；
 - 含 `LegacyTerrain` 的旧 LevelDB；
@@ -52,7 +52,7 @@ Pocket terrain 有两个必须区分的真实长度：
 
 库不得把 82,176 bytes 补默认 biome 后伪装成 83,200 bytes。缺失字段必须继续表现为缺失。
 
-`versions_blocking()` 收集实际证据，而不是把 mixed-version 世界强行归纳成一个内部 schema：
+`versions()` 收集实际证据，而不是把 mixed-version 世界强行归纳成一个内部 schema：
 
 - `level.dat` header version；
 - `StorageVersion`；
@@ -103,7 +103,7 @@ Pocket terrain 有两个必须区分的真实长度：
 ### SubChunk
 
 - `upgrade_subchunks_blocking(target_game_version, upgrade_data, target_palette)`：目标游戏版本明确，BlockState 升级数据与目标 vanilla palette 必须匹配。
-- `write_subchunks_as_legacy_numeric_blocking(target_subchunk_version, numeric_table)`：目标固定数组 SubChunk version 明确，并要求经过正向验证的历史 numeric ID/meta 表。
+- `downgrade_subchunks(target_subchunk_version, numeric_table)`：目标固定数组 SubChunk version 明确，并要求经过正向验证的历史 numeric ID/meta 表。
 - 未知 SubChunk version、无 version byte、实验期无法唯一确定目标表示时直接拒绝。
 
 ### Biome

@@ -1,7 +1,7 @@
 use crate::chunk::{ActorUid, BedrockDbKey, ChunkPos};
-use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::Result;
-use crate::parsed::parse_actor_digest_ids;
+use crate::scan::decode_actor_ids;
+use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Global ownership graph between modern Bedrock actors and chunk `digp` records.
@@ -23,7 +23,7 @@ impl ActorOwnershipIndex {
             let BedrockDbKey::ActorDigest { pos } = BedrockDbKey::decode(key) else {
                 return Ok(StorageVisitorControl::Continue);
             };
-            index.replace_chunk(pos, parse_actor_digest_ids(value)?);
+            index.replace_chunk(pos, decode_actor_ids(value)?);
             Ok(StorageVisitorControl::Continue)
         })?;
         Ok(index)

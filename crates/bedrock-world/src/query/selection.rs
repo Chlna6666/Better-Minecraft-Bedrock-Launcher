@@ -1,13 +1,13 @@
 //! Exact non-rectangular chunk selection primitives and queries.
 
 use crate::chunk::{ChunkPos, Dimension};
-use crate::storage::{CancelFlag, MemoryStorage, WorldStorage};
 use crate::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 use crate::query::{
-    ChunkRecordQuery, ParsedChunkRecordValue, RegionOverlayQueryOptions, SelectionStats,
-    SlimeChunkBounds, VillageOverlayIndex, is_slime_chunk, query_chunk_records_many_blocking,
+    ChunkRecordQuery, ChunkValue, RegionOverlayQueryOptions, SelectionStats,
+    SlimeChunkBounds, VillageOverlayIndex, is_slime_chunk, load_chunks,
 };
-use crate::world::{BedrockWorld, BedrockWorldOpenOptions, WorldStorageHandle};
+use crate::storage::{CancelFlag, MemoryStorage, WorldStorage};
+use crate::world::{OpenOptions, World, StorageBackend};
 use std::collections::BTreeSet;
 
 /// A validated, non-empty, exact set of chunks from one Bedrock dimension.
@@ -263,13 +263,13 @@ pub fn rasterize_chunk_line(start: ChunkPos, end: ChunkPos) -> Result<Vec<ChunkP
 }
 
 /// Queries aggregate statistics for a validated exact chunk selection.
-pub fn query_selection_stats_exact_blocking<S>(
-    world: &BedrockWorld<S>,
+pub fn exact_selection_stats<S>(
+    world: &World<S>,
     selection: &ExactChunkSelection,
     options: RegionOverlayQueryOptions,
 ) -> Result<SelectionStats>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     if selection.len() > options.max_chunks {
         return Err(BedrockWorldError::Validation(format!(
@@ -294,7 +294,7 @@ where
     };
 
     if exact_stats_need_chunk_records(options) {
-        let records = query_chunk_records_many_blocking(
+        let records = load_chunks(
             world,
             selection.iter(),
             ChunkRecordQuery {
@@ -303,6 +303,7 @@ where
                 pending_ticks: options.include_pending_ticks,
                 hardcoded_spawn_areas: options.include_hardcoded_spawn_areas,
             },
+            None,
         )?;
         for chunk in records {
             if chunk.records.is_empty() {
@@ -312,14 +313,14 @@ where
             stats.loaded_chunks = stats.loaded_chunks.saturating_add(1);
             for record in chunk.records {
                 match record.value {
-                    ParsedChunkRecordValue::Entities(entities) if options.include_entities => {
+                    ChunkValue::Entities(entities) if options.include_entities => {
                         stats.entity_count = capped_add(
                             stats.entity_count,
                             entities.len(),
                             options.max_items_per_kind,
                         );
                     }
-                    ParsedChunkRecordValue::BlockEntities(block_entities)
+                    ChunkValue::BlockEntities(block_entities)
                         if options.include_block_entities =>
                     {
                         stats.block_entity_count = capped_add(
@@ -328,7 +329,7 @@ where
                             options.max_items_per_kind,
                         );
                     }
-                    ParsedChunkRecordValue::PendingTicks(ticks)
+                    ChunkValue::PendingTicks(ticks)
                         if options.include_pending_ticks =>
                     {
                         stats.pending_tick_count = capped_add(
@@ -337,7 +338,7 @@ where
                             options.max_items_per_kind,
                         );
                     }
-                    ParsedChunkRecordValue::HardcodedSpawnAreas(areas)
+                    ChunkValue::HardcodedSpawnAreas(areas)
                         if options.include_hardcoded_spawn_areas =>
                     {
                         stats.hardcoded_spawn_area_count = capped_add(
@@ -354,7 +355,7 @@ where
 
     if options.include_villages && options.max_items_per_kind > 0 {
         let cancel = CancelFlag::new();
-        let index = VillageOverlayIndex::build_blocking_with_control(world, &cancel)?;
+        let index = VillageOverlayIndex::build(world, &cancel)?;
         stats.village_count = index
             .villages
             .iter()
@@ -371,13 +372,13 @@ where
 }
 
 /// Queries aggregate statistics for an arbitrary set of chunk positions.
-pub fn query_selection_stats_chunks_blocking<S, I>(
-    world: &BedrockWorld<S>,
+pub fn chunk_selection_stats<S, I>(
+    world: &World<S>,
     positions: I,
     options: RegionOverlayQueryOptions,
 ) -> Result<SelectionStats>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
     I: IntoIterator<Item = ChunkPos>,
 {
     let positions = positions.into_iter().collect::<Vec<_>>();
@@ -385,7 +386,7 @@ where
         return Ok(SelectionStats::default());
     }
     let selection = ExactChunkSelection::new(positions)?;
-    query_selection_stats_exact_blocking(world, &selection, options)
+    exact_selection_stats(world, &selection, options)
 }
 
 fn exact_stats_need_chunk_records(options: RegionOverlayQueryOptions) -> bool {
@@ -454,11 +455,10 @@ mod tests {
     #[test]
     fn exact_stats_do_not_fill_bounding_rectangle() {
         let storage = Arc::new(MemoryStorage::default()) as Arc<dyn WorldStorage>;
-        let world =
-            BedrockWorld::from_storage("memory", storage, BedrockWorldOpenOptions::default());
+        let world = World::from_storage("memory", storage, OpenOptions::default());
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)]).expect("exact selection");
-        let stats = query_selection_stats_exact_blocking(
+        let stats = exact_selection_stats(
             &world,
             &selection,
             RegionOverlayQueryOptions {

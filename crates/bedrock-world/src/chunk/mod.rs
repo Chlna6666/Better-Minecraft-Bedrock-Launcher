@@ -1,22 +1,15 @@
 //! Minecraft Bedrock chunk records and SubChunk payloads.
 
 mod encoding;
-mod height_map;
+mod block_entities;
+mod heightmap;
 mod legacy_encoding;
 mod legacy_extra;
-mod legacy_subchunk_downgrade;
-mod legacy_subchunk_upgrade;
 mod legacy_terrain_combine;
+pub(crate) mod legacy_terrain;
 mod legacy_terrain_storage;
 mod level_chunk;
 mod subchunk;
-mod subchunk_storage;
-mod subchunk_upgrade;
-mod v0;
-mod v1;
-mod v2_v7;
-mod v8;
-mod v9;
 
 /// Bedrock LevelDB chunk and world-record keys.
 pub mod key;
@@ -26,14 +19,13 @@ pub mod legacy;
 pub mod palette;
 /// Bedrock world, chunk and block coordinates and dimension identities.
 pub mod position;
-/// Minecraft Bedrock SubChunk version byte values.
-pub mod version;
 
-pub use crate::parsed::{
-    HardcodedSpawnAreaKind, ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,
-    ParsedHardcodedSpawnArea, parse_chunk_records, parse_chunk_records_with_options,
+pub use crate::scan::{
+    HardcodedSpawnAreaKind, ChunkEntry, ChunkValue,
+    HardcodedSpawnArea,
 };
-pub use height_map::*;
+pub use heightmap::{ChunkHeightMap, ChunkHeightMapStatus};
+pub use block_entities::ChunkBlockEntities;
 pub use key::*;
 pub use legacy::*;
 pub use legacy_encoding::{LegacySubChunkBuilder, LegacyTerrainBuilder};
@@ -41,39 +33,24 @@ pub use legacy_extra::{
     LegacyBlockExtraData, LegacyBlockExtraDataBuilder, LegacyBlockExtraDataEntries,
     LegacyBlockExtraDataEntry,
 };
-pub use legacy_subchunk_downgrade::LegacyNumericSubChunkWriteReport;
-pub(crate) use legacy_subchunk_downgrade::stage_paletted_subchunks_as_legacy_numeric;
-pub use legacy_subchunk_upgrade::LegacySubChunkUpgradeWriteReport;
-pub(crate) use legacy_subchunk_upgrade::stage_legacy_subchunks_for_upgrade;
 pub use legacy_terrain_combine::LegacyTerrainCombineReport;
 pub(crate) use legacy_terrain_combine::stage_legacy_terrain_combine;
 pub use legacy_terrain_storage::LegacyTerrainSplitReport;
 pub(crate) use legacy_terrain_storage::stage_legacy_terrain_split;
-pub use level_chunk::{Chunk, ChunkRecord, EntityData};
+pub use level_chunk::{ChunkRecord, EntityData, LevelChunk};
 pub use palette::*;
 pub use position::*;
-pub use subchunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat, VisibleBlockStatesAt};
-pub use subchunk_storage::{SubChunkDowngradeWriteReport, SubChunkStorageWriteReport};
-pub(crate) use subchunk_storage::{
-    stage_subchunks_as_version, stage_subchunks_for_exact_downgrade,
+pub(crate) use subchunk::stage_paletted_subchunks_for_upgrade;
+pub use subchunk::{
+    NumericSubChunkDowngradeReport, NumericSubChunkUpgradeReport, SubChunk, SubChunkDecodeMode,
+    SubChunkHeightMapContribution, subchunk_height_map_contribution,
+    SubChunkDowngradeWriteReport, SubChunkFormat, SubChunkStorageWriteReport, SubChunkUpgradeReport,
+    SubChunkUpgradeWriteReport, SubChunkVersion, VisibleBlockStatesAt,
 };
-pub use subchunk_upgrade::SubChunkUpgradeWriteReport;
-pub(crate) use subchunk_upgrade::stage_paletted_subchunks_for_upgrade;
-pub use version::SubChunkVersion;
-
-/// Reads a SubChunk with full block indices after automatically detecting V0-V9.
-pub fn parse_subchunk(y: i8, bytes: bytes::Bytes) -> crate::error::Result<SubChunk> {
-    SubChunk::read(y, bytes, SubChunkDecodeMode::FullIndices)
-}
-
-/// Reads a SubChunk with the requested block-index retention after automatically detecting V0-V9.
-pub fn parse_subchunk_with_mode(
-    y: i8,
-    bytes: bytes::Bytes,
-    mode: SubChunkDecodeMode,
-) -> crate::error::Result<SubChunk> {
-    SubChunk::read(y, bytes, mode)
-}
+pub(crate) use subchunk::{
+    stage_numeric_subchunk_upgrade, stage_subchunk_downgrade, stage_subchunks_as_version,
+    stage_subchunks_for_exact_downgrade,
+};
 
 #[cfg(test)]
 mod tests;

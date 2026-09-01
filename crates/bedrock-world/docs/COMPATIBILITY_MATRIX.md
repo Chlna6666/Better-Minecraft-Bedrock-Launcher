@@ -8,8 +8,8 @@ retained unless the caller explicitly invokes an upgrade or downgrade API.
 | Modern LevelDB world | Yes | Yes | World migration APIs | `tests/writable_leveldb.rs`, `tests/write_visibility.rs` |
 | Full LevelDB `LegacyTerrain` (83,200 bytes) | Yes | Yes | Split/merge and numeric SubChunk upgrade | `chunk::tests`, `world::legacy_terrain_storage` tests |
 | Pocket `LegacyTerrain` core (82,176 bytes) | Yes | Read-only | Rejected when a complete biome-bearing record is required | `database::pocket_chunks` tests |
-| SubChunk V0 | Yes | Raw/legacy V0 | Numeric upgrade requires an explicit palette target | `chunk::version::tests::legacy_subchunk_versions_roundtrip_without_implicit_upgrade` |
-| SubChunk V1 | Yes | Paletted V1 | V1/V8/V9 when representable | `chunk::version::tests::paletted_subchunk_versions_roundtrip_through_their_native_writers` |
+| SubChunk V0 | Yes | Raw/legacy V0 | Numeric upgrade requires an explicit palette target | `chunk::subchunk::version::tests::legacy_subchunk_versions_roundtrip_without_implicit_upgrade` |
+| SubChunk V1 | Yes | Paletted V1 | V1/V8/V9 when representable | `chunk::subchunk::version::tests::paletted_subchunk_versions_roundtrip_through_their_native_writers` |
 | SubChunk V2–V7 | Yes | Raw/legacy same version | Numeric upgrade requires an explicit palette target | legacy SubChunk matrix test |
 | SubChunk V8 | Yes | Paletted V8 | V1/V9 when representable | paletted SubChunk matrix test |
 | SubChunk V9 | Yes | Paletted V9 | V1/V8 when representable | paletted SubChunk matrix test |

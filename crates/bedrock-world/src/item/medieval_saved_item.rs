@@ -1,10 +1,9 @@
 //! MCPE 1.6-1.8 (Medieval) saved-item representability and explicit writes.
 
-use super::legacy_saved_item::{
-    LegacySavedItemId, LegacySavedItemIdTable, MedievalSavedItemId, MedievalSavedItemMatch,
-    NamedSavedItemId,
+use super::saved_item_history::{
+    ClassicSavedItemId, MedievalSavedItemId, MedievalSavedItemMatch, NamedSavedItemId,
+    SavedItemBlockStates, SavedItemHistory,
 };
-use super::legacy_saved_item_check::LegacySavedItemBlockStateTables;
 use crate::block::{LegacyNumericBlock, LegacyNumericBlockMatch, read_block_state_nbt};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
@@ -156,43 +155,26 @@ pub struct MedievalSavedItemConversionReport {
 /// Checks whether every recognised saved item can be written in MCPE 1.6-1.8 representation.
 pub fn check_saved_items_for_medieval(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
 ) -> Result<MedievalSavedItemCheckReport> {
-    check_saved_items_for_medieval_inner(nbt, table, None)
-}
-
-/// Checks Medieval representation including modern blockitem `Block` payloads.
-pub fn check_saved_items_for_medieval_with_blocks(
-    nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: &LegacySavedItemBlockStateTables<'_>,
-) -> Result<MedievalSavedItemCheckReport> {
-    check_saved_items_for_medieval_inner(nbt, table, Some(blocks))
+    check_saved_items_for_medieval_inner(nbt, table, blocks)
 }
 
 /// Explicitly rewrites all recognised saved items to Medieval string-ID + TAG_Short Damage.
 pub fn convert_saved_items_to_medieval(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
 ) -> Result<MedievalSavedItemConversionOutcome> {
-    let check = check_saved_items_for_medieval(nbt, table)?;
-    convert_after_check(nbt, table, false, check)
-}
-
-/// Explicitly rewrites all recognised saved items to Medieval format with blockitem proof.
-pub fn convert_saved_items_to_medieval_with_blocks(
-    nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: &LegacySavedItemBlockStateTables<'_>,
-) -> Result<MedievalSavedItemConversionOutcome> {
-    let check = check_saved_items_for_medieval_with_blocks(nbt, table, blocks)?;
-    convert_after_check(nbt, table, true, check)
+    let check = check_saved_items_for_medieval(nbt, table, blocks)?;
+    convert_after_check(nbt, table, blocks.is_some(), check)
 }
 
 fn check_saved_items_for_medieval_inner(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
 ) -> Result<MedievalSavedItemCheckReport> {
     let mut report = MedievalSavedItemCheckReport::default();
     check_tag(nbt, table, blocks, "$", &mut report)?;
@@ -201,8 +183,8 @@ fn check_saved_items_for_medieval_inner(
 
 fn check_tag(
     tag: &NbtTag,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
     path: &str,
     report: &mut MedievalSavedItemCheckReport,
 ) -> Result<()> {
@@ -242,8 +224,8 @@ fn check_tag(
 
 fn check_item(
     root: &IndexMap<String, NbtTag>,
-    table: &LegacySavedItemIdTable,
-    blocks: Option<&LegacySavedItemBlockStateTables<'_>>,
+    table: &SavedItemHistory,
+    blocks: Option<&SavedItemBlockStates<'_>>,
     path: &str,
     report: &mut MedievalSavedItemCheckReport,
 ) -> Result<()> {
@@ -261,7 +243,7 @@ fn check_item(
         }
         SourceItemId::Numeric(numeric_id) => {
             report.classic_sources = report.classic_sources.saturating_add(1);
-            let classic = LegacySavedItemId { numeric_id, meta };
+            let classic = ClassicSavedItemId { numeric_id, meta };
             let Some(target) = table.medieval_id_from_classic(classic) else {
                 report.missing = report.missing.saturating_add(1);
                 report.issues.push(MedievalSavedItemIssue {
@@ -336,8 +318,8 @@ fn check_item(
 fn check_block(
     block_tag: &NbtTag,
     target: &MedievalSavedItemId,
-    table: &LegacySavedItemIdTable,
-    blocks: &LegacySavedItemBlockStateTables<'_>,
+    table: &SavedItemHistory,
+    blocks: &SavedItemBlockStates<'_>,
     path: &str,
     report: &mut MedievalSavedItemCheckReport,
 ) -> Result<()> {
@@ -424,7 +406,7 @@ fn block_issue(
 
 fn convert_after_check(
     nbt: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
     remove_blocks: bool,
     check: MedievalSavedItemCheckReport,
 ) -> Result<MedievalSavedItemConversionOutcome> {
@@ -466,7 +448,7 @@ fn convert_after_check(
 
 fn convert_tag(
     tag: &NbtTag,
-    table: &LegacySavedItemIdTable,
+    table: &SavedItemHistory,
     remove_blocks: bool,
     items_changed: &mut usize,
     block_payloads_removed: &mut usize,
@@ -476,7 +458,7 @@ fn convert_tag(
             let meta = read_item_meta(root)?;
             let target = match read_item_id(root)? {
                 SourceItemId::Numeric(numeric_id) => table
-                    .medieval_id_from_classic(LegacySavedItemId { numeric_id, meta })
+                    .medieval_id_from_classic(ClassicSavedItemId { numeric_id, meta })
                     .ok_or_else(|| validation("Medieval preflight/conversion numeric mismatch"))?,
                 SourceItemId::Named(name) => table
                     .match_medieval(&NamedSavedItemId { name, meta })
@@ -642,7 +624,7 @@ mod tests {
 
     #[test]
     fn classic_numeric_is_written_as_1_6_endpoint_string() {
-        let table = LegacySavedItemIdTable::from_sources(
+        let table = SavedItemHistory::from_sources(
             r#"{"minecraft:nametag":421}"#,
             "{}",
             &[SavedItemUpgradeSource {
@@ -652,7 +634,7 @@ mod tests {
         )
         .unwrap();
         let source = item(NbtTag::Short(421), 0);
-        let outcome = convert_saved_items_to_medieval(&source, &table).unwrap();
+        let outcome = convert_saved_items_to_medieval(&source, &table, None).unwrap();
         let NbtTag::Compound(root) = outcome.nbt else {
             panic!("compound")
         };
@@ -667,7 +649,7 @@ mod tests {
 
     #[test]
     fn modern_string_is_reversed_to_proven_medieval_endpoint() {
-        let table = LegacySavedItemIdTable::from_sources(
+        let table = SavedItemHistory::from_sources(
             r#"{"minecraft:old":1}"#,
             "{}",
             &[
@@ -683,7 +665,7 @@ mod tests {
         )
         .unwrap();
         let source = item(NbtTag::String("minecraft:modern".to_string()), 3);
-        let outcome = convert_saved_items_to_medieval(&source, &table).unwrap();
+        let outcome = convert_saved_items_to_medieval(&source, &table, None).unwrap();
         let NbtTag::Compound(root) = outcome.nbt else {
             panic!("compound")
         };
@@ -696,19 +678,17 @@ mod tests {
 
     #[test]
     fn unproven_later_item_is_refused() {
-        let table =
-            LegacySavedItemIdTable::from_sources(r#"{"minecraft:old":1}"#, "{}", &[]).unwrap();
+        let table = SavedItemHistory::from_sources(r#"{"minecraft:old":1}"#, "{}", &[]).unwrap();
         let source = item(NbtTag::String("minecraft:future".to_string()), 0);
-        let report = check_saved_items_for_medieval(&source, &table).unwrap();
+        let report = check_saved_items_for_medieval(&source, &table, None).unwrap();
         assert_eq!(report.missing, 1);
         assert!(!report.is_fully_proven());
-        assert!(convert_saved_items_to_medieval(&source, &table).is_err());
+        assert!(convert_saved_items_to_medieval(&source, &table, None).is_err());
     }
 
     #[test]
     fn target_damage_must_fit_short() {
-        let table =
-            LegacySavedItemIdTable::from_sources(r#"{"minecraft:old":1}"#, "{}", &[]).unwrap();
+        let table = SavedItemHistory::from_sources(r#"{"minecraft:old":1}"#, "{}", &[]).unwrap();
         let source = NbtTag::Compound(IndexMap::from([
             (
                 "Name".to_string(),
@@ -717,7 +697,7 @@ mod tests {
             ("Damage".to_string(), NbtTag::Int(40_000)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
-        let report = check_saved_items_for_medieval(&source, &table).unwrap();
+        let report = check_saved_items_for_medieval(&source, &table, None).unwrap();
         assert_eq!(report.metadata_out_of_range, 1);
         assert!(!report.is_fully_proven());
     }

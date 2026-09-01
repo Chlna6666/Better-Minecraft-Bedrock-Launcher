@@ -1,6 +1,7 @@
 #![cfg(feature = "bedrock-leveldb")]
 
-use bedrock_world::{BedrockWorld, WorldScanOptions};
+use bedrock_world::surface::WorldScanOptions;
+use bedrock_world::{OpenOptions, World};
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -90,9 +91,9 @@ fn historical_world_matrix_opens_and_exposes_persisted_records() {
         let Some(path) = available_fixture(name) else {
             continue;
         };
-        let world = BedrockWorld::open_auto_blocking(&path)
+        let world = World::open(&path, OpenOptions::default())
             .unwrap_or_else(|error| panic!("open historical world fixture {name}: {error}"));
-        let level = world.read_level_dat_blocking().unwrap_or_else(|error| {
+        let level = world.read_level_dat().unwrap_or_else(|error| {
             panic!("read level.dat for historical fixture {name}: {error}")
         });
         assert!(
@@ -100,7 +101,7 @@ fn historical_world_matrix_opens_and_exposes_persisted_records() {
             "historical fixture {name} has an empty level.dat payload"
         );
 
-        let versions = world.versions_blocking().unwrap_or_else(|error| {
+        let versions = world.versions().unwrap_or_else(|error| {
             panic!("scan version evidence for historical fixture {name}: {error}")
         });
         assert_eq!(
@@ -110,7 +111,7 @@ fn historical_world_matrix_opens_and_exposes_persisted_records() {
         );
 
         let key_counts = world
-            .classify_keys_blocking(WorldScanOptions::default())
+            .classify_keys(WorldScanOptions::default())
             .unwrap_or_else(|error| panic!("classify keys for historical fixture {name}: {error}"));
         let visible_keys = key_counts.values().copied().sum::<usize>();
         assert!(
@@ -119,7 +120,7 @@ fn historical_world_matrix_opens_and_exposes_persisted_records() {
         );
 
         let _chunk_positions = world
-            .list_chunk_positions_blocking(WorldScanOptions::default())
+            .chunk_positions(WorldScanOptions::default())
             .unwrap_or_else(|error| {
                 panic!("list chunk positions for historical fixture {name}: {error}")
             });

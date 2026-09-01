@@ -16,25 +16,25 @@ WAL/SST/MANIFEST、压缩、校验、缓存与任意字节 key/value 访问。
 普通只读工具应让世界层自动识别真实存储格式：
 
 ```rust
-use bedrock_world::{BedrockWorld, WorldScanOptions};
+use bedrock_world::{World, WorldScanOptions};
 
 fn inspect() -> bedrock_world::Result<()> {
-    let world = BedrockWorld::open_auto_blocking("path/to/minecraftWorld")?;
+    let world = World::open("path/to/minecraftWorld", OpenOptions::default())?;
     println!("format={:?}", world.format());
 
-    let versions = world.versions_blocking()?;
+    let versions = world.versions()?;
     println!("mixed={}", versions.has_mixed_version_storage());
     println!("future={}", versions.has_future_storage());
 
-    let chunks = world.list_chunk_positions_blocking(WorldScanOptions::default())?;
+    let chunks = world.chunk_positions(WorldScanOptions::default())?;
     println!("chunks={}", chunks.len());
     Ok(())
 }
 ```
 
-开启 `async` feature 后可使用 `BedrockWorld::open_auto` 和对应 async wrapper。
+开启 `async` feature 后可使用 `World::open_async` 和对应 async wrapper。
 只有需要显式格式提示或可写 LevelDB 时，才使用
-`BedrockWorld::open_blocking(path, BedrockWorldOpenOptions)`。
+`World::open(path, OpenOptions)`。
 
 ## 支持的真实存储代际
 
@@ -72,8 +72,8 @@ Pocket core 上的方块、metadata、light、height 仍可编辑；如果源记
 修改 biome sample 会直接报错，不会隐式扩展数据。
 
 在尝试复制到后期 LevelDB 表示前，应先调用
-`check_pocket_chunks_dat_leveldb_import_blocking`。
-`import_pocket_chunks_dat_records_blocking` 会在目标发生任何修改前拒绝缺少必要持久化
+`check_pocket_chunks_dat_leveldb_import`。
+`import_pocket_chunks_dat` 会在目标发生任何修改前拒绝缺少必要持久化
 biome/RGB 信息的有损转换。
 
 ## Pocket `entities.dat`
@@ -125,12 +125,12 @@ BlockState 映射必须在目标修改前拒绝。
 
 交互式工具应只请求实际需要的数据：
 
-- `list_render_chunk_positions_blocking`；
-- `list_chunk_positions_in_region_blocking`；
-- `query_chunk_data_blocking`；
-- `query_chunk_data_many_blocking`；
-- `query_chunk_region_blocking`；
-- `parse_chunk_blocking` 用于完整结构化检查。
+- `render_chunk_positions`；
+- `region_chunk_positions`；
+- `query_chunk_data`；
+- `query_chunk_data_many`；
+- `query_chunk_region`；
+- `scan_chunk` 用于完整结构化检查。
 
 `ChunkDataRequest` 可以组合 surface columns、固定 layer、cave slice、完整 3D indices、
 height map、biome 和 block entity。渲染热路径使用 exact batch read，避免全世界扫描和
@@ -171,12 +171,12 @@ block entity、player、chunk record 与 `.mcstructure` 导入/导出/放置。�
 
 ## 写入规则
 
-`BedrockWorldOpenOptions::default()` 为只读。需要编辑 LevelDB 世界时必须显式以 writable 方式打开：
+`OpenOptions::default()` 为只读。需要编辑 LevelDB 世界时必须显式以 writable 方式打开：
 
 ```rust
-let world = bedrock_world::BedrockWorld::open_blocking(
+let world = bedrock_world::World::open(
     "path/to/minecraftWorld",
-    bedrock_world::BedrockWorldOpenOptions {
+    bedrock_world::OpenOptions {
         read_only: false,
         ..Default::default()
     },

@@ -244,7 +244,7 @@ fn pack_palette_indices(indices: &[u16], bits: u8) -> Result<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::{SubChunkDecodeMode, SubChunkFormat, parse_subchunk_with_mode};
+    use crate::chunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
     use std::collections::BTreeMap;
 
     fn state(name: &str) -> BlockState {
@@ -265,8 +265,7 @@ mod tests {
             None,
         );
         let encoded = encode_paletted_subchunk_from_palettes(9, -4, &[&palette]).unwrap();
-        let parsed =
-            parse_subchunk_with_mode(-4, encoded, SubChunkDecodeMode::FullIndices).unwrap();
+        let parsed = SubChunk::read(-4, encoded, SubChunkDecodeMode::FullIndices).unwrap();
         let SubChunkFormat::Paletted { version, storages } = parsed.format else {
             panic!("expected paletted subchunk");
         };

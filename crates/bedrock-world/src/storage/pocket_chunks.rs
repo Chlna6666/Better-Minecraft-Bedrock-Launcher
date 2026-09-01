@@ -5,8 +5,8 @@
 //! shape. Full Pocket world opening, including `entities.dat`, is composed by the world layer.
 
 use super::{
-    StorageBatch, StorageReadOptions, StorageScanOutcome, StorageScanProgress, StorageVisitorControl,
-    WorldStorage,
+    StorageBatch, StorageReadOptions, StorageScanOutcome, StorageScanProgress,
+    StorageVisitorControl, WorldStorage,
 };
 use crate::chunk::{
     ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LEGACY_TERRAIN_VALUE_LEN,

@@ -1,7 +1,7 @@
 use bedrock_world::{
-    BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, ChunkPos, Dimension, NbtReader,
-    NbtTag, NbtWriter,
-    chunk::{SubChunkDecodeMode, parse_subchunk, parse_subchunk_with_mode},
+    BedrockLevelDbStorage, ChunkPos, Dimension, NbtReader, NbtTag, NbtWriter, OpenOptions, World,
+    ScanOptions,
+    chunk::{SubChunk, SubChunkDecodeMode},
     parse_level_dat_document, read_level_dat_document,
 };
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
@@ -100,12 +100,12 @@ fn bench_large_fixture(c: &mut Criterion) {
         z: 207,
         dimension: Dimension::Overworld,
     };
-    let world = BedrockWorld::from_storage(world_path, storage, BedrockWorldOpenOptions::default());
-    c.bench_function("bedrock_world/world/list_players", |b| {
-        b.iter(|| black_box(world.list_players_blocking().expect("list players")));
+    let world = World::from_storage(world_path, storage, OpenOptions::default());
+    c.bench_function("bedrock_world/world/players", |b| {
+        b.iter(|| black_box(world.players().expect("list players")));
     });
     let chunk = world
-        .get_chunk_blocking(pos)
+        .chunk(pos)
         .expect("load fixture sample chunk");
     let (subchunk_y, value) = chunk
         .records
@@ -121,15 +121,19 @@ fn bench_large_fixture(c: &mut Criterion) {
     c.bench_function("bedrock_world/subchunk/decode_palette_full_indices", |b| {
         b.iter(|| {
             black_box(
-                parse_subchunk(black_box(subchunk_y), black_box(value.clone()))
-                    .expect("decode full subchunk"),
+                SubChunk::read(
+                    black_box(subchunk_y),
+                    black_box(value.clone()),
+                    SubChunkDecodeMode::FullIndices,
+                )
+                .expect("decode full subchunk"),
             )
         });
     });
     c.bench_function("bedrock_world/subchunk/decode_palette_counts_only", |b| {
         b.iter(|| {
             black_box(
-                parse_subchunk_with_mode(
+                SubChunk::read(
                     black_box(subchunk_y),
                     black_box(value.clone()),
                     SubChunkDecodeMode::CountsOnly,
@@ -143,7 +147,7 @@ fn bench_large_fixture(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 world
-                    .parse_chunk_blocking(black_box(pos))
+                    .scan_chunk(black_box(pos), ScanOptions::full())
                     .expect("parse chunk"),
             )
         });

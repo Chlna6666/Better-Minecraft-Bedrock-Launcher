@@ -1,0 +1,46 @@
+//! Minecraft Bedrock BlockState identity and explicit storage-version rewriting.
+
+mod migration;
+mod upgrade;
+mod identity;
+mod nbt;
+mod properties;
+
+use crate::block::BlockState;
+use crate::block::version::AuthoritativeBlockStateCatalog;
+use crate::error::{BedrockWorldError, Result};
+
+pub use migration::{BlockStateMigrationGraph, BlockStateMigrationStep};
+pub use upgrade::{
+    BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
+    BlockStateValueRewrite,
+};
+pub use nbt::read_block_state_nbt;
+pub use properties::{
+    BlockFace, DoorBlockStates, HorizontalDirection, RedstoneBlockStates, SlabBlockStates,
+    StairBlockStates, StairCorner, TrapdoorBlockStates, VerticalHalf,
+};
+
+/// BlockState version writer used only when a caller explicitly selects another persisted version.
+pub trait BlockStateMigrator: Send + Sync {
+    /// Writes one BlockState for the requested persisted `version` value.
+    fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState>;
+}
+
+impl BlockStateMigrator for BlockStateMigrationGraph {
+    fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState> {
+        BlockStateMigrationGraph::migrate_to(self, state, target_version)
+    }
+}
+
+impl BlockStateMigrator for AuthoritativeBlockStateCatalog {
+    fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState> {
+        if self.output_version().raw() != target_version {
+            return Err(BedrockWorldError::Validation(format!(
+                "BlockState history data outputs version {}, requested {target_version}",
+                self.output_version().raw()
+            )));
+        }
+        self.upgrade(state)
+    }
+}
