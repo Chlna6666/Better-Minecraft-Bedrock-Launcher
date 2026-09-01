@@ -575,7 +575,7 @@ fn text_layout_measurement_fingerprint(
 mod tests {
     use super::{
         TextLayout, text_layout_cache_key, text_layout_measurement_fingerprint,
-        text_layout_measurement_key, text_layout_paint_key,
+        text_layout_paint_key,
     };
     use crate::element::text::StyledText;
     use crate::{
@@ -737,7 +737,7 @@ mod tests {
         assert_eq!(lines.len(), 2);
         for (line, first_layout) in lines.iter().zip(first_layouts) {
             assert_eq!(line.decoration_runs[0].color, rgb(0x0000ff).into());
-            assert!(Arc::ptr_eq(first_layout, &line.layout));
+            assert!(Arc::ptr_eq(&first_layout, &line.layout));
         }
     }
 
