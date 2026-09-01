@@ -2,7 +2,11 @@ use super::*;
 
 impl Window {
     fn invalidate_text_rasterization(&mut self) {
-        self.text_system.clear_layout_cache();
+        // Platform shaping/layout is expressed in logical Pixels and its API does not depend on
+        // the window DPI/scale factor. Moving between displays therefore invalidates glyph bitmap
+        // bounds and atlas residency, but not the shaped line/layout identity. Keeping the line
+        // cache avoids reshaping every visible string after a DPI transition; the measured-layout
+        // fingerprint still includes scale factor and will re-run measurement where required.
         self.text_system.clear_raster_cache();
         self.sprite_atlas.clear_glyphs();
     }
