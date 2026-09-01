@@ -1,4 +1,5 @@
 use super::draw_steps::{PreparedBackdropBlurGroup, PreparedElementBlurLayer};
+use super::retained_upload::StaticUploadMask;
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -41,57 +42,68 @@ fn upload_frame_buffers<D>(
     buffers: FrameBufferTargets,
     frame_upload: &FrameUpload,
     has_backdrop_blurs: bool,
-    upload_static: bool,
+    static_uploads: StaticUploadMask,
 ) -> Result<()>
 where
     D: BackendResources,
 {
-    if !upload_static {
-        return upload_animated_buffers(device, buffers, frame_upload);
+    if static_uploads.global {
+        device.write_buffer(buffers.global, 0, &frame_upload.globals)?;
     }
-    device.write_buffer(buffers.global, 0, &frame_upload.globals)?;
-    device.write_buffer(buffers.text_raster, 0, &frame_upload.text_raster_params)?;
-    if !frame_upload.quads.is_empty() {
+    if static_uploads.text_raster {
+        device.write_buffer(buffers.text_raster, 0, &frame_upload.text_raster_params)?;
+    }
+    if static_uploads.quad && !frame_upload.quads.is_empty() {
         device.write_buffer(buffers.quad, 0, &frame_upload.quads)?;
     }
-    if !frame_upload.shadows.is_empty() {
+    if static_uploads.shadow && !frame_upload.shadows.is_empty() {
         device.write_buffer(buffers.shadow, 0, &frame_upload.shadows)?;
     }
-    if !frame_upload.path_rasterization_vertices.is_empty() {
+    if static_uploads.path_rasterization_vertex
+        && !frame_upload.path_rasterization_vertices.is_empty()
+    {
         device.write_buffer(
             buffers.path_rasterization_vertex,
             0,
             &frame_upload.path_rasterization_vertices,
         )?;
     }
-    if !frame_upload.path_sprites.is_empty() {
+    if static_uploads.path_sprite && !frame_upload.path_sprites.is_empty() {
         device.write_buffer(buffers.path_sprite, 0, &frame_upload.path_sprites)?;
     }
-    if !frame_upload.mono_sprites.is_empty() {
+    if static_uploads.mono_sprite && !frame_upload.mono_sprites.is_empty() {
         device.write_buffer(buffers.mono_sprite, 0, &frame_upload.mono_sprites)?;
     }
-    if !frame_upload.poly_sprites.is_empty() {
+    if static_uploads.poly_sprite && !frame_upload.poly_sprites.is_empty() {
         device.write_buffer(buffers.poly_sprite, 0, &frame_upload.poly_sprites)?;
     }
-    if !frame_upload.underlines.is_empty() {
+    if static_uploads.underline && !frame_upload.underlines.is_empty() {
         device.write_buffer(buffers.underline, 0, &frame_upload.underlines)?;
     }
-    if has_backdrop_blurs {
+    if has_backdrop_blurs && static_uploads.backdrop_blur_pass {
         device.write_buffer(
             buffers.backdrop_blur_pass,
             0,
             &frame_upload.backdrop_blur_passes,
         )?;
+    }
+    if has_backdrop_blurs && static_uploads.backdrop_blur {
         device.write_buffer(buffers.backdrop_blur, 0, &frame_upload.backdrop_blurs)?;
     }
-    if !frame_upload.custom_mesh_3d_parameters.is_empty() {
+    if static_uploads.custom_mesh_3d_parameters
+        && !frame_upload.custom_mesh_3d_parameters.is_empty()
+    {
         device.write_buffer(
             buffers.custom_mesh_3d_parameters,
             0,
             &frame_upload.custom_mesh_3d_parameters,
         )?;
     }
-    Ok(())
+
+    // A partial static refresh may leave other primitive streams resident. Those clean streams can
+    // still contain active animations, so refresh only their animated ranges. Streams uploaded in
+    // full above already contain the sampled bytes and deliberately skip duplicate range writes.
+    upload_animated_buffers(device, buffers, frame_upload, static_uploads)
 }
 
 fn upload_animated_buffer_kind<D: BackendResources>(
@@ -158,8 +170,9 @@ fn upload_animated_buffers<D: BackendResources>(
     device: &mut D,
     buffers: FrameBufferTargets,
     frame_upload: &FrameUpload,
+    static_uploads: StaticUploadMask,
 ) -> Result<()> {
-    if frame_upload.has_animated_backdrop_blurs() {
+    if frame_upload.has_animated_backdrop_blurs() && !static_uploads.backdrop_blur_pass {
         device.write_buffer(
             buffers.backdrop_blur_pass,
             0,
@@ -171,41 +184,51 @@ fn upload_animated_buffers<D: BackendResources>(
     // increasing buffer index. Walk each kind independently so physically adjacent records can be
     // uploaded as one range without widening across static gaps. Text runs benefit the most: a run
     // of hundreds of glyph sprites becomes one backend write instead of one write per glyph.
-    upload_animated_buffer_kind(
-        device,
-        buffers.quad,
-        &frame_upload.quads,
-        frame_upload,
-        AnimatedPrimitiveKind::Quad,
-    )?;
-    upload_animated_buffer_kind(
-        device,
-        buffers.shadow,
-        &frame_upload.shadows,
-        frame_upload,
-        AnimatedPrimitiveKind::Shadow,
-    )?;
-    upload_animated_buffer_kind(
-        device,
-        buffers.mono_sprite,
-        &frame_upload.mono_sprites,
-        frame_upload,
-        AnimatedPrimitiveKind::MonochromeSprite,
-    )?;
-    upload_animated_buffer_kind(
-        device,
-        buffers.poly_sprite,
-        &frame_upload.poly_sprites,
-        frame_upload,
-        AnimatedPrimitiveKind::PolychromeSprite,
-    )?;
-    upload_animated_buffer_kind(
-        device,
-        buffers.backdrop_blur,
-        &frame_upload.backdrop_blurs,
-        frame_upload,
-        AnimatedPrimitiveKind::BackdropBlur,
-    )?;
+    if !static_uploads.quad {
+        upload_animated_buffer_kind(
+            device,
+            buffers.quad,
+            &frame_upload.quads,
+            frame_upload,
+            AnimatedPrimitiveKind::Quad,
+        )?;
+    }
+    if !static_uploads.shadow {
+        upload_animated_buffer_kind(
+            device,
+            buffers.shadow,
+            &frame_upload.shadows,
+            frame_upload,
+            AnimatedPrimitiveKind::Shadow,
+        )?;
+    }
+    if !static_uploads.mono_sprite {
+        upload_animated_buffer_kind(
+            device,
+            buffers.mono_sprite,
+            &frame_upload.mono_sprites,
+            frame_upload,
+            AnimatedPrimitiveKind::MonochromeSprite,
+        )?;
+    }
+    if !static_uploads.poly_sprite {
+        upload_animated_buffer_kind(
+            device,
+            buffers.poly_sprite,
+            &frame_upload.poly_sprites,
+            frame_upload,
+            AnimatedPrimitiveKind::PolychromeSprite,
+        )?;
+    }
+    if !static_uploads.backdrop_blur {
+        upload_animated_buffer_kind(
+            device,
+            buffers.backdrop_blur,
+            &frame_upload.backdrop_blurs,
+            frame_upload,
+            AnimatedPrimitiveKind::BackdropBlur,
+        )?;
+    }
     Ok(())
 }
 
@@ -651,12 +674,13 @@ impl NovaRenderer {
         );
 
         let unsupported = upload.unsupported_batches;
-        let upload_static = self
+        let static_uploads = self
             .retained_upload
-            .needs_static_upload(self.current_frame_resource_index);
+            .static_upload_mask(self.current_frame_resource_index);
+        let upload_static = !static_uploads.is_empty();
         let animated_upload_bytes = self.frame_upload.animated_upload_bytes();
         let mapped_upload_bytes = if upload_static {
-            self.frame_upload.mapped_upload_bytes(has_backdrop_blurs)
+            static_uploads.mapped_upload_bytes(&self.frame_upload, has_backdrop_blurs)
         } else {
             animated_upload_bytes
         };
@@ -801,7 +825,7 @@ impl NovaRenderer {
                     frame_buffers,
                     &self.frame_upload,
                     has_backdrop_blurs,
-                    upload_static,
+                    static_uploads,
                 )?;
                 let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
                 let atlas_started = Instant::now();
@@ -906,7 +930,7 @@ impl NovaRenderer {
                     frame_buffers,
                     &self.frame_upload,
                     has_backdrop_blurs,
-                    upload_static,
+                    static_uploads,
                 )?;
                 let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
                     self.gpu_atlas_textures
@@ -986,7 +1010,7 @@ impl NovaRenderer {
                     frame_buffers,
                     &self.frame_upload,
                     has_backdrop_blurs,
-                    upload_static,
+                    static_uploads,
                 )?;
                 let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
                 let atlas_started = Instant::now();
