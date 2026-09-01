@@ -1,10 +1,11 @@
 use crate::{
-    App, Bounds, LayoutId, Pixels, Point, SharedString, Size, TextOverflow, TextRun, TextStyle,
-    WhiteSpace, Window, WrappedLine, WrappedLineLayout,
+    App, Bounds, DecorationRun, LayoutId, Pixels, Point, SharedString, Size, TextOverflow, TextRun,
+    TextStyle, WhiteSpace, Window, WrappedLine, WrappedLineLayout,
 };
 use smallvec::SmallVec;
 use std::{
     cell::RefCell,
+    cmp,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     rc::Rc,
@@ -48,7 +49,33 @@ impl TextLayout {
         };
         let cache_key = text_layout_cache_key(&text, &runs, &text_style, font_size, line_height);
         let paint_key = text_layout_paint_key(&runs);
-        let measurement_key = text_layout_measurement_key(cache_key, paint_key);
+
+        // Most UI text never uses truncation. When only paint decorations change, refresh the
+        // DecorationRun sidecar in place and keep the measured/wrapped/shaped geometry intact.
+        // This makes theme/color animation skip the measured-layout closure entirely instead of
+        // calling shape_text again just to recover the same Arc<WrappedLineLayout> from its cache.
+        // Truncation remains conservative because its synthetic suffix can change run boundaries.
+        let mut paint_refresh_failed = false;
+        if text_style.text_overflow.is_none() {
+            let mut element_state = self.0.borrow_mut();
+            if let Some(text_layout) = element_state.as_mut()
+                && text_layout.cache_key == cache_key
+                && text_layout.paint_key != paint_key
+                && text_layout.size.is_some()
+            {
+                if refresh_cached_decoration_runs(&text, &mut text_layout.lines, &runs) {
+                    text_layout.paint_key = paint_key;
+                } else {
+                    paint_refresh_failed = true;
+                }
+            }
+        }
+
+        let measurement_key = text_layout_measurement_fingerprint(
+            cache_key,
+            paint_key,
+            text_style.text_overflow.is_some() || paint_refresh_failed,
+        );
 
         window.request_measured_layout_with_fingerprint(Default::default(), measurement_key, {
             let element_state = self.clone();
@@ -102,10 +129,8 @@ impl TextLayout {
                 };
                 let len = text.len();
 
-                // A paint-only fingerprint change intentionally reaches this point, but the
-                // geometry key and FontRun identity remain unchanged. `shape_text` therefore
-                // rebuilds current DecorationRuns while LineLayoutCache reuses the existing shaped
-                // line instead of invoking the platform shaper again.
+                // Geometry changes and truncation-dependent paint changes reach this path. The
+                // LineLayoutCache still reuses shaped glyph geometry when its font identity matches.
                 let Some(lines) = window
                     .text_system()
                     .shape_text(
@@ -339,6 +364,141 @@ impl TextLayout {
     }
 }
 
+struct DecorationRunCursor<'a> {
+    runs: &'a [TextRun],
+    index: usize,
+    offset: usize,
+}
+
+impl<'a> DecorationRunCursor<'a> {
+    fn new(runs: &'a [TextRun]) -> Self {
+        Self {
+            runs,
+            index: 0,
+            offset: 0,
+        }
+    }
+
+    fn append(&mut self, mut len: usize, target: &mut SmallVec<[DecorationRun; 32]>) -> bool {
+        while len > 0 {
+            self.skip_empty_runs();
+            let Some(run) = self.runs.get(self.index) else {
+                return false;
+            };
+            let available = run.len.saturating_sub(self.offset);
+            if available == 0 {
+                self.index += 1;
+                self.offset = 0;
+                continue;
+            }
+            let take = cmp::min(len, available);
+            push_cached_decoration_run(target, run, take);
+            self.offset += take;
+            len -= take;
+            if self.offset == run.len {
+                self.index += 1;
+                self.offset = 0;
+            }
+        }
+        true
+    }
+
+    fn skip(&mut self, mut len: usize) -> bool {
+        while len > 0 {
+            self.skip_empty_runs();
+            let Some(run) = self.runs.get(self.index) else {
+                return false;
+            };
+            let available = run.len.saturating_sub(self.offset);
+            if available == 0 {
+                self.index += 1;
+                self.offset = 0;
+                continue;
+            }
+            let take = cmp::min(len, available);
+            self.offset += take;
+            len -= take;
+            if self.offset == run.len {
+                self.index += 1;
+                self.offset = 0;
+            }
+        }
+        true
+    }
+
+    fn is_exhausted(&mut self) -> bool {
+        self.skip_empty_runs();
+        self.index >= self.runs.len()
+    }
+
+    fn skip_empty_runs(&mut self) {
+        while self
+            .runs
+            .get(self.index)
+            .is_some_and(|run| run.len == self.offset)
+        {
+            self.index += 1;
+            self.offset = 0;
+        }
+    }
+}
+
+fn refresh_cached_decoration_runs(
+    text: &SharedString,
+    lines: &mut [WrappedLine],
+    runs: &[TextRun],
+) -> bool {
+    let mut source_lines = text.split('\n').peekable();
+    let mut cursor = DecorationRunCursor::new(runs);
+
+    for line in lines {
+        let Some(source_line) = source_lines.next() else {
+            return false;
+        };
+        if line.text.as_ref() != source_line {
+            return false;
+        }
+
+        line.decoration_runs.clear();
+        if !cursor.append(source_line.len(), &mut line.decoration_runs) {
+            return false;
+        }
+
+        if source_lines.peek().is_some() && !cursor.skip(1) {
+            return false;
+        }
+    }
+
+    source_lines.next().is_none() && cursor.is_exhausted()
+}
+
+fn push_cached_decoration_run(
+    decoration_runs: &mut SmallVec<[DecorationRun; 32]>,
+    run: &TextRun,
+    len: usize,
+) {
+    if let Some(last_run) = decoration_runs.last_mut()
+        && last_run.color == run.color
+        && last_run.underline == run.underline
+        && last_run.strikethrough == run.strikethrough
+        && last_run.background_color == run.background_color
+        && last_run.background_corner_radius == run.background_corner_radius
+        && last_run.background_padding == run.background_padding
+    {
+        last_run.len += len as u32;
+    } else {
+        decoration_runs.push(DecorationRun {
+            len: len as u32,
+            color: run.color,
+            background_color: run.background_color,
+            background_corner_radius: run.background_corner_radius,
+            background_padding: run.background_padding,
+            underline: run.underline,
+            strikethrough: run.strikethrough,
+        });
+    }
+}
+
 fn text_layout_cache_key(
     text: &SharedString,
     runs: &[TextRun],
@@ -399,15 +559,28 @@ fn text_layout_measurement_key(cache_key: u64, paint_key: u64) -> u64 {
     hasher.finish()
 }
 
+fn text_layout_measurement_fingerprint(
+    cache_key: u64,
+    paint_key: u64,
+    paint_requires_measurement: bool,
+) -> u64 {
+    if paint_requires_measurement {
+        text_layout_measurement_key(cache_key, paint_key)
+    } else {
+        cache_key
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        TextLayout, text_layout_cache_key, text_layout_measurement_key, text_layout_paint_key,
+        TextLayout, text_layout_cache_key, text_layout_measurement_fingerprint,
+        text_layout_measurement_key, text_layout_paint_key,
     };
     use crate::element::text::StyledText;
     use crate::{
         AvailableSpace, IntoElement, ParentElement as _, Render, SharedString, TestAppContext,
-        TextStyle, Window, div, point, px, rgb, size,
+        TextStyle, TextOverflow, Window, div, point, px, rgb, size,
     };
     use std::sync::Arc;
 
@@ -438,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn paint_only_changes_keep_geometry_identity() {
+    fn paint_only_changes_keep_geometry_measurement_identity() {
         let text = SharedString::from("paint cache");
         let text_style = TextStyle::default();
         let font_size = px(16.);
@@ -459,9 +632,32 @@ mod tests {
 
         assert_eq!(first_geometry, second_geometry);
         assert_ne!(first_paint, second_paint);
+        assert_eq!(
+            text_layout_measurement_fingerprint(first_geometry, first_paint, false),
+            text_layout_measurement_fingerprint(second_geometry, second_paint, false)
+        );
+    }
+
+    #[test]
+    fn truncation_keeps_paint_in_measurement_identity() {
+        let text = SharedString::from("truncate cache");
+        let mut text_style = TextStyle::default();
+        text_style.text_overflow = Some(TextOverflow::Truncate("…".into()));
+        let font_size = px(16.);
+        let line_height = px(24.);
+        let mut first = text_style.to_run(text.len());
+        first.color = rgb(0xff0000).into();
+        let mut second = first.clone();
+        second.color = rgb(0x0000ff).into();
+        let first_runs = [first];
+        let second_runs = [second];
+        let geometry = text_layout_cache_key(&text, &first_runs, &text_style, font_size, line_height);
+        let first_paint = text_layout_paint_key(&first_runs);
+        let second_paint = text_layout_paint_key(&second_runs);
+
         assert_ne!(
-            text_layout_measurement_key(first_geometry, first_paint),
-            text_layout_measurement_key(second_geometry, second_paint)
+            text_layout_measurement_fingerprint(geometry, first_paint, true),
+            text_layout_measurement_fingerprint(geometry, second_paint, true)
         );
     }
 
@@ -501,6 +697,48 @@ mod tests {
         let line = &state.as_ref().unwrap().lines[0];
         assert_eq!(line.decoration_runs[0].color, rgb(0x0000ff).into());
         assert!(Arc::ptr_eq(&first_layout, &line.layout));
+    }
+
+    #[gpui::test]
+    fn multiline_paint_change_refreshes_decorations_in_place(cx: &mut TestAppContext) {
+        let (_, visual) = cx.add_window_view(|_, _| crate::Empty);
+        let layout = TextLayout::default();
+        let available_space = size(
+            AvailableSpace::Definite(px(240.)),
+            AvailableSpace::MinContent,
+        );
+        let text = SharedString::from("first\nsecond");
+        let text_style = TextStyle::default();
+        let mut first_run = text_style.to_run(text.len());
+        first_run.color = rgb(0xff0000).into();
+        let mut first = StyledText::new(text.clone()).with_runs(vec![first_run]);
+        first.layout = layout.clone();
+        visual.draw(point(px(0.), px(0.)), available_space, |_, _| first);
+
+        let first_layouts = {
+            let state = layout.0.borrow();
+            state
+                .as_ref()
+                .unwrap()
+                .lines
+                .iter()
+                .map(|line| line.layout.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let mut second_run = text_style.to_run(text.len());
+        second_run.color = rgb(0x0000ff).into();
+        let mut second = StyledText::new(text).with_runs(vec![second_run]);
+        second.layout = layout.clone();
+        visual.draw(point(px(0.), px(0.)), available_space, |_, _| second);
+
+        let state = layout.0.borrow();
+        let lines = &state.as_ref().unwrap().lines;
+        assert_eq!(lines.len(), 2);
+        for (line, first_layout) in lines.iter().zip(first_layouts) {
+            assert_eq!(line.decoration_runs[0].color, rgb(0x0000ff).into());
+            assert!(Arc::ptr_eq(first_layout, &line.layout));
+        }
     }
 
     #[gpui::test]
