@@ -136,9 +136,31 @@ impl FrameUpload {
         self.custom_mesh_3d_ids.shrink_to(8 * multiplier);
         self.custom_mesh_3d_shader_ids.shrink_to(8 * multiplier);
         trim_upload_vec(&mut self.batches, 64, multiplier);
+
+        // Path cache values can contain large Arc-backed raster payloads and the hash tables can
+        // grow to thousands of buckets. Clearing entries alone leaves those bucket arrays resident,
+        // so explicitly shrink them according to memory pressure instead of pinning a one-frame
+        // path/SVG spike indefinitely.
         self.path_rasterization_cache.clear();
         self.path_geometry_hash_memo.clear();
-        self.path_paint_key_scratch = Vec::new();
+        let path_cache_floor = match level {
+            GpuiMemoryTrimLevel::Light => 256,
+            GpuiMemoryTrimLevel::Moderate => 64,
+            GpuiMemoryTrimLevel::Aggressive => 0,
+        };
+        self.path_rasterization_cache.shrink_to(path_cache_floor);
+        self.path_geometry_hash_memo.shrink_to(path_cache_floor);
+
+        self.path_paint_key_scratch.clear();
+        match level {
+            GpuiMemoryTrimLevel::Aggressive => self.path_paint_key_scratch.shrink_to(0),
+            GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
+                // ContentMask + Background packing normally fits comfortably in this floor. Keep
+                // one small allocation hot so a light trim does not force the very next path to
+                // allocate again.
+                trim_upload_vec(&mut self.path_paint_key_scratch, 128, multiplier);
+            }
+        }
     }
 
     /// Rebuild the set of atlas textures that can feed the earliest blur barrier.
