@@ -146,6 +146,7 @@ unsafe fn avx2_buffer(buffer: &mut [u8]) {
         let bgra_indices = _mm256_set_epi32(7, 4, 5, 6, 3, 0, 1, 2);
         let min_i = _mm256_setzero_si256();
         let max_i = _mm256_set1_epi32(255);
+        let zero128 = _mm_setzero_si128();
 
         // Eight input bytes are two RGBA pixels. Expanding them to eight i32/f32 lanes lets one
         // AVX2 division unpremultiply both pixels at once. The divisor LUT maps alpha 0 to 1.0, so
@@ -169,11 +170,14 @@ unsafe fn avx2_buffer(buffer: &mut [u8]) {
             let with_alpha = _mm256_blend_epi32(straight_i, rgba_i, 0b1000_1000);
             // RGBA -> BGRA for both pixels.
             let bgra_i = _mm256_permutevar8x32_epi32(with_alpha, bgra_indices);
-            let mut lanes = [0i32; 8];
-            _mm256_storeu_si256(lanes.as_mut_ptr().cast::<__m256i>(), bgra_i);
-            for (index, value) in lanes.into_iter().enumerate() {
-                *source.add(index) = value as u8;
-            }
+            // Narrow the already-clamped i32 lanes entirely in registers. AVX2 guarantees SSE2,
+            // so signed i32->i16 is safe for 0..=255 and the final pack saturates to u8. The low
+            // eight bytes preserve [B0,G0,R0,A0,B1,G1,R1,A1] and can be stored in one instruction.
+            let bgra_low = _mm256_castsi256_si128(bgra_i);
+            let bgra_high = _mm256_extracti128_si256::<1>(bgra_i);
+            let packed_i16 = _mm_packs_epi32(bgra_low, bgra_high);
+            let packed_u8 = _mm_packus_epi16(packed_i16, zero128);
+            _mm_storel_epi64(source.cast::<__m128i>(), packed_u8);
             offset += 8;
         }
         scalar_buffer(&mut buffer[offset..]);
