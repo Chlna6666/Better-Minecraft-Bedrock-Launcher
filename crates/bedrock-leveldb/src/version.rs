@@ -40,11 +40,6 @@ impl ImmutableMemTable {
     }
 
     #[must_use]
-    pub(crate) fn entries_arc(&self) -> Arc<MemTableEntries> {
-        Arc::clone(&self.entries)
-    }
-
-    #[must_use]
     pub(crate) const fn last_sequence(&self) -> u64 {
         self.last_sequence
     }
@@ -136,8 +131,8 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(b"a".to_vec(), Some(Bytes::from_static(b"one")));
         let table = ImmutableMemTable::new(entries, 7, 3, 4);
-        let first = table.entries_arc();
-        let second = table.entries_arc();
+        let first = Arc::clone(&table.entries);
+        let second = Arc::clone(&table.entries);
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(table.get(b"a"), Some(Some(Bytes::from_static(b"one"))));
     }
