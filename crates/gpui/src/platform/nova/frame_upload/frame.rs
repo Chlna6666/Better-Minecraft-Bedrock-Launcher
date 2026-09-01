@@ -78,6 +78,9 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_passes: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blurs: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
+    /// Parsed BeginBlur/EndBlur topology. Batches are static for a retained upload, so compute this
+    /// once when blur configs refresh and let target planning/present/draw-step code borrow it.
+    pub(in crate::platform::nova) blur_content_ranges_cache: Vec<BlurContentRange>,
     /// Animated backdrop indices whose current composite geometry fits entirely inside the
     /// unanimated filter footprint. These use the base blur geometry for filter planning while
     /// the GPU primitive buffer still receives the sampled composite geometry/opacity.
