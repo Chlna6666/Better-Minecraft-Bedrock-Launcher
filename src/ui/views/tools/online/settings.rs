@@ -4,6 +4,7 @@ use crate::ui::components::modal;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::*;
@@ -36,24 +37,15 @@ pub(super) fn render_settings_overlay(
             state.easytier_settings_open = false;
         });
     });
-
-    // Capture the complete settings card once and animate only its final compositor record.
-    // The previous layout-driven `top(...) + opacity(...)` path rebuilt the card's layout and text
-    // prepaint on every spring sample. A very small scale-in preserves the entrance affordance
-    // without changing layout identity or touching the card's glyph atlas entries.
-    let card = render_settings_card(colors, i18n, width, state, dismiss.clone())
-        .composite_layer()
-        .with_animation(
-            "online-settings-card-enter",
-            spring_motion(spring_smooth()).with_property(AnimationProperty::scale_opacity(
-                0.985,
-                1.0,
-                0.0,
-                1.0,
-                TransformOrigin::CENTER,
-            )),
-            |card, _progress| card,
-        );
+    let card = render_settings_card(colors, i18n, width, state, dismiss.clone()).with_animation(
+        "online-settings-card-enter",
+        spring_motion(spring_smooth()),
+        |card, progress| {
+            card.opacity(progress.clamp(0.0, 1.0))
+                .relative()
+                .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
+        },
+    );
 
     Some(modal::modal_layer_dismissible(card, colors.backdrop, dismiss).into_any_element())
 }
