@@ -37,10 +37,10 @@ pub(super) struct CacheKeyRef<'a> {
 
 /// Iterates the shaping identity of a font-run slice without allocating.
 ///
-/// Decoration changes are intentionally not part of shaping. Some callers still split otherwise
-/// identical font runs at color/background/underline boundaries so that paint can retain those
-/// boundaries. Treat adjacent runs using the same resolved font as one canonical run when hashing
-/// and comparing layout-cache keys. Zero-length runs are ignored as well.
+/// Decoration changes are intentionally not part of shaping. Treat adjacent runs using the same
+/// resolved font as one canonical run when hashing and comparing layout-cache keys. Zero-length
+/// runs are ignored as well. Normal WindowTextSystem callers already emit this canonical form;
+/// doing the same in the cache key keeps direct/internal callers safe without another allocation.
 #[derive(Clone)]
 struct CanonicalFontRuns<'a> {
     runs: &'a [FontRun],
@@ -82,15 +82,6 @@ impl Iterator for CanonicalFontRuns<'_> {
             font_id: first.font_id,
         })
     }
-}
-
-/// Materializes the unique shaping representation of a run slice.
-///
-/// This is used only on cache misses before invoking the platform shaper, so the small allocation
-/// is off the hot cache-hit path. Keeping the platform input canonical guarantees that a cached
-/// layout cannot depend on paint-only decoration boundaries from whichever frame populated it.
-pub(super) fn canonicalize_font_runs(runs: &[FontRun]) -> SmallVec<[FontRun; 1]> {
-    CanonicalFontRuns::new(runs).collect()
 }
 
 impl PartialEq for CacheKeyRef<'_> {
@@ -209,7 +200,6 @@ mod tests {
 
         assert!(split_key == merged_key);
         assert_eq!(hash_key(split_key), hash_key(merged_key));
-        assert_eq!(canonicalize_font_runs(&split).as_slice(), &merged);
     }
 
     #[test]
@@ -277,6 +267,5 @@ mod tests {
 
         assert!(split_key == merged_key);
         assert_eq!(hash_key(split_key), hash_key(merged_key));
-        assert_eq!(canonicalize_font_runs(&split).as_slice(), &merged);
     }
 }
