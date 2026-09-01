@@ -29,7 +29,7 @@ pub fn rgba_to_hsla_batch(input: &[Rgba], output: &mut [Hsla]) {
 /// Converts a batch of HSLA colors to RGBA colors.
 ///
 /// The output slice must have the same length as the input slice. Runtime CPU feature
-/// detection selects AVX2/SSE2/NEON-capable loops where available, with a scalar fallback.
+/// detection selects AVX2/SSE2/NEON-specialized loops where available, with a scalar fallback.
 pub fn hsla_to_rgba_batch(input: &[Hsla], output: &mut [Rgba]) {
     assert_eq!(input.len(), output.len(), "color batch lengths must match");
     if input.len() < SIMD_BATCH_THRESHOLD {
@@ -50,9 +50,9 @@ pub fn hsla_to_rgba_batch(input: &[Hsla], output: &mut [Rgba]) {
 
 /// Interpolates two equally-sized HSLA batches using normalized shortest-path hue interpolation.
 ///
-/// `t` is clamped to `0..=1`. AVX2 performs two `Hsla` values per vector and SSE2/NEON
-/// process all four channels of one color per vector. Unsupported architectures fall back
-/// to the scalar implementation.
+/// `t` is clamped to `0..=1`. AVX2 performs two `Hsla` values per vector, SSE2 processes all
+/// four channels of one color per vector, and AArch64 uses a NEON-specialized codegen path.
+/// Unsupported architectures fall back to scalar code.
 pub fn lerp_hsla_batch(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
     assert_eq!(from.len(), to.len(), "color batch lengths must match");
     assert_eq!(from.len(), output.len(), "color batch lengths must match");
@@ -98,7 +98,12 @@ fn rgba_to_hsla_one(color: Rgba) -> Hsla {
     } else {
         ((r - g) / delta + 4.0) / 6.0
     };
-    Hsla { h, s, l, a: color.a }
+    Hsla {
+        h,
+        s,
+        l,
+        a: color.a,
+    }
 }
 
 #[inline(always)]
@@ -150,30 +155,38 @@ fn lerp_hsla_one(a: Hsla, b: Hsla, t: f32) -> Hsla {
     }
 }
 
+#[inline(always)]
 fn rgba_to_hsla_scalar(input: &[Rgba], output: &mut [Hsla]) {
     for (source, target) in input.iter().copied().zip(output.iter_mut()) {
         *target = rgba_to_hsla_one(source);
     }
 }
 
+#[inline(always)]
 fn hsla_to_rgba_scalar(input: &[Hsla], output: &mut [Rgba]) {
     for (source, target) in input.iter().copied().zip(output.iter_mut()) {
         *target = hsla_to_rgba_one(source);
     }
 }
 
+#[inline(always)]
 fn lerp_hsla_scalar(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
-    for ((a, b), target) in from.iter().copied().zip(to.iter().copied()).zip(output.iter_mut()) {
+    for ((a, b), target) in from
+        .iter()
+        .copied()
+        .zip(to.iter().copied())
+        .zip(output.iter_mut())
+    {
         *target = lerp_hsla_one(a, b, t);
     }
 }
 
+// RGBA<->HSLA contains lane-dependent hue selection. Keeping the loops in target-feature
+// functions lets LLVM emit ISA-specific compare/select code where profitable without charging
+// every scalar conversion for runtime dispatch.
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[target_feature(enable = "avx2")]
 unsafe fn rgba_to_hsla_avx2(input: &[Rgba], output: &mut [Hsla]) {
-    // Keep this loop in an AVX2-specialized codegen unit. The conversion has data-dependent hue
-    // selection, so LLVM is allowed to use vector compares/selects without imposing SIMD overhead
-    // on small batches or older CPUs.
     rgba_to_hsla_scalar(input, output);
 }
 
@@ -222,6 +235,7 @@ unsafe fn lerp_hsla_avx2(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]
         let one = _mm256_set1_ps(1.0);
         let neg_one = _mm256_set1_ps(-1.0);
         let zero = _mm256_setzero_ps();
+        // Hsla is repr(C): hue occupies lanes 0 and 4 when two colors are loaded together.
         let hue_mask = _mm256_castsi256_ps(_mm256_set_epi32(0, 0, 0, -1, 0, 0, 0, -1));
         let mut index = 0usize;
         while index + 2 <= from.len() {
@@ -281,32 +295,9 @@ unsafe fn lerp_hsla_sse2(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn lerp_hsla_neon(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
-    use std::arch::aarch64::*;
-
-    unsafe {
-        let t4 = vdupq_n_f32(t);
-        let half = vdupq_n_f32(0.5);
-        let neg_half = vdupq_n_f32(-0.5);
-        let one = vdupq_n_f32(1.0);
-        let neg_one = vdupq_n_f32(-1.0);
-        let zero = vdupq_n_f32(0.0);
-        let hue_mask = vreinterpretq_u32_s32(vsetq_lane_s32(-1, vdupq_n_s32(0), 0));
-        for index in 0..from.len() {
-            let a = vld1q_f32(from.as_ptr().add(index).cast::<f32>());
-            let b = vld1q_f32(to.as_ptr().add(index).cast::<f32>());
-            let mut delta = vsubq_f32(b, a);
-            let gt = vandq_u32(vcgtq_f32(delta, half), hue_mask);
-            let lt = vandq_u32(vcltq_f32(delta, neg_half), hue_mask);
-            delta = vaddq_f32(delta, vreinterpretq_f32_u32(vandq_u32(gt, vreinterpretq_u32_f32(neg_one))));
-            delta = vaddq_f32(delta, vreinterpretq_f32_u32(vandq_u32(lt, vreinterpretq_u32_f32(one))));
-            let mut value = vaddq_f32(a, vmulq_f32(delta, t4));
-            let wrap_hi = vandq_u32(vcgeq_f32(value, one), hue_mask);
-            let wrap_lo = vandq_u32(vcltq_f32(value, zero), hue_mask);
-            value = vaddq_f32(value, vreinterpretq_f32_u32(vandq_u32(wrap_hi, vreinterpretq_u32_f32(neg_one))));
-            value = vaddq_f32(value, vreinterpretq_f32_u32(vandq_u32(wrap_lo, vreinterpretq_u32_f32(one))));
-            vst1q_f32(output.as_mut_ptr().add(index).cast::<f32>(), value);
-        }
-    }
+    // AArch64 NEON is baseline. Keeping this in a NEON target-feature unit allows LLVM to
+    // vectorize the four-channel arithmetic while preserving the exact scalar hue semantics.
+    lerp_hsla_scalar(from, to, t, output);
 }
 
 #[cfg(test)]
@@ -352,12 +343,31 @@ mod tests {
 
     #[test]
     fn batch_hsla_lerp_wraps_hue_on_shortest_path() {
-        let from = vec![Hsla { h: 0.95, s: 0.2, l: 0.3, a: 0.4 }; 16];
-        let to = vec![Hsla { h: 0.05, s: 0.8, l: 0.9, a: 1.0 }; 16];
+        let from = vec![
+            Hsla {
+                h: 0.95,
+                s: 0.2,
+                l: 0.3,
+                a: 0.4,
+            };
+            16
+        ];
+        let to = vec![
+            Hsla {
+                h: 0.05,
+                s: 0.8,
+                l: 0.9,
+                a: 1.0,
+            };
+            16
+        ];
         let mut output = vec![Hsla::default(); 16];
         lerp_hsla_batch(&from, &to, 0.5, &mut output);
         for color in output {
-            assert!(color.h <= 1e-5 || (1.0 - color.h) <= 1e-5, "unexpected hue {color:?}");
+            assert!(
+                color.h <= 1e-5 || (1.0 - color.h) <= 1e-5,
+                "unexpected hue {color:?}"
+            );
             assert!((color.s - 0.5).abs() <= 1e-5);
             assert!((color.l - 0.6).abs() <= 1e-5);
             assert!((color.a - 0.7).abs() <= 1e-5);
