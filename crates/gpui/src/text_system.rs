@@ -7,6 +7,8 @@ mod line_wrapper;
 mod primitives;
 mod system;
 #[cfg(test)]
+mod font_run_tests;
+#[cfg(test)]
 mod tests;
 
 pub use font_fallbacks::*;
