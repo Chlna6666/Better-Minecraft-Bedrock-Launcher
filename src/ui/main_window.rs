@@ -449,21 +449,15 @@ impl MainWindowView {
             }
         };
         let route_key = route_enter_animation_key(route);
-        let translation = AnimationProperty::translation(
-            point(px(18.0 * transition_direction), px(0.0)),
-            point(px(0.0), px(0.0)),
+        // 整页含文字、路径和嵌套裁剪，不能只移动支持 scene animation 的部分图元。
+        let animated_page = div().size_full().child(page).with_animation(
+            route_key,
+            spring_motion(apple_spring(0.36, 0.74)),
+            move |page, progress| {
+                page.relative()
+                    .left(px(18.0 * transition_direction * (1.0 - progress)))
+            },
         );
-        // Keep the page's layout/static scene fixed. The complete subtree is rasterized once into
-        // a retained compositor layer, while the route spring only updates its final translation.
-        let animated_page = div()
-            .size_full()
-            .child(page)
-            .composite_layer()
-            .with_animation(
-                route_key,
-                spring_motion(apple_spring(0.36, 0.74)).with_property(translation),
-                |page, _progress| page,
-            );
         div()
             .absolute()
             .inset_0()
