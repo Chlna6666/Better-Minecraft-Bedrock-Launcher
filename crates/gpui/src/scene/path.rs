@@ -67,10 +67,16 @@ impl Path<Pixels> {
             order: self.order,
             bounds: self.bounds.scale(factor),
             content_mask: self.content_mask.scale(factor),
+            // Path vertices are created with a default mask and GPUI rasterizers consume the
+            // path-level mask. Avoid scaling the same large ContentMask once per vertex.
             vertices: self
                 .vertices
                 .iter()
-                .map(|vertex| vertex.scale(factor))
+                .map(|vertex| PathVertex {
+                    xy_position: vertex.xy_position.scale(factor),
+                    st_position: vertex.st_position,
+                    content_mask: Default::default(),
+                })
                 .collect(),
             start: self.start.map(|start| start.scale(factor)),
             current: self.current.scale(factor),
@@ -166,6 +172,10 @@ impl Path<ScaledPixels> {
         scale: f32,
         translation: Point<ScaledPixels>,
     ) -> Self {
+        if scale == 1.0 && translation == Point::default() {
+            return self;
+        }
+
         self.bounds = Bounds {
             origin: self.bounds.origin * scale + translation,
             size: self.bounds.size.map(|value| value * scale),
@@ -187,7 +197,6 @@ impl Path<ScaledPixels> {
         };
         for vertex in &mut self.vertices {
             vertex.xy_position = vertex.xy_position * scale + translation;
-            vertex.content_mask = self.content_mask.clone();
         }
         self.start = self.start * scale + translation;
         self.current = self.current * scale + translation;
