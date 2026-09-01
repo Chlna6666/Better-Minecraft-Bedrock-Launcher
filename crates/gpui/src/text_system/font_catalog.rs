@@ -51,6 +51,11 @@ impl FontCatalog {
             true
         }
     }
+
+    /// Compatibility spelling used by the text-system façade.
+    pub(super) fn set_fallback_font_families(&self, families: Vec<SharedString>) -> bool {
+        self.set_fallback_families(families)
+    }
 }
 
 fn default_fallback_families() -> Vec<SharedString> {
