@@ -8,7 +8,7 @@ indexing.
 ## Runtime Flow
 
 1. `MapViewerWindowView::refresh_render_session` opens a read-only
-   `BedrockWorld`, builds `MapRenderer`, and wraps it in `MapRenderSession`.
+   `World`, builds `MapRenderer`, and wraps it in `MapRenderSession`.
 2. Metadata indexing still runs in the background for bounds, markers, and
    overview status.
 3. `ensure_visible_tiles` plans only the current viewport and schedules missing
@@ -63,7 +63,7 @@ sampler. They are diagnostic hints, not a stable file format.
 
 ## Performance Notes
 
-- Do not block first paint on full `list_chunk_positions` metadata.
+- Do not block first paint on full `chunk_positions` metadata.
 - Prefer viewport tile batches over full map export in the GPUI window.
 - Keep `MapRenderSessionConfig::cull_missing_chunks` enabled for interactive
   viewing so missing chunks are skipped before bake.

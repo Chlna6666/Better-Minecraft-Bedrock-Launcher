@@ -80,8 +80,8 @@ a rename. Token similarity alone is insufficient.
   types may carry domain context when callers genuinely need it, such as
   `WindowOptions` or `ImageRenderSize`. Do not repeat a crate/module domain that
   is already visible at the effective public path; in `bedrock_world::world`,
-  prefer `World` and `OpenOptions` over `BedrockWorld` and
-  `BedrockWorldOpenOptions` unless a broader re-export would make the shorter
+  prefer `World` and `OpenOptions` over `World` and
+  `OpenOptions` unless a broader re-export would make the shorter
   name ambiguous.
 - Conventional suffixes such as `State`, `Context`, `Options`, `Config`,
   `Builder`, `Error`, and `Iterator` are valid when the type actually has that
