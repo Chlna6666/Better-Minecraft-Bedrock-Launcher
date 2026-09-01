@@ -63,6 +63,12 @@ struct BackdropBlurAnimationSample {
     radius: crate::ScaledPixels,
 }
 
+#[derive(Clone, Copy)]
+struct AnimatedPrimitiveSample {
+    visual_bounds: crate::Bounds<crate::ScaledPixels>,
+    backdrop_blur: Option<BackdropBlurAnimationSample>,
+}
+
 impl BackdropBlurAnimationSample {
     fn can_use_base_filter(self) -> bool {
         bounds_contains(self.base_bounds, self.sampled_bounds)
@@ -110,14 +116,14 @@ impl AnimatedUpload {
         size: DrawableSize,
     ) -> Option<BackdropBlurAnimationSample> {
         let resolved = resolve_animation_values(values);
-        self.sample_resolved(&resolved, size)
+        self.sample_resolved(&resolved, size).backdrop_blur
     }
 
     fn sample_resolved(
         &mut self,
         values: &ResolvedAnimationValues,
         size: DrawableSize,
-    ) -> Option<BackdropBlurAnimationSample> {
+    ) -> AnimatedPrimitiveSample {
         let mut primitive = self.primitive.clone();
         if let Some(value) = primitive
             .animation_id()
@@ -125,7 +131,8 @@ impl AnimatedUpload {
         {
             apply_resolved_value(&mut primitive, *value);
         }
-        let blur_sample = match (&self.primitive, &primitive) {
+        let visual_bounds = primitive.visual_bounds();
+        let backdrop_blur = match (&self.primitive, &primitive) {
             (Primitive::BackdropBlur(base), Primitive::BackdropBlur(sampled)) => {
                 Some(BackdropBlurAnimationSample {
                     index: self.index,
@@ -166,7 +173,10 @@ impl AnimatedUpload {
             }
             _ => {}
         }
-        blur_sample
+        AnimatedPrimitiveSample {
+            visual_bounds,
+            backdrop_blur,
+        }
     }
 
     fn animation_id(&self) -> Option<SceneAnimationId> {
@@ -175,20 +185,6 @@ impl AnimatedUpload {
 
     fn order(&self) -> u32 {
         self.primitive.order()
-    }
-
-    fn sampled_visual_bounds(
-        &self,
-        values: &ResolvedAnimationValues,
-    ) -> crate::Bounds<crate::ScaledPixels> {
-        let mut primitive = self.primitive.clone();
-        if let Some(value) = primitive
-            .animation_id()
-            .and_then(|animation_id| values.get(&animation_id))
-        {
-            apply_resolved_value(&mut primitive, *value);
-        }
-        primitive.visual_bounds()
     }
 
     pub(in crate::platform::nova) fn base_backdrop_blur(
@@ -225,8 +221,10 @@ impl FrameUpload {
         relevant_animation_ids.extend(current_animation_ids.iter().copied());
 
         let mut blur_samples = Vec::new();
+        let mut sampled_visual_bounds = Vec::with_capacity(self.animated_primitives.len());
         for primitive in &mut self.animated_primitives {
-            let blur_sample = primitive.sample_resolved(&resolved_animation_values, size);
+            let sample = primitive.sample_resolved(&resolved_animation_values, size);
+            sampled_visual_bounds.push(sample.visual_bounds);
             // GPU composite state always receives the sampled primitive. Filter planning does not
             // have to use these same bytes: root backdrop configs can independently select retained
             // base geometry, while element blur records keep base source bounds inside the record.
@@ -239,7 +237,7 @@ impl FrameUpload {
             };
             let offset = primitive.index as usize * primitive.bytes.len();
             buffer[offset..offset + primitive.bytes.len()].copy_from_slice(&primitive.bytes);
-            if let Some(sample) = blur_sample {
+            if let Some(sample) = sample.backdrop_blur {
                 blur_samples.push(sample);
             }
         }
@@ -282,23 +280,25 @@ impl FrameUpload {
                     continue;
                 }
                 let source_region = sample.base_source_region();
-                let blocked_by_other_animation = self.animated_primitives.iter().any(|other| {
-                    if other.base_backdrop_blur().is_some() && other.index == sample.index {
-                        return false;
-                    }
-                    let Some(other_animation_id) = other.animation_id() else {
-                        return false;
-                    };
-                    if Some(other_animation_id) == sample.animation_id
-                        || !relevant_animation_ids.contains(&other_animation_id)
-                        || other.order() >= sample.order
-                    {
-                        return false;
-                    }
-                    other
-                        .sampled_visual_bounds(&resolved_animation_values)
-                        .intersects(&source_region)
-                });
+                let blocked_by_other_animation = self
+                    .animated_primitives
+                    .iter()
+                    .zip(&sampled_visual_bounds)
+                    .any(|(other, other_bounds)| {
+                        if other.base_backdrop_blur().is_some() && other.index == sample.index {
+                            return false;
+                        }
+                        let Some(other_animation_id) = other.animation_id() else {
+                            return false;
+                        };
+                        if Some(other_animation_id) == sample.animation_id
+                            || !relevant_animation_ids.contains(&other_animation_id)
+                            || other.order() >= sample.order
+                        {
+                            return false;
+                        }
+                        other_bounds.intersects(&source_region)
+                    });
                 if !blocked_by_other_animation {
                     self.backdrop_blur_ignore_animation_damage_indices
                         .insert(sample.index);
