@@ -37,9 +37,19 @@ const fn build_alpha_norm_lut() -> [f32; 256] {
     lut
 }
 
+const fn build_alpha_divisor_lut() -> [f32; 256] {
+    let mut lut = build_alpha_norm_lut();
+    // A fully transparent premultiplied pixel has zero color channels. Dividing by one preserves
+    // those zeros and avoids a special branch in vector kernels; the original alpha byte is
+    // restored after unpremultiplication.
+    lut[0] = 1.0;
+    lut
+}
+
 // Match the historical scalar denominator exactly while avoiding a first divide inside every
 // vector loop. Using a reciprocal LUT would change a small number of 8-bit results by one LSB.
 const ALPHA_NORM_LUT: [f32; 256] = build_alpha_norm_lut();
+const ALPHA_DIVISOR_LUT: [f32; 256] = build_alpha_divisor_lut();
 
 /// Converts an in-place RGBA premultiplied-alpha pixel buffer to BGRA straight alpha.
 ///
@@ -135,7 +145,6 @@ unsafe fn avx2_buffer(buffer: &mut [u8]) {
         let mut offset = 0usize;
         let alpha_indices = _mm256_set_epi32(7, 7, 7, 7, 3, 3, 3, 3);
         let bgra_indices = _mm256_set_epi32(7, 4, 5, 6, 3, 0, 1, 2);
-        let one = _mm256_set1_ps(1.0);
         let zero_i = _mm256_setzero_si256();
         let min_i = _mm256_setzero_si256();
         let max_i = _mm256_set1_epi32(255);
@@ -155,6 +164,7 @@ unsafe fn avx2_buffer(buffer: &mut [u8]) {
             let alpha_norm = _mm256_set_ps(
                 alpha1, alpha1, alpha1, alpha1, alpha0, alpha0, alpha0, alpha0,
             );
+            let one = _mm256_set1_ps(1.0);
             let denominator = _mm256_blendv_ps(alpha_norm, one, _mm256_castsi256_ps(alpha_zero));
             let straight_f = _mm256_div_ps(rgba_f, denominator);
             let straight_i = _mm256_cvttps_epi32(straight_f);
@@ -214,45 +224,44 @@ unsafe fn sse2_buffer(buffer: &mut [u8]) {
 unsafe fn neon_buffer(buffer: &mut [u8]) {
     use std::arch::aarch64::*;
 
+    const BGRA_INDICES: [u8; 8] = [2, 1, 0, 3, 6, 5, 4, 7];
+    const ALPHA_MASK: [u8; 8] = [0, 0, 0, u8::MAX, 0, 0, 0, u8::MAX];
+
     unsafe {
         let mut offset = 0usize;
+        let bgra_indices = vld1_u8(BGRA_INDICES.as_ptr());
+        let alpha_mask = vld1_u8(ALPHA_MASK.as_ptr());
+        let zero8 = vdup_n_u8(0);
+
         while offset + 8 <= buffer.len() {
             let source = buffer.as_mut_ptr().add(offset);
-            let bytes = vld1_u8(source);
-            let words = vmovl_u8(bytes);
-            let low = vmovl_u16(vget_low_u16(words));
-            let high = vmovl_u16(vget_high_u16(words));
-            neon_pixel(source, low);
-            neon_pixel(source.add(4), high);
+            let rgba8 = vld1_u8(source);
+            let words = vmovl_u8(rgba8);
+            let low_i = vmovl_u16(vget_low_u16(words));
+            let high_i = vmovl_u16(vget_high_u16(words));
+
+            let low_f = vcvtq_f32_u32(low_i);
+            let high_f = vcvtq_f32_u32(high_i);
+            let alpha0 = usize::from(*source.add(3));
+            let alpha1 = usize::from(*source.add(7));
+            let low_divisor = vdupq_n_f32(ALPHA_DIVISOR_LUT[alpha0]);
+            let high_divisor = vdupq_n_f32(ALPHA_DIVISOR_LUT[alpha1]);
+            let low_straight = vcvtq_u32_f32(vdivq_f32(low_f, low_divisor));
+            let high_straight = vcvtq_u32_f32(vdivq_f32(high_f, high_divisor));
+
+            // Saturating narrowing reproduces Rust's float->u8 clamp while keeping the whole
+            // two-pixel result in vector registers.
+            let packed16 = vcombine_u16(vqmovn_u32(low_straight), vqmovn_u32(high_straight));
+            let straight_rgba8 = vqmovn_u16(packed16);
+            let table = vcombine_u8(straight_rgba8, zero8);
+            let bgra8 = vqtbl1_u8(table, bgra_indices);
+            // Unpremultiplication turns every non-zero alpha lane into 255. Restore the source
+            // alpha bytes after the RGBA->BGRA shuffle, including fully transparent pixels.
+            let result = vbsl_u8(alpha_mask, rgba8, bgra8);
+            vst1_u8(source, result);
             offset += 8;
         }
         scalar_buffer(&mut buffer[offset..]);
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn neon_pixel(pixel: *mut u8, rgba_i: std::arch::aarch64::uint32x4_t) {
-    use std::arch::aarch64::*;
-
-    unsafe {
-        let alpha = *pixel.add(3);
-        if alpha == 0 {
-            let red = *pixel;
-            *pixel = *pixel.add(2);
-            *pixel.add(2) = red;
-            return;
-        }
-        let rgba_f = vcvtq_f32_u32(rgba_i);
-        let alpha_norm = vdupq_n_f32(ALPHA_NORM_LUT[usize::from(alpha)]);
-        let straight_f = vdivq_f32(rgba_f, alpha_norm);
-        let straight_i = vcvtq_u32_f32(straight_f);
-        let mut lanes = [0u32; 4];
-        vst1q_u32(lanes.as_mut_ptr(), straight_i);
-        *pixel = lanes[2].min(255) as u8;
-        *pixel.add(1) = lanes[1].min(255) as u8;
-        *pixel.add(2) = lanes[0].min(255) as u8;
-        *pixel.add(3) = alpha;
     }
 }
 
@@ -287,6 +296,10 @@ mod tests {
             assert_eq!(
                 ALPHA_NORM_LUT[usize::from(alpha)].to_bits(),
                 (alpha as f32 / 255.0).to_bits()
+            );
+            assert_eq!(
+                ALPHA_DIVISOR_LUT[usize::from(alpha)].to_bits(),
+                (if alpha == 0 { 1.0 } else { alpha as f32 / 255.0 }).to_bits()
             );
         }
     }
