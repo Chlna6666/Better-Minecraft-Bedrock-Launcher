@@ -81,6 +81,9 @@ pub(in crate::platform::nova) struct FrameUpload {
     /// Parsed BeginBlur/EndBlur topology. Batches are static for a retained upload, so compute this
     /// once when blur configs refresh and let target planning/present/draw-step code borrow it.
     pub(in crate::platform::nova) blur_content_ranges_cache: Vec<BlurContentRange>,
+    /// Sorted unique element-blur indices derived from the same static topology. GPU target
+    /// compatibility checks can borrow this directly instead of collect + sort + dedup every frame.
+    pub(in crate::platform::nova) isolated_blur_source_indices_cache: Vec<u32>,
     /// Atlas textures sampled before the earliest blur barrier. This is derived only from the
     /// static retained batch stream and shared by renderer cache planning and present-time damage
     /// checks, so keep it behind Arc for cheap same-frame reuse without cloning hash buckets.
