@@ -2,6 +2,9 @@ use super::rgba::swap_rgba_pa_to_bgra;
 use crate::{CpuVectorLevel, cpu_vector_level};
 
 const VECTOR_MIN_BYTES: usize = 64;
+const PARALLEL_MIN_BYTES: usize = 16 * 1024 * 1024;
+const PARALLEL_MIN_BYTES_PER_WORKER: usize = 4 * 1024 * 1024;
+const MAX_PARALLEL_WORKERS: usize = 4;
 
 const fn build_alpha_norm_lut() -> [f32; 256] {
     let mut lut = [0.0; 256];
@@ -19,25 +22,72 @@ const ALPHA_NORM_LUT: [f32; 256] = build_alpha_norm_lut();
 
 /// Converts an in-place RGBA premultiplied-alpha pixel buffer to BGRA straight alpha.
 ///
-/// Large buffers use an ISA-specific vector path. Small buffers and unsupported CPUs retain the
-/// exact scalar conversion used historically by GPUI. Trailing bytes that do not form a complete
-/// RGBA pixel are left untouched.
+/// Medium and large buffers use an ISA-specific vector path. Very large buffers are split across
+/// a small number of scoped workers, and each worker still uses the best available SIMD kernel.
+/// Small buffers and unsupported CPUs retain the exact scalar conversion used historically by
+/// GPUI. Trailing bytes that do not form a complete RGBA pixel are left untouched.
 pub(crate) fn swap_rgba_pa_to_bgra_buffer(buffer: &mut [u8]) {
     let pixel_bytes = buffer.len() & !3;
     let (pixels, _) = buffer.split_at_mut(pixel_bytes);
-    if pixels.len() < VECTOR_MIN_BYTES {
-        scalar_buffer(pixels);
+    let workers = parallel_worker_count(pixels.len());
+    if workers > 1 {
+        parallel_buffer(pixels, workers);
+    } else {
+        serial_buffer(pixels);
+    }
+}
+
+#[inline]
+fn parallel_worker_count(buffer_len: usize) -> usize {
+    let cpus = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    parallel_worker_count_for(buffer_len, cpus)
+}
+
+#[inline]
+fn parallel_worker_count_for(buffer_len: usize, cpus: usize) -> usize {
+    if buffer_len < PARALLEL_MIN_BYTES || cpus < 3 {
+        return 1;
+    }
+
+    // Leave one logical CPU available for the UI/platform thread and cap fan-out so a large image
+    // decode cannot monopolize high-core-count desktops. Require enough bytes per worker to amortize
+    // scoped-thread creation and cache handoff costs.
+    cpus.saturating_sub(1)
+        .min(MAX_PARALLEL_WORKERS)
+        .min(buffer_len / PARALLEL_MIN_BYTES_PER_WORKER)
+        .max(1)
+}
+
+fn parallel_buffer(buffer: &mut [u8], workers: usize) {
+    debug_assert!(workers > 1);
+    // Keep every chunk aligned to both whole RGBA pixels and a cache line. The final chunk may be
+    // shorter but the caller already removed any incomplete pixel tail.
+    let target = buffer.len().div_ceil(workers);
+    let chunk_bytes = target.saturating_add(63) & !63;
+    std::thread::scope(|scope| {
+        for chunk in buffer.chunks_mut(chunk_bytes) {
+            scope.spawn(move || serial_buffer(chunk));
+        }
+    });
+}
+
+#[inline]
+fn serial_buffer(buffer: &mut [u8]) {
+    if buffer.len() < VECTOR_MIN_BYTES {
+        scalar_buffer(buffer);
         return;
     }
 
     match cpu_vector_level() {
         #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Avx2 => unsafe { avx2_buffer(pixels) },
+        CpuVectorLevel::Avx2 => unsafe { avx2_buffer(buffer) },
         #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Sse2 => unsafe { sse2_buffer(pixels) },
+        CpuVectorLevel::Sse2 => unsafe { sse2_buffer(buffer) },
         #[cfg(target_arch = "aarch64")]
-        CpuVectorLevel::Neon => unsafe { neon_buffer(pixels) },
-        _ => scalar_buffer(pixels),
+        CpuVectorLevel::Neon => unsafe { neon_buffer(buffer) },
+        _ => scalar_buffer(buffer),
     }
 }
 
@@ -214,6 +264,35 @@ mod tests {
                 (alpha as f32 / 255.0).to_bits()
             );
         }
+    }
+
+    #[test]
+    fn parallel_policy_keeps_small_and_low_core_work_serial() {
+        assert_eq!(parallel_worker_count_for(PARALLEL_MIN_BYTES - 4, 16), 1);
+        assert_eq!(parallel_worker_count_for(PARALLEL_MIN_BYTES, 2), 1);
+    }
+
+    #[test]
+    fn parallel_policy_caps_workers_and_leaves_one_cpu_free() {
+        assert_eq!(parallel_worker_count_for(PARALLEL_MIN_BYTES, 4), 3);
+        assert_eq!(parallel_worker_count_for(64 * 1024 * 1024, 32), 4);
+    }
+
+    #[test]
+    fn parallel_chunks_match_scalar_reference() {
+        let mut input = Vec::with_capacity(PARALLEL_MIN_BYTES);
+        while input.len() < PARALLEL_MIN_BYTES {
+            let alpha = ((input.len() / 4) % 256) as u8;
+            input.extend_from_slice(&[
+                alpha / 3,
+                alpha / 2,
+                alpha.saturating_sub(alpha / 4),
+                alpha,
+            ]);
+        }
+        let expected = scalar_reference(input.clone());
+        parallel_buffer(&mut input, 4);
+        assert_eq!(input, expected);
     }
 
     #[test]
