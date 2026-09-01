@@ -1,6 +1,7 @@
 mod background;
 mod batch;
 mod hsla;
+mod premultiplied;
 mod rgba;
 
 #[cfg(test)]
@@ -16,5 +17,6 @@ pub use hsla::{
     Hsla, black, blue, green, hsla, opaque_grey, red, transparent_black, transparent_white, white,
     yellow,
 };
+pub(crate) use premultiplied::swap_rgba_pa_to_bgra_buffer;
 pub(crate) use rgba::swap_rgba_pa_to_bgra;
 pub use rgba::{Rgba, rgb, rgba};
