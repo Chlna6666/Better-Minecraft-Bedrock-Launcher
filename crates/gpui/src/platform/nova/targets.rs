@@ -292,7 +292,11 @@ where
             // resolution even if stale quality metadata happens to carry a downsample factor.
             descriptor.size
         };
-        let pass_sizes = [horizontal_size, final_size];
+        let pass_sizes = if config.radius() > 0.0 {
+            [horizontal_size, final_size]
+        } else {
+            [final_size, final_size]
+        };
         let pass_count = blur_variant_level_count(config);
         let mut levels = Vec::with_capacity(pass_count);
         for (pass_index, target_size) in pass_sizes.into_iter().take(pass_count).enumerate() {
