@@ -2,6 +2,7 @@ use crate::ui::animation::{spring_bouncy, spring_motion};
 use crate::ui::components::input::Input;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
@@ -68,17 +69,15 @@ fn render_advanced_panel(
             state.game_ports_input.as_ref(),
             t!("Online.open_ports_placeholder"),
         ))
-        .composite_layer()
         .with_animation(
             "online-room-advanced-panel",
-            spring_motion(spring_bouncy()).with_property(AnimationProperty::scale_opacity(
-                0.985,
-                1.0,
-                0.0,
-                1.0,
-                TransformOrigin::CENTER,
-            )),
-            |panel, _progress| panel,
+            spring_motion(spring_bouncy()),
+            |panel, progress| {
+                panel
+                    .opacity(progress.clamp(0.0, 1.0))
+                    .relative()
+                    .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
+            },
         )
 }
 
