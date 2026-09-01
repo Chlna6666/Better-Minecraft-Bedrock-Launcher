@@ -1,9 +1,10 @@
 use super::*;
+use smallvec::SmallVec;
 
 /// One isolated element-blur content range in the flattened upload stream.
 ///
-/// The range excludes both marker batches. Ranges are returned deepest first so a child blur can
-/// be rendered and retained in its target before its parent source samples the child composite.
+/// The range excludes both marker batches. Ranges are stored deepest first so a child blur can be
+/// rendered and retained in its target before its parent source samples the child composite.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::platform::nova) struct BlurContentRange {
     pub(in crate::platform::nova) index: u32,
@@ -13,9 +14,15 @@ pub(in crate::platform::nova) struct BlurContentRange {
 }
 
 impl FrameUpload {
-    pub(in crate::platform::nova) fn blur_content_ranges(&self) -> Vec<BlurContentRange> {
-        let mut stack = Vec::<(u32, usize, usize)>::new();
-        let mut ranges = Vec::new();
+    /// Rebuild the parsed blur marker topology after the static batch stream changes.
+    ///
+    /// Present, target planning and draw-step construction all query this topology in the same
+    /// frame. Keeping it beside the retained batch stream prevents each consumer from reparsing the
+    /// BeginBlur/EndBlur stack and allocating another temporary Vec.
+    pub(in crate::platform::nova) fn refresh_blur_content_ranges(&mut self) {
+        let ranges = &mut self.blur_content_ranges_cache;
+        ranges.clear();
+        let mut stack: SmallVec<[(u32, usize, usize); 4]> = SmallVec::new();
 
         for (batch_index, batch) in self.batches.iter().enumerate() {
             match *batch {
@@ -52,12 +59,15 @@ impl FrameUpload {
         }
 
         ranges.sort_unstable_by_key(|range| (std::cmp::Reverse(range.depth), range.content_start));
-        ranges
     }
 
+    #[inline]
+    pub(in crate::platform::nova) fn blur_content_ranges(&self) -> &[BlurContentRange] {
+        &self.blur_content_ranges_cache
+    }
+
+    #[inline]
     pub(in crate::platform::nova) fn has_element_blurs(&self) -> bool {
-        self.batches
-            .iter()
-            .any(|batch| matches!(batch, UploadedBatch::BeginBlur { .. }))
+        !self.blur_content_ranges_cache.is_empty()
     }
 }
