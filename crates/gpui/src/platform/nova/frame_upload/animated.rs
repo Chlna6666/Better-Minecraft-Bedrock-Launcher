@@ -136,12 +136,39 @@ fn resolve_animation_values(values: &[SceneAnimationValue]) -> ResolvedAnimation
     ResolvedAnimationValues::new(values)
 }
 
+/// Metadata for one packed animated primitive record.
+///
+/// The bytes themselves live in FrameUpload's shared staging buffer and final packed primitive
+/// buffers. Keeping only the fixed record length here avoids one heap allocation per animated
+/// primitive while preserving the existing renderer range API.
+#[derive(Clone, Copy)]
+pub(in crate::platform::nova) struct AnimatedByteMetadata {
+    len: usize,
+}
+
+impl AnimatedByteMetadata {
+    #[inline]
+    const fn new(kind: AnimatedPrimitiveKind) -> Self {
+        Self { len: kind.stride() }
+    }
+
+    #[inline]
+    pub(in crate::platform::nova) const fn len(self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub(in crate::platform::nova) const fn capacity(self) -> usize {
+        0
+    }
+}
+
 /// A retained primitive and its small, independently uploadable animated range.
 /// Nova's current shaders consume primitive buffers, not the animation metadata.
 pub(in crate::platform::nova) struct AnimatedUpload {
     pub(in crate::platform::nova) kind: AnimatedPrimitiveKind,
     pub(in crate::platform::nova) index: u32,
-    pub(in crate::platform::nova) bytes: Vec<u8>,
+    pub(in crate::platform::nova) bytes: AnimatedByteMetadata,
     primitive: Primitive,
 }
 
@@ -188,35 +215,30 @@ impl AnimatedUpload {
             primitive,
             kind,
             index,
-            bytes: Vec::new(),
+            bytes: AnimatedByteMetadata::new(kind),
         }
     }
 
     pub(in crate::platform::nova) fn offset(&self) -> u64 {
-        let stride = match self.kind {
-            AnimatedPrimitiveKind::Quad => PACKED_QUAD_BYTES,
-            AnimatedPrimitiveKind::Shadow => PACKED_SHADOW_BYTES,
-            AnimatedPrimitiveKind::MonochromeSprite => PACKED_MONO_SPRITE_BYTES,
-            AnimatedPrimitiveKind::PolychromeSprite => PACKED_POLY_SPRITE_BYTES,
-            AnimatedPrimitiveKind::BackdropBlur => PACKED_BACKDROP_BLUR_BYTES,
-        };
-        u64::from(self.index) * stride as u64
+        u64::from(self.index) * self.kind.stride() as u64
     }
 
     #[cfg(test)]
     fn sample(
-        &mut self,
+        &self,
         values: &[SceneAnimationValue],
         size: DrawableSize,
+        bytes: &mut Vec<u8>,
     ) -> Option<BackdropBlurAnimationSample> {
         let resolved = resolve_animation_values(values);
-        self.sample_resolved(&resolved, size).backdrop_blur
+        self.sample_resolved(&resolved, size, bytes).backdrop_blur
     }
 
     fn sample_resolved(
-        &mut self,
+        &self,
         values: &ResolvedAnimationValues,
         size: DrawableSize,
+        bytes: &mut Vec<u8>,
     ) -> AnimatedPrimitiveSample {
         let mut primitive = self.primitive.clone();
         if let Some(value) = primitive
@@ -241,32 +263,25 @@ impl AnimatedUpload {
             }
             _ => None,
         };
-        self.bytes.clear();
+        bytes.clear();
         match primitive {
-            Primitive::Quad(quad) => write_quad(&mut self.bytes, &quad),
-            Primitive::Shadow(shadow) => write_shadow(&mut self.bytes, &shadow),
-            Primitive::MonochromeSprite(sprite) => {
-                write_monochrome_sprite(&mut self.bytes, &sprite)
-            }
-            Primitive::PolychromeSprite(sprite) => {
-                write_polychrome_sprite(&mut self.bytes, &sprite)
-            }
-            Primitive::BackdropBlur(blur) => write_backdrop_blur(&mut self.bytes, &blur, size),
+            Primitive::Quad(quad) => write_quad(bytes, &quad),
+            Primitive::Shadow(shadow) => write_shadow(bytes, &shadow),
+            Primitive::MonochromeSprite(sprite) => write_monochrome_sprite(bytes, &sprite),
+            Primitive::PolychromeSprite(sprite) => write_polychrome_sprite(bytes, &sprite),
+            Primitive::BackdropBlur(blur) => write_backdrop_blur(bytes, &blur, size),
             Primitive::Blur(blur) => {
-                write_paint_blur(&mut self.bytes, &blur, size);
+                write_paint_blur(bytes, &blur, size);
                 // Element/composite records deliberately use two geometries in one 136-byte record:
                 // the normal bounds slot remains the immutable source/filter footprint, while the
                 // auxiliary slot written by write_paint_blur contains the sampled display bounds.
                 if let Primitive::Blur(base) = &self.primitive {
-                    write_packed_bounds_at(
-                        &mut self.bytes,
-                        BLUR_SOURCE_BOUNDS_OFFSET,
-                        base.bounds,
-                    );
+                    write_packed_bounds_at(bytes, BLUR_SOURCE_BOUNDS_OFFSET, base.bounds);
                 }
             }
             _ => {}
         }
+        debug_assert_eq!(bytes.len(), self.bytes.len());
         AnimatedPrimitiveSample {
             visual_bounds,
             backdrop_blur,
@@ -300,7 +315,6 @@ impl AnimatedUpload {
 
 impl FrameUpload {
     pub(in crate::platform::nova) fn sample_animated_primitives(&mut self, size: DrawableSize) {
-        let previous_filter_dirty = self.backdrop_blur_filter_dirty_indices.clone();
         self.backdrop_blur_use_base_filter_indices.clear();
         self.backdrop_blur_ignore_animation_damage_indices.clear();
         self.backdrop_blur_passes_dirty_this_frame = false;
@@ -309,18 +323,31 @@ impl FrameUpload {
         // animation timelines (for example hundreds of glyphs sharing one retained transform), so
         // the old per-primitive linear search and interpolation scaled as O(primitives * values).
         let resolved_animation_values = resolve_animation_values(&self.sampled_animation_values);
-        let current_animation_ids: FxHashSet<_> = self
-            .sampled_animation_values
-            .iter()
-            .map(|value| value.animation_id)
-            .collect();
-        let mut relevant_animation_ids = self.backdrop_blur_previous_animation_ids.clone();
-        relevant_animation_ids.extend(current_animation_ids.iter().copied());
 
-        let mut blur_samples = Vec::new();
-        let mut sampled_visual_bounds = Vec::with_capacity(self.animated_primitives.len());
-        for primitive in &mut self.animated_primitives {
-            let sample = primitive.sample_resolved(&resolved_animation_values, size);
+        let mut current_animation_ids =
+            std::mem::take(&mut self.backdrop_blur_current_animation_ids_scratch);
+        current_animation_ids.clear();
+        current_animation_ids.extend(
+            self.sampled_animation_values
+                .iter()
+                .map(|value| value.animation_id),
+        );
+
+        let mut blur_samples: SmallVec<[BackdropBlurAnimationSample; 4]> = SmallVec::new();
+        let mut sampled_visual_bounds = std::mem::take(&mut self.animated_visual_bounds_scratch);
+        sampled_visual_bounds.clear();
+        sampled_visual_bounds.reserve(
+            self.animated_primitives
+                .len()
+                .saturating_sub(sampled_visual_bounds.capacity()),
+        );
+        let mut staging = std::mem::take(&mut self.animated_primitive_staging);
+        if staging.capacity() < PACKED_BACKDROP_BLUR_BYTES {
+            staging.reserve(PACKED_BACKDROP_BLUR_BYTES - staging.capacity());
+        }
+
+        for primitive in &self.animated_primitives {
+            let sample = primitive.sample_resolved(&resolved_animation_values, size, &mut staging);
             sampled_visual_bounds.push(sample.visual_bounds);
             // GPU composite state always receives the sampled primitive. Filter planning does not
             // have to use these same bytes: root backdrop configs can independently select retained
@@ -332,14 +359,19 @@ impl FrameUpload {
                 AnimatedPrimitiveKind::PolychromeSprite => &mut self.poly_sprites,
                 AnimatedPrimitiveKind::BackdropBlur => &mut self.backdrop_blurs,
             };
-            let offset = primitive.index as usize * primitive.bytes.len();
-            buffer[offset..offset + primitive.bytes.len()].copy_from_slice(&primitive.bytes);
+            let byte_len = primitive.bytes.len();
+            let offset = primitive.index as usize * byte_len;
+            debug_assert_eq!(staging.len(), byte_len);
+            buffer[offset..offset + byte_len].copy_from_slice(&staging);
             if let Some(sample) = sample.backdrop_blur {
                 blur_samples.push(sample);
             }
         }
+        self.animated_primitive_staging = staging;
 
-        let mut current_filter_dirty = FxHashSet::default();
+        let mut current_filter_dirty =
+            std::mem::take(&mut self.backdrop_blur_filter_dirty_scratch);
+        current_filter_dirty.clear();
         for sample in &blur_samples {
             if sample.can_use_base_filter() {
                 self.backdrop_blur_use_base_filter_indices
@@ -352,11 +384,16 @@ impl FrameUpload {
         // A filter that temporarily escaped the retained base footprint may have cleared pixels
         // needed by the base result. The first frame that re-enters the base footprint therefore
         // performs one restoring refresh using the base filter geometry.
-        let mut filter_refresh_indices = current_filter_dirty.clone();
-        for index in previous_filter_dirty.difference(&current_filter_dirty) {
+        let mut filter_refresh_indices =
+            std::mem::take(&mut self.backdrop_blur_filter_refresh_scratch);
+        filter_refresh_indices.clear();
+        filter_refresh_indices.extend(current_filter_dirty.iter().copied());
+        for index in self
+            .backdrop_blur_filter_dirty_indices
+            .difference(&current_filter_dirty)
+        {
             filter_refresh_indices.insert(*index);
         }
-        self.backdrop_blur_filter_dirty_indices = current_filter_dirty;
 
         if !filter_refresh_indices.is_empty() {
             // Keep ignore-self-damage empty while canonical configs are rebuilt so retained target
@@ -389,7 +426,10 @@ impl FrameUpload {
                             return false;
                         };
                         if Some(other_animation_id) == sample.animation_id
-                            || !relevant_animation_ids.contains(&other_animation_id)
+                            || !(current_animation_ids.contains(&other_animation_id)
+                                || self
+                                    .backdrop_blur_previous_animation_ids
+                                    .contains(&other_animation_id))
                             || other.order() >= sample.order
                         {
                             return false;
@@ -403,7 +443,19 @@ impl FrameUpload {
             }
         }
 
-        self.backdrop_blur_previous_animation_ids = current_animation_ids;
+        std::mem::swap(
+            &mut self.backdrop_blur_filter_dirty_indices,
+            &mut current_filter_dirty,
+        );
+        self.backdrop_blur_filter_dirty_scratch = current_filter_dirty;
+        self.backdrop_blur_filter_refresh_scratch = filter_refresh_indices;
+        self.animated_visual_bounds_scratch = sampled_visual_bounds;
+
+        std::mem::swap(
+            &mut self.backdrop_blur_previous_animation_ids,
+            &mut current_animation_ids,
+        );
+        self.backdrop_blur_current_animation_ids_scratch = current_animation_ids;
     }
 
     pub(in crate::platform::nova) fn animated_upload_bytes(&self) -> usize {
@@ -688,7 +740,7 @@ mod tests {
             animation_id: Some(id),
             ..Default::default()
         };
-        let mut upload = AnimatedUpload::new(Primitive::Quad(quad), AnimatedPrimitiveKind::Quad, 3);
+        let upload = AnimatedUpload::new(Primitive::Quad(quad), AnimatedPrimitiveKind::Quad, 3);
         let mut value = SceneAnimationValue {
             animation_id: id,
             property: TransitionProperty::Translation,
@@ -700,18 +752,14 @@ mod tests {
             width: 640,
             height: 480,
         };
-        upload.sample(&[value], size);
-        assert_eq!(
-            f32::from_le_bytes(upload.bytes[8..12].try_into().unwrap()),
-            12.0
-        );
+        let mut bytes = Vec::new();
+        upload.sample(&[value], size, &mut bytes);
+        assert_eq!(f32::from_le_bytes(bytes[8..12].try_into().unwrap()), 12.0);
         assert_eq!(upload.offset(), (3 * PACKED_QUAD_BYTES) as u64);
         value.progress = 0.5;
-        upload.sample(&[value], size);
-        assert_eq!(
-            f32::from_le_bytes(upload.bytes[8..12].try_into().unwrap()),
-            5.0
-        );
+        upload.sample(&[value], size, &mut bytes);
+        assert_eq!(f32::from_le_bytes(bytes[8..12].try_into().unwrap()), 5.0);
+        let expected = bytes.clone();
         let mut frame = FrameUpload {
             quads: vec![0; 4 * PACKED_QUAD_BYTES],
             animated_primitives: vec![upload],
@@ -723,11 +771,9 @@ mod tests {
             &frame.quads[..3 * PACKED_QUAD_BYTES],
             vec![0; 3 * PACKED_QUAD_BYTES]
         );
-        assert_eq!(
-            &frame.quads[3 * PACKED_QUAD_BYTES..],
-            frame.animated_primitives[0].bytes
-        );
+        assert_eq!(&frame.quads[3 * PACKED_QUAD_BYTES..], expected);
         assert_eq!(frame.animated_upload_bytes(), PACKED_QUAD_BYTES);
+        assert!(frame.animated_primitive_staging.capacity() >= PACKED_QUAD_BYTES);
     }
 
     #[test]
@@ -844,11 +890,12 @@ mod tests {
             opacity: 1.0,
             content: std::sync::Arc::new(crate::Scene::default()),
         };
-        let mut upload = AnimatedUpload::new(
+        let upload = AnimatedUpload::new(
             Primitive::Blur(blur),
             AnimatedPrimitiveKind::BackdropBlur,
             4,
         );
+        let mut bytes = Vec::new();
         upload.sample(
             &[SceneAnimationValue {
                 animation_id: id,
@@ -861,24 +908,19 @@ mod tests {
                 width: 640,
                 height: 480,
             },
+            &mut bytes,
         );
 
         assert_eq!(
-            read_packed_bounds_at(&upload.bytes, BLUR_SOURCE_BOUNDS_OFFSET),
+            read_packed_bounds_at(&bytes, BLUR_SOURCE_BOUNDS_OFFSET),
             [10.0, 20.0, 100.0, 80.0]
         );
         assert_ne!(
-            read_packed_bounds_at(&upload.bytes, BLUR_DISPLAY_BOUNDS_OFFSET),
+            read_packed_bounds_at(&bytes, BLUR_DISPLAY_BOUNDS_OFFSET),
             [10.0, 20.0, 100.0, 80.0]
         );
-        assert_eq!(
-            f32::from_ne_bytes(upload.bytes[112..116].try_into().unwrap()),
-            14.0
-        );
-        assert_eq!(
-            f32::from_ne_bytes(upload.bytes[128..132].try_into().unwrap()),
-            0.5
-        );
+        assert_eq!(f32::from_ne_bytes(bytes[112..116].try_into().unwrap()), 14.0);
+        assert_eq!(f32::from_ne_bytes(bytes[128..132].try_into().unwrap()), 0.5);
         assert_eq!(upload.offset(), (4 * PACKED_BACKDROP_BLUR_BYTES) as u64);
     }
 
