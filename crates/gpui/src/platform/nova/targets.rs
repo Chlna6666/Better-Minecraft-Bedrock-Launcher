@@ -36,10 +36,11 @@ pub(super) struct IsolatedBlurSource {
 #[derive(Clone)]
 pub(super) struct BackdropBlurVariantTargets {
     pub(super) config: BackdropBlurConfig,
-    /// Two separable Gaussian targets with axis-specific resolution:
+    /// Positive-radius Gaussian filters own two axis-specific targets:
     /// levels[0] = X-blurred target at `(W/downsample, H)`;
     /// levels[1] = Y-blurred final target at `(W/downsample, H/downsample)`.
-    /// This prevents vertical aliasing from shrinking Y before a vertical low-pass has run.
+    /// Zero-filter compositor layers own only levels[0], a full-resolution retained final texture;
+    /// they execute no Gaussian passes and render their captured subtree directly into that target.
     pub(super) levels: Vec<BackdropBlurLevelTarget>,
     pub(super) target_resource_sets: Vec<ResourceSetId>,
 }
@@ -73,6 +74,11 @@ fn blur_requires_isolated_source(configs: &[BackdropBlurConfig], index: u32) -> 
         .iter()
         .copied()
         .any(|config| config.contains_member_index(index) && config.radius() > 0.0)
+}
+
+#[inline]
+fn blur_variant_level_count(config: BackdropBlurConfig) -> usize {
+    if config.radius() > 0.0 { 2 } else { 1 }
 }
 
 impl BackdropBlurTargets {
@@ -126,11 +132,10 @@ impl BackdropBlurTargets {
                 .eq(next_isolated_source_indices.iter().copied().filter(|index| {
                     blur_requires_isolated_source(next, *index)
                 }))
-            && self
-                .variants
-                .iter()
-                .zip(next)
-                .all(|(variant, config)| variant.config.same_target_slot(*config))
+            && self.variants.iter().zip(next).all(|(variant, config)| {
+                variant.config.same_target_slot(*config)
+                    && variant.levels.len() == blur_variant_level_count(*config)
+            })
     }
 }
 
@@ -277,16 +282,23 @@ where
             descriptor.size.width().div_ceil(downsample).max(1),
             descriptor.size.height(),
         )?;
-        let final_size = Extent2d::new(
-            descriptor.size.width().div_ceil(downsample).max(1),
-            descriptor.size.height().div_ceil(downsample).max(1),
-        )?;
+        let final_size = if config.radius() > 0.0 {
+            Extent2d::new(
+                descriptor.size.width().div_ceil(downsample).max(1),
+                descriptor.size.height().div_ceil(downsample).max(1),
+            )?
+        } else {
+            // A direct compositor is a pixel cache, not a low-pass filter. Keep it at native
+            // resolution even if stale quality metadata happens to carry a downsample factor.
+            descriptor.size
+        };
         let pass_sizes = [horizontal_size, final_size];
-        let mut levels = Vec::with_capacity(pass_sizes.len());
-        for (pass_index, target_size) in pass_sizes.into_iter().enumerate() {
+        let pass_count = blur_variant_level_count(config);
+        let mut levels = Vec::with_capacity(pass_count);
+        for (pass_index, target_size) in pass_sizes.into_iter().take(pass_count).enumerate() {
             let target = create_render_texture_target(
                 device,
-                &format!("{label} backdrop gaussian variant {variant_index} pass {pass_index}"),
+                &format!("{label} backdrop variant {variant_index} target {pass_index}"),
                 target_size,
                 descriptor.format,
             )?;
@@ -294,7 +306,7 @@ where
             for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
                 pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
                     label: Some(format!(
-                        "{label} backdrop gaussian variant {variant_index} pass {pass_index} frame {frame_index} resource set"
+                        "{label} backdrop variant {variant_index} target {pass_index} frame {frame_index} resource set"
                     )),
                     layout: descriptor.pass_resource_set_layout,
                     bindings: backdrop_blur_pass_resource_bindings(
@@ -457,16 +469,4 @@ where
         texture,
         texture_view,
     })
-}
-
-fn destroy_render_texture_target<D>(device: &mut D, target: TextureTarget, backend_name: &str)
-where
-    D: BackendResources + BackendPipelines,
-{
-    if let Err(error) = device.destroy_texture_view(target.texture_view) {
-        log::debug!("failed to destroy {backend_name} texture target view: {error}");
-    }
-    if let Err(error) = device.destroy_texture(target.texture) {
-        log::debug!("failed to destroy {backend_name} texture target: {error}");
-    }
 }
