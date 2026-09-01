@@ -134,6 +134,15 @@ impl BackdropBlurConfig {
         self.owns(other)
     }
 
+    /// Returns whether this canonical target owns the packed blur primitive at `index`.
+    ///
+    /// This deliberately ignores source-group/reuse metadata. Target allocation uses it only to
+    /// decide whether an element-filter capture needs a separate source texture; the caller already
+    /// knows the queried index belongs to an element capture.
+    pub(in crate::platform::nova) fn contains_member_index(self, index: u32) -> bool {
+        index >= self.member_first && index <= self.member_last
+    }
+
     fn ignores_animation_damage(self) -> bool {
         self.order == BLUR_IGNORE_ANIMATION_DAMAGE_ORDER
             && self.order_last == BLUR_IGNORE_ANIMATION_DAMAGE_ORDER
