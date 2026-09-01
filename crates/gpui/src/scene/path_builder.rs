@@ -327,6 +327,10 @@ impl PathBuilder {
         let first_point = buffers.vertices[0];
 
         let mut path = Path::new(first_point.into());
+        // Tessellation has already produced the full triangle index stream, so reserve once before
+        // expanding indexed vertices into GPUI's triangle list. This avoids repeated Vec growth and
+        // copies for complex SVG/path geometry.
+        path.vertices.reserve(buffers.indices.len());
         for i in 0..buffers.indices.len() / 3 {
             let i0 = buffers.indices[i * 3] as usize;
             let i1 = buffers.indices[i * 3 + 1] as usize;
