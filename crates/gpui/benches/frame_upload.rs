@@ -1,7 +1,9 @@
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
-use gpui::benchmark::{AtlasPixelEncodingBenchmark, AtlasUploadBenchmark, FrameUploadBenchmark};
+use gpui::benchmark::{
+    AtlasPixelEncodingBenchmark, AtlasUploadBenchmark, FrameUploadBenchmark, MeshPackingBenchmark,
+};
 
 const QUAD_COUNTS: [usize; 3] = [128, 1_024, 8_192];
 const BLUR_COUNTS: [usize; 3] = [1, 16, 128];
@@ -9,9 +11,18 @@ const ATLAS_UPLOAD_COUNTS: [usize; 3] = [1, 8, 64];
 const ATLAS_TILE_SIZES: [u32; 3] = [1, 16, 64];
 const GLYPH_SIZES: [u32; 3] = [16, 32, 64];
 const GLYPH_PADDING: [u32; 3] = [0, 1, 2];
+const RGBA_PIXEL_WORKLOADS: [(usize, u32, u32); 6] = [
+    (16, 4, 4),
+    (32, 8, 4),
+    (64, 8, 8),
+    (256, 16, 16),
+    (1_024, 32, 32),
+    (65_536, 256, 256),
+];
+const MESH_VERTEX_COUNTS: [usize; 3] = [256, 1_024, 65_536];
 
 fn frame_upload(criterion: &mut Criterion) {
-    let mut quads = criterion.benchmark_group("frame_upload/retained_quads");
+    let mut quads = criterion.benchmark_group("frame_upload/scene_pack_time/quads");
     quads.sample_size(30);
     for primitive_count in QUAD_COUNTS {
         let mut frame = FrameUploadBenchmark::quads(primitive_count);
@@ -64,6 +75,23 @@ fn frame_upload(criterion: &mut Criterion) {
 
     let mut pixels = criterion.benchmark_group("frame_upload/atlas_pixels");
     pixels.sample_size(30);
+
+    for &(pixel_count, width, height) in &RGBA_PIXEL_WORKLOADS {
+        for padding in [0, 1, 2] {
+            pixels.throughput(Throughput::Bytes((pixel_count * 4) as u64));
+            let mut rgba_scalar = AtlasPixelEncodingBenchmark::rgba(width, height, padding);
+            pixels.bench_function(
+                format!("scalar/rgba_{pixel_count}_pixels_padding_{padding}"),
+                |bencher| bencher.iter(|| black_box(rgba_scalar.encode_scalar())),
+            );
+            let mut rgba_simd = AtlasPixelEncodingBenchmark::rgba(width, height, padding);
+            pixels.bench_function(
+                format!("fearless_simd/rgba_{pixel_count}_pixels_padding_{padding}"),
+                |bencher| bencher.iter(|| black_box(rgba_simd.encode_simd())),
+            );
+        }
+    }
+
     pixels.throughput(Throughput::Bytes(320 * 180 * 4));
     let mut rgba_unpadded = AtlasPixelEncodingBenchmark::rgba(320, 180, 0);
     pixels.bench_function("rgba_320x180_padding_0", |bencher| {
@@ -108,6 +136,32 @@ fn frame_upload(criterion: &mut Criterion) {
         }
     }
     subpixel.finish();
+
+    let mut meshes = criterion.benchmark_group("mesh_packing");
+    meshes.sample_size(30);
+    for vertex_count in MESH_VERTEX_COUNTS {
+        for uses_u16 in [true, false] {
+            let index_format = if uses_u16 { "u16" } else { "u32" };
+            meshes.throughput(Throughput::Elements(vertex_count as u64));
+            meshes.bench_with_input(
+                BenchmarkId::new(format!("scalar/{index_format}"), vertex_count),
+                &vertex_count,
+                |bencher, _| {
+                    let mut mesh = MeshPackingBenchmark::new(vertex_count, uses_u16);
+                    bencher.iter(|| black_box(mesh.pack_scalar()));
+                },
+            );
+            meshes.bench_with_input(
+                BenchmarkId::new(format!("fearless_simd/{index_format}"), vertex_count),
+                &vertex_count,
+                |bencher, _| {
+                    let mut mesh = MeshPackingBenchmark::new(vertex_count, uses_u16);
+                    bencher.iter(|| black_box(mesh.pack_simd()));
+                },
+            );
+        }
+    }
+    meshes.finish();
 }
 
 criterion_group!(gpui_frame_upload, frame_upload);

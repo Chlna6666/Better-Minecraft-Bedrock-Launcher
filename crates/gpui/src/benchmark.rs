@@ -1,12 +1,14 @@
 use crate::assets::AnimatedFrame;
 use crate::platform::{
     AtlasPixelEncodingBenchmarkCore, AtlasUploadBenchmarkCore, FrameUploadBenchmarkCore,
+    MeshPackingBenchmarkCore, PathPackingBenchmarkCore,
 };
 use crate::{
     AnimatedImageConfig, AvailableSpace, Bounds, ContentMask, EncodedImage, LayoutId,
-    PaintBackdropBlur, Pixels, Quad, RenderImage, ScaledPixels, Scene, Style, TaffyLayoutEngine,
-    VisualTestContext, acquire_bitmap_buffer_capacity, configure_global_bitmap_pool,
-    global_bitmap_pool, point, px, release_bitmap_buffer, size, trim_global_bitmap_pool_to,
+    PaintBackdropBlur, Path, Pixels, Quad, RenderImage, ScaledPixels, Scene, Style,
+    TaffyLayoutEngine, VisualTestContext, acquire_bitmap_buffer_capacity,
+    configure_global_bitmap_pool, global_bitmap_pool, point, px, release_bitmap_buffer, size,
+    trim_global_bitmap_pool_to,
 };
 use image::{Frame, ImageFormat, Rgba, RgbaImage};
 use std::{
@@ -19,8 +21,8 @@ pub struct BitmapPoolBenchmark;
 
 impl BitmapPoolBenchmark {
     /// Applies benchmark-local pool limits and clears retained buffers.
-    pub fn new(byte_limit: usize, max_buffer_bytes: usize) -> Self {
-        configure_global_bitmap_pool(byte_limit, max_buffer_bytes);
+    pub fn new(byte_limit: usize, _max_buffer_bytes: usize) -> Self {
+        configure_global_bitmap_pool(byte_limit);
         trim_global_bitmap_pool_to(0);
         Self
     }
@@ -121,6 +123,124 @@ pub struct AtlasPixelEncodingBenchmark {
     core: AtlasPixelEncodingBenchmarkCore,
 }
 
+/// Owns a path used to measure bulk device-space vertex transformation.
+pub struct PathTransformBenchmark {
+    path: Path<Pixels>,
+    requested_vertex_count: usize,
+}
+
+/// Owns a Nova scene used to measure path rasterization packing on cache misses.
+pub struct PathPackingBenchmark {
+    core: PathPackingBenchmarkCore,
+}
+
+/// Owns a CPU-only mesh conversion workload for packed vertex and index buffers.
+pub struct MeshPackingBenchmark {
+    core: MeshPackingBenchmarkCore,
+}
+
+fn benchmark_path(requested_vertex_count: usize) -> Path<Pixels> {
+    let mut path = Path::new(point(px(0.0), px(0.0)));
+    let triangle_count = requested_vertex_count.saturating_add(2) / 3;
+    for triangle_index in 0..triangle_count {
+        let base = triangle_index as f32 * 3.0;
+        path.push_triangle(
+            (
+                point(px(base), px(base * 0.5)),
+                point(px(base + 1.0), px(base * 0.5 + 1.0)),
+                point(px(base + 2.0), px(base * 0.5)),
+            ),
+            (point(0.0, 0.0), point(0.5, 1.0), point(1.0, 0.0)),
+        );
+    }
+    path.content_mask = ContentMask::new(path.bounds);
+    path
+}
+
+impl PathTransformBenchmark {
+    /// Creates a path with enough complete triangles to cover the requested vertex count.
+    pub fn new(requested_vertex_count: usize) -> Self {
+        Self {
+            path: benchmark_path(requested_vertex_count),
+            requested_vertex_count,
+        }
+    }
+
+    /// Transforms the path and returns the requested workload size.
+    pub fn transform(&self) -> usize {
+        let transformed = self.path.scale_and_transform_for_paint(
+            1.25,
+            0.875,
+            point(ScaledPixels(4.0), ScaledPixels(-3.0)),
+        );
+        std::hint::black_box(transformed);
+        self.requested_vertex_count
+    }
+
+    /// Transforms the same path with the scalar baseline.
+    pub fn transform_scalar(&self) -> usize {
+        let transformed = self.path.scale_and_transform_for_paint_scalar(
+            1.25,
+            0.875,
+            point(ScaledPixels(4.0), ScaledPixels(-3.0)),
+        );
+        std::hint::black_box(transformed);
+        self.requested_vertex_count
+    }
+
+    /// Transforms the same path with the runtime-selected Fearless SIMD path.
+    pub fn transform_simd(&self) -> usize {
+        let transformed = self.path.scale_and_transform_for_paint_simd(
+            1.25,
+            0.875,
+            point(ScaledPixels(4.0), ScaledPixels(-3.0)),
+        );
+        std::hint::black_box(transformed);
+        self.requested_vertex_count
+    }
+}
+
+impl PathPackingBenchmark {
+    /// Creates a path scene whose packed vertices are regenerated on every benchmark iteration.
+    pub fn new(requested_vertex_count: usize) -> Self {
+        let mut scene = Scene::default();
+        scene.insert_primitive(benchmark_path(requested_vertex_count).scale(1.0));
+        scene.finish();
+        Self {
+            core: PathPackingBenchmarkCore::new(scene),
+        }
+    }
+
+    /// Clears the path cache before encoding, forcing the cache-miss packing path.
+    pub fn encode_cache_miss(&mut self) -> usize {
+        self.core.encode_cache_miss()
+    }
+}
+
+impl MeshPackingBenchmark {
+    /// Creates a mesh conversion workload with either 16-bit or 32-bit output indices.
+    pub fn new(vertex_count: usize, uses_u16: bool) -> Self {
+        Self {
+            core: MeshPackingBenchmarkCore::new(vertex_count, uses_u16),
+        }
+    }
+
+    /// Rebuilds the packed vertex and index buffers and returns their byte lengths.
+    pub fn pack(&mut self) -> (usize, usize) {
+        self.core.pack()
+    }
+
+    /// Rebuilds the same mesh using the scalar index-packing baseline.
+    pub fn pack_scalar(&mut self) -> (usize, usize) {
+        self.core.pack_scalar()
+    }
+
+    /// Rebuilds the same mesh using the runtime-selected Fearless SIMD index packer.
+    pub fn pack_simd(&mut self) -> (usize, usize) {
+        self.core.pack_simd()
+    }
+}
+
 impl AtlasPixelEncodingBenchmark {
     /// Creates an RGBA-to-BGRA atlas workload with edge padding.
     pub fn rgba(width: u32, height: u32, padding: u32) -> Self {
@@ -153,6 +273,16 @@ impl AtlasPixelEncodingBenchmark {
     /// Rewrites the retained destination buffer and returns its byte length.
     pub fn encode(&mut self) -> usize {
         self.core.encode()
+    }
+
+    /// Rewrites an RGBA destination with the scalar channel-swap baseline.
+    pub fn encode_scalar(&mut self) -> usize {
+        self.core.encode_scalar()
+    }
+
+    /// Rewrites an RGBA destination with the runtime-selected Fearless SIMD path.
+    pub fn encode_simd(&mut self) -> usize {
+        self.core.encode_simd()
     }
 }
 
@@ -318,9 +448,7 @@ impl AnimationQueueBenchmark {
             queued_frames.into(),
             AnimatedImageConfig {
                 prefetch_frames: queued_frame_count.max(2),
-                prefetch_byte_limit: usize::MAX,
                 max_resident_frames: 1,
-                max_resident_bytes: 4,
                 ..AnimatedImageConfig::default()
             },
         );

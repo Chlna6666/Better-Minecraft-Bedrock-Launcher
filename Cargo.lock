@@ -3299,6 +3299,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fearless_simd"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4077,6 +4083,7 @@ dependencies = [
  "embed-resource",
  "env_logger",
  "etagere",
+ "fearless_simd",
  "filedescriptor",
  "flume",
  "foreign-types 0.5.0",
