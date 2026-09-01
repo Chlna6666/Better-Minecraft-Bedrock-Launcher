@@ -33,6 +33,22 @@ pub(crate) fn text_paint_style_eq(left: &TextStyle, right: &TextStyle) -> bool {
         && left.strikethrough == right.strikethrough
 }
 
+/// Returns whether the only semantic text-style change is the inherited foreground color.
+///
+/// This is intentionally stricter than "layout identity matches": backgrounds and text
+/// decorations also emit paint primitives and therefore still require an ordinary repaint. Cached
+/// views use this predicate only together with per-glyph provenance proving that their retained
+/// scene range is safe to recolor.
+pub(crate) fn text_foreground_only_change(left: &TextStyle, right: &TextStyle) -> bool {
+    left.color != right.color
+        && text_layout_style_eq(left, right)
+        && left.background_color == right.background_color
+        && left.background_corner_radius == right.background_corner_radius
+        && left.background_padding == right.background_padding
+        && left.underline == right.underline
+        && left.strikethrough == right.strikethrough
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +62,7 @@ mod tests {
 
         assert!(text_layout_style_eq(&left, &right));
         assert!(!text_paint_style_eq(&left, &right));
+        assert!(text_foreground_only_change(&left, &right));
     }
 
     #[test]
@@ -56,6 +73,7 @@ mod tests {
 
         assert!(!text_layout_style_eq(&left, &right));
         assert!(text_paint_style_eq(&left, &right));
+        assert!(!text_foreground_only_change(&left, &right));
     }
 
     #[test]
@@ -66,6 +84,7 @@ mod tests {
 
         assert!(text_layout_style_eq(&left, &right));
         assert!(!text_paint_style_eq(&left, &right));
+        assert!(!text_foreground_only_change(&left, &right));
     }
 
     #[test]
@@ -75,6 +94,7 @@ mod tests {
 
         assert!(text_layout_style_eq(&left, &right));
         assert!(text_paint_style_eq(&left, &right));
+        assert!(!text_foreground_only_change(&left, &right));
         assert_eq!(left, right);
     }
 }
