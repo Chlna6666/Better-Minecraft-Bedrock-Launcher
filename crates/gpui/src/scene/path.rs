@@ -67,15 +67,16 @@ impl Path<Pixels> {
             order: self.order,
             bounds: self.bounds.scale(factor),
             content_mask: self.content_mask.scale(factor),
-            // Path vertices are created with a default mask and GPUI rasterizers consume the
-            // path-level mask. Avoid scaling the same large ContentMask once per vertex.
+            // Rasterizers consume the path-level mask. The per-vertex field is only a tiny legacy
+            // marker retained for internal struct-literal compatibility, so scaling vertices now
+            // copies only xy/st data instead of duplicating a large ContentMask for every vertex.
             vertices: self
                 .vertices
                 .iter()
                 .map(|vertex| PathVertex {
                     xy_position: vertex.xy_position.scale(factor),
                     st_position: vertex.st_position,
-                    content_mask: Default::default(),
+                    content_mask: vertex.content_mask,
                 })
                 .collect(),
             start: self.start.map(|start| start.scale(factor)),
@@ -147,7 +148,7 @@ impl Path<Pixels> {
                         translation,
                     ),
                     st_position: vertex.st_position,
-                    content_mask: Default::default(),
+                    content_mask: vertex.content_mask,
                 })
                 .collect(),
             start: transform_point(self.start, device_scale, visual_scale, translation),
@@ -219,17 +220,17 @@ impl Path<Pixels> {
         self.vertices.push(PathVertex {
             xy_position: xy.0,
             st_position: st.0,
-            content_mask: Default::default(),
+            content_mask: 0,
         });
         self.vertices.push(PathVertex {
             xy_position: xy.1,
             st_position: st.1,
-            content_mask: Default::default(),
+            content_mask: 0,
         });
         self.vertices.push(PathVertex {
             xy_position: xy.2,
             st_position: st.2,
-            content_mask: Default::default(),
+            content_mask: 0,
         });
     }
 
@@ -297,7 +298,9 @@ impl From<Path<ScaledPixels>> for Primitive {
 pub(crate) struct PathVertex<P: Clone + Debug + Default + PartialEq> {
     pub(crate) xy_position: Point<P>,
     pub(crate) st_position: Point<f32>,
-    pub(crate) content_mask: ContentMask<P>,
+    /// Legacy marker retained only so existing internal struct literals remain source-compatible.
+    /// Path clipping is represented once on `Path::content_mask`; no renderer reads this field.
+    pub(crate) content_mask: u8,
 }
 
 impl PathVertex<Pixels> {
@@ -305,7 +308,7 @@ impl PathVertex<Pixels> {
         PathVertex {
             xy_position: self.xy_position.scale(factor),
             st_position: self.st_position,
-            content_mask: self.content_mask.scale(factor),
+            content_mask: self.content_mask,
         }
     }
 }
