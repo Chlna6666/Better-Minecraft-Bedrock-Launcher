@@ -176,7 +176,12 @@ pub(super) fn write_paint_blur(
     write_u32_vec(bytes, blur.order);
     write_u32_vec(bytes, 1);
     write_u32_vec(bytes, 1);
-    write_u32_vec(bytes, 0);
+    // A zero-radius PaintBlur is GPUI's retained compositor layer. Its target contains the cached
+    // subtree pixels themselves, so sharing that target with an adjacent compositor is unsafe:
+    // refreshing either layer begins with an attachment clear and would erase the other retained
+    // layer before the main pass samples it. Mark zero-filter layers as overlap-recompute slots so
+    // canonical blur-config merging keeps each compositor on an independent GPU target.
+    write_u32_vec(bytes, u32::from(blur.radius.0 <= 0.0));
     // Display bounds. Future composite-only animation may change these independently.
     write_bounds_scaled(bytes, &blur.bounds);
     write_content_mask(bytes, &blur.content_mask);
