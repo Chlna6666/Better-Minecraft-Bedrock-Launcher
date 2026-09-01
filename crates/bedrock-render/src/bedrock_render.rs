@@ -12,15 +12,18 @@ mod palette;
 mod renderer;
 
 pub use bedrock_world::{
-    BedrockWorld, ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk,
-    SurfaceMapColumn, SurfaceMapMaterial, SurfaceMapQueryOptions,
+    World,
     query::{ExactChunkSelection, SlimeChunkBounds},
+    surface::{
+        ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk, SurfaceMapColumn,
+        SurfaceMapMaterial, SurfaceMapQueryOptions,
+    },
 };
 pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
 pub use exact_selection::{
     ExactChunkRenderData, ExactChunkRenderPlan, ExactSurfaceRenderData,
-    load_exact_chunk_render_data_blocking, load_exact_surface_render_data_blocking,
+    load_exact_chunk_render_data, load_exact_surface_render_data,
 };
 pub use palette::{PaletteImportReport, RenderPalette, RgbaColor};
 #[cfg(feature = "async")]
@@ -51,7 +54,7 @@ pub use renderer::{
     TileAuthorityChunkTileRef, TileAuthorityCommit, TileAuthorityDependency, TileAuthorityEntry,
     TileAuthorityFreeExtent, TileAuthorityIndexSnapshot, TileOccupancyEntry, TileOccupancyIndex,
     TileOccupancyIndexRequest, TileOccupancyIndexResult, TileOccupancyIndexSource,
-    WorldCacheIdentity, load_or_build_tile_occupancy_index_blocking, render_backend_cache_slug,
+    WorldCacheIdentity, load_or_build_tile_occupancy_index, render_backend_cache_slug,
     render_cache_validation_seed_from_signature, render_gpu_backend_cache_slug,
     render_mode_cache_slug, render_preset_cache_signature, render_preset_cache_validation_seed,
     tile_occupancy_cache_path, tile_payload_fingerprint, validate_chunk_fingerprints_parallel,

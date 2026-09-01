@@ -111,7 +111,7 @@ bedrock_render_report case=surface_region_rgba_gpu_compare storage=generic backe
 
 当前本地基线在 2026-05-07 采集，系统为 Windows，默认 features，fixture 路径为
 `C:\Users\Administrator\Desktop\BE-Community-Dev\bedrock-world\tests\fixtures\sample-bedrock-world`。
-Criterion case 使用 typed `BedrockWorld<BedrockLevelDbStorage>` 构造；baked surface
+Criterion case 使用 typed `World<BedrockLevelDbStorage>` 构造；baked surface
 tile 使用 exact-batch world load；editor 场景通过 `MapWorldEditor` 只读打开同一 fixture。
 
 机器可读报告：
@@ -228,7 +228,7 @@ Each report line uses fixed `key=value` fields, including `storage`, `backend`,
 The v0.2.0 editor facade reports are emitted alongside the render reports:
 
 - `v02_overlay_query` records region overlay scan time and overlay counts.
-- `v02_map_scan` records typed map record scan time and count.
+- `v02_map_scan` records Bedrock map item scan time and count.
 - `v02_global_scan` records typed global scan time, scoreboard presence, and an
   `error` field when fixture data contains a record the parser rejects.
 - `v02_hsa_scan` records HSA chunk and area counts.
@@ -319,7 +319,7 @@ cargo bench --bench render --all-features
 Measured on 2026-05-07 on Windows in release Criterion mode with default
 features and fixture
 `C:\Users\Administrator\Desktop\BE-Community-Dev\bedrock-world\tests\fixtures\sample-bedrock-world`.
-This baseline uses typed `BedrockWorld<BedrockLevelDbStorage>` construction for
+This baseline uses typed `World<BedrockLevelDbStorage>` construction for
 the Criterion cases, the exact-batch world load path for baked surface tiles,
 and `MapWorldEditor` for v0.2.0 editor facade reports.
 

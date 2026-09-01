@@ -4,7 +4,7 @@ use bedrock_render::{
     RenderOptions, RenderPalette, RenderThreadingOptions, RenderTilePriority, TileReadySource,
     TileStreamEvent,
 };
-use bedrock_world::{BedrockWorld, BedrockWorldOpenOptions, Dimension};
+use bedrock_world::{World, OpenOptions, Dimension};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -37,9 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let world = Arc::new(BedrockWorld::open_blocking(
+    let world = Arc::new(World::open(
         &world_path,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     )?);
     let renderer = MapRenderer::new(world, RenderPalette::default());
     let session = MapRenderSession::new(
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let output_format = default_output_format();
     let cancel = RenderCancelFlag::new();
-    session.render_web_tiles_streaming_blocking(
+    session.render_web_tiles_streaming(
         &planned_tiles,
         RenderOptions {
             format: output_format,

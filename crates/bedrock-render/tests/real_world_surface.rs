@@ -3,7 +3,7 @@ use bedrock_render::{
     RenderPalette, RenderThreadingOptions, TileCoord,
 };
 use bedrock_world::{
-    BedrockWorld, BedrockWorldOpenOptions, ChunkData, ChunkLoadOptions, ChunkPos, Dimension,
+    World, OpenOptions, ChunkData, ChunkLoadOptions, ChunkPos, Dimension,
     ExactSurfaceBiomeLoad, ExactSurfaceSubchunkPolicy, NbtTag, SubChunkFormat,
     WorldThreadingOptions, read_level_dat_document,
 };
@@ -15,9 +15,9 @@ use std::sync::Arc;
 fn real_world_exact_surface_finds_secondary_storage_surface()
 -> Result<(), Box<dyn std::error::Error>> {
     let world_path = PathBuf::from("tests/fixtures/bedrock-world");
-    let world = Arc::new(BedrockWorld::open_blocking(
+    let world = Arc::new(World::open(
         &world_path,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     )?);
     let (spawn_chunk_x, spawn_chunk_z) = spawn_chunk(&world_path).unwrap_or((0, 0));
 
@@ -26,7 +26,7 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
         z: spawn_chunk_z - 3,
         dimension: Dimension::Overworld,
     };
-    let chunk = world.query_chunk_data_blocking(target_pos, exact_surface_options())?;
+    let chunk = world.query_chunk_data(target_pos, exact_surface_options())?;
     let surface = find_layered_surface_column(&chunk).ok_or_else(|| {
         format!("no secondary-storage exact surface column found in chunk {target_pos:?}")
     })?;
@@ -53,7 +53,7 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
         RenderMode::HeightMap,
         RenderMode::RawHeightMap,
     ] {
-        let tile = renderer.render_tile_with_options_blocking(
+        let tile = renderer.render_tile(
             RenderJob::chunk_tile(
                 TileCoord {
                     x: tile_x,
@@ -84,7 +84,7 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
 fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
 -> Result<(), Box<dyn std::error::Error>> {
     let world_path = PathBuf::from("tests/fixtures/bedrock-world");
-    let world = BedrockWorld::open_blocking(&world_path, BedrockWorldOpenOptions::default())?;
+    let world = World::open(&world_path, OpenOptions::default())?;
 
     for (block_x, block_z) in [(340_i32, 36_i32), (360_i32, 67_i32)] {
         let chunk_pos = ChunkPos {
@@ -94,7 +94,7 @@ fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
         };
         let local_x = u8::try_from(block_x.rem_euclid(16))?;
         let local_z = u8::try_from(block_z.rem_euclid(16))?;
-        let chunk = world.query_chunk_data_blocking(chunk_pos, exact_surface_options())?;
+        let chunk = world.query_chunk_data(chunk_pos, exact_surface_options())?;
         let subchunk = chunk
             .subchunks
             .get(&4)
@@ -106,7 +106,7 @@ fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
         );
 
         let raw_height = world
-            .get_height_at_blocking(chunk_pos, local_x, local_z)?
+            .height(chunk_pos, local_x, local_z)?
             .ok_or_else(|| format!("missing raw height at block ({block_x}, {block_z})"))?;
         assert!(
             raw_height > 63,
@@ -145,9 +145,9 @@ fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
 fn real_world_cobblestone_slab_aliases_render_consistently()
 -> Result<(), Box<dyn std::error::Error>> {
     let world_path = PathBuf::from("tests/fixtures/bedrock-world");
-    let world = Arc::new(BedrockWorld::open_blocking(
+    let world = Arc::new(World::open(
         &world_path,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     )?);
 
     for (block_x, block_z, expected_name) in [
@@ -163,7 +163,7 @@ fn real_world_cobblestone_slab_aliases_render_consistently()
         };
         let local_x = u8::try_from(block_x.rem_euclid(16))?;
         let local_z = u8::try_from(block_z.rem_euclid(16))?;
-        let chunk = world.query_chunk_data_blocking(chunk_pos, exact_surface_options())?;
+        let chunk = world.query_chunk_data(chunk_pos, exact_surface_options())?;
         let sample = chunk
             .column_sample_at(local_x, local_z)
             .ok_or_else(|| format!("missing exact surface at block ({block_x}, {block_z})"))?;
@@ -214,7 +214,7 @@ fn surface_pixel_for_block(
     let chunk_z = block_z.div_euclid(16);
     let local_x = u32::try_from(block_x.rem_euclid(16))?;
     let local_z = u32::try_from(block_z.rem_euclid(16))?;
-    let tile = renderer.render_tile_with_options_blocking(
+    let tile = renderer.render_tile(
         RenderJob::chunk_tile(
             TileCoord {
                 x: chunk_x,

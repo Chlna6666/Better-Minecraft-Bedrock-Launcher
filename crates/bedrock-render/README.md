@@ -112,7 +112,7 @@ let layout = RenderLayout {
     pixels_per_block: 1,
 };
 
-let tiles = renderer.render_region_tiles_blocking(
+let tiles = renderer.render_region_tiles(
     region,
     RenderMode::HeightMap,
     layout,
@@ -126,8 +126,8 @@ let tiles = renderer.render_region_tiles_blocking(
 )?;
 ```
 
-For examples and tools, prefer `bedrock_world::BedrockWorld::open_blocking` or
-`BedrockWorld::open` instead of constructing a LevelDB storage handle directly.
+For examples and tools, prefer `bedrock_world::World::open` or
+`World::open` instead of constructing a LevelDB storage handle directly.
 That enables automatic detection of old LevelDB `LegacyTerrain` worlds and
 read-only `chunks.dat` worlds.
 
@@ -143,9 +143,9 @@ render/UI invalidation summary.
 use bedrock_render::editor::{MapWorldEditor, WorldScanOptions};
 
 let editor = MapWorldEditor::open_writable("path/to/minecraftWorld")?;
-let hsa = editor.scan_hsa_records(WorldScanOptions::default())?;
+let hsa = editor.hardcoded_spawn_areas(WorldScanOptions::default())?;
 
-let invalidation = editor.delete_hsa_for_chunk(chunk_pos)?;
+let invalidation = editor.delete_hardcoded_spawn_areas(chunk_pos)?;
 if invalidation.refresh_overlays() {
     // reload overlays for the current viewport
 }
@@ -193,7 +193,7 @@ let region = ChunkRegion::new(dimension, -32, -32, 31, 31);
 let planned_tiles = MapRenderer::plan_region_tiles(region, RenderMode::SurfaceBlocks, layout)?;
 let cancel = RenderCancelFlag::new();
 
-session.render_web_tiles_streaming_blocking(
+session.render_web_tiles_streaming(
     &planned_tiles,
     RenderOptions {
         format: ImageFormat::WebP,
@@ -228,11 +228,11 @@ session.render_web_tiles_streaming_blocking(
 
 ### Migration: blocking batch to cancellable streaming
 
-Legacy callers that used `render_web_tiles_blocking` usually waited for an
+Legacy callers that used `render_web_tiles` usually waited for an
 entire batch before updating UI:
 
 ```rust
-renderer.render_web_tiles_blocking(&planned_tiles, options, |planned, tile| {
+renderer.render_web_tiles(&planned_tiles, options, |planned, tile| {
     write_tile(planned, tile)?;
     Ok(())
 })?;
@@ -243,7 +243,7 @@ Prefer a long-lived session and stream tile events into the frontend:
 ```rust
 let session = MapRenderSession::new(renderer, MapRenderSessionConfig::default());
 let cancel = RenderCancelFlag::new();
-session.render_web_tiles_streaming_blocking(
+session.render_web_tiles_streaming(
     &planned_tiles,
     RenderOptions {
         cancel: Some(cancel),
@@ -268,7 +268,7 @@ cargo run --example render_streaming_session -- <world_path>
 ```
 
 For UI image caches that want decoded pixels directly, use
-`render_web_tiles_streaming_blocking_v2`, `render_web_tiles_streaming_v2`, or
+`render_web_tiles_streaming_v2`, `render_web_tiles_streaming_v2`, or
 `render_web_tiles_streaming_channel_v2`. These emit `TileStreamEventV2::Ready`
 with `DecodedTileImage` pixels in `TilePixelFormat::Rgba8` by default, or
 `Bgra8` when requested through `RenderTileOutputOptions`.

@@ -41,16 +41,18 @@ use super::gpu::{GpuProcessResult, GpuRenderContext};
 use crate::error::{BedrockRenderError, Result};
 use crate::palette::{RenderPalette, RgbaColor};
 use bedrock_world::{
-    BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, BiomeDataRequirement, BlockPos,
-    BlockState, CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkData, ChunkDataRequest,
-    ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats, ChunkPos, Dimension,
-    ExactSurfaceSubchunkPolicy, LegacyBiomeSample, NbtTag, PartitionedWorldStorage,
+    BedrockLevelDbStorage, World, OpenOptions, BlockPos,
+    BlockState, ChunkPos, Dimension, LegacyBiomeSample, NbtTag, PartitionedWorldStorage,
     StorageCachePolicy, StoragePipelineOptions, StorageReadOptions, StorageScanMode,
     StorageThreadingOptions, StorageVisitorControl, SubChunk, SubChunkDecodeMode,
-    TerrainColumnBiome, TerrainColumnOverlay, TerrainColumnSample, TerrainColumnSamples,
-    WorldChunkQueryRegion, WorldChunkQueryRegionData, WorldChunkQueryRegionLoadOptions,
-    WorldPipelineOptions, WorldScanOptions, WorldStorage, WorldStorageHandle,
-    WorldThreadingOptions, terrain_surface_overlay_alpha,
+    WorldStorage, StorageBackend,
+};
+use bedrock_world::surface::{
+    BiomeDataRequirement, CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkData,
+    ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats,
+    ExactSurfaceSubchunkPolicy, Region, RegionLoad, RegionLoadOptions, TerrainColumnBiome,
+    TerrainColumnOverlay, TerrainColumnSample, TerrainColumnSamples, WorldPipelineOptions,
+    WorldScanOptions, WorldThreadingOptions, terrain_surface_overlay_alpha,
 };
 #[cfg(feature = "png")]
 use image::codecs::png::PngEncoder;
@@ -108,91 +110,91 @@ static TILE_CACHE_WRITE_ID: AtomicUsize = AtomicUsize::new(0);
 /// Source of render-ready chunk data used by [`MapRenderer`].
 pub trait RenderChunkSource: Send + Sync {
     /// Lists all chunks with records relevant to map rendering.
-    fn list_render_chunk_positions_blocking(
+    fn render_chunk_positions(
         &self,
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>>;
 
     /// Lists renderable chunks inside an inclusive chunk region.
-    fn list_chunk_positions_in_region_blocking(
+    fn region_chunk_positions(
         &self,
-        region: WorldChunkQueryRegion,
+        region: Region,
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>>;
 
     /// Loads render data for a region.
-    fn query_chunk_region_blocking(
+    fn query_chunk_region(
         &self,
-        region: WorldChunkQueryRegion,
-        options: WorldChunkQueryRegionLoadOptions,
-    ) -> Result<WorldChunkQueryRegionData>;
+        region: Region,
+        options: RegionLoadOptions,
+    ) -> Result<RegionLoad>;
 
     /// Loads render data for explicit chunks with stats.
-    fn query_chunk_data_with_stats_blocking(
+    fn query_chunk_data_with_stats(
         &self,
         positions: &[ChunkPos],
         options: ChunkLoadOptions,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)>;
 
     /// Loads render data for one chunk.
-    fn query_chunk_data_blocking(
+    fn query_chunk_data(
         &self,
         pos: ChunkPos,
         options: ChunkLoadOptions,
     ) -> Result<ChunkData>;
 }
 
-impl<S> RenderChunkSource for BedrockWorld<S>
+impl<S> RenderChunkSource for World<S>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
-    fn list_render_chunk_positions_blocking(
+    fn render_chunk_positions(
         &self,
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>> {
-        Ok(BedrockWorld::list_render_chunk_positions_blocking(
+        Ok(World::render_chunk_positions(
             self, options,
         )?)
     }
 
-    fn list_chunk_positions_in_region_blocking(
+    fn region_chunk_positions(
         &self,
-        region: WorldChunkQueryRegion,
+        region: Region,
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>> {
-        Ok(BedrockWorld::list_chunk_positions_in_region_blocking(
+        Ok(World::region_chunk_positions(
             self, region, options,
         )?)
     }
 
-    fn query_chunk_region_blocking(
+    fn query_chunk_region(
         &self,
-        region: WorldChunkQueryRegion,
-        options: WorldChunkQueryRegionLoadOptions,
-    ) -> Result<WorldChunkQueryRegionData> {
-        Ok(BedrockWorld::query_chunk_region_blocking(
+        region: Region,
+        options: RegionLoadOptions,
+    ) -> Result<RegionLoad> {
+        Ok(World::query_chunk_region(
             self, region, options,
         )?)
     }
 
-    fn query_chunk_data_with_stats_blocking(
+    fn query_chunk_data_with_stats(
         &self,
         positions: &[ChunkPos],
         options: ChunkLoadOptions,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)> {
-        Ok(BedrockWorld::query_chunk_data_with_stats_blocking(
+        Ok(World::query_chunk_data_with_stats(
             self,
             positions.iter().copied(),
             options,
         )?)
     }
 
-    fn query_chunk_data_blocking(
+    fn query_chunk_data(
         &self,
         pos: ChunkPos,
         options: ChunkLoadOptions,
     ) -> Result<ChunkData> {
-        Ok(BedrockWorld::query_chunk_data_blocking(self, pos, options)?)
+        Ok(World::query_chunk_data(self, pos, options)?)
     }
 }
 
@@ -534,7 +536,7 @@ impl ChunkRegion {
     }
 }
 
-impl From<ChunkRegion> for WorldChunkQueryRegion {
+impl From<ChunkRegion> for Region {
     fn from(region: ChunkRegion) -> Self {
         Self {
             dimension: region.dimension,
@@ -953,7 +955,7 @@ pub enum RenderExecutionProfile {
 impl RenderExecutionProfile {
     /// Resolves an automatic thread count for a work-item count.
     #[must_use]
-    pub fn default_auto_threads(self, work_items: usize) -> usize {
+    pub fn thread_count(self, work_items: usize) -> usize {
         let logical_threads = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1);
@@ -1832,7 +1834,7 @@ impl RenderThreadingOptions {
         match self {
             Self::Single => 1,
             Self::Fixed(threads) => threads.clamp(1, MAX_RENDER_THREADS),
-            Self::Auto => profile.default_auto_threads(work_items),
+            Self::Auto => profile.thread_count(work_items),
         }
     }
 
@@ -1991,7 +1993,7 @@ impl RenderTaskControl {
 #[derive(Clone)]
 pub struct LevelDbRenderSource {
     world_path: PathBuf,
-    world: Arc<BedrockWorld<BedrockLevelDbStorage>>,
+    world: Arc<World<BedrockLevelDbStorage>>,
     full_render_chunk_index: Arc<OnceLock<Arc<[ChunkPos]>>>,
 }
 
@@ -2013,10 +2015,10 @@ impl LevelDbRenderSource {
     pub fn open_read_only(world_path: impl AsRef<Path>) -> Result<Self> {
         let world_path = world_path.as_ref().to_path_buf();
         let storage = BedrockLevelDbStorage::open_read_only_best_effort(world_path.join("db"))?;
-        let world = Arc::new(BedrockWorld::from_typed_storage(
+        let world = Arc::new(World::from_typed_storage(
             world_path.clone(),
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         Ok(Self {
             world_path,
@@ -2027,16 +2029,16 @@ impl LevelDbRenderSource {
 }
 
 impl RenderChunkSource for LevelDbRenderSource {
-    fn list_render_chunk_positions_blocking(
+    fn render_chunk_positions(
         &self,
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>> {
         Ok(self.full_render_chunk_index(&options)?.as_ref().to_vec())
     }
 
-    fn list_chunk_positions_in_region_blocking(
+    fn region_chunk_positions(
         &self,
-        region: WorldChunkQueryRegion,
+        region: Region,
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>> {
         let width = i64::from(region.max_chunk_x) - i64::from(region.min_chunk_x) + 1;
@@ -2046,7 +2048,7 @@ impl RenderChunkSource for LevelDbRenderSource {
         if !should_use_full_render_chunk_index(area) {
             return Ok(self
                 .world
-                .list_chunk_positions_in_region_blocking(region, options)?);
+                .region_chunk_positions(region, options)?);
         }
         Ok(self
             .full_render_chunk_index(&options)?
@@ -2060,30 +2062,30 @@ impl RenderChunkSource for LevelDbRenderSource {
             .collect())
     }
 
-    fn query_chunk_region_blocking(
+    fn query_chunk_region(
         &self,
-        region: WorldChunkQueryRegion,
-        options: WorldChunkQueryRegionLoadOptions,
-    ) -> Result<WorldChunkQueryRegionData> {
-        Ok(self.world.query_chunk_region_blocking(region, options)?)
+        region: Region,
+        options: RegionLoadOptions,
+    ) -> Result<RegionLoad> {
+        Ok(self.world.query_chunk_region(region, options)?)
     }
 
-    fn query_chunk_data_with_stats_blocking(
+    fn query_chunk_data_with_stats(
         &self,
         positions: &[ChunkPos],
         options: ChunkLoadOptions,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)> {
         Ok(self
             .world
-            .query_chunk_data_with_stats_blocking(positions.iter().copied(), options)?)
+            .query_chunk_data_with_stats(positions.iter().copied(), options)?)
     }
 
-    fn query_chunk_data_blocking(
+    fn query_chunk_data(
         &self,
         pos: ChunkPos,
         options: ChunkLoadOptions,
     ) -> Result<ChunkData> {
-        Ok(self.world.query_chunk_data_blocking(pos, options)?)
+        Ok(self.world.query_chunk_data(pos, options)?)
     }
 }
 
@@ -4472,7 +4474,7 @@ pub enum TileStreamEventV2 {
 #[derive(Clone)]
 pub struct MapRenderSession<S = Arc<dyn WorldStorage>>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     renderer: MapRenderer<S>,
     cache: Arc<Mutex<TileCache>>,
@@ -4502,7 +4504,7 @@ impl MapRenderSession<Arc<dyn WorldStorage>> {
 
 impl<S> MapRenderSession<S>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     /// Creates a reusable session from an existing renderer.
     #[must_use]
@@ -4584,7 +4586,7 @@ where
     /// Rendered tile cache writes are queued after the tile is emitted to the
     /// stream, and cache write failures are logged.
     #[allow(clippy::too_many_lines)]
-    pub fn render_web_tiles_streaming_blocking<F>(
+    pub fn render_web_tiles_streaming<F>(
         &self,
         planned_tiles: &[PlannedTile],
         mut options: RenderOptions,
@@ -4942,7 +4944,7 @@ where
             let rendered_stream_count_for_sink = Arc::clone(&rendered_stream_count);
             let writer_dropped_for_sink = Arc::clone(&tile_cache_writer_dropped_count);
             for render_group in render_tiles.chunks(render_group_size) {
-                let rendered = self.renderer.render_web_tiles_blocking(
+                let rendered = self.renderer.render_web_tiles(
                     render_group,
                     options.clone(),
                     |planned, tile| {
@@ -5130,7 +5132,7 @@ where
     ///
     /// Returns an error if rendering, cancellation, cache decoding, or the sink fails.
     #[allow(clippy::too_many_lines)]
-    pub fn render_web_tiles_streaming_blocking_v2<F>(
+    pub fn render_web_tiles_streaming_v2<F>(
         &self,
         planned_tiles: &[PlannedTile],
         mut options: RenderOptions,
@@ -5142,7 +5144,7 @@ where
     {
         options.format = ImageFormat::Rgba;
         let sink = Arc::new(sink);
-        self.render_web_tiles_streaming_blocking(planned_tiles, options, {
+        self.render_web_tiles_streaming(planned_tiles, options, {
             let sink = Arc::clone(&sink);
             move |event| match event {
                 TileStreamEvent::Ready {
@@ -5171,13 +5173,13 @@ where
     }
 
     #[cfg(feature = "async")]
-    /// Runs [`MapRenderSession::render_web_tiles_streaming_blocking`] on a Tokio
+    /// Runs [`MapRenderSession::render_web_tiles_streaming`] on a Tokio
     /// blocking task.
     ///
     /// # Errors
     ///
     /// Returns an error if the blocking task fails or rendering fails.
-    pub async fn render_web_tiles_streaming<F>(
+    pub async fn render_web_tiles_streaming_async<F>(
         self: Arc<Self>,
         planned_tiles: Vec<PlannedTile>,
         options: RenderOptions,
@@ -5187,20 +5189,20 @@ where
         F: Fn(TileStreamEvent) -> Result<()> + Send + Sync + 'static,
     {
         tokio::task::spawn_blocking(move || {
-            self.render_web_tiles_streaming_blocking(&planned_tiles, options, sink)
+            self.render_web_tiles_streaming(&planned_tiles, options, sink)
         })
         .await
         .map_err(|error| BedrockRenderError::Join(error.to_string()))?
     }
 
     #[cfg(feature = "async")]
-    /// Runs [`MapRenderSession::render_web_tiles_streaming_blocking_v2`] on a Tokio
+    /// Runs [`MapRenderSession::render_web_tiles_streaming_v2`] on a Tokio
     /// blocking task.
     ///
     /// # Errors
     ///
     /// Returns an error if the blocking task fails or rendering fails.
-    pub async fn render_web_tiles_streaming_v2<F>(
+    pub async fn render_web_tiles_streaming_v2_async<F>(
         self: Arc<Self>,
         planned_tiles: Vec<PlannedTile>,
         options: RenderOptions,
@@ -5211,7 +5213,7 @@ where
         F: Fn(TileStreamEventV2) -> Result<()> + Send + Sync + 'static,
     {
         tokio::task::spawn_blocking(move || {
-            self.render_web_tiles_streaming_blocking_v2(&planned_tiles, options, output, sink)
+            self.render_web_tiles_streaming_v2(&planned_tiles, options, output, sink)
         })
         .await
         .map_err(|error| BedrockRenderError::Join(error.to_string()))?
@@ -5244,7 +5246,7 @@ where
                 })
             };
             if let Err(error) =
-                self.render_web_tiles_streaming_blocking(&planned_tiles, options, send_event)
+                self.render_web_tiles_streaming(&planned_tiles, options, send_event)
             {
                 log::warn!("tile stream task failed: {error}");
                 let message = error.to_string();
@@ -5290,7 +5292,7 @@ where
                     )
                 })
             };
-            if let Err(error) = self.render_web_tiles_streaming_blocking_v2(
+            if let Err(error) = self.render_web_tiles_streaming_v2(
                 &planned_tiles,
                 options,
                 output,
@@ -5424,7 +5426,7 @@ where
             let all_positions = self
                 .renderer
                 .source
-                .list_render_chunk_positions_blocking(scan_options)?;
+                .render_chunk_positions(scan_options)?;
             for pos in all_positions {
                 if regions
                     .get(&pos.dimension)
@@ -5438,7 +5440,7 @@ where
                 for pos in self
                     .renderer
                     .source
-                    .list_chunk_positions_in_region_blocking(region.into(), scan_options.clone())?
+                    .region_chunk_positions(region.into(), scan_options.clone())?
                 {
                     renderable_chunks.insert(pos);
                 }
@@ -5917,7 +5919,7 @@ fn tile_cache_entry_decision(
 #[derive(Clone)]
 pub struct MapRenderer<S = Arc<dyn WorldStorage>>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     source: Arc<dyn RenderChunkSource>,
     palette: Arc<RenderPalette>,
@@ -5928,11 +5930,11 @@ where
 
 impl<S> MapRenderer<S>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     /// Creates a renderer from a world handle and palette.
     #[must_use]
-    pub fn new(world: Arc<BedrockWorld<S>>, palette: impl Into<Arc<RenderPalette>>) -> Self {
+    pub fn new(world: Arc<World<S>>, palette: impl Into<Arc<RenderPalette>>) -> Self {
         Self::from_source(world, palette)
     }
 
@@ -5960,29 +5962,19 @@ where
         self
     }
 
-    /// Renders one tile with default options.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the job is invalid, world reads fail, rendering is cancelled,
-    /// or the requested output cannot be encoded.
-    pub fn render_tile_blocking(&self, job: RenderJob) -> Result<TileImage> {
-        self.render_tile_with_options_blocking(job, &RenderOptions::default())
-    }
-
     /// Renders one tile with explicit options.
     ///
     /// # Errors
     ///
     /// Returns an error if the job/options are invalid, world reads fail, rendering is
     /// cancelled, or the requested output cannot be encoded.
-    pub fn render_tile_with_options_blocking(
+    pub fn render_tile(
         &self,
         job: RenderJob,
         options: &RenderOptions,
     ) -> Result<TileImage> {
         validate_job(&job)?;
-        self.render_tile_from_bake_blocking(job, options)
+        self.render_tile_from_bake(job, options)
     }
 
     /// Renders a batch of tiles.
@@ -5992,7 +5984,7 @@ where
     /// Returns an error if any tile fails, rendering is cancelled, or the thread options
     /// are invalid.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn render_tiles_blocking(
+    pub fn render_tiles(
         &self,
         jobs: impl IntoIterator<Item = RenderJob>,
         options: RenderOptions,
@@ -6007,17 +5999,17 @@ where
             let mut tiles = Vec::with_capacity(total_tiles);
             for job in jobs {
                 check_cancelled(&options)?;
-                tiles.push(self.render_tile_with_options_blocking(job, &options)?);
+                tiles.push(self.render_tile(job, &options)?);
                 emit_progress(&options, tiles.len(), total_tiles);
             }
             return Ok(tiles);
         }
 
-        self.render_tiles_from_shared_bakes_blocking(&jobs, &options)
+        self.render_tiles_from_shared_bakes(&jobs, &options)
     }
 
     #[allow(clippy::too_many_lines)]
-    fn render_tiles_from_shared_bakes_blocking(
+    fn render_tiles_from_shared_bakes(
         &self,
         jobs: &[RenderJob],
         options: &RenderOptions,
@@ -6098,7 +6090,7 @@ where
                             return;
                         }
                         let result = renderer
-                            .load_render_chunk_data_with_options_blocking(
+                            .load_render_chunk_data_with_options(
                                 key.pos, key.mode, &options,
                             )
                             .map(|data| (key, data));
@@ -6153,7 +6145,7 @@ where
                 scope.spawn(move |_| {
                     for task in compose_receiver {
                         let result = renderer
-                            .render_tile_from_chunk_bakes_blocking(
+                            .render_tile_from_chunk_bakes(
                                 task.job,
                                 &options,
                                 &task.bakes,
@@ -6196,7 +6188,7 @@ where
                         let (tile_bakes, diagnostics) =
                             collect_tile_chunk_bakes(&tile_dependencies[tile_index], &bakes)?;
                         if compose_count == 0 {
-                            let tile = self.render_tile_from_chunk_bakes_blocking(
+                            let tile = self.render_tile_from_chunk_bakes(
                                 jobs[tile_index].clone(),
                                 options,
                                 &tile_bakes,
@@ -6347,7 +6339,7 @@ where
     ///
     /// Returns an error if planning, rendering, encoding, cancellation, or result
     /// aggregation fails.
-    pub fn render_region_tiles_blocking(
+    pub fn render_region_tiles(
         &self,
         region: ChunkRegion,
         mode: RenderMode,
@@ -6356,7 +6348,7 @@ where
     ) -> Result<TileSet> {
         let planned_tiles = Self::plan_region_tiles(region, mode, layout)?;
         let tiles = Arc::new(Mutex::new(Vec::with_capacity(planned_tiles.len())));
-        self.render_tiles_from_regions_blocking(&planned_tiles, options, {
+        self.render_tiles_from_regions(&planned_tiles, options, {
             let tiles = Arc::clone(&tiles);
             move |_planned, tile| {
                 tiles
@@ -6388,13 +6380,13 @@ where
     /// # Errors
     ///
     /// Returns an error if any tile render fails.
-    pub fn render_region_blocking(
+    pub fn render_region(
         &self,
         jobs: impl IntoIterator<Item = RenderJob>,
         options: RenderOptions,
     ) -> Result<TileSet> {
         Ok(TileSet {
-            tiles: self.render_tiles_blocking(jobs, options)?,
+            tiles: self.render_tiles(jobs, options)?,
         })
     }
 
@@ -6403,7 +6395,7 @@ where
     /// # Errors
     ///
     /// Returns an error if the region layout is invalid, world reads fail, or baking is cancelled.
-    pub fn bake_region_blocking(
+    pub fn bake_region(
         &self,
         coord: RegionCoord,
         options: &RenderOptions,
@@ -6411,10 +6403,10 @@ where
     ) -> Result<RegionBake> {
         options.region_layout.validate()?;
         let chunk_region = coord.chunk_region(options.region_layout);
-        self.bake_region_chunk_region_blocking(coord, chunk_region, options, mode)
+        self.bake_region_chunk_region(coord, chunk_region, options, mode)
     }
 
-    fn bake_region_chunk_region_blocking(
+    fn bake_region_chunk_region(
         &self,
         coord: RegionCoord,
         chunk_region: ChunkRegion,
@@ -6422,7 +6414,7 @@ where
         mode: RenderMode,
     ) -> Result<RegionBake> {
         options.region_layout.validate()?;
-        let world_region = WorldChunkQueryRegion {
+        let world_region = Region {
             dimension: chunk_region.dimension,
             min_chunk_x: chunk_region.min_chunk_x,
             min_chunk_z: chunk_region.min_chunk_z,
@@ -6430,16 +6422,16 @@ where
             max_chunk_z: chunk_region.max_chunk_z,
         };
         let threading = render_world_threading(options, render_chunk_region_area(&chunk_region)?)?;
-        let data = self.source.query_chunk_region_blocking(
+        let data = self.source.query_chunk_region(
             world_region,
-            WorldChunkQueryRegionLoadOptions {
+            RegionLoadOptions {
                 data_request: render_chunk_request_for_options(mode, options),
                 subchunk_decode: render_subchunk_decode_mode(mode),
                 threading,
                 pipeline: options.cpu.to_world_pipeline(),
                 cancel: render_world_cancel(options),
                 priority: render_chunk_priority_for_region(options, chunk_region),
-                ..WorldChunkQueryRegionLoadOptions::default()
+                ..RegionLoadOptions::default()
             },
         )?;
         let load_stats = data.stats;
@@ -6453,7 +6445,7 @@ where
         )
     }
 
-    fn bake_region_chunk_positions_blocking(
+    fn bake_region_chunk_positions(
         &self,
         coord: RegionCoord,
         chunk_region: ChunkRegion,
@@ -6465,7 +6457,7 @@ where
         options.region_layout.validate()?;
         let threading =
             render_world_threading_with_budget(options, chunk_positions.len(), world_workers);
-        let (data, load_stats) = self.source.query_chunk_data_with_stats_blocking(
+        let (data, load_stats) = self.source.query_chunk_data_with_stats(
             chunk_positions,
             ChunkLoadOptions {
                 data_request: render_chunk_request_for_options(mode, options),
@@ -6609,7 +6601,7 @@ where
     /// Returns an error if region baking, tile composition, encoding, cancellation,
     /// or the sink callback fails.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn render_tiles_from_regions_blocking<F>(
+    pub fn render_tiles_from_regions<F>(
         &self,
         planned_tiles: &[PlannedTile],
         options: RenderOptions,
@@ -6618,7 +6610,7 @@ where
     where
         F: Fn(PlannedTile, TileImage) -> Result<()> + Send + Sync,
     {
-        self.render_web_regions_blocking(planned_tiles, &options, sink)
+        self.render_web_regions(planned_tiles, &options, sink)
     }
 
     /// Renders web-map planned tiles and streams each tile to a sink.
@@ -6628,7 +6620,7 @@ where
     /// Returns an error if region baking, tile composition, encoding, cancellation,
     /// or the sink callback fails.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn render_web_tiles_blocking<F>(
+    pub fn render_web_tiles<F>(
         &self,
         planned_tiles: &[PlannedTile],
         options: RenderOptions,
@@ -6637,10 +6629,10 @@ where
     where
         F: Fn(PlannedTile, TileImage) -> Result<()> + Send + Sync,
     {
-        self.render_web_regions_blocking(planned_tiles, &options, sink)
+        self.render_web_regions(planned_tiles, &options, sink)
     }
 
-    fn render_web_regions_blocking<F>(
+    fn render_web_regions<F>(
         &self,
         planned_tiles: &[PlannedTile],
         options: &RenderOptions,
@@ -6831,7 +6823,7 @@ where
                         };
                         let started = Instant::now();
                         let result = renderer
-                            .bake_region_chunk_positions_blocking(
+                            .bake_region_chunk_positions(
                                 plan.key.coord,
                                 plan.region,
                                 &plan.chunk_positions,
@@ -7016,27 +7008,27 @@ where
     /// # Errors
     ///
     /// Returns an error if the chunk cannot be loaded or decoded for the requested mode.
-    pub fn bake_chunk_blocking(&self, pos: ChunkPos, options: BakeOptions) -> Result<ChunkBake> {
-        let data = self.load_render_chunk_data_blocking(pos, options.mode)?;
+    pub fn bake_chunk(&self, pos: ChunkPos, options: BakeOptions) -> Result<ChunkBake> {
+        let data = self.load_render_chunk_data(pos, options.mode)?;
         self.bake_chunk_data(data, options)
     }
 
-    fn load_render_chunk_data_blocking(
+    fn load_render_chunk_data(
         &self,
         pos: ChunkPos,
         mode: RenderMode,
     ) -> Result<ChunkData> {
         self.source
-            .query_chunk_data_blocking(pos, render_chunk_load_options(mode))
+            .query_chunk_data(pos, render_chunk_load_options(mode))
     }
 
-    fn load_render_chunk_data_with_options_blocking(
+    fn load_render_chunk_data_with_options(
         &self,
         pos: ChunkPos,
         mode: RenderMode,
         options: &RenderOptions,
     ) -> Result<ChunkData> {
-        self.source.query_chunk_data_blocking(
+        self.source.query_chunk_data(
             pos,
             ChunkLoadOptions {
                 data_request: render_chunk_request_for_options(mode, options),
@@ -7081,7 +7073,7 @@ where
     /// Returns an error if the job is invalid, chunk loading or baking fails, rendering is
     /// cancelled, or image encoding fails.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn render_tile_from_bake_blocking(
+    pub fn render_tile_from_bake(
         &self,
         job: RenderJob,
         options: &RenderOptions,
@@ -7109,7 +7101,7 @@ where
         };
         let (chunk_data, _stats) = self
             .source
-            .query_chunk_data_with_stats_blocking(&positions, load_options)?;
+            .query_chunk_data_with_stats(&positions, load_options)?;
         let mut diagnostics = RenderDiagnostics::default();
         let mut bakes = BTreeMap::new();
         for data in chunk_data {
@@ -7118,11 +7110,11 @@ where
             diagnostics.add(bake.diagnostics.clone());
             bakes.insert(bake.pos, bake);
         }
-        self.render_tile_from_chunk_bakes_blocking(job, options, &bakes, diagnostics)
+        self.render_tile_from_chunk_bakes(job, options, &bakes, diagnostics)
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    fn render_tile_from_chunk_bakes_blocking(
+    fn render_tile_from_chunk_bakes(
         &self,
         job: RenderJob,
         options: &RenderOptions,
@@ -7165,9 +7157,9 @@ where
     /// # Errors
     ///
     /// Returns an error if the blocking task fails or if tile rendering fails.
-    pub async fn render_tile(&self, job: RenderJob) -> Result<TileImage> {
+    pub async fn render_tile_async(&self, job: RenderJob) -> Result<TileImage> {
         let renderer = self.clone();
-        tokio::task::spawn_blocking(move || renderer.render_tile_blocking(job))
+        tokio::task::spawn_blocking(move || renderer.render_tile(job, &RenderOptions::default()))
             .await
             .map_err(|error| BedrockRenderError::Join(error.to_string()))?
     }
@@ -7178,13 +7170,13 @@ where
     /// # Errors
     ///
     /// Returns an error if the blocking task fails or if batch rendering fails.
-    pub async fn render_tiles(
+    pub async fn render_tiles_async(
         &self,
         jobs: Vec<RenderJob>,
         options: RenderOptions,
     ) -> Result<Vec<TileImage>> {
         let renderer = self.clone();
-        tokio::task::spawn_blocking(move || renderer.render_tiles_blocking(jobs, options))
+        tokio::task::spawn_blocking(move || renderer.render_tiles(jobs, options))
             .await
             .map_err(|error| BedrockRenderError::Join(error.to_string()))?
     }
@@ -7756,7 +7748,7 @@ fn compose_region_tile_cpu<S>(
     pixel_count: usize,
 ) -> Result<(Vec<u8>, RenderDiagnostics)>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     if block_volume_enabled_for(job.mode, options.surface, job)
         || atlas_enabled_for(job.mode, options.surface, job)
@@ -7805,7 +7797,7 @@ fn compose_tile_from_chunk_bakes_cpu<S>(
     pixel_count: usize,
 ) -> Result<Vec<u8>>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     if block_volume_enabled_for(job.mode, options.surface, job)
         || atlas_enabled_for(job.mode, options.surface, job)
@@ -10927,7 +10919,7 @@ fn render_web_tile_indexes<S, F>(
     sink: &F,
 ) -> Result<TileComposeStats>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
     F: Fn(PlannedTile, TileImage) -> Result<()> + Send + Sync,
 {
     if tile_indexes.is_empty() {
@@ -12286,7 +12278,7 @@ fn biome_storage_bucket_y(y: i32) -> i32 {
     y.div_euclid(16) * 16
 }
 
-fn local_biome_y(storage: &bedrock_world::ParsedBiomeStorage, y: i32) -> Result<u8> {
+fn local_biome_y(storage: &bedrock_world::BiomeStorage, y: i32) -> Result<u8> {
     let local_y = if let Some(start_y) = storage.y {
         y - start_y
     } else {
@@ -12796,7 +12788,7 @@ mod tests {
     use super::*;
     use bedrock_leveldb::{Db, LevelDbOpenOptions};
     use bedrock_world::{
-        BedrockWorldOpenOptions, ChunkKey, ChunkRecordTag, MemoryStorage, NbtTag, WorldStorage,
+        OpenOptions, ChunkKey, ChunkRecordTag, MemoryStorage, NbtTag, WorldStorage,
         block_storage_index,
     };
     use indexmap::IndexMap;
@@ -13007,7 +12999,7 @@ mod tests {
             max_chunk_z: 0,
         };
         let first = source
-            .list_chunk_positions_in_region_blocking(region.into(), WorldScanOptions::default())
+            .region_chunk_positions(region.into(), WorldScanOptions::default())
             .expect("first full index query");
         let first_index = Arc::clone(
             source
@@ -13016,7 +13008,7 @@ mod tests {
                 .expect("cached full index"),
         );
         let second = source
-            .list_chunk_positions_in_region_blocking(region.into(), WorldScanOptions::default())
+            .region_chunk_positions(region.into(), WorldScanOptions::default())
             .expect("second full index query");
         let second_index = source
             .full_render_chunk_index
@@ -13103,10 +13095,10 @@ mod tests {
                 &test_data2d_bytes(64, 4),
             )
             .expect("put renderable chunk marker");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let session = MapRenderSession::new(
             MapRenderer::new(world, RenderPalette::default()),
@@ -13234,7 +13226,7 @@ mod tests {
 
     #[test]
     fn render_modes_declare_composable_world_data_requirements() {
-        use bedrock_world::SubchunkDataRequirement;
+        use bedrock_world::surface::SubchunkDataRequirement;
 
         let surface = render_chunk_request(RenderMode::SurfaceBlocks);
         assert!(surface.block_entities);
@@ -13945,10 +13937,10 @@ mod tests {
 
     #[test]
     fn web_tile_pipeline_bakes_shared_chunks_once() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let layout = ChunkTileLayout::default();
@@ -13962,7 +13954,7 @@ mod tests {
         let planned = vec![planned[0].clone(), planned[0].clone()];
         let emitted_tiles = AtomicUsize::new(0);
         let result = renderer
-            .render_web_tiles_blocking(
+            .render_web_tiles(
                 &planned,
                 RenderOptions {
                     format: ImageFormat::Rgba,
@@ -14016,10 +14008,10 @@ mod tests {
 
     #[test]
     fn render_rgba_tile_has_expected_size() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let job = RenderJob {
@@ -14034,7 +14026,7 @@ mod tests {
             )
         };
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 job,
                 &RenderOptions {
                     format: ImageFormat::Rgba,
@@ -14062,10 +14054,10 @@ mod tests {
                 &test_legacy_terrain_bytes(2, 65),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
@@ -14082,7 +14074,7 @@ mod tests {
                 move |value| diagnostics.lock().expect("diagnostics lock").add(value)
             });
             let tile = renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob {
                         tile_size: 16,
                         ..RenderJob::new(
@@ -14130,16 +14122,16 @@ mod tests {
                 &test_legacy_grass_over_stone_bytes(65, 0x0020_c840),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14191,10 +14183,10 @@ mod tests {
                 &terrain,
             )
             .expect("put legacy terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default();
@@ -14205,7 +14197,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14254,10 +14246,10 @@ mod tests {
                 &test_data2d_bytes(2, 24),
             )
             .expect("put conflicting data2d");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default();
@@ -14290,7 +14282,7 @@ mod tests {
         };
 
         let direct = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 job.clone(),
                 &RenderOptions {
                     threading: RenderThreadingOptions::Single,
@@ -14301,7 +14293,7 @@ mod tests {
         assert_eq!(pixel_rgba(&direct.rgba, direct.width, 0, 0), expected);
 
         let shared = renderer
-            .render_tiles_blocking(
+            .render_tiles(
                 vec![job],
                 RenderOptions {
                     threading: RenderThreadingOptions::Fixed(2),
@@ -14328,16 +14320,16 @@ mod tests {
                 &test_legacy_terrain_bytes(9, 65),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14388,10 +14380,10 @@ mod tests {
                 &terrain,
             )
             .expect("put legacy terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default();
@@ -14399,7 +14391,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14451,10 +14443,10 @@ mod tests {
                 ]),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(90, 90, 90, 255))
@@ -14462,7 +14454,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14509,10 +14501,10 @@ mod tests {
                 &test_asymmetric_legacy_terrain_bytes(),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default()
@@ -14529,7 +14521,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let layer = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14555,7 +14547,7 @@ mod tests {
         assert_eq!(pixel_rgba(&layer.rgba, layer.width, 15, 15), bricks);
 
         let heightmap = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14589,7 +14581,7 @@ mod tests {
         );
 
         let surface = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14636,10 +14628,10 @@ mod tests {
                 &test_asymmetric_legacy_subchunk_bytes(),
             )
             .expect("put legacy subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(90, 90, 90, 255))
@@ -14653,7 +14645,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let layer = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14694,10 +14686,10 @@ mod tests {
                 &test_legacy_sand_data_terrain_bytes(),
             )
             .expect("put legacy sand terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let palette = RenderPalette::default()
@@ -14708,7 +14700,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let layer = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14732,7 +14724,7 @@ mod tests {
         assert_eq!(pixel_rgba(&layer.rgba, layer.width, 8, 8), red_sand);
 
         let surface = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14777,10 +14769,10 @@ mod tests {
                 &test_legacy_sand_data_subchunk_bytes(),
             )
             .expect("put legacy sand subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:sand", RgbaColor::new(220, 210, 120, 255))
@@ -14790,7 +14782,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let layer = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -14817,15 +14809,15 @@ mod tests {
 
     #[test]
     fn cancelled_batch_returns_error() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let cancel = RenderCancelFlag::new();
         cancel.cancel();
-        let result = renderer.render_tiles_blocking(
+        let result = renderer.render_tiles(
             vec![RenderJob::new(
                 TileCoord {
                     x: 0,
@@ -15928,17 +15920,17 @@ mod tests {
         storage
             .put(&ChunkKey::subchunk(pos, 4).encode(), &test_subchunk_bytes())
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:x_axis", RgbaColor::new(10, 0, 0, 255))
             .with_block_color("minecraft:z_axis", RgbaColor::new(0, 10, 0, 255));
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 2,
                     ..RenderJob::new(
@@ -15985,10 +15977,10 @@ mod tests {
                 )
                 .expect("put subchunk");
         }
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(
             world,
@@ -16020,7 +16012,7 @@ mod tests {
         });
 
         let tiles = renderer
-            .render_tiles_blocking(
+            .render_tiles(
                 jobs,
                 RenderOptions {
                     format: ImageFormat::Rgba,
@@ -16060,10 +16052,10 @@ mod tests {
                 &test_uniform_layer_subchunk_bytes(block_name),
             )
             .expect("put signature subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette =
             RenderPalette::default().with_block_color(block_name, RgbaColor::new(11, 77, 199, 255));
@@ -16075,7 +16067,7 @@ mod tests {
         let clipped = ChunkRegion::new(Dimension::Overworld, -1, -1, -1, -1);
 
         let bake = renderer
-            .bake_region_chunk_region_blocking(
+            .bake_region_chunk_region(
                 coord,
                 clipped,
                 &RenderOptions {
@@ -16152,10 +16144,10 @@ mod tests {
             ]);
         }
 
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, palette);
         let layout = RenderLayout {
@@ -16184,7 +16176,7 @@ mod tests {
         };
 
         let direct = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 job.clone(),
                 &RenderOptions {
                     threading: RenderThreadingOptions::Single,
@@ -16195,7 +16187,7 @@ mod tests {
         assert_signature_pixels("direct", &direct, &expected);
 
         let shared = renderer
-            .render_tiles_blocking(
+            .render_tiles(
                 vec![job.clone()],
                 RenderOptions {
                     threading: RenderThreadingOptions::Fixed(2),
@@ -16216,7 +16208,7 @@ mod tests {
         };
         let region_tiles = Arc::new(Mutex::new(Vec::new()));
         let result = renderer
-            .render_tiles_from_regions_blocking(
+            .render_tiles_from_regions(
                 std::slice::from_ref(&planned),
                 RenderOptions {
                     threading: RenderThreadingOptions::Fixed(2),
@@ -16251,7 +16243,7 @@ mod tests {
             },
         );
         let session_result = session
-            .render_web_tiles_streaming_blocking(
+            .render_web_tiles_streaming(
                 std::slice::from_ref(&planned),
                 RenderOptions {
                     cache_policy: RenderCachePolicy::Bypass,
@@ -16296,17 +16288,17 @@ mod tests {
         storage
             .put(&ChunkKey::subchunk(pos, 4).encode(), &test_subchunk_bytes())
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:x_axis", RgbaColor::new(10, 0, 0, 255))
             .with_block_color("minecraft:z_axis", RgbaColor::new(0, 10, 0, 255));
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 4,
                     pixels_per_block: 2,
@@ -16367,10 +16359,10 @@ mod tests {
                 ),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -16386,7 +16378,7 @@ mod tests {
         .to_array();
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -16447,10 +16439,10 @@ mod tests {
                 ),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:dirt", RgbaColor::new(130, 90, 55, 255))
@@ -16460,7 +16452,7 @@ mod tests {
             .to_array();
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -16528,10 +16520,10 @@ mod tests {
                 ),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:grass_block", RgbaColor::new(20, 180, 20, 255))
@@ -16561,7 +16553,7 @@ mod tests {
         });
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 4,
                     ..RenderJob::new(
@@ -16626,10 +16618,10 @@ mod tests {
                 ),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color(
@@ -16640,7 +16632,7 @@ mod tests {
         let expected = palette.block_color("minecraft:gray_carpet").to_array();
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -16697,17 +16689,17 @@ mod tests {
                 ),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
             .with_block_color("minecraft:green_test", RgbaColor::new(20, 200, 20, 255));
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     scale: 16,
@@ -16771,10 +16763,10 @@ mod tests {
                 ),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color(
@@ -16784,7 +16776,7 @@ mod tests {
             .with_block_color("minecraft:dark_platform", RgbaColor::new(80, 80, 80, 255));
         let renderer = MapRenderer::new(world, palette);
         let tiles = renderer
-            .render_region_tiles_blocking(
+            .render_region_tiles(
                 ChunkRegion::new(Dimension::Overworld, 0, 0, 0, 0),
                 RenderMode::SurfaceBlocks,
                 ChunkTileLayout {
@@ -16823,15 +16815,15 @@ mod tests {
 
     #[test]
     fn heightmap_and_cave_slice_render_rgba() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         for mode in [RenderMode::HeightMap, RenderMode::CaveSlice { y: 32 }] {
             let tile = renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob {
                         tile_size: 2,
                         ..RenderJob::new(
@@ -16880,10 +16872,10 @@ mod tests {
                 ),
             )
             .expect("put exact surface subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let options = RenderOptions {
@@ -16896,7 +16888,7 @@ mod tests {
             ..RenderOptions::default()
         };
         let computed = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -16912,7 +16904,7 @@ mod tests {
             )
             .expect("render computed heightmap");
         let raw = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -16972,10 +16964,10 @@ mod tests {
                 ),
             )
             .expect("put unknown surface subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default();
         assert!(!palette.has_block_color("minecraft:unmapped_roof_block"));
@@ -16993,7 +16985,7 @@ mod tests {
         };
 
         let heightmap = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 16,
                     ..RenderJob::new(
@@ -17035,14 +17027,14 @@ mod tests {
                 ),
             )
             .expect("put unknown surface subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let bake = renderer
-            .bake_chunk_blocking(
+            .bake_chunk(
                 pos,
                 BakeOptions {
                     mode: RenderMode::SurfaceBlocks,
@@ -17068,10 +17060,10 @@ mod tests {
 
     #[test]
     fn missing_fixed_y_layer_renders_transparent_pixels() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
@@ -17082,7 +17074,7 @@ mod tests {
             }
         });
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -17111,14 +17103,14 @@ mod tests {
 
     #[test]
     fn missing_biome_chunk_renders_transparent_not_unknown_biome() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -17155,15 +17147,15 @@ mod tests {
                 &test_data3d_single_biome_bytes(4),
             )
             .expect("put Data3D");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let expected = RenderPalette::default().biome_color(4).to_array();
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -17210,10 +17202,10 @@ mod tests {
                 ]),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17223,7 +17215,7 @@ mod tests {
             .to_array();
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -17269,13 +17261,13 @@ mod tests {
                 ]),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let data = world
-            .query_chunk_data_blocking(
+            .query_chunk_data(
                 pos,
                 ChunkLoadOptions {
                     data_request: ChunkDataRequest::new().height_map(),
@@ -17337,10 +17329,10 @@ mod tests {
                 )
                 .expect("put subchunk");
         }
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default();
         let expected_desert = palette
@@ -17351,7 +17343,7 @@ mod tests {
             .to_array();
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 32,
                     ..RenderJob::new(
@@ -17418,10 +17410,10 @@ mod tests {
                 ]),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17431,7 +17423,7 @@ mod tests {
             .to_array();
         let renderer = MapRenderer::new(world, palette);
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -17483,10 +17475,10 @@ mod tests {
                 ]),
             )
             .expect("put top-layer subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17527,7 +17519,7 @@ mod tests {
         };
 
         let direct = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 job.clone(),
                 &RenderOptions {
                     threading: RenderThreadingOptions::Single,
@@ -17538,7 +17530,7 @@ mod tests {
         assert_eq!(pixel_rgba(&direct.rgba, direct.width, 0, 0), expected);
 
         let shared = renderer
-            .render_tiles_blocking(
+            .render_tiles(
                 vec![job.clone()],
                 RenderOptions {
                     threading: RenderThreadingOptions::Fixed(2),
@@ -17558,7 +17550,7 @@ mod tests {
         };
         let region_tiles = Arc::new(Mutex::new(Vec::new()));
         let result = renderer
-            .render_tiles_from_regions_blocking(
+            .render_tiles_from_regions(
                 std::slice::from_ref(&planned),
                 RenderOptions {
                     threading: RenderThreadingOptions::Fixed(2),
@@ -17590,7 +17582,7 @@ mod tests {
             },
         );
         let session_result = session
-            .render_web_tiles_streaming_blocking(
+            .render_web_tiles_streaming(
                 std::slice::from_ref(&planned),
                 RenderOptions {
                     cache_policy: RenderCachePolicy::Bypass,
@@ -17660,10 +17652,10 @@ mod tests {
                 ),
             )
             .expect("put high roof subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(10, 10, 10, 255))
@@ -17726,7 +17718,7 @@ mod tests {
         };
 
         let surface = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 surface_job.clone(),
                 &RenderOptions {
                     threading: RenderThreadingOptions::Single,
@@ -17740,7 +17732,7 @@ mod tests {
         );
 
         let height = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 height_job.clone(),
                 &RenderOptions {
                     threading: RenderThreadingOptions::Single,
@@ -17754,7 +17746,7 @@ mod tests {
         );
 
         let raw_height = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 raw_height_job,
                 &RenderOptions {
                     threading: RenderThreadingOptions::Single,
@@ -17775,7 +17767,7 @@ mod tests {
         };
         let region_tiles = Arc::new(Mutex::new(Vec::new()));
         let region_result = renderer
-            .render_tiles_from_regions_blocking(
+            .render_tiles_from_regions(
                 std::slice::from_ref(&planned),
                 RenderOptions {
                     threading: RenderThreadingOptions::Fixed(2),
@@ -17807,7 +17799,7 @@ mod tests {
             },
         );
         let session_result = session
-            .render_web_tiles_streaming_blocking(
+            .render_web_tiles_streaming(
                 std::slice::from_ref(&planned),
                 RenderOptions {
                     cache_policy: RenderCachePolicy::Bypass,
@@ -17888,14 +17880,14 @@ mod tests {
                 ),
             )
             .expect("put slab aliases");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob::chunk_tile(
                     TileCoord {
                         x: 0,
@@ -17960,14 +17952,14 @@ mod tests {
                 ]),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -18028,10 +18020,10 @@ mod tests {
                 ]))),
             )
             .expect("put banner block entity");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let mut palette = RenderPalette::default();
         palette
@@ -18052,7 +18044,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -18115,10 +18107,10 @@ mod tests {
                 ]))),
             )
             .expect("put bed block entity");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let mut palette = RenderPalette::default();
         palette
@@ -18139,7 +18131,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -18212,10 +18204,10 @@ mod tests {
                 ]))),
             )
             .expect("put moving block entity");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:movingBlock", RgbaColor::new(1, 1, 1, 255))
@@ -18223,7 +18215,7 @@ mod tests {
         let renderer = MapRenderer::new(world, palette);
 
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -18274,14 +18266,14 @@ mod tests {
                 ]),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let bake = renderer
-            .bake_chunk_blocking(pos, BakeOptions::default())
+            .bake_chunk(pos, BakeOptions::default())
             .expect("bake surface chunk");
         let ChunkBakePayload::SurfaceAtlas(surface) = bake.payload else {
             panic!("expected surface payload");
@@ -18336,10 +18328,10 @@ mod tests {
                 ]),
             )
             .expect("put subchunk");
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
@@ -18350,7 +18342,7 @@ mod tests {
             }
         });
         renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -18385,10 +18377,10 @@ mod tests {
 
     #[test]
     fn missing_heightmap_renders_transparent_pixels() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
@@ -18399,7 +18391,7 @@ mod tests {
             }
         });
         let tile = renderer
-            .render_tile_with_options_blocking(
+            .render_tile(
                 RenderJob {
                     tile_size: 1,
                     ..RenderJob::new(
@@ -19132,10 +19124,10 @@ mod tests {
                 &test_legacy_terrain_bytes(2, 65),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(BedrockWorld::from_storage_with_format(
+        let world = Arc::new(World::from_storage_with_format(
             "memory",
             storage,
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
             bedrock_world::WorldFormat::LevelDbLegacyTerrain,
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
@@ -19212,10 +19204,10 @@ mod tests {
         if cache_root.exists() {
             fs::remove_dir_all(&cache_root).expect("remove stale test cache");
         }
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let config = MapRenderSessionConfig {
@@ -19281,7 +19273,7 @@ mod tests {
         cache_policy: RenderCachePolicy,
     ) -> Vec<&'static str>
     where
-        S: WorldStorageHandle,
+        S: StorageBackend,
     {
         collect_stream_event_kinds_with_seed(session, planned, cache_policy, 0)
     }
@@ -19293,11 +19285,11 @@ mod tests {
         tile_cache_validation_seed: u64,
     ) -> Vec<&'static str>
     where
-        S: WorldStorageHandle,
+        S: StorageBackend,
     {
         let events = Arc::new(Mutex::new(Vec::new()));
         session
-            .render_web_tiles_streaming_blocking(
+            .render_web_tiles_streaming(
                 std::slice::from_ref(planned),
                 RenderOptions {
                     format: ImageFormat::FastRgbaZstd,
@@ -19341,10 +19333,10 @@ mod tests {
 
     #[test]
     fn render_session_lifts_stale_renderer_cache_version() {
-        let world = Arc::new(BedrockWorld::from_storage(
+        let world = Arc::new(World::from_storage(
             "memory",
             Arc::new(MemoryStorage::new()),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let stale = RENDERER_CACHE_VERSION.saturating_sub(1);

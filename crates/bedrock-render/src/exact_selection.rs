@@ -8,10 +8,11 @@ use crate::Result;
 use bedrock_world::{
     chunk::ChunkPos,
     query::{ExactChunkSelection, SlimeChunkBounds},
-    world::{
-        BedrockWorld, ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk,
-        SurfaceMapQueryOptions, WorldStorageHandle,
+    surface::{
+        ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk,
+        SurfaceMapQueryOptions,
     },
+    world::{World, StorageBackend},
 };
 
 /// A render-oriented plan derived from an exact non-rectangular chunk selection.
@@ -113,23 +114,23 @@ pub struct ExactSurfaceRenderData {
 /// # Errors
 ///
 /// Returns storage, decode, cancellation, or chunk-loading errors from `bedrock-world`.
-pub fn load_exact_chunk_render_data_blocking<S>(
-    world: &BedrockWorld<S>,
+pub fn load_exact_chunk_render_data<S>(
+    world: &World<S>,
     selection: ExactChunkSelection,
     options: ChunkLoadOptions,
 ) -> Result<ExactChunkRenderData>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     let plan = ExactChunkRenderPlan::new(selection);
     let (chunks, _) =
-        world.query_chunk_data_with_stats_blocking(plan.positions().iter().copied(), options)?;
+        world.query_chunk_data_with_stats(plan.positions().iter().copied(), options)?;
     Ok(ExactChunkRenderData { plan, chunks })
 }
 
 /// Loads exactly the selected chunks as compact 2D surface planes.
 ///
-/// Unlike [`load_exact_chunk_render_data_blocking`], this route does not expose
+/// Unlike [`load_exact_chunk_render_data`], this route does not expose
 /// general `ChunkData`, full 3D indices, or block entities. The world-layer
 /// surface contract is exact; rendering colors remain the responsibility of
 /// `bedrock-render`.
@@ -138,17 +139,17 @@ where
 ///
 /// Returns storage, decode, cancellation, or surface-projection errors from
 /// `bedrock-world`.
-pub fn load_exact_surface_render_data_blocking<S>(
-    world: &BedrockWorld<S>,
+pub fn load_exact_surface_render_data<S>(
+    world: &World<S>,
     selection: ExactChunkSelection,
     options: SurfaceMapQueryOptions,
 ) -> Result<ExactSurfaceRenderData>
 where
-    S: WorldStorageHandle,
+    S: StorageBackend,
 {
     let plan = ExactChunkRenderPlan::new(selection);
     let (chunks, stats) =
-        world.query_surface_map_many_blocking(plan.positions().iter().copied(), options)?;
+        world.query_surface_map_many(plan.positions().iter().copied(), options)?;
     Ok(ExactSurfaceRenderData {
         plan,
         chunks,

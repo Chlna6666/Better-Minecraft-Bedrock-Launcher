@@ -28,7 +28,7 @@ pub use pipeline::{
 
 pub use occupancy::{
     TileOccupancyEntry, TileOccupancyIndex, TileOccupancyIndexRequest, TileOccupancyIndexResult,
-    TileOccupancyIndexSource, load_or_build_tile_occupancy_index_blocking,
+    TileOccupancyIndexSource, load_or_build_tile_occupancy_index,
     tile_occupancy_cache_path,
 };
 
@@ -46,4 +46,5 @@ pub use cache::{
     world_cache_signature,
 };
 
-pub use ::bedrock_world::{ChunkBounds, ChunkPos, Dimension, NbtTag};
+pub use ::bedrock_world::{ChunkPos, Dimension, NbtTag};
+pub use ::bedrock_world::surface::ChunkBounds;

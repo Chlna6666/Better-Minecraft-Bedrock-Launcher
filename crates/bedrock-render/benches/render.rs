@@ -6,9 +6,10 @@ use bedrock_render::{
     editor::{MapEditInvalidation, MapWorldEditor},
 };
 use bedrock_world::{
-    BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, ChunkPos, Dimension,
-    GlobalRecordKind, SlimeChunkBounds, WorldScanOptions,
+    BedrockLevelDbStorage, World, OpenOptions, ChunkPos, Dimension,
+    GlobalRecordKind, SlimeChunkBounds,
 };
+use bedrock_world::surface::WorldScanOptions;
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::path::PathBuf;
 use std::sync::{
@@ -32,10 +33,10 @@ fn renderer() -> Option<MapRenderer<BedrockLevelDbStorage>> {
         return None;
     }
     let storage = BedrockLevelDbStorage::open(world_path.join("db")).ok()?;
-    let world = Arc::new(BedrockWorld::from_typed_storage(
+    let world = Arc::new(World::from_typed_storage(
         world_path,
         storage,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     ));
     Some(MapRenderer::new(world, RenderPalette::default()))
 }
@@ -46,10 +47,10 @@ fn dynamic_renderer() -> Option<MapRenderer> {
         return None;
     }
     let storage = Arc::new(BedrockLevelDbStorage::open(world_path.join("db")).ok()?);
-    let world = Arc::new(BedrockWorld::from_storage(
+    let world = Arc::new(World::from_storage(
         world_path,
         storage,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     ));
     Some(MapRenderer::new(world, RenderPalette::default()))
 }
@@ -57,7 +58,7 @@ fn dynamic_renderer() -> Option<MapRenderer> {
 fn emit_machine_readable_report(
     case: &str,
     storage: &str,
-    renderer: &MapRenderer<impl bedrock_world::WorldStorageHandle>,
+    renderer: &MapRenderer<impl bedrock_world::StorageBackend>,
 ) {
     emit_machine_readable_report_with_options(
         case,
@@ -78,7 +79,7 @@ fn emit_machine_readable_report_with_options(
     case: &str,
     storage: &str,
     backend_label: &str,
-    renderer: &MapRenderer<impl bedrock_world::WorldStorageHandle>,
+    renderer: &MapRenderer<impl bedrock_world::StorageBackend>,
     options: RenderOptions,
 ) {
     let region = ChunkRegion::new(Dimension::Overworld, 0, 0, 15, 15);
@@ -91,7 +92,7 @@ fn emit_machine_readable_report_with_options(
     let rendered_tiles = AtomicUsize::new(0);
     let start = Instant::now();
     let result = renderer
-        .render_web_tiles_blocking(&planned, options, |_planned, _tile| {
+        .render_web_tiles(&planned, options, |_planned, _tile| {
             rendered_tiles.fetch_add(1, Ordering::Relaxed);
             Ok(())
         })
@@ -137,7 +138,7 @@ fn emit_machine_readable_report_with_options(
 const RUN_GPU_COMPARISON_REPORTS: bool = false;
 const RUN_FULL_BENCHMARKS: bool = false;
 
-fn emit_gpu_comparison_reports(renderer: &MapRenderer<impl bedrock_world::WorldStorageHandle>) {
+fn emit_gpu_comparison_reports(renderer: &MapRenderer<impl bedrock_world::StorageBackend>) {
     if !RUN_GPU_COMPARISON_REPORTS {
         return;
     }
@@ -195,7 +196,7 @@ fn emit_v02_editor_reports() {
         return;
     }
     let Ok(editor) =
-        MapWorldEditor::open_with_options(&world_path, BedrockWorldOpenOptions::default())
+        MapWorldEditor::open_with_options(&world_path, OpenOptions::default())
     else {
         return;
     };
@@ -225,10 +226,11 @@ fn emit_v02_overlay_report(editor: &MapWorldEditor) {
         max_items_per_kind: 10_000,
     };
     let start = Instant::now();
-    let overlay = bedrock_render::editor::query_region_overlays_blocking(
+    let overlay = bedrock_render::editor::region_overlays(
         editor.world(),
         region,
         overlay_options,
+        None,
     );
     let overlay_ms = start.elapsed().as_millis();
     if let Ok(overlay) = overlay {
@@ -245,7 +247,7 @@ fn emit_v02_overlay_report(editor: &MapWorldEditor) {
 
 fn emit_v02_map_report(editor: &MapWorldEditor) {
     let start = Instant::now();
-    let maps = editor.scan_map_records(WorldScanOptions::default());
+    let maps = editor.map_items(WorldScanOptions::default());
     let map_ms = start.elapsed().as_millis();
     if let Ok(maps) = maps {
         println!(
@@ -257,12 +259,12 @@ fn emit_v02_map_report(editor: &MapWorldEditor) {
 
 fn emit_v02_global_report(editor: &MapWorldEditor) {
     let start = Instant::now();
-    let globals = editor.scan_global_records(WorldScanOptions::default());
+    let globals = editor.globals(WorldScanOptions::default());
     let global_ms = start.elapsed().as_millis();
     match globals {
         Ok(globals) => {
             let scoreboard_found = editor
-                .read_global_record(GlobalRecordKind::Scoreboard)
+                .global(GlobalRecordKind::Scoreboard)
                 .ok()
                 .flatten()
                 .is_some();
@@ -282,7 +284,7 @@ fn emit_v02_global_report(editor: &MapWorldEditor) {
 
 fn emit_v02_hsa_report(editor: &MapWorldEditor) {
     let start = Instant::now();
-    let hsa = editor.scan_hsa_records(WorldScanOptions::default());
+    let hsa = editor.hardcoded_spawn_areas(WorldScanOptions::default());
     let hsa_ms = start.elapsed().as_millis();
     if let Ok(hsa) = hsa {
         let area_count = hsa.iter().map(|(_, areas)| areas.len()).sum::<usize>();
@@ -338,7 +340,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/biome_tile_256_rgba", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob::new(coord, RenderMode::Biome { y: 64 }),
                     &RenderOptions {
                         format: ImageFormat::Rgba,
@@ -351,14 +353,17 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/biome_tile_256_webp", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_blocking(RenderJob::new(coord, RenderMode::Biome { y: 64 }))
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::Biome { y: 64 }),
+                    &RenderOptions::default(),
+                )
                 .expect("render biome tile");
         });
     });
     c.bench_function("bedrock_render/fixed_y_tile_256_rgba", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob::new(coord, RenderMode::LayerBlocks { y: 64 }),
                     &RenderOptions {
                         format: ImageFormat::Rgba,
@@ -371,7 +376,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/raw_biome_tile_256_rgba", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob::new(coord, RenderMode::RawBiomeLayer { y: 64 }),
                     &RenderOptions {
                         format: ImageFormat::Rgba,
@@ -384,7 +389,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/surface_tile_256_rgba", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob::new(coord, RenderMode::SurfaceBlocks),
                     &RenderOptions {
                         format: ImageFormat::Rgba,
@@ -397,7 +402,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/bake_chunk_surface", |bench| {
         bench.iter(|| {
             renderer
-                .bake_chunk_blocking(
+                .bake_chunk(
                     ChunkPos {
                         x: 0,
                         z: 0,
@@ -414,7 +419,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/render_tile_surface_from_bake", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_from_bake_blocking(
+                .render_tile_from_bake(
                     RenderJob::new(coord, RenderMode::SurfaceBlocks),
                     &RenderOptions {
                         format: ImageFormat::Rgba,
@@ -428,7 +433,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/heightmap_tile_256_rgba", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob::new(coord, RenderMode::HeightMap),
                     &RenderOptions {
                         format: ImageFormat::Rgba,
@@ -441,7 +446,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/cave_slice_tile_256_rgba", |bench| {
         bench.iter(|| {
             renderer
-                .render_tile_with_options_blocking(
+                .render_tile(
                     RenderJob::new(coord, RenderMode::CaveSlice { y: 32 }),
                     &RenderOptions {
                         format: ImageFormat::Rgba,
@@ -466,7 +471,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/tile_batch_auto_threads", |bench| {
         bench.iter(|| {
             renderer
-                .render_tiles_blocking(
+                .render_tiles(
                     jobs.clone(),
                     RenderOptions {
                         format: ImageFormat::Rgba,
@@ -480,7 +485,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/tile_batch_single_thread", |bench| {
         bench.iter(|| {
             renderer
-                .render_tiles_blocking(
+                .render_tiles(
                     jobs.clone(),
                     RenderOptions {
                         format: ImageFormat::Rgba,
@@ -503,7 +508,7 @@ fn render_benches(c: &mut Criterion) {
         |bench| {
             bench.iter(|| {
                 renderer
-                    .render_web_tiles_blocking(
+                    .render_web_tiles(
                         &interactive_tiles,
                         RenderOptions {
                             format: ImageFormat::Rgba,
@@ -536,7 +541,7 @@ fn render_benches(c: &mut Criterion) {
             |bench| {
                 bench.iter(|| {
                     renderer
-                        .render_web_tiles_blocking(
+                        .render_web_tiles(
                             &web_tiles,
                             RenderOptions {
                                 format: ImageFormat::Rgba,
@@ -559,7 +564,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/global_chunk_bake_queue", |bench| {
         bench.iter(|| {
             renderer
-                .render_web_tiles_blocking(
+                .render_web_tiles(
                     &web_tiles,
                     RenderOptions {
                         format: ImageFormat::Rgba,
@@ -576,7 +581,7 @@ fn render_benches(c: &mut Criterion) {
     c.bench_function("bedrock_render/tile_compose_encode_pipeline", |bench| {
         bench.iter(|| {
             renderer
-                .render_web_tiles_blocking(
+                .render_web_tiles(
                     &web_tiles,
                     RenderOptions {
                         format: ImageFormat::WebP,

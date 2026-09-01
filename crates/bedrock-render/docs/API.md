@@ -13,15 +13,15 @@
 
 ## Renderer Setup
 
-Create a lazy `bedrock_world::BedrockWorld`, then pass it with a palette to
+Create a lazy `bedrock_world::World`, then pass it with a palette to
 `MapRenderer::new`:
 
 ```rust
 use std::sync::Arc;
 
-let world = bedrock_world::BedrockWorld::open_blocking(
+let world = bedrock_world::World::open(
     "path/to/minecraftWorld",
-    bedrock_world::BedrockWorldOpenOptions::default(),
+    bedrock_world::OpenOptions::default(),
 )?;
 let renderer = bedrock_render::MapRenderer::new(
     Arc::new(world),
@@ -62,7 +62,7 @@ let session = bedrock_render::MapRenderSession::new(
     },
 );
 let cancel = bedrock_render::RenderCancelFlag::new();
-session.render_web_tiles_streaming_blocking(
+session.render_web_tiles_streaming(
     &planned_tiles,
     bedrock_render::RenderOptions {
         cancel: Some(cancel),
@@ -88,7 +88,7 @@ that prefers an async channel, use `render_web_tiles_streaming_channel`; it
 returns a `tokio::sync::mpsc::Receiver<TileStreamEvent>` immediately and lets
 the render task continue in the background.
 
-Use `render_web_tiles_streaming_blocking_v2`,
+Use `render_web_tiles_streaming_v2`,
 `render_web_tiles_streaming_v2`, or `render_web_tiles_streaming_channel_v2`
 when a UI wants decoded pixels instead of encoded tile bytes. These APIs emit
 `TileStreamEventV2::Ready` with `DecodedTileImage`; `RenderTileOutputOptions`
@@ -111,7 +111,7 @@ adapter for explicit write-mode workflows; it does not change the
 `bedrock-world` v0.2 map/global/HSA/actor/block-entity/heightmap/biome/query
 types and adds two render-facing helpers:
 
-- `MapWorldEditor` opens or wraps a writable `BedrockWorld` and exposes common
+- `MapWorldEditor` opens or wraps a writable `World` and exposes common
   structured editor calls.
 - `MapEditInvalidation` describes which render/UI metadata, overlays, chunks,
   and tile caches should be refreshed after a write.
@@ -120,8 +120,8 @@ types and adds two render-facing helpers:
 use bedrock_render::editor::{MapWorldEditor, WorldScanOptions};
 
 let editor = MapWorldEditor::open_writable("path/to/minecraftWorld")?;
-let maps = editor.scan_map_records(WorldScanOptions::default())?;
-let overlays = editor.scan_hsa_records(WorldScanOptions::default())?;
+let maps = editor.map_items(WorldScanOptions::default())?;
+let overlays = editor.hardcoded_spawn_areas(WorldScanOptions::default())?;
 
 let invalidation = editor.put_heightmap(chunk_pos, chunk_version, &heightmap)?;
 if invalidation.refresh_metadata() {
@@ -144,13 +144,13 @@ refreshing overlays or tiles so stale background results are ignored.
 
 ### Replacing older entry points
 
-- `render_web_tiles_blocking` remains suitable for static exports where one
+- `render_web_tiles` remains suitable for static exports where one
   sink writes all tiles.
 - Interactive renderers should use `MapRenderSession` and stream events into
   the UI.
 - Full-world chunk scans should move to `bedrock-world` render-index APIs before
   planning visible tiles.
-- `render_web_tiles_blocking` remains ordered for export. For first-screen
+- `render_web_tiles` remains ordered for export. For first-screen
   interactivity, set `RenderOptions::priority` to
   `RenderTilePriority::DistanceFrom { tile_x, tile_z }`.
 

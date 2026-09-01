@@ -6,7 +6,8 @@
 
 use super::pipeline::{LevelDbRenderSource, RenderChunkSource, RenderLayout, RenderTaskControl};
 use crate::error::{BedrockRenderError, Result};
-use bedrock_world::{ChunkBounds, ChunkPos, Dimension, WorldScanOptions, WorldThreadingOptions};
+use bedrock_world::{ChunkPos, Dimension};
+use bedrock_world::surface::{ChunkBounds, WorldScanOptions, WorldThreadingOptions};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -212,7 +213,7 @@ pub struct TileOccupancyIndexResult {
 ///
 /// The sidecar uses the same world identity and cache root as rendered tiles, so
 /// a world signature change invalidates both cache paths consistently.
-pub fn load_or_build_tile_occupancy_index_blocking(
+pub fn load_or_build_tile_occupancy_index(
     request: TileOccupancyIndexRequest,
     control: &RenderTaskControl,
 ) -> Result<TileOccupancyIndexResult> {
@@ -245,7 +246,7 @@ pub fn load_or_build_tile_occupancy_index_blocking(
 
     wait_for_control(control)?;
     let source = LevelDbRenderSource::open_read_only(&request.world_path)?;
-    let positions = source.list_render_chunk_positions_blocking(request.scan_options)?;
+    let positions = source.render_chunk_positions(request.scan_options)?;
     wait_for_control(control)?;
     let index = TileOccupancyIndex::from_render_chunk_positions(
         request.dimension,

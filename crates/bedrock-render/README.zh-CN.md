@@ -84,9 +84,9 @@ use bedrock_render::{
     RenderMemoryBudget, RenderMode, RenderOptions, RenderPalette, RenderThreadingOptions,
 };
 
-let world = bedrock_world::BedrockWorld::open_blocking(
+let world = bedrock_world::World::open(
     "path/to/minecraftWorld",
-    bedrock_world::BedrockWorldOpenOptions::default(),
+    bedrock_world::OpenOptions::default(),
 )?;
 let renderer = MapRenderer::new(Arc::new(world), RenderPalette::default());
 let region = ChunkRegion::new(dimension, -32, -32, 31, 31);
@@ -96,7 +96,7 @@ let layout = RenderLayout {
     pixels_per_block: 1,
 };
 
-let tiles = renderer.render_region_tiles_blocking(
+let tiles = renderer.render_region_tiles(
     region,
     RenderMode::HeightMap,
     layout,
@@ -110,8 +110,8 @@ let tiles = renderer.render_region_tiles_blocking(
 )?;
 ```
 
-示例和工具建议使用 `bedrock_world::BedrockWorld::open_blocking` 或
-`BedrockWorld::open`，不要直接构造 LevelDB storage。这样可以自动识别旧版
+示例和工具建议使用 `bedrock_world::World::open` 或
+`World::open`，不要直接构造 LevelDB storage。这样可以自动识别旧版
 LevelDB `LegacyTerrain` 世界和只读 `chunks.dat` 世界。
 
 ## 编辑门面
@@ -125,9 +125,9 @@ render/UI 层的失效摘要。
 use bedrock_render::editor::{MapWorldEditor, WorldScanOptions};
 
 let editor = MapWorldEditor::open_writable("path/to/minecraftWorld")?;
-let hsa = editor.scan_hsa_records(WorldScanOptions::default())?;
+let hsa = editor.hardcoded_spawn_areas(WorldScanOptions::default())?;
 
-let invalidation = editor.delete_hsa_for_chunk(chunk_pos)?;
+let invalidation = editor.delete_hardcoded_spawn_areas(chunk_pos)?;
 if invalidation.refresh_overlays() {
     // 重新读取当前视口 overlay
 }
@@ -172,7 +172,7 @@ let region = ChunkRegion::new(dimension, -32, -32, 31, 31);
 let planned_tiles = MapRenderer::plan_region_tiles(region, RenderMode::SurfaceBlocks, layout)?;
 let cancel = RenderCancelFlag::new();
 
-session.render_web_tiles_streaming_blocking(
+session.render_web_tiles_streaming(
     &planned_tiles,
     RenderOptions {
         format: ImageFormat::WebP,
@@ -207,10 +207,10 @@ session.render_web_tiles_streaming_blocking(
 
 ### 迁移：阻塞批量渲染到可取消 streaming
 
-旧代码通常使用 `render_web_tiles_blocking`，整批完成后才更新 UI：
+旧代码通常使用 `render_web_tiles`，整批完成后才更新 UI：
 
 ```rust
-renderer.render_web_tiles_blocking(&planned_tiles, options, |planned, tile| {
+renderer.render_web_tiles(&planned_tiles, options, |planned, tile| {
     write_tile(planned, tile)?;
     Ok(())
 })?;
@@ -221,7 +221,7 @@ renderer.render_web_tiles_blocking(&planned_tiles, options, |planned, tile| {
 ```rust
 let session = MapRenderSession::new(renderer, MapRenderSessionConfig::default());
 let cancel = RenderCancelFlag::new();
-session.render_web_tiles_streaming_blocking(
+session.render_web_tiles_streaming(
     &planned_tiles,
     RenderOptions {
         cancel: Some(cancel),
@@ -244,7 +244,7 @@ cargo run --example render_streaming_session -- <world_path>
 ```
 
 如果 UI 图片缓存希望直接接收解码后的像素，可以使用
-`render_web_tiles_streaming_blocking_v2`、`render_web_tiles_streaming_v2` 或
+`render_web_tiles_streaming_v2`、`render_web_tiles_streaming_v2` 或
 `render_web_tiles_streaming_channel_v2`。这些接口会通过
 `TileStreamEventV2::Ready` 返回 `DecodedTileImage`；默认像素格式是
 `TilePixelFormat::Rgba8`，也可以通过 `RenderTileOutputOptions` 请求 `Bgra8`。

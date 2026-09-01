@@ -4,7 +4,7 @@ use bedrock_render::{
     RenderPalette, RenderThreadingOptions, RgbaColor, SurfaceRenderOptions, TerrainLightingOptions,
     TilePathScheme,
 };
-use bedrock_world::{BedrockWorld, BedrockWorldOpenOptions, Dimension, NbtTag};
+use bedrock_world::{World, OpenOptions, Dimension, NbtTag};
 use image::{ImageFormat as OutputImageFormat, save_buffer_with_format};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -33,9 +33,9 @@ fn main() -> bedrock_render::Result<()> {
     })?;
 
     let world = Arc::new(
-        BedrockWorld::open_blocking(
+        World::open(
             config.world_path.clone(),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         )
         .map_err(bedrock_render::BedrockRenderError::World)?,
     );
@@ -215,7 +215,7 @@ fn render_viewport(
             }
         })
     });
-    let tiles = renderer.render_tiles_blocking(
+    let tiles = renderer.render_tiles(
         jobs,
         RenderOptions {
             format: ImageFormat::Rgba,

@@ -6,7 +6,7 @@ use bedrock_render::{
     SurfaceRenderOptions, TerrainLightingOptions, TerrainLightingPreset, TileCoord,
 };
 use bedrock_world::{
-    BedrockWorld, BedrockWorldOpenOptions, ChunkBounds, ChunkPos, Dimension, WorldScanOptions,
+    World, OpenOptions, ChunkBounds, ChunkPos, Dimension, WorldScanOptions,
     WorldThreadingOptions,
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -85,9 +85,9 @@ fn main() -> bedrock_render::Result<()> {
     );
 
     let world = Arc::new(
-        BedrockWorld::open_blocking(
+        World::open(
             config.world_path.clone(),
-            BedrockWorldOpenOptions::default(),
+            OpenOptions::default(),
         )
         .map_err(bedrock_render::BedrockRenderError::World)?,
     );
@@ -1012,7 +1012,7 @@ fn render_dimension_mode(
                 }
             }
         });
-        let render_result = renderer.render_web_tiles_blocking(
+        let render_result = renderer.render_web_tiles(
             &planned_tiles,
             RenderOptions {
                 format: ImageFormat::WebP,
@@ -1234,7 +1234,7 @@ fn world_scan_threading(config: &WebMapConfig) -> WorldThreadingOptions {
 }
 
 fn discover_dimension_tiles(
-    world: &BedrockWorld,
+    world: &World,
     config: &WebMapConfig,
 ) -> bedrock_render::Result<BTreeMap<Dimension, DiscoveredDimension>> {
     let mut dimensions = config
@@ -1255,7 +1255,7 @@ fn discover_dimension_tiles(
         )
     })?;
     let positions = world
-        .list_render_chunk_positions_blocking(WorldScanOptions {
+        .render_chunk_positions(WorldScanOptions {
             threading: world_scan_threading(config),
             ..WorldScanOptions::default()
         })

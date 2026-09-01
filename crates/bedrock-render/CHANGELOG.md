@@ -98,7 +98,7 @@ All notable changes to `bedrock-render` are tracked here.
   interactive renderers that reuse the world handle, renderer, tile cache, and
   diagnostics state.
 - Added cancellable streaming tile rendering through
-  `render_web_tiles_streaming_blocking` and the async
+  `render_web_tiles_streaming` and the async
   `render_web_tiles_streaming` wrapper.
 - Added `TileStreamEvent` with cached, rendered, failed, progress, and complete
   events so frontends can paint visible tiles before a full batch finishes.
@@ -152,13 +152,13 @@ All notable changes to `bedrock-render` are tracked here.
   thin overlays, water relief, and block-entity surface colors share one source
   of truth.
 - Updated preview/static web-map/streaming examples to use
-  `BedrockWorld::open_blocking`, enabling automatic old LevelDB and
+  `World::open`, enabling automatic old LevelDB and
   `chunks.dat` detection.
 
 ### Breaking Changes
 
 - Interactive integrations should migrate from one-shot
-  `render_web_tiles_blocking` calls to a reusable `MapRenderSession`. The old
+  `render_web_tiles` calls to a reusable `MapRenderSession`. The old
   blocking batch API remains for export tools, but it no longer represents the
   recommended UI path.
 - `SurfaceRenderOptions` now includes `block_boundaries`, and `RenderOptions`
@@ -196,8 +196,8 @@ All notable changes to `bedrock-render` are tracked here.
 - Use `bedrock_render::editor::MapWorldEditor` for common write-mode map
   tooling. After a successful edit, apply `MapEditInvalidation` before
   rescheduling render work.
-- For 0.16-era worlds, open with `bedrock_world::BedrockWorld::open` or
-  `open_blocking` so format detection can identify `LevelDbLegacyTerrain` or
+- For 0.16-era worlds, open with `bedrock_world::World::open` or
+  `open` so format detection can identify `LevelDbLegacyTerrain` or
   read-only `PocketChunksDat`.
 - If an integration compared `HeightMap` output against Data2D/Data3D bytes,
   migrate that check to `RawHeightMap`. Use `HeightMap` for “what the rendered

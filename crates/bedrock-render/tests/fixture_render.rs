@@ -9,7 +9,7 @@ use bedrock_render::{
 use bedrock_render::{
     ImageFormat, MapRenderer, RenderJob, RenderMode, RenderOptions, RenderPalette, TileCoord,
 };
-use bedrock_world::{BedrockLevelDbStorage, BedrockWorld, BedrockWorldOpenOptions, Dimension};
+use bedrock_world::{BedrockLevelDbStorage, World, OpenOptions, Dimension};
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "webp")]
@@ -33,14 +33,14 @@ fn renders_fixture_biome_tile_as_rgba() {
         return;
     }
     let storage = Arc::new(BedrockLevelDbStorage::open(world_path.join("db")).expect("open db"));
-    let world = Arc::new(BedrockWorld::from_storage(
+    let world = Arc::new(World::from_storage(
         world_path,
         storage,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     ));
     let renderer = MapRenderer::new(world, RenderPalette::default());
     let tile = renderer
-        .render_tile_with_options_blocking(
+        .render_tile(
             RenderJob {
                 tile_size: 16,
                 ..RenderJob::new(
@@ -71,10 +71,10 @@ fn streaming_session_emits_rendered_then_cached_events() {
     }
     let storage =
         Arc::new(BedrockLevelDbStorage::open_read_only(world_path.join("db")).expect("open db"));
-    let world = Arc::new(BedrockWorld::from_storage(
+    let world = Arc::new(World::from_storage(
         world_path,
         storage,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     ));
     let renderer = MapRenderer::new(world, RenderPalette::default());
     let cache_root = unique_cache_root();
@@ -106,7 +106,7 @@ fn streaming_session_emits_rendered_then_cached_events() {
     let cached = Arc::new(AtomicUsize::new(0));
     let complete = Arc::new(AtomicUsize::new(0));
     session
-        .render_web_tiles_streaming_blocking(
+        .render_web_tiles_streaming(
             &planned_tiles,
             RenderOptions {
                 format: ImageFormat::FastRgbaZstd,
@@ -140,7 +140,7 @@ fn streaming_session_emits_rendered_then_cached_events() {
     assert_eq!(complete.load(Ordering::Relaxed), 1);
 
     session
-        .render_web_tiles_streaming_blocking(
+        .render_web_tiles_streaming(
             &planned_tiles,
             RenderOptions {
                 format: ImageFormat::FastRgbaZstd,
@@ -187,10 +187,10 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
     }
     let storage =
         Arc::new(BedrockLevelDbStorage::open_read_only(world_path.join("db")).expect("open db"));
-    let world = Arc::new(BedrockWorld::from_storage(
+    let world = Arc::new(World::from_storage(
         world_path,
         storage,
-        BedrockWorldOpenOptions::default(),
+        OpenOptions::default(),
     ));
     let renderer = MapRenderer::new(Arc::clone(&world), RenderPalette::default());
     let cache_root = unique_cache_root();
@@ -230,7 +230,7 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
     let rendered_tiles = Arc::new(AtomicUsize::new(0));
     let complete = Arc::new(AtomicUsize::new(0));
     session
-        .render_web_tiles_streaming_blocking_v2(
+        .render_web_tiles_streaming_v2(
             &planned_tiles,
             RenderOptions {
                 threading: RenderThreadingOptions::Single,
