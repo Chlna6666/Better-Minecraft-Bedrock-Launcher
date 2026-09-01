@@ -18,12 +18,11 @@ impl FrameUpload {
             self.animation_bindings.capacity(),
             self.animation_values.capacity(),
             self.animated_primitives.capacity() * std::mem::size_of::<AnimatedUpload>(),
-            self.animated_primitives
-                .iter()
-                .map(|primitive| primitive.bytes.capacity())
-                .sum(),
             self.sampled_animation_values.capacity()
                 * std::mem::size_of::<crate::SceneAnimationValue>(),
+            self.animated_primitive_staging.capacity(),
+            self.animated_visual_bounds_scratch.capacity()
+                * std::mem::size_of::<crate::Bounds<crate::ScaledPixels>>(),
             self.custom_mesh_3d_parameters.capacity(),
             self.path_paint_key_scratch.capacity(),
         ]
@@ -93,6 +92,32 @@ impl FrameUpload {
         );
         trim_upload_vec(&mut self.animated_primitives, 64, multiplier);
         trim_upload_vec(&mut self.sampled_animation_values, 64, multiplier);
+        trim_upload_vec(
+            &mut self.animated_primitive_staging,
+            PACKED_BACKDROP_BLUR_BYTES,
+            multiplier,
+        );
+        trim_upload_vec(&mut self.animated_visual_bounds_scratch, 64, multiplier);
+
+        // Animation/blur hash tables are reused between frames to avoid allocator churn, but one
+        // pathological frame should not pin their peak bucket arrays forever. Keep a small floor so
+        // normal animations remain allocation-free after a memory-pressure trim.
+        let hash_floor = 8usize.saturating_mul(multiplier.max(1));
+        self.backdrop_blur_use_base_filter_indices
+            .shrink_to(hash_floor);
+        self.backdrop_blur_filter_dirty_indices
+            .shrink_to(hash_floor);
+        self.backdrop_blur_filter_dirty_scratch
+            .shrink_to(hash_floor);
+        self.backdrop_blur_filter_refresh_scratch
+            .shrink_to(hash_floor);
+        self.backdrop_blur_ignore_animation_damage_indices
+            .shrink_to(hash_floor);
+        self.backdrop_blur_previous_animation_ids
+            .shrink_to(hash_floor);
+        self.backdrop_blur_current_animation_ids_scratch
+            .shrink_to(hash_floor);
+
         trim_upload_vec(
             &mut self.custom_mesh_3d_parameters,
             16 * PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES,
