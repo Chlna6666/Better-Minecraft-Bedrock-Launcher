@@ -5,7 +5,7 @@ use crate::{
 use collections::FxHashMap;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::SmallVec;
-use std::{cell::Cell, hash::Hash, ops::Range, sync::Arc};
+use std::{cell::Cell, collections::VecDeque, hash::Hash, ops::Range, sync::Arc};
 
 use super::key::{AsCacheKeyRef, CacheKey, CacheKeyRef};
 use super::{FontRun, LineLayout};
@@ -22,6 +22,7 @@ const LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
 const LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER: usize = 4;
 const LINE_LAYOUT_CACHE_MAX_RETAINED_LINES: usize = 2_048;
 const LINE_LAYOUT_CACHE_MAX_RETAINED_WRAPPED_LINES: usize = 512;
+const LINE_LAYOUT_CACHE_RECENCY_COMPACTION_MULTIPLIER: usize = 2;
 
 #[derive(Default)]
 struct FrameCache {
@@ -31,10 +32,18 @@ struct FrameCache {
     used_wrapped_lines: Vec<Arc<CacheKey>>,
 }
 
+struct RetainedLayoutEntry<V> {
+    value: V,
+    stamp: u64,
+}
+
 #[derive(Default)]
 struct RetainedLayoutCache {
-    lines: FxHashMap<Arc<CacheKey>, Arc<LineLayout>>,
-    wrapped_lines: FxHashMap<Arc<CacheKey>, Arc<WrappedLineLayout>>,
+    lines: FxHashMap<Arc<CacheKey>, RetainedLayoutEntry<Arc<LineLayout>>>,
+    wrapped_lines: FxHashMap<Arc<CacheKey>, RetainedLayoutEntry<Arc<WrappedLineLayout>>>,
+    line_recency: VecDeque<(Arc<CacheKey>, u64)>,
+    wrapped_line_recency: VecDeque<(Arc<CacheKey>, u64)>,
+    next_stamp: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -227,7 +236,7 @@ impl LineLayoutCache {
             return layout;
         }
 
-        let retained_entry = self.retained.lock().wrapped_lines.remove_entry(key);
+        let retained_entry = self.retained.lock().take_wrapped_line(key);
         if let Some((key, layout)) = retained_entry {
             let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame
@@ -302,7 +311,7 @@ impl LineLayoutCache {
             return layout;
         }
 
-        if let Some((key, layout)) = self.retained.lock().lines.remove_entry(key) {
+        if let Some((key, layout)) = self.retained.lock().take_line(key) {
             let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
             current_frame.lines.insert(key.clone(), layout.clone());
             current_frame.used_lines.push(key);
@@ -401,32 +410,70 @@ impl FrameCache {
 }
 
 impl RetainedLayoutCache {
+    fn next_stamp(&mut self) -> u64 {
+        self.next_stamp = self.next_stamp.wrapping_add(1);
+        self.next_stamp
+    }
+
     fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
-        insert_bounded(
+        let stamp = self.next_stamp();
+        insert_retained_bounded(
             &mut self.lines,
+            &mut self.line_recency,
             key,
             layout,
+            stamp,
             LINE_LAYOUT_CACHE_MAX_RETAINED_LINES,
         );
     }
 
     fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
-        insert_bounded(
+        let stamp = self.next_stamp();
+        insert_retained_bounded(
             &mut self.wrapped_lines,
+            &mut self.wrapped_line_recency,
             key,
             layout,
+            stamp,
             LINE_LAYOUT_CACHE_MAX_RETAINED_WRAPPED_LINES,
         );
+    }
+
+    fn take_line(
+        &mut self,
+        key: &dyn AsCacheKeyRef,
+    ) -> Option<(Arc<CacheKey>, Arc<LineLayout>)> {
+        self.lines
+            .remove_entry(key)
+            .map(|(key, entry)| (key, entry.value))
+    }
+
+    fn take_wrapped_line(
+        &mut self,
+        key: &dyn AsCacheKeyRef,
+    ) -> Option<(Arc<CacheKey>, Arc<WrappedLineLayout>)> {
+        self.wrapped_lines
+            .remove_entry(key)
+            .map(|(key, entry)| (key, entry.value))
     }
 
     fn clear(&mut self) {
         self.lines.clear();
         self.wrapped_lines.clear();
+        self.line_recency.clear();
+        self.wrapped_line_recency.clear();
+        self.next_stamp = 0;
+    }
+
+    fn compact_recency(&mut self) {
+        compact_retained_recency(&self.lines, &mut self.line_recency);
+        compact_retained_recency(&self.wrapped_lines, &mut self.wrapped_line_recency);
     }
 
     fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
         match level {
             GpuiMemoryTrimLevel::Light => {
+                self.compact_recency();
                 trim_map_capacity(
                     &mut self.lines,
                     LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY,
@@ -437,37 +484,104 @@ impl RetainedLayoutCache {
                     LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY,
                     LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
                 );
+                trim_deque_capacity(
+                    &mut self.line_recency,
+                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY,
+                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
+                );
+                trim_deque_capacity(
+                    &mut self.wrapped_line_recency,
+                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY,
+                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
+                );
             }
             GpuiMemoryTrimLevel::Moderate => {
+                self.compact_recency();
                 self.lines
                     .shrink_to(LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.lines.len()));
                 self.wrapped_lines.shrink_to(
                     LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.wrapped_lines.len()),
+                );
+                self.line_recency.shrink_to(
+                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.line_recency.len()),
+                );
+                self.wrapped_line_recency.shrink_to(
+                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.wrapped_line_recency.len()),
                 );
             }
             GpuiMemoryTrimLevel::Aggressive => {
                 self.clear();
                 self.lines.shrink_to(0);
                 self.wrapped_lines.shrink_to(0);
+                self.line_recency.shrink_to(0);
+                self.wrapped_line_recency.shrink_to(0);
             }
         }
     }
 }
 
-fn insert_bounded<K, V>(map: &mut FxHashMap<K, V>, key: K, value: V, max_entries: usize)
-where
+fn insert_retained_bounded<K, V>(
+    map: &mut FxHashMap<K, RetainedLayoutEntry<V>>,
+    recency: &mut VecDeque<(K, u64)>,
+    key: K,
+    value: V,
+    stamp: u64,
+    max_entries: usize,
+) where
     K: Clone + Eq + Hash,
 {
     if max_entries == 0 {
         return;
     }
-    if map.len() >= max_entries
-        && !map.contains_key(&key)
-        && let Some(evicted) = map.keys().next().cloned()
-    {
-        map.remove(&evicted);
+
+    if map.len() >= max_entries && !map.contains_key(&key) {
+        evict_oldest_retained(map, recency);
     }
-    map.insert(key, value);
+
+    map.insert(key.clone(), RetainedLayoutEntry { value, stamp });
+    recency.push_back((key, stamp));
+
+    let compact_at = max_entries
+        .saturating_mul(LINE_LAYOUT_CACHE_RECENCY_COMPACTION_MULTIPLIER)
+        .max(max_entries.saturating_add(1));
+    if recency.len() > compact_at {
+        compact_retained_recency(map, recency);
+    }
+}
+
+fn evict_oldest_retained<K, V>(
+    map: &mut FxHashMap<K, RetainedLayoutEntry<V>>,
+    recency: &mut VecDeque<(K, u64)>,
+) where
+    K: Clone + Eq + Hash,
+{
+    while let Some((candidate, stamp)) = recency.pop_front() {
+        if map
+            .get(&candidate)
+            .is_some_and(|entry| entry.stamp == stamp)
+        {
+            map.remove(&candidate);
+            return;
+        }
+    }
+
+    // Queue/map divergence should not normally happen, but keep the hard bound sound even after a
+    // future representation change instead of allowing an accidental unbounded cache.
+    if let Some(candidate) = map.keys().next().cloned() {
+        map.remove(&candidate);
+    }
+}
+
+fn compact_retained_recency<K, V>(
+    map: &FxHashMap<K, RetainedLayoutEntry<V>>,
+    recency: &mut VecDeque<(K, u64)>,
+) where
+    K: Eq + Hash,
+{
+    recency.retain(|(key, stamp)| {
+        map.get(key)
+            .is_some_and(|entry| entry.stamp == *stamp)
+    });
 }
 
 fn trim_map_capacity<K, V>(map: &mut FxHashMap<K, V>, floor: usize, multiplier: usize)
@@ -484,6 +598,13 @@ fn trim_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     let target = floor.max(vec.len());
     if vec.capacity() > target.saturating_mul(multiplier) {
         vec.shrink_to(target);
+    }
+}
+
+fn trim_deque_capacity<T>(deque: &mut VecDeque<T>, floor: usize, multiplier: usize) {
+    let target = floor.max(deque.len());
+    if deque.capacity() > target.saturating_mul(multiplier) {
+        deque.shrink_to(target);
     }
 }
 
@@ -562,6 +683,25 @@ mod tests {
         cache.finish_frame();
 
         assert!(cache.retained.lock().lines.len() <= LINE_LAYOUT_CACHE_MAX_RETAINED_LINES);
+    }
+
+    #[test]
+    fn retained_eviction_uses_current_generation_order() {
+        let mut map = FxHashMap::default();
+        let mut recency = VecDeque::new();
+
+        insert_retained_bounded(&mut map, &mut recency, 1_u32, 10_u32, 1, 2);
+        insert_retained_bounded(&mut map, &mut recency, 2_u32, 20_u32, 2, 2);
+
+        // Simulate a retained hit: the map entry leaves the retained tier, while its queue record is
+        // intentionally left stale. Reinserting it gives it a newer generation.
+        map.remove(&1);
+        insert_retained_bounded(&mut map, &mut recency, 1_u32, 11_u32, 3, 2);
+        insert_retained_bounded(&mut map, &mut recency, 3_u32, 30_u32, 4, 2);
+
+        assert!(map.contains_key(&1));
+        assert!(!map.contains_key(&2));
+        assert!(map.contains_key(&3));
     }
 
     #[test]
