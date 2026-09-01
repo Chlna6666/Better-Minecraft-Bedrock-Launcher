@@ -1,13 +1,14 @@
 use super::{Hsla, Rgba};
-use crate::{CpuVectorLevel, cpu_vector_level};
+use fearless_simd::{Level, Simd, dispatch};
 
 const SIMD_BATCH_THRESHOLD: usize = 8;
 
 /// Converts a batch of RGBA colors to HSLA colors.
 ///
-/// The output slice must have the same length as the input slice. GPUI selects an
-/// ISA-specialized implementation once the batch is large enough to amortize dispatch;
-/// small batches and unsupported architectures use the scalar path.
+/// The output slice must have the same length as the input slice. GPUI keeps tiny batches on the
+/// scalar path and uses Fearless SIMD runtime multiversioning once there is enough work to amortize
+/// dispatch. Branch-heavy hue selection remains ordinary safe Rust so LLVM can specialize it for
+/// the selected ISA without GPUI owning target-feature or intrinsic safety contracts.
 pub fn rgba_to_hsla_batch(input: &[Rgba], output: &mut [Hsla]) {
     assert_eq!(input.len(), output.len(), "color batch lengths must match");
     if input.len() < SIMD_BATCH_THRESHOLD {
@@ -15,21 +16,14 @@ pub fn rgba_to_hsla_batch(input: &[Rgba], output: &mut [Hsla]) {
         return;
     }
 
-    match cpu_vector_level() {
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Avx2 => unsafe { rgba_to_hsla_avx2(input, output) },
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Sse2 => unsafe { rgba_to_hsla_sse2(input, output) },
-        #[cfg(target_arch = "aarch64")]
-        CpuVectorLevel::Neon => unsafe { rgba_to_hsla_neon(input, output) },
-        _ => rgba_to_hsla_scalar(input, output),
-    }
+    let level = Level::new();
+    dispatch!(level, simd => rgba_to_hsla_multiversioned(simd, input, output));
 }
 
 /// Converts a batch of HSLA colors to RGBA colors.
 ///
-/// The output slice must have the same length as the input slice. Runtime CPU feature
-/// detection selects AVX2/SSE2/NEON-specialized loops where available, with a scalar fallback.
+/// The output slice must have the same length as the input slice. Large batches are compiled into
+/// ISA-specialized safe-Rust loops and selected at runtime by Fearless SIMD.
 pub fn hsla_to_rgba_batch(input: &[Hsla], output: &mut [Rgba]) {
     assert_eq!(input.len(), output.len(), "color batch lengths must match");
     if input.len() < SIMD_BATCH_THRESHOLD {
@@ -37,22 +31,15 @@ pub fn hsla_to_rgba_batch(input: &[Hsla], output: &mut [Rgba]) {
         return;
     }
 
-    match cpu_vector_level() {
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Avx2 => unsafe { hsla_to_rgba_avx2(input, output) },
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Sse2 => unsafe { hsla_to_rgba_sse2(input, output) },
-        #[cfg(target_arch = "aarch64")]
-        CpuVectorLevel::Neon => unsafe { hsla_to_rgba_neon(input, output) },
-        _ => hsla_to_rgba_scalar(input, output),
-    }
+    let level = Level::new();
+    dispatch!(level, simd => hsla_to_rgba_multiversioned(simd, input, output));
 }
 
 /// Interpolates two equally-sized HSLA batches using normalized shortest-path hue interpolation.
 ///
-/// `t` is clamped to `0..=1`. AVX2 performs two `Hsla` values per vector, SSE2 and AArch64 NEON
-/// process all four channels of one color per vector. Unsupported architectures fall back to
-/// scalar code.
+/// `t` is clamped to `0..=1`. Tiny batches stay scalar; larger batches use Fearless SIMD runtime
+/// multiversioning so x86/x86-64 and AArch64 receive the strongest supported code path without
+/// handwritten feature detection or architecture-specific unsafe blocks in GPUI.
 pub fn lerp_hsla_batch(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
     assert_eq!(from.len(), to.len(), "color batch lengths must match");
     assert_eq!(from.len(), output.len(), "color batch lengths must match");
@@ -62,15 +49,8 @@ pub fn lerp_hsla_batch(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) 
         return;
     }
 
-    match cpu_vector_level() {
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Avx2 => unsafe { lerp_hsla_avx2(from, to, t, output) },
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Sse2 => unsafe { lerp_hsla_sse2(from, to, t, output) },
-        #[cfg(target_arch = "aarch64")]
-        CpuVectorLevel::Neon => unsafe { lerp_hsla_neon(from, to, t, output) },
-        _ => lerp_hsla_scalar(from, to, t, output),
-    }
+    let level = Level::new();
+    dispatch!(level, simd => lerp_hsla_multiversioned(simd, from, to, t, output));
 }
 
 #[inline(always)]
@@ -181,149 +161,19 @@ fn lerp_hsla_scalar(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
     }
 }
 
-// RGBA<->HSLA contains lane-dependent hue selection. Keeping the loops in target-feature
-// functions lets LLVM emit ISA-specific compare/select code where profitable without charging
-// every scalar conversion for runtime dispatch.
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx2")]
-unsafe fn rgba_to_hsla_avx2(input: &[Rgba], output: &mut [Hsla]) {
+#[inline(always)]
+fn rgba_to_hsla_multiversioned<S: Simd>(_: S, input: &[Rgba], output: &mut [Hsla]) {
     rgba_to_hsla_scalar(input, output);
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse2")]
-unsafe fn rgba_to_hsla_sse2(input: &[Rgba], output: &mut [Hsla]) {
-    rgba_to_hsla_scalar(input, output);
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn rgba_to_hsla_neon(input: &[Rgba], output: &mut [Hsla]) {
-    rgba_to_hsla_scalar(input, output);
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx2")]
-unsafe fn hsla_to_rgba_avx2(input: &[Hsla], output: &mut [Rgba]) {
+#[inline(always)]
+fn hsla_to_rgba_multiversioned<S: Simd>(_: S, input: &[Hsla], output: &mut [Rgba]) {
     hsla_to_rgba_scalar(input, output);
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse2")]
-unsafe fn hsla_to_rgba_sse2(input: &[Hsla], output: &mut [Rgba]) {
-    hsla_to_rgba_scalar(input, output);
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn hsla_to_rgba_neon(input: &[Hsla], output: &mut [Rgba]) {
-    hsla_to_rgba_scalar(input, output);
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx2")]
-unsafe fn lerp_hsla_avx2(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
-
-    unsafe {
-        let t8 = _mm256_set1_ps(t);
-        let half = _mm256_set1_ps(0.5);
-        let neg_half = _mm256_set1_ps(-0.5);
-        let one = _mm256_set1_ps(1.0);
-        let neg_one = _mm256_set1_ps(-1.0);
-        let zero = _mm256_setzero_ps();
-        // Hsla is repr(C): hue occupies lanes 0 and 4 when two colors are loaded together.
-        let hue_mask = _mm256_castsi256_ps(_mm256_set_epi32(0, 0, 0, -1, 0, 0, 0, -1));
-        let mut index = 0usize;
-        while index + 2 <= from.len() {
-            let a = _mm256_loadu_ps(from.as_ptr().add(index).cast::<f32>());
-            let b = _mm256_loadu_ps(to.as_ptr().add(index).cast::<f32>());
-            let mut delta = _mm256_sub_ps(b, a);
-            let gt = _mm256_and_ps(_mm256_cmp_ps(delta, half, _CMP_GT_OQ), hue_mask);
-            let lt = _mm256_and_ps(_mm256_cmp_ps(delta, neg_half, _CMP_LT_OQ), hue_mask);
-            delta = _mm256_add_ps(delta, _mm256_and_ps(gt, neg_one));
-            delta = _mm256_add_ps(delta, _mm256_and_ps(lt, one));
-            let mut value = _mm256_add_ps(a, _mm256_mul_ps(delta, t8));
-            let wrap_hi = _mm256_and_ps(_mm256_cmp_ps(value, one, _CMP_GE_OQ), hue_mask);
-            let wrap_lo = _mm256_and_ps(_mm256_cmp_ps(value, zero, _CMP_LT_OQ), hue_mask);
-            value = _mm256_add_ps(value, _mm256_and_ps(wrap_hi, neg_one));
-            value = _mm256_add_ps(value, _mm256_and_ps(wrap_lo, one));
-            _mm256_storeu_ps(output.as_mut_ptr().add(index).cast::<f32>(), value);
-            index += 2;
-        }
-        lerp_hsla_scalar(&from[index..], &to[index..], t, &mut output[index..]);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse2")]
-unsafe fn lerp_hsla_sse2(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
-
-    unsafe {
-        let t4 = _mm_set1_ps(t);
-        let half = _mm_set1_ps(0.5);
-        let neg_half = _mm_set1_ps(-0.5);
-        let one = _mm_set1_ps(1.0);
-        let neg_one = _mm_set1_ps(-1.0);
-        let zero = _mm_setzero_ps();
-        let hue_mask = _mm_castsi128_ps(_mm_set_epi32(0, 0, 0, -1));
-        for index in 0..from.len() {
-            let a = _mm_loadu_ps(from.as_ptr().add(index).cast::<f32>());
-            let b = _mm_loadu_ps(to.as_ptr().add(index).cast::<f32>());
-            let mut delta = _mm_sub_ps(b, a);
-            let gt = _mm_and_ps(_mm_cmpgt_ps(delta, half), hue_mask);
-            let lt = _mm_and_ps(_mm_cmplt_ps(delta, neg_half), hue_mask);
-            delta = _mm_add_ps(delta, _mm_and_ps(gt, neg_one));
-            delta = _mm_add_ps(delta, _mm_and_ps(lt, one));
-            let mut value = _mm_add_ps(a, _mm_mul_ps(delta, t4));
-            let wrap_hi = _mm_and_ps(_mm_cmpge_ps(value, one), hue_mask);
-            let wrap_lo = _mm_and_ps(_mm_cmplt_ps(value, zero), hue_mask);
-            value = _mm_add_ps(value, _mm_and_ps(wrap_hi, neg_one));
-            value = _mm_add_ps(value, _mm_and_ps(wrap_lo, one));
-            _mm_storeu_ps(output.as_mut_ptr().add(index).cast::<f32>(), value);
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn lerp_hsla_neon(from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
-    use std::arch::aarch64::*;
-
-    unsafe {
-        let t4 = vdupq_n_f32(t);
-        let half = vdupq_n_f32(0.5);
-        let neg_half = vdupq_n_f32(-0.5);
-        let one = vdupq_n_f32(1.0);
-        let neg_one = vdupq_n_f32(-1.0);
-        let zero = vdupq_n_f32(0.0);
-        let hue_mask = vsetq_lane_u32(u32::MAX, vdupq_n_u32(0), 0);
-
-        for index in 0..from.len() {
-            let a = vld1q_f32(from.as_ptr().add(index).cast::<f32>());
-            let b = vld1q_f32(to.as_ptr().add(index).cast::<f32>());
-            let mut delta = vsubq_f32(b, a);
-
-            let gt = vandq_u32(vcgtq_f32(delta, half), hue_mask);
-            let lt = vandq_u32(vcltq_f32(delta, neg_half), hue_mask);
-            delta = vaddq_f32(delta, vbslq_f32(gt, neg_one, zero));
-            delta = vaddq_f32(delta, vbslq_f32(lt, one, zero));
-
-            let mut value = vaddq_f32(a, vmulq_f32(delta, t4));
-            let wrap_hi = vandq_u32(vcgeq_f32(value, one), hue_mask);
-            let wrap_lo = vandq_u32(vcltq_f32(value, zero), hue_mask);
-            value = vaddq_f32(value, vbslq_f32(wrap_hi, neg_one, zero));
-            value = vaddq_f32(value, vbslq_f32(wrap_lo, one, zero));
-            vst1q_f32(output.as_mut_ptr().add(index).cast::<f32>(), value);
-        }
-    }
+#[inline(always)]
+fn lerp_hsla_multiversioned<S: Simd>(_: S, from: &[Hsla], to: &[Hsla], t: f32, output: &mut [Hsla]) {
+    lerp_hsla_scalar(from, to, t, output);
 }
 
 #[cfg(test)]

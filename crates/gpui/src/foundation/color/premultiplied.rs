@@ -1,8 +1,10 @@
 use super::rgba::swap_rgba_pa_to_bgra;
-use crate::{CpuVectorLevel, cpu_vector_level};
+use fearless_simd::{Level, Simd, dispatch, f32x16, prelude::*, u8x16, u16x8, u32x4, u32x8, u32x16};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const VECTOR_MIN_BYTES: usize = 64;
+const SIMD_PIXELS_PER_CHUNK: usize = 16;
+const SIMD_BYTES_PER_CHUNK: usize = SIMD_PIXELS_PER_CHUNK * 4;
 const PARALLEL_MIN_BYTES: usize = 16 * 1024 * 1024;
 const PARALLEL_MIN_BYTES_PER_WORKER: usize = 4 * 1024 * 1024;
 const MAX_PARALLEL_WORKERS: usize = 4;
@@ -40,25 +42,25 @@ const fn build_alpha_norm_lut() -> [f32; 256] {
 const fn build_alpha_divisor_lut() -> [f32; 256] {
     let mut lut = build_alpha_norm_lut();
     // A fully transparent premultiplied pixel has zero color channels. Dividing by one preserves
-    // those zeros and avoids a special branch in vector kernels; the original alpha byte is
-    // restored after unpremultiplication.
+    // those zeros and avoids a special branch in the SIMD kernel; the original alpha channel is
+    // carried through untouched.
     lut[0] = 1.0;
     lut
 }
 
-// Match the historical scalar denominator exactly while avoiding a first divide inside every
-// vector loop. Using a reciprocal LUT would change a small number of 8-bit results by one LSB.
+// Match the historical scalar denominator exactly. A reciprocal or algebraic rewrite changes a
+// small number of 8-bit results by one LSB, so the safe SIMD kernel still uses the exact table.
 const ALPHA_NORM_LUT: [f32; 256] = build_alpha_norm_lut();
 const ALPHA_DIVISOR_LUT: [f32; 256] = build_alpha_divisor_lut();
 
 /// Converts an in-place RGBA premultiplied-alpha pixel buffer to BGRA straight alpha.
 ///
-/// Medium and large buffers use an ISA-specific vector path. Very large buffers may be split across
-/// a small number of scoped workers, and each worker still uses the best available SIMD kernel.
-/// Only one conversion may fan out at a time; concurrent huge conversions fall back immediately to
-/// single-threaded SIMD instead of oversubscribing the process. Small buffers and unsupported CPUs
-/// retain the exact scalar conversion used historically by GPUI. Trailing bytes that do not form a
-/// complete RGBA pixel are left untouched.
+/// Medium and large buffers use Fearless SIMD runtime multiversioning. Very large buffers may be
+/// split across a small number of scoped workers, and each worker still dispatches to the strongest
+/// available safe SIMD backend. Only one conversion may fan out at a time; concurrent huge
+/// conversions fall back immediately to single-threaded SIMD instead of oversubscribing the
+/// process. Small buffers retain the historical scalar conversion. Trailing bytes that do not form
+/// a complete RGBA pixel are left untouched.
 pub(crate) fn swap_rgba_pa_to_bgra_buffer(buffer: &mut [u8]) {
     let pixel_bytes = buffer.len() & !3;
     let (pixels, _) = buffer.split_at_mut(pixel_bytes);
@@ -115,15 +117,8 @@ fn serial_buffer(buffer: &mut [u8]) {
         return;
     }
 
-    match cpu_vector_level() {
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Avx2 => unsafe { avx2_buffer(buffer) },
-        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-        CpuVectorLevel::Sse2 => unsafe { sse2_buffer(buffer) },
-        #[cfg(target_arch = "aarch64")]
-        CpuVectorLevel::Neon => unsafe { neon_buffer(buffer) },
-        _ => scalar_buffer(buffer),
-    }
+    let level = Level::new();
+    dispatch!(level, simd => simd_buffer(simd, buffer));
 }
 
 #[inline(always)]
@@ -133,140 +128,54 @@ fn scalar_buffer(buffer: &mut [u8]) {
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx2")]
-unsafe fn avx2_buffer(buffer: &mut [u8]) {
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
+#[inline(always)]
+fn simd_buffer<S: Simd>(simd: S, buffer: &mut [u8]) {
+    let mut chunks = buffer.chunks_exact_mut(SIMD_BYTES_PER_CHUNK);
+    for chunk in &mut chunks {
+        let [red, green, blue, alpha] = u8x16::load_four_interleaved(simd, chunk);
+        let alpha_wide = widen_u8_to_u32x16(alpha);
+        let divisor = f32x16::from_fn(simd, |lane| {
+            ALPHA_DIVISOR_LUT[alpha_wide[lane] as usize]
+        });
 
-    unsafe {
-        let mut offset = 0usize;
-        let bgra_indices = _mm256_set_epi32(7, 4, 5, 6, 3, 0, 1, 2);
-        let min_i = _mm256_setzero_si256();
-        let max_i = _mm256_set1_epi32(255);
-        let zero128 = _mm_setzero_si128();
+        let red = unpremultiply_channel(simd, red, divisor);
+        let green = unpremultiply_channel(simd, green, divisor);
+        let blue = unpremultiply_channel(simd, blue, divisor);
 
-        // Eight input bytes are two RGBA pixels. Expanding them to eight i32/f32 lanes lets one
-        // AVX2 division unpremultiply both pixels at once. The divisor LUT maps alpha 0 to 1.0, so
-        // transparent pixels need no per-iteration alpha-lane permute/compare/blend branch path.
-        while offset + 8 <= buffer.len() {
-            let source = buffer.as_mut_ptr().add(offset);
-            let packed = std::ptr::read_unaligned(source.cast::<u64>());
-            let bytes = _mm_cvtsi64_si128(packed as i64);
-            let rgba_i = _mm256_cvtepu8_epi32(bytes);
-            let rgba_f = _mm256_cvtepi32_ps(rgba_i);
-            let alpha0 = ALPHA_DIVISOR_LUT[usize::from(*source.add(3))];
-            let alpha1 = ALPHA_DIVISOR_LUT[usize::from(*source.add(7))];
-            let denominator = _mm256_set_ps(
-                alpha1, alpha1, alpha1, alpha1, alpha0, alpha0, alpha0, alpha0,
-            );
-            let straight_f = _mm256_div_ps(rgba_f, denominator);
-            let straight_i = _mm256_cvttps_epi32(straight_f);
-            // Rust's float->u8 cast saturates. Reproduce that behavior before the final lane store.
-            let straight_i = _mm256_min_epi32(_mm256_max_epi32(straight_i, min_i), max_i);
-            // Alpha is not unpremultiplied. Restore the original A lanes (3 and 7).
-            let with_alpha = _mm256_blend_epi32(straight_i, rgba_i, 0b1000_1000);
-            // RGBA -> BGRA for both pixels.
-            let bgra_i = _mm256_permutevar8x32_epi32(with_alpha, bgra_indices);
-            // Narrow the already-clamped i32 lanes entirely in registers. AVX2 guarantees SSE2,
-            // so signed i32->i16 is safe for 0..=255 and the final pack saturates to u8. The low
-            // eight bytes preserve [B0,G0,R0,A0,B1,G1,R1,A1] and can be stored in one instruction.
-            let bgra_low = _mm256_castsi256_si128(bgra_i);
-            let bgra_high = _mm256_extracti128_si256::<1>(bgra_i);
-            let packed_i16 = _mm_packs_epi32(bgra_low, bgra_high);
-            let packed_u8 = _mm_packus_epi16(packed_i16, zero128);
-            _mm_storel_epi64(source.cast::<__m128i>(), packed_u8);
-            offset += 8;
-        }
-        scalar_buffer(&mut buffer[offset..]);
+        // Preserve the original alpha bytes and write BGRA directly from the deinterleaved vectors.
+        u8x16::store_four_interleaved([blue, green, red, alpha], chunk);
     }
+
+    scalar_buffer(chunks.into_remainder());
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse2")]
-unsafe fn sse2_buffer(buffer: &mut [u8]) {
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
-
-    unsafe {
-        let zero = _mm_setzero_si128();
-        let alpha_lane_mask = _mm_set_epi32(-1, 0, 0, 0);
-
-        for pixel in buffer.chunks_exact_mut(4) {
-            let alpha = pixel[3];
-            let packed = std::ptr::read_unaligned(pixel.as_ptr().cast::<u32>());
-            let bytes = _mm_cvtsi32_si128(packed as i32);
-            let words = _mm_unpacklo_epi8(bytes, zero);
-            let rgba_i = _mm_unpacklo_epi16(words, zero);
-            let rgba_f = _mm_cvtepi32_ps(rgba_i);
-            let denominator = _mm_set1_ps(ALPHA_DIVISOR_LUT[usize::from(alpha)]);
-            let straight_i = _mm_cvttps_epi32(_mm_div_ps(rgba_f, denominator));
-
-            // Restore the source alpha without SSE4.1 blend instructions, then reorder dword lanes
-            // from RGBA to BGRA using SSE2's immediate shuffle.
-            let rgb_i = _mm_andnot_si128(alpha_lane_mask, straight_i);
-            let alpha_i = _mm_and_si128(alpha_lane_mask, rgba_i);
-            let with_alpha = _mm_or_si128(rgb_i, alpha_i);
-            let bgra_i = _mm_shuffle_epi32::<0b11_00_01_10>(with_alpha);
-
-            // PACKSSDW + PACKUSWB reproduces Rust's saturating float->u8 cast for both valid
-            // premultiplied pixels and defensive RGB>alpha inputs, with no stack lane array.
-            let packed_i16 = _mm_packs_epi32(bgra_i, zero);
-            let packed_u8 = _mm_packus_epi16(packed_i16, zero);
-            let bgra = _mm_cvtsi128_si32(packed_u8) as u32;
-            std::ptr::write_unaligned(pixel.as_mut_ptr().cast::<u32>(), bgra);
-        }
-    }
+#[inline(always)]
+fn widen_u8_to_u32x16<S: Simd>(value: u8x16<S>) -> u32x16<S> {
+    let (low16, high16) = value.widen();
+    let (q0, q1) = low16.widen();
+    let (q2, q3) = high16.widen();
+    let low32 = q0.combine(q1);
+    let high32 = q2.combine(q3);
+    low32.combine(high32)
 }
 
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn neon_buffer(buffer: &mut [u8]) {
-    use std::arch::aarch64::*;
+#[inline(always)]
+fn narrow_u32x16_to_u8<S: Simd>(value: u32x16<S>) -> u8x16<S> {
+    let (low32, high32): (u32x8<S>, u32x8<S>) = value.split();
+    let (q0, q1): (u32x4<S>, u32x4<S>) = low32.split();
+    let (q2, q3): (u32x4<S>, u32x4<S>) = high32.split();
+    let low16: u16x8<S> = q0.saturating_narrow(q1);
+    let high16: u16x8<S> = q2.saturating_narrow(q3);
+    low16.saturating_narrow(high16)
+}
 
-    const BGRA_INDICES: [u8; 8] = [2, 1, 0, 3, 6, 5, 4, 7];
-    const ALPHA_MASK: [u8; 8] = [0, 0, 0, u8::MAX, 0, 0, 0, u8::MAX];
-
-    unsafe {
-        let mut offset = 0usize;
-        let bgra_indices = vld1_u8(BGRA_INDICES.as_ptr());
-        let alpha_mask = vld1_u8(ALPHA_MASK.as_ptr());
-        let zero8 = vdup_n_u8(0);
-
-        while offset + 8 <= buffer.len() {
-            let source = buffer.as_mut_ptr().add(offset);
-            let rgba8 = vld1_u8(source);
-            let words = vmovl_u8(rgba8);
-            let low_i = vmovl_u16(vget_low_u16(words));
-            let high_i = vmovl_u16(vget_high_u16(words));
-
-            let low_f = vcvtq_f32_u32(low_i);
-            let high_f = vcvtq_f32_u32(high_i);
-            let alpha0 = usize::from(*source.add(3));
-            let alpha1 = usize::from(*source.add(7));
-            let low_divisor = vdupq_n_f32(ALPHA_DIVISOR_LUT[alpha0]);
-            let high_divisor = vdupq_n_f32(ALPHA_DIVISOR_LUT[alpha1]);
-            let low_straight = vcvtq_u32_f32(vdivq_f32(low_f, low_divisor));
-            let high_straight = vcvtq_u32_f32(vdivq_f32(high_f, high_divisor));
-
-            // Saturating narrowing reproduces Rust's float->u8 clamp while keeping the whole
-            // two-pixel result in vector registers.
-            let packed16 = vcombine_u16(vqmovn_u32(low_straight), vqmovn_u32(high_straight));
-            let straight_rgba8 = vqmovn_u16(packed16);
-            let table = vcombine_u8(straight_rgba8, zero8);
-            let bgra8 = vqtbl1_u8(table, bgra_indices);
-            // Unpremultiplication turns every non-zero alpha lane into 255. Restore the source
-            // alpha bytes after the RGBA->BGRA shuffle, including fully transparent pixels.
-            let result = vbsl_u8(alpha_mask, rgba8, bgra8);
-            vst1_u8(source, result);
-            offset += 8;
-        }
-        scalar_buffer(&mut buffer[offset..]);
-    }
+#[inline(always)]
+fn unpremultiply_channel<S: Simd>(simd: S, channel: u8x16<S>, divisor: f32x16<S>) -> u8x16<S> {
+    let channel_wide = widen_u8_to_u32x16(channel);
+    let channel_f: f32x16<S> = channel_wide.to_float();
+    let straight: u32x16<S> = (channel_f / divisor).to_int_precise();
+    let _ = simd;
+    narrow_u32x16_to_u8(straight)
 }
 
 #[cfg(test)]
@@ -294,19 +203,11 @@ mod tests {
         assert_eq!(input, expected);
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     #[test]
-    fn sse2_conversion_matches_scalar_for_all_alpha_values() {
-        #[cfg(target_arch = "x86")]
-        if !std::is_x86_feature_detected!("sse2") {
-            return;
-        }
-
+    fn vector_conversion_saturates_non_premultiplied_inputs() {
         let mut input = Vec::with_capacity(256 * 4 * 4);
         for alpha in 0..=255u8 {
             for seed in [0u8, 37, 127, 255] {
-                // Include deliberately non-premultiplied values so the vector narrowing also
-                // verifies Rust's saturating float->u8 behavior, not only the well-formed fast case.
                 input.extend_from_slice(&[
                     seed,
                     seed.wrapping_mul(3),
@@ -316,7 +217,7 @@ mod tests {
             }
         }
         let expected = scalar_reference(input.clone());
-        unsafe { sse2_buffer(&mut input) };
+        swap_rgba_pa_to_bgra_buffer(&mut input);
         assert_eq!(input, expected);
     }
 

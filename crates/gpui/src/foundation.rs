@@ -4,7 +4,6 @@ mod color;
 /// The default colors used by GPUI.
 pub mod colors;
 mod counter;
-mod cpu_features;
 mod executor;
 mod fluent;
 mod global;
@@ -20,7 +19,6 @@ pub use asset_cache::*;
 pub use color::*;
 pub use colors::*;
 pub(crate) use counter::atomic_incr_if_not_zero;
-pub(crate) use cpu_features::{CpuVectorLevel, cpu_vector_level};
 pub use executor::*;
 pub use fluent::FluentBuilder;
 pub use global::*;
