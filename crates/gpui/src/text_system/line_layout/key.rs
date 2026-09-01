@@ -84,6 +84,15 @@ impl Iterator for CanonicalFontRuns<'_> {
     }
 }
 
+/// Materializes the unique shaping representation of a run slice.
+///
+/// This is used only on cache misses before invoking the platform shaper, so the small allocation
+/// is off the hot cache-hit path. Keeping the platform input canonical guarantees that a cached
+/// layout cannot depend on paint-only decoration boundaries from whichever frame populated it.
+pub(super) fn canonicalize_font_runs(runs: &[FontRun]) -> SmallVec<[FontRun; 1]> {
+    CanonicalFontRuns::new(runs).collect()
+}
+
 impl PartialEq for CacheKeyRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.text == other.text
@@ -200,6 +209,7 @@ mod tests {
 
         assert!(split_key == merged_key);
         assert_eq!(hash_key(split_key), hash_key(merged_key));
+        assert_eq!(canonicalize_font_runs(&split).as_slice(), &merged);
     }
 
     #[test]
@@ -267,5 +277,6 @@ mod tests {
 
         assert!(split_key == merged_key);
         assert_eq!(hash_key(split_key), hash_key(merged_key));
+        assert_eq!(canonicalize_font_runs(&split).as_slice(), &merged);
     }
 }
