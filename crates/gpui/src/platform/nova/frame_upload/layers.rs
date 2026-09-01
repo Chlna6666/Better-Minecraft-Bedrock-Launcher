@@ -60,6 +60,14 @@ impl FrameUpload {
                 .sort_unstable_by_key(|range| (std::cmp::Reverse(range.depth), range.content_start));
         }
 
+        // GPU target identity needs a stable order independent of nesting/depth order. Build it once
+        // with the static topology instead of collect + sort + dedup in every compatibility check.
+        self.isolated_blur_source_indices_cache.clear();
+        self.isolated_blur_source_indices_cache
+            .extend(self.blur_content_ranges_cache.iter().map(|range| range.index));
+        self.isolated_blur_source_indices_cache.sort_unstable();
+        self.isolated_blur_source_indices_cache.dedup();
+
         // Atlas dependency membership is also a pure function of the static flattened batch stream.
         // Refresh it beside the marker topology so retained frames never rescan the batch prefix.
         self.refresh_backdrop_source_atlas_texture_ids();
@@ -68,6 +76,11 @@ impl FrameUpload {
     #[inline]
     pub(in crate::platform::nova) fn blur_content_ranges(&self) -> &[BlurContentRange] {
         &self.blur_content_ranges_cache
+    }
+
+    #[inline]
+    pub(in crate::platform::nova) fn isolated_blur_source_indices(&self) -> &[u32] {
+        &self.isolated_blur_source_indices_cache
     }
 
     #[inline]
