@@ -2,7 +2,7 @@ use crate::{
     Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
     FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem, Point,
     RenderGlyphParams, Result, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size,
-    point, px, size, swap_rgba_pa_to_bgra,
+    point, px, size, swap_rgba_pa_to_bgra_buffer,
 };
 use anyhow::anyhow;
 use cocoa::appkit::CGFloat;
@@ -177,7 +177,7 @@ impl PlatformTextSystem for MacTextSystem {
     }
 
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
-        self.0.read().glyph_for_char(font_id, ch)
+        self.0.read().glyph_for_char(ch).map(GlyphId)
     }
 
     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
@@ -444,9 +444,7 @@ impl MacTextSystemState {
 
             if params.is_emoji {
                 // Convert from RGBA with premultiplied alpha to BGRA with straight alpha.
-                for pixel in bytes.chunks_exact_mut(4) {
-                    swap_rgba_pa_to_bgra(pixel);
-                }
+                swap_rgba_pa_to_bgra_buffer(&mut bytes);
             }
 
             Ok(GlyphRasterization::Bitmap {
