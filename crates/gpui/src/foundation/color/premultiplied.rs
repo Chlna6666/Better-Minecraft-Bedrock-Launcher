@@ -3,6 +3,20 @@ use crate::{CpuVectorLevel, cpu_vector_level};
 
 const VECTOR_MIN_BYTES: usize = 64;
 
+const fn build_alpha_norm_lut() -> [f32; 256] {
+    let mut lut = [0.0; 256];
+    let mut index = 0usize;
+    while index < lut.len() {
+        lut[index] = index as f32 / 255.0;
+        index += 1;
+    }
+    lut
+}
+
+// Match the historical scalar denominator exactly while avoiding a first divide inside every
+// vector loop. Using a reciprocal LUT would change a small number of 8-bit results by one LSB.
+const ALPHA_NORM_LUT: [f32; 256] = build_alpha_norm_lut();
+
 /// Converts an in-place RGBA premultiplied-alpha pixel buffer to BGRA straight alpha.
 ///
 /// Large buffers use an ISA-specific vector path. Small buffers and unsupported CPUs retain the
@@ -46,7 +60,6 @@ unsafe fn avx2_buffer(buffer: &mut [u8]) {
         let mut offset = 0usize;
         let alpha_indices = _mm256_set_epi32(7, 7, 7, 7, 3, 3, 3, 3);
         let bgra_indices = _mm256_set_epi32(7, 4, 5, 6, 3, 0, 1, 2);
-        let divisor = _mm256_set1_ps(255.0);
         let one = _mm256_set1_ps(1.0);
         let zero_i = _mm256_setzero_si256();
         let min_i = _mm256_setzero_si256();
@@ -62,8 +75,11 @@ unsafe fn avx2_buffer(buffer: &mut [u8]) {
             let alpha_i = _mm256_permutevar8x32_epi32(rgba_i, alpha_indices);
             let alpha_zero = _mm256_cmpeq_epi32(alpha_i, zero_i);
             let rgba_f = _mm256_cvtepi32_ps(rgba_i);
-            let alpha_f = _mm256_cvtepi32_ps(alpha_i);
-            let alpha_norm = _mm256_div_ps(alpha_f, divisor);
+            let alpha0 = ALPHA_NORM_LUT[usize::from(*source.add(3))];
+            let alpha1 = ALPHA_NORM_LUT[usize::from(*source.add(7))];
+            let alpha_norm = _mm256_set_ps(
+                alpha1, alpha1, alpha1, alpha1, alpha0, alpha0, alpha0, alpha0,
+            );
             let denominator = _mm256_blendv_ps(alpha_norm, one, _mm256_castsi256_ps(alpha_zero));
             let straight_f = _mm256_div_ps(rgba_f, denominator);
             let straight_i = _mm256_cvttps_epi32(straight_f);
@@ -93,7 +109,6 @@ unsafe fn sse2_buffer(buffer: &mut [u8]) {
     use std::arch::x86_64::*;
 
     unsafe {
-        let divisor = _mm_set1_ps(255.0);
         let zero = _mm_setzero_si128();
         for pixel in buffer.chunks_exact_mut(4) {
             let alpha = pixel[3];
@@ -106,7 +121,7 @@ unsafe fn sse2_buffer(buffer: &mut [u8]) {
             let words = _mm_unpacklo_epi8(bytes, zero);
             let dwords = _mm_unpacklo_epi16(words, zero);
             let rgba_f = _mm_cvtepi32_ps(dwords);
-            let alpha_norm = _mm_div_ps(_mm_set1_ps(alpha as f32), divisor);
+            let alpha_norm = _mm_set1_ps(ALPHA_NORM_LUT[usize::from(alpha)]);
             let straight_f = _mm_div_ps(rgba_f, alpha_norm);
             let straight_i = _mm_cvttps_epi32(straight_f);
             let mut lanes = [0i32; 4];
@@ -125,7 +140,6 @@ unsafe fn neon_buffer(buffer: &mut [u8]) {
     use std::arch::aarch64::*;
 
     unsafe {
-        let divisor = vdupq_n_f32(255.0);
         let mut offset = 0usize;
         while offset + 8 <= buffer.len() {
             let source = buffer.as_mut_ptr().add(offset);
@@ -133,8 +147,8 @@ unsafe fn neon_buffer(buffer: &mut [u8]) {
             let words = vmovl_u8(bytes);
             let low = vmovl_u16(vget_low_u16(words));
             let high = vmovl_u16(vget_high_u16(words));
-            neon_pixel(source, low, divisor);
-            neon_pixel(source.add(4), high, divisor);
+            neon_pixel(source, low);
+            neon_pixel(source.add(4), high);
             offset += 8;
         }
         scalar_buffer(&mut buffer[offset..]);
@@ -143,11 +157,7 @@ unsafe fn neon_buffer(buffer: &mut [u8]) {
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn neon_pixel(
-    pixel: *mut u8,
-    rgba_i: std::arch::aarch64::uint32x4_t,
-    divisor: std::arch::aarch64::float32x4_t,
-) {
+unsafe fn neon_pixel(pixel: *mut u8, rgba_i: std::arch::aarch64::uint32x4_t) {
     use std::arch::aarch64::*;
 
     unsafe {
@@ -159,7 +169,7 @@ unsafe fn neon_pixel(
             return;
         }
         let rgba_f = vcvtq_f32_u32(rgba_i);
-        let alpha_norm = vdivq_f32(vdupq_n_f32(alpha as f32), divisor);
+        let alpha_norm = vdupq_n_f32(ALPHA_NORM_LUT[usize::from(alpha)]);
         let straight_f = vdivq_f32(rgba_f, alpha_norm);
         let straight_i = vcvtq_u32_f32(straight_f);
         let mut lanes = [0u32; 4];
@@ -194,6 +204,16 @@ mod tests {
         let expected = scalar_reference(input.clone());
         swap_rgba_pa_to_bgra_buffer(&mut input);
         assert_eq!(input, expected);
+    }
+
+    #[test]
+    fn alpha_lut_matches_scalar_denominator() {
+        for alpha in 0..=255u8 {
+            assert_eq!(
+                ALPHA_NORM_LUT[usize::from(alpha)].to_bits(),
+                (alpha as f32 / 255.0).to_bits()
+            );
+        }
     }
 
     #[test]
