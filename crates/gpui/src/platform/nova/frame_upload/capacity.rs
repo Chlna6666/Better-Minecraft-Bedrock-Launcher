@@ -17,6 +17,8 @@ impl FrameUpload {
             self.backdrop_blurs.capacity(),
             self.backdrop_blur_configs.capacity() * std::mem::size_of::<BackdropBlurConfig>(),
             self.blur_content_ranges_cache.capacity() * std::mem::size_of::<BlurContentRange>(),
+            self.backdrop_source_atlas_texture_ids_cache.capacity()
+                * std::mem::size_of::<AtlasTextureId>(),
             self.animation_bindings.capacity(),
             self.animation_values.capacity(),
             self.animated_primitives.capacity() * std::mem::size_of::<AnimatedUpload>(),
@@ -106,6 +108,7 @@ impl FrameUpload {
         // pathological frame should not pin their peak bucket arrays forever. Keep a small floor so
         // normal animations remain allocation-free after a memory-pressure trim.
         let hash_floor = 8usize.saturating_mul(multiplier.max(1));
+        Arc::make_mut(&mut self.backdrop_source_atlas_texture_ids_cache).shrink_to(hash_floor);
         self.backdrop_blur_use_base_filter_indices
             .shrink_to(hash_floor);
         self.backdrop_blur_filter_dirty_indices
@@ -136,30 +139,23 @@ impl FrameUpload {
         self.path_paint_key_scratch = Vec::new();
     }
 
-    /// Atlas textures in the prefix that feeds the earliest backdrop barrier.
+    /// Rebuild the set of atlas textures that can feed the earliest blur barrier.
     ///
-    /// This is only the conservative non-spatial fallback used while pending atlas uploads are
-    /// tracked at texture granularity. Textures drawn after the earliest backdrop cannot affect
-    /// that retained background result, so including everything before the last blur barrier would
-    /// let a foreground glyph/image upload invalidate an unrelated lower blur. Later blur barriers
-    /// are already refreshed through the normal draw-order + DirtyRegion dependency path.
-    ///
-    /// Keep this as a hash set all the way through invalidation: converting it to a temporary Vec
-    /// would add another allocation and turn pending-upload lookup into an O(uploads * textures)
-    /// nested scan.
-    pub(in crate::platform::nova) fn backdrop_source_atlas_texture_ids(
-        &self,
-    ) -> FxHashSet<AtlasTextureId> {
+    /// The batch stream is static for a retained upload, so this derived dependency set is computed
+    /// once after static encode and shared by all renderer/present consumers in subsequent frames.
+    pub(in crate::platform::nova) fn refresh_backdrop_source_atlas_texture_ids(&mut self) {
+        let textures = Arc::make_mut(&mut self.backdrop_source_atlas_texture_ids_cache);
+        textures.clear();
+
         let Some(first_blur_batch) = self.batches.iter().position(|batch| {
             matches!(
                 batch,
                 UploadedBatch::BackdropBlurs { .. } | UploadedBatch::CompositeBlur { .. }
             )
         }) else {
-            return FxHashSet::default();
+            return;
         };
 
-        let mut textures = FxHashSet::default();
         for batch in &self.batches[..first_blur_batch] {
             match *batch {
                 UploadedBatch::MonoSprites { texture_id, .. }
@@ -179,7 +175,17 @@ impl FrameUpload {
                 | UploadedBatch::CustomMesh3d { .. } => {}
             }
         }
-        textures
+    }
+
+    /// Atlas textures in the prefix that feeds the earliest backdrop barrier.
+    ///
+    /// Return an Arc clone rather than rebuilding the set. This keeps existing renderer call sites
+    /// ownership-friendly while reducing same-frame use to an atomic refcount increment.
+    #[inline]
+    pub(in crate::platform::nova) fn backdrop_source_atlas_texture_ids(
+        &self,
+    ) -> Arc<FxHashSet<AtlasTextureId>> {
+        Arc::clone(&self.backdrop_source_atlas_texture_ids_cache)
     }
 
     pub(in crate::platform::nova) fn uploaded_bytes(&self) -> usize {
