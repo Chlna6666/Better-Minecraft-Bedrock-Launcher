@@ -143,29 +143,24 @@ unsafe fn avx2_buffer(buffer: &mut [u8]) {
 
     unsafe {
         let mut offset = 0usize;
-        let alpha_indices = _mm256_set_epi32(7, 7, 7, 7, 3, 3, 3, 3);
         let bgra_indices = _mm256_set_epi32(7, 4, 5, 6, 3, 0, 1, 2);
-        let zero_i = _mm256_setzero_si256();
         let min_i = _mm256_setzero_si256();
         let max_i = _mm256_set1_epi32(255);
 
         // Eight input bytes are two RGBA pixels. Expanding them to eight i32/f32 lanes lets one
-        // AVX2 division unpremultiply both pixels at once while preserving each alpha channel.
+        // AVX2 division unpremultiply both pixels at once. The divisor LUT maps alpha 0 to 1.0, so
+        // transparent pixels need no per-iteration alpha-lane permute/compare/blend branch path.
         while offset + 8 <= buffer.len() {
             let source = buffer.as_mut_ptr().add(offset);
             let packed = std::ptr::read_unaligned(source.cast::<u64>());
             let bytes = _mm_cvtsi64_si128(packed as i64);
             let rgba_i = _mm256_cvtepu8_epi32(bytes);
-            let alpha_i = _mm256_permutevar8x32_epi32(rgba_i, alpha_indices);
-            let alpha_zero = _mm256_cmpeq_epi32(alpha_i, zero_i);
             let rgba_f = _mm256_cvtepi32_ps(rgba_i);
-            let alpha0 = ALPHA_NORM_LUT[usize::from(*source.add(3))];
-            let alpha1 = ALPHA_NORM_LUT[usize::from(*source.add(7))];
-            let alpha_norm = _mm256_set_ps(
+            let alpha0 = ALPHA_DIVISOR_LUT[usize::from(*source.add(3))];
+            let alpha1 = ALPHA_DIVISOR_LUT[usize::from(*source.add(7))];
+            let denominator = _mm256_set_ps(
                 alpha1, alpha1, alpha1, alpha1, alpha0, alpha0, alpha0, alpha0,
             );
-            let one = _mm256_set1_ps(1.0);
-            let denominator = _mm256_blendv_ps(alpha_norm, one, _mm256_castsi256_ps(alpha_zero));
             let straight_f = _mm256_div_ps(rgba_f, denominator);
             let straight_i = _mm256_cvttps_epi32(straight_f);
             // Rust's float->u8 cast saturates. Reproduce that behavior before the final lane store.
