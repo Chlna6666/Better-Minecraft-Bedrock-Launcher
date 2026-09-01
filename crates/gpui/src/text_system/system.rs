@@ -161,7 +161,7 @@ impl TextSystem {
     }
 
     pub(crate) fn set_fallback_font_families(&self, families: Vec<SharedString>) {
-        if self.font_catalog.set_fallback_families(families) {
+        if self.font_catalog.set_fallback_font_families(families) {
             self.clear_caches();
         }
     }
@@ -357,7 +357,7 @@ impl TextSystem {
 
     /// Get the number of font size units per 'em square',
     /// Per MDN: "an abstract square whose height is the intended distance between
-    /// lines of type in the same type size"
+    /// lines of type in the same text size"
     pub fn units_per_em(&self, font_id: FontId) -> u32 {
         self.read_metrics(font_id, |metrics| metrics.units_per_em)
     }
@@ -650,9 +650,8 @@ impl WindowTextSystem {
 
                 let run_len_within_line = cmp::min(line_end, run_start + run.len) - run_start;
 
-                let decoration_changed =
-                    push_decoration_run(&mut decoration_runs, run, run_len_within_line);
-                self.push_font_run(&mut font_runs, run, run_len_within_line, decoration_changed);
+                push_decoration_run(&mut decoration_runs, run, run_len_within_line);
+                self.push_font_run(&mut font_runs, run, run_len_within_line);
 
                 if run_len_within_line == run.len {
                     runs.next();
@@ -735,9 +734,8 @@ impl WindowTextSystem {
             }
 
             let run_len_within_line = cmp::min(line_end, run_start + run.len) - run_start;
-            let decoration_changed =
-                push_decoration_run(&mut decoration_runs, run, run_len_within_line);
-            self.push_font_run(font_runs, run, run_len_within_line, decoration_changed);
+            push_decoration_run(&mut decoration_runs, run, run_len_within_line);
+            self.push_font_run(font_runs, run, run_len_within_line);
             run_start += run_len_within_line;
         }
 
@@ -756,17 +754,10 @@ impl WindowTextSystem {
         }
     }
 
-    fn push_font_run(
-        &self,
-        font_runs: &mut Vec<FontRun>,
-        run: &TextRun,
-        len: usize,
-        decoration_changed: bool,
-    ) {
+    fn push_font_run(&self, font_runs: &mut Vec<FontRun>, run: &TextRun, len: usize) {
         let font_id = self.resolve_font(&run.font);
         if let Some(font_run) = font_runs.last_mut()
             && font_id == font_run.font_id
-            && !decoration_changed
         {
             font_run.len += len;
         } else {
@@ -785,38 +776,11 @@ impl WindowTextSystem {
         runs: &[TextRun],
         force_width: Option<Pixels>,
     ) -> Arc<LineLayout> {
-        let mut last_run = None::<&TextRun>;
-        let mut last_font: Option<FontId> = None;
         let mut font_runs = self.text_system.take_font_runs_pool();
         font_runs.clear();
 
-        for run in runs.iter() {
-            let decoration_changed = if let Some(last_run) = last_run
-                && last_run.color == run.color
-                && last_run.underline == run.underline
-                && last_run.strikethrough == run.strikethrough
-            // we do not consider differing background color relevant, as it does not affect glyphs
-            // && last_run.background_color == run.background_color
-            {
-                false
-            } else {
-                last_run = Some(run);
-                true
-            };
-
-            if let Some(font_run) = font_runs.last_mut()
-                && Some(font_run.font_id) == last_font
-                && !decoration_changed
-            {
-                font_run.len += run.len;
-            } else {
-                let font_id = self.resolve_font(&run.font);
-                last_font = Some(font_id);
-                font_runs.push(FontRun {
-                    len: run.len,
-                    font_id,
-                });
-            }
+        for run in runs.iter().filter(|run| run.len > 0) {
+            self.push_font_run(&mut font_runs, run, run.len);
         }
 
         let layout = self.line_layout_cache.layout_line(
@@ -869,7 +833,7 @@ fn push_decoration_run(
     decoration_runs: &mut SmallVec<[DecorationRun; 32]>,
     run: &TextRun,
     len: usize,
-) -> bool {
+) {
     if let Some(last_run) = decoration_runs.last_mut()
         && last_run.color == run.color
         && last_run.underline == run.underline
@@ -879,7 +843,6 @@ fn push_decoration_run(
         && last_run.background_padding == run.background_padding
     {
         last_run.len += len as u32;
-        false
     } else {
         decoration_runs.push(DecorationRun {
             len: len as u32,
@@ -890,7 +853,6 @@ fn push_decoration_run(
             underline: run.underline,
             strikethrough: run.strikethrough,
         });
-        true
     }
 }
 
