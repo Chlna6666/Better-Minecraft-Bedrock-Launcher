@@ -14,51 +14,55 @@ pub(in crate::platform::nova) struct BlurContentRange {
 }
 
 impl FrameUpload {
-    /// Rebuild the parsed blur marker topology after the static batch stream changes.
-    ///
-    /// Present, target planning and draw-step construction all query this topology in the same
-    /// frame. Keeping it beside the retained batch stream prevents each consumer from reparsing the
-    /// BeginBlur/EndBlur stack and allocating another temporary Vec.
+    /// Rebuild static blur-derived topology/dependency caches after the flattened batch stream
+    /// changes. Retained frames reuse these results without reparsing the same batches.
     pub(in crate::platform::nova) fn refresh_blur_content_ranges(&mut self) {
-        let ranges = &mut self.blur_content_ranges_cache;
-        ranges.clear();
-        let mut stack: SmallVec<[(u32, usize, usize); 4]> = SmallVec::new();
+        {
+            let ranges = &mut self.blur_content_ranges_cache;
+            ranges.clear();
+            let mut stack: SmallVec<[(u32, usize, usize); 4]> = SmallVec::new();
 
-        for (batch_index, batch) in self.batches.iter().enumerate() {
-            match *batch {
-                UploadedBatch::BeginBlur { index } => {
-                    stack.push((index, batch_index, stack.len()));
-                }
-                UploadedBatch::EndBlur { index } => {
-                    let Some(&(open_index, begin, depth)) = stack.last() else {
-                        continue;
-                    };
-                    if open_index != index {
-                        continue;
+            for (batch_index, batch) in self.batches.iter().enumerate() {
+                match *batch {
+                    UploadedBatch::BeginBlur { index } => {
+                        stack.push((index, batch_index, stack.len()));
                     }
-                    stack.pop();
-                    ranges.push(BlurContentRange {
-                        index,
-                        depth,
-                        content_start: begin.saturating_add(1),
-                        content_end: batch_index,
-                    });
+                    UploadedBatch::EndBlur { index } => {
+                        let Some(&(open_index, begin, depth)) = stack.last() else {
+                            continue;
+                        };
+                        if open_index != index {
+                            continue;
+                        }
+                        stack.pop();
+                        ranges.push(BlurContentRange {
+                            index,
+                            depth,
+                            content_start: begin.saturating_add(1),
+                            content_end: batch_index,
+                        });
+                    }
+                    UploadedBatch::SolidQuads { .. }
+                    | UploadedBatch::Quads { .. }
+                    | UploadedBatch::Shadows { .. }
+                    | UploadedBatch::PathRasterization { .. }
+                    | UploadedBatch::Paths { .. }
+                    | UploadedBatch::MonoSprites { .. }
+                    | UploadedBatch::PolySprites { .. }
+                    | UploadedBatch::Underlines { .. }
+                    | UploadedBatch::BackdropBlurs { .. }
+                    | UploadedBatch::CompositeBlur { .. }
+                    | UploadedBatch::CustomMesh3d { .. } => {}
                 }
-                UploadedBatch::SolidQuads { .. }
-                | UploadedBatch::Quads { .. }
-                | UploadedBatch::Shadows { .. }
-                | UploadedBatch::PathRasterization { .. }
-                | UploadedBatch::Paths { .. }
-                | UploadedBatch::MonoSprites { .. }
-                | UploadedBatch::PolySprites { .. }
-                | UploadedBatch::Underlines { .. }
-                | UploadedBatch::BackdropBlurs { .. }
-                | UploadedBatch::CompositeBlur { .. }
-                | UploadedBatch::CustomMesh3d { .. } => {}
             }
+
+            ranges
+                .sort_unstable_by_key(|range| (std::cmp::Reverse(range.depth), range.content_start));
         }
 
-        ranges.sort_unstable_by_key(|range| (std::cmp::Reverse(range.depth), range.content_start));
+        // Atlas dependency membership is also a pure function of the static flattened batch stream.
+        // Refresh it beside the marker topology so retained frames never rescan the batch prefix.
+        self.refresh_backdrop_source_atlas_texture_ids();
     }
 
     #[inline]
