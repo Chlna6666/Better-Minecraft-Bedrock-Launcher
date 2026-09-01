@@ -177,18 +177,9 @@ impl NovaRenderer {
 
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
         if self.backdrop_blur_targets.as_ref().is_some_and(|targets| {
-            let isolated_source_indices: Vec<_> = self
-                .frame_upload
-                .blur_content_ranges()
-                .into_iter()
-                .map(|range| range.index)
-                .collect();
-            let mut isolated_source_indices = isolated_source_indices;
-            isolated_source_indices.sort_unstable();
-            isolated_source_indices.dedup();
             targets.is_layout_compatible(
                 self.frame_upload.backdrop_blur_configs(),
-                &isolated_source_indices,
+                self.frame_upload.isolated_blur_source_indices(),
             )
         }) {
             return Ok(());
@@ -597,7 +588,6 @@ fn force_full_backdrop_blur_refresh(cache_valid: bool, explicitly_forced: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn draw_step_scratch_aggressive_trim_shrinks_retained_capacity() {
         let mut scratch = DrawStepScratch::default();
