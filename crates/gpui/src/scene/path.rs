@@ -85,6 +85,78 @@ impl Path<Pixels> {
         }
     }
 
+    /// Converts a logical path into final device-space geometry for painting in one vertex pass.
+    ///
+    /// The arithmetic order intentionally matches `scale(device_scale).transform_uniform(...)`:
+    /// DPI scaling happens before the renderer-owned visual scale and translation. This preserves
+    /// the previous floating-point results while avoiding an intermediate scaled vertex vector.
+    pub(crate) fn scale_and_transform_for_paint(
+        &self,
+        device_scale: f32,
+        visual_scale: f32,
+        translation: Point<ScaledPixels>,
+    ) -> Path<ScaledPixels> {
+        #[inline]
+        fn transform_point(
+            point: Point<Pixels>,
+            device_scale: f32,
+            visual_scale: f32,
+            translation: Point<ScaledPixels>,
+        ) -> Point<ScaledPixels> {
+            point.scale(device_scale) * visual_scale + translation
+        }
+
+        let scaled_bounds = self.bounds.scale(device_scale);
+        let bounds = Bounds {
+            origin: scaled_bounds.origin * visual_scale + translation,
+            size: scaled_bounds.size.map(|value| value * visual_scale),
+        };
+        let scaled_mask = self.content_mask.scale(device_scale);
+        let content_mask = ContentMask {
+            bounds: Bounds {
+                origin: scaled_mask.bounds.origin * visual_scale + translation,
+                size: scaled_mask.bounds.size.map(|value| value * visual_scale),
+            },
+            corner_bounds: Bounds {
+                origin: scaled_mask.corner_bounds.origin * visual_scale + translation,
+                size: scaled_mask
+                    .corner_bounds
+                    .size
+                    .map(|value| value * visual_scale),
+            },
+            corner_radii: scaled_mask
+                .corner_radii
+                .map(|value| *value * visual_scale),
+        };
+
+        Path {
+            id: self.id,
+            cache_id: self.cache_id,
+            geometry_generation: self.geometry_generation,
+            order: self.order,
+            bounds,
+            content_mask,
+            vertices: self
+                .vertices
+                .iter()
+                .map(|vertex| PathVertex {
+                    xy_position: transform_point(
+                        vertex.xy_position,
+                        device_scale,
+                        visual_scale,
+                        translation,
+                    ),
+                    st_position: vertex.st_position,
+                    content_mask: Default::default(),
+                })
+                .collect(),
+            start: transform_point(self.start, device_scale, visual_scale, translation),
+            current: transform_point(self.current, device_scale, visual_scale, translation),
+            contour_count: self.contour_count,
+            color: self.color,
+        }
+    }
+
     /// Move the start, current point to the given point.
     pub fn move_to(&mut self, to: Point<Pixels>) {
         self.bump_geometry_generation();
