@@ -125,13 +125,12 @@ impl BackdropBlurTargets {
         next_isolated_source_indices: &[u32],
     ) -> bool {
         self.variants.len() == next.len()
-            && self
-                .isolated_sources
-                .iter()
-                .map(|source| source.index)
-                .eq(next_isolated_source_indices.iter().copied().filter(|index| {
-                    blur_requires_isolated_source(next, *index)
-                }))
+            && self.isolated_sources.iter().map(|source| source.index).eq(
+                next_isolated_source_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| blur_requires_isolated_source(next, *index)),
+            )
             && self.variants.iter().zip(next).all(|(variant, config)| {
                 variant.config.same_target_slot(*config)
                     && variant.levels.len() == blur_variant_level_count(*config)

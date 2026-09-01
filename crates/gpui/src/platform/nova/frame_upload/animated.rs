@@ -126,9 +126,7 @@ impl ResolvedAnimationValues {
 
 fn dense_span_len(count: usize, min: u32, max: u32) -> Option<usize> {
     let span = max.checked_sub(min)?.checked_add(1)? as usize;
-    let density_limit = count
-        .saturating_mul(DENSE_LOOKUP_DENSITY_FACTOR)
-        .max(16);
+    let density_limit = count.saturating_mul(DENSE_LOOKUP_DENSITY_FACTOR).max(16);
     (span <= density_limit && span <= DENSE_LOOKUP_MAX_SPAN).then_some(span)
 }
 
@@ -364,8 +362,7 @@ impl FrameUpload {
         }
         self.animated_primitive_staging = staging;
 
-        let mut current_filter_dirty =
-            std::mem::take(&mut self.backdrop_blur_filter_dirty_scratch);
+        let mut current_filter_dirty = std::mem::take(&mut self.backdrop_blur_filter_dirty_scratch);
         current_filter_dirty.clear();
         for sample in &blur_samples {
             if sample.can_use_base_filter() {
@@ -914,7 +911,10 @@ mod tests {
             read_packed_bounds_at(&bytes, BLUR_DISPLAY_BOUNDS_OFFSET),
             [10.0, 20.0, 100.0, 80.0]
         );
-        assert_eq!(f32::from_ne_bytes(bytes[112..116].try_into().unwrap()), 14.0);
+        assert_eq!(
+            f32::from_ne_bytes(bytes[112..116].try_into().unwrap()),
+            14.0
+        );
         assert_eq!(f32::from_ne_bytes(bytes[128..132].try_into().unwrap()), 0.5);
         assert_eq!(upload.offset(), (4 * PACKED_BACKDROP_BLUR_BYTES) as u64);
     }

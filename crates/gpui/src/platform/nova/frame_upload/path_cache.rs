@@ -84,11 +84,8 @@ impl PathRasterizationCache {
         }
 
         self.eviction_scratch.clear();
-        self.eviction_scratch.extend(
-            self.entries
-                .iter()
-                .map(|(key, (_, stamp))| (*stamp, *key)),
-        );
+        self.eviction_scratch
+            .extend(self.entries.iter().map(|(key, (_, stamp))| (*stamp, *key)));
         self.eviction_scratch
             .select_nth_unstable_by_key(remove_count - 1, |(stamp, _)| *stamp);
         for (_, key) in self.eviction_scratch.iter().take(remove_count) {

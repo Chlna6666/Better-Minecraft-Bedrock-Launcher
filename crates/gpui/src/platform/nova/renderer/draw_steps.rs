@@ -296,22 +296,22 @@ impl NovaRenderer {
                 continue;
             };
 
-            let (source_texture_view, source_resource_set) =
-                if let Some(target) = direct_composite_target {
-                    (target.texture_view, target.source_resource_set)
-                } else {
-                    let Some(source_texture_view) =
-                        targets.isolated_source_texture_view(range.index)
-                    else {
-                        continue;
-                    };
-                    let Some(source_resource_set) =
-                        targets.isolated_source_resource_set(range.index, frame_resource_index)
-                    else {
-                        continue;
-                    };
-                    (source_texture_view, source_resource_set)
+            let (source_texture_view, source_resource_set) = if let Some(target) =
+                direct_composite_target
+            {
+                (target.texture_view, target.source_resource_set)
+            } else {
+                let Some(source_texture_view) = targets.isolated_source_texture_view(range.index)
+                else {
+                    continue;
                 };
+                let Some(source_resource_set) =
+                    targets.isolated_source_resource_set(range.index, frame_resource_index)
+                else {
+                    continue;
+                };
+                (source_texture_view, source_resource_set)
+            };
 
             let barrier_groups: Vec<_> = direct_backdrop_barriers(
                 &self.frame_upload,

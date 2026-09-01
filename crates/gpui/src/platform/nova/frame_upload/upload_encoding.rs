@@ -1,4 +1,7 @@
 use super::*;
+use crate::swap_rgba_to_bgra_rows;
+#[cfg(feature = "bench")]
+use crate::{swap_rgba_to_bgra_rows_scalar, swap_rgba_to_bgra_rows_simd};
 
 const NOVA_ATLAS_TRANSPARENT_COVERAGE: [u8; 1] = [0];
 const NOVA_ATLAS_TRANSPARENT_COLOR: [u8; 4] = [0, 0, 0, 0];
@@ -57,7 +60,24 @@ impl AtlasPixelEncodingBenchmarkCore {
     }
 
     pub(crate) fn encode(&mut self) -> usize {
-        encode_bgra_upload_with_padding(
+        self.encode_with(encode_bgra_upload_with_padding)
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn encode_scalar(&mut self) -> usize {
+        self.encode_with(encode_bgra_upload_with_padding_scalar)
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn encode_simd(&mut self) -> usize {
+        self.encode_with(encode_bgra_upload_with_padding_simd)
+    }
+
+    fn encode_with(
+        &mut self,
+        encoder: fn(&mut [u8], Size<DevicePixels>, &[u8], AtlasTextureKind, u32) -> Option<()>,
+    ) -> usize {
+        encoder(
             &mut self.destination,
             self.size,
             &self.source,
@@ -169,6 +189,78 @@ pub(in crate::platform::nova) fn encode_bgra_upload_with_padding(
     }
 }
 
+#[cfg(feature = "bench")]
+fn encode_bgra_upload_with_padding_scalar(
+    pixels: &mut [u8],
+    size: Size<DevicePixels>,
+    bytes: &[u8],
+    texture_kind: AtlasTextureKind,
+    padding: u32,
+) -> Option<()> {
+    if texture_kind != AtlasTextureKind::Rgba {
+        return encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, padding);
+    }
+
+    let width = size.width.0.max(1) as usize;
+    let height = size.height.0.max(1) as usize;
+    let padding = padding as usize;
+    let upload_width = width.saturating_add(padding.saturating_mul(2));
+    let upload_height = height.saturating_add(padding.saturating_mul(2));
+    if pixels.len()
+        < upload_width
+            .saturating_mul(upload_height)
+            .saturating_mul(NOVA_ATLAS_BYTES_PER_PIXEL)
+    {
+        return None;
+    }
+
+    encode_rgba_upload_scalar(
+        pixels,
+        bytes,
+        width,
+        height,
+        upload_width,
+        upload_height,
+        padding,
+    )
+}
+
+#[cfg(feature = "bench")]
+fn encode_bgra_upload_with_padding_simd(
+    pixels: &mut [u8],
+    size: Size<DevicePixels>,
+    bytes: &[u8],
+    texture_kind: AtlasTextureKind,
+    padding: u32,
+) -> Option<()> {
+    if texture_kind != AtlasTextureKind::Rgba {
+        return encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, padding);
+    }
+
+    let width = size.width.0.max(1) as usize;
+    let height = size.height.0.max(1) as usize;
+    let padding = padding as usize;
+    let upload_width = width.saturating_add(padding.saturating_mul(2));
+    let upload_height = height.saturating_add(padding.saturating_mul(2));
+    if pixels.len()
+        < upload_width
+            .saturating_mul(upload_height)
+            .saturating_mul(NOVA_ATLAS_BYTES_PER_PIXEL)
+    {
+        return None;
+    }
+
+    encode_rgba_upload_simd(
+        pixels,
+        bytes,
+        width,
+        height,
+        upload_width,
+        upload_height,
+        padding,
+    )
+}
+
 fn encode_bgra_upload_kind(
     pixels: &mut [u8],
     bytes: &[u8],
@@ -268,6 +360,72 @@ fn encode_rgba_upload(
     upload_height: usize,
     padding: usize,
 ) -> Option<()> {
+    encode_rgba_upload_with_swap(
+        pixels,
+        bytes,
+        width,
+        height,
+        upload_width,
+        upload_height,
+        padding,
+        swap_rgba_to_bgra_rows,
+    )
+}
+
+#[cfg(feature = "bench")]
+fn encode_rgba_upload_scalar(
+    pixels: &mut [u8],
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    upload_width: usize,
+    upload_height: usize,
+    padding: usize,
+) -> Option<()> {
+    encode_rgba_upload_with_swap(
+        pixels,
+        bytes,
+        width,
+        height,
+        upload_width,
+        upload_height,
+        padding,
+        swap_rgba_to_bgra_rows_scalar,
+    )
+}
+
+#[cfg(feature = "bench")]
+fn encode_rgba_upload_simd(
+    pixels: &mut [u8],
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    upload_width: usize,
+    upload_height: usize,
+    padding: usize,
+) -> Option<()> {
+    encode_rgba_upload_with_swap(
+        pixels,
+        bytes,
+        width,
+        height,
+        upload_width,
+        upload_height,
+        padding,
+        swap_rgba_to_bgra_rows_simd,
+    )
+}
+
+fn encode_rgba_upload_with_swap(
+    pixels: &mut [u8],
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    upload_width: usize,
+    upload_height: usize,
+    padding: usize,
+    swap_rgba: fn(&mut [u8], usize, usize),
+) -> Option<()> {
     let source_len = width
         .checked_mul(height)?
         .checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
@@ -279,6 +437,12 @@ fn encode_rgba_upload(
     let source_row_bytes = width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
     let upload_row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
 
+    if padding == 0 {
+        destination.copy_from_slice(source);
+        swap_rgba(destination, upload_row_bytes, upload_height);
+        return Some(());
+    }
+
     for (source_row, destination_row) in source
         .chunks_exact(source_row_bytes)
         .zip(destination[padding * upload_row_bytes..].chunks_exact_mut(upload_row_bytes))
@@ -286,20 +450,11 @@ fn encode_rgba_upload(
     {
         let center_start = padding * NOVA_ATLAS_BYTES_PER_PIXEL;
         let center = &mut destination_row[center_start..center_start + source_row_bytes];
-        for (source_pixel, destination_pixel) in source_row
-            .chunks_exact(NOVA_ATLAS_BYTES_PER_PIXEL)
-            .zip(center.chunks_exact_mut(NOVA_ATLAS_BYTES_PER_PIXEL))
-        {
-            destination_pixel.copy_from_slice(&[
-                source_pixel[2],
-                source_pixel[1],
-                source_pixel[0],
-                source_pixel[3],
-            ]);
-        }
+        center.copy_from_slice(source_row);
         replicate_horizontal_padding(destination_row, width, padding)?;
     }
     replicate_vertical_padding(destination, upload_width, height, padding)?;
+    swap_rgba(destination, upload_row_bytes, upload_height);
     Some(())
 }
 

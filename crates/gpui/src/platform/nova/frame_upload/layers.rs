@@ -56,15 +56,19 @@ impl FrameUpload {
                 }
             }
 
-            ranges
-                .sort_unstable_by_key(|range| (std::cmp::Reverse(range.depth), range.content_start));
+            ranges.sort_unstable_by_key(|range| {
+                (std::cmp::Reverse(range.depth), range.content_start)
+            });
         }
 
         // GPU target identity needs a stable order independent of nesting/depth order. Build it once
         // with the static topology instead of collect + sort + dedup in every compatibility check.
         self.isolated_blur_source_indices_cache.clear();
-        self.isolated_blur_source_indices_cache
-            .extend(self.blur_content_ranges_cache.iter().map(|range| range.index));
+        self.isolated_blur_source_indices_cache.extend(
+            self.blur_content_ranges_cache
+                .iter()
+                .map(|range| range.index),
+        );
         self.isolated_blur_source_indices_cache.sort_unstable();
         self.isolated_blur_source_indices_cache.dedup();
 

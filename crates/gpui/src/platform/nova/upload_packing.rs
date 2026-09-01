@@ -1,4 +1,10 @@
 use super::*;
+use fearless_simd::{Level, Simd, dispatch, prelude::*, u16x8, u32x4};
+use std::sync::LazyLock;
+
+const SIMD_MESH_INDEX_MIN_BYTES: usize = 256;
+
+static MESH_INDEX_SIMD_LEVEL: LazyLock<Level> = LazyLock::new(Level::new);
 
 pub(super) fn write_animation_binding(
     bytes: &mut Vec<u8>,
@@ -77,8 +83,122 @@ fn pack_unorm8(value: f32) -> u32 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u32
 }
 
-pub(super) fn write_custom_mesh_3d_index(bytes: &mut Vec<u8>, index: u32) {
-    write_u32_vec(bytes, index);
+pub(super) fn write_custom_mesh_3d_indices(
+    bytes: &mut Vec<u8>,
+    indices: &[u32],
+    uses_u16: bool,
+) -> Result<()> {
+    write_custom_mesh_3d_indices_with(bytes, indices, uses_u16, pack_mesh_indices_selected, true)
+}
+
+#[cfg(feature = "bench")]
+pub(super) fn write_custom_mesh_3d_indices_simd(
+    bytes: &mut Vec<u8>,
+    indices: &[u32],
+    uses_u16: bool,
+) -> Result<()> {
+    write_custom_mesh_3d_indices_with(bytes, indices, uses_u16, pack_mesh_indices_selected, false)
+}
+
+#[cfg(feature = "bench")]
+pub(super) fn write_custom_mesh_3d_indices_scalar(
+    bytes: &mut Vec<u8>,
+    indices: &[u32],
+    uses_u16: bool,
+) -> Result<()> {
+    write_custom_mesh_3d_indices_with(bytes, indices, uses_u16, pack_mesh_indices_scalar, false)
+}
+
+fn write_custom_mesh_3d_indices_with(
+    bytes: &mut Vec<u8>,
+    indices: &[u32],
+    uses_u16: bool,
+    pack_indices: fn(&[u32], bool, &mut [u8]),
+    use_threshold: bool,
+) -> Result<()> {
+    if uses_u16 {
+        for &index in indices {
+            u16::try_from(index).context("custom 3D mesh index exceeds Uint16 after validation")?;
+        }
+    }
+
+    let index_bytes = if uses_u16 { 2 } else { 4 };
+    let byte_len = indices.len().saturating_mul(index_bytes);
+    bytes.reserve(byte_len);
+    let start = bytes.len();
+    bytes.resize(start.saturating_add(byte_len), 0);
+    let output = &mut bytes[start..];
+    if use_threshold && (!uses_u16 || byte_len < SIMD_MESH_INDEX_MIN_BYTES) {
+        pack_mesh_indices_scalar(indices, uses_u16, output);
+    } else {
+        pack_indices(indices, uses_u16, output);
+    }
+    Ok(())
+}
+
+fn pack_mesh_indices_selected(indices: &[u32], uses_u16: bool, output: &mut [u8]) {
+    let level = *MESH_INDEX_SIMD_LEVEL;
+    if level.is_fallback() {
+        pack_mesh_indices_scalar(indices, uses_u16, output);
+        return;
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = level.as_avx2() {
+        dispatch!(
+            Level::Avx2(avx2),
+            simd => pack_mesh_indices_simd(simd, indices, uses_u16, output)
+        );
+        return;
+    }
+
+    dispatch!(
+        level,
+        simd => pack_mesh_indices_simd(simd, indices, uses_u16, output)
+    );
+}
+
+#[inline(always)]
+fn pack_mesh_indices_scalar(indices: &[u32], uses_u16: bool, output: &mut [u8]) {
+    let index_bytes = if uses_u16 { 2 } else { 4 };
+    for (&index, chunk) in indices.iter().zip(output.chunks_exact_mut(index_bytes)) {
+        if uses_u16 {
+            chunk.copy_from_slice(
+                &u16::try_from(index)
+                    .expect("mesh index was validated before packed conversion")
+                    .to_ne_bytes(),
+            );
+        } else {
+            chunk.copy_from_slice(&index.to_ne_bytes());
+        }
+    }
+}
+
+#[inline(always)]
+fn pack_mesh_indices_simd<S: Simd>(simd: S, indices: &[u32], uses_u16: bool, output: &mut [u8]) {
+    if uses_u16 {
+        let mut chunks = indices.chunks_exact(8);
+        let mut output_offset = 0;
+        for chunk in &mut chunks {
+            let low = u32x4::from_slice(simd, &chunk[..4]);
+            let high = u32x4::from_slice(simd, &chunk[4..]);
+            let packed: u16x8<S> = low.saturating_narrow(high);
+            packed
+                .to_bytes()
+                .store_slice(&mut output[output_offset..output_offset + 16]);
+            output_offset += 16;
+        }
+        pack_mesh_indices_scalar(chunks.remainder(), true, &mut output[output_offset..]);
+    } else {
+        let mut chunks = indices.chunks_exact(4);
+        let mut output_offset = 0;
+        for chunk in &mut chunks {
+            let packed = u32x4::from_slice(simd, chunk).to_bytes();
+            packed.store_slice(&mut output[output_offset..output_offset + 16]);
+            output_offset += 16;
+        }
+        pack_mesh_indices_scalar(chunks.remainder(), false, &mut output[output_offset..]);
+    }
 }
 
 /// Packs a normalized Gaussian kernel as four sample pairs plus the center tap.
@@ -363,6 +483,28 @@ fn write_matrix(bytes: &mut Vec<u8>, matrix: [[f32; 4]; 4]) {
     for column in matrix {
         for value in column {
             write_f32_vec(bytes, value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bulk_mesh_indices_match_scalar_bytes() {
+        for uses_u16 in [true, false] {
+            let indices = (0..128).map(|index| index as u32).collect::<Vec<_>>();
+            let mut actual = Vec::new();
+            write_custom_mesh_3d_indices(&mut actual, &indices, uses_u16)
+                .expect("benchmark indices fit the selected format");
+
+            let mut expected = Vec::new();
+            let index_bytes = if uses_u16 { 2 } else { 4 };
+            expected.resize(indices.len() * index_bytes, 0);
+            pack_mesh_indices_scalar(&indices, uses_u16, &mut expected);
+
+            assert_eq!(actual, expected);
         }
     }
 }

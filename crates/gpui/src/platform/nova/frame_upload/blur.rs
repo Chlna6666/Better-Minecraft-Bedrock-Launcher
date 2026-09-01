@@ -597,16 +597,8 @@ mod tests {
             [0.0, 0.0, 300.0, 80.0],
             false,
         );
-        let regular = BackdropBlurConfig::new(
-            0,
-            1,
-            10,
-            1,
-            2,
-            18.0,
-            [200.0, 20.0, 300.0, 80.0],
-            false,
-        );
+        let regular =
+            BackdropBlurConfig::new(0, 1, 10, 1, 2, 18.0, [200.0, 20.0, 300.0, 80.0], false);
         assert!(!ignored.should_merge_with(regular));
     }
 

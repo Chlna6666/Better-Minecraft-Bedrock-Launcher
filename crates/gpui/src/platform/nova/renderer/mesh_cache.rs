@@ -680,23 +680,7 @@ impl NovaRenderer {
         }
         let mut index_bytes = std::mem::take(&mut self.custom_mesh_3d_index_upload_scratch);
         index_bytes.clear();
-        if uses_u16 {
-            index_bytes.reserve(mesh.indices.len().saturating_mul(2));
-            for index in mesh.indices.iter().copied() {
-                let index = u16::try_from(index)
-                    .context("custom 3D mesh index exceeds Uint16 after validation")?;
-                index_bytes.extend_from_slice(&index.to_ne_bytes());
-            }
-        } else {
-            index_bytes.reserve(
-                mesh.indices
-                    .len()
-                    .saturating_mul(PACKED_CUSTOM_MESH_3D_INDEX_BYTES),
-            );
-            for index in mesh.indices.iter().copied() {
-                write_custom_mesh_3d_index(&mut index_bytes, index);
-            }
-        }
+        write_custom_mesh_3d_indices(&mut index_bytes, &mesh.indices, uses_u16)?;
 
         let vertex_byte_offset = (vertex_offset * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64;
         let vertex_buffer = self.custom_mesh_3d_vertices_buffer;

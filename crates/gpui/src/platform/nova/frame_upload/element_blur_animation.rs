@@ -109,10 +109,7 @@ fn collect_element_blurs<'a>(scene: &'a crate::Scene, output: &mut Vec<&'a crate
 mod tests {
     use super::*;
 
-    fn test_blur(
-        animation_id: crate::SceneAnimationId,
-        content: crate::Scene,
-    ) -> crate::PaintBlur {
+    fn test_blur(animation_id: crate::SceneAnimationId, content: crate::Scene) -> crate::PaintBlur {
         let bounds = crate::bounds(
             crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
             crate::size(crate::ScaledPixels(120.0), crate::ScaledPixels(80.0)),
