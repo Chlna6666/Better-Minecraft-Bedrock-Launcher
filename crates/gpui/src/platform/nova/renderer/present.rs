@@ -94,6 +94,66 @@ where
     Ok(())
 }
 
+fn upload_animated_buffer_kind<D: BackendResources>(
+    device: &mut D,
+    buffer: BufferId,
+    source: &[u8],
+    frame_upload: &FrameUpload,
+    kind: AnimatedPrimitiveKind,
+) -> Result<()> {
+    let mut range_start = None::<usize>;
+    let mut range_end = 0usize;
+
+    for primitive in frame_upload
+        .animated_primitives
+        .iter()
+        .filter(|primitive| primitive.kind == kind)
+    {
+        let start = usize::try_from(primitive.offset()).map_err(|_| {
+            anyhow::anyhow!(
+                "nova animated buffer offset does not fit usize: kind={kind:?} offset={}",
+                primitive.offset()
+            )
+        })?;
+        let end = start.checked_add(primitive.bytes.len()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "nova animated buffer range overflow: kind={kind:?} start={start} len={}",
+                primitive.bytes.len()
+            )
+        })?;
+        if end > source.len() {
+            anyhow::bail!(
+                "nova animated buffer range out of bounds: kind={kind:?} range={start}..{end} source_len={}",
+                source.len()
+            );
+        }
+
+        match range_start {
+            Some(start_of_range) if start == range_end => {
+                range_end = end;
+            }
+            Some(start_of_range) => {
+                device.write_buffer(
+                    buffer,
+                    start_of_range as u64,
+                    &source[start_of_range..range_end],
+                )?;
+                range_start = Some(start);
+                range_end = end;
+            }
+            None => {
+                range_start = Some(start);
+                range_end = end;
+            }
+        }
+    }
+
+    if let Some(start) = range_start {
+        device.write_buffer(buffer, start as u64, &source[start..range_end])?;
+    }
+    Ok(())
+}
+
 fn upload_animated_buffers<D: BackendResources>(
     device: &mut D,
     buffers: FrameBufferTargets,
@@ -106,16 +166,46 @@ fn upload_animated_buffers<D: BackendResources>(
             &frame_upload.backdrop_blur_passes,
         )?;
     }
-    for primitive in &frame_upload.animated_primitives {
-        let buffer = match primitive.kind {
-            AnimatedPrimitiveKind::Quad => buffers.quad,
-            AnimatedPrimitiveKind::Shadow => buffers.shadow,
-            AnimatedPrimitiveKind::MonochromeSprite => buffers.mono_sprite,
-            AnimatedPrimitiveKind::PolychromeSprite => buffers.poly_sprite,
-            AnimatedPrimitiveKind::BackdropBlur => buffers.backdrop_blur,
-        };
-        device.write_buffer(buffer, primitive.offset(), &primitive.bytes)?;
-    }
+
+    // Animated primitives are registered in scene order and each primitive kind has a monotonically
+    // increasing buffer index. Walk each kind independently so physically adjacent records can be
+    // uploaded as one range without widening across static gaps. Text runs benefit the most: a run
+    // of hundreds of glyph sprites becomes one backend write instead of one write per glyph.
+    upload_animated_buffer_kind(
+        device,
+        buffers.quad,
+        &frame_upload.quads,
+        frame_upload,
+        AnimatedPrimitiveKind::Quad,
+    )?;
+    upload_animated_buffer_kind(
+        device,
+        buffers.shadow,
+        &frame_upload.shadows,
+        frame_upload,
+        AnimatedPrimitiveKind::Shadow,
+    )?;
+    upload_animated_buffer_kind(
+        device,
+        buffers.mono_sprite,
+        &frame_upload.mono_sprites,
+        frame_upload,
+        AnimatedPrimitiveKind::MonochromeSprite,
+    )?;
+    upload_animated_buffer_kind(
+        device,
+        buffers.poly_sprite,
+        &frame_upload.poly_sprites,
+        frame_upload,
+        AnimatedPrimitiveKind::PolychromeSprite,
+    )?;
+    upload_animated_buffer_kind(
+        device,
+        buffers.backdrop_blur,
+        &frame_upload.backdrop_blurs,
+        frame_upload,
+        AnimatedPrimitiveKind::BackdropBlur,
+    )?;
     Ok(())
 }
 
