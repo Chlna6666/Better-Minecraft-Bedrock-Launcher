@@ -81,6 +81,11 @@ pub(in crate::platform::nova) struct FrameUpload {
     /// Parsed BeginBlur/EndBlur topology. Batches are static for a retained upload, so compute this
     /// once when blur configs refresh and let target planning/present/draw-step code borrow it.
     pub(in crate::platform::nova) blur_content_ranges_cache: Vec<BlurContentRange>,
+    /// Atlas textures sampled before the earliest blur barrier. This is derived only from the
+    /// static retained batch stream and shared by renderer cache planning and present-time damage
+    /// checks, so keep it behind Arc for cheap same-frame reuse without cloning hash buckets.
+    pub(in crate::platform::nova) backdrop_source_atlas_texture_ids_cache:
+        Arc<FxHashSet<AtlasTextureId>>,
     /// Animated backdrop indices whose current composite geometry fits entirely inside the
     /// unanimated filter footprint. These use the base blur geometry for filter planning while
     /// the GPU primitive buffer still receives the sampled composite geometry/opacity.
