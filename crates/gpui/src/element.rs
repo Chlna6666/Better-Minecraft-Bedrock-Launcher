@@ -51,6 +51,7 @@ mod rounded_cutout;
 mod surface;
 mod svg;
 mod text;
+mod text_animation;
 mod traits;
 mod uniform_list;
 
@@ -74,5 +75,6 @@ pub use rounded_cutout::*;
 pub use surface::*;
 pub use svg::*;
 pub use text::*;
+pub use text_animation::*;
 pub use traits::*;
 pub use uniform_list::*;
