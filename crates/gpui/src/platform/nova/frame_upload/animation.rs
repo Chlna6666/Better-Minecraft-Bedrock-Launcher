@@ -10,6 +10,19 @@ pub(in crate::platform::nova) enum AnimatedPrimitiveKind {
     BackdropBlur = 4,
 }
 
+impl AnimatedPrimitiveKind {
+    #[inline]
+    pub(in crate::platform::nova) const fn stride(self) -> usize {
+        match self {
+            Self::Quad => super::PACKED_QUAD_BYTES,
+            Self::Shadow => super::PACKED_SHADOW_BYTES,
+            Self::MonochromeSprite => super::PACKED_MONO_SPRITE_BYTES,
+            Self::PolychromeSprite => super::PACKED_POLY_SPRITE_BYTES,
+            Self::BackdropBlur => super::PACKED_BACKDROP_BLUR_BYTES,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub(in crate::platform::nova) enum AnimationProperty {
