@@ -341,14 +341,17 @@ pub(crate) fn render_task_card(
     if let Some(motion_kind) = motion {
         return match motion_kind {
             TaskCardMotionKind::Enter => base_card
+                .composite_layer()
                 .with_animation(
                     ("task-card-motion-enter", stable_task_id(model.id.as_ref())),
-                    spring_motion(spring_smooth()),
-                    |card, progress| {
-                        card.opacity(0.15 + progress * 0.85)
-                            .relative()
-                            .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
-                    },
+                    spring_motion(spring_smooth()).with_property(AnimationProperty::scale_opacity(
+                        0.985,
+                        1.0,
+                        0.15,
+                        1.0,
+                        TransformOrigin::CENTER,
+                    )),
+                    |card, _progress| card,
                 )
                 .into_any_element(),
             TaskCardMotionKind::Complete => base_card
