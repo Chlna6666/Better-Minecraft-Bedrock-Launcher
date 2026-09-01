@@ -1,4 +1,5 @@
 mod background;
+mod batch;
 mod hsla;
 mod rgba;
 
@@ -10,6 +11,7 @@ pub use background::{
     Background, ColorSpace, LinearColorStop, linear_color_stop, linear_gradient, pattern_slash,
     solid_background,
 };
+pub use batch::{hsla_to_rgba_batch, lerp_hsla_batch, rgba_to_hsla_batch};
 pub use hsla::{
     Hsla, black, blue, green, hsla, opaque_grey, red, transparent_black, transparent_white, white,
     yellow,
