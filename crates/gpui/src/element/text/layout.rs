@@ -18,6 +18,7 @@ pub struct TextLayout(Rc<RefCell<Option<TextLayoutInner>>>);
 
 struct TextLayoutInner {
     cache_key: u64,
+    paint_key: u64,
     len: usize,
     lines: SmallVec<[WrappedLine; 1]>,
     line_height: Pixels,
@@ -45,16 +46,11 @@ impl TextLayout {
         } else {
             vec![text_style.to_run(text.len())]
         };
-        let cache_key = text_layout_cache_key(
-            &text,
-            &runs,
-            &text_style,
-            font_size,
-            line_height,
-            window.scale_factor(),
-        );
+        let cache_key = text_layout_cache_key(&text, &runs, &text_style, font_size, line_height);
+        let paint_key = text_layout_paint_key(&runs);
+        let measurement_key = text_layout_measurement_key(cache_key, paint_key);
 
-        window.request_measured_layout_with_fingerprint(Default::default(), cache_key, {
+        window.request_measured_layout_with_fingerprint(Default::default(), measurement_key, {
             let element_state = self.clone();
 
             move |known_dimensions, available_space, window, cx| {
@@ -86,6 +82,7 @@ impl TextLayout {
 
                 if let Some(text_layout) = element_state.0.borrow().as_ref()
                     && text_layout.cache_key == cache_key
+                    && text_layout.paint_key == paint_key
                     && text_layout.size.is_some()
                     && wrap_width == text_layout.wrap_width
                 {
@@ -105,6 +102,10 @@ impl TextLayout {
                 };
                 let len = text.len();
 
+                // A paint-only fingerprint change intentionally reaches this point, but the
+                // geometry key and FontRun identity remain unchanged. `shape_text` therefore
+                // rebuilds current DecorationRuns while LineLayoutCache reuses the existing shaped
+                // line instead of invoking the platform shaper again.
                 let Some(lines) = window
                     .text_system()
                     .shape_text(
@@ -118,6 +119,7 @@ impl TextLayout {
                 else {
                     element_state.0.borrow_mut().replace(TextLayoutInner {
                         cache_key,
+                        paint_key,
                         lines: Default::default(),
                         len: 0,
                         line_height,
@@ -137,6 +139,7 @@ impl TextLayout {
 
                 element_state.0.borrow_mut().replace(TextLayoutInner {
                     cache_key,
+                    paint_key,
                     lines,
                     len,
                     line_height,
@@ -342,7 +345,6 @@ fn text_layout_cache_key(
     text_style: &TextStyle,
     font_size: Pixels,
     line_height: Pixels,
-    scale_factor: f32,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
@@ -354,9 +356,7 @@ fn text_layout_cache_key(
     text_style.font().hash(&mut hasher);
     font_size.0.to_bits().hash(&mut hasher);
     line_height.0.to_bits().hash(&mut hasher);
-    scale_factor.to_bits().hash(&mut hasher);
     std::mem::discriminant(&text_style.white_space).hash(&mut hasher);
-    std::mem::discriminant(&text_style.text_align).hash(&mut hasher);
     text_style.line_clamp.hash(&mut hasher);
     if let Some(text_overflow) = text_style.text_overflow.as_ref() {
         1u8.hash(&mut hasher);
@@ -369,14 +369,47 @@ fn text_layout_cache_key(
     hasher.finish()
 }
 
+fn text_layout_paint_key(runs: &[TextRun]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    runs.len().hash(&mut hasher);
+    for run in runs {
+        run.len.hash(&mut hasher);
+        run.color.hash(&mut hasher);
+        run.background_color.hash(&mut hasher);
+        run.background_corner_radius.hash(&mut hasher);
+        if let Some(padding) = run.background_padding {
+            1u8.hash(&mut hasher);
+            padding.top.hash(&mut hasher);
+            padding.right.hash(&mut hasher);
+            padding.bottom.hash(&mut hasher);
+            padding.left.hash(&mut hasher);
+        } else {
+            0u8.hash(&mut hasher);
+        }
+        run.underline.hash(&mut hasher);
+        run.strikethrough.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn text_layout_measurement_key(cache_key: u64, paint_key: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    cache_key.hash(&mut hasher);
+    paint_key.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TextLayout, text_layout_cache_key};
+    use super::{
+        TextLayout, text_layout_cache_key, text_layout_measurement_key, text_layout_paint_key,
+    };
     use crate::element::text::StyledText;
     use crate::{
         AvailableSpace, IntoElement, ParentElement as _, Render, SharedString, TestAppContext,
-        TextStyle, Window, div, point, px, size,
+        TextStyle, Window, div, point, px, rgb, size,
     };
+    use std::sync::Arc;
 
     #[gpui::test]
     fn text_layout_cache_invalidates_when_text_changes(cx: &mut TestAppContext) {
@@ -405,22 +438,69 @@ mod tests {
     }
 
     #[test]
-    fn text_layout_cache_key_changes_with_scale_factor() {
-        let text = SharedString::from("scaled text");
+    fn paint_only_changes_keep_geometry_identity() {
+        let text = SharedString::from("paint cache");
         let text_style = TextStyle::default();
         let font_size = px(16.);
         let line_height = px(24.);
-        let runs = vec![text_style.to_run(text.len())];
+        let mut first = text_style.to_run(text.len());
+        first.color = rgb(0xff0000).into();
+        let mut second = first.clone();
+        second.color = rgb(0x0000ff).into();
 
-        let normal_scale_key =
-            text_layout_cache_key(&text, &runs, &text_style, font_size, line_height, 1.0);
-        let high_scale_key =
-            text_layout_cache_key(&text, &runs, &text_style, font_size, line_height, 1.25);
+        let first_runs = [first];
+        let second_runs = [second];
+        let first_geometry =
+            text_layout_cache_key(&text, &first_runs, &text_style, font_size, line_height);
+        let second_geometry =
+            text_layout_cache_key(&text, &second_runs, &text_style, font_size, line_height);
+        let first_paint = text_layout_paint_key(&first_runs);
+        let second_paint = text_layout_paint_key(&second_runs);
 
+        assert_eq!(first_geometry, second_geometry);
+        assert_ne!(first_paint, second_paint);
         assert_ne!(
-            normal_scale_key, high_scale_key,
-            "text layout cache must be invalidated when the raster scale changes"
+            text_layout_measurement_key(first_geometry, first_paint),
+            text_layout_measurement_key(second_geometry, second_paint)
         );
+    }
+
+    #[gpui::test]
+    fn paint_change_refreshes_decorations_without_replacing_shaped_layout(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, visual) = cx.add_window_view(|_, _| crate::Empty);
+        let layout = TextLayout::default();
+        let available_space = size(
+            AvailableSpace::Definite(px(240.)),
+            AvailableSpace::MinContent,
+        );
+        let text = SharedString::from("cached color");
+        let text_style = TextStyle::default();
+        let mut first_run = text_style.to_run(text.len());
+        first_run.color = rgb(0xff0000).into();
+
+        let mut first = StyledText::new(text.clone()).with_runs(vec![first_run]);
+        first.layout = layout.clone();
+        visual.draw(point(px(0.), px(0.)), available_space, |_, _| first);
+
+        let (first_layout, first_color) = {
+            let state = layout.0.borrow();
+            let line = &state.as_ref().unwrap().lines[0];
+            (line.layout.clone(), line.decoration_runs[0].color)
+        };
+        assert_eq!(first_color, rgb(0xff0000).into());
+
+        let mut second_run = text_style.to_run(text.len());
+        second_run.color = rgb(0x0000ff).into();
+        let mut second = StyledText::new(text).with_runs(vec![second_run]);
+        second.layout = layout.clone();
+        visual.draw(point(px(0.), px(0.)), available_space, |_, _| second);
+
+        let state = layout.0.borrow();
+        let line = &state.as_ref().unwrap().lines[0];
+        assert_eq!(line.decoration_runs[0].color, rgb(0x0000ff).into());
+        assert!(Arc::ptr_eq(&first_layout, &line.layout));
     }
 
     #[gpui::test]
