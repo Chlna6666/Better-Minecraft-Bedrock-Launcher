@@ -194,26 +194,31 @@ unsafe fn sse2_buffer(buffer: &mut [u8]) {
 
     unsafe {
         let zero = _mm_setzero_si128();
+        let alpha_lane_mask = _mm_set_epi32(-1, 0, 0, 0);
+
         for pixel in buffer.chunks_exact_mut(4) {
             let alpha = pixel[3];
-            if alpha == 0 {
-                pixel.swap(0, 2);
-                continue;
-            }
             let packed = std::ptr::read_unaligned(pixel.as_ptr().cast::<u32>());
             let bytes = _mm_cvtsi32_si128(packed as i32);
             let words = _mm_unpacklo_epi8(bytes, zero);
-            let dwords = _mm_unpacklo_epi16(words, zero);
-            let rgba_f = _mm_cvtepi32_ps(dwords);
-            let alpha_norm = _mm_set1_ps(ALPHA_NORM_LUT[usize::from(alpha)]);
-            let straight_f = _mm_div_ps(rgba_f, alpha_norm);
-            let straight_i = _mm_cvttps_epi32(straight_f);
-            let mut lanes = [0i32; 4];
-            _mm_storeu_si128(lanes.as_mut_ptr().cast::<__m128i>(), straight_i);
-            pixel[0] = lanes[2].clamp(0, 255) as u8;
-            pixel[1] = lanes[1].clamp(0, 255) as u8;
-            pixel[2] = lanes[0].clamp(0, 255) as u8;
-            pixel[3] = alpha;
+            let rgba_i = _mm_unpacklo_epi16(words, zero);
+            let rgba_f = _mm_cvtepi32_ps(rgba_i);
+            let denominator = _mm_set1_ps(ALPHA_DIVISOR_LUT[usize::from(alpha)]);
+            let straight_i = _mm_cvttps_epi32(_mm_div_ps(rgba_f, denominator));
+
+            // Restore the source alpha without SSE4.1 blend instructions, then reorder dword lanes
+            // from RGBA to BGRA using SSE2's immediate shuffle.
+            let rgb_i = _mm_andnot_si128(alpha_lane_mask, straight_i);
+            let alpha_i = _mm_and_si128(alpha_lane_mask, rgba_i);
+            let with_alpha = _mm_or_si128(rgb_i, alpha_i);
+            let bgra_i = _mm_shuffle_epi32::<0b11_00_01_10>(with_alpha);
+
+            // PACKSSDW + PACKUSWB reproduces Rust's saturating float->u8 cast for both valid
+            // premultiplied pixels and defensive RGB>alpha inputs, with no stack lane array.
+            let packed_i16 = _mm_packs_epi32(bgra_i, zero);
+            let packed_u8 = _mm_packus_epi16(packed_i16, zero);
+            let bgra = _mm_cvtsi128_si32(packed_u8) as u32;
+            std::ptr::write_unaligned(pixel.as_mut_ptr().cast::<u32>(), bgra);
         }
     }
 }
@@ -286,6 +291,32 @@ mod tests {
         }
         let expected = scalar_reference(input.clone());
         swap_rgba_pa_to_bgra_buffer(&mut input);
+        assert_eq!(input, expected);
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[test]
+    fn sse2_conversion_matches_scalar_for_all_alpha_values() {
+        #[cfg(target_arch = "x86")]
+        if !std::is_x86_feature_detected!("sse2") {
+            return;
+        }
+
+        let mut input = Vec::with_capacity(256 * 4 * 4);
+        for alpha in 0..=255u8 {
+            for seed in [0u8, 37, 127, 255] {
+                // Include deliberately non-premultiplied values so the vector narrowing also
+                // verifies Rust's saturating float->u8 behavior, not only the well-formed fast case.
+                input.extend_from_slice(&[
+                    seed,
+                    seed.wrapping_mul(3),
+                    255u8.wrapping_sub(seed),
+                    alpha,
+                ]);
+            }
+        }
+        let expected = scalar_reference(input.clone());
+        unsafe { sse2_buffer(&mut input) };
         assert_eq!(input, expected);
     }
 
