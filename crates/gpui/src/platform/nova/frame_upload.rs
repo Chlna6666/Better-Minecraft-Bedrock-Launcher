@@ -21,5 +21,6 @@ pub(super) use animation::*;
 pub(super) use batch::*;
 pub(super) use blur::*;
 pub(super) use frame::*;
+pub(super) use layers::*;
 pub(super) use path_cache::*;
 pub(super) use quality::*;
