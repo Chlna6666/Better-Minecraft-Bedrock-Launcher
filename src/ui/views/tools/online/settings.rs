@@ -37,15 +37,24 @@ pub(super) fn render_settings_overlay(
             state.easytier_settings_open = false;
         });
     });
-    let card = render_settings_card(colors, i18n, width, state, dismiss.clone()).with_animation(
-        "online-settings-card-enter",
-        spring_motion(spring_smooth()),
-        |card, progress| {
-            card.opacity(progress.clamp(0.0, 1.0))
-                .relative()
-                .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
-        },
-    );
+
+    // Capture the complete settings card once and animate only its final compositor record.
+    // The previous layout-driven `top(...) + opacity(...)` path rebuilt the card's layout and text
+    // prepaint on every spring sample. A very small scale-in preserves the entrance affordance
+    // without changing layout identity or touching the card's glyph atlas entries.
+    let card = render_settings_card(colors, i18n, width, state, dismiss.clone())
+        .composite_layer()
+        .with_animation(
+            "online-settings-card-enter",
+            spring_motion(spring_smooth()).with_property(AnimationProperty::scale_opacity(
+                0.985,
+                1.0,
+                0.0,
+                1.0,
+                TransformOrigin::CENTER,
+            )),
+            |card, _progress| card,
+        );
 
     Some(modal::modal_layer_dismissible(card, colors.backdrop, dismiss).into_any_element())
 }
@@ -222,12 +231,8 @@ fn render_bootstrap_input(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSt
         },
         |input| {
             Input::new(input)
-                .appearance(false)
-                .bordered(false)
-                .focus_bordered(false)
-                .cleanable(true)
-                .w_full()
-                .h(px(42.))
+                .id("online-bootstrap-peers")
+                .placeholder(t!("Online.bootstrap_peers_placeholder"))
                 .into_any_element()
         },
     )
@@ -235,59 +240,52 @@ fn render_bootstrap_input(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSt
 
 fn render_toggle_row(
     colors: &ThemeColors,
-    title: SharedString,
+    label: SharedString,
     description: SharedString,
-    id: &'static str,
-    enabled: bool,
-    toggle: fn(&mut ToolsPageState),
+    toggle_id: &'static str,
+    checked: bool,
+    toggle: impl Fn(&mut ToolsPageState) + 'static,
 ) -> Div {
     div()
         .w_full()
+        .min_h(px(58.))
+        .px(px(12.))
+        .py(px(10.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.12,
             ..colors.border
         })
-        .bg(Hsla {
-            a: 0.42,
-            ..colors.surface
-        })
-        .px(px(14.))
-        .py(px(12.))
+        .bg(colors.settings_field_bg)
         .flex()
         .items_center()
         .justify_between()
         .gap(px(16.))
-        .child(render_toggle_copy(colors, title, description))
-        .child(ToggleSwitch::new(
-            SharedString::from(id),
-            colors,
-            enabled,
-            move |cx| {
-                cx.update_global(|state: &mut ToolsPageState, _cx| toggle(state));
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(colors.text_primary)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.text_muted)
+                        .child(description),
+                ),
+        )
+        .child(ToggleSwitch::new(toggle_id, checked).on_toggle(move |_checked, _window, cx| {
+            cx.update_global(|state: &mut ToolsPageState, cx| {
+                toggle(state);
                 persist_tools_online_settings(cx);
-            },
-        ))
-}
-
-fn render_toggle_copy(colors: &ThemeColors, title: SharedString, description: SharedString) -> Div {
-    div()
-        .min_w(px(0.))
-        .flex()
-        .flex_col()
-        .gap(px(3.))
-        .child(
-            div()
-                .text_size(px(13.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors.text_primary)
-                .child(title),
-        )
-        .child(
-            div()
-                .text_size(px(12.))
-                .text_color(colors.text_secondary)
-                .child(description),
-        )
+            });
+        }))
 }
