@@ -26,6 +26,19 @@ pub(crate) struct RetainedSceneSegment {
     pub(crate) entity_id: EntityId,
 }
 
+/// Retained lifecycle ranges for one stable element path.
+///
+/// Interaction-only frames use these ranges to replay unchanged leaf subtrees without executing
+/// their prepaint/paint lifecycle again. Only leaf entries are currently replayed so nested range
+/// indices never need to be translated when a parent subtree is restored.
+#[derive(Clone)]
+pub(crate) struct RetainedElementRange {
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) prepaint_range: Range<PrepaintStateIndex>,
+    pub(crate) paint_range: Range<PaintIndex>,
+    pub(crate) leaf: bool,
+}
+
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -41,6 +54,7 @@ pub(crate) struct Frame {
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
+    pub(crate) retained_element_ranges: FxHashMap<GlobalElementId, RetainedElementRange>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -96,6 +110,7 @@ impl Frame {
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
             retained_scene_segments: Vec::new(),
+            retained_element_ranges: FxHashMap::default(),
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: FxHashMap::default(),
@@ -126,6 +141,7 @@ impl Frame {
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.retained_scene_segments.clear();
+        self.retained_element_ranges.clear();
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -218,6 +234,7 @@ impl Frame {
             + self.tooltip_requests.capacity()
             + self.cursor_styles.capacity()
             + self.retained_scene_segments.capacity()
+            + self.retained_element_ranges.capacity()
             + self.debug_container_capacity()
     }
 
@@ -252,6 +269,12 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
+        if self.retained_element_ranges.capacity()
+            > FRAME_MIN_RETAINED_CAPACITY.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.retained_element_ranges
+                .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_element_ranges.len()));
+        }
     }
 
     pub(super) fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
@@ -277,6 +300,8 @@ impl Frame {
                 self.tooltip_requests.shrink_to(floor);
                 self.cursor_styles.shrink_to(floor);
                 self.retained_scene_segments.shrink_to(floor);
+                self.retained_element_ranges
+                    .shrink_to(floor.max(self.retained_element_ranges.len()));
                 #[cfg(any(test, feature = "test-support"))]
                 self.debug_bounds
                     .shrink_to(floor.max(self.debug_bounds.len()));
