@@ -1,3 +1,4 @@
+use super::frame::RetainedElementRange;
 use super::state::ElementVisualTransform;
 use super::*;
 
