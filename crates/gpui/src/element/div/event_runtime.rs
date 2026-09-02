@@ -68,16 +68,17 @@ impl Interactivity {
             });
         }
 
-        if self.hover_style.is_some()
-            || self.base_style.mouse_cursor.is_some()
-            || cx.active_drag.is_some() && !self.drag_over_styles.is_empty()
-        {
+        let hover_changes_style = self.hover_style.is_some()
+            || cx.active_drag.is_some() && !self.drag_over_styles.is_empty();
+        let hover_changes_cursor = self.base_style.mouse_cursor.is_some();
+        if hover_changes_style || hover_changes_cursor {
             let hitbox = hitbox.clone();
             let was_hovered = hitbox.is_hovered(window);
             let current_view = window.current_view();
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
-                if phase == DispatchPhase::Capture && hovered != was_hovered {
+                if phase == DispatchPhase::Capture && hovered != was_hovered && hover_changes_style
+                {
                     cx.notify(current_view);
                 }
             });
@@ -143,18 +144,19 @@ impl Interactivity {
                 window.on_mouse_event({
                     let mut captured_mouse_down = None;
                     let hitbox = hitbox.clone();
+                    let current_view = window.current_view();
                     move |event: &MouseUpEvent, phase, window, cx| match phase {
                         DispatchPhase::Capture => {
                             let mut pending_mouse_down = pending_mouse_down.borrow_mut();
                             if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
                                 captured_mouse_down = pending_mouse_down.take();
                                 if has_active_style {
-                                    window.refresh();
+                                    cx.notify(current_view);
                                 }
                             } else if pending_mouse_down.is_some() {
                                 pending_mouse_down.take();
                                 if has_active_style {
-                                    window.refresh();
+                                    cx.notify(current_view);
                                 }
                             }
                         }
@@ -230,10 +232,11 @@ impl Interactivity {
 
             let active_state = element_state.ensure_clicked_state();
             if has_active_style && active_state.borrow().is_clicked() {
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _cx| {
+                let current_view = window.current_view();
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _window, cx| {
                     if phase == DispatchPhase::Capture {
                         *active_state.borrow_mut() = ElementClickedState::default();
-                        window.refresh();
+                        cx.notify(current_view);
                     }
                 });
             } else if has_active_style {
@@ -242,7 +245,8 @@ impl Interactivity {
                     .as_ref()
                     .and_then(|group_active| GroupHitboxes::get(&group_active.group, cx));
                 let hitbox = hitbox.clone();
-                window.on_mouse_event(move |_: &MouseDownEvent, phase, window, _cx| {
+                let current_view = window.current_view();
+                window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble && !window.default_prevented() {
                         let group_hovered = active_group_hitbox
                             .is_some_and(|group_hitbox_id| group_hitbox_id.is_hovered(window));
@@ -252,7 +256,7 @@ impl Interactivity {
                                 group: group_hovered,
                                 element: element_hovered,
                             };
-                            window.refresh();
+                            cx.notify(current_view);
                         }
                     }
                 });
