@@ -343,6 +343,54 @@ impl Window {
             .replay(old_scene_range, &self.rendered_frame.scene);
         true
     }
+
+    /// Returns a previously retained element range that is safe to replay in the current
+    /// interaction-only frame.
+    pub(crate) fn reusable_interaction_element(
+        &self,
+        global_id: &GlobalElementId,
+        bounds: Bounds<Pixels>,
+    ) -> Option<RetainedElementRange> {
+        if self.force_view_cache_refresh()
+            || !self.invalidator.active_interaction_only()
+            || self.invalidator.interactive_path_is_dirty(global_id)
+        {
+            return None;
+        }
+
+        let retained = self.rendered_frame.retained_element_ranges.get(global_id)?;
+        if !retained.leaf
+            || retained.bounds != bounds
+            || !self.can_reuse_prepaint(&retained.prepaint_range)
+            || !self.can_reuse_paint(&retained.paint_range)
+        {
+            return None;
+        }
+        Some(retained.clone())
+    }
+
+    pub(crate) fn retained_element_range_count(&self) -> usize {
+        self.next_frame.retained_element_ranges.len()
+    }
+
+    pub(crate) fn record_retained_element_range(
+        &mut self,
+        global_id: GlobalElementId,
+        bounds: Bounds<Pixels>,
+        prepaint_range: Range<PrepaintStateIndex>,
+        paint_range: Range<PaintIndex>,
+        leaf: bool,
+    ) {
+        self.next_frame.retained_element_ranges.insert(
+            global_id,
+            RetainedElementRange {
+                bounds,
+                prepaint_range,
+                paint_range,
+                leaf,
+            },
+        );
+    }
 }
 
 fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {
