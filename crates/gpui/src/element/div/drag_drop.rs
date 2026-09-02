@@ -245,17 +245,18 @@ pub(crate) fn bind_drag_start_listeners(
     mut drag_listener: Option<(Arc<dyn Any>, DragListener)>,
     window: &mut Window,
 ) {
+    let current_view = window.current_view();
     window.on_mouse_event({
         let pending_mouse_down = pending_mouse_down.clone();
         let hitbox = hitbox.clone();
-        move |event: &MouseDownEvent, phase, window, _cx| {
+        move |event: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble
                 && event.button == MouseButton::Left
                 && hitbox.is_hovered(window)
             {
                 *pending_mouse_down.borrow_mut() = Some(event.clone());
                 if has_active_style {
-                    window.refresh();
+                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
                 }
             }
         }
