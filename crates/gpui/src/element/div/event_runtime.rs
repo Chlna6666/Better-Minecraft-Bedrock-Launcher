@@ -79,7 +79,7 @@ impl Interactivity {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered && hover_changes_style
                 {
-                    cx.notify(current_view);
+                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
                 }
             });
         }
@@ -151,12 +151,12 @@ impl Interactivity {
                             if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
                                 captured_mouse_down = pending_mouse_down.take();
                                 if has_active_style {
-                                    cx.notify(current_view);
+                                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
                                 }
                             } else if pending_mouse_down.is_some() {
                                 pending_mouse_down.take();
                                 if has_active_style {
-                                    cx.notify(current_view);
+                                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
                                 }
                             }
                         }
@@ -232,11 +232,12 @@ impl Interactivity {
 
             let active_state = element_state.ensure_clicked_state();
             if has_active_style && active_state.borrow().is_clicked() {
+                let hitbox = hitbox.clone();
                 let current_view = window.current_view();
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, _window, cx| {
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
                         *active_state.borrow_mut() = ElementClickedState::default();
-                        cx.notify(current_view);
+                        window.notify_interactive_region(current_view, hitbox.bounds, cx);
                     }
                 });
             } else if has_active_style {
@@ -256,7 +257,7 @@ impl Interactivity {
                                 group: group_hovered,
                                 element: element_hovered,
                             };
-                            cx.notify(current_view);
+                            window.notify_interactive_region(current_view, hitbox.bounds, cx);
                         }
                     }
                 });
