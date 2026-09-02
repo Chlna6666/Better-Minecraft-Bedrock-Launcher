@@ -1,6 +1,6 @@
 use crate::{
-    App, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId, MouseMoveEvent, SharedString,
-    Style, Window, record_style_refine,
+    App, Bounds, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId, MouseMoveEvent, Pixels,
+    SharedString, Style, Window, record_style_refine,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -93,7 +93,13 @@ impl Interactivity {
         key
     }
 
-    pub(crate) fn paint_hover_group_handler(&self, window: &mut Window, cx: &mut App) {
+    pub(crate) fn paint_hover_group_handler(
+        &self,
+        global_id: Option<&GlobalElementId>,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let group_hitbox = self
             .group_hover_style
             .as_ref()
@@ -102,10 +108,16 @@ impl Interactivity {
         if let Some(group_hitbox) = group_hitbox {
             let was_hovered = group_hitbox.is_hovered(window);
             let current_view = window.current_view();
+            let global_id = global_id.cloned();
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
-                    cx.notify(current_view);
+                    window.notify_interactive_region(
+                        current_view,
+                        global_id.as_ref(),
+                        bounds,
+                        cx,
+                    );
                 }
             });
         }
