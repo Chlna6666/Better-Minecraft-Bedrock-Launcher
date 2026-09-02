@@ -1,19 +1,21 @@
 use crate::{
-    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId, Pixels,
-    Size, Window,
+    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId, PaintIndex,
+    Pixels, PrepaintStateIndex, Size, Window,
 };
+use crate::window::debug_visualization::ViewCacheDebugStatus;
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
 use std::{
     any::Any,
     fmt::{self, Display},
     mem,
+    ops::Range,
 };
 
 use super::Element;
 
 /// A globally unique identifier for an element, used to track state across frames.
-#[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
 pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
 
 impl Display for GlobalElementId {
@@ -76,6 +78,14 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         bounds: Bounds<Pixels>,
         request_layout: RequestLayoutState,
         prepaint: PrepaintState,
+        prepaint_range: Range<PrepaintStateIndex>,
+    },
+    Retained {
+        global_id: GlobalElementId,
+        inspector_id: Option<InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        prepaint_range: Range<PrepaintStateIndex>,
+        paint_range: Range<PaintIndex>,
     },
     Painted,
 }
@@ -151,12 +161,32 @@ impl<E: Element> Drawable<E> {
                 mut request_layout,
                 ..
             } => {
+                let bounds = window.layout_bounds(layout_id);
+
+                if let Some(global_id) = global_id.as_ref()
+                    && let Some(retained) =
+                        window.reusable_interaction_element(global_id, bounds)
+                {
+                    let prepaint_start = window.prepaint_index();
+                    if window.reuse_prepaint(retained.prepaint_range) {
+                        let prepaint_end = window.prepaint_index();
+                        self.phase = ElementDrawPhase::Retained {
+                            global_id: global_id.clone(),
+                            inspector_id,
+                            bounds,
+                            prepaint_range: prepaint_start..prepaint_end,
+                            paint_range: retained.paint_range,
+                        };
+                        return;
+                    }
+                }
+
                 if let Some(element_id) = self.element.id() {
                     window.element_id_stack.push(element_id);
                     debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
                 }
 
-                let bounds = window.layout_bounds(layout_id);
+                let prepaint_start = window.prepaint_index();
                 let node_id = window.next_frame.dispatch_tree.push_node();
                 let prepaint = self.element.prepaint(
                     global_id.as_ref(),
@@ -167,6 +197,7 @@ impl<E: Element> Drawable<E> {
                     cx,
                 );
                 window.next_frame.dispatch_tree.pop_node();
+                let prepaint_end = window.prepaint_index();
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
@@ -179,17 +210,14 @@ impl<E: Element> Drawable<E> {
                     bounds,
                     request_layout,
                     prepaint,
+                    prepaint_range: prepaint_start..prepaint_end,
                 };
             }
             _ => panic!("must call request_layout before prepaint"),
         }
     }
 
-    pub(crate) fn paint(
-        &mut self,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (E::RequestLayoutState, E::PrepaintState) {
+    pub(crate) fn paint(&mut self, window: &mut Window, cx: &mut App) {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Prepaint {
                 node_id,
@@ -198,13 +226,15 @@ impl<E: Element> Drawable<E> {
                 bounds,
                 mut request_layout,
                 mut prepaint,
-                ..
+                prepaint_range,
             } => {
                 if let Some(element_id) = self.element.id() {
                     window.element_id_stack.push(element_id);
                     debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
                 }
 
+                let retained_children_before = window.retained_element_range_count();
+                let paint_start = window.paint_index();
                 window.record_debug_element_paint(bounds, cx);
                 window.next_frame.dispatch_tree.set_active_node(node_id);
                 self.element.paint(
@@ -216,13 +246,54 @@ impl<E: Element> Drawable<E> {
                     window,
                     cx,
                 );
+                let paint_end = window.paint_index();
+                let leaf = window.retained_element_range_count() == retained_children_before;
+
+                if let Some(global_id) = global_id.as_ref() {
+                    window.record_retained_element_range(
+                        global_id.clone(),
+                        bounds,
+                        prepaint_range,
+                        paint_start..paint_end,
+                        leaf,
+                    );
+                }
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
                 }
 
                 self.phase = ElementDrawPhase::Painted;
-                (request_layout, prepaint)
+            }
+            ElementDrawPhase::Retained {
+                global_id,
+                inspector_id: _,
+                bounds,
+                prepaint_range,
+                paint_range,
+            } => {
+                let paint_start = window.paint_index();
+                if window.reuse_paint(paint_range) {
+                    let paint_end = window.paint_index();
+                    window.record_retained_element_range(
+                        global_id,
+                        bounds,
+                        prepaint_range,
+                        paint_start..paint_end,
+                        true,
+                    );
+                    window.record_debug_view_cache_status(
+                        bounds,
+                        ViewCacheDebugStatus::Hit,
+                        cx,
+                    );
+                } else {
+                    // Prepaint has already been replayed, so a late paint-range failure cannot be
+                    // rebuilt safely in place. Preserve the previous completed frame and recover on
+                    // the next draw instead of submitting a partially reconstructed subtree.
+                    window.degrade_current_draw();
+                }
+                self.phase = ElementDrawPhase::Painted;
             }
             _ => panic!("must call prepaint before paint"),
         }
