@@ -309,6 +309,7 @@ impl Interactivity {
                                                 }
 
                                                 self.paint_mouse_listeners(
+                                                    global_id,
                                                     hitbox,
                                                     element_state.as_mut(),
                                                     window,
