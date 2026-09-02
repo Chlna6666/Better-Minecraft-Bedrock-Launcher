@@ -1,7 +1,7 @@
 use crate::{
-    App, ClickEvent, DispatchPhase, Hitbox, KeyDownEvent, KeyUpEvent, KeyboardButton,
-    KeyboardClickEvent, ModifiersChangedEvent, MouseClickEvent, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ScrollWheelEvent, Window,
+    App, ClickEvent, DispatchPhase, GlobalElementId, Hitbox, KeyDownEvent, KeyUpEvent,
+    KeyboardButton, KeyboardClickEvent, ModifiersChangedEvent, MouseClickEvent, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window,
 };
 use std::{mem, rc::Rc};
 
@@ -16,11 +16,13 @@ use super::{
 impl Interactivity {
     pub(crate) fn paint_mouse_listeners(
         &mut self,
+        global_id: Option<&GlobalElementId>,
         hitbox: &Hitbox,
         element_state: Option<&mut InteractiveElementState>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let interactive_id = global_id.cloned();
         let is_focused = self
             .tracked_focus_handle
             .as_ref()
@@ -75,11 +77,17 @@ impl Interactivity {
             let hitbox = hitbox.clone();
             let was_hovered = hitbox.is_hovered(window);
             let current_view = window.current_view();
+            let interactive_id = interactive_id.clone();
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered && hover_changes_style
                 {
-                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
+                    window.notify_interactive_region(
+                        current_view,
+                        interactive_id.as_ref(),
+                        hitbox.bounds,
+                        cx,
+                    );
                 }
             });
         }
@@ -101,6 +109,7 @@ impl Interactivity {
 
                 bind_drag_start_listeners(
                     hitbox,
+                    interactive_id.clone(),
                     pending_mouse_down.clone(),
                     clicked_state,
                     has_active_style,
@@ -145,18 +154,29 @@ impl Interactivity {
                     let mut captured_mouse_down = None;
                     let hitbox = hitbox.clone();
                     let current_view = window.current_view();
+                    let interactive_id = interactive_id.clone();
                     move |event: &MouseUpEvent, phase, window, cx| match phase {
                         DispatchPhase::Capture => {
                             let mut pending_mouse_down = pending_mouse_down.borrow_mut();
                             if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
                                 captured_mouse_down = pending_mouse_down.take();
                                 if has_active_style {
-                                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
+                                    window.notify_interactive_region(
+                                        current_view,
+                                        interactive_id.as_ref(),
+                                        hitbox.bounds,
+                                        cx,
+                                    );
                                 }
                             } else if pending_mouse_down.is_some() {
                                 pending_mouse_down.take();
                                 if has_active_style {
-                                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
+                                    window.notify_interactive_region(
+                                        current_view,
+                                        interactive_id.as_ref(),
+                                        hitbox.bounds,
+                                        cx,
+                                    );
                                 }
                             }
                         }
@@ -234,10 +254,16 @@ impl Interactivity {
             if has_active_style && active_state.borrow().is_clicked() {
                 let hitbox = hitbox.clone();
                 let current_view = window.current_view();
+                let interactive_id = interactive_id.clone();
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
                         *active_state.borrow_mut() = ElementClickedState::default();
-                        window.notify_interactive_region(current_view, hitbox.bounds, cx);
+                        window.notify_interactive_region(
+                            current_view,
+                            interactive_id.as_ref(),
+                            hitbox.bounds,
+                            cx,
+                        );
                     }
                 });
             } else if has_active_style {
@@ -247,6 +273,7 @@ impl Interactivity {
                     .and_then(|group_active| GroupHitboxes::get(&group_active.group, cx));
                 let hitbox = hitbox.clone();
                 let current_view = window.current_view();
+                let interactive_id = interactive_id.clone();
                 window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble && !window.default_prevented() {
                         let group_hovered = active_group_hitbox
@@ -257,7 +284,12 @@ impl Interactivity {
                                 group: group_hovered,
                                 element: element_hovered,
                             };
-                            window.notify_interactive_region(current_view, hitbox.bounds, cx);
+                            window.notify_interactive_region(
+                                current_view,
+                                interactive_id.as_ref(),
+                                hitbox.bounds,
+                                cx,
+                            );
                         }
                     }
                 });
