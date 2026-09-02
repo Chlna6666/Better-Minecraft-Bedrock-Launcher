@@ -52,8 +52,7 @@ impl InteractiveText {
         }
     }
 
-    /// on_click is called when the user clicks on one of the given ranges, passing the index of
-    /// the clicked range.
+    /// on_click is called when the user clicks on one of the given ranges, passing the index of the clicked range.
     pub fn on_click(
         mut self,
         ranges: Vec<Range<usize>>,
@@ -71,8 +70,7 @@ impl InteractiveText {
         self
     }
 
-    /// on_hover is called when the mouse moves over a character within the text, passing the
-    /// index of the hovered character, or None if the mouse leaves the text.
+    /// on_hover is called when the mouse moves over a character within the text, passing the index of the hovered character, or None if the mouse leaves the text.
     pub fn on_hover(
         mut self,
         listener: impl Fn(Option<usize>, MouseMoveEvent, &mut Window, &mut App) + 'static,
@@ -133,7 +131,6 @@ impl Element for InteractiveText {
                         self.tooltip_id =
                             set_tooltip_on_window(&interactive_state.active_tooltip, window);
                     } else {
-                        // If there is no longer a tooltip builder, remove the active tooltip.
                         interactive_state.active_tooltip.take();
                     }
                 }
@@ -157,6 +154,7 @@ impl Element for InteractiveText {
         cx: &mut App,
     ) {
         let current_view = window.current_view();
+        let interaction_id = global_id.cloned();
         let text_layout = self.text.layout().clone();
         window.with_element_state::<InteractiveTextState, _>(
             global_id.unwrap(),
@@ -178,6 +176,7 @@ impl Element for InteractiveText {
                     if let Some(mouse_down_index) = mouse_down.get() {
                         let hitbox = hitbox.clone();
                         let clickable_ranges = mem::take(&mut self.clickable_ranges);
+                        let interaction_id = interaction_id.clone();
                         window.on_mouse_event(
                             move |event: &MouseUpEvent, phase, window: &mut Window, cx| {
                                 if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
@@ -196,20 +195,31 @@ impl Element for InteractiveText {
                                     }
 
                                     mouse_down.take();
-                                    window.refresh();
+                                    window.notify_interactive_region(
+                                        current_view,
+                                        interaction_id.as_ref(),
+                                        hitbox.bounds,
+                                        cx,
+                                    );
                                 }
                             },
                         );
                     } else {
                         let hitbox = hitbox.clone();
-                        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+                        let interaction_id = interaction_id.clone();
+                        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                             if phase == DispatchPhase::Bubble
                                 && hitbox.is_hovered(window)
                                 && let Ok(mouse_down_index) =
                                     text_layout.index_for_position(event.position)
                             {
                                 mouse_down.set(Some(mouse_down_index));
-                                window.refresh();
+                                window.notify_interactive_region(
+                                    current_view,
+                                    interaction_id.as_ref(),
+                                    hitbox.bounds,
+                                    cx,
+                                );
                             }
                         });
                     }
@@ -220,6 +230,7 @@ impl Element for InteractiveText {
                     let hitbox = hitbox.clone();
                     let text_layout = text_layout.clone();
                     let hovered_index = interactive_state.hovered_index.clone();
+                    let interaction_id = interaction_id.clone();
                     move |event: &MouseMoveEvent, phase, window, cx| {
                         if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                             let current = hovered_index.get();
@@ -229,7 +240,12 @@ impl Element for InteractiveText {
                                 if let Some(hover_listener) = hover_listener.as_ref() {
                                     hover_listener(updated, event.clone(), window, cx);
                                 }
-                                cx.notify(current_view);
+                                window.notify_interactive_region(
+                                    current_view,
+                                    interaction_id.as_ref(),
+                                    hitbox.bounds,
+                                    cx,
+                                );
                             }
                         }
                     }
@@ -249,7 +265,6 @@ impl Element for InteractiveText {
                         }
                     });
 
-                    // Use bounds instead of testing hitbox since this is called during prepaint.
                     let check_is_hovered_during_prepaint = Rc::new({
                         let source_bounds = hitbox.bounds;
                         let text_layout = text_layout.clone();
