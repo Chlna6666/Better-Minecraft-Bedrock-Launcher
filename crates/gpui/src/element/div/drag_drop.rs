@@ -1,7 +1,7 @@
 use crate::{
-    AnyDrag, App, Bounds, DispatchPhase, Hitbox, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, SharedString, Style, StyleRefinement, Window,
-    record_style_refine,
+    AnyDrag, App, Bounds, DispatchPhase, GlobalElementId, Hitbox, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Style, StyleRefinement,
+    Window, record_style_refine,
 };
 use refineable::Refineable;
 use std::{
@@ -227,7 +227,10 @@ pub(crate) fn bind_drop_listeners(
 
                     if can_drop {
                         listener(drag.value.as_ref(), window, cx);
-                        window.refresh();
+                        // Removing the drag preview needs another frame but must not invalidate all
+                        // cached application views. The drop listener itself is responsible for
+                        // notifying any model state that actually changed.
+                        window.redraw_without_view_cache_refresh();
                         cx.stop_propagation();
                     }
                 }
@@ -238,6 +241,7 @@ pub(crate) fn bind_drop_listeners(
 
 pub(crate) fn bind_drag_start_listeners(
     hitbox: &Hitbox,
+    global_id: Option<GlobalElementId>,
     pending_mouse_down: Rc<RefCell<Option<MouseDownEvent>>>,
     clicked_state: Rc<RefCell<ElementClickedState>>,
     has_active_style: bool,
@@ -249,6 +253,7 @@ pub(crate) fn bind_drag_start_listeners(
     window.on_mouse_event({
         let pending_mouse_down = pending_mouse_down.clone();
         let hitbox = hitbox.clone();
+        let global_id = global_id.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble
                 && event.button == MouseButton::Left
@@ -256,7 +261,12 @@ pub(crate) fn bind_drag_start_listeners(
             {
                 *pending_mouse_down.borrow_mut() = Some(event.clone());
                 if has_active_style {
-                    window.notify_interactive_region(current_view, hitbox.bounds, cx);
+                    window.notify_interactive_region(
+                        current_view,
+                        global_id.as_ref(),
+                        hitbox.bounds,
+                        cx,
+                    );
                 }
             }
         }
@@ -285,7 +295,12 @@ pub(crate) fn bind_drag_start_listeners(
                     cursor_style: drag_cursor_style,
                 });
                 pending_mouse_down.take();
-                window.refresh();
+                window.notify_interactive_region(
+                    current_view,
+                    global_id.as_ref(),
+                    hitbox.bounds,
+                    cx,
+                );
                 cx.stop_propagation();
             }
         }
