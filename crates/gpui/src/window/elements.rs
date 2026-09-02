@@ -95,7 +95,7 @@ impl Window {
         let key = (GlobalElementId(global_id.0.clone()), TypeId::of::<S>());
         self.next_frame
             .accessed_element_states
-            .push((GlobalElementId(key.0.clone()), TypeId::of::<S>()));
+            .push((key.0.clone(), TypeId::of::<S>()));
 
         if let Some(any) = self
             .next_frame
