@@ -7,13 +7,12 @@
 //! # Build your own div
 //!
 //! GPUI does not directly provide APIs for stateful, multi step events like `click`
-//! and `drag`. We want GPUI users to be able to build their own abstractions for
-//! their own needs. However, as a UI framework, we're also obliged to provide some
-//! building blocks to make the process of building your own elements easier.
-//! For this we have the [`Interactivity`] and the [`StyleRefinement`] structs, as well
-//! as several associated traits. Together, these provide the full suite of Dom-like events
-//! and Tailwind-like styling that you can use to build your own custom elements. Div is
-//! constructed by combining these two systems into an all-in-one element.
+//! and `drag`. We want GPUI users to be able to build their own abstractions for their own needs.
+//! However, as a UI framework, we're also obliged to provide some building blocks to make the
+//! process of building your own elements easier. For this we have the [`Interactivity`] and the
+//! [`StyleRefinement`] structs, as well as several associated traits. Together, these provide the
+//! full suite of Dom-like events and Tailwind-like styling that you can use to build your own
+//! custom elements. Div is constructed by combining these two systems into an all-in-one element.
 
 use crate::{
     App, Bounds, ElementId, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior,
@@ -38,16 +37,14 @@ use super::state::{ElementClickedState, InteractiveElementState};
 use super::style_state::{ComputedStyleCache, GroupHitboxes};
 use super::tooltip::TooltipBuilder;
 
-/// The interactivity struct. Powers all of the general-purpose
-/// interactivity in the `Div` element.
+/// The interactivity struct. Powers all of the general-purpose interactivity in the `Div` element.
 #[derive(Default)]
 pub struct Interactivity {
     /// The element ID of the element. In id is required to support a stateful subset of the interactivity such as on_click.
     pub element_id: Option<ElementId>,
     /// Whether the element was clicked. This will only be present after layout.
     pub active: Option<bool>,
-    /// Whether the element was hovered. This will only be present after paint if an hitbox
-    /// was created for the interactive element.
+    /// Whether the element was hovered. This will only be present after paint if an hitbox was created for the interactive element.
     pub hovered: Option<bool>,
     pub(crate) tooltip_id: Option<TooltipId>,
     pub(crate) content_size: Size<Pixels>,
@@ -58,8 +55,7 @@ pub struct Interactivity {
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
     pub(crate) group: Option<SharedString>,
-    /// The base style of the element, before any modifications are applied
-    /// by focus, active, etc.
+    /// The base style of the element, before any modifications are applied by focus, active, etc.
     pub base_style: Box<StyleRefinement>,
     pub(crate) focus_style: Option<Box<StyleRefinement>>,
     pub(crate) in_focus_style: Option<Box<StyleRefinement>>,
@@ -122,7 +118,7 @@ impl Interactivity {
             || window.is_inspector_picking(cx)
     }
 
-    /// Layout this element according to this interactivity state's configured styles
+    /// Layout this element according to this interactivity state's configured styles.
     pub fn request_layout(
         &mut self,
         global_id: Option<&GlobalElementId>,
@@ -222,14 +218,7 @@ impl Interactivity {
         )
     }
 
-    /// Paint this element according to this interactivity state's configured styles
-    /// and bind the element's mouse and keyboard events.
-    ///
-    /// content_size is the size of the content of the element, which may be larger than the
-    /// element's bounds if the element is scrollable.
-    ///
-    /// the final computed style will be passed to the provided function, along
-    /// with the current scroll offset
+    /// Paint this element according to this interactivity state's configured styles and bind the element's mouse and keyboard events.
     pub fn paint(
         &mut self,
         global_id: Option<&GlobalElementId>,
@@ -257,7 +246,7 @@ impl Interactivity {
                         .insert(debug_selector.clone(), window.visual_bounds(bounds));
                 }
 
-                self.paint_hover_group_handler(window, cx);
+                self.paint_hover_group_handler(global_id, bounds, window, cx);
 
                 if style.visibility == Visibility::Hidden {
                     return ((), element_state);
@@ -287,14 +276,10 @@ impl Interactivity {
 
                                                 if let Some(drag) = cx.active_drag.as_ref() {
                                                     if let Some(mouse_cursor) = drag.cursor_style {
-                                                        window
-                                                            .set_window_cursor_style(mouse_cursor);
+                                                        window.set_window_cursor_style(mouse_cursor);
                                                     }
-                                                } else {
-                                                    if let Some(mouse_cursor) = style.mouse_cursor {
-                                                        window
-                                                            .set_cursor_style(mouse_cursor, hitbox);
-                                                    }
+                                                } else if let Some(mouse_cursor) = style.mouse_cursor {
+                                                    window.set_cursor_style(mouse_cursor, hitbox);
                                                 }
 
                                                 if let Some(group) = self.group.clone() {
@@ -315,19 +300,14 @@ impl Interactivity {
                                                     window,
                                                     cx,
                                                 );
-                                                self.paint_scroll_listener(
-                                                    hitbox, &style, window, cx,
-                                                );
+                                                self.paint_scroll_listener(hitbox, &style, window, cx);
                                             }
 
                                             self.paint_keyboard_listeners(window, cx);
                                             f(&style, window, cx);
 
                                             if let Some(_hitbox) = hitbox {
-                                                #[cfg(any(
-                                                    feature = "inspector",
-                                                    debug_assertions
-                                                ))]
+                                                #[cfg(any(feature = "inspector", debug_assertions))]
                                                 window.insert_inspector_hitbox(
                                                     _hitbox.id,
                                                     _inspector_id,
