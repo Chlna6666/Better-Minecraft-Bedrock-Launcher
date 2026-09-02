@@ -39,6 +39,25 @@ impl DispatchPhase {
     }
 }
 
+impl Window {
+    /// Notify the view that owns an interactive state change while recording the
+    /// hitbox-sized visual damage separately from view-cache invalidation.
+    ///
+    /// The view still has to be rerendered so hover/active style can be recomputed, but the
+    /// compositor/presenter should not treat that traversal requirement as full-window pixel damage.
+    pub(crate) fn notify_interactive_region(
+        &mut self,
+        view_id: EntityId,
+        bounds: Bounds<Pixels>,
+        cx: &mut App,
+    ) {
+        if !bounds.is_empty() {
+            self.animation_dirty_region.push(bounds.scale(self.scale_factor));
+        }
+        cx.notify(view_id);
+    }
+}
+
 struct WindowInvalidatorInner {
     pub dirty: bool,
     pub draw_phase: DrawPhase,
