@@ -81,8 +81,9 @@ fn clear_active_tooltip(active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>, win
     match active_tooltip.borrow_mut().take() {
         None => {}
         Some(ActiveTooltip::WaitingForShow { .. }) => {}
-        Some(ActiveTooltip::Visible { .. }) => window.refresh(),
-        Some(ActiveTooltip::WaitingForHide { .. }) => window.refresh(),
+        Some(ActiveTooltip::Visible { .. }) | Some(ActiveTooltip::WaitingForHide { .. }) => {
+            window.redraw_without_view_cache_refresh();
+        }
     }
 }
 
@@ -98,7 +99,7 @@ fn clear_active_tooltip_if_not_hoverable(
     };
     if should_clear {
         active_tooltip.borrow_mut().take();
-        window.refresh();
+        window.redraw_without_view_cache_refresh();
     }
 }
 
@@ -233,7 +234,7 @@ fn handle_tooltip_mouse_move(
                                 }
                             });
                         *active_tooltip.borrow_mut() = new_tooltip;
-                        window.refresh();
+                        window.redraw_without_view_cache_refresh();
                     })
                     .ok();
                 }
@@ -295,7 +296,8 @@ fn handle_tooltip_check_visible_and_update(
                         .timer(HOVERABLE_TOOLTIP_HIDE_DELAY)
                         .await;
                     if active_tooltip.borrow_mut().take().is_some() {
-                        cx.update(|window, _cx| window.refresh()).ok();
+                        cx.update(|window, _cx| window.redraw_without_view_cache_refresh())
+                            .ok();
                     }
                 }
             });
