@@ -347,7 +347,7 @@ impl MapViewerWindowView {
             return;
         }
         self.preview_3d.last_motion_frame_at = None;
-        request_animation_frame_if(window, true);
+        request_layout_animation_frame_if(window, true);
         cx.notify();
     }
 
