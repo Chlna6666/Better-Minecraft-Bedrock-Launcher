@@ -1,7 +1,7 @@
 use super::*;
-use crate::ui::animation::request_animation_frame_if_active;
 use crate::ui::state::bedrock_auth::BedrockAuthState;
 use crate::ui::state::navigation::NavState;
+use gpui::AnimationExt as _;
 
 // Bubble-only fallback: inputs and editors keep their own Tab actions.
 pub(super) fn navigate_focus(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
@@ -157,11 +157,10 @@ impl Render for AppChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         let state = self.prepare_render_state(now, window, cx);
-        request_animation_frame_if_active(window, state.theme_animating);
-        request_animation_frame_if_active(window, state.nav_animating);
-        request_animation_frame_if_active(window, state.auth.animating);
+        let animating = state.theme_animating || state.nav_animating || state.auth.animating;
         let route = crate::ui::navigation::current_route_target(cx);
         let update_modal_open = cx.global::<UpdateState>().show_modal;
         chrome::render_app_chrome(state, route, update_modal_open)
+            .with_layout_animation_target("app-chrome-layout-animation", animating)
     }
 }
