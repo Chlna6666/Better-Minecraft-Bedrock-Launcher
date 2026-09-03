@@ -7,11 +7,15 @@ pub trait ParentElement {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>);
 
     /// Extend this element's children with already-erased child elements.
+    #[track_caller]
     fn extend_any(&mut self, elements: impl IntoIterator<Item = AnyElement>)
     where
         Self: Sized,
     {
-        self.extend(elements);
+        let retained_source = core::panic::Location::caller();
+        self.extend(elements.into_iter().enumerate().map(|(index, child)| {
+            child.with_retained_mount(retained_source, index.min(u32::MAX as usize) as u32)
+        }));
     }
 
     /// Add a single child element to this element.
