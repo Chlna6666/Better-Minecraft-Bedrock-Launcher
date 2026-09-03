@@ -199,6 +199,16 @@ impl AnyWindowHandle {
     }
 }
 
+impl Window {
+    /// Returns a weak, copyable handle to this GPUI window.
+    ///
+    /// The handle does not keep the window alive and is safe to retain for later targeted updates;
+    /// operations through it simply fail after the window has been closed.
+    pub fn any_window_handle(&self) -> AnyWindowHandle {
+        self.handle
+    }
+}
+
 impl HasWindowHandle for Window {
     fn window_handle(&self) -> Result<winit::raw_window_handle::WindowHandle<'_>, HandleError> {
         self.platform_window.window_handle()
