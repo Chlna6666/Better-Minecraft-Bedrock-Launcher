@@ -226,161 +226,168 @@ impl Element for UniformList {
                     false
                 };
 
-                if self.item_count > 0 {
-                    let content_height =
-                        item_height * self.item_count + padding.top + padding.bottom;
-                    let is_scrolled_vertically = !scroll_offset.y.is_zero();
-                    let min_vertical_scroll_offset = padded_bounds.size.height - content_height;
-                    if is_scrolled_vertically && scroll_offset.y < min_vertical_scroll_offset {
-                        shared_scroll_offset.borrow_mut().y = min_vertical_scroll_offset;
-                        scroll_offset.y = min_vertical_scroll_offset;
-                    }
-
-                    let content_width = content_size.width + padding.left + padding.right;
-                    let is_scrolled_horizontally =
-                        can_scroll_horizontally && !scroll_offset.x.is_zero();
-                    if is_scrolled_horizontally && content_width <= padded_bounds.size.width {
-                        shared_scroll_offset.borrow_mut().x = Pixels::ZERO;
-                        scroll_offset.x = Pixels::ZERO;
-                    }
-
-                    if let Some(deferred_scroll) = shared_scroll_to_item {
-                        let mut ix = deferred_scroll.item_index;
-                        if y_flipped {
-                            ix = self.item_count.saturating_sub(ix + 1);
-                        }
-                        let list_height = padded_bounds.size.height;
-                        let mut updated_scroll_offset = shared_scroll_offset.borrow_mut();
-                        let item_top = item_height * ix + padding.top;
-                        let item_bottom = item_top + item_height;
-                        let scroll_top = -updated_scroll_offset.y;
-                        let offset_pixels = item_height * deferred_scroll.offset;
-                        let mut scrolled_to_top = false;
-
-                        if item_top < scroll_top + padding.top + offset_pixels {
-                            scrolled_to_top = true;
-                            updated_scroll_offset.y = -(item_top) + padding.top + offset_pixels;
-                        } else if item_bottom > scroll_top + list_height - padding.bottom {
-                            scrolled_to_top = true;
-                            updated_scroll_offset.y = -(item_bottom - list_height) - padding.bottom;
+                // UniformList materializes visible items during prepaint, after the retained child
+                // counter established by its request-layout scope has already been popped. Give the
+                // lazy item/decorations tree its own deterministic parent-local namespace so item
+                // roots cannot collide with unrelated ancestor slots or all collapse to slot zero.
+                window.with_retained_child_scope(|window| {
+                    if self.item_count > 0 {
+                        let content_height =
+                            item_height * self.item_count + padding.top + padding.bottom;
+                        let is_scrolled_vertically = !scroll_offset.y.is_zero();
+                        let min_vertical_scroll_offset = padded_bounds.size.height - content_height;
+                        if is_scrolled_vertically && scroll_offset.y < min_vertical_scroll_offset {
+                            shared_scroll_offset.borrow_mut().y = min_vertical_scroll_offset;
+                            scroll_offset.y = min_vertical_scroll_offset;
                         }
 
-                        if deferred_scroll.scroll_strict
-                            || (scrolled_to_top
-                                && (item_top < scroll_top + offset_pixels
-                                    || item_bottom > scroll_top + list_height))
-                        {
-                            match deferred_scroll.strategy {
-                                ScrollStrategy::Top => {
-                                    updated_scroll_offset.y = -(item_top - offset_pixels)
-                                        .max(Pixels::ZERO)
-                                        .min(content_height - list_height)
-                                        .max(Pixels::ZERO);
-                                }
-                                ScrollStrategy::Center => {
-                                    let item_center = item_top + item_height / 2.0;
+                        let content_width = content_size.width + padding.left + padding.right;
+                        let is_scrolled_horizontally =
+                            can_scroll_horizontally && !scroll_offset.x.is_zero();
+                        if is_scrolled_horizontally && content_width <= padded_bounds.size.width {
+                            shared_scroll_offset.borrow_mut().x = Pixels::ZERO;
+                            scroll_offset.x = Pixels::ZERO;
+                        }
 
-                                    let viewport_height = list_height - offset_pixels;
-                                    let viewport_center = offset_pixels + viewport_height / 2.0;
-                                    let target_scroll_top = item_center - viewport_center;
+                        if let Some(deferred_scroll) = shared_scroll_to_item {
+                            let mut ix = deferred_scroll.item_index;
+                            if y_flipped {
+                                ix = self.item_count.saturating_sub(ix + 1);
+                            }
+                            let list_height = padded_bounds.size.height;
+                            let mut updated_scroll_offset = shared_scroll_offset.borrow_mut();
+                            let item_top = item_height * ix + padding.top;
+                            let item_bottom = item_top + item_height;
+                            let scroll_top = -updated_scroll_offset.y;
+                            let offset_pixels = item_height * deferred_scroll.offset;
+                            let mut scrolled_to_top = false;
 
-                                    updated_scroll_offset.y = -target_scroll_top
-                                        .max(Pixels::ZERO)
-                                        .min(content_height - list_height)
-                                        .max(Pixels::ZERO);
-                                }
-                                ScrollStrategy::Bottom => {
-                                    updated_scroll_offset.y = -(item_bottom - list_height
-                                        + offset_pixels)
-                                        .max(Pixels::ZERO)
-                                        .min(content_height - list_height)
-                                        .max(Pixels::ZERO);
+                            if item_top < scroll_top + padding.top + offset_pixels {
+                                scrolled_to_top = true;
+                                updated_scroll_offset.y = -(item_top) + padding.top + offset_pixels;
+                            } else if item_bottom > scroll_top + list_height - padding.bottom {
+                                scrolled_to_top = true;
+                                updated_scroll_offset.y =
+                                    -(item_bottom - list_height) - padding.bottom;
+                            }
+
+                            if deferred_scroll.scroll_strict
+                                || (scrolled_to_top
+                                    && (item_top < scroll_top + offset_pixels
+                                        || item_bottom > scroll_top + list_height))
+                            {
+                                match deferred_scroll.strategy {
+                                    ScrollStrategy::Top => {
+                                        updated_scroll_offset.y = -(item_top - offset_pixels)
+                                            .max(Pixels::ZERO)
+                                            .min(content_height - list_height)
+                                            .max(Pixels::ZERO);
+                                    }
+                                    ScrollStrategy::Center => {
+                                        let item_center = item_top + item_height / 2.0;
+
+                                        let viewport_height = list_height - offset_pixels;
+                                        let viewport_center = offset_pixels + viewport_height / 2.0;
+                                        let target_scroll_top = item_center - viewport_center;
+
+                                        updated_scroll_offset.y = -target_scroll_top
+                                            .max(Pixels::ZERO)
+                                            .min(content_height - list_height)
+                                            .max(Pixels::ZERO);
+                                    }
+                                    ScrollStrategy::Bottom => {
+                                        updated_scroll_offset.y = -(item_bottom - list_height
+                                            + offset_pixels)
+                                            .max(Pixels::ZERO)
+                                            .min(content_height - list_height)
+                                            .max(Pixels::ZERO);
+                                    }
                                 }
                             }
+                            scroll_offset = *updated_scroll_offset
                         }
-                        scroll_offset = *updated_scroll_offset
-                    }
 
-                    let first_visible_element_ix =
-                        (-(scroll_offset.y + padding.top) / item_height).floor() as usize;
-                    let last_visible_element_ix = ((-scroll_offset.y + padded_bounds.size.height)
-                        / item_height)
-                        .ceil() as usize;
+                        let first_visible_element_ix =
+                            (-(scroll_offset.y + padding.top) / item_height).floor() as usize;
+                        let last_visible_element_ix =
+                            ((-scroll_offset.y + padded_bounds.size.height) / item_height).ceil()
+                                as usize;
 
-                    let visible_range = first_visible_element_ix
-                        ..cmp::min(last_visible_element_ix, self.item_count);
+                        let visible_range = first_visible_element_ix
+                            ..cmp::min(last_visible_element_ix, self.item_count);
 
-                    let items = if y_flipped {
-                        let flipped_range = self.item_count.saturating_sub(visible_range.end)
-                            ..self.item_count.saturating_sub(visible_range.start);
-                        let mut items = (self.render_items)(flipped_range, window, cx);
-                        items.reverse();
-                        items
-                    } else {
-                        (self.render_items)(visible_range.clone(), window, cx)
-                    };
+                        let items = if y_flipped {
+                            let flipped_range = self.item_count.saturating_sub(visible_range.end)
+                                ..self.item_count.saturating_sub(visible_range.start);
+                            let mut items = (self.render_items)(flipped_range, window, cx);
+                            items.reverse();
+                            items
+                        } else {
+                            (self.render_items)(visible_range.clone(), window, cx)
+                        };
 
-                    let content_mask = ContentMask {
-                        bounds,
-                        ..Default::default()
-                    };
-                    window.with_content_mask(Some(content_mask), |window| {
-                        for (mut item, ix) in items.into_iter().zip(visible_range.clone()) {
-                            let item_origin = padded_bounds.origin
-                                + point(
-                                    if can_scroll_horizontally {
-                                        scroll_offset.x + padding.left
-                                    } else {
-                                        scroll_offset.x
-                                    },
-                                    item_height * ix + scroll_offset.y + padding.top,
+                        let content_mask = ContentMask {
+                            bounds,
+                            ..Default::default()
+                        };
+                        window.with_content_mask(Some(content_mask), |window| {
+                            for (mut item, ix) in items.into_iter().zip(visible_range.clone()) {
+                                let item_origin = padded_bounds.origin
+                                    + point(
+                                        if can_scroll_horizontally {
+                                            scroll_offset.x + padding.left
+                                        } else {
+                                            scroll_offset.x
+                                        },
+                                        item_height * ix + scroll_offset.y + padding.top,
+                                    );
+                                let available_width = if can_scroll_horizontally {
+                                    padded_bounds.size.width + scroll_offset.x.abs()
+                                } else {
+                                    padded_bounds.size.width
+                                };
+                                let available_space = size(
+                                    AvailableSpace::Definite(available_width),
+                                    AvailableSpace::Definite(item_height),
                                 );
-                            let available_width = if can_scroll_horizontally {
-                                padded_bounds.size.width + scroll_offset.x.abs()
-                            } else {
-                                padded_bounds.size.width
-                            };
-                            let available_space = size(
-                                AvailableSpace::Definite(available_width),
-                                AvailableSpace::Definite(item_height),
-                            );
-                            item.layout_as_root(available_space, window, cx);
-                            item.prepaint_at(item_origin, window, cx);
-                            frame_state.items.push(item);
-                        }
+                                item.layout_as_root(available_space, window, cx);
+                                item.prepaint_at(item_origin, window, cx);
+                                frame_state.items.push(item);
+                            }
 
-                        let bounds = Bounds::new(
-                            padded_bounds.origin
-                                + point(
-                                    if can_scroll_horizontally {
-                                        scroll_offset.x + padding.left
-                                    } else {
-                                        scroll_offset.x
-                                    },
-                                    scroll_offset.y + padding.top,
-                                ),
-                            padded_bounds.size,
-                        );
-                        for decoration in &self.decorations {
-                            let mut decoration = decoration.as_ref().compute(
-                                visible_range.clone(),
-                                bounds,
-                                scroll_offset,
-                                item_height,
-                                self.item_count,
-                                window,
-                                cx,
+                            let bounds = Bounds::new(
+                                padded_bounds.origin
+                                    + point(
+                                        if can_scroll_horizontally {
+                                            scroll_offset.x + padding.left
+                                        } else {
+                                            scroll_offset.x
+                                        },
+                                        scroll_offset.y + padding.top,
+                                    ),
+                                padded_bounds.size,
                             );
-                            let available_space = size(
-                                AvailableSpace::Definite(bounds.size.width),
-                                AvailableSpace::Definite(bounds.size.height),
-                            );
-                            decoration.layout_as_root(available_space, window, cx);
-                            decoration.prepaint_at(bounds.origin, window, cx);
-                            frame_state.decorations.push(decoration);
-                        }
-                    });
-                }
+                            for decoration in &self.decorations {
+                                let mut decoration = decoration.as_ref().compute(
+                                    visible_range.clone(),
+                                    bounds,
+                                    scroll_offset,
+                                    item_height,
+                                    self.item_count,
+                                    window,
+                                    cx,
+                                );
+                                let available_space = size(
+                                    AvailableSpace::Definite(bounds.size.width),
+                                    AvailableSpace::Definite(bounds.size.height),
+                                );
+                                decoration.layout_as_root(available_space, window, cx);
+                                decoration.prepaint_at(bounds.origin, window, cx);
+                                frame_state.decorations.push(decoration);
+                            }
+                        });
+                    }
+                });
 
                 hitbox
             },
