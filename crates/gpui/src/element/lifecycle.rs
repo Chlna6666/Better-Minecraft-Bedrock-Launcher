@@ -1,6 +1,6 @@
 use crate::{
     App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId, PaintIndex,
-    Pixels, PrepaintStateIndex, Size, Window,
+    Pixels, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
 };
 use crate::window::debug_visualization::ViewCacheDebugStatus;
 use derive_more::{Deref, DerefMut};
@@ -30,6 +30,18 @@ impl Display for GlobalElementId {
         }
         Ok(())
     }
+}
+
+/// Exact output identity for side-effect-free plain text elements on a generic dirty frame.
+///
+/// The wrapped text is part of the key so equal outer bounds are not enough to reuse a previous
+/// scene when a different available width would have produced different soft-wrap boundaries.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RetainedPlainTextKey {
+    pub(crate) text: SharedString,
+    pub(crate) text_style: TextStyle,
+    pub(crate) rem_size: Pixels,
+    pub(crate) wrapped_text: String,
 }
 
 pub(super) trait ElementObject {
@@ -91,6 +103,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         prepaint: PrepaintState,
         prepaint_range: Range<PrepaintStateIndex>,
         div_self_scene_style: Option<RetainedDivSelfSceneStyle>,
+        plain_text_key: Option<RetainedPlainTextKey>,
     },
     Retained {
         bounds: Bounds<Pixels>,
@@ -104,6 +117,29 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
 
 fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
     ambiguity.iter().all(|flag| !flag.get())
+}
+
+fn retained_plain_text_key<E: Element>(
+    element: &E,
+    request_layout: &E::RequestLayoutState,
+    window: &Window,
+) -> Option<RetainedPlainTextKey> {
+    let element = element as &dyn Any;
+    let text = if let Some(text) = element.downcast_ref::<SharedString>() {
+        text.clone()
+    } else if let Some(text) = element.downcast_ref::<&'static str>() {
+        SharedString::from(*text)
+    } else {
+        return None;
+    };
+
+    let text_layout = (request_layout as &dyn Any).downcast_ref::<TextLayout>()?;
+    Some(RetainedPlainTextKey {
+        text,
+        text_style: window.text_style(),
+        rem_size: window.rem_size(),
+        wrapped_text: text_layout.wrapped_text(),
+    })
 }
 
 /// A wrapper around an implementer of [`Element`] that allows it to be drawn in a window.
@@ -194,11 +230,20 @@ impl<E: Element> Drawable<E> {
                 let bounds = window.layout_bounds(layout_id);
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
+                let targeted_replay = window.invalidator.active_targeted_replay();
+                let mut plain_text_key = (!targeted_replay)
+                    .then(|| retained_plain_text_key(&self.element, &request_layout, window))
+                    .flatten();
+                let may_reconcile = identity_stable || plain_text_key.is_some();
 
-                let retained = identity_stable
+                let retained = may_reconcile
                     .then(|| {
                         window.with_retained_element_segment(&retained_segment, |window| {
-                            window.reusable_retained_element(&retained_id, bounds)
+                            window.reusable_retained_element(
+                                &retained_id,
+                                bounds,
+                                plain_text_key.as_ref(),
+                            )
                         })
                     })
                     .flatten();
@@ -216,6 +261,10 @@ impl<E: Element> Drawable<E> {
                         };
                         return;
                     }
+                }
+
+                if plain_text_key.is_none() {
+                    plain_text_key = retained_plain_text_key(&self.element, &request_layout, window);
                 }
 
                 if let Some(element_id) = self.element.id() {
@@ -257,6 +306,7 @@ impl<E: Element> Drawable<E> {
                     prepaint,
                     prepaint_range: prepaint_start..prepaint_end,
                     div_self_scene_style,
+                    plain_text_key,
                 };
             }
             _ => panic!("must call request_layout before prepaint"),
@@ -277,6 +327,7 @@ impl<E: Element> Drawable<E> {
                 mut prepaint,
                 prepaint_range,
                 div_self_scene_style,
+                plain_text_key,
             } => {
                 if let Some(element_id) = self.element.id() {
                     window.element_id_stack.push(element_id);
@@ -313,6 +364,7 @@ impl<E: Element> Drawable<E> {
                     paint_start..paint_end,
                     metadata_start,
                     div_self_scene_style,
+                    plain_text_key,
                     identity_stable,
                     subtree_stable,
                 );
