@@ -258,8 +258,8 @@ impl Interactivity {
         cx: &mut App,
         resolve_self_scene: impl FnOnce(
             &Style,
-            &Window,
-            &App,
+            &mut Window,
+            &mut App,
         ) -> Option<(Range<usize>, Range<usize>)>,
         f: impl FnOnce(&Style, &mut Window, &mut App),
     ) -> Style {
@@ -289,8 +289,8 @@ impl Interactivity {
     where
         ResolveSelfScene: FnOnce(
             &Style,
-            &Window,
-            &App,
+            &mut Window,
+            &mut App,
         ) -> Option<(Range<usize>, Range<usize>)>,
         PaintContents: FnOnce(&Style, &mut Window, &mut App),
     {
