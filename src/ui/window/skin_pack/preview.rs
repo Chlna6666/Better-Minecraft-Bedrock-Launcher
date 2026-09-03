@@ -6,10 +6,10 @@ use super::selector::{
     render_current_preview, render_skin_selector, skin_selector_page_count,
     skin_selector_page_for_index,
 };
-use crate::ui::animation::request_animation_frame_if;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::path::Path;
@@ -419,10 +419,7 @@ impl Render for SkinPreviewWindowView {
         let i18n = cx.global::<I18n>().clone();
         let window_title = t!("SkinPreview.window_title", name = &self.title).to_string();
         window.set_title(&window_title);
-        request_animation_frame_if(
-            window,
-            self.walking && self.mesh.as_ref().is_some_and(Result::is_ok),
-        );
+        let preview_animating = self.walking && self.mesh.as_ref().is_some_and(Result::is_ok);
         let colors = self.theme_colors(cx);
         let model_label = self.current_model_label();
         let skin_label = self.current_skin_label();
@@ -590,7 +587,10 @@ impl Render for SkinPreviewWindowView {
                             .border_1()
                             .border_color(colors.border)
                             .overflow_hidden()
-                            .child(self.render_canvas(&colors, now, cx)),
+                            .child(
+                                self.render_canvas(&colors, now, cx)
+                                    .with_layout_animation_target(preview_animating),
+                            ),
                     ),
             )
             .when(self.skins.len() > 1, |this| {
