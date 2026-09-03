@@ -3,7 +3,9 @@ use crate::{
     Pixels, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
     WrappedLineLayout,
 };
-use crate::window::debug_visualization::ViewCacheDebugStatus;
+use crate::window::{
+    RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus,
+};
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
 use std::{
@@ -182,37 +184,22 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::Start => {
                 let element_id = self.element.id();
                 let element_source_location = self.element.source_location();
-                let retained_element_id = element_id.clone().or_else(|| {
-                    let mount = self.retained_source_location.copied();
-                    let source = element_source_location.copied();
-                    if mount.is_none() && source.is_none() {
-                        return None;
-                    }
-
-                    // `.child()` and other fixed mounts supply ordinal 0, so unrelated conditional
-                    // siblings do not shift this identity. Generic erasure without a parent mount
-                    // falls back to the parent's next positional slot. `.children()` supplies its
-                    // own collection-local ordinal explicitly.
-                    let occurrence = self.retained_source_ordinal.unwrap_or_else(|| {
-                        window
-                            .retained_child_slot_stack
-                            .last()
-                            .copied()
-                            .unwrap_or(0)
-                    });
-                    Some(ElementId::RetainedAutoSlot {
+                let mount = self.retained_source_location.copied();
+                let source = element_source_location.copied();
+                let retained_identity = if let Some(element_id) = element_id.clone() {
+                    RetainedElementIdentity::Explicit(element_id)
+                } else if mount.is_some() || source.is_some() {
+                    RetainedElementIdentity::Auto {
                         mount,
                         source,
                         element_type: TypeId::of::<E>(),
-                        occurrence,
-                    })
-                });
-                let retained_source_location = retained_element_id
-                    .is_none()
-                    .then_some(self.retained_source_location.or(element_source_location))
-                    .flatten();
-                let (retained_segment, retained_id, retained_identity_ambiguity) = window
-                    .begin_retained_element(retained_element_id, retained_source_location);
+                        ordinal: self.retained_source_ordinal,
+                    }
+                } else {
+                    RetainedElementIdentity::Positional
+                };
+                let (retained_segment, retained_id, retained_identity_ambiguity) =
+                    window.begin_retained_element(retained_identity);
                 let global_id = element_id.map(|element_id| {
                     window.element_id_stack.push(element_id);
                     GlobalElementId(window.element_id_stack.clone())
