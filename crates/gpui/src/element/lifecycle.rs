@@ -14,7 +14,7 @@ use std::{
     rc::Rc,
 };
 
-use super::Element;
+use super::{DivPrepaint, Element, RetainedDivSelfSceneStyle};
 
 /// A globally unique identifier for an element, used to track state across frames.
 #[derive(Clone, Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
@@ -90,6 +90,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         request_layout: RequestLayoutState,
         prepaint: PrepaintState,
         prepaint_range: Range<PrepaintStateIndex>,
+        div_self_scene_style: Option<RetainedDivSelfSceneStyle>,
     },
     Retained {
         bounds: Bounds<Pixels>,
@@ -236,6 +237,9 @@ impl<E: Element> Drawable<E> {
                 });
                 window.next_frame.dispatch_tree.pop_node();
                 let prepaint_end = window.prepaint_index();
+                let div_self_scene_style = (&prepaint as &dyn Any)
+                    .downcast_ref::<DivPrepaint>()
+                    .and_then(|prepaint| prepaint.self_scene_style.clone());
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
@@ -252,6 +256,7 @@ impl<E: Element> Drawable<E> {
                     request_layout,
                     prepaint,
                     prepaint_range: prepaint_start..prepaint_end,
+                    div_self_scene_style,
                 };
             }
             _ => panic!("must call request_layout before prepaint"),
@@ -271,6 +276,7 @@ impl<E: Element> Drawable<E> {
                 mut request_layout,
                 mut prepaint,
                 prepaint_range,
+                div_self_scene_style,
             } => {
                 if let Some(element_id) = self.element.id() {
                     window.element_id_stack.push(element_id);
@@ -306,6 +312,7 @@ impl<E: Element> Drawable<E> {
                     prepaint_range,
                     paint_start..paint_end,
                     metadata_start,
+                    div_self_scene_style,
                     identity_stable,
                     subtree_stable,
                 );
