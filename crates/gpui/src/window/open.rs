@@ -208,9 +208,14 @@ impl Window {
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, _| {
+                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
+                    // Enter/leave is an input-state transition, not an application-wide visual
+                    // invalidation. Element hover listeners receive MouseMove/MouseExited and
+                    // invalidate their retained repaint boundary directly.
                     window.hovered.set(active);
-                    window.refresh();
+                    if active {
+                        window.reset_cursor_style(cx);
+                    }
                 }));
             }
         }));
