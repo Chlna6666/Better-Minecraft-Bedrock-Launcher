@@ -73,8 +73,7 @@ impl Interactivity {
 
         let hover_changes_style = self.hover_style.is_some()
             || cx.active_drag.is_some() && !self.drag_over_styles.is_empty();
-        let hover_changes_cursor = self.base_style.mouse_cursor.is_some();
-        if hover_changes_style || hover_changes_cursor {
+        if hover_changes_style {
             let hitbox = hitbox.clone();
             let was_hovered = hitbox.is_hovered(window);
             let current_view = window.current_view();
@@ -84,7 +83,7 @@ impl Interactivity {
             // Window::refresh path hid this gap by repainting every view. Instead, clear the
             // window hit-test before MouseExited dispatch and invalidate only the retained hover
             // boundary that was actually active.
-            if was_hovered && hover_changes_style {
+            if was_hovered {
                 let exit_hitbox = hitbox.clone();
                 let exit_interaction_path = interaction_path.clone();
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
@@ -102,8 +101,7 @@ impl Interactivity {
 
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
-                if phase == DispatchPhase::Capture && hovered != was_hovered && hover_changes_style
-                {
+                if phase == DispatchPhase::Capture && hovered != was_hovered {
                     window.notify_interactive_region_scoped(
                         current_view,
                         interaction_path.as_ref(),
