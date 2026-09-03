@@ -64,6 +64,11 @@ impl PartialEq for RetainedPlainTextKey {
 pub(super) trait ElementObject {
     fn inner_element(&mut self) -> &mut dyn Any;
 
+    fn set_retained_source_location(
+        &mut self,
+        source: &'static core::panic::Location<'static>,
+    );
+
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId;
 
     fn prepaint(&mut self, window: &mut Window, cx: &mut App);
@@ -82,6 +87,7 @@ pub(super) trait ElementObject {
 pub struct Drawable<E: Element> {
     /// The drawn element.
     pub element: E,
+    retained_source_location: Option<&'static core::panic::Location<'static>>,
     phase: ElementDrawPhase<E::RequestLayoutState, E::PrepaintState>,
 }
 
@@ -163,6 +169,7 @@ impl<E: Element> Drawable<E> {
     pub(crate) fn new(element: E) -> Self {
         Drawable {
             element,
+            retained_source_location: None,
             phase: ElementDrawPhase::Start,
         }
     }
@@ -171,9 +178,11 @@ impl<E: Element> Drawable<E> {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
                 let element_id = self.element.id();
-                let source_location = self.element.source_location();
+                let element_source_location = self.element.source_location();
+                let retained_source_location =
+                    self.retained_source_location.or(element_source_location);
                 let (retained_segment, retained_id, retained_identity_ambiguity) = window
-                    .begin_retained_element(element_id.clone(), source_location);
+                    .begin_retained_element(element_id.clone(), retained_source_location);
                 let global_id = element_id.map(|element_id| {
                     window.element_id_stack.push(element_id);
                     GlobalElementId(window.element_id_stack.clone())
@@ -182,7 +191,7 @@ impl<E: Element> Drawable<E> {
                 let inspector_id;
                 #[cfg(any(feature = "inspector", debug_assertions))]
                 {
-                    inspector_id = source_location.map(|source| {
+                    inspector_id = element_source_location.map(|source| {
                         let path = crate::InspectorElementPath {
                             global_id: GlobalElementId(window.element_id_stack.clone()),
                             source_location: source,
@@ -496,6 +505,13 @@ where
 {
     fn inner_element(&mut self) -> &mut dyn Any {
         &mut self.element
+    }
+
+    fn set_retained_source_location(
+        &mut self,
+        source: &'static core::panic::Location<'static>,
+    ) {
+        self.retained_source_location = Some(source);
     }
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
