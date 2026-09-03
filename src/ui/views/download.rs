@@ -1,9 +1,10 @@
-use crate::ui::animation::{ease_out_cubic, request_animation_frame_if};
+use crate::ui::animation::ease_out_cubic;
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
+use gpui::AnimationExt as _;
 use gpui::*;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -474,9 +475,6 @@ impl DownloadPageView {
 impl Render for DownloadPageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
-        let tab_animating =
-            cx.read_global(|state: &DownloadPageState, _cx| state.tab_anim_factor(now).1);
-        request_animation_frame_if(window, tab_animating);
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
@@ -625,7 +623,8 @@ pub fn render_download_page(
                 .left(px(slide_offset_px))
                 .flex()
                 .flex_col()
-                .child(body),
+                .child(body)
+                .with_layout_animation_target(tab_animating),
         );
 
     let page = common::page_shell(unified_panel, &colors);
