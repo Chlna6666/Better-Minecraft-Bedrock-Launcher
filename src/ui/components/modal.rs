@@ -67,7 +67,10 @@ fn default_modal_content_offset(progress: f32, visible: bool) -> Pixels {
 }
 
 fn intercepting_backdrop(backdrop: Div) -> Div {
-    // Prevent hover state changes and mouse interactions for hitboxes behind the backdrop.
+    // `occlude()` already removes all hitboxes behind this fullscreen backdrop from hover testing.
+    // Keep click propagation guards for explicit window/global handlers, but do not register a
+    // continuous MouseMove callback: underlying element move handlers require their own hitbox to
+    // be hovered, so they are already suppressed by the occluding hitbox.
     backdrop
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
@@ -75,7 +78,6 @@ fn intercepting_backdrop(backdrop: Div) -> Div {
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
 }
 
 /// Places `content` on top of a fullscreen modal layer and animates the backdrop
@@ -499,8 +501,7 @@ fn dismissible_modal_layer(
                 .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
                 .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-                .on_mouse_move(|_, _, cx| cx.stop_propagation()),
+                .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation()),
         )
         .child(
             div()
