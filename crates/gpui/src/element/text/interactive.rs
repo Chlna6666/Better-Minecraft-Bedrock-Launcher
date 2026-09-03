@@ -82,7 +82,7 @@ impl InteractiveText {
     /// tooltip lets you specify a tooltip for a given character index in the string.
     pub fn tooltip(
         mut self,
-        builder: impl Fn(usize, &mut Window, &mut App) -> Option<AnyView>> + 'static,
+        builder: impl Fn(usize, &mut Window, &mut App) -> Option<AnyView> + 'static,
     ) -> Self {
         self.tooltip_builder = Some(Rc::new(builder));
         self
