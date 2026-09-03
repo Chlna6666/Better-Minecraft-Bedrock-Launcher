@@ -267,7 +267,7 @@ pub fn render_overlay(
         return div()
             .absolute()
             .inset_0()
-            .with_layout_animation_target("dropdown-overlay-layout-animation", overlay_animating)
+            .with_layout_animation_target(overlay_animating)
             .into_any_element();
     }
 
@@ -446,7 +446,7 @@ pub fn render_overlay(
             }
         })
         .child(popup)
-        .with_layout_animation_target("dropdown-overlay-layout-animation", overlay_animating)
+        .with_layout_animation_target(overlay_animating)
         .into_any_element()
 }
 
