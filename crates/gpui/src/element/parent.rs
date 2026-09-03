@@ -28,7 +28,7 @@ pub trait ParentElement {
         self.extend(std::iter::once(
             child
                 .into_any_element()
-                .with_retained_mount(retained_source, 0),
+                .with_retained_auto_mount(retained_source),
         ));
         self
     }
@@ -62,7 +62,7 @@ pub trait ParentElement {
             self.extend(std::iter::once(
                 build_child()
                     .into_any_element()
-                    .with_retained_mount(retained_source, 0),
+                    .with_retained_auto_mount(retained_source),
             ));
         }
         self
@@ -81,7 +81,7 @@ pub trait ParentElement {
             self.extend(std::iter::once(
                 build_child(value)
                     .into_any_element()
-                    .with_retained_mount(retained_source, 0),
+                    .with_retained_auto_mount(retained_source),
             ));
         }
         self
