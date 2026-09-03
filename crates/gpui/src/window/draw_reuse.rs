@@ -435,6 +435,9 @@ impl Window {
         }
 
         let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
+        if !retained.identity_stable || !retained.subtree_stable {
+            return None;
+        }
         if retained_id_is_anonymous(retained_id)
             && retained_range_contains_frame_bound_interactivity(retained)
         {
@@ -467,6 +470,8 @@ impl Window {
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
         metadata_start: usize,
+        identity_stable: bool,
+        subtree_stable: bool,
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let key = ReconcileKey::from(retained_id);
@@ -479,8 +484,16 @@ impl Window {
                 prepaint_range,
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
+                identity_stable,
+                subtree_stable,
             },
         );
+        if !identity_stable {
+            self.next_frame.retained_unstable_identity_count = self
+                .next_frame
+                .retained_unstable_identity_count
+                .saturating_add(1);
+        }
     }
 
     /// Carries every descendant reconciliation record of a replayed subtree into the current
@@ -558,6 +571,8 @@ impl Window {
                     prepaint_range,
                     paint_range,
                     metadata_range: metadata_start..metadata_end,
+                    identity_stable: source_range.identity_stable,
+                    subtree_stable: source_range.subtree_stable,
                 },
             ));
         }
