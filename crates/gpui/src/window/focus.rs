@@ -31,7 +31,7 @@ slotmap::new_key_type! {
 }
 
 thread_local! {
-    pub(crate) static ELEMENT_ARENA: RefCell<Arena> = RefCell::new(Arena::new(64 * 1024));
+    pub(crate) static ELEMENT_ARENA: RefCell<Arena> = RefCell::new(64 * 1024));
 }
 
 /// Returned when the element arena has been used and so must be cleared before the next draw.
@@ -91,8 +91,11 @@ impl Window {
 
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
-        self.invalidator
-            .invalidate_interactive_view(target.view_id, Some(&target.retained_id))
+        self.invalidator.invalidate_interactive_view(
+            target.view_id,
+            Some(&target.retained_id),
+            false,
+        )
     }
 
     fn invalidate_focus_transition(
@@ -204,8 +207,7 @@ impl FocusId {
         window.focus == Some(*self)
     }
 
-    /// Obtains whether the element associated with this handle contains the focused
-    /// element or is itself focused.
+    /// Obtains whether this handle contains the focused element or is itself focused.
     pub fn contains_focused(&self, window: &Window, cx: &App) -> bool {
         window
             .focused(cx)
@@ -423,5 +425,5 @@ pub trait ManagedView: Focusable + EventEmitter<DismissEvent> + Render {}
 
 impl<M: Focusable + EventEmitter<DismissEvent> + Render> ManagedView for M {}
 
-/// Emitted by implementers of [`ManagedView`] to indicate the view should be dismissed, such as when a view is presented as a modal.
+/// Emitted by implementers of [`ManagedView`] to indicate the view should be dismissed, such as when a modal is closed.
 pub struct DismissEvent;
