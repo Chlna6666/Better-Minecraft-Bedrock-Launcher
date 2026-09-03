@@ -91,7 +91,7 @@ impl Window {
 
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
-        self.invalidator.invalidate_interactive_view(
+        self.invalidator.invalidate_retained_path(
             target.view_id,
             Some(&target.retained_id),
             false,
