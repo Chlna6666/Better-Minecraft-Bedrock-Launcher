@@ -1,6 +1,6 @@
 use crate::{
     App, Bounds, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId, LayoutStyle,
-    MouseMoveEvent, Pixels, SharedString, Style, Window, record_style_refine,
+    MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style, Window, record_style_refine,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -148,6 +148,22 @@ impl Interactivity {
             let current_view = window.current_view();
             let retained_path = window.current_retained_element_id();
             let descendants_dirty = self.interaction_affects_descendants();
+
+            if was_hovered {
+                let exit_retained_path = retained_path.clone();
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture {
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            exit_retained_path.as_ref(),
+                            bounds,
+                            descendants_dirty,
+                            cx,
+                        );
+                    }
+                });
+            }
+
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
@@ -230,7 +246,7 @@ impl Interactivity {
                     && hitbox.is_hovered(window)
                 {
                     record_style_refine(1);
-                    style.refine(hover_style);
+                    style.refine(hover_style)
                 }
             }
 
