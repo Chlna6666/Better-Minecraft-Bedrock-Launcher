@@ -1,8 +1,8 @@
 use crate::{
     AbsoluteLength, AnyElement, App, BorderStyle, Bounds, BoxShadow, Corners, Display, Edges,
     Element, ElementId, Fill, GlobalElementId, Hitbox, Hsla, ImageCacheProvider,
-    InspectorElementId, IntoElement, LayoutId, Overflow, ParentElement, Pixels, Point,
-    RetainedDivSelfSceneStyle, Style, StyleRefinement, Styled, Visibility, Window, point,
+    InspectorElementId, IntoElement, LayoutId, Overflow, ParentElement, Pixels, Point, Style,
+    StyleRefinement, Styled, Visibility, Window, point,
 };
 use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
