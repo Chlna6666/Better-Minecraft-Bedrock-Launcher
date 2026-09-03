@@ -159,17 +159,21 @@ impl Window {
         .detach();
     }
 
-    /// Schedule a frame for the window animation engine without notifying a view.
+    /// Schedule a frame for the window animation engine without unnecessarily invalidating an
+    /// entire view.
     ///
-    /// Paint and GPU drivers can advance retained visual state without forcing a
-    /// full layout pass. Layout driver requests intentionally fall back to
-    /// [`Window::request_animation_frame`] because layout-affecting animation
-    /// closures must rerender their owning view. Element-owned layout animations use the more
-    /// precise targeted path above instead.
+    /// Paint and GPU drivers advance retained visual state without relayout. A layout driver first
+    /// tries to capture the retained element path that is currently being built. Component-local
+    /// layout animations therefore become targeted retained invalidations automatically. Only
+    /// callers outside an element lifecycle fall back to [`Window::request_animation_frame`].
     #[track_caller]
     pub fn request_animation_engine_frame(&self, driver: AnimationDriver) {
         if matches!(driver, AnimationDriver::Layout) {
-            self.request_animation_frame();
+            if let Some(retained_id) = self.current_instance_path() {
+                self.request_layout_animation_frame(retained_id);
+            } else {
+                self.request_animation_frame();
+            }
             return;
         }
 
