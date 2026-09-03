@@ -48,10 +48,6 @@ pub struct SpringValueSample {
 }
 
 /// 可中断、可重定向的弹簧值。
-///
-/// 与一次性的时长动画不同：目标在动画进行中改变时，弹簧会从当前
-/// 位置继续运动；只有仍朝新目标运动的速度才会继承。快速反向操作会
-/// 丢弃旧目标方向的惯性，避免点击已经生效但画面短暂继续反向运动。
 #[derive(Clone, Copy, Debug)]
 pub struct SpringValue {
     from: f32,
@@ -81,7 +77,6 @@ impl SpringValue {
         self.to
     }
 
-    /// 直接跳到指定值，不产生动画。
     pub fn snap_to(&mut self, value: f32) {
         self.from = value;
         self.to = value;
@@ -89,7 +84,6 @@ impl SpringValue {
         self.started_at = None;
     }
 
-    /// 重定向到新目标，并仅保留朝新目标方向的当前速度。
     pub fn retarget(&mut self, target: f32, now: Instant) {
         if (target - self.to).abs() <= f32::EPSILON {
             return;
@@ -106,7 +100,6 @@ impl SpringValue {
         }
     }
 
-    /// 以指定弹簧配置重定向（例如展开用 Q 弹、收起用干脆）。
     pub fn retarget_with_spring(&mut self, target: f32, spring: Spring, now: Instant) {
         if (target - self.to).abs() <= f32::EPSILON {
             return;
@@ -168,11 +161,6 @@ impl SpringValue {
     }
 }
 
-/// 将中断时的物理速度映射到新目标。
-///
-/// 当速度仍朝向新目标时保留连续性；若速度背离新目标则立即清零，避免
-/// 反向点击后 UI 还沿旧方向运动数帧。对很短的剩余位移同时限制归一化
-/// 初速度，避免 `velocity / delta` 在目标附近被放大成异常大的弹簧冲量。
 fn responsive_retarget_velocity(current_velocity: f32, delta: f32) -> f32 {
     if !current_velocity.is_finite() || !delta.is_finite() || delta.abs() <= f32::EPSILON {
         return 0.0;
@@ -231,7 +219,6 @@ pub fn motion(duration: Duration, easing: Easing) -> Animation {
     element_motion_from_spec(AnimationSpec::new(duration).ease(easing))
 }
 
-/// 元素弹簧按真实时间采样，直到位置与速度同时收敛。
 pub fn spring_motion(spring: Spring) -> Animation {
     Animation::spring(spring)
 }
@@ -256,32 +243,60 @@ pub fn repeating_linear_motion(duration: Duration) -> Animation {
     repeating_motion(duration, Easing::Linear)
 }
 
+/// Explicit whole-view fallback for caller-sampled layout animation.
+/// Prefer `AnimationExt::with_layout_animation_target` when a stable element boundary exists.
 #[track_caller]
-pub fn request_animation_frame_if(window: &mut Window, animating: bool) {
+pub fn request_view_animation_frame_if(window: &mut Window, animating: bool) {
     if animating {
         window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
+/// Active-window variant of [`request_view_animation_frame_if`].
 #[track_caller]
-pub fn request_animation_frame_if_active(window: &mut Window, animating: bool) {
+pub fn request_view_animation_frame_if_active(window: &mut Window, animating: bool) {
     if animating && window.is_window_active() {
         window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
+/// Explicit whole-view deadline fallback for caller-sampled layout animation.
 #[track_caller]
-pub fn request_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
+pub fn request_view_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
     if deadline.is_some_and(|deadline| Instant::now() < deadline) {
         window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
+/// Active-window variant of [`request_view_animation_frame_until`].
+#[track_caller]
+pub fn request_view_animation_frame_until_active(
+    window: &mut Window,
+    deadline: Option<Instant>,
+) {
+    if window.is_window_active() {
+        request_view_animation_frame_until(window, deadline);
+    }
+}
+
+#[track_caller]
+pub fn request_animation_frame_if(window: &mut Window, animating: bool) {
+    request_view_animation_frame_if(window, animating);
+}
+
+#[track_caller]
+pub fn request_animation_frame_if_active(window: &mut Window, animating: bool) {
+    request_view_animation_frame_if_active(window, animating);
+}
+
+#[track_caller]
+pub fn request_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
+    request_view_animation_frame_until(window, deadline);
+}
+
 #[track_caller]
 pub fn request_animation_frame_until_active(window: &mut Window, deadline: Option<Instant>) {
-    if window.is_window_active() {
-        request_animation_frame_until(window, deadline);
-    }
+    request_view_animation_frame_until_active(window, deadline);
 }
 
 fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
@@ -336,7 +351,6 @@ mod tests {
         let mut spring = SpringValue::new(0.0).with_spring(spring_smooth());
         spring.retarget(1.0, now);
 
-        // 动画中途反向：位置应从当前值继续，而不是跳变。
         let mid = now + Duration::from_millis(120);
         let before = spring.value(mid);
         assert!(before > 0.0 && before < 1.0);
@@ -359,12 +373,7 @@ mod tests {
 
         spring.retarget_with_spring(0.0, spring_snappy(), reverse_at);
         let after = spring.sample(reverse_at + Duration::from_millis(10));
-        assert!(
-            after.value < before.value,
-            "反向重定向后应立即朝新目标移动：before={} after={}",
-            before.value,
-            after.value
-        );
+        assert!(after.value < before.value);
     }
 
     #[test]
@@ -398,6 +407,6 @@ mod tests {
             let t = i as f32 * 0.01;
             peak = peak.max(spring.sample(t));
         }
-        assert!(peak > 1.01, "Q 弹弹簧应有可感知的过冲，实际峰值 {peak}");
+        assert!(peak > 1.01);
     }
 }
