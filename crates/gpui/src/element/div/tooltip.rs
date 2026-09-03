@@ -1,6 +1,6 @@
 use crate::{
-    AnyTooltip, AnyView, App, Bounds, DispatchPhase, MouseDownEvent, MouseMoveEvent, Pixels,
-    ScrollWheelEvent, Task, TooltipId, Window,
+    AnyTooltip, AnyView, App, Bounds, DispatchPhase, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    Pixels, ScrollWheelEvent, Task, TooltipId, Window,
 };
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
@@ -138,6 +138,18 @@ pub(crate) fn register_tooltip_mouse_handlers(
                 window,
                 cx,
             )
+        }
+    });
+
+    window.on_mouse_event({
+        let active_tooltip = active_tooltip.clone();
+        move |_: &MouseExitEvent, phase, window: &mut Window, _cx| {
+            if phase.bubble() {
+                // A pointer outside the platform window cannot hover either the source or a
+                // hoverable tooltip. Cancel delayed-show tasks and remove visible tooltip pixels
+                // without invalidating application views.
+                clear_active_tooltip(&active_tooltip, window);
+            }
         }
     });
 
