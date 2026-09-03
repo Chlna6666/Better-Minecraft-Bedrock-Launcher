@@ -411,7 +411,7 @@ impl Window {
         );
 
         self.text_system.reuse_layouts(
-            range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
+            range.start.line_layout_index.clone()..range.end.line_layout_index,
         );
         let old_scene_range = range.start.scene_index..range.end.scene_index;
         self.next_frame
@@ -435,6 +435,11 @@ impl Window {
         }
 
         let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
+        if retained_id_is_anonymous(retained_id)
+            && retained_range_contains_frame_bound_interactivity(retained)
+        {
+            return None;
+        }
         if retained.bounds != bounds
             || !self.can_reuse_prepaint(&retained.prepaint_range)
             || !self.can_reuse_paint(&retained.paint_range)
@@ -563,6 +568,27 @@ impl Window {
         }
         true
     }
+}
+
+fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {
+    matches!(retained_id.0.last(), Some(ElementId::InstanceSlot(_)))
+}
+
+fn retained_range_contains_frame_bound_interactivity(retained: &RetainedElementRange) -> bool {
+    let prepaint = &retained.prepaint_range;
+    let paint = &retained.paint_range;
+
+    prepaint.start.hitboxes_index != prepaint.end.hitboxes_index
+        || prepaint.start.tooltips_index != prepaint.end.tooltips_index
+        || prepaint.start.deferred_draws_index != prepaint.end.deferred_draws_index
+        || prepaint.start.dispatch_tree_index != prepaint.end.dispatch_tree_index
+        || prepaint.start.accessed_element_states_index != prepaint.end.accessed_element_states_index
+        || paint.start.mouse_listeners_index != paint.end.mouse_listeners_index
+        || paint.start.input_handlers_index != paint.end.input_handlers_index
+        || paint.start.cursor_styles_index != paint.end.cursor_styles_index
+        || paint.start.window_control_hitboxes_index != paint.end.window_control_hitboxes_index
+        || paint.start.accessed_element_states_index != paint.end.accessed_element_states_index
+        || paint.start.tab_handle_index != paint.end.tab_handle_index
 }
 
 fn rebase_prepaint_range(
