@@ -180,7 +180,7 @@ impl<E: Element> Drawable<E> {
                 let bounds = window.layout_bounds(layout_id);
 
                 let retained = window.with_retained_element_segment(&retained_segment, |window| {
-                    window.reusable_interaction_element(&retained_id, bounds)
+                    window.reusable_retained_element(&retained_id, bounds)
                 });
                 if let Some(retained) = retained {
                     let source_prepaint_range = retained.prepaint_range.clone();
@@ -314,9 +314,6 @@ impl<E: Element> Drawable<E> {
                         window.degrade_current_draw();
                     }
                 } else {
-                    // Prepaint has already been replayed, so a late paint-range failure cannot be
-                    // rebuilt safely in place. Preserve the previous completed frame and recover on
-                    // the next draw instead of submitting a partially reconstructed subtree.
                     window.degrade_current_draw();
                 }
                 self.phase = ElementDrawPhase::Painted;
