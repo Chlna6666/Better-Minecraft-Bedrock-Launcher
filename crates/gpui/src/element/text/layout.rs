@@ -221,6 +221,20 @@ impl TextLayout {
         }
     }
 
+    pub(crate) fn retained_line_layouts(&self) -> SmallVec<[Arc<WrappedLineLayout>; 1]> {
+        self.0
+            .borrow()
+            .as_ref()
+            .map(|state| {
+                state
+                    .lines
+                    .iter()
+                    .map(|line| line.layout.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Get the byte index into the input of the pixel position.
     pub fn index_for_position(&self, mut position: Point<Pixels>) -> Result<usize, usize> {
         let element_state = self.0.borrow();
