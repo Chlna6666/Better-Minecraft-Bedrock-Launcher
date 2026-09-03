@@ -425,28 +425,24 @@ impl Window {
         let unpressed_mouse_move = event
             .downcast_ref::<MouseMoveEvent>()
             .is_some_and(|event| event.pressed_button.is_none());
-        if unpressed_mouse_move && hit_test_unchanged && !cx.has_active_drag() {
-            let mouse_move_type = TypeId::of::<MouseMoveEvent>();
-            let has_continuous_mouse_move_listener = self
-                .rendered_frame
-                .mouse_listeners
-                .iter()
-                .any(|listener| listener.handles(mouse_move_type, true));
-            if !has_continuous_mouse_move_listener {
-                // The hit-test set did not change, so all framework hover/tooltip transitions are
-                // already stable. Cursor style still depends on the exact pointer coordinate for
-                // client-side resize edges, therefore resolve it before skipping event traversal.
-                self.reset_cursor_style(cx);
-                record_skipped_pointer_frame();
-                if log::log_enabled!(log::Level::Trace) {
-                    log::trace!(
-                        "gpui mouse move skipped: unchanged hit-test without continuous listeners; active_drag={} ids={}",
-                        cx.has_active_drag(),
-                        self.mouse_hit_test.ids.len()
-                    );
-                }
-                return;
+        if unpressed_mouse_move
+            && hit_test_unchanged
+            && !cx.has_active_drag()
+            && !self.rendered_frame.has_continuous_mouse_move_listener
+        {
+            // The hit-test set did not change, so all framework hover/tooltip transitions are
+            // already stable. Cursor style still depends on the exact pointer coordinate for
+            // client-side resize edges, therefore resolve it before skipping event traversal.
+            self.reset_cursor_style(cx);
+            record_skipped_pointer_frame();
+            if log::log_enabled!(log::Level::Trace) {
+                log::trace!(
+                    "gpui mouse move skipped: unchanged hit-test without continuous listeners; active_drag={} ids={}",
+                    cx.has_active_drag(),
+                    self.mouse_hit_test.ids.len()
+                );
             }
+            return;
         }
 
         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
