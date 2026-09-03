@@ -2,6 +2,7 @@ use super::*;
 use crate::{AbsoluteLength, Length, Timer, rgb};
 
 const SURFACE_FLASH_HOLD: Duration = Duration::from_millis(90);
+const ELEMENT_UPDATE_HOLD: Duration = Duration::from_millis(120);
 const MAX_ELEMENT_PAINT_MARKERS: usize = 2048;
 const MAX_VIEW_CACHE_MARKERS: usize = 512;
 
@@ -337,54 +338,73 @@ impl Window {
         }
     }
 
-    /// Schedules cleanup only for the surface-flash overlay.
+    /// Removes diagnostic pixels after the final stable debug frame without turning every animation
+    /// sample into a second lifecycle frame.
     ///
-    /// Element-update diagnostics are strictly observational: they are painted only on real
-    /// application frames and never manufacture a synthetic GPUI lifecycle frame just to erase
-    /// their markers. This is important for deferred overlays such as dropdowns/popovers, whose
-    /// retained prepaint/paint state must not be replayed solely because diagnostics are enabled.
+    /// A generation check coalesces continuous animation/hover activity: only the last marker frame
+    /// survives long enough to arm cleanup. Deferred overlays are deliberately not replayed solely
+    /// for diagnostics; if one is visible, cleanup remains pending and the next real application
+    /// frame erases the markers. Outside diagnostic mode this path is completely inactive.
     pub(super) fn finish_debug_visualization_frame(&mut self, cx: &mut App) {
         let window_id = self.handle.window_id().as_u64();
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
             return;
         }
-        let (flash_this_frame, generation) = {
+        let (flash_this_frame, element_updates_this_frame, generation) = {
             let registry = cx.global::<WindowDebugVisualizationRegistry>();
             let Some(runtime) = registry.windows.get(&window_id) else {
                 return;
             };
-            (runtime.flash_this_frame, runtime.overlay_generation)
+            (
+                runtime.flash_this_frame,
+                runtime.element_update_painted_this_frame,
+                runtime.overlay_generation,
+            )
         };
-        if !flash_this_frame {
+        if !flash_this_frame && !element_updates_this_frame {
             return;
         }
 
+        let hold = if flash_this_frame {
+            SURFACE_FLASH_HOLD.max(ELEMENT_UPDATE_HOLD)
+        } else {
+            ELEMENT_UPDATE_HOLD
+        };
         let handle = self.handle;
         cx.spawn(async move |cx| {
-            Timer::after(SURFACE_FLASH_HOLD).await;
+            Timer::after(hold).await;
             let _ = cx.update(|cx| {
                 if !cx.has_global::<WindowDebugVisualizationRegistry>() {
                     return;
                 }
 
-                let mut should_schedule = false;
+                let mut should_cleanup = false;
                 cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
                     let Some(runtime) = registry.windows.get_mut(&window_id) else {
                         return;
                     };
-                    if runtime.overlay_generation == generation
-                        && runtime.options.flash_surface_updates
-                    {
+                    let cleanup_still_enabled = runtime.options.flash_surface_updates
+                        || runtime.options.show_element_updates;
+                    if runtime.overlay_generation == generation && cleanup_still_enabled {
                         runtime.cleanup_pending = true;
-                        should_schedule = true;
+                        should_cleanup = true;
                     }
                 });
 
-                if should_schedule {
+                if should_cleanup {
                     let _ = ignore_window_not_found(handle.update(cx, |_root, window, _cx| {
-                        // Surface-flash cleanup changes only the window-owned overlay. Treat it as
-                        // a retained replay frame so pending application invalidations keep their
-                        // own dirty classification.
+                        // Never manufacture a diagnostic lifecycle frame while deferred overlays
+                        // are alive; their draw descriptors are frame-local. The pending flag will
+                        // be consumed by the next genuine application frame instead.
+                        if !window.rendered_frame.deferred_draws.is_empty() {
+                            return;
+                        }
+                        // If application work is already queued, let that real frame perform the
+                        // cleanup. Otherwise request one replay-only frame: unchanged retained
+                        // subtrees are copied and no application entity is notified.
+                        if window.invalidator.is_dirty() || window.refreshing {
+                            return;
+                        }
                         window.invalidator.set_replay_only_dirty();
                         window.schedule_dirty_frame();
                     }));
