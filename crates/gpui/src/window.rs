@@ -11,7 +11,7 @@ use crate::{
     ImagePipelineConfig, ImagePixelFormat, InputHandler, IsZero, KeyBinding, KeyContext,
     KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutFrameMetrics, LayoutId,
     LineLayoutFrameMetrics, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
-    MonochromeSpriteSampling, MouseButton, MouseDownEvent, MouseEvent, MouseMoveEvent,
+    MonochromeSpriteSampling, MouseButton, MouseDownEvent, MouseEvent, MouseExitEvent, MouseMoveEvent,
     MouseUpEvent, PartialPresentMode, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, RequestFrameOptions,
