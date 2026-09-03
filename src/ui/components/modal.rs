@@ -441,7 +441,12 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
             let layout_id = element.request_layout(window, cx);
 
             if sample.animating || sample.close_completed {
-                window.request_animation_engine_frame(AnimationDriver::Layout);
+                // This modal timeline is sampled manually from `Instant`; it is not owned by the
+                // animation engine. A targeted layout-engine frame can legally retain structural
+                // ancestors and therefore miss fullscreen backdrop/inherited-opacity changes. Use
+                // a regular animation frame so the owning view is notified and the complete modal
+                // composition is rebuilt for every open/close sample.
+                window.request_animation_frame();
             }
             if state.take_close_completion(sample.close_completed) {
                 (self.on_cleanup)(cx);
@@ -494,7 +499,7 @@ fn dismissible_modal_layer(
                     let mut control = dismiss_control.get();
                     control.begin_close(Instant::now());
                     dismiss_control.set(control);
-                    window.request_animation_engine_frame(AnimationDriver::Layout);
+                    window.request_animation_frame();
                     cx.stop_propagation();
                 })
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
