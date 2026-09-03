@@ -65,8 +65,13 @@ pub trait Element: 'static + IntoElement {
     );
 
     /// Convert this element into a dynamically-typed [`AnyElement`].
+    ///
+    /// The erasure call site is retained separately from the element's inspector source location.
+    /// This gives reconciliation a stable parent-facing identity even when reusable helpers construct
+    /// the same concrete element type from one internal source line.
+    #[track_caller]
     fn into_any(self) -> AnyElement {
-        AnyElement::new(self)
+        AnyElement::new(self).with_retained_source_location(panic::Location::caller())
     }
 }
 
@@ -80,6 +85,7 @@ pub trait IntoElement: Sized {
     fn into_element(self) -> Self::Element;
 
     /// Convert self into a dynamically-typed [`AnyElement`].
+    #[track_caller]
     fn into_any_element(self) -> AnyElement {
         self.into_element().into_any()
     }
