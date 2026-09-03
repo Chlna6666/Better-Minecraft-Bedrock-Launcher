@@ -164,18 +164,20 @@ impl Interactivity {
                 });
             }
 
-            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-                let hovered = group_hitbox.is_hovered(window);
-                if phase == DispatchPhase::Capture && hovered != was_hovered {
-                    window.notify_interactive_region_scoped(
-                        current_view,
-                        retained_path.as_ref(),
-                        bounds,
-                        descendants_dirty,
-                        cx,
-                    );
-                }
-            });
+            window.on_mouse_hit_test_transition(
+                move |_: &MouseMoveEvent, phase, window, cx| {
+                    let hovered = group_hitbox.is_hovered(window);
+                    if phase == DispatchPhase::Capture && hovered != was_hovered {
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            retained_path.as_ref(),
+                            bounds,
+                            descendants_dirty,
+                            cx,
+                        );
+                    }
+                },
+            );
         }
     }
 
