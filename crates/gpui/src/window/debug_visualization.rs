@@ -9,6 +9,9 @@ const MAX_VIEW_CACHE_MARKERS: usize = 512;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ViewCacheDebugStatus {
     Hit,
+    /// A parent lifecycle was traversed to reach a dirty child, but the parent contributes no own
+    /// scene primitives and therefore did not repaint anything itself.
+    TraversalOnly,
     /// A parent lifecycle was traversed to reach a dirty child, while the parent's own scene
     /// primitives were replayed unchanged.
     SelfSceneReplay,
@@ -39,9 +42,9 @@ pub struct WindowDebugVisualization {
     /// cache/repaint-boundary markers.
     ///
     /// A subtree restored through retained paint replay is not traversed, so its descendants do
-    /// not get repaint markers. A structural ancestor that is traversed only to reach a dirty child
-    /// can replace its provisional red/orange marker with a green `SelfSceneReplay` marker when its
-    /// own background/shadow/border scene operations are reused.
+    /// not get repaint markers. Structural ancestors that execute only to reach a dirty descendant
+    /// are reclassified from provisional red/orange: cyan means traversal with no own scene work,
+    /// while green means the parent's own scene primitives were replayed from the previous frame.
     pub show_element_updates: bool,
 }
 
@@ -145,12 +148,10 @@ impl Window {
         });
     }
 
-    /// Reclassify the current element from a full own-paint marker into an ancestor traversal whose
-    /// own scene primitives were retained. This must be called before painting any child so the
-    /// last provisional marker still belongs to this parent.
-    pub(crate) fn record_debug_element_self_scene_replay(
+    fn reclassify_debug_element_paint(
         &mut self,
         bounds: Bounds<Pixels>,
+        status: ViewCacheDebugStatus,
         cx: &mut App,
     ) {
         if bounds.is_empty() || !cx.has_global::<WindowDebugVisualizationRegistry>() {
@@ -179,11 +180,31 @@ impl Window {
                 runtime.element_update_painted_this_frame = true;
                 runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
             }
-            runtime.view_cache_markers.push(ViewCacheDebugMarker {
-                bounds,
-                status: ViewCacheDebugStatus::SelfSceneReplay,
-            });
+            runtime
+                .view_cache_markers
+                .push(ViewCacheDebugMarker { bounds, status });
         });
+    }
+
+    /// Reclassify the current element as structural traversal with no own scene primitive work.
+    /// This must be called before painting children while the provisional marker is still last.
+    pub(crate) fn record_debug_element_traversal_only(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        cx: &mut App,
+    ) {
+        self.reclassify_debug_element_paint(bounds, ViewCacheDebugStatus::TraversalOnly, cx);
+    }
+
+    /// Reclassify the current element from a full own-paint marker into an ancestor traversal whose
+    /// own scene primitives were retained. This must be called before painting any child so the
+    /// last provisional marker still belongs to this parent.
+    pub(crate) fn record_debug_element_self_scene_replay(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        cx: &mut App,
+    ) {
+        self.reclassify_debug_element_paint(bounds, ViewCacheDebugStatus::SelfSceneReplay, cx);
     }
 
     /// Record the result of one retained-view/boundary lookup. This is intentionally a no-op unless
@@ -259,7 +280,7 @@ impl Window {
     }
 
     /// Paints window-level debug overlays above the completed tree. Cache markers are painted last
-    /// so a green/yellow/purple cached-view outline remains visible over red child repaint outlines.
+    /// so cached/traversal outlines remain visible over red child repaint outlines.
     pub(super) fn paint_debug_surface_update_flash(&mut self, cx: &App) {
         let window_id = self.handle.window_id().as_u64();
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
@@ -421,7 +442,8 @@ pub(crate) fn paint_layout_bounds(
 fn cache_marker_color(status: ViewCacheDebugStatus) -> (u32, f32) {
     match status {
         ViewCacheDebugStatus::Hit | ViewCacheDebugStatus::SelfSceneReplay => (0x30d158, 0.98),
-        ViewCacheDebugStatus::DeferredDirtyReuse => (0x64d2ff, 0.98),
+        ViewCacheDebugStatus::TraversalOnly => (0x64d2ff, 0.98),
+        ViewCacheDebugStatus::DeferredDirtyReuse => (0x5ac8fa, 0.98),
         ViewCacheDebugStatus::MissBounds => (0xffcc00, 0.98),
         ViewCacheDebugStatus::MissRefresh
         | ViewCacheDebugStatus::MissDirty
@@ -508,13 +530,17 @@ mod tests {
     }
 
     #[test]
-    fn cache_status_palette_distinguishes_hit_bounds_and_dirty_miss() {
+    fn cache_status_palette_distinguishes_hit_bounds_dirty_and_traversal() {
         assert_ne!(
             cache_marker_color(ViewCacheDebugStatus::Hit).0,
             cache_marker_color(ViewCacheDebugStatus::MissBounds).0
         );
         assert_ne!(
             cache_marker_color(ViewCacheDebugStatus::Hit).0,
+            cache_marker_color(ViewCacheDebugStatus::MissDirty).0
+        );
+        assert_ne!(
+            cache_marker_color(ViewCacheDebugStatus::TraversalOnly).0,
             cache_marker_color(ViewCacheDebugStatus::MissDirty).0
         );
         assert_eq!(
