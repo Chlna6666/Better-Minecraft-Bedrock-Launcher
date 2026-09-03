@@ -1,7 +1,7 @@
 use crate::{
     App, ClickEvent, DispatchPhase, GlobalElementId, Hitbox, KeyDownEvent, KeyUpEvent,
     KeyboardButton, KeyboardClickEvent, ModifiersChangedEvent, MouseClickEvent, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window,
 };
 use std::{mem, rc::Rc};
 
@@ -79,6 +79,27 @@ impl Interactivity {
             let was_hovered = hitbox.is_hovered(window);
             let current_view = window.current_view();
             let interaction_path = interaction_path.clone();
+
+            // The platform reports window leave separately from pointer motion. The old global
+            // Window::refresh path hid this gap by repainting every view. Instead, clear the
+            // window hit-test before MouseExited dispatch and invalidate only the retained hover
+            // boundary that was actually active.
+            if was_hovered && hover_changes_style {
+                let exit_hitbox = hitbox.clone();
+                let exit_interaction_path = interaction_path.clone();
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture {
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            exit_interaction_path.as_ref(),
+                            exit_hitbox.bounds,
+                            descendants_dirty,
+                            cx,
+                        );
+                    }
+                });
+            }
+
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered && hover_changes_style
@@ -202,7 +223,10 @@ impl Interactivity {
             if let Some(hover_listener) = self.hover_listener.take() {
                 let hitbox = hitbox.clone();
                 let was_hovered = element_state.ensure_hover_state();
+                let exit_was_hovered = was_hovered.clone();
                 let has_mouse_down = element_state.ensure_pending_mouse_down();
+                let hover_listener: Rc<_> = Rc::from(hover_listener);
+                let move_hover_listener = hover_listener.clone();
 
                 window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble {
@@ -216,7 +240,19 @@ impl Interactivity {
                     if is_hovered != *was_hovered {
                         *was_hovered = is_hovered;
                         drop(was_hovered);
-                        hover_listener(&is_hovered, window, cx);
+                        move_hover_listener(&is_hovered, window, cx);
+                    }
+                });
+
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    let mut was_hovered = exit_was_hovered.borrow_mut();
+                    if *was_hovered {
+                        *was_hovered = false;
+                        drop(was_hovered);
+                        hover_listener(&false, window, cx);
                     }
                 });
             }
@@ -258,6 +294,9 @@ impl Interactivity {
                 let hitbox = hitbox.clone();
                 let current_view = window.current_view();
                 let interaction_path = interaction_path.clone();
+                let exit_active_state = active_state.clone();
+                let exit_hitbox = hitbox.clone();
+                let exit_interaction_path = interaction_path.clone();
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
                         *active_state.borrow_mut() = ElementClickedState::default();
@@ -265,6 +304,18 @@ impl Interactivity {
                             current_view,
                             interaction_path.as_ref(),
                             hitbox.bounds,
+                            descendants_dirty,
+                            cx,
+                        );
+                    }
+                });
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture && exit_active_state.borrow().is_clicked() {
+                        *exit_active_state.borrow_mut() = ElementClickedState::default();
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            exit_interaction_path.as_ref(),
+                            exit_hitbox.bounds,
                             descendants_dirty,
                             cx,
                         );
