@@ -169,7 +169,7 @@ impl Window {
     #[track_caller]
     pub fn request_animation_engine_frame(&self, driver: AnimationDriver) {
         if matches!(driver, AnimationDriver::Layout) {
-            if let Some(retained_id) = self.current_instance_path() {
+            if let Some(retained_id) = self.current_retained_element_id() {
                 self.request_layout_animation_frame(retained_id);
             } else {
                 self.request_animation_frame();
