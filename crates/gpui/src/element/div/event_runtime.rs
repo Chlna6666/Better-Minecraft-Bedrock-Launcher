@@ -22,7 +22,7 @@ impl Interactivity {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let interaction_path = window.current_instance_path();
+        let interaction_path = window.current_retained_element_id();
         let descendants_dirty = self.interaction_affects_descendants();
         let is_focused = self
             .tracked_focus_handle
