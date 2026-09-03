@@ -1,6 +1,17 @@
 use super::*;
 use crate::TransformOrigin;
 
+#[derive(Default)]
+struct RetainedIdentityScope {
+    source_occurrences:
+        FxHashMap<core::panic::Location<'static>, (u32, Rc<Cell<bool>>)>,
+    owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+}
+
+thread_local! {
+    static RETAINED_IDENTITY_SCOPES: RefCell<Vec<RetainedIdentityScope>> = RefCell::new(Vec::new());
+}
+
 impl Window {
     /// Acquire a globally unique identifier for the given ElementId.
     /// Only valid for the duration of the provided closure.
@@ -18,14 +29,23 @@ impl Window {
 
     /// Begins one retained element identity scope during request layout.
     ///
-    /// Every child consumes a parent-local positional slot even when it has an explicit ID, so
-    /// following anonymous siblings keep the same structural address as their actual child index.
-    /// The synthetic slot is used only for retained rendering identity and is never exposed as the
-    /// element's state-bearing `GlobalElementId`.
+    /// Explicit IDs remain authoritative. Anonymous elements prefer a construction source location
+    /// plus a parent-local occurrence number, so inserting a different call site before them does
+    /// not shift their reconciliation identity. Repeated elements produced from the same call site
+    /// share an ambiguity token; once a second occurrence appears, the first occurrence and all of
+    /// its descendants are retroactively treated as unsafe for frame-bound interaction replay.
+    /// Elements without source information fall back to positional identity and are always marked
+    /// ambiguous for interaction replay.
     pub(crate) fn begin_retained_element(
         &mut self,
         explicit_id: Option<ElementId>,
-    ) -> (ElementId, GlobalElementId) {
+        source_location: Option<&'static core::panic::Location<'static>>,
+    ) -> (
+        ElementId,
+        GlobalElementId,
+        SmallVec<[Rc<Cell<bool>>; 4]>,
+    ) {
+        let depth = self.retained_child_slot_stack.len();
         let slot = if let Some(next_slot) = self.retained_child_slot_stack.last_mut() {
             let slot = *next_slot;
             *next_slot = next_slot.saturating_add(1);
@@ -33,17 +53,73 @@ impl Window {
         } else {
             0
         };
-        let segment = explicit_id.unwrap_or(ElementId::InstanceSlot(slot));
+
+        let (segment, ambiguity) = RETAINED_IDENTITY_SCOPES.with(|scopes| {
+            let mut scopes = scopes.borrow_mut();
+
+            // Lazy children can be materialized after the original request-layout scope has been
+            // popped. Re-synchronize conservatively: those synthetic parent scopes are marked
+            // ambiguous, so explicit retained keys can still work while anonymous interaction
+            // replay never becomes less safe than the old positional scheme.
+            if scopes.len() != depth {
+                scopes.clear();
+                for _ in 0..depth {
+                    let mut scope = RetainedIdentityScope::default();
+                    scope.owner_ambiguity.push(Rc::new(Cell::new(true)));
+                    scopes.push(scope);
+                }
+            }
+
+            let mut ambiguity = scopes
+                .last()
+                .map(|scope| scope.owner_ambiguity.clone())
+                .unwrap_or_default();
+
+            let segment = if let Some(explicit_id) = explicit_id {
+                explicit_id
+            } else if let Some(source_location) = source_location {
+                if let Some(parent) = scopes.last_mut() {
+                    let entry = parent
+                        .source_occurrences
+                        .entry(*source_location)
+                        .or_insert_with(|| (0, Rc::new(Cell::new(false))));
+                    let occurrence = entry.0;
+                    entry.0 = entry.0.saturating_add(1);
+                    if occurrence > 0 {
+                        entry.1.set(true);
+                    }
+                    ambiguity.push(entry.1.clone());
+                    ElementId::RetainedSourceSlot(*source_location, occurrence)
+                } else {
+                    // A window has a single root element, so a source-derived root identity cannot
+                    // collide with a sibling in the same retained namespace.
+                    ElementId::RetainedSourceSlot(*source_location, 0)
+                }
+            } else {
+                ambiguity.push(Rc::new(Cell::new(true)));
+                ElementId::InstanceSlot(slot)
+            };
+
+            scopes.push(RetainedIdentityScope {
+                source_occurrences: FxHashMap::default(),
+                owner_ambiguity: ambiguity.clone(),
+            });
+            (segment, ambiguity)
+        });
+
         self.retained_element_id_stack.push(segment.clone());
         let retained_id = GlobalElementId(self.retained_element_id_stack.clone());
         self.retained_child_slot_stack.push(0);
-        (segment, retained_id)
+        (segment, retained_id, ambiguity)
     }
 
     /// Ends the retained identity scope opened by [`Self::begin_retained_element`].
     pub(crate) fn end_retained_element(&mut self) {
         self.retained_child_slot_stack.pop();
         self.retained_element_id_stack.pop();
+        RETAINED_IDENTITY_SCOPES.with(|scopes| {
+            scopes.borrow_mut().pop();
+        });
     }
 
     /// Restores one already-assigned retained identity segment for prepaint/paint traversal.
