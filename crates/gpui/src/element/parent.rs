@@ -15,24 +15,39 @@ pub trait ParentElement {
     }
 
     /// Add a single child element to this element.
+    #[track_caller]
     fn child(mut self, child: impl IntoElement) -> Self
     where
         Self: Sized,
     {
-        self.extend(std::iter::once(child.into_element().into_any()));
+        let retained_source = core::panic::Location::caller();
+        self.extend(std::iter::once(
+            child
+                .into_element()
+                .into_any()
+                .with_retained_source_location(retained_source),
+        ));
         self
     }
 
     /// Add multiple child elements to this element.
+    #[track_caller]
     fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self
     where
         Self: Sized,
     {
-        self.extend(children.into_iter().map(|child| child.into_any_element()));
+        let retained_source = core::panic::Location::caller();
+        self.extend(children.into_iter().map(|child| {
+            child
+                .into_element()
+                .into_any()
+                .with_retained_source_location(retained_source)
+        }));
         self
     }
 
     /// Conditionally add a child element.
+    #[track_caller]
     fn child_if<E, F>(mut self, condition: bool, build_child: F) -> Self
     where
         Self: Sized,
@@ -40,12 +55,19 @@ pub trait ParentElement {
         F: FnOnce() -> E,
     {
         if condition {
-            self.extend(std::iter::once(build_child().into_any_element()));
+            let retained_source = core::panic::Location::caller();
+            self.extend(std::iter::once(
+                build_child()
+                    .into_element()
+                    .into_any()
+                    .with_retained_source_location(retained_source),
+            ));
         }
         self
     }
 
     /// Conditionally add a child element from an option.
+    #[track_caller]
     fn child_some<T, E, F>(mut self, option: Option<T>, build_child: F) -> Self
     where
         Self: Sized,
@@ -53,7 +75,13 @@ pub trait ParentElement {
         F: FnOnce(T) -> E,
     {
         if let Some(value) = option {
-            self.extend(std::iter::once(build_child(value).into_any_element()));
+            let retained_source = core::panic::Location::caller();
+            self.extend(std::iter::once(
+                build_child(value)
+                    .into_element()
+                    .into_any()
+                    .with_retained_source_location(retained_source),
+            ));
         }
         self
     }
