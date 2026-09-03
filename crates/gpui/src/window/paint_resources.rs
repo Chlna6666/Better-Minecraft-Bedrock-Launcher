@@ -542,15 +542,40 @@ impl Window {
 
     /// Drops this window's decoded-image lookup state and retires its atlas residency.
     ///
-    /// The atlas backend defers physical deallocation until a GPU-safe point, and can cancel the
-    /// pending removal if the same image is painted again before retirement completes.
+    /// The atlas backend defers physical deallocation until a GPU-safe point. A retained Scene can
+    /// still reference the old [`AtlasTile`] after the decoded-image cache releases its strong
+    /// image handle, so the next platform frame is forced through a real view rebuild before Nova
+    /// applies pending atlas removals. If the image is still visible, its paint path calls
+    /// `ensure_tile_with` during that CPU draw and cancels the pending retirement; if it has left
+    /// the UI, the removal remains pending and is safely applied before presentation.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
+        let image_id = data.id;
+        let had_window_residency = self
+            .animated_image_slots
+            .keys()
+            .any(|slot_key| slot_key.image_id == image_id)
+            || self
+                .image_paint_tile_cache
+                .keys()
+                .any(|cache_key| cache_key.image_id == image_id);
+
         self.animated_image_slots
-            .retain(|slot_key, _| slot_key.image_id != data.id);
+            .retain(|slot_key, _| slot_key.image_id != image_id);
         self.image_paint_tile_cache
-            .retain(|cache_key, _| cache_key.image_id != data.id);
-        self.sprite_atlas.remove_image(data.id);
+            .retain(|cache_key, _| cache_key.image_id != image_id);
+        self.sprite_atlas.remove_image(image_id);
         record_image_drop(1);
+
+        if had_window_residency {
+            // Do not call `refresh()` synchronously here. Image-cache eviction can happen while an
+            // element is already painting; `finish_completed_draw` would then clear the one-shot
+            // force-view-cache flag before the recovery frame. Running the refresh as a frame
+            // callback guarantees it is installed immediately before the next draw decision.
+            self.on_next_frame(|window, _cx| {
+                window.force_full_redraw.set(true);
+                window.refresh();
+            });
+        }
 
         Ok(())
     }
