@@ -19,7 +19,7 @@ pub enum DispatchPhase {
     Bubble,
     /// During the initial capture phase, mouse event listeners are invoked back to front, and keyboard
     /// listeners are invoked from the root of the tree downward toward the focused element. This phase
-    /// is used for special purposes such as clearing the "pressed" state for click events. If
+    /// is used for special purposes, such as clearing the "pressed" state for click events. If
     /// you stop event propagation during this phase, you need to know what you're doing. Handlers
     /// outside of the immediate region may rely on detecting non-local events during this phase.
     Capture,
@@ -261,6 +261,36 @@ impl WindowInvalidator {
         )
     }
 
+    /// Returns true when `global_id` executes only because it is a structural ancestor of one or
+    /// more dirty interactive elements, while its own pixels and subtree context remain unchanged.
+    ///
+    /// This distinction is the repaint-boundary equivalent of Flutter/Qt scene nodes: an ancestor
+    /// still has to route traversal to the changed child, but it does not need to regenerate its own
+    /// background/shadow/border primitives. Any direct hit on this path, or an ancestor invalidation
+    /// whose scope explicitly damages descendants, disables self-scene reuse.
+    pub(in crate::window) fn interactive_path_is_descendant_only(
+        &self,
+        global_id: &GlobalElementId,
+    ) -> bool {
+        let inner = self.inner.borrow();
+        if !inner.active_interaction_only {
+            return false;
+        }
+
+        let mut has_dirty_descendant = false;
+        for (dirty, descendants_dirty) in &inner.active_interactive_elements {
+            if global_id == dirty
+                || (*descendants_dirty && global_element_path_is_prefix(dirty, global_id))
+            {
+                return false;
+            }
+            if global_element_path_is_strict_prefix(global_id, dirty) {
+                has_dirty_descendant = true;
+            }
+        }
+        has_dirty_descendant
+    }
+
     pub fn set_phase(&self, phase: DrawPhase) {
         self.inner.borrow_mut().draw_phase = phase
     }
@@ -327,6 +357,10 @@ fn global_element_path_is_prefix(prefix: &GlobalElementId, path: &GlobalElementI
             .all(|(prefix, path)| prefix == path)
 }
 
+fn global_element_path_is_strict_prefix(prefix: &GlobalElementId, path: &GlobalElementId) -> bool {
+    prefix.0.len() < path.0.len() && global_element_path_is_prefix(prefix, path)
+}
+
 #[cfg(test)]
 mod interaction_dirty_scope_tests {
     use super::*;
@@ -359,6 +393,34 @@ mod interaction_dirty_scope_tests {
         assert!(interaction_path_requires_repaint(&dirty, &dirty, true));
         assert!(interaction_path_requires_repaint(&descendant, &dirty, true));
         assert!(!interaction_path_requires_repaint(&sibling, &dirty, true));
+    }
+
+    #[test]
+    fn ancestor_can_reuse_own_scene_for_element_only_child_damage() {
+        let invalidator = WindowInvalidator::new();
+        let ancestor = path(&[0]);
+        let dirty = path(&[0, 1]);
+
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_interactive_view(EntityId::from_u64(1), Some(&dirty), false));
+        invalidator.set_dirty(false);
+
+        assert!(invalidator.interactive_path_is_descendant_only(&ancestor));
+        assert!(!invalidator.interactive_path_is_descendant_only(&dirty));
+    }
+
+    #[test]
+    fn subtree_damage_disables_descendant_self_scene_reuse() {
+        let invalidator = WindowInvalidator::new();
+        let dirty = path(&[0]);
+        let descendant = path(&[0, 1]);
+
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_interactive_view(EntityId::from_u64(1), Some(&dirty), true));
+        invalidator.set_dirty(false);
+
+        assert!(!invalidator.interactive_path_is_descendant_only(&dirty));
+        assert!(!invalidator.interactive_path_is_descendant_only(&descendant));
     }
 
     #[test]
