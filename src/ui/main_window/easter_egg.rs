@@ -236,7 +236,7 @@ impl MainWindowView {
                 native_positioning,
                 ..
             } => {
-                crate::ui::animation::request_animation_frame_if(window, true);
+                crate::ui::animation::request_layout_animation_frame_if(window, true);
                 let elapsed = now.saturating_duration_since(started_at);
                 let offset = shake_offset(elapsed);
                 if native_positioning {
