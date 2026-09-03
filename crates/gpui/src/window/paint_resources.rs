@@ -610,6 +610,13 @@ impl Window {
                     cx.trim_image_memory(ImageMemoryTrimLevel::Moderate);
                 }
                 window.trim_gpui_memory(GpuiMemoryTrimLevel::Moderate);
+                // Moderate renderer/backend trimming is allowed to discard scratch or compositor
+                // resources while the window is inactive. Keep the window asleep, but never let a
+                // later activation present the old retained frame as though those dependencies were
+                // still resident. The normal activation frame observes these flags and performs one
+                // complete CPU/GPU rebuild before returning to retained replay.
+                window.force_full_redraw.set(true);
+                window.force_view_cache_refresh = true;
             }));
         }));
     }
