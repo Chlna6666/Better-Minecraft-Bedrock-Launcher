@@ -3,8 +3,7 @@ use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
 use crate::ui::animation::{
-    SpringValue, apple_spring, ease_out_back, request_animation_frame_if, spring_bouncy,
-    spring_snappy,
+    SpringValue, apple_spring, ease_out_back, spring_bouncy, spring_snappy,
 };
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::hooks::use_launcher::{LaunchVersionDescriptor, start_launcher};
@@ -16,6 +15,7 @@ use crate::ui::navigation::{AppRoute, set_route};
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_hooks::{hook_element, hook_render};
@@ -958,28 +958,30 @@ impl Render for HomePageView {
         }
 
         launcher_root = launcher_root.child(launch_bar);
+        let launcher_animating =
+            self.dropdown_animating || entrance_animating || initial_versions_loading;
 
-        let mut overlay = div().absolute().inset_0().child(launcher_root);
+        let mut overlay = div().absolute().inset_0().child(
+            launcher_root.with_layout_animation_target(launcher_animating),
+        );
         let sidebar_registrations = crate::plugins::runtime::injection_registrations(
             cx,
             InjectionSlot::HomeSidebar,
             Some("/"),
         );
         if !sidebar_registrations.is_empty() {
-            overlay = overlay.child(self.render_home_sidebar(
-                merged_home_sidebar_layout(&sidebar_registrations),
-                &theme_colors,
-                theme_dark,
-                entrance_eased,
-                window,
-                cx,
-            ));
+            overlay = overlay.child(
+                self.render_home_sidebar(
+                    merged_home_sidebar_layout(&sidebar_registrations),
+                    &theme_colors,
+                    theme_dark,
+                    entrance_eased,
+                    window,
+                    cx,
+                )
+                .with_layout_animation_target(entrance_animating),
+            );
         }
-
-        request_animation_frame_if(
-            window,
-            self.dropdown_animating || entrance_animating || initial_versions_loading,
-        );
 
         overlay.into_any_element()
     }
