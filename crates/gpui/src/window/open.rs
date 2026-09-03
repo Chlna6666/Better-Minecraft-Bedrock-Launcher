@@ -195,8 +195,20 @@ impl Window {
                         .clone()
                         .retain(&(), |callback| callback(window, cx));
 
+                    let previous_scale_factor = window.scale_factor;
+                    let previous_viewport_size = window.viewport_size;
+                    let previous_display_id = window.display_id;
                     window.content_bounds_changed(cx);
-                    window.refresh();
+                    let platform_geometry_changed = previous_scale_factor != window.scale_factor
+                        || previous_viewport_size != window.viewport_size
+                        || previous_display_id != window.display_id;
+                    if !platform_geometry_changed {
+                        // Window activation changes focus-event semantics but does not invalidate
+                        // application layout or scene content by itself. Produce a replay-only frame
+                        // so `window_active` and focus observers advance without forcing every
+                        // AnyView/retained element through MissRefresh.
+                        window.redraw_without_view_cache_refresh();
+                    }
                     if active {
                         window.rearm_platform_frame_watchdog_on_activation();
                     }
