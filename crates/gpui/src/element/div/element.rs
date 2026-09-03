@@ -110,23 +110,24 @@ pub struct DivLayout {
 
 /// Paint-time state for a [`Div`].
 ///
-/// Pure structural containers can bypass their own paint machinery after prepaint has proven that
-/// they contribute no scene primitives, compositing scope, hitbox, or dispatch-tree side effects.
+/// `reconciliation_transparent` means the container contributes no own paint work at all.
+/// `self_scene_replayable` is less restrictive: background/shadow/border are allowed, but the Div
+/// must not establish an interaction/compositing/text/clip context for its children. In an
+/// element-local child update, those own primitives can be replayed around independently reconciled
+/// children without rerunning `Style::paint` for the parent.
 pub struct DivPrepaint {
     hitbox: Option<Hitbox>,
     reconciliation_transparent: bool,
+    self_scene_replayable: bool,
 }
 
-fn style_is_reconciliation_transparent(style: &Style, window: &Window, cx: &App) -> bool {
+fn style_allows_self_scene_replay(style: &Style, window: &Window, cx: &App) -> bool {
     style.display != Display::None
         && style.visibility == Visibility::Visible
         && style.overflow.x == Overflow::Visible
         && style.overflow.y == Overflow::Visible
-        && style.background.is_none()
         && style.backdrop_blur.is_none()
         && style.blur.is_none()
-        && style.border_color.is_none()
-        && style.box_shadow.is_empty()
         && style.text_style().is_none()
         && style.mouse_cursor.is_none()
         && style.opacity.is_none()
@@ -143,6 +144,13 @@ fn style_is_reconciliation_transparent(style: &Style, window: &Window, cx: &App)
                 true
             }
         }
+}
+
+fn style_is_reconciliation_transparent(style: &Style, window: &Window, cx: &App) -> bool {
+    style_allows_self_scene_replay(style, window, cx)
+        && style.background.is_none()
+        && style.border_color.is_none()
+        && style.box_shadow.is_empty()
 }
 
 impl Styled for Div {
@@ -277,8 +285,10 @@ impl Element for Div {
             window,
             cx,
             |style, scroll_offset, hitbox, window, cx| {
-                let reconciliation_transparent = interactivity_transparent
+                let self_scene_replayable = interactivity_transparent
                     && hitbox.is_none()
+                    && style_allows_self_scene_replay(style, window, cx);
+                let reconciliation_transparent = self_scene_replayable
                     && style_is_reconciliation_transparent(style, window, cx);
 
                 // Generic Div traversal is not a progressive boundary. If this structural loop
@@ -301,6 +311,7 @@ impl Element for Div {
                 DivPrepaint {
                     hitbox,
                     reconciliation_transparent,
+                    self_scene_replayable,
                 }
             },
         )
@@ -327,6 +338,26 @@ impl Element for Div {
                 false
             }
         };
+
+        // True repaint boundary for structural ancestors: the lifecycle is entered only to reach
+        // a dirty descendant. Reuse this Div's previous shadow/background prefix and border suffix,
+        // while every child independently takes its retained or rebuilt path. Because this fast
+        // path is restricted to non-interactive, non-clipping, non-transforming containers, no old
+        // hitbox/listener or inherited compositing state is replayed.
+        if prepaint.self_scene_replayable
+            && !debug_below_active
+            && !window.debug_visualization(cx).show_layout_bounds
+            && let Some(ranges) = window.retained_self_scene_ranges_for_current(bounds)
+        {
+            window.record_debug_element_self_scene_replay(bounds, cx);
+            window.replay_retained_scene_range(ranges.prefix);
+            for child in &mut self.children {
+                child.paint(window, cx);
+            }
+            window.replay_retained_scene_range(ranges.suffix);
+            return;
+        }
+
         if prepaint.reconciliation_transparent
             && !debug_below_active
             && !window.debug_visualization(cx).show_layout_bounds
