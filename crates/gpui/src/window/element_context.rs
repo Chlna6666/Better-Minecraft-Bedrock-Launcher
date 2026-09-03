@@ -63,25 +63,33 @@ impl Window {
             // request-layout scope has already been popped. Keep the identity-scope stack aligned
             // with the slot stack instead of clearing all prior scopes. A synthetic level that also
             // contributes a retained path segment (`with_retained_child_key`) is a stable boundary;
-            // a slot-only child scope inherits its parent's ambiguity conservatively.
+            // a slot-only child scope inherits its parent's ambiguity conservatively. If an unwind
+            // ever leaves more identity scopes than slot scopes, discard them and reconstruct the
+            // unknown prefix as ambiguous rather than upgrading an inconsistent stack to stable.
             if scopes.len() > depth {
                 scopes.clear();
-            }
-            while scopes.len() < depth {
-                let synthetic_depth = scopes.len();
-                let keyed_boundary = self.retained_element_id_stack.len() > synthetic_depth;
-                let owner_ambiguity = if keyed_boundary {
-                    SmallVec::new()
-                } else {
-                    scopes
-                        .last()
-                        .map(|scope| scope.owner_ambiguity.clone())
-                        .unwrap_or_default()
-                };
-                scopes.push(RetainedIdentityScope {
-                    source_occurrences: FxHashMap::default(),
-                    owner_ambiguity,
-                });
+                for _ in 0..depth {
+                    let mut scope = RetainedIdentityScope::default();
+                    scope.owner_ambiguity.push(Rc::new(Cell::new(true)));
+                    scopes.push(scope);
+                }
+            } else {
+                while scopes.len() < depth {
+                    let synthetic_depth = scopes.len();
+                    let keyed_boundary = self.retained_element_id_stack.len() > synthetic_depth;
+                    let owner_ambiguity = if keyed_boundary {
+                        SmallVec::new()
+                    } else {
+                        scopes
+                            .last()
+                            .map(|scope| scope.owner_ambiguity.clone())
+                            .unwrap_or_default()
+                    };
+                    scopes.push(RetainedIdentityScope {
+                        source_occurrences: FxHashMap::default(),
+                        owner_ambiguity,
+                    });
+                }
             }
 
             let has_explicit_id = explicit_id.is_some();
@@ -265,7 +273,7 @@ impl Window {
 
         if offset.is_zero() {
             return f(self);
-        }
+        };
 
         let abs_offset = self.element_offset() + offset;
         self.with_absolute_element_offset(abs_offset, f)
