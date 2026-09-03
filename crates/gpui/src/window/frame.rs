@@ -1,5 +1,6 @@
 use super::state::ElementVisualTransform;
 use super::*;
+use crate::element::RetainedDivSelfSceneStyle;
 use std::borrow::Borrow;
 
 pub(crate) struct DeferredDraw {
@@ -79,6 +80,8 @@ pub(crate) struct RetainedElementRange {
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) metadata_range: Range<usize>,
+    /// Exact shadow/background/border state for a reconciliation-safe `Div` self scene.
+    pub(crate) div_self_scene_style: Option<RetainedDivSelfSceneStyle>,
     /// Whether this element's retained address is unambiguous in the frame that produced it.
     pub(crate) identity_stable: bool,
     /// Whether this element and every retained descendant have unambiguous identities.
