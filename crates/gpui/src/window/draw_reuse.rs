@@ -420,29 +420,49 @@ impl Window {
         true
     }
 
-    /// Returns a previously retained element range that is safe to replay in the current targeted
-    /// retained frame.
+    /// Returns a previously retained element range that is safe to replay in the current frame.
+    ///
+    /// Targeted retained frames keep the existing structural-identity rules. Generic dirty frames
+    /// are accepted only for side-effect-free plain text whose exact output key matches the previous
+    /// frame; this never broadens anonymous replay to interactive elements.
     pub(crate) fn reusable_retained_element(
         &self,
         retained_id: &GlobalElementId,
         bounds: Bounds<Pixels>,
+        plain_text_key: Option<&crate::element::RetainedPlainTextKey>,
     ) -> Option<RetainedElementRange> {
-        if self.force_view_cache_refresh()
-            || !self.invalidator.active_targeted_replay()
-            || self.invalidator.retained_path_is_dirty(retained_id)
-        {
+        if self.force_view_cache_refresh() {
+            return None;
+        }
+
+        let targeted_replay = self.invalidator.active_targeted_replay();
+        if targeted_replay && self.invalidator.retained_path_is_dirty(retained_id) {
             return None;
         }
 
         let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
-        if !retained.identity_stable || !retained.subtree_stable {
-            return None;
+        if targeted_replay {
+            if !retained.identity_stable || !retained.subtree_stable {
+                let current_plain_text = plain_text_key?;
+                if retained.plain_text_key.as_ref()? != current_plain_text
+                    || !retained_plain_text_range_is_side_effect_free(retained)
+                {
+                    return None;
+                }
+            } else if retained_id_is_anonymous(retained_id)
+                && retained_range_contains_frame_bound_interactivity(retained)
+            {
+                return None;
+            }
+        } else {
+            let current_plain_text = plain_text_key?;
+            if retained.plain_text_key.as_ref()? != current_plain_text
+                || !retained_plain_text_range_is_side_effect_free(retained)
+            {
+                return None;
+            }
         }
-        if retained_id_is_anonymous(retained_id)
-            && retained_range_contains_frame_bound_interactivity(retained)
-        {
-            return None;
-        }
+
         if retained.bounds != bounds
             || !self.can_reuse_prepaint(&retained.prepaint_range)
             || !self.can_reuse_paint(&retained.paint_range)
@@ -471,6 +491,7 @@ impl Window {
         paint_range: Range<PaintIndex>,
         metadata_start: usize,
         div_self_scene_style: Option<crate::element::RetainedDivSelfSceneStyle>,
+        plain_text_key: Option<crate::element::RetainedPlainTextKey>,
         identity_stable: bool,
         subtree_stable: bool,
     ) {
@@ -486,6 +507,7 @@ impl Window {
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
                 div_self_scene_style,
+                plain_text_key,
                 identity_stable,
                 subtree_stable,
             },
@@ -574,6 +596,7 @@ impl Window {
                     paint_range,
                     metadata_range: metadata_start..metadata_end,
                     div_self_scene_style: source_range.div_self_scene_style.clone(),
+                    plain_text_key: source_range.plain_text_key.clone(),
                     identity_stable: source_range.identity_stable,
                     subtree_stable: source_range.subtree_stable,
                 },
@@ -590,6 +613,23 @@ impl Window {
 
 fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {
     matches!(retained_id.0.last(), Some(ElementId::InstanceSlot(_)))
+}
+
+fn retained_plain_text_range_is_side_effect_free(retained: &RetainedElementRange) -> bool {
+    let prepaint = &retained.prepaint_range;
+    let paint = &retained.paint_range;
+
+    retained.metadata_range.end == retained.metadata_range.start.saturating_add(1)
+        && prepaint.start.hitboxes_index == prepaint.end.hitboxes_index
+        && prepaint.start.tooltips_index == prepaint.end.tooltips_index
+        && prepaint.start.deferred_draws_index == prepaint.end.deferred_draws_index
+        && prepaint.start.accessed_element_states_index == prepaint.end.accessed_element_states_index
+        && paint.start.mouse_listeners_index == paint.end.mouse_listeners_index
+        && paint.start.input_handlers_index == paint.end.input_handlers_index
+        && paint.start.cursor_styles_index == paint.end.cursor_styles_index
+        && paint.start.window_control_hitboxes_index == paint.end.window_control_hitboxes_index
+        && paint.start.accessed_element_states_index == paint.end.accessed_element_states_index
+        && paint.start.tab_handle_index == paint.end.tab_handle_index
 }
 
 fn retained_range_contains_frame_bound_interactivity(retained: &RetainedElementRange) -> bool {
