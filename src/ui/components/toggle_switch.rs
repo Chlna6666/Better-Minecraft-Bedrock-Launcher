@@ -112,7 +112,7 @@ impl Render for ToggleSwitchView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let (progress, animating) = self.animation_progress(Instant::now());
         self.render_track(progress)
-            .with_layout_animation_target("toggle-switch-layout-animation", animating)
+            .with_layout_animation_target(animating)
     }
 }
 
