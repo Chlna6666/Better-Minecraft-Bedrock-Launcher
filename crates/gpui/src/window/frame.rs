@@ -96,6 +96,10 @@ pub(crate) struct Frame {
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
     pub(super) accessed_element_states: Vec<(GlobalElementId, TypeId)>,
     pub(crate) mouse_listeners: Vec<MouseListener>,
+    /// Whether the completed frame contains an application listener that needs every MouseMove
+    /// sample, even when the hit-test result did not change. Computed once when the frame finishes
+    /// so high-report-rate mice do not scan the full listener array for every hardware event.
+    pub(crate) has_continuous_mouse_move_listener: bool,
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
@@ -229,6 +233,7 @@ impl Frame {
             element_states: FxHashMap::default(),
             accessed_element_states: Vec::new(),
             mouse_listeners: Vec::new(),
+            has_continuous_mouse_move_listener: false,
             dispatch_tree,
             scene: Scene::default(),
             hitboxes: Vec::new(),
@@ -266,6 +271,7 @@ impl Frame {
         self.element_states.clear();
         self.accessed_element_states.clear();
         self.mouse_listeners.clear();
+        self.has_continuous_mouse_move_listener = false;
         self.dispatch_tree.clear();
         self.scene.clear();
         self.input_handlers.clear();
@@ -353,6 +359,9 @@ impl Frame {
             }
         }
 
+        self.has_continuous_mouse_move_listener = self.mouse_listeners.iter().any(|listener| {
+            listener.handles(TypeId::of::<MouseMoveEvent>(), true)
+        });
         self.scene.finish_retaining_revision(&prev_frame.scene);
     }
 
