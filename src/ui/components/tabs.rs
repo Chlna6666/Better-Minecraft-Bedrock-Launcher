@@ -1,6 +1,7 @@
-use crate::ui::animation::{ease_out_cubic, raw_progress, request_animation_frame_if};
+use crate::ui::animation::{ease_out_cubic, raw_progress};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::rc::Rc;
@@ -179,6 +180,7 @@ impl RenderOnce for AnimatedSegmentTabs {
         let segment_width = 1.0 / item_count as f32;
         let item_width = self.item_width;
         let indicator_shadow = self.indicator_shadow;
+        let animation_target_id = SharedString::from(format!("{}-layout-animation", self.id));
         let active_background = colors.settings_field_bg;
         let active_border = Hsla {
             a: if dark_mode { 0.52 } else { 0.28 },
@@ -220,23 +222,25 @@ impl RenderOnce for AnimatedSegmentTabs {
         }
 
         let snapshot = *state.read(cx);
-        let indicator_slot = if let Some(started_at) = snapshot.started_at {
+        let (indicator_slot, indicator_animating) = if let Some(started_at) = snapshot.started_at {
             let progress = raw_progress(Instant::now(), started_at, ANIMATED_TAB_DURATION);
             let eased = ease_out_cubic(progress);
+            let animating = progress < 1.0;
 
-            if progress >= 1.0 {
+            if !animating {
                 state.update(cx, |tab_state, _| {
                     tab_state.previous_index = tab_state.active_index;
                     tab_state.started_at = None;
                 });
-            } else {
-                request_animation_frame_if(window, true);
             }
 
-            snapshot.previous_index as f32
-                + (snapshot.active_index as f32 - snapshot.previous_index as f32) * eased
+            (
+                snapshot.previous_index as f32
+                    + (snapshot.active_index as f32 - snapshot.previous_index as f32) * eased,
+                animating,
+            )
         } else {
-            snapshot.active_index as f32
+            (snapshot.active_index as f32, false)
         };
 
         let indicator = if let Some(item_width) = item_width {
@@ -361,6 +365,7 @@ impl RenderOnce for AnimatedSegmentTabs {
                     (on_select)(window, cx);
                 })
             }))
+            .with_layout_animation_target(animation_target_id, indicator_animating)
             .into_any_element()
     }
 }
