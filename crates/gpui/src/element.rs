@@ -1,9 +1,8 @@
 //! Elements are the workhorses of GPUI. They are responsible for laying out and painting all of
-//! the contents of a window. Elements form a tree and are laid out according to the web layout
-//! standards as implemented by [taffy](https://github.com/DioxusLabs/taffy). Most of the time,
-//! you won't need to interact with this module or these APIs directly. Elements provide their
-//! own APIs and GPUI, or other element implementation, uses the APIs in this module to convert
-//! that element tree into the pixels you see on the screen.
+//! the contents of a window. Elements form a tree and are laid out according to the web-based layout rules,
+//! as implemented by Taffy.
+//! You can create custom elements by implementing this trait, see the module-level documentation
+//! for more details.
 //!
 //! # Element Basics
 //!
@@ -78,3 +77,5 @@ pub use text::*;
 pub use text_animation::*;
 pub use traits::*;
 pub use uniform_list::*;
+
+pub(crate) use div::{DivPrepaint, RetainedDivSelfSceneStyle};
