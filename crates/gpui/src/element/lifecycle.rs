@@ -278,6 +278,7 @@ impl<E: Element> Drawable<E> {
                 }
 
                 let metadata_start = window.retained_element_metadata_len();
+                let unstable_identity_start = window.next_frame.retained_unstable_identity_count;
                 let paint_start = window.paint_index();
                 window.record_debug_element_paint(bounds, cx);
                 window.next_frame.dispatch_tree.set_active_node(node_id);
@@ -294,15 +295,20 @@ impl<E: Element> Drawable<E> {
                 });
                 let paint_end = window.paint_index();
 
-                if retained_identity_is_stable(&retained_identity_ambiguity) {
-                    window.record_retained_element_range(
-                        retained_id,
-                        bounds,
-                        prepaint_range,
-                        paint_start..paint_end,
-                        metadata_start,
-                    );
-                }
+                let identity_stable =
+                    retained_identity_is_stable(&retained_identity_ambiguity);
+                let subtree_stable = identity_stable
+                    && window.next_frame.retained_unstable_identity_count
+                        == unstable_identity_start;
+                window.record_retained_element_range(
+                    retained_id,
+                    bounds,
+                    prepaint_range,
+                    paint_start..paint_end,
+                    metadata_start,
+                    identity_stable,
+                    subtree_stable,
+                );
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
