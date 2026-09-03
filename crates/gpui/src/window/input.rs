@@ -112,7 +112,7 @@ impl Window {
     }
 
     /// Register a listener to be called when the given focus handle or one of its descendants receives focus.
-    /// This does not fire if the given focus handle - or one of its descendants - was previously focused.
+    /// This does not fire if the given focus handle - or one of its descendants was previously focused.
     /// Returns a subscription and persists until the subscription is dropped.
     pub fn on_focus_in(
         &mut self,
@@ -152,7 +152,7 @@ impl Window {
                             handles: Arc::downgrade(&cx.focus_handles),
                         },
                     };
-                    listener(window, cx)
+                    listener(event, window, cx)
                 }
                 true
             }));
