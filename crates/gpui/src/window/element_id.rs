@@ -37,9 +37,6 @@ pub enum ElementId {
         element_type: TypeId,
         occurrence: u32,
     },
-    /// Internal source-location identity used only by retained element reconciliation.
-    #[doc(hidden)]
-    RetainedSourceSlot(core::panic::Location<'static>, u32),
     /// Internal positional identity used only by retained element reconciliation.
     #[doc(hidden)]
     InstanceSlot(u32),
@@ -81,9 +78,6 @@ impl Display for ElementId {
                     write!(f, "source={source}")?;
                 }
                 write!(f, ",type={element_type:?}]#{occurrence}")?;
-            }
-            ElementId::RetainedSourceSlot(location, occurrence) => {
-                write!(f, "@{}#{}", location, occurrence)?
             }
             ElementId::InstanceSlot(slot) => write!(f, "@{}", slot)?,
         }
