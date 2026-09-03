@@ -117,7 +117,7 @@ impl Window {
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(move |window, _cx| {
             if window
                 .invalidator
-                .invalidate_interactive_view(entity, Some(&retained_id), true)
+                .invalidate_retained_path(entity, Some(&retained_id), true)
             {
                 window.schedule_dirty_frame();
             }
@@ -150,7 +150,7 @@ impl Window {
             let _ = ignore_window_not_found(handle.update(cx, |_, window, _cx| {
                 if window
                     .invalidator
-                    .invalidate_interactive_view(entity, Some(&retained_id), true)
+                    .invalidate_retained_path(entity, Some(&retained_id), true)
                 {
                     window.schedule_dirty_frame();
                 }
