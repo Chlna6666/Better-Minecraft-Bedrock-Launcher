@@ -8,7 +8,6 @@ use crate::core::minecraft::import::{
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
 use crate::core::version::launch_versions::version_folder_matches;
 use crate::launch::ImportLaunchContext;
-use crate::ui::animation::request_animation_frame_if;
 use crate::ui::components::dropdown::{self, Dropdown, DropdownOption};
 use crate::ui::components::minecraft_text::MinecraftFormattedText;
 use crate::ui::components::scroll::ScrollableElement;
@@ -567,6 +566,7 @@ impl Render for ImportWindowView {
         let sidebar_dropdown_width = px((window_width_px - 40.0).clamp(240.0, 520.0));
         let versions = read_local_versions_snapshot(cx);
         let launcher_snapshot = read_launcher_snapshot(now, cx);
+        let launcher_modal_animating = cx.global::<LauncherState>().is_modal_animating(now);
         if self.close_after_launch_completion
             && !self.launch_completion_close_scheduled
             && launcher_snapshot
@@ -584,8 +584,6 @@ impl Render for ImportWindowView {
         let done_label = t!("Import.done");
         let start_import_label = t!("Import.startImport");
         let start_import_and_launch_label = t!("Import.startImportAndLaunch");
-        request_animation_frame_if(window, self.is_inspecting || self.is_importing);
-        request_animation_frame_if(window, cx.global::<LauncherState>().is_modal_animating(now));
 
         let mut root = div()
             .relative()
@@ -634,9 +632,12 @@ impl Render for ImportWindowView {
                                                         .min_w(px(0.))
                                                         .min_h(px(0.))
                                                         .overflow_y_scrollbar()
-                                                        .child(render_preview_card(
-                                                            self, &colors, cx,
-                                                        )),
+                                                        .child(
+                                                            render_preview_card(self, &colors, cx)
+                                                                .with_layout_animation_target(
+                                                                    self.is_inspecting,
+                                                                ),
+                                                        ),
                                                 )
                                                 .child(
                                                     div()
@@ -674,7 +675,12 @@ impl Render for ImportWindowView {
                                                 .flex()
                                                 .flex_col()
                                                 .gap(px(14.))
-                                                .child(render_preview_card(self, &colors, cx))
+                                                .child(
+                                                    render_preview_card(self, &colors, cx)
+                                                        .with_layout_animation_target(
+                                                            self.is_inspecting,
+                                                        ),
+                                                )
                                                 .child(render_versions_card(
                                                     self,
                                                     &colors,
@@ -722,11 +728,14 @@ impl Render for ImportWindowView {
         }
 
         if self.presentation == ImportPresentation::Window && launcher_snapshot.show_modal {
-            root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
-                &launcher_snapshot,
-                window,
-                cx,
-            ));
+            root = root.child(
+                crate::ui::overlays::launcher::render_launcher_overlay(
+                    &launcher_snapshot,
+                    window,
+                    cx,
+                )
+                .with_layout_animation_target(launcher_modal_animating),
+            );
         }
 
         #[cfg(target_os = "windows")]
