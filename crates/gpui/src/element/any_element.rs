@@ -124,7 +124,7 @@ impl AnyElement {
         AnyElement(element)
     }
 
-    pub(crate) fn with_retained_source_location(
+    pub(crate) fn with_retained_auto_mount(
         mut self,
         source: &'static core::panic::Location<'static>,
     ) -> Self {
