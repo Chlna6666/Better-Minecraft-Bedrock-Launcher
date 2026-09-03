@@ -1,4 +1,5 @@
 use super::*;
+use std::any::TypeId;
 
 /// An identifier for an [`Element`].
 ///
@@ -24,6 +25,18 @@ pub enum ElementId {
     CodeLocation(core::panic::Location<'static>),
     /// A labeled child of an element.
     NamedChild(Box<ElementId>, SharedString),
+    /// Internal automatic hierarchy identity used only by retained element reconciliation.
+    ///
+    /// `mount` is the parent-facing insertion/erasure call site, while `source` is the concrete
+    /// element's own construction site. Keeping both prevents reusable helpers from collapsing
+    /// every child onto one internal `div()` line without requiring application-authored IDs.
+    #[doc(hidden)]
+    RetainedAutoSlot {
+        mount: Option<core::panic::Location<'static>>,
+        source: Option<core::panic::Location<'static>>,
+        element_type: TypeId,
+        occurrence: u32,
+    },
     /// Internal source-location identity used only by retained element reconciliation.
     #[doc(hidden)]
     RetainedSourceSlot(core::panic::Location<'static>, u32),
@@ -51,6 +64,24 @@ impl Display for ElementId {
             ElementId::Path(path) => write!(f, "{}", path.display())?,
             ElementId::CodeLocation(location) => write!(f, "{}", location)?,
             ElementId::NamedChild(id, name) => write!(f, "{}-{}", id, name)?,
+            ElementId::RetainedAutoSlot {
+                mount,
+                source,
+                element_type,
+                occurrence,
+            } => {
+                write!(f, "@auto[")?;
+                if let Some(mount) = mount {
+                    write!(f, "mount={mount}")?;
+                }
+                if let Some(source) = source {
+                    if mount.is_some() {
+                        write!(f, ",")?;
+                    }
+                    write!(f, "source={source}")?;
+                }
+                write!(f, ",type={element_type:?}]#{occurrence}")?;
+            }
             ElementId::RetainedSourceSlot(location, occurrence) => {
                 write!(f, "@{}#{}", location, occurrence)?
             }
