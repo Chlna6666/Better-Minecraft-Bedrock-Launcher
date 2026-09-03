@@ -231,6 +231,10 @@ impl Window {
                 PlatformInput::MouseUp(mouse_up)
             }
             PlatformInput::MouseExited(mouse_exited) => {
+                // Preserve the platform leave position for tooltip/drag bookkeeping, but the
+                // dispatch path below deliberately clears the hit-test instead of treating this
+                // coordinate as an in-window hover point.
+                self.mouse_position = mouse_exited.position;
                 self.modifiers = mouse_exited.modifiers;
                 PlatformInput::MouseExited(mouse_exited)
             }
@@ -346,16 +350,26 @@ impl Window {
                     .downcast_ref::<MouseUpEvent>()
                     .map(|event| event.position)
             })
+            .or_else(|| {
+                event
+                    .downcast_ref::<MouseExitEvent>()
+                    .map(|event| event.position)
+            })
             .unwrap_or_else(|| self.mouse_position());
-        let hit_test = self.rendered_frame.hit_test(mouse_position);
+        let hit_test = if event.is::<MouseExitEvent>() {
+            HitTest::default()
+        } else {
+            self.rendered_frame.hit_test(mouse_position)
+        };
         let hit_test_unchanged = hit_test == self.mouse_hit_test;
         if hit_test != self.mouse_hit_test {
             self.mouse_hit_test = hit_test;
             self.reset_cursor_style(cx);
         }
 
-        let client_resize_edge = if matches!(self.window_decorations(), Decorations::Client { .. })
-        {
+        let client_resize_edge = if event.is::<MouseExitEvent>() {
+            None
+        } else if matches!(self.window_decorations(), Decorations::Client { .. }) {
             self.client_inset
                 .and_then(|inset| resize_edge_hit_test(self, mouse_position, inset))
         } else {
