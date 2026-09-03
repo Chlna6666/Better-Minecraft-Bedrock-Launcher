@@ -417,7 +417,7 @@ impl Window {
             if !listener.handles(event_type) {
                 continue;
             }
-            let Some(listener) = listener.listener_mut() else {
+            let Some(mut listener) = listener.listener_mut() else {
                 continue;
             };
             listener(event, DispatchPhase::Capture, self, cx);
@@ -432,7 +432,7 @@ impl Window {
                 if !listener.handles(event_type) {
                     continue;
                 }
-                let Some(listener) = listener.listener_mut() else {
+                let Some(mut listener) = listener.listener_mut() else {
                     continue;
                 };
                 listener(event, DispatchPhase::Bubble, self, cx);
