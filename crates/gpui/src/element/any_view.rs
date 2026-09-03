@@ -74,12 +74,14 @@ impl<V: Render> Element for Entity<V> {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Entity is a lifecycle proxy. Its rendered element owns all actual scene primitives.
+        window.record_debug_element_traversal_only(bounds, cx);
         window.with_rendered_view(self.entity_id(), |window| element.paint(window, cx));
     }
 }
@@ -443,18 +445,26 @@ impl Element for AnyView {
                         let paint_start = window.paint_index();
 
                         if let Some(element) = element {
+                            // Cached view missed and is forwarding current work to its rendered
+                            // child. The AnyView wrapper itself owns no scene primitives.
+                            window.record_debug_element_traversal_only(bounds, cx);
                             let refreshing = mem::replace(&mut window.refreshing, true);
                             with_optional_critical_draw(critical, window, |window| {
                                 element.paint(window, cx);
                             });
                             window.refreshing = refreshing;
-                        } else if !window.reuse_paint(element_state.paint_range.clone()) {
-                            window.record_debug_view_cache_status(
-                                bounds,
-                                ViewCacheDebugStatus::ReuseFailed,
-                                cx,
-                            );
-                            window.degrade_current_draw();
+                        } else {
+                            // Full cached subtree replay: replace Drawable's provisional red marker
+                            // with a retained-green marker before copying the previous paint range.
+                            window.record_debug_element_self_scene_replay(bounds, cx);
+                            if !window.reuse_paint(element_state.paint_range.clone()) {
+                                window.record_debug_view_cache_status(
+                                    bounds,
+                                    ViewCacheDebugStatus::ReuseFailed,
+                                    cx,
+                                );
+                                window.degrade_current_draw();
+                            }
                         }
 
                         let paint_end = window.paint_index();
@@ -466,6 +476,7 @@ impl Element for AnyView {
                     },
                 )
             } else {
+                window.record_debug_element_traversal_only(bounds, cx);
                 with_optional_critical_draw(critical, window, |window| {
                     element.as_mut().unwrap().paint(window, cx);
                 });
