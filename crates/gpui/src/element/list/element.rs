@@ -163,16 +163,26 @@ impl Element for List {
         let padding = style
             .padding
             .to_pixels(bounds.size.into(), window.rem_size());
-        let layout =
-            match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
-                Ok(layout) => layout,
-                Err(autoscroll_request) => {
-                    state.logical_scroll_top = Some(autoscroll_request);
-                    state
-                        .prepaint_items(bounds, padding, false, &mut self.render_item, window, cx)
-                        .unwrap()
-                }
-            };
+        let layout = match window.with_retained_child_scope(|window| {
+            state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx)
+        }) {
+            Ok(layout) => layout,
+            Err(autoscroll_request) => {
+                state.logical_scroll_top = Some(autoscroll_request);
+                window
+                    .with_retained_child_scope(|window| {
+                        state.prepaint_items(
+                            bounds,
+                            padding,
+                            false,
+                            &mut self.render_item,
+                            window,
+                            cx,
+                        )
+                    })
+                    .unwrap()
+            }
+        };
 
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
