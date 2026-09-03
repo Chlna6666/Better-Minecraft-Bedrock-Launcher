@@ -230,10 +230,8 @@ impl<E: Element> Drawable<E> {
                 let bounds = window.layout_bounds(layout_id);
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
-                let targeted_replay = window.invalidator.active_targeted_replay();
-                let mut plain_text_key = (!targeted_replay)
-                    .then(|| retained_plain_text_key(&self.element, &request_layout, window))
-                    .flatten();
+                let plain_text_key =
+                    retained_plain_text_key(&self.element, &request_layout, window);
                 let may_reconcile = identity_stable || plain_text_key.is_some();
 
                 let retained = may_reconcile
@@ -261,10 +259,6 @@ impl<E: Element> Drawable<E> {
                         };
                         return;
                     }
-                }
-
-                if plain_text_key.is_none() {
-                    plain_text_key = retained_plain_text_key(&self.element, &request_layout, window);
                 }
 
                 if let Some(element_id) = self.element.id() {
