@@ -9,6 +9,28 @@ impl Window {
         self.current_retained_element_id()
     }
 
+    /// Execute lazy child construction with a fresh parent-local retained slot namespace.
+    ///
+    /// Normal elements allocate all children during `request_layout`, while virtualized elements
+    /// such as [`crate::List`] may create their visible children later during prepaint. At that
+    /// point the original `begin_retained_element` child counter has already been popped, so lazy
+    /// children must establish an equivalent scope explicitly. Without this, every lazy child can
+    /// fall back to slot zero (or consume an unrelated ancestor counter), causing retained ranges,
+    /// hitboxes and listeners to be reconciled against the wrong element after list expansion or
+    /// recycling.
+    ///
+    /// Callers that retry a transactional prepaint must create a new scope for every attempt so the
+    /// same logical children receive the same slots after rollback.
+    pub(crate) fn with_retained_child_scope<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.retained_child_slot_stack.push(0);
+        let result = f(self);
+        self.retained_child_slot_stack.pop();
+        result
+    }
+
     /// Bound the persistent focus-target lookup when applications create and discard many unique
     /// focus handles over time. The common path pays only one length comparison; pruning happens
     /// only after the table becomes unusually large.
