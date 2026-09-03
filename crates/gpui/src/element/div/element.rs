@@ -6,6 +6,7 @@ use crate::{
 };
 use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
+use std::ops::Range;
 
 use super::event::{InteractiveElement, StatefulInteractiveElement};
 use super::interactivity::Interactivity;
@@ -125,17 +126,35 @@ pub(crate) struct RetainedDivSelfSceneStyle {
     box_shadow: Vec<BoxShadow>,
 }
 
+/// Exact retained self-scene metadata emitted by a reconciliation-safe [`Div`].
+///
+/// `child_scene_range` is the current frame span painted by children. The parent's own prefix and
+/// suffix are therefore known exactly even when the child list changes between frames.
+#[derive(Clone)]
+pub(crate) struct RetainedDivSelfScene {
+    pub(crate) style: RetainedDivSelfSceneStyle,
+    pub(crate) child_scene_range: Range<usize>,
+}
+
 /// Paint-time state for a [`Div`].
 ///
 /// `reconciliation_transparent` means the container contributes no own paint/context work at all.
-/// `self_scene_replayable` is less restrictive: background/shadow/border are allowed and inherited
-/// text/clipping contexts are reconstructed around dirty children while the parent's own scene
-/// primitives are replayed unchanged.
+/// `self_scene_style` marks containers whose shadow/background/border can be replayed independently
+/// while child lifecycle continues against the current inherited context.
 pub struct DivPrepaint {
     hitbox: Option<Hitbox>,
     reconciliation_transparent: bool,
-    self_scene_replayable: bool,
     pub(crate) self_scene_style: Option<RetainedDivSelfSceneStyle>,
+    pub(crate) self_scene_child_range: Option<Range<usize>>,
+}
+
+impl DivPrepaint {
+    pub(crate) fn retained_self_scene(&self) -> Option<RetainedDivSelfScene> {
+        Some(RetainedDivSelfScene {
+            style: self.self_scene_style.clone()?,
+            child_scene_range: self.self_scene_child_range.clone()?,
+        })
+    }
 }
 
 fn retained_div_self_scene_style(style: &Style) -> RetainedDivSelfSceneStyle {
@@ -341,8 +360,8 @@ impl Element for Div {
                 DivPrepaint {
                     hitbox,
                     reconciliation_transparent,
-                    self_scene_replayable,
                     self_scene_style,
+                    self_scene_child_range: None,
                 }
             },
         )
@@ -385,6 +404,7 @@ impl Element for Div {
                 .compute_style(global_id, prepaint.hitbox.as_ref(), window, cx);
             window.record_debug_element_self_scene_replay(bounds, cx);
             window.replay_retained_scene_range(ranges.prefix);
+            let child_scene_start = window.next_frame.scene.len();
             window.with_text_style(style.text_style().cloned(), |window| {
                 window.with_content_mask(style.overflow_mask(bounds, window.rem_size()), |window| {
                     for child in &mut self.children {
@@ -392,6 +412,8 @@ impl Element for Div {
                     }
                 });
             });
+            let child_scene_end = window.next_frame.scene.len();
+            prepaint.self_scene_child_range = Some(child_scene_start..child_scene_end);
             window.replay_retained_scene_range(ranges.suffix);
             return;
         }
@@ -401,8 +423,13 @@ impl Element for Div {
             && !window.debug_visualization(cx).show_layout_bounds
         {
             window.record_debug_element_traversal_only(bounds, cx);
+            let child_scene_start = window.next_frame.scene.len();
             for child in &mut self.children {
                 child.paint(window, cx);
+            }
+            let child_scene_end = window.next_frame.scene.len();
+            if prepaint.self_scene_style.is_some() {
+                prepaint.self_scene_child_range = Some(child_scene_start..child_scene_end);
             }
             return;
         }
@@ -411,6 +438,7 @@ impl Element for Div {
             .image_cache
             .as_mut()
             .map(|provider| provider.provide(window, cx));
+        let mut self_scene_child_range = None;
 
         window.with_image_cache(image_cache, |window| {
             self.interactivity.paint(
@@ -426,12 +454,19 @@ impl Element for Div {
                         return;
                     }
 
+                    let child_scene_start = window.next_frame.scene.len();
                     for child in &mut self.children {
                         child.paint(window, cx);
                     }
+                    let child_scene_end = window.next_frame.scene.len();
+                    self_scene_child_range = Some(child_scene_start..child_scene_end);
                 },
             )
         });
+
+        if prepaint.self_scene_style.is_some() {
+            prepaint.self_scene_child_range = self_scene_child_range;
+        }
     }
 }
 
