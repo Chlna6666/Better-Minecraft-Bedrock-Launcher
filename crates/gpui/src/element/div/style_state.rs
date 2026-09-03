@@ -146,14 +146,14 @@ impl Interactivity {
         if let Some(group_hitbox) = group_hitbox {
             let was_hovered = group_hitbox.is_hovered(window);
             let current_view = window.current_view();
-            let interaction_path = window.current_instance_path();
+            let retained_path = window.current_retained_element_id();
             let descendants_dirty = self.interaction_affects_descendants();
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
                     window.notify_interactive_region_scoped(
                         current_view,
-                        interaction_path.as_ref(),
+                        retained_path.as_ref(),
                         bounds,
                         descendants_dirty,
                         cx,
@@ -276,7 +276,6 @@ fn style_change_affects_descendants(before: &Style, after: &Style) -> bool {
         return true;
     }
 
-    // Corner/border color only changes descendant pixels when this element clips its children.
     let clips_descendants = before.overflow.x != crate::Overflow::Visible
         || before.overflow.y != crate::Overflow::Visible
         || after.overflow.x != crate::Overflow::Visible
