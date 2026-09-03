@@ -6,10 +6,13 @@ const ELEMENT_UPDATE_HOLD: Duration = Duration::from_millis(140);
 const MAX_ELEMENT_PAINT_MARKERS: usize = 2048;
 const MAX_VIEW_CACHE_MARKERS: usize = 512;
 
-/// Why an [`AnyView`](crate::AnyView) cache entry was reused or rebuilt in the current frame.
+/// Why a retained render boundary was reused or rebuilt in the current frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ViewCacheDebugStatus {
     Hit,
+    /// A parent lifecycle was traversed to reach a dirty child, while the parent's own scene
+    /// primitives were replayed unchanged.
+    SelfSceneReplay,
     DeferredDirtyReuse,
     MissCold,
     MissBounds,
@@ -33,11 +36,13 @@ pub struct WindowDebugVisualization {
     pub flash_surface_updates: bool,
     /// Draw the box model and clipping boundary for styled elements.
     pub show_layout_bounds: bool,
-    /// Outline elements whose paint lifecycle actually executes in the current frame and show
-    /// cached-view hit/miss markers.
+    /// Outline elements whose own paint work executes in the current frame and show retained
+    /// cache/repaint-boundary markers.
     ///
     /// A subtree restored through retained paint replay is not traversed, so its descendants do
-    /// not get repaint markers. Cached AnyView wrappers receive a cache-status outline on top.
+    /// not get repaint markers. A structural ancestor that is traversed only to reach a dirty child
+    /// can replace its provisional red/orange marker with a green `SelfSceneReplay` marker when its
+    /// own background/shadow/border scene operations are reused.
     pub show_element_updates: bool,
 }
 
@@ -141,8 +146,49 @@ impl Window {
         });
     }
 
-    /// Record the result of one cached-view lookup. This is intentionally a no-op unless visual
-    /// element diagnostics are enabled, so normal rendering does not allocate marker storage.
+    /// Reclassify the current element from a full own-paint marker into an ancestor traversal whose
+    /// own scene primitives were retained. This must be called before painting any child so the
+    /// last provisional marker still belongs to this parent.
+    pub(crate) fn record_debug_element_self_scene_replay(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        cx: &mut App,
+    ) {
+        if bounds.is_empty() || !cx.has_global::<WindowDebugVisualizationRegistry>() {
+            return;
+        }
+        let window_id = self.handle.window_id().as_u64();
+        cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+            let Some(runtime) = registry.windows.get_mut(&window_id) else {
+                return;
+            };
+            if !runtime.options.show_element_updates || runtime.cleanup_this_frame {
+                return;
+            }
+
+            if runtime
+                .element_paint_markers
+                .last()
+                .is_some_and(|last| *last == bounds)
+            {
+                runtime.element_paint_markers.pop();
+            }
+            if runtime.view_cache_markers.len() >= MAX_VIEW_CACHE_MARKERS {
+                return;
+            }
+            if !runtime.element_update_painted_this_frame {
+                runtime.element_update_painted_this_frame = true;
+                runtime.overlay_generation = runtime.overlay_generation.wrapping_add(1);
+            }
+            runtime.view_cache_markers.push(ViewCacheDebugMarker {
+                bounds,
+                status: ViewCacheDebugStatus::SelfSceneReplay,
+            });
+        });
+    }
+
+    /// Record the result of one retained-view/boundary lookup. This is intentionally a no-op unless
+    /// visual element diagnostics are enabled, so normal rendering does not allocate marker storage.
     pub(crate) fn record_debug_view_cache_status(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -382,7 +428,7 @@ pub(crate) fn paint_layout_bounds(
 
 fn cache_marker_color(status: ViewCacheDebugStatus) -> (u32, f32) {
     match status {
-        ViewCacheDebugStatus::Hit => (0x30d158, 0.98),
+        ViewCacheDebugStatus::Hit | ViewCacheDebugStatus::SelfSceneReplay => (0x30d158, 0.98),
         ViewCacheDebugStatus::DeferredDirtyReuse => (0x64d2ff, 0.98),
         ViewCacheDebugStatus::MissBounds => (0xffcc00, 0.98),
         ViewCacheDebugStatus::MissRefresh
@@ -478,6 +524,10 @@ mod tests {
         assert_ne!(
             cache_marker_color(ViewCacheDebugStatus::Hit).0,
             cache_marker_color(ViewCacheDebugStatus::MissDirty).0
+        );
+        assert_eq!(
+            cache_marker_color(ViewCacheDebugStatus::Hit).0,
+            cache_marker_color(ViewCacheDebugStatus::SelfSceneReplay).0
         );
     }
 }
