@@ -112,6 +112,27 @@ fn crop_image_tile_to_visible_bounds(
 }
 
 impl Window {
+    fn record_external_texture_damage(&mut self, damage: Bounds<ScaledPixels>) {
+        if damage.is_empty() {
+            return;
+        }
+
+        // Texture bytes can change while the retained primitive itself remains byte-for-byte
+        // identical. Carry that out-of-band mutation into the same spatial damage channel used by
+        // retained/layout animations, and include any previous-frame backdrop output that samples
+        // the changed pixels. Blur topology/config changes are handled separately by the normal
+        // scene damage plan.
+        let backdrop_damage = self
+            .rendered_frame
+            .scene
+            .backdrop_blur_damage(damage)
+            .collect::<SmallVec<[_; 4]>>();
+        self.animation_dirty_region.push(damage);
+        for bounds in backdrop_damage {
+            self.animation_dirty_region.push(bounds);
+        }
+    }
+
     /// Paint a monochrome SVG into the scene for the next frame at the current stacking context.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
@@ -418,6 +439,28 @@ impl Window {
             return Ok(());
         };
         if update_animated_slot {
+            // Animated image slots intentionally reuse the same atlas allocation. `refresh_tile_with`
+            // therefore changes GPU-visible pixels without changing the retained PolychromeSprite
+            // descriptor. Scene diff alone cannot discover that mutation. Damage every previous
+            // sprite sampling the refreshed allocation plus this occurrence, so a concurrent local
+            // animation can never restrict Present1 to an unrelated dirty rectangle and leave the
+            // rest of the window on the old image frame.
+            let current_damage = image_sprite_bounds(bounds, context.visual_transform)
+                .intersect(&context.content_mask.bounds);
+            let previous_damage = self
+                .rendered_frame
+                .scene
+                .polychrome_sprites
+                .iter()
+                .filter(|sprite| {
+                    sprite.tile.texture_id == tile.texture_id && sprite.tile.tile_id == tile.tile_id
+                })
+                .map(|sprite| sprite.bounds.intersect(&sprite.content_mask.bounds))
+                .collect::<SmallVec<[_; 4]>>();
+            self.record_external_texture_damage(current_damage);
+            for damage in previous_damage {
+                self.record_external_texture_damage(damage);
+            }
             self.animated_image_slots
                 .insert(animated_slot_key, frame_sequence);
         }
