@@ -1,6 +1,6 @@
 use super::*;
 use crate::element::RetainedDivSelfSceneStyle;
-use std::{borrow::Borrow, ops::Range};
+use std::ops::Range;
 
 /// Previous-frame scene spans that belong to a parent element itself rather than to its children.
 ///
@@ -60,7 +60,8 @@ impl Window {
     /// Unlike full subtree replay, this path is safe on generic application-dirty frames because it
     /// never replays hitboxes/listeners or child lifecycle state. The current `Div` must provide an
     /// exact shadow/background/border key matching the previous retained range, and its bounds must
-    /// be unchanged. Children are still painted normally against the current inherited contexts.
+    /// be unchanged. The child split is recorded directly during paint, so child insertion/removal
+    /// cannot move a retained border to the wrong side of the current child scene.
     pub(crate) fn retained_self_scene_ranges_for_current(
         &self,
         bounds: Bounds<Pixels>,
@@ -72,63 +73,27 @@ impl Window {
 
         let retained_id = self.current_retained_element_id()?;
         let parent = self.rendered_frame.retained_element_ranges.get(&retained_id)?;
-        if parent.bounds != bounds
-            || parent.div_self_scene_style.as_ref()? != current_style
-        {
+        let self_scene = parent.div_self_scene.as_ref()?;
+        if parent.bounds != bounds || &self_scene.style != current_style {
             return None;
         }
 
         let parent_start = parent.paint_range.start.scene_index;
         let parent_end = parent.paint_range.end.scene_index;
-        if parent_start > parent_end || parent_end > self.rendered_frame.scene.len() {
-            return None;
-        }
-        if parent.metadata_range.start > parent.metadata_range.end
-            || parent.metadata_range.end > self.rendered_frame.retained_element_order.len()
+        let child_start = self_scene.child_scene_range.start;
+        let child_end = self_scene.child_scene_range.end;
+        if parent_start > child_start
+            || child_start > child_end
+            || child_end > parent_end
+            || parent_end > self.rendered_frame.scene.len()
         {
             return None;
         }
 
-        let parent_depth = retained_id.0.len();
-        let mut child_scene_start: Option<usize> = None;
-        let mut child_scene_end: Option<usize> = None;
-
-        for metadata_index in parent.metadata_range.clone() {
-            let key = &self.rendered_frame.retained_element_order[metadata_index];
-            let candidate: &GlobalElementId = key.borrow();
-            if candidate.0.len() != parent_depth + 1
-                || !retained_path_has_prefix(candidate, &retained_id)
-            {
-                continue;
-            }
-
-            let child = self.rendered_frame.retained_element_ranges.get(candidate)?;
-            let start = child.paint_range.start.scene_index;
-            let end = child.paint_range.end.scene_index;
-            if start > end || start < parent_start || end > parent_end {
-                return None;
-            }
-
-            child_scene_start = Some(child_scene_start.map_or(start, |current| current.min(start)));
-            child_scene_end = Some(child_scene_end.map_or(end, |current| current.max(end)));
-        }
-
-        if let Some((child_scene_start, child_scene_end)) = child_scene_start.zip(child_scene_end) {
-            if child_scene_start > child_scene_end {
-                return None;
-            }
-            Some(RetainedSelfSceneRanges {
-                prefix: parent_start..child_scene_start,
-                suffix: child_scene_end..parent_end,
-            })
-        } else {
-            // A leaf Div owns the entire retained scene range. This lets static cards/backgrounds
-            // avoid regenerating their primitives on an unrelated generic view notification.
-            Some(RetainedSelfSceneRanges {
-                prefix: parent_start..parent_end,
-                suffix: parent_end..parent_end,
-            })
-        }
+        Some(RetainedSelfSceneRanges {
+            prefix: parent_start..child_start,
+            suffix: child_end..parent_end,
+        })
     }
 
     /// Replay a validated previous-frame scene span into the current frame without replaying
@@ -158,13 +123,4 @@ impl Window {
                 || next.focusable_node_id(*focus_id).is_some()
         });
     }
-}
-
-fn retained_path_has_prefix(path: &GlobalElementId, prefix: &GlobalElementId) -> bool {
-    prefix.0.len() <= path.0.len()
-        && prefix
-            .0
-            .iter()
-            .zip(path.0.iter())
-            .all(|(prefix, path)| prefix == path)
 }
