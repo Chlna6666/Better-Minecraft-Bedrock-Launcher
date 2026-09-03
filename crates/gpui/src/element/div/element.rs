@@ -1,7 +1,8 @@
 use crate::{
-    AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId, Hitbox,
-    ImageCacheProvider, InspectorElementId, IntoElement, LayoutId, Overflow, ParentElement, Pixels,
-    Point, Style, StyleRefinement, Styled, Visibility, Window, point,
+    AbsoluteLength, AnyElement, App, BorderStyle, Bounds, BoxShadow, Corners, Display, Edges,
+    Element, ElementId, Fill, GlobalElementId, Hitbox, Hsla, ImageCacheProvider,
+    InspectorElementId, IntoElement, LayoutId, Overflow, ParentElement, Pixels, Point,
+    RetainedDivSelfSceneStyle, Style, StyleRefinement, Styled, Visibility, Window, point,
 };
 use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
@@ -110,6 +111,20 @@ pub struct DivLayout {
     pub(crate) child_layout_ids: SmallVec<[LayoutId; 2]>,
 }
 
+/// Exact visual state for the primitives owned directly by a retained [`Div`].
+///
+/// Child paint context is deliberately excluded: current text and clipping state is rebuilt while
+/// only the parent's shadow/background/border scene spans are replayed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RetainedDivSelfSceneStyle {
+    background: Option<Fill>,
+    border_color: Option<Hsla>,
+    border_style: BorderStyle,
+    border_widths: Edges<AbsoluteLength>,
+    corner_radii: Corners<AbsoluteLength>,
+    box_shadow: Vec<BoxShadow>,
+}
+
 /// Paint-time state for a [`Div`].
 ///
 /// `reconciliation_transparent` means the container contributes no own paint/context work at all.
@@ -120,6 +135,18 @@ pub struct DivPrepaint {
     hitbox: Option<Hitbox>,
     reconciliation_transparent: bool,
     self_scene_replayable: bool,
+    pub(crate) self_scene_style: Option<RetainedDivSelfSceneStyle>,
+}
+
+fn retained_div_self_scene_style(style: &Style) -> RetainedDivSelfSceneStyle {
+    RetainedDivSelfSceneStyle {
+        background: style.background.clone(),
+        border_color: style.border_color,
+        border_style: style.border_style,
+        border_widths: style.border_widths,
+        corner_radii: style.corner_radii,
+        box_shadow: style.box_shadow.clone(),
+    }
 }
 
 fn style_allows_self_scene_replay(style: &Style, window: &Window, cx: &App) -> bool {
@@ -291,6 +318,8 @@ impl Element for Div {
                     && style_allows_self_scene_replay(style, window, cx);
                 let reconciliation_transparent = self_scene_replayable
                     && style_is_reconciliation_transparent(style, window, cx);
+                let self_scene_style = self_scene_replayable
+                    .then(|| retained_div_self_scene_style(style));
 
                 // Generic Div traversal is not a progressive boundary. If this structural loop
                 // merely sets `draw_was_degraded` after the deadline, GPUI still walks every child
@@ -313,6 +342,7 @@ impl Element for Div {
                     hitbox,
                     reconciliation_transparent,
                     self_scene_replayable,
+                    self_scene_style,
                 }
             },
         )
@@ -340,14 +370,15 @@ impl Element for Div {
             }
         };
 
-        // A descendant-only update still has to traverse structural ancestors. Reuse this Div's
-        // previous shadow/background prefix and border suffix, then reconstruct only the inherited
-        // text/clipping context needed by dirty children. No old hitbox/listener state is replayed
-        // here because the boundary is restricted to reconciliation-transparent interactivity.
-        if prepaint.self_scene_replayable
+        // Parent self-scene reuse is safe even on a generic application dirty frame: the exact
+        // background/shadow/border state is compared with the previous retained range, while
+        // children still execute against the current text/clipping context. Frame-bound input
+        // state is never replayed by this path.
+        if let Some(self_scene_style) = prepaint.self_scene_style.as_ref()
             && !debug_below_active
             && !window.debug_visualization(cx).show_layout_bounds
-            && let Some(ranges) = window.retained_self_scene_ranges_for_current(bounds)
+            && let Some(ranges) =
+                window.retained_self_scene_ranges_for_current(bounds, self_scene_style)
         {
             let style = self
                 .interactivity
