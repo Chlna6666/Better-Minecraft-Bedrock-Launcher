@@ -14,6 +14,7 @@ pub(crate) type AnyMouseListener =
 #[derive(Clone)]
 pub(crate) struct MouseListener {
     event_type: TypeId,
+    dispatch_on_unchanged_hit_test: bool,
     listener: Rc<RefCell<Option<AnyMouseListener>>>,
 }
 
@@ -21,12 +22,28 @@ impl MouseListener {
     pub(crate) fn new<Event: MouseEvent>(listener: AnyMouseListener) -> Self {
         Self {
             event_type: TypeId::of::<Event>(),
+            dispatch_on_unchanged_hit_test: true,
             listener: Rc::new(RefCell::new(Some(listener))),
         }
     }
 
-    pub(super) fn handles(&self, event_type: TypeId) -> bool {
-        self.event_type == event_type
+    pub(crate) fn new_hit_test_transition<Event: MouseEvent>(listener: AnyMouseListener) -> Self {
+        Self {
+            event_type: TypeId::of::<Event>(),
+            dispatch_on_unchanged_hit_test: false,
+            listener: Rc::new(RefCell::new(Some(listener))),
+        }
+    }
+
+    pub(super) fn handles(&self, event_type: TypeId, hit_test_unchanged: bool) -> bool {
+        if self.event_type != event_type {
+            return false;
+        }
+        if event_type == TypeId::of::<MouseMoveEvent>() && hit_test_unchanged {
+            self.dispatch_on_unchanged_hit_test
+        } else {
+            true
+        }
     }
 
     pub(super) fn listener_mut(&mut self) -> Option<RefMut<'_, AnyMouseListener>> {
@@ -211,7 +228,9 @@ pub enum HitboxBehavior {
 pub struct TooltipId(pub(super) usize);
 
 impl TooltipId {
-    /// Checks if the tooltip is currently hovered.
+    /// Checks if the tooltip is currently hovered. Except when handling
+    /// `ScrollWheelEvent`, this is typically what you want when determining whether to handle mouse
+    /// events or paint hover styles.
     pub fn is_hovered(&self, window: &Window) -> bool {
         window
             .tooltip_bounds
