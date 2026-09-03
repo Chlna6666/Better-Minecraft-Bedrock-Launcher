@@ -122,6 +122,14 @@ impl AnyElement {
         AnyElement(element)
     }
 
+    pub(crate) fn with_retained_source_location(
+        mut self,
+        source: &'static core::panic::Location<'static>,
+    ) -> Self {
+        self.0.set_retained_source_location(source);
+        self
+    }
+
     /// Attempt to downcast a reference to the boxed element to a specific type.
     pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
         self.0.inner_element().downcast_mut::<T>()
