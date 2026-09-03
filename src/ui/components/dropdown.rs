@@ -1,5 +1,6 @@
-use crate::ui::animation::{ease_out_cubic, request_animation_frame_if};
+use crate::ui::animation::{ease_out_cubic, request_layout_animation_frame_if};
 use crate::ui::theme::colors::ThemeColors;
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
@@ -257,16 +258,17 @@ pub fn render_overlay(
         return div().into_any_element();
     }
 
-    request_animation_frame_if(
-        window,
-        matches!(
-            active.phase,
-            DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
-        ),
+    let overlay_animating = matches!(
+        active.phase,
+        DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
     );
 
     if active.animated_h <= px(1.0) || active.width <= px(1.0) {
-        return div().absolute().inset_0().into_any_element();
+        return div()
+            .absolute()
+            .inset_0()
+            .with_layout_animation_target("dropdown-overlay-layout-animation", overlay_animating)
+            .into_any_element();
     }
 
     let panel_opacity = active.panel_opacity;
@@ -444,6 +446,7 @@ pub fn render_overlay(
             }
         })
         .child(popup)
+        .with_layout_animation_target("dropdown-overlay-layout-animation", overlay_animating)
         .into_any_element()
 }
 
@@ -591,7 +594,7 @@ impl RenderOnce for Dropdown {
             phase,
             DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
         );
-        request_animation_frame_if(window, phase_animating);
+        request_layout_animation_frame_if(window, phase_animating);
 
         if matches!(phase, DropdownPhase::Closing { .. }) && open_k <= 0.001 {
             state.update(cx, |s, _| s.phase = DropdownPhase::Closed);
