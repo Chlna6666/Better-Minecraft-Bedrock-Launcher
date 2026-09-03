@@ -2,7 +2,6 @@ use super::*;
 use crate::{AbsoluteLength, Length, Timer, rgb};
 
 const SURFACE_FLASH_HOLD: Duration = Duration::from_millis(90);
-const ELEMENT_UPDATE_HOLD: Duration = Duration::from_millis(140);
 const MAX_ELEMENT_PAINT_MARKERS: usize = 2048;
 const MAX_VIEW_CACHE_MARKERS: usize = 512;
 
@@ -317,37 +316,31 @@ impl Window {
         }
     }
 
-    /// Schedules one cleanup frame after the newest debug overlay. Cleanup frames deliberately do
-    /// not call [`Window::refresh`]: doing so would set `force_view_cache_refresh` and make this
-    /// diagnostic manufacture the cache misses it is intended to reveal.
+    /// Schedules cleanup only for the surface-flash overlay.
+    ///
+    /// Element-update diagnostics are strictly observational: they are painted only on real
+    /// application frames and never manufacture a synthetic GPUI lifecycle frame just to erase
+    /// their markers. This is important for deferred overlays such as dropdowns/popovers, whose
+    /// retained prepaint/paint state must not be replayed solely because diagnostics are enabled.
     pub(super) fn finish_debug_visualization_frame(&mut self, cx: &mut App) {
         let window_id = self.handle.window_id().as_u64();
         if !cx.has_global::<WindowDebugVisualizationRegistry>() {
             return;
         }
-        let (flash_this_frame, element_update_painted_this_frame, generation) = {
+        let (flash_this_frame, generation) = {
             let registry = cx.global::<WindowDebugVisualizationRegistry>();
             let Some(runtime) = registry.windows.get(&window_id) else {
                 return;
             };
-            (
-                runtime.flash_this_frame,
-                runtime.element_update_painted_this_frame,
-                runtime.overlay_generation,
-            )
+            (runtime.flash_this_frame, runtime.overlay_generation)
         };
-        if !flash_this_frame && !element_update_painted_this_frame {
+        if !flash_this_frame {
             return;
         }
 
-        let hold = if element_update_painted_this_frame {
-            ELEMENT_UPDATE_HOLD.max(SURFACE_FLASH_HOLD)
-        } else {
-            SURFACE_FLASH_HOLD
-        };
         let handle = self.handle;
         cx.spawn(async move |cx| {
-            Timer::after(hold).await;
+            Timer::after(SURFACE_FLASH_HOLD).await;
             let _ = cx.update(|cx| {
                 if !cx.has_global::<WindowDebugVisualizationRegistry>() {
                     return;
@@ -359,8 +352,7 @@ impl Window {
                         return;
                     };
                     if runtime.overlay_generation == generation
-                        && (runtime.options.flash_surface_updates
-                            || runtime.options.show_element_updates)
+                        && runtime.options.flash_surface_updates
                     {
                         runtime.cleanup_pending = true;
                         should_schedule = true;
@@ -369,9 +361,9 @@ impl Window {
 
                 if should_schedule {
                     let _ = ignore_window_not_found(handle.update(cx, |_root, window, _cx| {
-                        // Diagnostic cleanup changes only the window-owned overlay. Treat it as a
-                        // retained replay frame so a pending hover/pressed invalidation can merge
-                        // without losing its element-level dirty paths.
+                        // Surface-flash cleanup changes only the window-owned overlay. Treat it as
+                        // a retained replay frame so pending application invalidations keep their
+                        // own dirty classification.
                         window.invalidator.set_replay_only_dirty();
                         window.schedule_dirty_frame();
                     }));
