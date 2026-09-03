@@ -87,12 +87,14 @@ impl<C: RenderOnce> Element for Component<C> {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Component is a lifecycle wrapper only; the rendered child owns every scene primitive.
+        window.record_debug_element_traversal_only(bounds, cx);
         window.with_global_id(ElementId::Name(type_name::<C>().into()), |_, window| {
             element.paint(window, cx);
         })
@@ -234,12 +236,14 @@ impl Element for AnyElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // This wrapper only forwards into the erased drawable.
+        window.record_debug_element_traversal_only(bounds, cx);
         self.paint(window, cx);
     }
 }
