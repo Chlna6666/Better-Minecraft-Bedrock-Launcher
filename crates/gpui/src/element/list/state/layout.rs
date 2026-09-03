@@ -1,4 +1,6 @@
-use crate::{App, AvailableSpace, Bounds, ContentMask, Edges, Pixels, Point, Window, px, size};
+use crate::{
+    App, AvailableSpace, Bounds, ContentMask, Edges, ElementId, Pixels, Point, Window, px, size,
+};
 use sum_tree::{Bias, SumTree};
 
 use super::{ListItem, StateInner};
@@ -7,6 +9,19 @@ use crate::element::list::{
     layout::{ItemLayout, LayoutItemsResponse},
     tree::Count,
 };
+
+const RETAINED_LIST_ITEM_KEY: &str = "__gpui_retained_list_item";
+
+fn with_item_retained_key<R>(
+    window: &mut Window,
+    item_index: usize,
+    f: impl FnOnce(&mut Window) -> R,
+) -> R {
+    window.with_retained_child_key(
+        ElementId::named_usize(RETAINED_LIST_ITEM_KEY, item_index),
+        f,
+    )
+}
 
 impl StateInner {
     fn layout_all_items(
@@ -40,8 +55,10 @@ impl StateInner {
         for (ix, item) in cursor.enumerate() {
             let size = item.size().unwrap_or_else(|| {
                 measured_item_count += 1;
-                let mut element = render_item(ix, window, cx);
-                element.layout_as_root(available_item_space, window, cx)
+                with_item_retained_key(window, ix, |window| {
+                    let mut element = render_item(ix, window, cx);
+                    element.layout_as_root(available_item_space, window, cx)
+                })
             });
 
             measured_items.push(ListItem::Measured {
@@ -83,7 +100,7 @@ impl StateInner {
 
         let mut cursor = old_items.cursor::<Count>(());
 
-        // Render items after the scroll top, including those in the trailing overdraw
+        // Render items after the scroll top, including those in the trailing overdraw.
         cursor.seek(&Count(scroll_top.item_ix), Bias::Right);
         for (ix, item) in cursor.by_ref().enumerate() {
             let visible_height = rendered_height - scroll_top.offset_in_item;
@@ -91,16 +108,20 @@ impl StateInner {
                 break;
             }
 
-            // Use the previously cached height and focus handle if available
-            let mut size = item.size();
+            let mut item_size = item.size();
 
-            // If we're within the visible area or the height wasn't cached, render and measure the item's element
-            if visible_height < available_height || size.is_none() {
+            // Bind retained identity to the logical item index, not to materialization order. This
+            // prevents measurement-only overdraw items or later `push_front` work from shifting the
+            // identity of visible rows.
+            if visible_height < available_height || item_size.is_none() {
                 let item_index = scroll_top.item_ix + ix;
-                let mut element = render_item(item_index, window, cx);
-                measured_item_count += 1;
-                let element_size = element.layout_as_root(available_item_space, window, cx);
-                size = Some(element_size);
+                let (element, element_size) = with_item_retained_key(window, item_index, |window| {
+                    let mut element = render_item(item_index, window, cx);
+                    measured_item_count += 1;
+                    let element_size = element.layout_as_root(available_item_space, window, cx);
+                    (element, element_size)
+                });
+                item_size = Some(element_size);
                 if visible_height < available_height {
                     item_layouts.push_back(ItemLayout {
                         index: item_index,
@@ -113,29 +134,34 @@ impl StateInner {
                 }
             }
 
-            let size = size.unwrap();
-            rendered_height += size.height;
-            max_item_width = max_item_width.max(size.width);
+            let item_size = item_size.unwrap();
+            rendered_height += item_size.height;
+            max_item_width = max_item_width.max(item_size.width);
             measured_items.push_back(ListItem::Measured {
-                size,
+                size: item_size,
                 focus_handle: item.focus_handle(),
             });
         }
         rendered_height += padding.bottom;
 
-        // Prepare to start walking upward from the item at the scroll top.
         cursor.seek(&Count(scroll_top.item_ix), Bias::Right);
 
-        // If the rendered items do not fill the visible region, then adjust
-        // the scroll top upward.
+        // If the rendered items do not fill the visible region, fill upward. These elements are
+        // created after the forward pass but inserted at the front, so positional retained slots
+        // are fundamentally invalid here; item-index keys keep their identity deterministic.
         if rendered_height - scroll_top.offset_in_item < available_height {
             while rendered_height < available_height {
                 cursor.prev();
                 if let Some(item) = cursor.item() {
                     let item_index = cursor.start().0;
-                    let mut element = render_item(item_index, window, cx);
-                    measured_item_count += 1;
-                    let element_size = element.layout_as_root(available_item_space, window, cx);
+                    let (element, element_size) =
+                        with_item_retained_key(window, item_index, |window| {
+                            let mut element = render_item(item_index, window, cx);
+                            measured_item_count += 1;
+                            let element_size =
+                                element.layout_as_root(available_item_space, window, cx);
+                            (element, element_size)
+                        });
                     let focus_handle = item.focus_handle();
                     rendered_height += element_size.height;
                     measured_items.push_front(ListItem::Measured {
@@ -175,22 +201,24 @@ impl StateInner {
             };
         }
 
-        // Measure items in the leading overdraw
         let mut leading_overdraw = scroll_top.offset_in_item;
         while leading_overdraw < self.overdraw {
             cursor.prev();
             if let Some(item) = cursor.item() {
-                let size = if let ListItem::Measured { size, .. } = item {
+                let item_index = cursor.start().0;
+                let item_size = if let ListItem::Measured { size, .. } = item {
                     *size
                 } else {
-                    let mut element = render_item(cursor.start().0, window, cx);
-                    measured_item_count += 1;
-                    element.layout_as_root(available_item_space, window, cx)
+                    with_item_retained_key(window, item_index, |window| {
+                        let mut element = render_item(item_index, window, cx);
+                        measured_item_count += 1;
+                        element.layout_as_root(available_item_space, window, cx)
+                    })
                 };
 
-                leading_overdraw += size.height;
+                leading_overdraw += item_size.height;
                 measured_items.push_front(ListItem::Measured {
-                    size,
+                    size: item_size,
                     focus_handle: item.focus_handle(),
                 });
             } else {
@@ -207,9 +235,6 @@ impl StateInner {
         self.items = new_items;
         self.measured_items_scratch = measured_items;
 
-        // If none of the visible items are focused, check if an off-screen item is focused
-        // and include it to be rendered after the visible items so keyboard interaction continues
-        // to work for it.
         if !rendered_focused_item {
             let mut cursor = self
                 .items
@@ -218,13 +243,17 @@ impl StateInner {
             while let Some(item) = cursor.item() {
                 if item.contains_focused(window, cx) {
                     let item_index = cursor.start().0;
-                    let mut element = render_item(cursor.start().0, window, cx);
-                    measured_item_count += 1;
-                    let size = element.layout_as_root(available_item_space, window, cx);
+                    let (element, item_size) =
+                        with_item_retained_key(window, item_index, |window| {
+                            let mut element = render_item(item_index, window, cx);
+                            measured_item_count += 1;
+                            let item_size = element.layout_as_root(available_item_space, window, cx);
+                            (element, item_size)
+                        });
                     item_layouts.push_back(ItemLayout {
                         index: item_index,
                         element,
-                        size,
+                        size: item_size,
                     });
                     break;
                 }
@@ -267,10 +296,8 @@ impl StateInner {
             );
             let mut measured_item_count = 0;
 
-            // Avoid honoring autoscroll requests from elements other than our children.
             window.take_autoscroll();
 
-            // Only paint the visible items, if there is actually any space for them (taking padding into account)
             if bounds.size.height > padding.top + padding.bottom {
                 let mut item_origin = bounds.origin + Point::new(px(0.), padding.top);
                 item_origin.y -= layout_response.scroll_top.offset_in_item;
@@ -281,7 +308,9 @@ impl StateInner {
                             ..Default::default()
                         }),
                         |window| {
-                            item.element.prepaint_at(item_origin, window, cx);
+                            with_item_retained_key(window, item.index, |window| {
+                                item.element.prepaint_at(item_origin, window, cx);
+                            });
                         },
                     );
 
@@ -298,25 +327,27 @@ impl StateInner {
                             let mut cursor = self.items.cursor::<Count>(());
                             cursor.seek(&Count(item.index), Bias::Right);
                             let mut height = bounds.size.height - padding.top - padding.bottom;
-
-                            // Account for the height of the element down until the autoscroll bottom.
                             height -= autoscroll_bounds.bottom() - item_origin.y;
 
-                            // Keep decreasing the scroll top until we fill all the available space.
                             while height > Pixels::ZERO {
                                 cursor.prev();
                                 let Some(item) = cursor.item() else {
                                     break;
                                 };
 
-                                let size = item.size().unwrap_or_else(|| {
-                                    let mut item = render_item(cursor.start().0, window, cx);
-                                    let item_available_size =
-                                        size(bounds.size.width.into(), AvailableSpace::MinContent);
-                                    measured_item_count += 1;
-                                    item.layout_as_root(item_available_size, window, cx)
+                                let item_index = cursor.start().0;
+                                let item_size = item.size().unwrap_or_else(|| {
+                                    with_item_retained_key(window, item_index, |window| {
+                                        let mut item = render_item(item_index, window, cx);
+                                        let available = size(
+                                            bounds.size.width.into(),
+                                            AvailableSpace::MinContent,
+                                        );
+                                        measured_item_count += 1;
+                                        item.layout_as_root(available, window, cx)
+                                    })
                                 });
-                                height -= size.height;
+                                height -= item_size.height;
                             }
 
                             window.record_list_measured_items(measured_item_count);
