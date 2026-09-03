@@ -1,6 +1,6 @@
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element, GlobalElementId,
-    HitboxBehavior, InspectorElementId, IntoElement, Overflow, Pixels, ScrollDelta,
+    AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element, ElementId,
+    GlobalElementId, HitboxBehavior, InspectorElementId, IntoElement, Overflow, Pixels, ScrollDelta,
     ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
 use refineable::Refineable as _;
@@ -11,6 +11,8 @@ use super::{
     layout::ListPrepaintLayout,
     state::{ListItem, ListState},
 };
+
+const RETAINED_LIST_ITEM_KEY: &str = "__gpui_retained_list_item";
 
 /// Construct a new list element
 pub fn list(
@@ -71,8 +73,6 @@ impl Element for List {
                     let available_height = if let Some(last_bounds) = state.last_layout_bounds {
                         last_bounds.size.height
                     } else {
-                        // If we don't have the last layout bounds (first render),
-                        // we might just use the overdraw value as the available height to layout enough items.
                         state.overdraw
                     };
                     let padding = style.padding.to_pixels(
@@ -145,7 +145,6 @@ impl Element for List {
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
-        // If the width of the list has changed, invalidate all cached item heights
         if state
             .last_layout_bounds
             .is_none_or(|last_bounds| last_bounds.size.width != bounds.size.width)
@@ -156,30 +155,32 @@ impl Element for List {
                 }),
                 (),
             );
-
             state.items = new_items;
         }
 
         let padding = style
             .padding
             .to_pixels(bounds.size.into(), window.rem_size());
-        let layout = match window.with_retained_child_scope(|window| {
-            state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx)
-        }) {
+        let layout = match state.prepaint_items(
+            bounds,
+            padding,
+            true,
+            &mut self.render_item,
+            window,
+            cx,
+        ) {
             Ok(layout) => layout,
             Err(autoscroll_request) => {
                 state.logical_scroll_top = Some(autoscroll_request);
-                window
-                    .with_retained_child_scope(|window| {
-                        state.prepaint_items(
-                            bounds,
-                            padding,
-                            false,
-                            &mut self.render_item,
-                            window,
-                            cx,
-                        )
-                    })
+                state
+                    .prepaint_items(
+                        bounds,
+                        padding,
+                        false,
+                        &mut self.render_item,
+                        window,
+                        cx,
+                    )
                     .unwrap()
             }
         };
@@ -207,7 +208,10 @@ impl Element for List {
             }),
             |window| {
                 for item in &mut prepaint.layout.item_layouts {
-                    item.element.paint(window, cx);
+                    window.with_retained_child_key(
+                        ElementId::named_usize(RETAINED_LIST_ITEM_KEY, item.index),
+                        |window| item.element.paint(window, cx),
+                    );
                 }
             },
         );
