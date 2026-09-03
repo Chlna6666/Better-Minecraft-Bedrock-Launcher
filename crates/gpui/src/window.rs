@@ -109,6 +109,7 @@ mod titlebar;
 pub use content_mask::ContentMask;
 pub use debug_visualization::WindowDebugVisualization;
 use dispatch::{log_timed_gpui_event, platform_input_name};
+pub(crate) use element_context::RetainedElementIdentity;
 pub use element_id::ElementId;
 pub(crate) use focus::{AnyWindowFocusListener, ELEMENT_ARENA, FocusMap, WindowFocusEvent};
 pub use focus::{
