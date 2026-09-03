@@ -84,14 +84,15 @@ impl Window {
         }
     }
 
-    /// Requests another draw without forcing every [`AnyView`] cache entry to miss.
+    /// Requests another draw for a window-owned overlay without invalidating application views.
     ///
-    /// This is intended for window-owned overlays such as tooltips and drag previews whose state
-    /// lives outside the normal entity render tree.
+    /// The root element tree may be traversed to assemble the frame, but unchanged retained
+    /// subtrees remain replayable. This is used for tooltips and drag previews, whose lifecycle is
+    /// owned by the window rather than by an entity notification.
     pub(crate) fn redraw_without_view_cache_refresh(&mut self) {
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
-        self.invalidator.set_dirty(true);
+        self.invalidator.set_replay_only_dirty();
         self.schedule_dirty_frame();
     }
 }
@@ -101,7 +102,8 @@ struct WindowInvalidatorInner {
     pub draw_phase: DrawPhase,
     pub dirty_views: FxHashSet<EntityId>,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
-    /// True only while all invalidations queued for the next frame are element-local interactions.
+    /// True only while all invalidations queued for the next frame are element-local interactions
+    /// or replay-only window overlays.
     pub pending_interaction_only: bool,
     /// Stable dirty paths and whether each path invalidates all of its descendants.
     pub pending_interactive_elements: FxHashMap<GlobalElementId, bool>,
@@ -201,6 +203,8 @@ impl WindowInvalidator {
         self.inner.borrow().dirty
     }
 
+    /// Marks a generic frame dirty. This is a conservative invalidation and disables element-level
+    /// replay because the caller has not supplied a retained target.
     pub fn set_dirty(&self, is_dirty: bool) {
         let mut inner = self.inner.borrow_mut();
         if is_dirty {
@@ -216,6 +220,26 @@ impl WindowInvalidator {
             inner.pending_interaction_only = false;
         }
         inner.dirty = is_dirty;
+    }
+
+    /// Schedules a frame whose only window-level change is outside the retained application tree.
+    ///
+    /// An empty interaction set means every stable retained element is eligible for replay. If an
+    /// interaction is queued before this frame starts, its target is merged into the same replay
+    /// frame. A pre-existing generic dirty request is never upgraded to replay-only because that
+    /// would risk reusing stale application content.
+    pub(in crate::window) fn set_replay_only_dirty(&self) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.draw_phase != DrawPhase::None {
+            inner.dirty = true;
+            return;
+        }
+
+        if !inner.dirty {
+            inner.pending_interaction_only = true;
+            inner.pending_interactive_elements.clear();
+        }
+        inner.dirty = true;
     }
 
     pub(in crate::window) fn active_interaction_only(&self) -> bool {
@@ -335,6 +359,18 @@ mod interaction_dirty_scope_tests {
         assert!(interaction_path_requires_repaint(&dirty, &dirty, true));
         assert!(interaction_path_requires_repaint(&descendant, &dirty, true));
         assert!(!interaction_path_requires_repaint(&sibling, &dirty, true));
+    }
+
+    #[test]
+    fn replay_only_dirty_keeps_all_retained_paths_replayable() {
+        let invalidator = WindowInvalidator::new();
+        invalidator.set_dirty(false);
+        invalidator.set_replay_only_dirty();
+        invalidator.set_dirty(false);
+
+        assert!(invalidator.active_interaction_only());
+        assert!(!invalidator.interactive_path_is_dirty(&path(&[0])));
+        assert!(!invalidator.interactive_path_is_dirty(&path(&[0, 1, 2])));
     }
 }
 

@@ -323,9 +323,10 @@ impl Window {
 
                 if should_schedule {
                     let _ = ignore_window_not_found(handle.update(cx, |_root, window, _cx| {
-                        // Schedule a diagnostic cleanup frame without invalidating retained view
-                        // caches. `Window::refresh()` would force every cached AnyView to miss.
-                        window.invalidator.set_dirty(true);
+                        // Diagnostic cleanup changes only the window-owned overlay. Treat it as a
+                        // retained replay frame so a pending hover/pressed invalidation can merge
+                        // without losing its element-level dirty paths.
+                        window.invalidator.set_replay_only_dirty();
                         window.schedule_dirty_frame();
                     }));
                 }
