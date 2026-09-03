@@ -23,9 +23,8 @@ pub trait ParentElement {
         let retained_source = core::panic::Location::caller();
         self.extend(std::iter::once(
             child
-                .into_element()
-                .into_any()
-                .with_retained_source_location(retained_source),
+                .into_any_element()
+                .with_retained_mount(retained_source, 0),
         ));
         self
     }
@@ -37,11 +36,11 @@ pub trait ParentElement {
         Self: Sized,
     {
         let retained_source = core::panic::Location::caller();
-        self.extend(children.into_iter().map(|child| {
-            child
-                .into_element()
-                .into_any()
-                .with_retained_source_location(retained_source)
+        self.extend(children.into_iter().enumerate().map(|(index, child)| {
+            child.into_any_element().with_retained_mount(
+                retained_source,
+                index.min(u32::MAX as usize) as u32,
+            )
         }));
         self
     }
@@ -58,9 +57,8 @@ pub trait ParentElement {
             let retained_source = core::panic::Location::caller();
             self.extend(std::iter::once(
                 build_child()
-                    .into_element()
-                    .into_any()
-                    .with_retained_source_location(retained_source),
+                    .into_any_element()
+                    .with_retained_mount(retained_source, 0),
             ));
         }
         self
@@ -78,20 +76,23 @@ pub trait ParentElement {
             let retained_source = core::panic::Location::caller();
             self.extend(std::iter::once(
                 build_child(value)
-                    .into_element()
-                    .into_any()
-                    .with_retained_source_location(retained_source),
+                    .into_any_element()
+                    .with_retained_mount(retained_source, 0),
             ));
         }
         self
     }
 
     /// Add children from a fixed-size array.
+    #[track_caller]
     fn children_array<const N: usize>(mut self, children: [AnyElement; N]) -> Self
     where
         Self: Sized,
     {
-        self.extend(children);
+        let retained_source = core::panic::Location::caller();
+        self.extend(children.into_iter().enumerate().map(|(index, child)| {
+            child.with_retained_mount(retained_source, index.min(u32::MAX as usize) as u32)
+        }));
         self
     }
 }
