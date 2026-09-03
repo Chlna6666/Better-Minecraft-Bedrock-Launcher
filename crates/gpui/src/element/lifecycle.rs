@@ -194,9 +194,13 @@ impl<E: Element> Drawable<E> {
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
 
-                let retained = window.with_retained_element_segment(&retained_segment, |window| {
-                    window.reusable_retained_element(&retained_id, bounds, identity_stable)
-                });
+                let retained = identity_stable
+                    .then(|| {
+                        window.with_retained_element_segment(&retained_segment, |window| {
+                            window.reusable_retained_element(&retained_id, bounds)
+                        })
+                    })
+                    .flatten();
                 if let Some(retained) = retained {
                     let source_prepaint_range = retained.prepaint_range.clone();
                     let prepaint_start = window.prepaint_index();
@@ -290,14 +294,15 @@ impl<E: Element> Drawable<E> {
                 });
                 let paint_end = window.paint_index();
 
-                window.record_retained_element_range(
-                    retained_id,
-                    bounds,
-                    prepaint_range,
-                    paint_start..paint_end,
-                    metadata_start,
-                    retained_identity_is_stable(&retained_identity_ambiguity),
-                );
+                if retained_identity_is_stable(&retained_identity_ambiguity) {
+                    window.record_retained_element_range(
+                        retained_id,
+                        bounds,
+                        prepaint_range,
+                        paint_start..paint_end,
+                        metadata_start,
+                    );
+                }
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
