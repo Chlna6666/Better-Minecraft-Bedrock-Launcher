@@ -1,18 +1,27 @@
 use super::*;
+use std::{
+    cell::{RefCell, RefMut},
+    rc::Rc,
+};
 
 pub(crate) type AnyMouseListener =
     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
 
+/// Mouse listener storage shared only when a retained frame replays the listener into the next
+/// frame. Keeping the callback alive in the currently presented frame is essential: a progressive
+/// draw may later be abandoned, and destructive `take()` semantics would otherwise leave the old
+/// visible frame with a hitbox but no callback.
+#[derive(Clone)]
 pub(crate) struct MouseListener {
     event_type: TypeId,
-    listener: Option<AnyMouseListener>,
+    listener: Rc<RefCell<Option<AnyMouseListener>>>,
 }
 
 impl MouseListener {
     pub(crate) fn new<Event: MouseEvent>(listener: AnyMouseListener) -> Self {
         Self {
             event_type: TypeId::of::<Event>(),
-            listener: Some(listener),
+            listener: Rc::new(RefCell::new(Some(listener))),
         }
     }
 
@@ -20,15 +29,16 @@ impl MouseListener {
         self.event_type == event_type
     }
 
-    pub(super) fn listener_mut(&mut self) -> Option<&mut AnyMouseListener> {
-        self.listener.as_mut()
+    pub(super) fn listener_mut(&mut self) -> Option<RefMut<'_, AnyMouseListener>> {
+        RefMut::filter_map(self.listener.borrow_mut(), |listener| listener.as_mut()).ok()
     }
 
+    /// Replay this listener into the next frame without consuming the callback owned by the
+    /// currently presented frame. The two frame records coexist only while a draw is being built;
+    /// after a successful swap the old record is cleared, while a degraded draw simply drops the
+    /// speculative clone and leaves input on the visible frame intact.
     pub(super) fn take(&mut self) -> Self {
-        Self {
-            event_type: self.event_type,
-            listener: self.listener.take(),
-        }
+        self.clone()
     }
 }
 
@@ -51,11 +61,11 @@ pub enum WindowControlArea {
     Client,
     /// An area that allows dragging of the platform window.
     Drag,
-    /// An area that allows closing of the platform window.
+    /// An area that allows closing the platform window.
     Close,
-    /// An area that allows maximizing of the platform window.
+    /// An area that allows maximizing the platform window.
     Max,
-    /// An area that allows minimizing of the platform window.
+    /// An area that allows minimizing the platform window.
     Min,
 }
 
@@ -80,7 +90,7 @@ impl HitboxId {
     }
 
     /// Checks if the hitbox with this ID contains the mouse and should handle scroll events.
-    /// Typically this should only be used when handling `ScrollWheelEvent`, and otherwise
+    /// Typically this should be used when handling `ScrollWheelEvent`, and otherwise
     /// `is_hovered` should be used. See the documentation of `Hitbox::is_hovered` for details about
     /// this distinction.
     pub fn should_handle_scroll(self, window: &Window) -> bool {
@@ -161,7 +171,7 @@ pub enum HitboxBehavior {
     /// ```
     ///
     /// This has effects beyond event handling - any use of hitbox checking, such as hover
-    /// styles and tooltops. These other behaviors are the main point of this mechanism. An
+    /// styles and tooltips. These other behaviors are the main point of this mechanism. An
     /// alternative might be to not affect mouse event handling - but this would allow
     /// inconsistent UI where clicks and moves interact with elements that are not considered to
     /// be hovered.
@@ -189,7 +199,7 @@ pub enum HitboxBehavior {
     /// desired, then a `cx.stop_propagation()` handler like the one above can be used.
     ///
     /// This has effects beyond event handling - this affects any use of `is_hovered`, such as
-    /// hover styles and tooltops. These other behaviors are the main point of this mechanism.
+    /// hover styles and tooltips. These other behaviors are the main point of this mechanism.
     /// An alternative might be to not affect mouse event handling - but this would allow
     /// inconsistent UI where clicks and moves interact with elements that are not considered to
     /// be hovered.
