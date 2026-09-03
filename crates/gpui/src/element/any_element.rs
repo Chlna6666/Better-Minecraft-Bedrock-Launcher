@@ -128,7 +128,17 @@ impl AnyElement {
         mut self,
         source: &'static core::panic::Location<'static>,
     ) -> Self {
-        self.0.set_retained_source_location(source);
+        self.0.set_retained_source_location(source, None);
+        self
+    }
+
+    pub(crate) fn with_retained_mount(
+        mut self,
+        source: &'static core::panic::Location<'static>,
+        ordinal: u32,
+    ) -> Self {
+        self.0
+            .set_retained_source_location(source, Some(ordinal));
         self
     }
 
