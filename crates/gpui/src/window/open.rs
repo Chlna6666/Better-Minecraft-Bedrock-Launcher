@@ -253,7 +253,7 @@ impl Window {
                     WindowTabRegistry::merge_all_windows(cx, handle.window_id());
                 }));
             })
-        }));
+        });
         platform_window.on_select_next_tab({
             let mut cx = cx.to_async();
             Box::new(move || {
@@ -261,7 +261,7 @@ impl Window {
                     WindowTabRegistry::select_next_tab(cx, handle.window_id());
                 }));
             })
-        }));
+        });
         platform_window.on_select_previous_tab({
             let mut cx = cx.to_async();
             Box::new(move || {
@@ -269,7 +269,7 @@ impl Window {
                     WindowTabRegistry::select_previous_tab(cx, handle.window_id())
                 }));
             })
-        }));
+        });
         platform_window.on_toggle_tab_bar({
             let mut cx = cx.to_async();
             Box::new(move || {
