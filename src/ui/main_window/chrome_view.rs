@@ -161,6 +161,6 @@ impl Render for AppChromeView {
         let route = crate::ui::navigation::current_route_target(cx);
         let update_modal_open = cx.global::<UpdateState>().show_modal;
         chrome::render_app_chrome(state, route, update_modal_open)
-            .with_layout_animation_target("app-chrome-layout-animation", animating)
+            .with_layout_animation_target(animating)
     }
 }
