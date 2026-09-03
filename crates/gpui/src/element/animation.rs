@@ -251,21 +251,23 @@ pub trait AnimationExt {
         }
     }
 
-    /// Attach a stable retained invalidation target to a caller-sampled layout animation.
+    /// Attach an automatically identified retained invalidation target to a caller-sampled layout animation.
     ///
     /// The owning view is still rerendered on every sample so callers may recompute arbitrary
     /// layout/style values. Only this retained subtree is marked dirty, allowing unrelated siblings
     /// to replay their previous prepaint/paint ranges instead of repainting with the entire view.
+    /// The target identity comes from the parent mount path, this wrapper's call site, and its type;
+    /// application code does not need to invent a rendering-only element ID.
+    #[track_caller]
     fn with_layout_animation_target(
         self,
-        id: impl Into<ElementId>,
         animating: bool,
     ) -> LayoutAnimationTargetElement<Self>
     where
         Self: Sized,
     {
         LayoutAnimationTargetElement {
-            id: id.into(),
+            source: core::panic::Location::caller(),
             element: Some(self),
             animating,
         }
@@ -276,7 +278,7 @@ impl<E: IntoElement + 'static> AnimationExt for E {}
 
 /// A retained boundary for manually sampled layout animations.
 pub struct LayoutAnimationTargetElement<E> {
-    id: ElementId,
+    source: &'static core::panic::Location<'static>,
     element: Option<E>,
     animating: bool,
 }
@@ -294,11 +296,11 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
+        None
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
+        Some(self.source)
     }
 
     fn request_layout(
