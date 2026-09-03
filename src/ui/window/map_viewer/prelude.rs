@@ -62,10 +62,7 @@ pub(super) use crate::core::minecraft::map_info_cache::{
     load_cached_map_info_tiles_blocking, load_map_info_tiles_blocking,
 };
 pub(super) use crate::tasks::task_manager::{self, TaskSnapshot};
-pub(super) use crate::ui::animation::{
-    request_layout_animation_frame_if,
-    request_layout_animation_frame_if as request_animation_frame_if,
-};
+pub(super) use crate::ui::animation::request_layout_animation_frame_if;
 pub(super) use crate::ui::components::code_editor::{
     CodeEditor, CodeEditorEvent, CodeEditorLanguage, CodeEditorState,
 };
