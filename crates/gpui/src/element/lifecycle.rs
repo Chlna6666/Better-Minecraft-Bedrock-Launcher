@@ -1,6 +1,7 @@
 use crate::{
     App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId, PaintIndex,
     Pixels, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
+    WrappedLineLayout,
 };
 use crate::window::debug_visualization::ViewCacheDebugStatus;
 use derive_more::{Deref, DerefMut};
@@ -12,6 +13,7 @@ use std::{
     mem,
     ops::Range,
     rc::Rc,
+    sync::Arc,
 };
 
 use super::{DivPrepaint, Element};
@@ -34,14 +36,29 @@ impl Display for GlobalElementId {
 
 /// Exact output identity for side-effect-free plain text elements on a generic dirty frame.
 ///
-/// The wrapped text is part of the key so equal outer bounds are not enough to reuse a previous
-/// scene when a different available width would have produced different soft-wrap boundaries.
-#[derive(Clone, Debug, PartialEq)]
+/// The shaped/wrapped line layout Arcs come directly from the text-system cache. Pointer equality
+/// therefore proves that the previous scene references the exact same glyph geometry and wrap
+/// boundaries; a cache miss conservatively causes repaint rather than relying on a hash collision.
+#[derive(Clone, Debug)]
 pub(crate) struct RetainedPlainTextKey {
     pub(crate) text: SharedString,
     pub(crate) text_style: TextStyle,
     pub(crate) rem_size: Pixels,
-    pub(crate) wrapped_text: String,
+    pub(crate) line_layouts: SmallVec<[Arc<WrappedLineLayout>; 1]>,
+}
+
+impl PartialEq for RetainedPlainTextKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+            && self.text_style == other.text_style
+            && self.rem_size == other.rem_size
+            && self.line_layouts.len() == other.line_layouts.len()
+            && self
+                .line_layouts
+                .iter()
+                .zip(&other.line_layouts)
+                .all(|(left, right)| Arc::ptr_eq(left, right))
+    }
 }
 
 pub(super) trait ElementObject {
@@ -137,7 +154,7 @@ fn retained_plain_text_key<E: Element>(
         text,
         text_style: window.text_style(),
         rem_size: window.rem_size(),
-        wrapped_text: text_layout.wrapped_text(),
+        line_layouts: text_layout.retained_line_layouts(),
     })
 }
 
@@ -229,8 +246,10 @@ impl<E: Element> Drawable<E> {
                 let bounds = window.layout_bounds(layout_id);
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
-                let plain_text_key =
-                    retained_plain_text_key(&self.element, &request_layout, window);
+                let targeted_replay = window.retained_replay_is_targeted();
+                let mut plain_text_key = (!targeted_replay || !identity_stable)
+                    .then(|| retained_plain_text_key(&self.element, &request_layout, window))
+                    .flatten();
                 let may_reconcile = identity_stable || plain_text_key.is_some();
 
                 let retained = may_reconcile
@@ -258,6 +277,10 @@ impl<E: Element> Drawable<E> {
                         };
                         return;
                     }
+                }
+
+                if plain_text_key.is_none() {
+                    plain_text_key = retained_plain_text_key(&self.element, &request_layout, window);
                 }
 
                 if let Some(element_id) = self.element.id() {
