@@ -12,15 +12,6 @@ pub(crate) struct RetainedSelfSceneRanges {
 }
 
 impl Window {
-    /// Returns the retained rendering identity currently being built.
-    ///
-    /// This is deliberately separate from the state-bearing `GlobalElementId`: anonymous elements
-    /// acquire synthetic positional segments only in the retained identity stack. Interaction,
-    /// focus and animation invalidation all use this same retained path.
-    pub(crate) fn current_instance_path(&self) -> Option<GlobalElementId> {
-        self.current_retained_element_id()
-    }
-
     /// Execute lazy child construction with a fresh parent-local retained slot namespace.
     ///
     /// Normal elements allocate all children during `request_layout`, while virtualized elements
