@@ -280,7 +280,17 @@ impl Window {
         let mut dirty_region = DirtyRegion::empty();
 
         let scene_requires_full_redraw = self.next_frame.scene.requires_full_redraw_fallback();
-        let requires_full_redraw = force_full_redraw || scene_requires_full_redraw;
+        // Backdrop-filter output depends on pixels rendered before it. When a blur primitive is
+        // added or removed (modal open/close is the common case), there is no current primitive on
+        // one side of the transition whose spatial damage can represent all stale filtered pixels
+        // from the other side. Pay for one full surface redraw on this low-frequency topology
+        // transition; once the blur set is stable, ordinary source/hover damage remains spatial.
+        let backdrop_blur_topology_changed = self.next_frame.scene.backdrop_blurs.len()
+            != self.rendered_frame.scene.backdrop_blurs.len()
+            || self.next_frame.scene.has_backdrop_blurs()
+                != self.rendered_frame.scene.has_backdrop_blurs();
+        let requires_full_redraw =
+            force_full_redraw || scene_requires_full_redraw || backdrop_blur_topology_changed;
 
         if requires_full_redraw {
             if scene_requires_full_redraw {
