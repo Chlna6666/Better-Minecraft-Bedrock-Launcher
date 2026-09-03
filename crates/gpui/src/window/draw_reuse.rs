@@ -420,16 +420,16 @@ impl Window {
         true
     }
 
-    /// Returns a previously retained element range that is safe to replay in the current
-    /// interaction-only frame.
-    pub(crate) fn reusable_interaction_element(
+    /// Returns a previously retained element range that is safe to replay in the current targeted
+    /// retained frame.
+    pub(crate) fn reusable_retained_element(
         &self,
         retained_id: &GlobalElementId,
         bounds: Bounds<Pixels>,
     ) -> Option<RetainedElementRange> {
         if self.force_view_cache_refresh()
-            || !self.invalidator.active_interaction_only()
-            || self.invalidator.interactive_path_is_dirty(retained_id)
+            || !self.invalidator.active_targeted_replay()
+            || self.invalidator.retained_path_is_dirty(retained_id)
         {
             return None;
         }
