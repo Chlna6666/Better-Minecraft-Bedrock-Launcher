@@ -1,5 +1,6 @@
-use crate::ui::animation::{ease_out_cubic, raw_progress, request_animation_frame_if};
+use crate::ui::animation::{ease_out_cubic, raw_progress};
 use crate::ui::theme::colors::ThemeColors;
+use gpui::AnimationExt as _;
 use gpui::*;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -108,10 +109,10 @@ impl ToggleSwitchView {
 }
 
 impl Render for ToggleSwitchView {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let (progress, animating) = self.animation_progress(Instant::now());
-        request_animation_frame_if(window, animating);
         self.render_track(progress)
+            .with_layout_animation_target("toggle-switch-layout-animation", animating)
     }
 }
 
