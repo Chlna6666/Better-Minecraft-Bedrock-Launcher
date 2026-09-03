@@ -180,7 +180,6 @@ impl RenderOnce for AnimatedSegmentTabs {
         let segment_width = 1.0 / item_count as f32;
         let item_width = self.item_width;
         let indicator_shadow = self.indicator_shadow;
-        let animation_target_id = SharedString::from(format!("{}-layout-animation", self.id));
         let active_background = colors.settings_field_bg;
         let active_border = Hsla {
             a: if dark_mode { 0.52 } else { 0.28 },
@@ -365,7 +364,7 @@ impl RenderOnce for AnimatedSegmentTabs {
                     (on_select)(window, cx);
                 })
             }))
-            .with_layout_animation_target(animation_target_id, indicator_animating)
+            .with_layout_animation_target(indicator_animating)
             .into_any_element()
     }
 }
