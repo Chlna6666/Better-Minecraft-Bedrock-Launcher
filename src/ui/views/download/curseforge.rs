@@ -2020,7 +2020,7 @@ fn render_curseforge_results_list(
         let warmup_deadline = results_transition_at.map(|started_at| {
             started_at + Duration::from_millis(CURSEFORGE_RESULTS_REVEAL_WARMUP_MS)
         });
-        crate::ui::animation::request_animation_frame_until_active(window, warmup_deadline);
+        crate::ui::animation::request_layout_animation_frame_until_active(window, warmup_deadline);
         let state = cx.global::<DownloadPageState>();
         return render_curseforge_results_list_placeholder_aligned(colors, state);
     }
@@ -2063,7 +2063,7 @@ fn render_curseforge_results_list(
                 .as_millis() as u64)
                 < total_duration_ms.max(CURSEFORGE_RESULTS_TRANSITION_MS)
         });
-    crate::ui::animation::request_animation_frame_if(window, transition_animating);
+    crate::ui::animation::request_layout_animation_frame_if(window, transition_animating);
 
     let content = list.child(
         div()
