@@ -1,4 +1,6 @@
-use super::frame::{ReconcileKey, RetainedElementRange};
+use super::frame::{
+    DeferredRetainedMetadata, DeferredRetainedReplay, ReconcileKey, RetainedElementRange,
+};
 use super::state::ElementVisualTransform;
 use super::*;
 
@@ -12,6 +14,8 @@ impl Window {
         assert_eq!(self.retained_element_id_stack.len(), 0);
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
+        let mut deferred_metadata = mem::take(&mut self.next_frame.deferred_retained_metadata);
+        deferred_metadata.resize_with(deferred_draws.len(), DeferredRetainedMetadata::default);
         for deferred_draw_ix in deferred_draw_indices {
             if self.draw_budget_exhausted() {
                 self.degrade_current_draw();
@@ -19,6 +23,10 @@ impl Window {
             }
 
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
+            let replay_prepaint_range = deferred_metadata[*deferred_draw_ix]
+                .replay_source
+                .as_ref()
+                .map(|source| source.prepaint_range.clone());
             self.element_id_stack
                 .clone_from(&deferred_draw.element_id_stack);
             self.retained_element_id_stack
@@ -41,7 +49,12 @@ impl Window {
                         element.prepaint(window, cx)
                     });
                 })
-            } else if !self.reuse_prepaint(deferred_draw.prepaint_range.clone()) {
+            } else if let Some(source_prepaint_range) = replay_prepaint_range {
+                if !self.reuse_prepaint(source_prepaint_range) {
+                    self.degrade_current_draw();
+                    break;
+                }
+            } else {
                 self.degrade_current_draw();
                 break;
             }
@@ -54,6 +67,7 @@ impl Window {
             "cannot call defer_draw during deferred drawing"
         );
         self.next_frame.deferred_draws = deferred_draws;
+        self.next_frame.deferred_retained_metadata = deferred_metadata;
         self.element_id_stack.clear();
         self.retained_element_id_stack.clear();
         self.text_style_stack.clear();
@@ -67,6 +81,8 @@ impl Window {
         assert_eq!(self.retained_element_id_stack.len(), 0);
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
+        let mut deferred_metadata = mem::take(&mut self.next_frame.deferred_retained_metadata);
+        deferred_metadata.resize_with(deferred_draws.len(), DeferredRetainedMetadata::default);
         for deferred_draw_ix in deferred_draw_indices {
             if self.draw_budget_exhausted() {
                 self.degrade_current_draw();
@@ -74,6 +90,8 @@ impl Window {
             }
 
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
+            let retained_metadata = &mut deferred_metadata[*deferred_draw_ix];
+            let replay_source = retained_metadata.replay_source.clone();
             self.element_id_stack
                 .clone_from(&deferred_draw.element_id_stack);
             self.retained_element_id_stack
@@ -87,25 +105,44 @@ impl Window {
                 .dispatch_tree
                 .set_active_node(deferred_draw.parent_node);
 
+            let metadata_start = self.retained_element_metadata_len();
             let paint_start = self.paint_index();
             let current_view = deferred_draw.current_view;
             if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(current_view, |window| {
                     element.paint(window, cx);
                 })
-            } else {
-                let paint_range = deferred_draw.paint_range.clone();
-                let reused =
-                    self.with_rendered_view(current_view, |window| window.reuse_paint(paint_range));
+            } else if let Some(source) = replay_source {
+                let reused = self.with_rendered_view(current_view, |window| {
+                    window.reuse_paint(source.paint_range.clone())
+                });
                 if !reused {
                     self.degrade_current_draw();
                     break;
                 }
+                let target_paint = paint_start.clone()..self.paint_index();
+                if !self.replay_retained_element_metadata(
+                    &source.prepaint_range,
+                    &source.paint_range,
+                    &source.metadata_range,
+                    &deferred_draw.prepaint_range,
+                    &target_paint,
+                ) {
+                    self.degrade_current_draw();
+                    break;
+                }
+            } else {
+                self.degrade_current_draw();
+                break;
             }
             let paint_end = self.paint_index();
             deferred_draw.paint_range = paint_start..paint_end;
+            retained_metadata.metadata_range =
+                metadata_start..self.retained_element_metadata_len();
+            retained_metadata.replay_source = None;
         }
         self.next_frame.deferred_draws = deferred_draws;
+        self.next_frame.deferred_retained_metadata = deferred_metadata;
         self.element_id_stack.clear();
         self.retained_element_id_stack.clear();
         self.element_visual_transform = ElementVisualTransform::identity();
@@ -131,6 +168,9 @@ impl Window {
             .truncate(index.tooltips_index);
         self.next_frame
             .deferred_draws
+            .truncate(index.deferred_draws_index);
+        self.next_frame
+            .deferred_retained_metadata
             .truncate(index.deferred_draws_index);
         self.next_frame
             .dispatch_tree
@@ -179,16 +219,24 @@ impl Window {
             range.start,
             range.end,
             self.rendered_frame.deferred_draws.len(),
+        ) || !frame_range_is_valid(
+            range.start,
+            range.end,
+            self.rendered_frame.deferred_retained_metadata.len(),
         ) {
             return false;
         }
 
-        self.rendered_frame.deferred_draws[range]
-            .iter()
-            .all(|draw| {
-                self.prepaint_range_indices_are_valid(&draw.prepaint_range)
-                    && self.can_reuse_paint(&draw.paint_range)
-            })
+        range.into_iter().all(|index| {
+            let draw = &self.rendered_frame.deferred_draws[index];
+            let metadata = &self.rendered_frame.deferred_retained_metadata[index];
+            self.prepaint_range_indices_are_valid(&draw.prepaint_range)
+                && self.can_reuse_paint(&draw.paint_range)
+                && retained_metadata_range_is_valid(
+                    &metadata.metadata_range,
+                    self.rendered_frame.retained_element_order.len(),
+                )
+        })
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) -> bool {
@@ -230,9 +278,27 @@ impl Window {
             self.next_frame.focus = self.focus;
         }
 
+        let deferred_range =
+            range.start.deferred_draws_index..range.end.deferred_draws_index;
+        self.next_frame
+            .deferred_retained_metadata
+            .resize_with(self.next_frame.deferred_draws.len(), DeferredRetainedMetadata::default);
+        self.next_frame.deferred_retained_metadata.extend(
+            deferred_range.clone().map(|index| {
+                let deferred_draw = &self.rendered_frame.deferred_draws[index];
+                let metadata = &self.rendered_frame.deferred_retained_metadata[index];
+                DeferredRetainedMetadata {
+                    metadata_range: 0..0,
+                    replay_source: Some(DeferredRetainedReplay {
+                        prepaint_range: deferred_draw.prepaint_range.clone(),
+                        paint_range: deferred_draw.paint_range.clone(),
+                        metadata_range: metadata.metadata_range.clone(),
+                    }),
+                }
+            }),
+        );
         self.next_frame.deferred_draws.extend(
-            self.rendered_frame.deferred_draws
-                [range.start.deferred_draws_index..range.end.deferred_draws_index]
+            self.rendered_frame.deferred_draws[deferred_range]
                 .iter()
                 .map(|deferred_draw| DeferredDraw {
                     current_view: deferred_draw.current_view,
@@ -372,9 +438,8 @@ impl Window {
         if retained.bounds != bounds
             || !self.can_reuse_prepaint(&retained.prepaint_range)
             || !self.can_reuse_paint(&retained.paint_range)
-            || !frame_range_is_valid(
-                retained.metadata_range.start,
-                retained.metadata_range.end,
+            || !retained_metadata_range_is_valid(
+                &retained.metadata_range,
                 self.rendered_frame.retained_element_order.len(),
             )
         {
@@ -426,13 +491,10 @@ impl Window {
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
     ) -> bool {
-        if source_metadata.start >= source_metadata.end
-            || !frame_range_is_valid(
-                source_metadata.start,
-                source_metadata.end,
-                self.rendered_frame.retained_element_order.len(),
-            )
-        {
+        if !retained_metadata_range_is_valid(
+            source_metadata,
+            self.rendered_frame.retained_element_order.len(),
+        ) {
             return false;
         }
 
@@ -462,22 +524,25 @@ impl Window {
             else {
                 return false;
             };
-            let Some(metadata_start) = target_metadata_start.checked_add(
-                source_range
-                    .metadata_range
-                    .start
-                    .checked_sub(source_metadata.start)
-                    .unwrap_or(usize::MAX),
-            ) else {
+            let Some(metadata_start_offset) = source_range
+                .metadata_range
+                .start
+                .checked_sub(source_metadata.start)
+            else {
                 return false;
             };
-            let Some(metadata_end) = target_metadata_start.checked_add(
-                source_range
-                    .metadata_range
-                    .end
-                    .checked_sub(source_metadata.start)
-                    .unwrap_or(usize::MAX),
-            ) else {
+            let Some(metadata_end_offset) = source_range
+                .metadata_range
+                .end
+                .checked_sub(source_metadata.start)
+            else {
+                return false;
+            };
+            let Some(metadata_start) = target_metadata_start.checked_add(metadata_start_offset)
+            else {
+                return false;
+            };
+            let Some(metadata_end) = target_metadata_start.checked_add(metadata_end_offset) else {
                 return false;
             };
 
@@ -520,6 +585,10 @@ fn rebase_paint_range(
         range.start.rebased_from(&source.start, &target.start)?
             ..range.end.rebased_from(&source.start, &target.start)?,
     )
+}
+
+fn retained_metadata_range_is_valid(range: &Range<usize>, len: usize) -> bool {
+    range.start < range.end && range.end <= len
 }
 
 fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {

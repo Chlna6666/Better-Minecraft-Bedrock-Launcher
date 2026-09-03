@@ -18,6 +18,25 @@ pub(crate) struct DeferredDraw {
     pub(super) paint_range: Range<PaintIndex>,
 }
 
+/// Source ranges required to rebase one retained deferred subtree into the next frame.
+#[derive(Clone)]
+pub(crate) struct DeferredRetainedReplay {
+    pub(super) prepaint_range: Range<PrepaintStateIndex>,
+    pub(super) paint_range: Range<PaintIndex>,
+    pub(super) metadata_range: Range<usize>,
+}
+
+/// Reconciliation metadata kept in a parallel vector indexed exactly like `Frame::deferred_draws`.
+///
+/// Keeping this outside [`DeferredDraw`] avoids growing the hot deferred draw descriptor used by
+/// normal non-replayed overlays. Slots are materialized lazily before retained extension/deferred
+/// processing, so ordinary `defer_draw` calls do not perform extra initialization work.
+#[derive(Clone, Default)]
+pub(crate) struct DeferredRetainedMetadata {
+    pub(super) metadata_range: Range<usize>,
+    pub(super) replay_source: Option<DeferredRetainedReplay>,
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct RetainedSceneSegment {
@@ -73,6 +92,7 @@ pub(crate) struct Frame {
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
+    pub(crate) deferred_retained_metadata: Vec<DeferredRetainedMetadata>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
@@ -202,6 +222,7 @@ impl Frame {
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
+            deferred_retained_metadata: Vec::new(),
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
@@ -243,6 +264,7 @@ impl Frame {
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
+        self.deferred_retained_metadata.clear();
         self.tab_stops.clear();
         self.focus = None;
 
@@ -328,6 +350,7 @@ impl Frame {
             + self.hitboxes.capacity()
             + self.window_control_hitboxes.capacity()
             + self.deferred_draws.capacity()
+            + self.deferred_retained_metadata.capacity()
             + self.input_handlers.capacity()
             + self.tooltip_requests.capacity()
             + self.cursor_styles.capacity()
@@ -355,6 +378,11 @@ impl Frame {
         );
         trim_frame_vec_capacity(
             &mut self.deferred_draws,
+            FRAME_MIN_RETAINED_CAPACITY,
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        trim_frame_vec_capacity(
+            &mut self.deferred_retained_metadata,
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
@@ -400,6 +428,7 @@ impl Frame {
                 self.hitboxes.shrink_to(floor);
                 self.window_control_hitboxes.shrink_to(floor);
                 self.deferred_draws.shrink_to(floor);
+                self.deferred_retained_metadata.shrink_to(floor);
                 self.input_handlers.shrink_to(floor);
                 self.tooltip_requests.shrink_to(floor);
                 self.cursor_styles.shrink_to(floor);
