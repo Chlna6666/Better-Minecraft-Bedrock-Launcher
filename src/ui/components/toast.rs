@@ -756,7 +756,7 @@ pub fn render_overlay_with_options(
     }
     outer
         .child(lane)
-        .with_layout_animation_target("toast-overlay-layout-animation", any_animating)
+        .with_layout_animation_target(any_animating)
         .into_any_element()
 }
 
@@ -848,7 +848,7 @@ pub fn render_breadcrumb_overlay(
         window.request_invalidation_at(deadline + TOAST_WAKE_EPSILON, cx);
     }
     toast
-        .with_layout_animation_target("toast-breadcrumb-layout-animation", animating)
+        .with_layout_animation_target(animating)
         .into_any_element()
 }
 
