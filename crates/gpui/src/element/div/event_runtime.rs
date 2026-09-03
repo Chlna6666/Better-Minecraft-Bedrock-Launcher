@@ -99,18 +99,20 @@ impl Interactivity {
                 });
             }
 
-            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-                let hovered = hitbox.is_hovered(window);
-                if phase == DispatchPhase::Capture && hovered != was_hovered {
-                    window.notify_interactive_region_scoped(
-                        current_view,
-                        interaction_path.as_ref(),
-                        hitbox.bounds,
-                        descendants_dirty,
-                        cx,
-                    );
-                }
-            });
+            window.on_mouse_hit_test_transition(
+                move |_: &MouseMoveEvent, phase, window, cx| {
+                    let hovered = hitbox.is_hovered(window);
+                    if phase == DispatchPhase::Capture && hovered != was_hovered {
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            interaction_path.as_ref(),
+                            hitbox.bounds,
+                            descendants_dirty,
+                            cx,
+                        );
+                    }
+                },
+            );
         }
         let drag_cursor_style = self.base_style.as_ref().mouse_cursor;
 
@@ -227,21 +229,23 @@ impl Interactivity {
                     Rc::from(hover_listener);
                 let move_hover_listener = hover_listener.clone();
 
-                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble {
-                        return;
-                    }
-                    let is_hovered = has_mouse_down.borrow().is_none()
-                        && !cx.has_active_drag()
-                        && hitbox.is_hovered(window);
-                    let mut was_hovered = was_hovered.borrow_mut();
+                window.on_mouse_hit_test_transition(
+                    move |_: &MouseMoveEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble {
+                            return;
+                        }
+                        let is_hovered = has_mouse_down.borrow().is_none()
+                            && !cx.has_active_drag()
+                            && hitbox.is_hovered(window);
+                        let mut was_hovered = was_hovered.borrow_mut();
 
-                    if is_hovered != *was_hovered {
-                        *was_hovered = is_hovered;
-                        drop(was_hovered);
-                        move_hover_listener(&is_hovered, window, cx);
-                    }
-                });
+                        if is_hovered != *was_hovered {
+                            *was_hovered = is_hovered;
+                            drop(was_hovered);
+                            move_hover_listener(&is_hovered, window, cx);
+                        }
+                    },
+                );
 
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble {
