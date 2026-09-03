@@ -14,7 +14,7 @@ use std::{
     rc::Rc,
 };
 
-use super::{DivPrepaint, Element, RetainedDivSelfSceneStyle};
+use super::{DivPrepaint, Element};
 
 /// A globally unique identifier for an element, used to track state across frames.
 #[derive(Clone, Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
@@ -102,7 +102,6 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         request_layout: RequestLayoutState,
         prepaint: PrepaintState,
         prepaint_range: Range<PrepaintStateIndex>,
-        div_self_scene_style: Option<RetainedDivSelfSceneStyle>,
         plain_text_key: Option<RetainedPlainTextKey>,
     },
     Retained {
@@ -280,9 +279,6 @@ impl<E: Element> Drawable<E> {
                 });
                 window.next_frame.dispatch_tree.pop_node();
                 let prepaint_end = window.prepaint_index();
-                let div_self_scene_style = (&prepaint as &dyn Any)
-                    .downcast_ref::<DivPrepaint>()
-                    .and_then(|prepaint| prepaint.self_scene_style.clone());
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
@@ -299,7 +295,6 @@ impl<E: Element> Drawable<E> {
                     request_layout,
                     prepaint,
                     prepaint_range: prepaint_start..prepaint_end,
-                    div_self_scene_style,
                     plain_text_key,
                 };
             }
@@ -320,7 +315,6 @@ impl<E: Element> Drawable<E> {
                 mut request_layout,
                 mut prepaint,
                 prepaint_range,
-                div_self_scene_style,
                 plain_text_key,
             } => {
                 if let Some(element_id) = self.element.id() {
@@ -345,6 +339,9 @@ impl<E: Element> Drawable<E> {
                     );
                 });
                 let paint_end = window.paint_index();
+                let div_self_scene = (&prepaint as &dyn Any)
+                    .downcast_ref::<DivPrepaint>()
+                    .and_then(DivPrepaint::retained_self_scene);
 
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
@@ -357,7 +354,7 @@ impl<E: Element> Drawable<E> {
                     prepaint_range,
                     paint_start..paint_end,
                     metadata_start,
-                    div_self_scene_style,
+                    div_self_scene,
                     plain_text_key,
                     identity_stable,
                     subtree_stable,
