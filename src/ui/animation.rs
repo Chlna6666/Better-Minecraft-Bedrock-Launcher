@@ -282,26 +282,6 @@ pub fn request_layout_animation_frame_until_active(
     }
 }
 
-#[track_caller]
-pub fn request_animation_frame_if(window: &mut Window, animating: bool) {
-    request_layout_animation_frame_if(window, animating);
-}
-
-#[track_caller]
-pub fn request_animation_frame_if_active(window: &mut Window, animating: bool) {
-    request_layout_animation_frame_if_active(window, animating);
-}
-
-#[track_caller]
-pub fn request_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
-    request_layout_animation_frame_until(window, deadline);
-}
-
-#[track_caller]
-pub fn request_animation_frame_until_active(window: &mut Window, deadline: Option<Instant>) {
-    request_layout_animation_frame_until_active(window, deadline);
-}
-
 fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
     let mut spec = spec;
     spec.duration = spec.duration.max(MIN_ANIMATION_DURATION);
