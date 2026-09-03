@@ -118,6 +118,7 @@ impl Window {
             current_view: self.current_view(),
             parent_node,
             element_id_stack: self.element_id_stack.clone(),
+            retained_element_id_stack: self.retained_element_id_stack.clone(),
             text_style_stack: self.text_style_stack.clone(),
             element_visual_transform: self.element_visual_transform,
             content_mask_stack: self.content_mask_stack.clone(),

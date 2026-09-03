@@ -99,6 +99,7 @@ mod platform_actions;
 mod platform_events;
 mod prompts;
 mod properties;
+mod retained_identity;
 mod state;
 mod tab_stop;
 #[cfg(test)]
@@ -138,8 +139,8 @@ pub use paint_resources::{ImagePaintProgress, ImagePaintRequest};
 pub use prompts::*;
 pub use state::Window;
 use state::{
-    AnimatedImageSlotKey, DirtyFrameDiagnostics, FrameGenerationStats, ImagePaintTileCacheKey,
-    LayoutCacheFrameMetrics, ModifierState, PendingInput,
+    AnimatedImageSlotKey, DirtyFrameDiagnostics, FocusRetainedTarget, FrameGenerationStats,
+    ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
 pub(crate) use state::{DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame};
 pub(crate) use tab_stop::*;

@@ -95,7 +95,7 @@ impl Interactivity {
 
     pub(crate) fn paint_hover_group_handler(
         &self,
-        global_id: Option<&GlobalElementId>,
+        _global_id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
@@ -108,13 +108,13 @@ impl Interactivity {
         if let Some(group_hitbox) = group_hitbox {
             let was_hovered = group_hitbox.is_hovered(window);
             let current_view = window.current_view();
-            let global_id = global_id.cloned();
+            let interaction_path = window.current_instance_path();
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
                     window.notify_interactive_region(
                         current_view,
-                        global_id.as_ref(),
+                        interaction_path.as_ref(),
                         bounds,
                         cx,
                     );

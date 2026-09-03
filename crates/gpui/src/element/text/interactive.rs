@@ -37,7 +37,7 @@ pub struct InteractiveTextState {
     active_tooltip: Rc<RefCell<Option<ActiveTooltip>>>,
 }
 
-/// InteractiveTest is a wrapper around StyledText that adds mouse interactions.
+/// InteractiveText is a wrapper around StyledText that adds mouse interactions.
 impl InteractiveText {
     /// Creates a new InteractiveText from the given text.
     pub fn new(id: impl Into<ElementId>, text: StyledText) -> Self {
@@ -154,12 +154,12 @@ impl Element for InteractiveText {
         cx: &mut App,
     ) {
         let current_view = window.current_view();
-        let interaction_id = global_id.cloned();
+        let interaction_path = window.current_instance_path();
         let text_layout = self.text.layout().clone();
         window.with_element_state::<InteractiveTextState, _>(
             global_id.unwrap(),
             |interactive_state, window| {
-                let mut interactive_state = interactive_state.unwrap_or_default();
+                let interactive_state = interactive_state.unwrap_or_default();
                 if let Some(click_listener) = self.click_listener.take() {
                     let mouse_position = window.mouse_position();
                     if let Ok(ix) = text_layout.index_for_position(mouse_position)
@@ -176,7 +176,7 @@ impl Element for InteractiveText {
                     if let Some(mouse_down_index) = mouse_down.get() {
                         let hitbox = hitbox.clone();
                         let clickable_ranges = mem::take(&mut self.clickable_ranges);
-                        let interaction_id = interaction_id.clone();
+                        let interaction_path = interaction_path.clone();
                         window.on_mouse_event(
                             move |event: &MouseUpEvent, phase, window: &mut Window, cx| {
                                 if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
@@ -197,7 +197,7 @@ impl Element for InteractiveText {
                                     mouse_down.take();
                                     window.notify_interactive_region(
                                         current_view,
-                                        interaction_id.as_ref(),
+                                        interaction_path.as_ref(),
                                         hitbox.bounds,
                                         cx,
                                     );
@@ -206,7 +206,7 @@ impl Element for InteractiveText {
                         );
                     } else {
                         let hitbox = hitbox.clone();
-                        let interaction_id = interaction_id.clone();
+                        let interaction_path = interaction_path.clone();
                         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                             if phase == DispatchPhase::Bubble
                                 && hitbox.is_hovered(window)
@@ -216,7 +216,7 @@ impl Element for InteractiveText {
                                 mouse_down.set(Some(mouse_down_index));
                                 window.notify_interactive_region(
                                     current_view,
-                                    interaction_id.as_ref(),
+                                    interaction_path.as_ref(),
                                     hitbox.bounds,
                                     cx,
                                 );
@@ -230,7 +230,7 @@ impl Element for InteractiveText {
                     let hitbox = hitbox.clone();
                     let text_layout = text_layout.clone();
                     let hovered_index = interactive_state.hovered_index.clone();
-                    let interaction_id = interaction_id.clone();
+                    let interaction_path = interaction_path.clone();
                     move |event: &MouseMoveEvent, phase, window, cx| {
                         if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                             let current = hovered_index.get();
@@ -242,7 +242,7 @@ impl Element for InteractiveText {
                                 }
                                 window.notify_interactive_region(
                                     current_view,
-                                    interaction_id.as_ref(),
+                                    interaction_path.as_ref(),
                                     hitbox.bounds,
                                     cx,
                                 );

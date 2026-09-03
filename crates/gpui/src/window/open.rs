@@ -253,7 +253,7 @@ impl Window {
                     WindowTabRegistry::merge_all_windows(cx, handle.window_id());
                 }));
             })
-        });
+        }));
         platform_window.on_select_next_tab({
             let mut cx = cx.to_async();
             Box::new(move || {
@@ -261,7 +261,7 @@ impl Window {
                     WindowTabRegistry::select_next_tab(cx, handle.window_id());
                 }));
             })
-        });
+        }));
         platform_window.on_select_previous_tab({
             let mut cx = cx.to_async();
             Box::new(move || {
@@ -269,7 +269,7 @@ impl Window {
                     WindowTabRegistry::select_previous_tab(cx, handle.window_id())
                 }));
             })
-        });
+        }));
         platform_window.on_toggle_tab_bar({
             let mut cx = cx.to_async();
             Box::new(move || {
@@ -315,6 +315,8 @@ impl Window {
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
             element_id_stack: SmallVec::default(),
+            retained_element_id_stack: SmallVec::default(),
+            retained_child_slot_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
             view_bounds_stack: Vec::new(),
@@ -385,6 +387,7 @@ impl Window {
             image_animation_deadline_generation: Rc::new(Cell::new(0)),
             activation_observers: SubscriberSet::new(),
             focus: None,
+            focus_retained_targets: FxHashMap::default(),
             focus_enabled: true,
             pending_input: None,
             pending_modifier: ModifierState::default(),

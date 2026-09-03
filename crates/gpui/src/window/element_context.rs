@@ -16,6 +16,54 @@ impl Window {
         result
     }
 
+    /// Begins one retained element identity scope during request layout.
+    ///
+    /// Every child consumes a parent-local positional slot even when it has an explicit ID, so
+    /// following anonymous siblings keep the same structural address as their actual child index.
+    /// The synthetic slot is used only for retained rendering identity and is never exposed as the
+    /// element's state-bearing `GlobalElementId`.
+    pub(crate) fn begin_retained_element(
+        &mut self,
+        explicit_id: Option<ElementId>,
+    ) -> (ElementId, GlobalElementId) {
+        let slot = if let Some(next_slot) = self.retained_child_slot_stack.last_mut() {
+            let slot = *next_slot;
+            *next_slot = next_slot.saturating_add(1);
+            slot
+        } else {
+            0
+        };
+        let segment = explicit_id.unwrap_or(ElementId::InstanceSlot(slot));
+        self.retained_element_id_stack.push(segment.clone());
+        let retained_id = GlobalElementId(self.retained_element_id_stack.clone());
+        self.retained_child_slot_stack.push(0);
+        (segment, retained_id)
+    }
+
+    /// Ends the retained identity scope opened by [`Self::begin_retained_element`].
+    pub(crate) fn end_retained_element(&mut self) {
+        self.retained_child_slot_stack.pop();
+        self.retained_element_id_stack.pop();
+    }
+
+    /// Restores one already-assigned retained identity segment for prepaint/paint traversal.
+    pub(crate) fn with_retained_element_segment<R>(
+        &mut self,
+        segment: &ElementId,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.retained_element_id_stack.push(segment.clone());
+        let result = f(self);
+        self.retained_element_id_stack.pop();
+        result
+    }
+
+    /// Returns the retained rendering identity of the element currently being prepainted/painted.
+    pub(crate) fn current_retained_element_id(&self) -> Option<GlobalElementId> {
+        (!self.retained_element_id_stack.is_empty())
+            .then(|| GlobalElementId(self.retained_element_id_stack.clone()))
+    }
+
     /// Executes the provided function with the specified rem size.
     ///
     /// This method must only be called as part of element drawing.
@@ -376,6 +424,18 @@ impl Window {
             self.next_frame.focus = Some(focus_handle.id);
         }
         self.next_frame.dispatch_tree.set_focus_id(focus_handle.id);
+
+        if let Some(retained_id) = self.current_retained_element_id()
+            && let Some(view_id) = self.rendered_entity_stack.last().copied()
+        {
+            self.focus_retained_targets.insert(
+                focus_handle.id,
+                FocusRetainedTarget {
+                    view_id,
+                    retained_id,
+                },
+            );
+        }
     }
 
     /// Sets the view id for the current element, which will be used to manage view caching.

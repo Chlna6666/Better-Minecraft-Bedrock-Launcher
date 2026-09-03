@@ -22,7 +22,7 @@ impl Interactivity {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let interactive_id = global_id.cloned();
+        let interaction_path = window.current_instance_path();
         let is_focused = self
             .tracked_focus_handle
             .as_ref()
@@ -77,14 +77,14 @@ impl Interactivity {
             let hitbox = hitbox.clone();
             let was_hovered = hitbox.is_hovered(window);
             let current_view = window.current_view();
-            let interactive_id = interactive_id.clone();
+            let interaction_path = interaction_path.clone();
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered && hover_changes_style
                 {
                     window.notify_interactive_region(
                         current_view,
-                        interactive_id.as_ref(),
+                        interaction_path.as_ref(),
                         hitbox.bounds,
                         cx,
                     );
@@ -104,12 +104,11 @@ impl Interactivity {
         if let Some(element_state) = element_state {
             if !click_listeners.is_empty() || drag_listener.is_some() {
                 let pending_mouse_down = element_state.ensure_pending_mouse_down();
-
                 let clicked_state = element_state.ensure_clicked_state();
 
                 bind_drag_start_listeners(
                     hitbox,
-                    interactive_id.clone(),
+                    interaction_path.clone(),
                     pending_mouse_down.clone(),
                     clicked_state,
                     has_active_style,
@@ -154,7 +153,7 @@ impl Interactivity {
                     let mut captured_mouse_down = None;
                     let hitbox = hitbox.clone();
                     let current_view = window.current_view();
-                    let interactive_id = interactive_id.clone();
+                    let interaction_path = interaction_path.clone();
                     move |event: &MouseUpEvent, phase, window, cx| match phase {
                         DispatchPhase::Capture => {
                             let mut pending_mouse_down = pending_mouse_down.borrow_mut();
@@ -163,7 +162,7 @@ impl Interactivity {
                                 if has_active_style {
                                     window.notify_interactive_region(
                                         current_view,
-                                        interactive_id.as_ref(),
+                                        interaction_path.as_ref(),
                                         hitbox.bounds,
                                         cx,
                                     );
@@ -173,7 +172,7 @@ impl Interactivity {
                                 if has_active_style {
                                     window.notify_interactive_region(
                                         current_view,
-                                        interactive_id.as_ref(),
+                                        interaction_path.as_ref(),
                                         hitbox.bounds,
                                         cx,
                                     );
@@ -212,7 +211,6 @@ impl Interactivity {
                     if is_hovered != *was_hovered {
                         *was_hovered = is_hovered;
                         drop(was_hovered);
-
                         hover_listener(&is_hovered, window, cx);
                     }
                 });
@@ -254,13 +252,13 @@ impl Interactivity {
             if has_active_style && active_state.borrow().is_clicked() {
                 let hitbox = hitbox.clone();
                 let current_view = window.current_view();
-                let interactive_id = interactive_id.clone();
+                let interaction_path = interaction_path.clone();
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
                         *active_state.borrow_mut() = ElementClickedState::default();
                         window.notify_interactive_region(
                             current_view,
-                            interactive_id.as_ref(),
+                            interaction_path.as_ref(),
                             hitbox.bounds,
                             cx,
                         );
@@ -273,7 +271,7 @@ impl Interactivity {
                     .and_then(|group_active| GroupHitboxes::get(&group_active.group, cx));
                 let hitbox = hitbox.clone();
                 let current_view = window.current_view();
-                let interactive_id = interactive_id.clone();
+                let interaction_path = interaction_path.clone();
                 window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble && !window.default_prevented() {
                         let group_hovered = active_group_hitbox
@@ -286,7 +284,7 @@ impl Interactivity {
                             };
                             window.notify_interactive_region(
                                 current_view,
-                                interactive_id.as_ref(),
+                                interaction_path.as_ref(),
                                 hitbox.bounds,
                                 cx,
                             );

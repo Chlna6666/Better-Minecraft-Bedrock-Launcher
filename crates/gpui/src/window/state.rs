@@ -82,6 +82,17 @@ pub(crate) struct ElementStateBox {
     pub(crate) type_name: &'static str,
 }
 
+/// Persistent lookup from a focus handle to the retained rendering identity that owns it.
+///
+/// Unlike `GlobalElementId`, this identity also exists for anonymous elements through internal
+/// `InstanceSlot` path segments. Keeping the lookup on the window lets a focus transition target
+/// the old and new repaint boundaries even when either subtree was replayed in an intervening frame.
+#[derive(Clone, Debug)]
+pub(crate) struct FocusRetainedTarget {
+    pub(crate) view_id: EntityId,
+    pub(crate) retained_id: GlobalElementId,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ElementVisualTransform {
     pub(crate) scale: f32,
@@ -181,6 +192,12 @@ pub struct Window {
     pub(super) layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
+    /// Retained rendering identity path. This intentionally differs from `element_id_stack`:
+    /// anonymous elements receive internal `InstanceSlot` segments here but still receive no
+    /// `GlobalElementId` for state storage.
+    pub(crate) retained_element_id_stack: SmallVec<[ElementId; 32]>,
+    /// Parent-local positional counters used only while `request_layout` constructs retained IDs.
+    pub(crate) retained_child_slot_stack: SmallVec<[u32; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     /// Per-view bounds accumulation frames for the paint phase, parallel to the painted views
@@ -260,6 +277,8 @@ pub struct Window {
     pub(super) image_animation_deadline_generation: Rc<Cell<u64>>,
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) focus: Option<FocusId>,
+    /// Persistent focus-to-retained-boundary lookup used to avoid `focus()/blur() -> refresh()`.
+    pub(crate) focus_retained_targets: FxHashMap<FocusId, FocusRetainedTarget>,
     pub(super) focus_enabled: bool,
     pub(super) pending_input: Option<PendingInput>,
     pub(super) pending_modifier: ModifierState,

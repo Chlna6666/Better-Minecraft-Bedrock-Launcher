@@ -69,15 +69,68 @@ impl Window {
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
     }
 
+    /// Invalidates the retained repaint boundary that owns one focus handle.
+    ///
+    /// Returns whether a dirty frame should be scheduled. Missing mappings are handled by the
+    /// caller with a non-refresh redraw fallback; they should occur only before the first complete
+    /// frame or after the focusable element has disappeared.
+    fn invalidate_focus_retained_target(&mut self, focus_id: FocusId) -> bool {
+        let Some(target) = self.focus_retained_targets.get(&focus_id).cloned() else {
+            return false;
+        };
+
+        if let Some(retained) = self
+            .rendered_frame
+            .retained_element_ranges
+            .get(&target.retained_id)
+            && !retained.bounds.is_empty()
+        {
+            self.animation_dirty_region
+                .push(retained.bounds.scale(self.scale_factor));
+        }
+
+        self.idle_render_frames = 0;
+        self.render_trim_policy = RetainedResourceTrimPolicy::None;
+        self.invalidator
+            .invalidate_interactive_view(target.view_id, Some(&target.retained_id))
+    }
+
+    fn invalidate_focus_transition(
+        &mut self,
+        previous: Option<FocusId>,
+        current: Option<FocusId>,
+    ) {
+        self.prune_focus_retained_targets_if_needed();
+
+        let mut schedule = false;
+        if let Some(previous) = previous {
+            schedule |= self.invalidate_focus_retained_target(previous);
+        }
+        if current != previous
+            && let Some(current) = current
+        {
+            schedule |= self.invalidate_focus_retained_target(current);
+        }
+
+        if schedule {
+            self.schedule_dirty_frame();
+        } else {
+            // Do not fall back to `refresh()`: a focus change may occur before the first retained
+            // target has been observed, but that still does not justify invalidating every AnyView.
+            self.redraw_without_view_cache_refresh();
+        }
+    }
+
     /// Move focus to the element associated with the given [`FocusHandle`].
     pub fn focus(&mut self, handle: &FocusHandle) {
         if !self.focus_enabled || self.focus == Some(handle.id) {
             return;
         }
 
+        let previous = self.focus;
         self.focus = Some(handle.id);
         self.clear_pending_keystrokes();
-        self.refresh();
+        self.invalidate_focus_transition(previous, self.focus);
     }
 
     /// Remove focus from all elements within this context's window.
@@ -86,8 +139,10 @@ impl Window {
             return;
         }
 
-        self.focus = None;
-        self.refresh();
+        let previous = self.focus.take();
+        if previous.is_some() {
+            self.invalidate_focus_transition(previous, None);
+        }
     }
 
     /// Blur the window and don't allow anything in it to be focused again.
@@ -157,8 +212,7 @@ impl FocusId {
             .is_some_and(|focused| self.contains(focused.id, window))
     }
 
-    /// Obtains whether the element associated with this handle is contained within the
-    /// focused element or is itself focused.
+    /// Obtains whether this handle is contained within the focused element or is itself focused.
     pub fn within_focused(&self, window: &Window, cx: &App) -> bool {
         let focused = window.focused(cx);
         focused.is_some_and(|focused| focused.id.contains(*self, window))
@@ -234,6 +288,7 @@ impl FocusHandle {
     pub fn tab_stop(mut self, is_tab_stop: bool) -> Self {
         self.tab_stop = is_tab_stop;
         if let Some(focus) = self.handles.write().get_mut(self.id) {
+            focus.tab_index = self.tab_index;
             focus.tab_stop = is_tab_stop;
         }
         self
@@ -263,8 +318,7 @@ impl FocusHandle {
         self.id.contains_focused(window, cx)
     }
 
-    /// Obtains whether the element associated with this handle is contained within the
-    /// focused element or is itself focused.
+    /// Obtains whether this handle is contained within the focused element or is itself focused.
     pub fn within_focused(&self, window: &Window, cx: &mut App) -> bool {
         self.id.within_focused(window, cx)
     }

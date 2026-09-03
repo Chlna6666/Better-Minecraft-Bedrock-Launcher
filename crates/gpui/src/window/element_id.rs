@@ -24,6 +24,9 @@ pub enum ElementId {
     CodeLocation(core::panic::Location<'static>),
     /// A labeled child of an element.
     NamedChild(Box<ElementId>, SharedString),
+    /// Internal positional identity used only by retained element reconciliation.
+    #[doc(hidden)]
+    InstanceSlot(u32),
 }
 
 impl ElementId {
@@ -45,6 +48,7 @@ impl Display for ElementId {
             ElementId::Path(path) => write!(f, "{}", path.display())?,
             ElementId::CodeLocation(location) => write!(f, "{}", location)?,
             ElementId::NamedChild(id, name) => write!(f, "{}-{}", id, name)?,
+            ElementId::InstanceSlot(slot) => write!(f, "@{}", slot)?,
         }
 
         Ok(())

@@ -9,6 +9,7 @@ impl Window {
         cx: &mut App,
     ) {
         assert_eq!(self.element_id_stack.len(), 0);
+        assert_eq!(self.retained_element_id_stack.len(), 0);
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
@@ -20,6 +21,8 @@ impl Window {
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
             self.element_id_stack
                 .clone_from(&deferred_draw.element_id_stack);
+            self.retained_element_id_stack
+                .clone_from(&deferred_draw.retained_element_id_stack);
             self.text_style_stack
                 .clone_from(&deferred_draw.text_style_stack);
             self.element_visual_transform = deferred_draw.element_visual_transform;
@@ -52,6 +55,7 @@ impl Window {
         );
         self.next_frame.deferred_draws = deferred_draws;
         self.element_id_stack.clear();
+        self.retained_element_id_stack.clear();
         self.text_style_stack.clear();
         self.element_visual_transform = ElementVisualTransform::identity();
         self.content_mask_stack.clear();
@@ -60,6 +64,7 @@ impl Window {
 
     pub(super) fn paint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
         assert_eq!(self.element_id_stack.len(), 0);
+        assert_eq!(self.retained_element_id_stack.len(), 0);
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
@@ -71,6 +76,8 @@ impl Window {
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
             self.element_id_stack
                 .clone_from(&deferred_draw.element_id_stack);
+            self.retained_element_id_stack
+                .clone_from(&deferred_draw.retained_element_id_stack);
             self.element_visual_transform = deferred_draw.element_visual_transform;
             self.content_mask_stack
                 .clone_from(&deferred_draw.content_mask_stack);
@@ -100,6 +107,7 @@ impl Window {
         }
         self.next_frame.deferred_draws = deferred_draws;
         self.element_id_stack.clear();
+        self.retained_element_id_stack.clear();
         self.element_visual_transform = ElementVisualTransform::identity();
         self.content_mask_stack.clear();
         self.visual_content_mask_stack.clear();
@@ -230,6 +238,7 @@ impl Window {
                     current_view: deferred_draw.current_view,
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
                     element_id_stack: deferred_draw.element_id_stack.clone(),
+                    retained_element_id_stack: deferred_draw.retained_element_id_stack.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
                     element_visual_transform: deferred_draw.element_visual_transform,
                     content_mask_stack: deferred_draw.content_mask_stack.clone(),
@@ -349,19 +358,18 @@ impl Window {
     /// interaction-only frame.
     pub(crate) fn reusable_interaction_element(
         &self,
-        global_id: &GlobalElementId,
+        retained_id: &GlobalElementId,
         bounds: Bounds<Pixels>,
     ) -> Option<RetainedElementRange> {
         if self.force_view_cache_refresh()
             || !self.invalidator.active_interaction_only()
-            || self.invalidator.interactive_path_is_dirty(global_id)
+            || self.invalidator.interactive_path_is_dirty(retained_id)
         {
             return None;
         }
 
-        let retained = self.rendered_frame.retained_element_ranges.get(global_id)?;
-        if !retained.leaf
-            || retained.bounds != bounds
+        let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
+        if retained.bounds != bounds
             || !self.can_reuse_prepaint(&retained.prepaint_range)
             || !self.can_reuse_paint(&retained.paint_range)
         {
@@ -370,25 +378,19 @@ impl Window {
         Some(retained.clone())
     }
 
-    pub(crate) fn retained_element_range_count(&self) -> usize {
-        self.next_frame.retained_element_ranges.len()
-    }
-
     pub(crate) fn record_retained_element_range(
         &mut self,
-        global_id: GlobalElementId,
+        retained_id: GlobalElementId,
         bounds: Bounds<Pixels>,
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
-        leaf: bool,
     ) {
         self.next_frame.retained_element_ranges.insert(
-            global_id,
+            retained_id,
             RetainedElementRange {
                 bounds,
                 prepaint_range,
                 paint_range,
-                leaf,
             },
         );
     }

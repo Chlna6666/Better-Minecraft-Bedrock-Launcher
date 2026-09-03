@@ -61,12 +61,16 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     RequestLayout {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
+        retained_segment: ElementId,
+        retained_id: GlobalElementId,
         inspector_id: Option<InspectorElementId>,
         request_layout: RequestLayoutState,
     },
     LayoutComputed {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
+        retained_segment: ElementId,
+        retained_id: GlobalElementId,
         inspector_id: Option<InspectorElementId>,
         available_space: Size<AvailableSpace>,
         request_layout: RequestLayoutState,
@@ -74,6 +78,8 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     Prepaint {
         node_id: DispatchNodeId,
         global_id: Option<GlobalElementId>,
+        retained_segment: ElementId,
+        retained_id: GlobalElementId,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
         request_layout: RequestLayoutState,
@@ -81,8 +87,8 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         prepaint_range: Range<PrepaintStateIndex>,
     },
     Retained {
-        global_id: GlobalElementId,
-        inspector_id: Option<InspectorElementId>,
+        retained_segment: ElementId,
+        retained_id: GlobalElementId,
         bounds: Bounds<Pixels>,
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
@@ -102,7 +108,10 @@ impl<E: Element> Drawable<E> {
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
-                let global_id = self.element.id().map(|element_id| {
+                let element_id = self.element.id();
+                let (retained_segment, retained_id) =
+                    window.begin_retained_element(element_id.clone());
+                let global_id = element_id.map(|element_id| {
                     window.element_id_stack.push(element_id);
                     GlobalElementId(window.element_id_stack.clone())
                 });
@@ -133,10 +142,13 @@ impl<E: Element> Drawable<E> {
                 if global_id.is_some() {
                     window.element_id_stack.pop();
                 }
+                window.end_retained_element();
 
                 self.phase = ElementDrawPhase::RequestLayout {
                     layout_id,
                     global_id,
+                    retained_segment,
+                    retained_id,
                     inspector_id,
                     request_layout,
                 };
@@ -151,28 +163,32 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::RequestLayout {
                 layout_id,
                 global_id,
+                retained_segment,
+                retained_id,
                 inspector_id,
                 mut request_layout,
             }
             | ElementDrawPhase::LayoutComputed {
                 layout_id,
                 global_id,
+                retained_segment,
+                retained_id,
                 inspector_id,
                 mut request_layout,
                 ..
             } => {
                 let bounds = window.layout_bounds(layout_id);
 
-                if let Some(global_id) = global_id.as_ref()
-                    && let Some(retained) =
-                        window.reusable_interaction_element(global_id, bounds)
-                {
+                let retained = window.with_retained_element_segment(&retained_segment, |window| {
+                    window.reusable_interaction_element(&retained_id, bounds)
+                });
+                if let Some(retained) = retained {
                     let prepaint_start = window.prepaint_index();
-                    if window.reuse_prepaint(retained.prepaint_range) {
+                    if window.reuse_prepaint(retained.prepaint_range.clone()) {
                         let prepaint_end = window.prepaint_index();
                         self.phase = ElementDrawPhase::Retained {
-                            global_id: global_id.clone(),
-                            inspector_id,
+                            retained_segment,
+                            retained_id,
                             bounds,
                             prepaint_range: prepaint_start..prepaint_end,
                             paint_range: retained.paint_range,
@@ -188,14 +204,16 @@ impl<E: Element> Drawable<E> {
 
                 let prepaint_start = window.prepaint_index();
                 let node_id = window.next_frame.dispatch_tree.push_node();
-                let prepaint = self.element.prepaint(
-                    global_id.as_ref(),
-                    inspector_id.as_ref(),
-                    bounds,
-                    &mut request_layout,
-                    window,
-                    cx,
-                );
+                let prepaint = window.with_retained_element_segment(&retained_segment, |window| {
+                    self.element.prepaint(
+                        global_id.as_ref(),
+                        inspector_id.as_ref(),
+                        bounds,
+                        &mut request_layout,
+                        window,
+                        cx,
+                    )
+                });
                 window.next_frame.dispatch_tree.pop_node();
                 let prepaint_end = window.prepaint_index();
 
@@ -206,6 +224,8 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::Prepaint {
                     node_id,
                     global_id,
+                    retained_segment,
+                    retained_id,
                     inspector_id,
                     bounds,
                     request_layout,
@@ -222,6 +242,8 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::Prepaint {
                 node_id,
                 global_id,
+                retained_segment,
+                retained_id,
                 inspector_id,
                 bounds,
                 mut request_layout,
@@ -233,31 +255,28 @@ impl<E: Element> Drawable<E> {
                     debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
                 }
 
-                let retained_children_before = window.retained_element_range_count();
                 let paint_start = window.paint_index();
                 window.record_debug_element_paint(bounds, cx);
                 window.next_frame.dispatch_tree.set_active_node(node_id);
-                self.element.paint(
-                    global_id.as_ref(),
-                    inspector_id.as_ref(),
-                    bounds,
-                    &mut request_layout,
-                    &mut prepaint,
-                    window,
-                    cx,
-                );
-                let paint_end = window.paint_index();
-                let leaf = window.retained_element_range_count() == retained_children_before;
-
-                if let Some(global_id) = global_id.as_ref() {
-                    window.record_retained_element_range(
-                        global_id.clone(),
+                window.with_retained_element_segment(&retained_segment, |window| {
+                    self.element.paint(
+                        global_id.as_ref(),
+                        inspector_id.as_ref(),
                         bounds,
-                        prepaint_range,
-                        paint_start..paint_end,
-                        leaf,
+                        &mut request_layout,
+                        &mut prepaint,
+                        window,
+                        cx,
                     );
-                }
+                });
+                let paint_end = window.paint_index();
+
+                window.record_retained_element_range(
+                    retained_id,
+                    bounds,
+                    prepaint_range,
+                    paint_start..paint_end,
+                );
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
@@ -266,8 +285,8 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::Painted;
             }
             ElementDrawPhase::Retained {
-                global_id,
-                inspector_id: _,
+                retained_segment: _,
+                retained_id,
                 bounds,
                 prepaint_range,
                 paint_range,
@@ -276,11 +295,10 @@ impl<E: Element> Drawable<E> {
                 if window.reuse_paint(paint_range) {
                     let paint_end = window.paint_index();
                     window.record_retained_element_range(
-                        global_id,
+                        retained_id,
                         bounds,
                         prepaint_range,
                         paint_start..paint_end,
-                        true,
                     );
                     window.record_debug_view_cache_status(
                         bounds,
@@ -313,6 +331,8 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::RequestLayout {
                 layout_id,
                 global_id,
+                retained_segment,
+                retained_id,
                 inspector_id,
                 request_layout,
             } => {
@@ -320,6 +340,8 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::LayoutComputed {
                     layout_id,
                     global_id,
+                    retained_segment,
+                    retained_id,
                     inspector_id,
                     available_space,
                     request_layout,
@@ -329,6 +351,8 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::LayoutComputed {
                 layout_id,
                 global_id,
+                retained_segment,
+                retained_id,
                 inspector_id,
                 available_space: prev_available_space,
                 request_layout,
@@ -339,6 +363,8 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::LayoutComputed {
                     layout_id,
                     global_id,
+                    retained_segment,
+                    retained_id,
                     inspector_id,
                     available_space,
                     request_layout,
@@ -366,11 +392,11 @@ where
     }
 
     fn prepaint(&mut self, window: &mut Window, cx: &mut App) {
-        Drawable::prepaint(self, window, cx);
+        Drawable::prepaint(self, window, cx)
     }
 
     fn paint(&mut self, window: &mut Window, cx: &mut App) {
-        Drawable::paint(self, window, cx);
+        Drawable::paint(self, window, cx)
     }
 
     fn layout_as_root(

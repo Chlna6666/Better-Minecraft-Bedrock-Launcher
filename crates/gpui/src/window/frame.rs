@@ -6,6 +6,7 @@ pub(crate) struct DeferredDraw {
     pub(super) priority: usize,
     pub(super) parent_node: DispatchNodeId,
     pub(super) element_id_stack: SmallVec<[ElementId; 32]>,
+    pub(super) retained_element_id_stack: SmallVec<[ElementId; 32]>,
     pub(super) text_style_stack: Vec<TextStyleRefinement>,
     pub(super) element_visual_transform: ElementVisualTransform,
     pub(super) content_mask_stack: Vec<ContentMask<Pixels>>,
@@ -26,17 +27,16 @@ pub(crate) struct RetainedSceneSegment {
     pub(crate) entity_id: EntityId,
 }
 
-/// Retained lifecycle ranges for one stable element path.
+/// Retained lifecycle ranges for one stable rendering identity path.
 ///
-/// Interaction-only frames use these ranges to replay unchanged leaf subtrees without executing
-/// their prepaint/paint lifecycle again. Only leaf entries are currently replayed so nested range
-/// indices never need to be translated when a parent subtree is restored.
+/// The path may contain explicit application IDs or internal positional `InstanceSlot` segments.
+/// The latter are rendering-only identities: they let anonymous elements participate in local
+/// interaction replay without changing element-state semantics.
 #[derive(Clone)]
 pub(crate) struct RetainedElementRange {
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
-    pub(crate) leaf: bool,
 }
 
 pub(crate) struct Frame {
