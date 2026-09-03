@@ -14,6 +14,7 @@ use super::interactivity::Interactivity;
 pub fn div() -> Div {
     Div {
         interactivity: Interactivity::new(),
+        source_location: core::panic::Location::caller(),
         children: SmallVec::default(),
         prepaint_listener: None,
         image_cache: None,
@@ -23,6 +24,7 @@ pub fn div() -> Div {
 /// A [`Div`] element, the all-in-one element for building complex UIs in GPUI
 pub struct Div {
     interactivity: Interactivity,
+    source_location: &'static core::panic::Location<'static>,
     children: SmallVec<[StackSafe<AnyElement>; 2]>,
     prepaint_listener: Option<Box<dyn Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static>>,
     image_cache: Option<Box<dyn ImageCacheProvider>>,
@@ -181,7 +183,7 @@ impl Element for Div {
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        self.interactivity.source_location()
+        Some(self.source_location)
     }
 
     #[stacksafe]
