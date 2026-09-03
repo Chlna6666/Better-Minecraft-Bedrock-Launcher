@@ -281,13 +281,14 @@ impl Element for Div {
                     && hitbox.is_none()
                     && style_is_reconciliation_transparent(style, window, cx);
 
-                // skip children
+                // Generic Div traversal is not a progressive boundary. If this structural loop
+                // merely sets `draw_was_degraded` after the deadline, GPUI still walks every child
+                // and then discards the completed frame, forcing a full view-cache refresh on the
+                // retry. Progressive deferral belongs at explicit retained boundaries such as
+                // progressive AnyView/deferred work, where work can actually be skipped safely.
                 if style.display != Display::None {
                     window.with_element_offset(scroll_offset, |window| {
                         for child in &mut self.children {
-                            if window.draw_budget_exhausted_for_optional_work() {
-                                window.degrade_current_draw();
-                            }
                             child.prepaint(window, cx);
                         }
                     });
@@ -331,9 +332,6 @@ impl Element for Div {
             && !window.debug_visualization(cx).show_layout_bounds
         {
             for child in &mut self.children {
-                if window.draw_budget_exhausted_for_optional_work() {
-                    window.degrade_current_draw();
-                }
                 child.paint(window, cx);
             }
             return;
@@ -359,9 +357,6 @@ impl Element for Div {
                     }
 
                     for child in &mut self.children {
-                        if window.draw_budget_exhausted_for_optional_work() {
-                            window.degrade_current_draw();
-                        }
                         child.paint(window, cx);
                     }
                 },
