@@ -1,7 +1,7 @@
 use crate::{
     AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId, Hitbox,
-    ImageCacheProvider, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point,
-    StyleRefinement, Styled, Window, point,
+    ImageCacheProvider, InspectorElementId, IntoElement, LayoutId, Overflow, ParentElement, Pixels,
+    Point, Style, StyleRefinement, Styled, Visibility, Window, point,
 };
 use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
@@ -44,6 +44,58 @@ impl Div {
         self.image_cache = Some(Box::new(cache));
         self
     }
+
+    /// Returns whether this `Div` has no paint-time interactivity of its own.
+    ///
+    /// Hitbox-producing state is checked again after prepaint; this predicate covers the remaining
+    /// keyboard/action/tab and state-style paths that can mutate the dispatch tree without a hitbox.
+    fn interactivity_is_reconciliation_transparent(&self) -> bool {
+        let interactivity = &self.interactivity;
+        interactivity.key_context.is_none()
+            && !interactivity.focusable
+            && interactivity.tracked_focus_handle.is_none()
+            && interactivity.tracked_scroll_handle.is_none()
+            && interactivity.scroll_anchor.is_none()
+            && interactivity.scroll_offset.is_none()
+            && interactivity.group.is_none()
+            && interactivity.focus_style.is_none()
+            && interactivity.in_focus_style.is_none()
+            && interactivity.hover_style.is_none()
+            && interactivity.group_hover_style.is_none()
+            && interactivity.active_style.is_none()
+            && interactivity.group_active_style.is_none()
+            && interactivity.drag_over_styles.is_empty()
+            && interactivity.group_drag_over_styles.is_empty()
+            && interactivity.mouse_down_listeners.is_empty()
+            && interactivity.mouse_up_listeners.is_empty()
+            && interactivity.mouse_move_listeners.is_empty()
+            && interactivity.scroll_wheel_listeners.is_empty()
+            && interactivity.key_down_listeners.is_empty()
+            && interactivity.key_up_listeners.is_empty()
+            && interactivity.modifiers_changed_listeners.is_empty()
+            && interactivity.action_listeners.is_empty()
+            && interactivity.drop_listeners.is_empty()
+            && interactivity.can_drop_predicate.is_none()
+            && interactivity.click_listeners.is_empty()
+            && interactivity.drag_listener.is_none()
+            && interactivity.hover_listener.is_none()
+            && interactivity.tooltip_builder.is_none()
+            && interactivity.window_control.is_none()
+            && interactivity.tab_index.is_none()
+            && !interactivity.tab_group
+            && !interactivity.tab_stop
+            && self.image_cache.is_none()
+            && {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    interactivity.debug_selector.is_none()
+                }
+                #[cfg(not(any(test, feature = "test-support")))]
+                {
+                    true
+                }
+            }
+    }
 }
 
 /// A frame state for a `Div` element, which contains layout IDs for its children.
@@ -54,6 +106,43 @@ impl Div {
 /// bounds of the children after the layout phase is complete.
 pub struct DivLayout {
     pub(crate) child_layout_ids: SmallVec<[LayoutId; 2]>,
+}
+
+/// Paint-time state for a [`Div`].
+///
+/// Pure structural containers can bypass their own paint machinery after prepaint has proven that
+/// they contribute no scene primitives, compositing scope, hitbox, or dispatch-tree side effects.
+pub struct DivPrepaint {
+    hitbox: Option<Hitbox>,
+    reconciliation_transparent: bool,
+}
+
+fn style_is_reconciliation_transparent(style: &Style, window: &Window, cx: &App) -> bool {
+    style.display != Display::None
+        && style.visibility == Visibility::Visible
+        && style.overflow.x == Overflow::Visible
+        && style.overflow.y == Overflow::Visible
+        && style.background.is_none()
+        && style.backdrop_blur.is_none()
+        && style.blur.is_none()
+        && style.border_color.is_none()
+        && style.box_shadow.is_empty()
+        && style.text_style().is_none()
+        && style.mouse_cursor.is_none()
+        && style.opacity.is_none()
+        && style.scale == 1.0
+        && style.transition.is_none()
+        && !window.debug_visualization(cx).show_layout_bounds
+        && {
+            #[cfg(debug_assertions)]
+            {
+                !style.debug && !style.debug_below
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                true
+            }
+        }
 }
 
 impl Styled for Div {
@@ -77,7 +166,7 @@ impl ParentElement for Div {
 
 impl Element for Div {
     type RequestLayoutState = DivLayout;
-    type PrepaintState = Option<Hitbox>;
+    type PrepaintState = DivPrepaint;
 
     fn id(&self) -> Option<ElementId> {
         self.interactivity.element_id.clone()
@@ -132,7 +221,7 @@ impl Element for Div {
         request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) -> Option<Hitbox> {
+    ) -> DivPrepaint {
         let has_prepaint_listener = self.prepaint_listener.is_some();
         let mut children_bounds = Vec::with_capacity(if has_prepaint_listener {
             request_layout.child_layout_ids.len()
@@ -179,6 +268,7 @@ impl Element for Div {
             scroll_handle.scroll_to_active_item();
         }
 
+        let interactivity_transparent = self.interactivity_is_reconciliation_transparent();
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -187,25 +277,30 @@ impl Element for Div {
             window,
             cx,
             |style, scroll_offset, hitbox, window, cx| {
+                let reconciliation_transparent = interactivity_transparent
+                    && hitbox.is_none()
+                    && style_is_reconciliation_transparent(style, window, cx);
+
                 // skip children
-                if style.display == Display::None {
-                    return hitbox;
-                }
-
-                window.with_element_offset(scroll_offset, |window| {
-                    for child in &mut self.children {
-                        if window.draw_budget_exhausted_for_optional_work() {
-                            window.degrade_current_draw();
+                if style.display != Display::None {
+                    window.with_element_offset(scroll_offset, |window| {
+                        for child in &mut self.children {
+                            if window.draw_budget_exhausted_for_optional_work() {
+                                window.degrade_current_draw();
+                            }
+                            child.prepaint(window, cx);
                         }
-                        child.prepaint(window, cx);
-                    }
-                });
+                    });
 
-                if let Some(listener) = self.prepaint_listener.as_ref() {
-                    listener(children_bounds, window, cx);
+                    if let Some(listener) = self.prepaint_listener.as_ref() {
+                        listener(children_bounds, window, cx);
+                    }
                 }
 
-                hitbox
+                DivPrepaint {
+                    hitbox,
+                    reconciliation_transparent,
+                }
             },
         )
     }
@@ -217,10 +312,33 @@ impl Element for Div {
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        hitbox: &mut Option<Hitbox>,
+        prepaint: &mut DivPrepaint,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let debug_below_active = {
+            #[cfg(debug_assertions)]
+            {
+                cx.has_global::<crate::DebugBelow>()
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                false
+            }
+        };
+        if prepaint.reconciliation_transparent
+            && !debug_below_active
+            && !window.debug_visualization(cx).show_layout_bounds
+        {
+            for child in &mut self.children {
+                if window.draw_budget_exhausted_for_optional_work() {
+                    window.degrade_current_draw();
+                }
+                child.paint(window, cx);
+            }
+            return;
+        }
+
         let image_cache = self
             .image_cache
             .as_mut()
@@ -231,7 +349,7 @@ impl Element for Div {
                 global_id,
                 inspector_id,
                 bounds,
-                hitbox.as_ref(),
+                prepaint.hitbox.as_ref(),
                 window,
                 cx,
                 |style, window, cx| {
