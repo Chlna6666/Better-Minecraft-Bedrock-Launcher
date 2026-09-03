@@ -29,13 +29,15 @@ impl Window {
 
     /// Begins one retained element identity scope during request layout.
     ///
-    /// Explicit IDs remain authoritative. Anonymous elements prefer a construction source location
-    /// plus a parent-local occurrence number, so inserting a different call site before them does
-    /// not shift their reconciliation identity. Repeated elements produced from the same call site
-    /// share an ambiguity token; once a second occurrence appears, the first occurrence and all of
-    /// its descendants are retroactively treated as unsafe for frame-bound interaction replay.
-    /// Elements without source information fall back to positional identity and are always marked
-    /// ambiguous for interaction replay.
+    /// Explicit IDs remain authoritative and form a stable retained boundary: anonymous ambiguity
+    /// above the ID does not poison the identified subtree because the full retained path still
+    /// changes whenever the surrounding positional segment or the explicit ID changes. Anonymous
+    /// elements prefer a construction source location plus a parent-local occurrence number, so
+    /// inserting a different call site before them does not shift their reconciliation identity.
+    /// Repeated elements produced from the same call site share an ambiguity token; once a second
+    /// occurrence appears, the first occurrence and all anonymous descendants are retroactively
+    /// treated as unsafe for frame-bound interaction replay. Elements without source information
+    /// fall back to positional identity and are always marked ambiguous for interaction replay.
     pub(crate) fn begin_retained_element(
         &mut self,
         explicit_id: Option<ElementId>,
@@ -57,23 +59,40 @@ impl Window {
         let (segment, ambiguity) = RETAINED_IDENTITY_SCOPES.with(|scopes| {
             let mut scopes = scopes.borrow_mut();
 
-            // Lazy children can be materialized after the original request-layout scope has been
-            // popped. Re-synchronize conservatively: those synthetic parent scopes are marked
-            // ambiguous, so explicit retained keys can still work while anonymous interaction
-            // replay never becomes less safe than the old positional scheme.
-            if scopes.len() != depth {
+            // Lazy containers may add a synthetic retained child scope after their own
+            // request-layout scope has already been popped. Keep the identity-scope stack aligned
+            // with the slot stack instead of clearing all prior scopes. A synthetic level that also
+            // contributes a retained path segment (`with_retained_child_key`) is a stable boundary;
+            // a slot-only child scope inherits its parent's ambiguity conservatively.
+            if scopes.len() > depth {
                 scopes.clear();
-                for _ in 0..depth {
-                    let mut scope = RetainedIdentityScope::default();
-                    scope.owner_ambiguity.push(Rc::new(Cell::new(true)));
-                    scopes.push(scope);
-                }
+            }
+            while scopes.len() < depth {
+                let synthetic_depth = scopes.len();
+                let keyed_boundary = self.retained_element_id_stack.len() > synthetic_depth;
+                let owner_ambiguity = if keyed_boundary {
+                    SmallVec::new()
+                } else {
+                    scopes
+                        .last()
+                        .map(|scope| scope.owner_ambiguity.clone())
+                        .unwrap_or_default()
+                };
+                scopes.push(RetainedIdentityScope {
+                    source_occurrences: FxHashMap::default(),
+                    owner_ambiguity,
+                });
             }
 
-            let mut ambiguity = scopes
-                .last()
-                .map(|scope| scope.owner_ambiguity.clone())
-                .unwrap_or_default();
+            let has_explicit_id = explicit_id.is_some();
+            let mut ambiguity = if has_explicit_id {
+                SmallVec::new()
+            } else {
+                scopes
+                    .last()
+                    .map(|scope| scope.owner_ambiguity.clone())
+                    .unwrap_or_default()
+            };
 
             let segment = if let Some(explicit_id) = explicit_id {
                 explicit_id
@@ -246,7 +265,7 @@ impl Window {
 
         if offset.is_zero() {
             return f(self);
-        };
+        }
 
         let abs_offset = self.element_offset() + offset;
         self.with_absolute_element_offset(abs_offset, f)
