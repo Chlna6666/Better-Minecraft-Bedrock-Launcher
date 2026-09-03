@@ -1,10 +1,27 @@
 use super::*;
 use crate::TransformOrigin;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+struct RetainedAutoIdentityKey {
+    mount: Option<core::panic::Location<'static>>,
+    source: Option<core::panic::Location<'static>>,
+    element_type: std::any::TypeId,
+}
+
+pub(crate) enum RetainedElementIdentity {
+    Explicit(ElementId),
+    Auto {
+        mount: Option<core::panic::Location<'static>>,
+        source: Option<core::panic::Location<'static>>,
+        element_type: std::any::TypeId,
+        ordinal: Option<u32>,
+    },
+    Positional,
+}
+
 #[derive(Default)]
 struct RetainedIdentityScope {
-    source_occurrences:
-        FxHashMap<core::panic::Location<'static>, (u32, Rc<Cell<bool>>)>,
+    auto_occurrences: FxHashMap<RetainedAutoIdentityKey, u32>,
     owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
 }
 
@@ -29,19 +46,16 @@ impl Window {
 
     /// Begins one retained element identity scope during request layout.
     ///
-    /// Explicit IDs remain authoritative and form a stable retained boundary: anonymous ambiguity
-    /// above the ID does not poison the identified subtree because the full retained path still
-    /// changes whenever the surrounding positional segment or the explicit ID changes. Anonymous
-    /// elements prefer a construction source location plus a parent-local occurrence number, so
-    /// inserting a different call site before them does not shift their reconciliation identity.
-    /// Repeated elements produced from the same call site share an ambiguity token; once a second
-    /// occurrence appears, the first occurrence and all anonymous descendants are retroactively
-    /// treated as unsafe for frame-bound interaction replay. Elements without source information
-    /// fall back to positional identity and are always marked ambiguous for interaction replay.
+    /// Application IDs and automatically derived identities form stable retained boundaries. Auto
+    /// identities combine the parent path, mount site, concrete element source, element type, and
+    /// a parent-local same-key occurrence. Fixed children at different call sites therefore remain
+    /// stable when unrelated conditional siblings appear or disappear, while repeated `.child()`
+    /// calls from one loop still receive distinct identities without requiring application IDs.
+    /// Elements with no usable source information fall back to positional identity and stay
+    /// conservatively ambiguous for interaction replay.
     pub(crate) fn begin_retained_element(
         &mut self,
-        explicit_id: Option<ElementId>,
-        source_location: Option<&'static core::panic::Location<'static>>,
+        identity: RetainedElementIdentity,
     ) -> (
         ElementId,
         GlobalElementId,
@@ -86,49 +100,58 @@ impl Window {
                             .unwrap_or_default()
                     };
                     scopes.push(RetainedIdentityScope {
-                        source_occurrences: FxHashMap::default(),
+                        auto_occurrences: FxHashMap::default(),
                         owner_ambiguity,
                     });
                 }
             }
 
-            let has_explicit_id = explicit_id.is_some();
-            let mut ambiguity = if has_explicit_id {
-                SmallVec::new()
-            } else {
-                scopes
-                    .last()
-                    .map(|scope| scope.owner_ambiguity.clone())
-                    .unwrap_or_default()
-            };
-
-            let segment = if let Some(explicit_id) = explicit_id {
-                explicit_id
-            } else if let Some(source_location) = source_location {
-                if let Some(parent) = scopes.last_mut() {
-                    let entry = parent
-                        .source_occurrences
-                        .entry(*source_location)
-                        .or_insert_with(|| (0, Rc::new(Cell::new(false))));
-                    let occurrence = entry.0;
-                    entry.0 = entry.0.saturating_add(1);
-                    if occurrence > 0 {
-                        entry.1.set(true);
-                    }
-                    ambiguity.push(entry.1.clone());
-                    ElementId::RetainedSourceSlot(*source_location, occurrence)
-                } else {
-                    // A window has a single root element, so a source-derived root identity cannot
-                    // collide with a sibling in the same retained namespace.
-                    ElementId::RetainedSourceSlot(*source_location, 0)
+            let (segment, ambiguity) = match identity {
+                RetainedElementIdentity::Explicit(explicit_id) => {
+                    (explicit_id, SmallVec::new())
                 }
-            } else {
-                ambiguity.push(Rc::new(Cell::new(true)));
-                ElementId::InstanceSlot(slot)
+                RetainedElementIdentity::Auto {
+                    mount,
+                    source,
+                    element_type,
+                    ordinal,
+                } => {
+                    let key = RetainedAutoIdentityKey {
+                        mount,
+                        source,
+                        element_type,
+                    };
+                    let occurrence = ordinal.unwrap_or_else(|| {
+                        let Some(parent) = scopes.last_mut() else {
+                            return 0;
+                        };
+                        let next = parent.auto_occurrences.entry(key).or_insert(0);
+                        let occurrence = *next;
+                        *next = next.saturating_add(1);
+                        occurrence
+                    });
+                    (
+                        ElementId::RetainedAutoSlot {
+                            mount,
+                            source,
+                            element_type,
+                            occurrence,
+                        },
+                        SmallVec::new(),
+                    )
+                }
+                RetainedElementIdentity::Positional => {
+                    let mut ambiguity = scopes
+                        .last()
+                        .map(|scope| scope.owner_ambiguity.clone())
+                        .unwrap_or_default();
+                    ambiguity.push(Rc::new(Cell::new(true)));
+                    (ElementId::InstanceSlot(slot), ambiguity)
+                }
             };
 
             scopes.push(RetainedIdentityScope {
-                source_occurrences: FxHashMap::default(),
+                auto_occurrences: FxHashMap::default(),
                 owner_ambiguity: ambiguity.clone(),
             });
             (segment, ambiguity)
@@ -216,8 +239,7 @@ impl Window {
 
     /// Updates the cursor style for the entire window at the platform level. A cursor
     /// style using this method will have precedence over any cursor style set using
-    /// `set_cursor_style`. This method should only be called during the prepaint
-    /// phase of element drawing.
+    /// `set_cursor_style`. This method should only be called as part of element drawing.
     pub fn set_window_cursor_style(&mut self, style: CursorStyle) {
         self.invalidator.debug_assert_paint();
         self.next_frame.cursor_styles.push(CursorStyleRequest {
