@@ -246,17 +246,13 @@ fn background_animation_policy(
     animation_suppressed: bool,
     window_active: bool,
 ) -> ImageAnimationPolicy {
-    if animation_suppressed {
+    if animation_suppressed || !window_active {
         ImageAnimationPolicy::paused()
     } else {
         ImageAnimationPolicy {
             play: true,
             max_fps: Some(BACKGROUND_ANIMATION_MAX_FPS),
-            inactive_max_fps: Some(if window_active {
-                BACKGROUND_ANIMATION_MAX_FPS
-            } else {
-                1.0
-            }),
+            inactive_max_fps: None,
         }
     }
 }
@@ -315,15 +311,15 @@ mod tests {
     }
 
     #[test]
-    fn background_animation_policy_throttles_when_window_inactive() {
+    fn background_animation_policy_pauses_when_window_inactive() {
         let policy = background_animation_policy(false, false);
-        assert!(policy.play);
-        assert_eq!(policy.inactive_max_fps, Some(1.0));
+        assert!(!policy.play);
     }
 
     #[test]
     fn background_animation_policy_caps_active_playback() {
         let policy = background_animation_policy(false, true);
+        assert!(policy.play);
         assert_eq!(policy.max_fps, Some(BACKGROUND_ANIMATION_MAX_FPS));
     }
 
