@@ -80,3 +80,4 @@ pub use traits::*;
 pub use uniform_list::*;
 
 pub(crate) use div::{DivPrepaint, RetainedDivSelfSceneStyle};
+pub(crate) use lifecycle::RetainedPlainTextKey;
