@@ -82,12 +82,8 @@ impl MapViewerWindowView {
         self.cancel_professional_overlay_query();
         self.cancel_slime_window_candidate_query();
         self.preview_3d.clear_resources(true);
-
-        // Stored tasks are window-scoped. Dropping their handles prevents delayed refreshes
-        // from keeping work alive while the native window is being removed.
         self.viewport_idle_task.take();
         self.task_updates_task.take();
-
         self.session_generation = self.session_generation.saturating_add(1);
         self.metadata_generation = self.metadata_generation.saturating_add(1);
         self.render_generation = self.render_generation.saturating_add(1);
@@ -110,14 +106,10 @@ impl MapViewerWindowView {
             .detach();
         }
 
-        // A tile can be referenced simultaneously by RegionManager, the retained canvas
-        // snapshot and a delayed eviction entry. GPUI image resources must be released once,
-        // so collect every window-owned RenderImage by ImageId before clearing the owners.
         let mut render_images = BTreeMap::<ImageId, Arc<RenderImage>>::new();
         let mut collect_image = |image: Arc<RenderImage>| {
             render_images.entry(image.id).or_insert(image);
         };
-
         for image in self.tile_manager.clear() {
             collect_image(image);
         }
@@ -162,7 +154,6 @@ impl MapViewerWindowView {
         for image in render_images.into_values() {
             cx.drop_image(image, None);
         }
-
         crate::utils::memory_diagnostics::clear_map_viewer_memory();
         tracing::debug!(
             released_render_images,
@@ -209,7 +200,7 @@ impl Render for MapViewerWindowView {
         }
         self.frame_stats.record_frame();
         self.sync_input_values(window, cx);
-        request_animation_frame_if(
+        request_layout_animation_frame_if(
             window,
             preview_3d_motion_active || paste_preview_auto_pan_active,
         );
@@ -238,109 +229,61 @@ impl Render for MapViewerWindowView {
             .bg(colors.bg)
             .key_context("MapViewer")
             .on_action(cx.listener(|this, _: &MapViewerCopyChunks, window, cx| {
-                if !this.map_shortcuts_allowed(window, cx) {
-                    return;
-                }
+                if !this.map_shortcuts_allowed(window, cx) { return; }
                 this.copy_context_chunks(cx);
             }))
-            .on_action(
-                cx.listener(|this, _: &MapViewerExportChunksImage, window, cx| {
-                    if !this.map_shortcuts_allowed(window, cx) {
-                        return;
-                    }
-                    this.export_chunks_image(cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &MapViewerStartPastePreview, window, cx| {
-                    if !this.map_shortcuts_allowed(window, cx) {
-                        return;
-                    }
-                    this.start_paste_preview_from_keyboard(cx);
-                }),
-            )
-            .on_action(cx.listener(
-                |this, _: &MapViewerRotatePastePreviewClockwise, window, cx| {
-                    if !this.map_shortcuts_allowed(window, cx) {
-                        return;
-                    }
-                    this.rotate_paste_preview(true, cx);
-                },
-            ))
-            .on_action(cx.listener(
-                |this, _: &MapViewerRotatePastePreviewCounterClockwise, window, cx| {
-                    if !this.map_shortcuts_allowed(window, cx) {
-                        return;
-                    }
-                    this.rotate_paste_preview(false, cx);
-                },
-            ))
-            .on_action(
-                cx.listener(|this, _: &MapViewerConfirmPastePreview, window, cx| {
-                    if !this.map_shortcuts_allowed(window, cx) {
-                        return;
-                    }
-                    this.confirm_paste_preview(cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &MapViewerCancelPastePreview, window, cx| {
-                    if !this.map_shortcuts_allowed(window, cx) {
-                        return;
-                    }
-                    if !this.cancel_paste_preview(cx) {
-                        this.close_all_menus(cx);
-                    }
-                }),
-            )
+            .on_action(cx.listener(|this, _: &MapViewerExportChunksImage, window, cx| {
+                if !this.map_shortcuts_allowed(window, cx) { return; }
+                this.export_chunks_image(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MapViewerStartPastePreview, window, cx| {
+                if !this.map_shortcuts_allowed(window, cx) { return; }
+                this.start_paste_preview_from_keyboard(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MapViewerRotatePastePreviewClockwise, window, cx| {
+                if !this.map_shortcuts_allowed(window, cx) { return; }
+                this.rotate_paste_preview(true, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MapViewerRotatePastePreviewCounterClockwise, window, cx| {
+                if !this.map_shortcuts_allowed(window, cx) { return; }
+                this.rotate_paste_preview(false, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MapViewerConfirmPastePreview, window, cx| {
+                if !this.map_shortcuts_allowed(window, cx) { return; }
+                this.confirm_paste_preview(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MapViewerCancelPastePreview, window, cx| {
+                if !this.map_shortcuts_allowed(window, cx) { return; }
+                if !this.cancel_paste_preview(cx) { this.close_all_menus(cx); }
+            }))
             .on_action(cx.listener(|this, _: &MapViewerUndoEdit, window, cx| {
-                if !this.map_shortcuts_allowed(window, cx) {
-                    return;
-                }
+                if !this.map_shortcuts_allowed(window, cx) { return; }
                 this.undo_map_edit(cx);
             }))
             .on_action(cx.listener(|this, _: &MapViewerRedoEdit, window, cx| {
-                if !this.map_shortcuts_allowed(window, cx) {
-                    return;
-                }
+                if !this.map_shortcuts_allowed(window, cx) { return; }
                 this.redo_map_edit(cx);
             }))
             .on_action(cx.listener(|this, _: &MapViewerOpenHistory, window, cx| {
-                if !this.map_shortcuts_allowed(window, cx) {
-                    return;
-                }
+                if !this.map_shortcuts_allowed(window, cx) { return; }
                 this.open_history_tab(cx);
             }))
             .on_action(cx.listener(|this, _: &MapViewerCreateBackup, window, cx| {
-                if !this.map_shortcuts_allowed(window, cx) {
-                    return;
-                }
+                if !this.map_shortcuts_allowed(window, cx) { return; }
                 this.create_map_backup(cx);
             }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("root left mouse up", cx);
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("root left mouse up out", cx);
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Right,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("root right mouse up", cx);
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Right,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("root right mouse up out", cx);
-                }),
-            )
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                this.release_pointer_captures("root left mouse up", cx);
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                this.release_pointer_captures("root left mouse up out", cx);
+            }))
+            .on_mouse_up(MouseButton::Right, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                this.release_pointer_captures("root right mouse up", cx);
+            }))
+            .on_mouse_up_out(MouseButton::Right, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                this.release_pointer_captures("root right mouse up out", cx);
+            }))
             .child(
                 div()
                     .absolute()
@@ -485,10 +428,6 @@ pub(super) fn map_render_layer_order() -> [MapLayerKind; 4] {
 impl MapViewerWindowView {
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {
-            // Track only genuinely new ImageIds. A ReadyBatch usually adds at most a handful of
-            // tiles, so it must not restart a repaint plan sized for every image already resident
-            // in the snapshot. The previous additive plan grew to hundreds of forced full-window
-            // redraws and made retained source tiles and macro pages alternate visibly.
             let mut last_frontend_generation = u64::MAX;
             let mut last_frontend_image_ids = BTreeSet::new();
             let mut last_frontend_paint_bounds: Option<TileBounds> = None;
@@ -502,148 +441,73 @@ impl MapViewerWindowView {
                     VIEWPORT_WATCHDOG_INTERVAL
                 };
                 Timer::after(interval).await;
-                let Some(view) = handle.upgrade() else {
-                    break;
-                };
+                let Some(view) = handle.upgrade() else { break; };
                 view.update(cx, |this, cx| {
-                    if this.render_session.is_none() || this.session_loading {
-                        return;
-                    }
+                    if this.render_session.is_none() || this.session_loading { return; }
                     let visible_tiles = this.tile_coords_for_viewport(0);
-                    if visible_tiles.is_empty() {
-                        return;
-                    }
+                    if visible_tiles.is_empty() { return; }
 
                     let frontend_generation = this.canvas_tile_snapshot.generation;
                     if frontend_generation != last_frontend_generation {
-                        let current_image_ids =
-                            frontend_snapshot_image_ids(&this.canvas_tile_snapshot);
+                        let current_image_ids = frontend_snapshot_image_ids(&this.canvas_tile_snapshot);
                         let image_count = current_image_ids.len();
-                        let added_or_replaced_images = current_image_ids
-                            .difference(&last_frontend_image_ids)
-                            .count();
-                        let removed_images = last_frontend_image_ids
-                            .difference(&current_image_ids)
-                            .count();
+                        let added_or_replaced_images = current_image_ids.difference(&last_frontend_image_ids).count();
+                        let removed_images = last_frontend_image_ids.difference(&current_image_ids).count();
                         let paint_bounds = this.canvas_tile_snapshot.paint_bounds;
                         let viewport_bounds_changed = paint_bounds != last_frontend_paint_bounds;
-
                         if added_or_replaced_images > 0 {
-                            let requested_passes =
-                                frontend_repaint_passes(added_or_replaced_images);
-                            // Coalesce bursts instead of adding every generation's pass count.
-                            // At most the largest currently pending burst remains scheduled.
+                            let requested_passes = frontend_repaint_passes(added_or_replaced_images);
                             if requested_passes > frontend_repaint_passes_remaining {
                                 frontend_repaint_passes_remaining = requested_passes;
                                 frontend_repaint_passes_total = requested_passes;
                             }
                         }
-
                         last_frontend_generation = frontend_generation;
                         last_frontend_image_ids = current_image_ids;
                         last_frontend_paint_bounds = paint_bounds;
-                        tracing::debug!(
-                            frontend_generation,
-                            image_count,
-                            added_or_replaced_images,
-                            removed_images,
-                            viewport_bounds_changed,
-                            macro_pages = this.canvas_tile_snapshot.screen_images.len(),
-                            individual_tiles = this.canvas_tile_snapshot.tiles.len(),
-                            repaint_passes = frontend_repaint_passes_remaining,
-                            viewport_scale = this.viewport.scale,
-                            ?paint_bounds,
-                            "map_viewer frontend_tile_upload_latch_updated"
-                        );
+                        tracing::debug!(frontend_generation, image_count, added_or_replaced_images, removed_images, viewport_bounds_changed, macro_pages = this.canvas_tile_snapshot.screen_images.len(), individual_tiles = this.canvas_tile_snapshot.tiles.len(), repaint_passes = frontend_repaint_passes_remaining, viewport_scale = this.viewport.scale, ?paint_bounds, "map_viewer frontend_tile_upload_latch_updated");
                     }
 
-                    let frontend_repaint_pending = frontend_repaint_passes_remaining > 0;
-                    if frontend_repaint_pending {
-                        // Invalidate only the retained tile-layer cache. Do not call
-                        // Window::refresh_map_image_uploads here: that forces a full-window cache
-                        // refresh every 8 ms and visibly alternates the source-tile and macro-page
-                        // scenes. set_tile_snapshot increments the tile-layer revision and is
-                        // sufficient to execute the budgeted image paint again.
+                    if frontend_repaint_passes_remaining > 0 {
                         this.last_synced_tile_layer_snapshot_key = None;
                         let colors = this.theme_colors(cx);
                         this.sync_tile_layer_snapshot(colors, cx);
-
                         let repaint_pass = frontend_repaint_passes_total
                             .saturating_sub(frontend_repaint_passes_remaining)
                             .saturating_add(1);
-                        frontend_repaint_passes_remaining =
-                            frontend_repaint_passes_remaining.saturating_sub(1);
-                        if repaint_pass == 1
-                            || frontend_repaint_passes_remaining <= 1
-                            || repaint_pass % FRONTEND_REPAINT_PROGRESS_LOG_INTERVAL == 0
-                        {
-                            tracing::debug!(
-                                frontend_generation,
-                                repaint_pass,
-                                repaint_passes_total = frontend_repaint_passes_total,
-                                repaint_passes_remaining = frontend_repaint_passes_remaining,
-                                image_count = last_frontend_image_ids.len(),
-                                viewport_scale = this.viewport.scale,
-                                paint_bounds = ?this.canvas_tile_snapshot.paint_bounds,
-                                refresh_scope = "tile_layer",
-                                "map_viewer frontend_tile_upload_repaint"
-                            );
+                        frontend_repaint_passes_remaining = frontend_repaint_passes_remaining.saturating_sub(1);
+                        if repaint_pass == 1 || frontend_repaint_passes_remaining <= 1 || repaint_pass % FRONTEND_REPAINT_PROGRESS_LOG_INTERVAL == 0 {
+                            tracing::debug!(frontend_generation, repaint_pass, repaint_passes_total = frontend_repaint_passes_total, repaint_passes_remaining = frontend_repaint_passes_remaining, image_count = last_frontend_image_ids.len(), viewport_scale = this.viewport.scale, paint_bounds = ?this.canvas_tile_snapshot.paint_bounds, refresh_scope = "tile_layer", "map_viewer frontend_tile_upload_repaint");
                         }
                         if frontend_repaint_passes_remaining == 0 {
-                            tracing::debug!(
-                                frontend_generation,
-                                image_count = last_frontend_image_ids.len(),
-                                viewport_scale = this.viewport.scale,
-                                paint_bounds = ?this.canvas_tile_snapshot.paint_bounds,
-                                "map_viewer frontend_tile_upload_latch_drained"
-                            );
+                            tracing::debug!(frontend_generation, image_count = last_frontend_image_ids.len(), viewport_scale = this.viewport.scale, paint_bounds = ?this.canvas_tile_snapshot.paint_bounds, "map_viewer frontend_tile_upload_latch_drained");
                         }
-                        // Keep upload work isolated from manifest/render scheduling. Mixing both
-                        // in the same 16 ms tick creates another snapshot before the previous
-                        // retained tile layer has reached the renderer.
                         return;
                     }
 
-                    // screen_images is also used by low-zoom macro pages. It must not activate
-                    // the legacy single-frame viewport-composite state machine, whose
-                    // `screen_images.len() != 1` condition otherwise keeps the viewport marked
-                    // incomplete forever and rebuilds the tile snapshot every watchdog tick.
                     let viewport_composite_active = VIEWPORT_COMPOSITE_ENABLED
                         && (this.viewport_composite_request_id.is_some()
                             || !this.canvas_tile_snapshot.screen_images.is_empty());
                     let orphaned_loading = if viewport_composite_active {
                         Vec::new()
                     } else {
-                        visible_tiles
-                            .iter()
-                            .copied()
-                            .filter(|coord| {
-                                this.tile_manager.entries.get(coord).is_some_and(|entry| {
-                                    entry.state == TileLoadState::Loading
-                                        && !this.active_render_tiles.contains(coord)
-                                })
+                        visible_tiles.iter().copied().filter(|coord| {
+                            this.tile_manager.entries.get(coord).is_some_and(|entry| {
+                                entry.state == TileLoadState::Loading && !this.active_render_tiles.contains(coord)
                             })
-                            .collect::<Vec<_>>()
+                        }).collect::<Vec<_>>()
                     };
                     if !orphaned_loading.is_empty() {
-                        this.tile_manager
-                            .requeue_cancelled_loading(&orphaned_loading);
+                        this.tile_manager.requeue_cancelled_loading(&orphaned_loading);
                     }
-
                     let incomplete = if viewport_composite_active {
                         this.viewport_composite_request_id.is_some()
                             || this.pending_viewport_refresh
                             || this.canvas_tile_snapshot.screen_images.len() != 1
                     } else {
-                        visible_tiles
-                            .iter()
-                            .copied()
-                            .any(|coord| !visible_tile_frontend_ready(&this.tile_manager, coord))
+                        visible_tiles.iter().copied().any(|coord| !visible_tile_frontend_ready(&this.tile_manager, coord))
                     };
-                    if !incomplete && orphaned_loading.is_empty() {
-                        return;
-                    }
-
+                    if !incomplete && orphaned_loading.is_empty() { return; }
                     this.pending_viewport_refresh = true;
                     this.ensure_visible_tiles(cx);
                     if this.pending_viewport_refresh {
