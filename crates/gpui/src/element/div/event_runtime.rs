@@ -225,7 +225,8 @@ impl Interactivity {
                 let was_hovered = element_state.ensure_hover_state();
                 let exit_was_hovered = was_hovered.clone();
                 let has_mouse_down = element_state.ensure_pending_mouse_down();
-                let hover_listener: Rc<_> = Rc::from(hover_listener);
+                let hover_listener: Rc<dyn Fn(&bool, &mut Window, &mut App)> =
+                    Rc::from(hover_listener);
                 let move_hover_listener = hover_listener.clone();
 
                 window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
