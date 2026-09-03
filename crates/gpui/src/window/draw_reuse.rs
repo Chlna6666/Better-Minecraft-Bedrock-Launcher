@@ -490,7 +490,7 @@ impl Window {
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
         metadata_start: usize,
-        div_self_scene_style: Option<crate::element::RetainedDivSelfSceneStyle>,
+        div_self_scene: Option<crate::element::RetainedDivSelfScene>,
         plain_text_key: Option<crate::element::RetainedPlainTextKey>,
         identity_stable: bool,
         subtree_stable: bool,
@@ -506,7 +506,7 @@ impl Window {
                 prepaint_range,
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
-                div_self_scene_style,
+                div_self_scene,
                 plain_text_key,
                 identity_stable,
                 subtree_stable,
@@ -566,6 +566,21 @@ impl Window {
             else {
                 return false;
             };
+            let div_self_scene = if let Some(source_self_scene) = source_range.div_self_scene.as_ref() {
+                let Some(child_scene_range) = rebase_scene_range(
+                    &source_self_scene.child_scene_range,
+                    source_paint,
+                    target_paint,
+                ) else {
+                    return false;
+                };
+                Some(crate::element::RetainedDivSelfScene {
+                    style: source_self_scene.style.clone(),
+                    child_scene_range,
+                })
+            } else {
+                None
+            };
             let Some(metadata_start_offset) = source_range
                 .metadata_range
                 .start
@@ -595,7 +610,7 @@ impl Window {
                     prepaint_range,
                     paint_range,
                     metadata_range: metadata_start..metadata_end,
-                    div_self_scene_style: source_range.div_self_scene_style.clone(),
+                    div_self_scene,
                     plain_text_key: source_range.plain_text_key.clone(),
                     identity_stable: source_range.identity_stable,
                     subtree_stable: source_range.subtree_stable,
@@ -668,6 +683,19 @@ fn rebase_paint_range(
     Some(
         range.start.rebased_from(&source.start, &target.start)?
             ..range.end.rebased_from(&source.start, &target.start)?,
+    )
+}
+
+fn rebase_scene_range(
+    range: &Range<usize>,
+    source: &Range<PaintIndex>,
+    target: &Range<PaintIndex>,
+) -> Option<Range<usize>> {
+    let start_offset = range.start.checked_sub(source.start.scene_index)?;
+    let end_offset = range.end.checked_sub(source.start.scene_index)?;
+    Some(
+        target.start.scene_index.checked_add(start_offset)?
+            ..target.start.scene_index.checked_add(end_offset)?,
     )
 }
 
