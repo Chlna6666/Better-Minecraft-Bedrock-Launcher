@@ -49,6 +49,26 @@ impl Window {
             )));
     }
 
+    /// Register a framework-owned mouse listener whose state can only change when hit testing
+    /// changes. Unlike [`Self::on_mouse_event`], an unchanged `MouseMoveEvent` does not invoke this
+    /// callback. Explicit application mouse-move handlers keep continuous delivery semantics.
+    pub(crate) fn on_mouse_hit_test_transition<Event: MouseEvent>(
+        &mut self,
+        mut handler: impl FnMut(&Event, DispatchPhase, &mut Window, &mut App) + 'static,
+    ) {
+        self.invalidator.debug_assert_paint();
+
+        self.next_frame
+            .mouse_listeners
+            .push(MouseListener::new_hit_test_transition::<Event>(Box::new(
+                move |event: &dyn Any, phase: DispatchPhase, window: &mut Window, cx: &mut App| {
+                    if let Some(event) = event.downcast_ref() {
+                        handler(event, phase, window, cx)
+                    }
+                },
+            )));
+    }
+
     /// Register a key event listener on the window for the next frame. The type of event
     /// is determined by the first parameter of the given listener. When the next frame is rendered
     /// the listener will be cleared.
@@ -132,7 +152,7 @@ impl Window {
                             handles: Arc::downgrade(&cx.focus_handles),
                         },
                     };
-                    listener(event, window, cx)
+                    listener(window, cx)
                 }
                 true
             }));
@@ -428,7 +448,7 @@ impl Window {
         // Capture phase, events bubble from back to front. Handlers for this phase are used for
         // special purposes, such as detecting events outside of a given Bounds.
         for listener in &mut mouse_listeners {
-            if !listener.handles(event_type) {
+            if !listener.handles(event_type, hit_test_unchanged) {
                 continue;
             }
             let Some(mut listener) = listener.listener_mut() else {
@@ -443,7 +463,7 @@ impl Window {
         // Bubble phase, where most normal handlers do their work.
         if cx.propagate_event {
             for listener in mouse_listeners.iter_mut().rev() {
-                if !listener.handles(event_type) {
+                if !listener.handles(event_type, hit_test_unchanged) {
                     continue;
                 }
                 let Some(mut listener) = listener.listener_mut() else {
