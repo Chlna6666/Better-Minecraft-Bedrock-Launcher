@@ -1,6 +1,6 @@
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
-use crate::ui::animation::{apple_spring, request_animation_frame_if, spring_motion};
+use crate::ui::animation::{apple_spring, spring_motion};
 use crate::ui::components::color_picker::normalize_hex_color;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{InputEvent, InputState};
@@ -180,6 +180,7 @@ struct MainWindowRenderModel {
     update_modal_animating: bool,
     diagnostics_visible: bool,
     launcher_snapshot: crate::ui::hooks::use_launcher::LauncherSnapshot,
+    launcher_modal_animating: bool,
     #[cfg(target_os = "windows")]
     launch_prereq_visible: bool,
     #[cfg(target_os = "windows")]
@@ -365,6 +366,7 @@ impl MainWindowView {
             .pending_report
             .is_some();
         let launcher_snapshot = crate::ui::hooks::use_launcher::read_launcher_snapshot(now, cx);
+        let launcher_modal_animating = cx.global::<LauncherState>().is_modal_animating(now);
         #[cfg(target_os = "windows")]
         let (launch_prereq_visible, launch_prereq_busy_deadline) = {
             let launch_prereq_state =
@@ -409,6 +411,7 @@ impl MainWindowView {
             update_modal_animating,
             diagnostics_visible,
             launcher_snapshot,
+            launcher_modal_animating,
             #[cfg(target_os = "windows")]
             launch_prereq_visible,
             #[cfg(target_os = "windows")]
@@ -641,22 +644,25 @@ impl MainWindowView {
                     self.pause_update_markdown_view(cx);
                 }
 
-                root = root.child(crate::ui::overlays::update::render_update_modal(
-                    release,
-                    markdown_view,
-                    changelog_scroll_handle,
-                    model.window_width,
-                    model.window_height,
-                    model.update_modal_visible,
-                    downloading,
-                    task_id,
-                    snap,
-                    download_error,
-                    model.theme_k,
-                    update_modal_factor,
-                    model.theme_accent,
-                    cx.global::<I18n>(),
-                ));
+                root = root.child(
+                    crate::ui::overlays::update::render_update_modal(
+                        release,
+                        markdown_view,
+                        changelog_scroll_handle,
+                        model.window_width,
+                        model.window_height,
+                        model.update_modal_visible,
+                        downloading,
+                        task_id,
+                        snap,
+                        download_error,
+                        model.theme_k,
+                        update_modal_factor,
+                        model.theme_accent,
+                        cx.global::<I18n>(),
+                    )
+                    .with_layout_animation_target(model.update_modal_animating),
+                );
             } else {
                 self.pause_update_markdown_view(cx);
             }
@@ -682,11 +688,14 @@ impl MainWindowView {
 
             if model.launcher_snapshot.show_modal {
                 auth_blocked = true;
-                root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
-                    &model.launcher_snapshot,
-                    window,
-                    cx,
-                ));
+                root = root.child(
+                    crate::ui::overlays::launcher::render_launcher_overlay(
+                        &model.launcher_snapshot,
+                        window,
+                        cx,
+                    )
+                    .with_layout_animation_target(model.launcher_modal_animating),
+                );
             }
 
             #[cfg(target_os = "windows")]
@@ -1701,11 +1710,6 @@ impl Render for MainWindowView {
         if self.startup_deferred_ready {
             self.ensure_startup_route_bootstrapped(cx);
             self.ensure_route_controls(model.builtin_route, window, cx);
-        }
-        request_animation_frame_if(window, model.update_modal_animating);
-        {
-            let launcher_state = cx.global::<LauncherState>();
-            request_animation_frame_if(window, launcher_state.is_modal_animating(render_started));
         }
         if update_state_changed {
             cx.notify();
