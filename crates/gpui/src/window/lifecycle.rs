@@ -43,14 +43,32 @@ impl Window {
     /// Invalidates an interactive element without turning an element-local state change into a
     /// general application notification or a forced refresh of every cached view.
     ///
-    /// The owning view is still marked dirty so it can rebuild the changed element. The exact
-    /// element path is retained separately, allowing unchanged sibling element subtrees to replay
-    /// their previous prepaint/paint ranges during this interaction-only frame.
+    /// This conservative entry point keeps the changed element's descendants dirty. Call
+    /// [`Self::notify_interactive_region_scoped`] when the caller knows the interaction only
+    /// changes the element's own paint and descendants can retain their previous ranges.
     pub(crate) fn notify_interactive_region(
         &mut self,
         view_id: EntityId,
         global_id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
+        cx: &mut App,
+    ) {
+        self.notify_interactive_region_scoped(view_id, global_id, bounds, true, cx);
+    }
+
+    /// Invalidates one stable interactive path with an explicit descendant-damage scope.
+    ///
+    /// `descendants_dirty == false` means only the changed element and its structural ancestors
+    /// must execute normally. Descendants remain eligible for retained prepaint/paint replay. This
+    /// is correct for state styles that only change the element's own pixels (for example a
+    /// background or shadow). Set it to `true` whenever the interaction can change layout,
+    /// inherited text, clipping, opacity, transforms, or another subtree paint context.
+    pub(crate) fn notify_interactive_region_scoped(
+        &mut self,
+        view_id: EntityId,
+        global_id: Option<&GlobalElementId>,
+        bounds: Bounds<Pixels>,
+        descendants_dirty: bool,
         _cx: &mut App,
     ) {
         if !bounds.is_empty() {
@@ -60,7 +78,7 @@ impl Window {
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
         if self
             .invalidator
-            .invalidate_interactive_view(view_id, global_id)
+            .invalidate_interactive_view(view_id, global_id, descendants_dirty)
         {
             self.schedule_dirty_frame();
         }
@@ -85,10 +103,11 @@ struct WindowInvalidatorInner {
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
     /// True only while all invalidations queued for the next frame are element-local interactions.
     pub pending_interaction_only: bool,
-    pub pending_interactive_elements: FxHashSet<GlobalElementId>,
+    /// Stable dirty paths and whether each path invalidates all of its descendants.
+    pub pending_interactive_elements: FxHashMap<GlobalElementId, bool>,
     /// Snapshot consumed by the frame currently being generated.
     pub active_interaction_only: bool,
-    pub active_interactive_elements: FxHashSet<GlobalElementId>,
+    pub active_interactive_elements: FxHashMap<GlobalElementId, bool>,
 }
 
 #[derive(Clone)]
@@ -105,9 +124,9 @@ impl WindowInvalidator {
                 dirty_views: FxHashSet::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
                 pending_interaction_only: false,
-                pending_interactive_elements: FxHashSet::default(),
+                pending_interactive_elements: FxHashMap::default(),
                 active_interaction_only: false,
-                active_interactive_elements: FxHashSet::default(),
+                active_interactive_elements: FxHashMap::default(),
             })),
         }
     }
@@ -144,6 +163,7 @@ impl WindowInvalidator {
         &self,
         entity: EntityId,
         global_id: Option<&GlobalElementId>,
+        descendants_dirty: bool,
     ) -> bool {
         let mut inner = self.inner.borrow_mut();
         inner
@@ -169,7 +189,9 @@ impl WindowInvalidator {
         {
             inner
                 .pending_interactive_elements
-                .insert(global_id.clone());
+                .entry(global_id.clone())
+                .and_modify(|existing_scope| *existing_scope |= descendants_dirty)
+                .or_insert(descendants_dirty);
         }
         inner.dirty = true;
         true
@@ -200,17 +222,19 @@ impl WindowInvalidator {
         self.inner.borrow().active_interaction_only
     }
 
-    /// Returns true when `global_id` is either the changed element, one of its ancestors, or one
-    /// of its descendants. Those paths must execute normally; disjoint stable paths may replay.
+    /// Returns whether this stable retained path must execute normally in the active interaction
+    /// frame. Structural ancestors always execute so the traversal can reach a changed element.
+    /// Descendants execute only when the invalidation explicitly carries subtree context damage.
     pub(in crate::window) fn interactive_path_is_dirty(&self, global_id: &GlobalElementId) -> bool {
         let inner = self.inner.borrow();
         if !inner.active_interaction_only {
             return true;
         }
-        inner
-            .active_interactive_elements
-            .iter()
-            .any(|dirty| global_element_paths_overlap(global_id, dirty))
+        inner.active_interactive_elements.iter().any(
+            |(dirty, descendants_dirty)| {
+                interaction_path_requires_repaint(global_id, dirty, *descendants_dirty)
+            },
+        )
     }
 
     pub fn set_phase(&self, phase: DrawPhase) {
@@ -261,13 +285,57 @@ impl WindowInvalidator {
     }
 }
 
-fn global_element_paths_overlap(left: &GlobalElementId, right: &GlobalElementId) -> bool {
-    let prefix_len = left.0.len().min(right.0.len());
-    left.0
-        .iter()
-        .zip(right.0.iter())
-        .take(prefix_len)
-        .all(|(left, right)| left == right)
+fn interaction_path_requires_repaint(
+    candidate: &GlobalElementId,
+    dirty: &GlobalElementId,
+    descendants_dirty: bool,
+) -> bool {
+    global_element_path_is_prefix(candidate, dirty)
+        || descendants_dirty && global_element_path_is_prefix(dirty, candidate)
+}
+
+fn global_element_path_is_prefix(prefix: &GlobalElementId, path: &GlobalElementId) -> bool {
+    prefix.0.len() <= path.0.len()
+        && prefix
+            .0
+            .iter()
+            .zip(path.0.iter())
+            .all(|(prefix, path)| prefix == path)
+}
+
+#[cfg(test)]
+mod interaction_dirty_scope_tests {
+    use super::*;
+
+    fn path(parts: &[u32]) -> GlobalElementId {
+        GlobalElementId(parts.iter().copied().map(ElementId::InstanceSlot).collect())
+    }
+
+    #[test]
+    fn element_only_interaction_keeps_descendants_replayable() {
+        let ancestor = path(&[0]);
+        let dirty = path(&[0, 1]);
+        let descendant = path(&[0, 1, 2]);
+        let sibling = path(&[0, 3]);
+
+        assert!(interaction_path_requires_repaint(&ancestor, &dirty, false));
+        assert!(interaction_path_requires_repaint(&dirty, &dirty, false));
+        assert!(!interaction_path_requires_repaint(&descendant, &dirty, false));
+        assert!(!interaction_path_requires_repaint(&sibling, &dirty, false));
+    }
+
+    #[test]
+    fn subtree_interaction_invalidates_descendants_but_not_siblings() {
+        let ancestor = path(&[0]);
+        let dirty = path(&[0, 1]);
+        let descendant = path(&[0, 1, 2]);
+        let sibling = path(&[0, 3]);
+
+        assert!(interaction_path_requires_repaint(&ancestor, &dirty, true));
+        assert!(interaction_path_requires_repaint(&dirty, &dirty, true));
+        assert!(interaction_path_requires_repaint(&descendant, &dirty, true));
+        assert!(!interaction_path_requires_repaint(&sibling, &dirty, true));
+    }
 }
 
 pub(crate) type AnyObserver = Box<dyn FnMut(&mut Window, &mut App) -> bool + 'static>;

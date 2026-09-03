@@ -23,6 +23,7 @@ impl Interactivity {
         cx: &mut App,
     ) {
         let interaction_path = window.current_instance_path();
+        let descendants_dirty = self.interaction_affects_descendants();
         let is_focused = self
             .tracked_focus_handle
             .as_ref()
@@ -82,10 +83,11 @@ impl Interactivity {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered && hover_changes_style
                 {
-                    window.notify_interactive_region(
+                    window.notify_interactive_region_scoped(
                         current_view,
                         interaction_path.as_ref(),
                         hitbox.bounds,
+                        descendants_dirty,
                         cx,
                     );
                 }
@@ -112,6 +114,7 @@ impl Interactivity {
                     pending_mouse_down.clone(),
                     clicked_state,
                     has_active_style,
+                    descendants_dirty,
                     drag_cursor_style,
                     drag_listener,
                     window,
@@ -160,20 +163,22 @@ impl Interactivity {
                             if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
                                 captured_mouse_down = pending_mouse_down.take();
                                 if has_active_style {
-                                    window.notify_interactive_region(
+                                    window.notify_interactive_region_scoped(
                                         current_view,
                                         interaction_path.as_ref(),
                                         hitbox.bounds,
+                                        descendants_dirty,
                                         cx,
                                     );
                                 }
                             } else if pending_mouse_down.is_some() {
                                 pending_mouse_down.take();
                                 if has_active_style {
-                                    window.notify_interactive_region(
+                                    window.notify_interactive_region_scoped(
                                         current_view,
                                         interaction_path.as_ref(),
                                         hitbox.bounds,
+                                        descendants_dirty,
                                         cx,
                                     );
                                 }
@@ -256,10 +261,11 @@ impl Interactivity {
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
                         *active_state.borrow_mut() = ElementClickedState::default();
-                        window.notify_interactive_region(
+                        window.notify_interactive_region_scoped(
                             current_view,
                             interaction_path.as_ref(),
                             hitbox.bounds,
+                            descendants_dirty,
                             cx,
                         );
                     }
@@ -282,10 +288,11 @@ impl Interactivity {
                                 group: group_hovered,
                                 element: element_hovered,
                             };
-                            window.notify_interactive_region(
+                            window.notify_interactive_region_scoped(
                                 current_view,
                                 interaction_path.as_ref(),
                                 hitbox.bounds,
+                                descendants_dirty,
                                 cx,
                             );
                         }

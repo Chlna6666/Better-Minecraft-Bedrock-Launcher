@@ -1,6 +1,6 @@
 use crate::{
-    App, Bounds, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId, MouseMoveEvent, Pixels,
-    SharedString, Style, Window, record_style_refine,
+    App, Bounds, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId, LayoutStyle,
+    MouseMoveEvent, Pixels, SharedString, Style, Window, record_style_refine,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -93,6 +93,44 @@ impl Interactivity {
         key
     }
 
+    /// Returns true when one of this element's state-driven style refinements can alter the
+    /// layout or inherited paint context of descendants.
+    ///
+    /// Paint-only changes such as background, shadow, border color (without clipping), and cursor
+    /// remain element-local. Dynamic drag-over builders stay conservative because their returned
+    /// refinement depends on runtime payload data and cannot be classified ahead of the event.
+    pub(crate) fn interaction_affects_descendants(&self) -> bool {
+        if !self.drag_over_styles.is_empty() || !self.group_drag_over_styles.is_empty() {
+            return true;
+        }
+
+        let mut base = Style::default();
+        base.refine(&self.base_style);
+
+        let refinements = [
+            self.focus_style.as_deref(),
+            self.in_focus_style.as_deref(),
+            self.hover_style.as_deref(),
+            self.active_style.as_deref(),
+        ];
+        if refinements.into_iter().flatten().any(|refinement| {
+            let mut variant = base.clone();
+            variant.refine(refinement);
+            style_change_affects_descendants(&base, &variant)
+        }) {
+            return true;
+        }
+
+        self.group_hover_style
+            .iter()
+            .chain(self.group_active_style.iter())
+            .any(|group_style| {
+                let mut variant = base.clone();
+                variant.refine(&group_style.style);
+                style_change_affects_descendants(&base, &variant)
+            })
+    }
+
     pub(crate) fn paint_hover_group_handler(
         &self,
         _global_id: Option<&GlobalElementId>,
@@ -109,13 +147,15 @@ impl Interactivity {
             let was_hovered = group_hitbox.is_hovered(window);
             let current_view = window.current_view();
             let interaction_path = window.current_instance_path();
+            let descendants_dirty = self.interaction_affects_descendants();
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
-                    window.notify_interactive_region(
+                    window.notify_interactive_region_scoped(
                         current_view,
                         interaction_path.as_ref(),
                         bounds,
+                        descendants_dirty,
                         cx,
                     );
                 }
@@ -222,6 +262,27 @@ impl Interactivity {
 
         style
     }
+}
+
+fn style_change_affects_descendants(before: &Style, after: &Style) -> bool {
+    if LayoutStyle::from(before) != LayoutStyle::from(after)
+        || before.visibility != after.visibility
+        || before.text != after.text
+        || before.opacity != after.opacity
+        || before.scale != after.scale
+        || before.transform_origin != after.transform_origin
+        || before.blur != after.blur
+    {
+        return true;
+    }
+
+    // Corner/border color only changes descendant pixels when this element clips its children.
+    let clips_descendants = before.overflow.x != crate::Overflow::Visible
+        || before.overflow.y != crate::Overflow::Visible
+        || after.overflow.x != crate::Overflow::Visible
+        || after.overflow.y != crate::Overflow::Visible;
+    clips_descendants
+        && (before.corner_radii != after.corner_radii || before.border_color != after.border_color)
 }
 
 #[cfg(test)]

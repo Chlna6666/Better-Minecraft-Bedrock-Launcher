@@ -245,6 +245,7 @@ pub(crate) fn bind_drag_start_listeners(
     pending_mouse_down: Rc<RefCell<Option<MouseDownEvent>>>,
     clicked_state: Rc<RefCell<ElementClickedState>>,
     has_active_style: bool,
+    active_style_affects_descendants: bool,
     drag_cursor_style: Option<crate::CursorStyle>,
     mut drag_listener: Option<(Arc<dyn Any>, DragListener)>,
     window: &mut Window,
@@ -261,10 +262,11 @@ pub(crate) fn bind_drag_start_listeners(
             {
                 *pending_mouse_down.borrow_mut() = Some(event.clone());
                 if has_active_style {
-                    window.notify_interactive_region(
+                    window.notify_interactive_region_scoped(
                         current_view,
                         global_id.as_ref(),
                         hitbox.bounds,
+                        active_style_affects_descendants,
                         cx,
                     );
                 }
@@ -295,6 +297,8 @@ pub(crate) fn bind_drag_start_listeners(
                     cursor_style: drag_cursor_style,
                 });
                 pending_mouse_down.take();
+                // Starting a drag can activate drag-over styles in arbitrary descendants, so keep
+                // this transition conservative even when the pressed style itself is local.
                 window.notify_interactive_region(
                     current_view,
                     global_id.as_ref(),
