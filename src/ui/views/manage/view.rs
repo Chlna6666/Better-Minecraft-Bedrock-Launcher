@@ -1,4 +1,5 @@
 use super::*;
+use gpui::AnimationExt as _;
 
 pub struct ManagePageView {
     pub(super) _subscriptions: Vec<Subscription>,
@@ -183,13 +184,6 @@ impl Render for ManagePageView {
         self.sync_data_requests(cx);
 
         let now = Instant::now();
-        let (_, tab_animating) = self.tab_anim_factor(now);
-        let (_, version_animating) = self.version_anim_factor(now);
-        crate::ui::animation::request_animation_frame_if(
-            window,
-            tab_animating || version_animating,
-        );
-
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
@@ -618,7 +612,7 @@ impl ManagePageView {
         state: &ManagePageState,
         now: Instant,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         let i18n = cx.global::<I18n>().clone();
         if is_level_dat_editor_route(cx) {
             return div()
@@ -649,18 +643,19 @@ impl ManagePageView {
                             cx,
                         )
                     },
-                ));
+                ))
+                .into_any_element();
         }
 
         let Some(version) = self.selected_version(state) else {
-            return crate::ui::components::page_shell::split_content_panel(colors).child(
-                empty_state(
+            return crate::ui::components::page_shell::split_content_panel(colors)
+                .child(empty_state(
                     colors,
                     "images/manage/empty.svg",
                     t!("ManagePage.select_version"),
                     t!("ManagePage.select_version_hint"),
-                ),
-            );
+                ))
+                .into_any_element();
         };
 
         if is_asset_tab(state.tab) && self.asset_list_cache.refresh(state) {
@@ -985,10 +980,16 @@ impl ManagePageView {
                                         cx,
                                     ),
                                 }
-                            }),
+                            })
+                            .with_layout_animation_target(
+                                "manage-tab-content-transition",
+                                tab_animating,
+                            ),
                     ),
             );
 
         main_panel
+            .with_layout_animation_target("manage-version-transition", version_animating)
+            .into_any_element()
     }
 }

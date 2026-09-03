@@ -250,9 +250,104 @@ pub trait AnimationExt {
             progress,
         }
     }
+
+    /// Attach a stable retained invalidation target to a caller-sampled layout animation.
+    ///
+    /// The owning view is still rerendered on every sample so callers may recompute arbitrary
+    /// layout/style values. Only this retained subtree is marked dirty, allowing unrelated siblings
+    /// to replay their previous prepaint/paint ranges instead of repainting with the entire view.
+    fn with_layout_animation_target(
+        self,
+        id: impl Into<ElementId>,
+        animating: bool,
+    ) -> LayoutAnimationTargetElement<Self>
+    where
+        Self: Sized,
+    {
+        LayoutAnimationTargetElement {
+            id: id.into(),
+            element: Some(self),
+            animating,
+        }
+    }
 }
 
 impl<E: IntoElement + 'static> AnimationExt for E {}
+
+/// A retained boundary for manually sampled layout animations.
+pub struct LayoutAnimationTargetElement<E> {
+    id: ElementId,
+    element: Option<E>,
+    animating: bool,
+}
+
+impl<E: IntoElement + 'static> IntoElement for LayoutAnimationTargetElement<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (crate::LayoutId, Self::RequestLayoutState) {
+        if self.animating {
+            let retained_id = window
+                .current_instance_path()
+                .expect("layout animation target must have a retained identity");
+            window.request_layout_animation_frame(retained_id);
+        }
+
+        let mut element = self
+            .element
+            .take()
+            .expect("layout animation target should only be laid out once")
+            .into_any_element();
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+    }
+}
 
 /// An element whose static primitives are retained while the caller supplies motion progress.
 pub struct SampledAnimationElement<E> {
@@ -384,7 +479,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
         if self.animations.is_empty() {
-            let mut element = self.element.take().expect("should only be called once");
+            let element = self.element.take().expect("should only be called once");
             let mut element = element.into_any_element();
             return (element.request_layout(window, cx), element);
         }
@@ -398,6 +493,9 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
+        let retained_id = window
+            .current_instance_path()
+            .expect("AnimationElement must have a retained identity");
         window.with_element_state(global_id, |state, window| {
             let now = window.animation_time();
             let mut state =
@@ -414,7 +512,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                 .animations
                 .get(animation_ix)
                 .is_some_and(|animation| !animation.oneshot);
-            schedule_next_animation_frame(window, cx, now, done, repeats);
+            schedule_next_animation_frame(window, cx, now, done, repeats, &retained_id);
 
             ((element.request_layout(window, cx), element), state)
         })
@@ -572,14 +670,15 @@ fn schedule_next_animation_frame(
     now: Instant,
     done: bool,
     repeats: bool,
+    retained_id: &GlobalElementId,
 ) {
     match next_animation_frame_delay(done, repeats, window.is_window_active()) {
         None => {}
         Some(delay) if delay.is_zero() => {
-            window.request_animation_engine_frame(AnimationDriver::Layout);
+            window.request_layout_animation_frame(retained_id.clone());
         }
         Some(delay) => {
-            window.request_invalidation_at(now + delay, cx);
+            window.request_layout_animation_frame_at(retained_id.clone(), now + delay, cx);
         }
     }
 }

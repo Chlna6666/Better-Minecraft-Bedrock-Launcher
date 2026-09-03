@@ -93,12 +93,79 @@ impl Window {
         }
     }
 
+    /// Schedule the next frame of a layout animation for one retained element path.
+    ///
+    /// Unlike [`Window::request_animation_frame`], this does not emit an application-level
+    /// `Notify`. The owning view is marked dirty only so it can resample layout state, while the
+    /// invalidator keeps the retained element path. Structural ancestors execute to reach the
+    /// target, but unrelated siblings remain eligible for retained prepaint/paint replay.
+    pub(crate) fn request_layout_animation_frame(&self, retained_id: GlobalElementId) {
+        let Some(entity) = self.current_view_or_root() else {
+            return;
+        };
+
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                "gpui targeted layout animation frame requested: window={} entity={:?} retained_id={} active={}",
+                self.handle.window_id().as_u64(),
+                entity.as_u64(),
+                retained_id,
+                self.active.get()
+            );
+        }
+
+        RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(move |window, _cx| {
+            if window
+                .invalidator
+                .invalidate_interactive_view(entity, Some(&retained_id), true)
+            {
+                window.schedule_dirty_frame();
+            }
+        }));
+
+        self.platform_window.request_frame(RequestFrameOptions {
+            require_presentation: true,
+            force_render: self.active.get(),
+        });
+    }
+
+    /// Schedule a delayed layout-animation sample for one retained element path.
+    ///
+    /// This is the targeted equivalent of [`Window::request_invalidation_at`] and is used by
+    /// repeating legacy/layout animations so their cadence does not turn into whole-view cache
+    /// invalidation.
+    pub(crate) fn request_layout_animation_frame_at(
+        &self,
+        retained_id: GlobalElementId,
+        deadline: Instant,
+        cx: &App,
+    ) {
+        let Some(entity) = self.current_view_or_root() else {
+            return;
+        };
+        let handle = self.handle;
+        let delay = deadline.saturating_duration_since(Instant::now());
+        self.spawn(cx, async move |cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = ignore_window_not_found(handle.update(cx, |_, window, _cx| {
+                if window
+                    .invalidator
+                    .invalidate_interactive_view(entity, Some(&retained_id), true)
+                {
+                    window.schedule_dirty_frame();
+                }
+            }));
+        })
+        .detach();
+    }
+
     /// Schedule a frame for the window animation engine without notifying a view.
     ///
     /// Paint and GPU drivers can advance retained visual state without forcing a
     /// full layout pass. Layout driver requests intentionally fall back to
     /// [`Window::request_animation_frame`] because layout-affecting animation
-    /// closures must rerender their owning view.
+    /// closures must rerender their owning view. Element-owned layout animations use the more
+    /// precise targeted path above instead.
     #[track_caller]
     pub fn request_animation_engine_frame(&self, driver: AnimationDriver) {
         if matches!(driver, AnimationDriver::Layout) {
