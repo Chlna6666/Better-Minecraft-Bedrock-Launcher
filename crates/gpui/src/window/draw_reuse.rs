@@ -1,4 +1,4 @@
-use super::frame::RetainedElementRange;
+use super::frame::{ReconcileKey, RetainedElementRange};
 use super::state::ElementVisualTransform;
 use super::*;
 
@@ -372,28 +372,154 @@ impl Window {
         if retained.bounds != bounds
             || !self.can_reuse_prepaint(&retained.prepaint_range)
             || !self.can_reuse_paint(&retained.paint_range)
+            || !frame_range_is_valid(
+                retained.metadata_range.start,
+                retained.metadata_range.end,
+                self.rendered_frame.retained_element_order.len(),
+            )
         {
             return None;
         }
         Some(retained.clone())
     }
 
+    /// Number of post-order reconciliation metadata records emitted into the current frame.
+    pub(crate) fn retained_element_metadata_len(&self) -> usize {
+        self.next_frame.retained_element_order.len()
+    }
+
+    /// Records one normally painted retained element. Descendants have already appended their
+    /// metadata, so `metadata_start..end` becomes one contiguous post-order subtree span.
     pub(crate) fn record_retained_element_range(
         &mut self,
         retained_id: GlobalElementId,
         bounds: Bounds<Pixels>,
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
+        metadata_start: usize,
     ) {
+        debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
+        let key = ReconcileKey::from(retained_id);
+        self.next_frame.retained_element_order.push(key.clone());
+        let metadata_end = self.next_frame.retained_element_order.len();
         self.next_frame.retained_element_ranges.insert(
-            retained_id,
+            key,
             RetainedElementRange {
                 bounds,
                 prepaint_range,
                 paint_range,
+                metadata_range: metadata_start..metadata_end,
             },
         );
     }
+
+    /// Carries every descendant reconciliation record of a replayed subtree into the current
+    /// frame, translating all frame-local indices relative to the replayed root's new location.
+    ///
+    /// The source metadata is post-order and contiguous, so this is O(subtree retained nodes) and
+    /// never scans unrelated entries in the frame-wide retained map.
+    pub(crate) fn replay_retained_element_metadata(
+        &mut self,
+        source_prepaint: &Range<PrepaintStateIndex>,
+        source_paint: &Range<PaintIndex>,
+        source_metadata: &Range<usize>,
+        target_prepaint: &Range<PrepaintStateIndex>,
+        target_paint: &Range<PaintIndex>,
+    ) -> bool {
+        if source_metadata.start >= source_metadata.end
+            || !frame_range_is_valid(
+                source_metadata.start,
+                source_metadata.end,
+                self.rendered_frame.retained_element_order.len(),
+            )
+        {
+            return false;
+        }
+
+        let target_metadata_start = self.next_frame.retained_element_order.len();
+        let mut rebased = Vec::with_capacity(source_metadata.end - source_metadata.start);
+
+        for source_index in source_metadata.clone() {
+            let key = self.rendered_frame.retained_element_order[source_index].clone();
+            let Some(source_range) = self.rendered_frame.retained_element_ranges.get(&key) else {
+                return false;
+            };
+            if source_range.metadata_range.start < source_metadata.start
+                || source_range.metadata_range.end > source_metadata.end
+            {
+                return false;
+            }
+
+            let Some(prepaint_range) = rebase_prepaint_range(
+                &source_range.prepaint_range,
+                source_prepaint,
+                target_prepaint,
+            ) else {
+                return false;
+            };
+            let Some(paint_range) =
+                rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
+            else {
+                return false;
+            };
+            let Some(metadata_start) = target_metadata_start.checked_add(
+                source_range
+                    .metadata_range
+                    .start
+                    .checked_sub(source_metadata.start)
+                    .unwrap_or(usize::MAX),
+            ) else {
+                return false;
+            };
+            let Some(metadata_end) = target_metadata_start.checked_add(
+                source_range
+                    .metadata_range
+                    .end
+                    .checked_sub(source_metadata.start)
+                    .unwrap_or(usize::MAX),
+            ) else {
+                return false;
+            };
+
+            rebased.push((
+                key,
+                RetainedElementRange {
+                    bounds: source_range.bounds,
+                    prepaint_range,
+                    paint_range,
+                    metadata_range: metadata_start..metadata_end,
+                },
+            ));
+        }
+
+        for (key, range) in rebased {
+            self.next_frame.retained_element_order.push(key.clone());
+            self.next_frame.retained_element_ranges.insert(key, range);
+        }
+        true
+    }
+}
+
+fn rebase_prepaint_range(
+    range: &Range<PrepaintStateIndex>,
+    source: &Range<PrepaintStateIndex>,
+    target: &Range<PrepaintStateIndex>,
+) -> Option<Range<PrepaintStateIndex>> {
+    Some(
+        range.start.rebased_from(&source.start, &target.start)?
+            ..range.end.rebased_from(&source.start, &target.start)?,
+    )
+}
+
+fn rebase_paint_range(
+    range: &Range<PaintIndex>,
+    source: &Range<PaintIndex>,
+    target: &Range<PaintIndex>,
+) -> Option<Range<PaintIndex>> {
+    Some(
+        range.start.rebased_from(&source.start, &target.start)?
+            ..range.end.rebased_from(&source.start, &target.start)?,
+    )
 }
 
 fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {

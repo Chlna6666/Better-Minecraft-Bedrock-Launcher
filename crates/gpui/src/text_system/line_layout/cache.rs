@@ -97,6 +97,24 @@ pub(crate) struct LineLayoutIndex {
     wrapped_lines_index: usize,
 }
 
+impl LineLayoutIndex {
+    /// Rebase this frame-local index from one retained subtree origin to another.
+    ///
+    /// The operation is checked because a malformed retained range must degrade the frame instead
+    /// of wrapping an index and replaying unrelated text layouts.
+    pub(crate) fn rebased_from(&self, source: &Self, target: &Self) -> Option<Self> {
+        Some(Self {
+            lines_index: target
+                .lines_index
+                .checked_add(self.lines_index.checked_sub(source.lines_index)?)?,
+            wrapped_lines_index: target.wrapped_lines_index.checked_add(
+                self.wrapped_lines_index
+                    .checked_sub(source.wrapped_lines_index)?,
+            )?,
+        })
+    }
+}
+
 impl LineLayoutCache {
     pub fn new(platform_text_system: Arc<dyn PlatformTextSystem>) -> Self {
         Self {
@@ -612,6 +630,25 @@ fn trim_deque_capacity<T>(deque: &mut VecDeque<T>, floor: usize, multiplier: usi
 mod tests {
     use super::*;
     use crate::{FontId, GpuiMemoryTrimLevel, NoopTextSystem, performance_metrics_snapshot, px};
+
+    #[test]
+    fn line_layout_index_rebases_relative_offsets() {
+        let source = LineLayoutIndex {
+            lines_index: 10,
+            wrapped_lines_index: 4,
+        };
+        let target = LineLayoutIndex {
+            lines_index: 30,
+            wrapped_lines_index: 20,
+        };
+        let index = LineLayoutIndex {
+            lines_index: 17,
+            wrapped_lines_index: 9,
+        };
+        let rebased = index.rebased_from(&source, &target).unwrap();
+        assert_eq!(rebased.lines_index, 37);
+        assert_eq!(rebased.wrapped_lines_index, 25);
+    }
 
     #[test]
     fn layout_line_records_same_frame_hits() {

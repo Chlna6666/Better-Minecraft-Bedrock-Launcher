@@ -87,11 +87,11 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         prepaint_range: Range<PrepaintStateIndex>,
     },
     Retained {
-        retained_segment: ElementId,
-        retained_id: GlobalElementId,
         bounds: Bounds<Pixels>,
+        source_prepaint_range: Range<PrepaintStateIndex>,
+        source_paint_range: Range<PaintIndex>,
+        source_metadata_range: Range<usize>,
         prepaint_range: Range<PrepaintStateIndex>,
-        paint_range: Range<PaintIndex>,
     },
     Painted,
 }
@@ -183,15 +183,16 @@ impl<E: Element> Drawable<E> {
                     window.reusable_interaction_element(&retained_id, bounds)
                 });
                 if let Some(retained) = retained {
+                    let source_prepaint_range = retained.prepaint_range.clone();
                     let prepaint_start = window.prepaint_index();
-                    if window.reuse_prepaint(retained.prepaint_range.clone()) {
+                    if window.reuse_prepaint(source_prepaint_range.clone()) {
                         let prepaint_end = window.prepaint_index();
                         self.phase = ElementDrawPhase::Retained {
-                            retained_segment,
-                            retained_id,
                             bounds,
+                            source_prepaint_range,
+                            source_paint_range: retained.paint_range,
+                            source_metadata_range: retained.metadata_range,
                             prepaint_range: prepaint_start..prepaint_end,
-                            paint_range: retained.paint_range,
                         };
                         return;
                     }
@@ -255,6 +256,7 @@ impl<E: Element> Drawable<E> {
                     debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
                 }
 
+                let metadata_start = window.retained_element_metadata_len();
                 let paint_start = window.paint_index();
                 window.record_debug_element_paint(bounds, cx);
                 window.next_frame.dispatch_tree.set_active_node(node_id);
@@ -276,6 +278,7 @@ impl<E: Element> Drawable<E> {
                     bounds,
                     prepaint_range,
                     paint_start..paint_end,
+                    metadata_start,
                 );
 
                 if global_id.is_some() {
@@ -285,26 +288,31 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::Painted;
             }
             ElementDrawPhase::Retained {
-                retained_segment: _,
-                retained_id,
                 bounds,
+                source_prepaint_range,
+                source_paint_range,
+                source_metadata_range,
                 prepaint_range,
-                paint_range,
             } => {
                 let paint_start = window.paint_index();
-                if window.reuse_paint(paint_range) {
+                if window.reuse_paint(source_paint_range.clone()) {
                     let paint_end = window.paint_index();
-                    window.record_retained_element_range(
-                        retained_id,
-                        bounds,
-                        prepaint_range,
-                        paint_start..paint_end,
-                    );
-                    window.record_debug_view_cache_status(
-                        bounds,
-                        ViewCacheDebugStatus::Hit,
-                        cx,
-                    );
+                    let paint_range = paint_start..paint_end;
+                    if window.replay_retained_element_metadata(
+                        &source_prepaint_range,
+                        &source_paint_range,
+                        &source_metadata_range,
+                        &prepaint_range,
+                        &paint_range,
+                    ) {
+                        window.record_debug_view_cache_status(
+                            bounds,
+                            ViewCacheDebugStatus::Hit,
+                            cx,
+                        );
+                    } else {
+                        window.degrade_current_draw();
+                    }
                 } else {
                     // Prepaint has already been replayed, so a late paint-range failure cannot be
                     // rebuilt safely in place. Preserve the previous completed frame and recover on
