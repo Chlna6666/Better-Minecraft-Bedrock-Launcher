@@ -12,10 +12,11 @@ pub(crate) struct RetainedSelfSceneRanges {
 }
 
 impl Window {
-    /// Compatibility name for the retained rendering identity captured by interaction handlers.
+    /// Returns the retained rendering identity currently being built.
     ///
     /// This is deliberately separate from the state-bearing `GlobalElementId`: anonymous elements
-    /// acquire synthetic positional segments only in the retained identity stack.
+    /// acquire synthetic positional segments only in the retained identity stack. Interaction,
+    /// focus and animation invalidation all use this same retained path.
     pub(crate) fn current_instance_path(&self) -> Option<GlobalElementId> {
         self.current_retained_element_id()
     }
@@ -64,10 +65,10 @@ impl Window {
 
     /// Returns the scene ranges owned by the currently painted structural ancestor itself.
     ///
-    /// This path is enabled only when the current element is executing solely to reach an
-    /// element-local dirty descendant. Immediate-child retained ranges define the exact split even
-    /// when a child emitted zero primitives in the previous frame, which preserves border ordering
-    /// when that child becomes visible in the current interaction frame.
+    /// This path is enabled only when the current element is executing solely to reach one or more
+    /// targeted dirty descendants. Immediate-child retained ranges define the exact split even when
+    /// a child emitted zero primitives in the previous frame, preserving border ordering when that
+    /// child becomes visible in the current targeted frame.
     pub(crate) fn retained_self_scene_ranges_for_current(
         &self,
         bounds: Bounds<Pixels>,
@@ -75,7 +76,7 @@ impl Window {
         let retained_id = self.current_retained_element_id()?;
         if !self
             .invalidator
-            .interactive_path_is_descendant_only(&retained_id)
+            .retained_path_is_descendant_only(&retained_id)
         {
             return None;
         }
