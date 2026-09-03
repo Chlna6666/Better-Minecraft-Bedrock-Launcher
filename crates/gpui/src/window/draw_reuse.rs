@@ -470,6 +470,7 @@ impl Window {
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
         metadata_start: usize,
+        div_self_scene_style: Option<crate::element::RetainedDivSelfSceneStyle>,
         identity_stable: bool,
         subtree_stable: bool,
     ) {
@@ -484,6 +485,7 @@ impl Window {
                 prepaint_range,
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
+                div_self_scene_style,
                 identity_stable,
                 subtree_stable,
             },
@@ -571,6 +573,7 @@ impl Window {
                     prepaint_range,
                     paint_range,
                     metadata_range: metadata_start..metadata_end,
+                    div_self_scene_style: source_range.div_self_scene_style.clone(),
                     identity_stable: source_range.identity_stable,
                     subtree_stable: source_range.subtree_stable,
                 },
