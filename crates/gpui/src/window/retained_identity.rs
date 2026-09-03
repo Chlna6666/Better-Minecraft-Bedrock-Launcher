@@ -13,6 +13,11 @@ pub(crate) struct RetainedSelfSceneRanges {
 }
 
 impl Window {
+    /// Returns whether the current frame was scheduled through a retained-path targeted invalidation.
+    pub(crate) fn retained_replay_is_targeted(&self) -> bool {
+        self.invalidator.active_targeted_replay()
+    }
+
     /// Execute lazy child construction with a fresh parent-local retained slot namespace.
     ///
     /// Normal elements allocate all children during `request_layout`, while virtualized elements
