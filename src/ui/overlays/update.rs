@@ -222,7 +222,7 @@ pub fn render_update_modal(
     modal_factor: f32,
     accent_override: Option<Hsla>,
     i18n: &I18n,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let tag = release.tag.clone();
     let title = release
         .name
