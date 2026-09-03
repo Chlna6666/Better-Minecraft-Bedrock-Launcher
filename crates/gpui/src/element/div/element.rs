@@ -137,10 +137,6 @@ pub(crate) struct RetainedDivSelfScene {
 }
 
 /// Paint-time state for a [`Div`].
-///
-/// `reconciliation_transparent` means the container contributes no own paint/context work at all.
-/// `self_scene_style` marks containers whose shadow/background/border can be replayed independently
-/// while child lifecycle continues against the current inherited context.
 pub struct DivPrepaint {
     hitbox: Option<Hitbox>,
     reconciliation_transparent: bool,
@@ -173,7 +169,6 @@ fn style_allows_self_scene_replay(style: &Style, window: &Window, cx: &App) -> b
         && style.visibility == Visibility::Visible
         && style.backdrop_blur.is_none()
         && style.blur.is_none()
-        && style.mouse_cursor.is_none()
         && style.opacity.is_none()
         && style.scale == 1.0
         && style.transition.is_none()
@@ -181,13 +176,22 @@ fn style_allows_self_scene_replay(style: &Style, window: &Window, cx: &App) -> b
         && {
             #[cfg(debug_assertions)]
             {
-                !style.debug && !style.debug_below
+                !style.debug && !style.debug_below && !cx.has_global::<crate::DebugBelow>()
             }
             #[cfg(not(debug_assertions))]
             {
                 true
             }
         }
+}
+
+fn retained_div_self_scene_style_if_replayable(
+    style: &Style,
+    window: &Window,
+    cx: &App,
+) -> Option<RetainedDivSelfSceneStyle> {
+    style_allows_self_scene_replay(style, window, cx)
+        .then(|| retained_div_self_scene_style(style))
 }
 
 fn style_is_reconciliation_transparent(style: &Style, window: &Window, cx: &App) -> bool {
@@ -332,13 +336,9 @@ impl Element for Div {
             window,
             cx,
             |style, scroll_offset, hitbox, window, cx| {
-                let self_scene_replayable = interactivity_transparent
+                let reconciliation_transparent = interactivity_transparent
                     && hitbox.is_none()
-                    && style_allows_self_scene_replay(style, window, cx);
-                let reconciliation_transparent = self_scene_replayable
                     && style_is_reconciliation_transparent(style, window, cx);
-                let self_scene_style = self_scene_replayable
-                    .then(|| retained_div_self_scene_style(style));
 
                 // Generic Div traversal is not a progressive boundary. If this structural loop
                 // merely sets `draw_was_degraded` after the deadline, GPUI still walks every child
@@ -360,7 +360,7 @@ impl Element for Div {
                 DivPrepaint {
                     hitbox,
                     reconciliation_transparent,
-                    self_scene_style,
+                    self_scene_style: None,
                     self_scene_child_range: None,
                 }
             },
@@ -378,58 +378,10 @@ impl Element for Div {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let debug_below_active = {
-            #[cfg(debug_assertions)]
-            {
-                cx.has_global::<crate::DebugBelow>()
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                false
-            }
-        };
-
-        // Parent self-scene reuse is safe even on a generic application dirty frame: the exact
-        // background/shadow/border state is compared with the previous retained range, while
-        // children still execute against the current text/clipping context. Frame-bound input
-        // state is never replayed by this path.
-        if let Some(self_scene_style) = prepaint.self_scene_style.as_ref()
-            && !debug_below_active
-            && !window.debug_visualization(cx).show_layout_bounds
-            && let Some(ranges) =
-                window.retained_self_scene_ranges_for_current(bounds, self_scene_style)
-        {
-            let style = self
-                .interactivity
-                .compute_style(global_id, prepaint.hitbox.as_ref(), window, cx);
-            window.record_debug_element_self_scene_replay(bounds, cx);
-            window.replay_retained_scene_range(ranges.prefix);
-            let child_scene_start = window.next_frame.scene.len();
-            window.with_text_style(style.text_style().cloned(), |window| {
-                window.with_content_mask(style.overflow_mask(bounds, window.rem_size()), |window| {
-                    for child in &mut self.children {
-                        child.paint(window, cx);
-                    }
-                });
-            });
-            let child_scene_end = window.next_frame.scene.len();
-            prepaint.self_scene_child_range = Some(child_scene_start..child_scene_end);
-            window.replay_retained_scene_range(ranges.suffix);
-            return;
-        }
-
-        if prepaint.reconciliation_transparent
-            && !debug_below_active
-            && !window.debug_visualization(cx).show_layout_bounds
-        {
+        if prepaint.reconciliation_transparent {
             window.record_debug_element_traversal_only(bounds, cx);
-            let child_scene_start = window.next_frame.scene.len();
             for child in &mut self.children {
                 child.paint(window, cx);
-            }
-            let child_scene_end = window.next_frame.scene.len();
-            if prepaint.self_scene_style.is_some() {
-                prepaint.self_scene_child_range = Some(child_scene_start..child_scene_end);
             }
             return;
         }
@@ -438,10 +390,11 @@ impl Element for Div {
             .image_cache
             .as_mut()
             .map(|provider| provider.provide(window, cx));
-        let mut self_scene_child_range = None;
+        let mut child_scene_range = None;
+        let mut reused_self_scene = false;
 
-        window.with_image_cache(image_cache, |window| {
-            self.interactivity.paint(
+        let final_style = window.with_image_cache(image_cache, |window| {
+            self.interactivity.paint_with_self_scene_reuse(
                 global_id,
                 inspector_id,
                 bounds,
@@ -449,7 +402,14 @@ impl Element for Div {
                 window,
                 cx,
                 |style, window, cx| {
-                    // skip children
+                    let self_scene_style =
+                        retained_div_self_scene_style_if_replayable(style, window, cx)?;
+                    let ranges = window
+                        .retained_self_scene_ranges_for_current(bounds, &self_scene_style)?;
+                    reused_self_scene = true;
+                    Some((ranges.prefix, ranges.suffix))
+                },
+                |style, window, cx| {
                     if style.display == Display::None {
                         return;
                     }
@@ -459,14 +419,22 @@ impl Element for Div {
                         child.paint(window, cx);
                     }
                     let child_scene_end = window.next_frame.scene.len();
-                    self_scene_child_range = Some(child_scene_start..child_scene_end);
+                    child_scene_range = Some(child_scene_start..child_scene_end);
                 },
             )
         });
 
-        if prepaint.self_scene_style.is_some() {
-            prepaint.self_scene_child_range = self_scene_child_range;
+        if reused_self_scene {
+            window.record_debug_element_self_scene_replay(bounds, cx);
         }
+
+        prepaint.self_scene_style =
+            retained_div_self_scene_style_if_replayable(&final_style, window, cx);
+        prepaint.self_scene_child_range = if prepaint.self_scene_style.is_some() {
+            child_scene_range
+        } else {
+            None
+        };
     }
 }
 
