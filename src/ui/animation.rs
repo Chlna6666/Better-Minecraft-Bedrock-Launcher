@@ -243,60 +243,63 @@ pub fn repeating_linear_motion(duration: Duration) -> Animation {
     repeating_motion(duration, Easing::Linear)
 }
 
-/// Explicit whole-view fallback for caller-sampled layout animation.
-/// Prefer `AnimationExt::with_layout_animation_target` when a stable element boundary exists.
+/// Request another layout-animation sample.
+///
+/// When called from an element lifecycle GPUI captures the current retained path and invalidates
+/// only that subtree. Calls made before an element boundary exists conservatively fall back to the
+/// owning view. Prefer `AnimationExt::with_layout_animation_target` for caller-sampled View code.
 #[track_caller]
-pub fn request_view_animation_frame_if(window: &mut Window, animating: bool) {
+pub fn request_layout_animation_frame_if(window: &mut Window, animating: bool) {
     if animating {
         window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
-/// Active-window variant of [`request_view_animation_frame_if`].
+/// Active-window variant of [`request_layout_animation_frame_if`].
 #[track_caller]
-pub fn request_view_animation_frame_if_active(window: &mut Window, animating: bool) {
+pub fn request_layout_animation_frame_if_active(window: &mut Window, animating: bool) {
     if animating && window.is_window_active() {
         window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
-/// Explicit whole-view deadline fallback for caller-sampled layout animation.
+/// Request layout-animation samples until the supplied deadline.
 #[track_caller]
-pub fn request_view_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
+pub fn request_layout_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
     if deadline.is_some_and(|deadline| Instant::now() < deadline) {
         window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
-/// Active-window variant of [`request_view_animation_frame_until`].
+/// Active-window variant of [`request_layout_animation_frame_until`].
 #[track_caller]
-pub fn request_view_animation_frame_until_active(
+pub fn request_layout_animation_frame_until_active(
     window: &mut Window,
     deadline: Option<Instant>,
 ) {
     if window.is_window_active() {
-        request_view_animation_frame_until(window, deadline);
+        request_layout_animation_frame_until(window, deadline);
     }
 }
 
 #[track_caller]
 pub fn request_animation_frame_if(window: &mut Window, animating: bool) {
-    request_view_animation_frame_if(window, animating);
+    request_layout_animation_frame_if(window, animating);
 }
 
 #[track_caller]
 pub fn request_animation_frame_if_active(window: &mut Window, animating: bool) {
-    request_view_animation_frame_if_active(window, animating);
+    request_layout_animation_frame_if_active(window, animating);
 }
 
 #[track_caller]
 pub fn request_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
-    request_view_animation_frame_until(window, deadline);
+    request_layout_animation_frame_until(window, deadline);
 }
 
 #[track_caller]
 pub fn request_animation_frame_until_active(window: &mut Window, deadline: Option<Instant>) {
-    request_view_animation_frame_until_active(window, deadline);
+    request_layout_animation_frame_until_active(window, deadline);
 }
 
 fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
