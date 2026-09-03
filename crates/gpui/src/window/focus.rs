@@ -31,7 +31,7 @@ slotmap::new_key_type! {
 }
 
 thread_local! {
-    pub(crate) static ELEMENT_ARENA: RefCell<Arena> = RefCell::new(64 * 1024));
+    pub(crate) static ELEMENT_ARENA: RefCell<Arena> = RefCell::new(Arena::new(64 * 1024));
 }
 
 /// Returned when the element arena has been used and so must be cleared before the next draw.
@@ -314,7 +314,7 @@ impl FocusHandle {
         self.id.is_focused(window)
     }
 
-    /// Obtains whether the element associated with this handle contains the focused
+    /// Obtains whether this handle contains the focused
     /// element or is itself focused.
     pub fn contains_focused(&self, window: &Window, cx: &App) -> bool {
         self.id.contains_focused(window, cx)
