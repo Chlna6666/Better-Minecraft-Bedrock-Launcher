@@ -981,15 +981,12 @@ impl ManagePageView {
                                     ),
                                 }
                             })
-                            .with_layout_animation_target(
-                                "manage-tab-content-transition",
-                                tab_animating,
-                            ),
+                            .with_layout_animation_target(tab_animating),
                     ),
             );
 
         main_panel
-            .with_layout_animation_target("manage-version-transition", version_animating)
+            .with_layout_animation_target(version_animating)
             .into_any_element()
     }
 }
