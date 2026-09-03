@@ -42,6 +42,26 @@ impl Window {
         result
     }
 
+    /// Execute a lazily materialized child subtree under a stable retained-only key.
+    ///
+    /// Virtualized containers must not identify children by materialization order: measuring an
+    /// overdraw item, filling upward with `push_front`, or changing the visible range would shift
+    /// positional slots and could reconcile a previous hitbox/listener with a different logical
+    /// item. The namespace is deliberately separate from `element_id_stack`, so it has no effect on
+    /// application element state or user-visible IDs.
+    pub(crate) fn with_retained_child_key<R>(
+        &mut self,
+        key: impl Into<ElementId>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.retained_element_id_stack.push(key.into());
+        self.retained_child_slot_stack.push(0);
+        let result = f(self);
+        self.retained_child_slot_stack.pop();
+        self.retained_element_id_stack.pop();
+        result
+    }
+
     /// Returns the scene ranges owned by the currently painted structural ancestor itself.
     ///
     /// This path is enabled only when the current element is executing solely to reach an
