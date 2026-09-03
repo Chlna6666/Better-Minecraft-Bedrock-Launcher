@@ -209,13 +209,13 @@ impl Window {
             let mut cx = cx.to_async();
             move |active| {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
-                    // Enter/leave is an input-state transition, not an application-wide visual
-                    // invalidation. Element hover listeners receive MouseMove/MouseExited and
-                    // invalidate their retained repaint boundary directly.
+                    // CursorEntered does not carry a fresh pointer coordinate. Re-evaluating the
+                    // client resize edge here would reuse the last CursorLeft position and can
+                    // leave a stale horizontal/vertical resize cursor in the middle of the window.
+                    // Normalize the boundary transition to Arrow; the first real MouseMove then
+                    // restores the current element/resize cursor from its fresh coordinate.
                     window.hovered.set(active);
-                    if active {
-                        window.reset_cursor_style(cx);
-                    }
+                    cx.platform.set_cursor_style(CursorStyle::Arrow);
                 }));
             }
         }));
