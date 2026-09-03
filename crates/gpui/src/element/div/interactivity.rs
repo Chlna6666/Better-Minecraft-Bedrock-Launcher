@@ -22,6 +22,7 @@ use crate::{
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
+    ops::Range,
     rc::Rc,
     sync::Arc,
 };
@@ -222,13 +223,77 @@ impl Interactivity {
     pub fn paint(
         &mut self,
         global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         hitbox: Option<&Hitbox>,
         window: &mut Window,
         cx: &mut App,
         f: impl FnOnce(&Style, &mut Window, &mut App),
     ) {
+        self.paint_internal(
+            global_id,
+            inspector_id,
+            bounds,
+            hitbox,
+            window,
+            cx,
+            |_, _, _| None,
+            f,
+        );
+    }
+
+    /// Paints with current-frame interaction metadata while allowing a caller to replay only this
+    /// element's previous self-scene prefix/suffix.
+    ///
+    /// The resolver sees the final hitbox-aware style. Regardless of whether it returns retained
+    /// scene ranges, hitboxes, cursor requests, listeners, dispatch nodes, tab stops, group state,
+    /// and inspector metadata are rebuilt from the current element instance.
+    pub(crate) fn paint_with_self_scene_reuse(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        hitbox: Option<&Hitbox>,
+        window: &mut Window,
+        cx: &mut App,
+        resolve_self_scene: impl FnOnce(
+            &Style,
+            &Window,
+            &App,
+        ) -> Option<(Range<usize>, Range<usize>)>,
+        f: impl FnOnce(&Style, &mut Window, &mut App),
+    ) -> Style {
+        self.paint_internal(
+            global_id,
+            inspector_id,
+            bounds,
+            hitbox,
+            window,
+            cx,
+            resolve_self_scene,
+            f,
+        )
+    }
+
+    fn paint_internal<ResolveSelfScene, PaintContents>(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        hitbox: Option<&Hitbox>,
+        window: &mut Window,
+        cx: &mut App,
+        resolve_self_scene: ResolveSelfScene,
+        f: PaintContents,
+    ) -> Style
+    where
+        ResolveSelfScene: FnOnce(
+            &Style,
+            &Window,
+            &App,
+        ) -> Option<(Range<usize>, Range<usize>)>,
+        PaintContents: FnOnce(&Style, &mut Window, &mut App),
+    {
         self.hovered = hitbox.map(|hitbox| hitbox.is_hovered(window));
         window.with_optional_element_state::<InteractiveElementState, _>(
             global_id,
@@ -249,7 +314,7 @@ impl Interactivity {
                 self.paint_hover_group_handler(global_id, bounds, window, cx);
 
                 if style.visibility == Visibility::Hidden {
-                    return ((), element_state);
+                    return (style, element_state);
                 }
 
                 let mut tab_group = None;
@@ -260,9 +325,10 @@ impl Interactivity {
                     window.next_frame.tab_stops.insert(focus_handle);
                 }
 
+                let retained_self_scene = resolve_self_scene(&style, window, cx);
                 window.with_element_scale(bounds, style.scale, style.transform_origin, |window| {
                     window.with_element_opacity(style.opacity, |window| {
-                        style.paint(bounds, window, cx, |window: &mut Window, cx: &mut App| {
+                        let paint_contents = |window: &mut Window, cx: &mut App| {
                             window.with_text_style(style.text_style().cloned(), |window| {
                                 window.with_content_mask(
                                     style.overflow_mask(bounds, window.rem_size()),
@@ -310,7 +376,7 @@ impl Interactivity {
                                                 #[cfg(any(feature = "inspector", debug_assertions))]
                                                 window.insert_inspector_hitbox(
                                                     _hitbox.id,
-                                                    _inspector_id,
+                                                    inspector_id,
                                                     cx,
                                                 );
 
@@ -322,12 +388,20 @@ impl Interactivity {
                                     },
                                 );
                             });
-                        });
+                        };
+
+                        if let Some((prefix, suffix)) = retained_self_scene {
+                            window.replay_retained_scene_range(prefix);
+                            paint_contents(window, cx);
+                            window.replay_retained_scene_range(suffix);
+                        } else {
+                            style.paint(bounds, window, cx, paint_contents);
+                        }
                     });
                 });
 
-                ((), element_state)
+                (style, element_state)
             },
-        );
+        )
     }
 }
