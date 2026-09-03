@@ -71,7 +71,7 @@ pub trait Element: 'static + IntoElement {
     /// the same concrete element type from one internal source line.
     #[track_caller]
     fn into_any(self) -> AnyElement {
-        AnyElement::new(self).with_retained_source_location(panic::Location::caller())
+        AnyElement::new(self).with_retained_auto_mount(panic::Location::caller())
     }
 }
 
