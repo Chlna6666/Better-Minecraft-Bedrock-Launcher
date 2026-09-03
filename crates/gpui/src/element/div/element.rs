@@ -194,14 +194,25 @@ fn retained_div_self_scene_style_if_replayable(
         .then(|| retained_div_self_scene_style(style))
 }
 
+fn style_has_self_scene_primitives(style: &Style) -> bool {
+    !style.box_shadow.is_empty()
+        || style
+            .background
+            .as_ref()
+            .and_then(Fill::color)
+            .is_some_and(|color| !color.is_transparent())
+        || (style
+            .border_color
+            .is_some_and(|color| !color.is_transparent())
+            && style.border_widths.any(|length| !length.is_zero()))
+}
+
 fn style_is_reconciliation_transparent(style: &Style, window: &Window, cx: &App) -> bool {
     style_allows_self_scene_replay(style, window, cx)
         && style.overflow.x == Overflow::Visible
         && style.overflow.y == Overflow::Visible
         && style.text_style().is_none()
-        && style.background.is_none()
-        && style.border_color.is_none()
-        && style.box_shadow.is_empty()
+        && !style_has_self_scene_primitives(style)
 }
 
 impl Styled for Div {
@@ -391,7 +402,6 @@ impl Element for Div {
             .as_mut()
             .map(|provider| provider.provide(window, cx));
         let mut child_scene_range = None;
-        let mut reused_self_scene = false;
 
         let final_style = window.with_image_cache(image_cache, |window| {
             self.interactivity.paint_with_self_scene_reuse(
@@ -404,9 +414,18 @@ impl Element for Div {
                 |style, window, cx| {
                     let self_scene_style =
                         retained_div_self_scene_style_if_replayable(style, window, cx)?;
+
+                    if !style_has_self_scene_primitives(style) {
+                        window.record_debug_element_traversal_only(bounds, cx);
+                        return None;
+                    }
+
                     let ranges = window
                         .retained_self_scene_ranges_for_current(bounds, &self_scene_style)?;
-                    reused_self_scene = true;
+                    if ranges.prefix.is_empty() && ranges.suffix.is_empty() {
+                        return None;
+                    }
+                    window.record_debug_element_self_scene_replay(bounds, cx);
                     Some((ranges.prefix, ranges.suffix))
                 },
                 |style, window, cx| {
@@ -423,10 +442,6 @@ impl Element for Div {
                 },
             )
         });
-
-        if reused_self_scene {
-            window.record_debug_element_self_scene_replay(bounds, cx);
-        }
 
         prepaint.self_scene_style =
             retained_div_self_scene_style_if_replayable(&final_style, window, cx);
