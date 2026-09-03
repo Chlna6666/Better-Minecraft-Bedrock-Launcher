@@ -7,7 +7,7 @@ use crate::window::debug_visualization::ViewCacheDebugStatus;
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
 use std::{
-    any::Any,
+    any::{Any, TypeId},
     cell::Cell,
     fmt::{self, Display},
     mem,
@@ -67,6 +67,7 @@ pub(super) trait ElementObject {
     fn set_retained_source_location(
         &mut self,
         source: &'static core::panic::Location<'static>,
+        ordinal: Option<u32>,
     );
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId;
@@ -88,6 +89,7 @@ pub struct Drawable<E: Element> {
     /// The drawn element.
     pub element: E,
     retained_source_location: Option<&'static core::panic::Location<'static>>,
+    retained_source_ordinal: Option<u32>,
     phase: ElementDrawPhase<E::RequestLayoutState, E::PrepaintState>,
 }
 
@@ -170,6 +172,7 @@ impl<E: Element> Drawable<E> {
         Drawable {
             element,
             retained_source_location: None,
+            retained_source_ordinal: None,
             phase: ElementDrawPhase::Start,
         }
     }
@@ -179,10 +182,37 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::Start => {
                 let element_id = self.element.id();
                 let element_source_location = self.element.source_location();
-                let retained_source_location =
-                    self.retained_source_location.or(element_source_location);
+                let retained_element_id = element_id.clone().or_else(|| {
+                    let mount = self.retained_source_location.copied();
+                    let source = element_source_location.copied();
+                    if mount.is_none() && source.is_none() {
+                        return None;
+                    }
+
+                    // `.child()` and other fixed mounts supply ordinal 0, so unrelated conditional
+                    // siblings do not shift this identity. Generic erasure without a parent mount
+                    // falls back to the parent's next positional slot. `.children()` supplies its
+                    // own collection-local ordinal explicitly.
+                    let occurrence = self.retained_source_ordinal.unwrap_or_else(|| {
+                        window
+                            .retained_child_slot_stack
+                            .last()
+                            .copied()
+                            .unwrap_or(0)
+                    });
+                    Some(ElementId::RetainedAutoSlot {
+                        mount,
+                        source,
+                        element_type: TypeId::of::<E>(),
+                        occurrence,
+                    })
+                });
+                let retained_source_location = retained_element_id
+                    .is_none()
+                    .then_some(self.retained_source_location.or(element_source_location))
+                    .flatten();
                 let (retained_segment, retained_id, retained_identity_ambiguity) = window
-                    .begin_retained_element(element_id.clone(), retained_source_location);
+                    .begin_retained_element(retained_element_id, retained_source_location);
                 let global_id = element_id.map(|element_id| {
                     window.element_id_stack.push(element_id);
                     GlobalElementId(window.element_id_stack.clone())
@@ -510,8 +540,10 @@ where
     fn set_retained_source_location(
         &mut self,
         source: &'static core::panic::Location<'static>,
+        ordinal: Option<u32>,
     ) {
         self.retained_source_location = Some(source);
+        self.retained_source_ordinal = ordinal;
     }
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
