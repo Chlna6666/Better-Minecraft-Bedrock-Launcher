@@ -79,6 +79,10 @@ pub(crate) struct RetainedElementRange {
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) metadata_range: Range<usize>,
+    /// Whether this element's retained address is unambiguous in the frame that produced it.
+    pub(crate) identity_stable: bool,
+    /// Whether this element and every retained descendant have unambiguous identities.
+    pub(crate) subtree_stable: bool,
 }
 
 pub(crate) struct Frame {
@@ -99,6 +103,9 @@ pub(crate) struct Frame {
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
     pub(crate) retained_element_order: Vec<ReconcileKey>,
+    /// Number of ambiguous retained identities painted into this frame. Drawable snapshots this
+    /// counter before and after child paint to derive subtree stability in O(1).
+    pub(crate) retained_unstable_identity_count: usize,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -229,6 +236,7 @@ impl Frame {
             retained_scene_segments: Vec::new(),
             retained_element_ranges: FxHashMap::default(),
             retained_element_order: Vec::new(),
+            retained_unstable_identity_count: 0,
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: FxHashMap::default(),
@@ -261,6 +269,7 @@ impl Frame {
         self.retained_scene_segments.clear();
         self.retained_element_ranges.clear();
         self.retained_element_order.clear();
+        self.retained_unstable_identity_count = 0;
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
