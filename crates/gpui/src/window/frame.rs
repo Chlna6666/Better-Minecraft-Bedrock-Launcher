@@ -124,7 +124,7 @@ pub(crate) struct Frame {
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) deferred_retained_metadata: Vec<DeferredRetainedMetadata>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
-    pub(crate) tooltip_requests: Vec<Option<TooltipRequest>,
+    pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
@@ -216,9 +216,13 @@ impl PaintIndex {
                 target.window_control_hitboxes_index,
             )?,
             accessed_element_states_index: rebase_index(
-                self.accessed_element_states_index, source.accessed_element_states_index, target.accessed_element_states_index,
+                self.accessed_element_states_index,
+                source.accessed_element_states_index,
+                target.accessed_element_states_index,
             )?,
-            tab_handle_index: rebase_index(self.tab_handle_index, source.tab_handle_index, target.tab_handle_index)?,
+            tab_handle_index: rebase_index(
+                self.tab_handle_index, source.tab_handle_index, target.tab_handle_index,
+            )?,
             line_layout_index: self
                 .line_layout_index
                 .rebased_from(&source.line_layout_index, &target.line_layout_index)?,
