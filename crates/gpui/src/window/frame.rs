@@ -68,16 +68,19 @@ impl Borrow<GlobalElementId> for ReconcileKey {
     }
 }
 
-/// Inherited paint state that changes the pixels produced by an otherwise identical retained
-/// element. This is deliberately compact: targeted reconciliation already tracks the element's own
-/// style changes, while this key protects descendants from being replayed under stale ancestor
-/// opacity, transforms, or clipping.
+/// Inherited state that changes either lifecycle side effects or the pixels produced by an
+/// otherwise identical retained element. Targeted reconciliation tracks the changed element path;
+/// this key lets unaffected descendants/siblings prove that their logical clip, visual clip, text
+/// inheritance and transforms are still identical before replaying old prepaint/paint ranges.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RetainedPaintContext {
     pub(crate) opacity: f32,
     pub(crate) scale: f32,
     pub(crate) translation: Point<Pixels>,
+    pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) visual_content_mask: ContentMask<Pixels>,
+    pub(crate) text_style: TextStyle,
+    pub(crate) rem_size: Pixels,
 }
 
 /// Retained lifecycle ranges for one stable rendering identity path.
@@ -121,7 +124,7 @@ pub(crate) struct Frame {
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) deferred_retained_metadata: Vec<DeferredRetainedMetadata>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
-    pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+    pub(crate) tooltip_requests: Vec<Option<TooltipRequest>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
@@ -213,13 +216,9 @@ impl PaintIndex {
                 target.window_control_hitboxes_index,
             )?,
             accessed_element_states_index: rebase_index(
-                self.accessed_element_states_index,
-                source.accessed_element_states_index,
-                target.accessed_element_states_index,
+                self.accessed_element_states_index, source.accessed_element_states_index, target.accessed_element_states_index,
             )?,
-            tab_handle_index: rebase_index(
-                self.tab_handle_index, source.tab_handle_index, target.tab_handle_index,
-            )?,
+            tab_handle_index: rebase_index(self.tab_handle_index, source.tab_handle_index, target.tab_handle_index)?,
             line_layout_index: self
                 .line_layout_index
                 .rebased_from(&source.line_layout_index, &target.line_layout_index)?,
