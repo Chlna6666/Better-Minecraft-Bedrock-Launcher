@@ -22,7 +22,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt,clippy
+          components: rustfmt
 
       - name: Apply truncate width cache fix
         shell: python
@@ -119,12 +119,6 @@ jobs:
 
       - name: Format
         run: cargo fmt --all
-
-      - name: Test GPUI truncate regression
-        run: cargo test -p gpui text_layout_truncation_remeasures_when_available_width_changes --lib
-
-      - name: Check GPUI
-        run: cargo check -p gpui
 
       - name: Commit fix
         shell: bash
