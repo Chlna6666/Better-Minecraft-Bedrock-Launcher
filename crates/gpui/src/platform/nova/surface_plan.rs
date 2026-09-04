@@ -2,17 +2,15 @@ use super::*;
 
 /// Resolve the render plan used by the Nova swapchain path.
 ///
-/// Preserve GPUI's precise damage only when the active swapchain can consume native dirty regions
-/// and the scene does not contain backdrop filters. Backdrop blur targets are retained GPU pixel
-/// caches whose output depends on the exact pixels rendered before each blur barrier. The current
-/// spatial damage model is not yet strong enough to prove that every dependency stays valid across
-/// native dirty-rect presentation, especially when transparent client titlebars, animated atlas
-/// content, and modal overlays are combined.
+/// Backdrop-filter scenes still use a full swapchain presentation until Nova can prove native
+/// dirty-rect composition is correct for every transparent/titlebar/atlas combination. That is a
+/// presentation constraint only: the renderer already owns retained backdrop targets and precise
+/// source-order damage, so a full present must not imply that every Gaussian target is invalid.
 ///
-/// Treat a backdrop-filter scene as a correctness boundary for now: rebuild the full surface and
-/// every retained backdrop target for each presented blur frame. This is intentionally conservative
-/// and scoped to scenes that actually contain backdrop filters; normal retained scenes continue to
-/// use partial presentation.
+/// Keeping those two decisions independent is important for full-window background glass. A later
+/// page/list animation may require a full swapchain present while leaving all pixels *before* the
+/// background blur barrier unchanged. In that case the cached blur target remains valid and should
+/// be sampled directly instead of recapturing and filtering the whole window.
 pub(super) fn resolve_surface_render_plan(
     render_plan: FrameRenderPlan<'_>,
     surface_requires_full_redraw: bool,
@@ -21,8 +19,6 @@ pub(super) fn resolve_surface_render_plan(
     if surface_requires_full_redraw || has_backdrop_blurs {
         FrameRenderPlan {
             partial_present_mode: PartialPresentMode::FullRedraw,
-            force_full_backdrop_blur_refresh: render_plan.force_full_backdrop_blur_refresh
-                || has_backdrop_blurs,
             ..render_plan
         }
     } else {

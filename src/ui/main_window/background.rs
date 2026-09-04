@@ -3,11 +3,11 @@ use tracing::{info, instrument};
 
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
-const BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED: bool = true;
-// The configured background blur belongs to the background image itself. Using a fullscreen
-// backdrop-filter here makes every later scene primitive depend on a permanent full-window capture
-// and turns otherwise unrelated retained updates into backdrop-composition dependencies. Keep true
-// backdrop blur for glass/modal surfaces; blur the image layer directly instead.
+const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
+const BACKGROUND_GPU_BLUR_MIN_PX: f32 = 0.75;
+// Background blur is a full-background effect. Nova now isolates backdrop sources by draw order,
+// so the application no longer needs to carve a 60px hole around the titlebar to avoid sharing
+// filter results with the titlebar glass.
 const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
 const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
 
@@ -90,7 +90,7 @@ impl AppBackgroundView {
             background_option: settings.background_option.to_string(),
             local_image_path: settings.local_image_path.to_string(),
             network_image_url: settings.network_image_url.to_string(),
-            background_blur: normalize_background_blur_for_rendering(
+            background_blur: crate::config::config::clamp_background_blur(
                 settings.background_blur_preview,
             ),
             network_image_refresh_nonce: settings.network_image_refresh_nonce,
@@ -142,37 +142,26 @@ impl AppBackgroundView {
         animation_policy: ImageAnimationPolicy,
     ) -> Div {
         let container = div().absolute().inset_0().bg(gpui::transparent_black());
-        let blur = normalize_background_blur_for_rendering(blur);
+        let blur = crate::config::config::clamp_background_blur(blur);
         let container = match source {
-            Some(source) => {
-                let layer = self.render_background_layer(source, animation_policy);
-                if background_uses_gpu_blur(blur) {
-                    container.child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .blur(background_foreground_blur_radius(blur))
-                            .child(layer),
-                    )
-                } else {
-                    container.child(layer)
-                }
-            }
+            Some(source) => container.child(self.render_background_layer(source, animation_policy)),
             None => container,
         };
 
-        if blur == 0.0 {
+        if blur <= 0.0 {
             return container;
         }
 
-        // Keep the inexpensive tint as an independent foreground quad. It must not participate in
-        // the image blur, otherwise its alpha would be blurred into the window edges.
-        container.child(
-            div()
-                .absolute()
-                .inset_0()
-                .bg(background_blur_overlay_color(blur)),
-        )
+        let overlay = div()
+            .absolute()
+            .inset_0()
+            .bg(background_blur_overlay_color(blur));
+
+        if background_uses_gpu_blur(blur) {
+            container.child(overlay.backdrop_blur(background_backdrop_blur_style(blur)))
+        } else {
+            container.child(overlay)
+        }
     }
 
     fn update_cached_background_source(&mut self, settings: &BackgroundSettingsSnapshot) {
@@ -233,23 +222,15 @@ impl AppBackgroundView {
     }
 }
 
-fn normalize_background_blur_for_rendering(blur: f32) -> f32 {
-    let blur = crate::config::config::clamp_background_blur(blur);
-    if blur.is_finite() && blur > 0.0 {
-        blur
-    } else {
-        0.0
-    }
-}
-
 fn background_uses_gpu_blur(blur: f32) -> bool {
-    BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED && blur.is_finite() && blur > 0.0
+    BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur.is_finite() && blur >= BACKGROUND_GPU_BLUR_MIN_PX
 }
 
-fn background_foreground_blur_radius(blur: f32) -> Pixels {
-    // Preserve the user-visible radius mapping used by the previous backdrop implementation while
-    // changing only which pixels are filtered.
-    px(blur / 3.0)
+fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
+    // BMCBL owns only the user-visible blur strength. Sampling resolution/pass policy belongs to
+    // GPUI so DX12/Vulkan can share one renderer-side tuning rule instead of duplicating thresholds
+    // in the application.
+    BackdropBlurStyle::new(px(blur / 3.0)).auto_quality()
 }
 
 fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
@@ -319,9 +300,8 @@ impl Render for AppBackgroundView {
 mod tests {
     use super::{
         BACKGROUND_ANIMATION_MAX_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
-        BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED, animation_suppression_changed,
+        BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, animation_suppression_changed,
         background_animation_policy, background_blur_overlay_color, background_uses_gpu_blur,
-        normalize_background_blur_for_rendering,
     };
 
     #[test]
@@ -350,16 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn only_zero_or_non_finite_background_blur_is_an_identity_effect() {
-        assert!(BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED);
-        assert_eq!(normalize_background_blur_for_rendering(0.0), 0.0);
-        assert_eq!(normalize_background_blur_for_rendering(0.1), 0.1);
-        assert_eq!(normalize_background_blur_for_rendering(0.5), 0.5);
-        assert_eq!(normalize_background_blur_for_rendering(f32::NAN), 0.0);
+    fn subpixel_background_blur_skips_invisible_gpu_work() {
+        assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
         assert!(!background_uses_gpu_blur(0.0));
-        assert!(!background_uses_gpu_blur(f32::NAN));
-        assert!(background_uses_gpu_blur(0.1));
-        assert!(background_uses_gpu_blur(0.5));
+        assert!(!background_uses_gpu_blur(0.1));
+        assert!(!background_uses_gpu_blur(0.5));
         assert!(background_uses_gpu_blur(1.0));
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
