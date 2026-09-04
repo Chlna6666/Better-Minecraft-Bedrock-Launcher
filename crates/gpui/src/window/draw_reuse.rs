@@ -442,6 +442,7 @@ impl Window {
         &self,
         retained_id: &GlobalElementId,
         bounds: Bounds<Pixels>,
+        layout_fingerprint: Option<u64>,
         plain_text_key: Option<&crate::element::RetainedPlainTextKey>,
     ) -> Option<RetainedElementRange> {
         if self.force_view_cache_refresh() {
@@ -452,19 +453,29 @@ impl Window {
         if targeted_replay && self.invalidator.retained_path_is_dirty(retained_id) {
             return None;
         }
-        // ReconcileSubtree deliberately separates "visit descendants" from "all descendants are
-        // dirty". Until a candidate carries both layout- and semantic-subtree proofs, an ancestor
-        // inside that scope must not outer-replay and hide a moving/restyled child whose own bounds
-        // have not yet been inspected. This is the conservative bridge to fingerprinted replay.
+
+        let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
+
+        // A ReconcileSubtree path means the candidate is not intrinsically dirty, but an ancestor
+        // cannot hide descendant layout work merely because its own final bounds stayed unchanged.
+        // The first proof admitted here is deliberately narrow: recursive Taffy layout identity plus
+        // the existing exact side-effect-free plain-text output key. Non-text subtrees remain
+        // conservative until they provide a semantic subtree proof of their own.
         if targeted_replay
             && self
                 .invalidator
                 .retained_path_requires_reconciliation(retained_id)
         {
-            return None;
+            let current_plain_text = plain_text_key?;
+            if retained.layout_fingerprint.is_none()
+                || retained.layout_fingerprint != layout_fingerprint
+                || retained.plain_text_key.as_ref()? != current_plain_text
+                || !retained_plain_text_range_is_side_effect_free(retained)
+            {
+                return None;
+            }
         }
 
-        let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
         if retained.paint_context != self.current_retained_paint_context() {
             return None;
         }
@@ -514,6 +525,7 @@ impl Window {
         &mut self,
         retained_id: GlobalElementId,
         bounds: Bounds<Pixels>,
+        layout_fingerprint: Option<u64>,
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
         metadata_start: usize,
@@ -531,6 +543,7 @@ impl Window {
             key,
             RetainedElementRange {
                 bounds,
+                layout_fingerprint,
                 prepaint_range,
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
@@ -636,6 +649,7 @@ impl Window {
                 key,
                 RetainedElementRange {
                     bounds: source_range.bounds,
+                    layout_fingerprint: source_range.layout_fingerprint,
                     prepaint_range,
                     paint_range,
                     metadata_range: metadata_start..metadata_end,

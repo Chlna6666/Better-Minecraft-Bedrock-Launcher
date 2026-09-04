@@ -126,6 +126,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         retained_identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
+        layout_fingerprint: Option<u64>,
         request_layout: RequestLayoutState,
         prepaint: PrepaintState,
         prepaint_range: Range<PrepaintStateIndex>,
@@ -270,12 +271,14 @@ impl<E: Element> Drawable<E> {
                 ..
             } => {
                 let bounds = window.layout_bounds(layout_id);
+                let layout_fingerprint = window.retained_layout_fingerprint(layout_id);
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
                 let targeted_replay = window.retained_replay_is_targeted();
-                let mut plain_text_key = (!targeted_replay || !identity_stable)
-                    .then(|| retained_plain_text_key(&self.element, &request_layout, window))
-                    .flatten();
+                // ReconcileSubtree proof needs the exact text output even for a stable identity.
+                // Non-text elements exit this helper after two cheap type checks.
+                let mut plain_text_key =
+                    retained_plain_text_key(&self.element, &request_layout, window);
                 let may_reconcile = E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay()
                     && (identity_stable || plain_text_key.is_some());
 
@@ -285,6 +288,7 @@ impl<E: Element> Drawable<E> {
                             window.reusable_retained_element(
                                 &retained_id,
                                 bounds,
+                                layout_fingerprint,
                                 plain_text_key.as_ref(),
                             )
                         })
@@ -306,7 +310,7 @@ impl<E: Element> Drawable<E> {
                     }
                 }
 
-                if plain_text_key.is_none() {
+                if plain_text_key.is_none() && (!targeted_replay || !identity_stable) {
                     plain_text_key = retained_plain_text_key(&self.element, &request_layout, window);
                 }
 
@@ -342,6 +346,7 @@ impl<E: Element> Drawable<E> {
                     retained_identity_ambiguity,
                     inspector_id,
                     bounds,
+                    layout_fingerprint,
                     request_layout,
                     prepaint,
                     prepaint_range: prepaint_start..prepaint_end,
@@ -362,6 +367,7 @@ impl<E: Element> Drawable<E> {
                 retained_identity_ambiguity,
                 inspector_id,
                 bounds,
+                layout_fingerprint,
                 mut request_layout,
                 mut prepaint,
                 prepaint_range,
@@ -403,6 +409,7 @@ impl<E: Element> Drawable<E> {
                 window.record_retained_element_range(
                     retained_id,
                     bounds,
+                    layout_fingerprint,
                     prepaint_range,
                     paint_start..paint_end,
                     metadata_start,

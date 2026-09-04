@@ -114,4 +114,12 @@ impl Window {
         bounds.origin += self.element_offset();
         bounds
     }
+
+    /// Returns the recursive layout fingerprint built during `request_layout` for the current frame.
+    /// `None` means at least one node in the subtree cannot prove stable layout semantics.
+    pub(crate) fn retained_layout_fingerprint(&self, layout_id: LayoutId) -> Option<u64> {
+        self.layout_engine
+            .as_ref()
+            .and_then(|engine| engine.retained_layout_fingerprint(layout_id))
+    }
 }

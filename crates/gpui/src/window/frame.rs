@@ -92,6 +92,8 @@ pub(crate) struct RetainedPaintContext {
 #[derive(Clone)]
 pub(crate) struct RetainedElementRange {
     pub(crate) bounds: Bounds<Pixels>,
+    /// Recursive layout proof captured from the Taffy subtree that produced this element.
+    pub(crate) layout_fingerprint: Option<u64>,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) metadata_range: Range<usize>,
@@ -216,9 +218,7 @@ impl PaintIndex {
                 target.window_control_hitboxes_index,
             )?,
             accessed_element_states_index: rebase_index(
-                self.accessed_element_states_index,
-                source.accessed_element_states_index,
-                target.accessed_element_states_index,
+                self.accessed_element_states_index, source.accessed_element_states_index, target.accessed_element_states_index,
             )?,
             tab_handle_index: rebase_index(
                 self.tab_handle_index, source.tab_handle_index, target.tab_handle_index,
