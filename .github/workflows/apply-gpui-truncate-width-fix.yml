@@ -77,10 +77,10 @@ jobs:
               visual.draw(
                   point(px(0.), px(0.)),
                   size(
-                      AvailableSpace::Definite(px(320.)),
+                      AvailableSpace::Definite(px(900.)),
                       AvailableSpace::MinContent,
                   ),
-                  |_, _| div().w(px(320.)).truncate().child(wide),
+                  |_, _| div().w(px(900.)).truncate().child(wide),
               );
               let wide_text = layout.text();
 
