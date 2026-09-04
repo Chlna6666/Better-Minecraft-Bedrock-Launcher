@@ -426,7 +426,10 @@ impl Window {
             opacity: self.element_opacity,
             scale: self.element_visual_transform.scale,
             translation: self.element_visual_transform.translation,
+            content_mask: self.content_mask(),
             visual_content_mask: self.visual_content_mask(),
+            text_style: self.text_style(),
+            rem_size: self.rem_size(),
         }
     }
 
