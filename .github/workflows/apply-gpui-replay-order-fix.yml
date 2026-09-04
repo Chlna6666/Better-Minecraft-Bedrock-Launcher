@@ -1,0 +1,306 @@
+name: Apply GPUI retained replay order fix
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/apply-gpui-replay-order-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply replay-order fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("crates/gpui/src/scene/display_list.rs")
+          text = path.read_text(encoding="utf-8")
+
+          old = '''    fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
+              let order = if retain_order {
+                  let clipped_bounds = primitive
+                      .bounds()
+                      .intersect(&primitive.content_mask().bounds);
+                  if clipped_bounds.is_empty() {
+                      return;
+                  }
+                  if let Some(layer_order) = self.layer_stack.last().copied() {
+                      debug_assert_eq!(layer_order, primitive.order());
+                      layer_order
+                  } else {
+                      self.primitive_bounds
+                          .insert_with_order(clipped_bounds, primitive.order())
+                  }
+              } else if let Some(order) = self.order_for_primitive(primitive) {
+                  order
+              } else {
+                  return;
+              };
+          '''
+          old = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in old.splitlines()
+          ) + "\n"
+          new = '''    fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
+              // A retained-order proof belongs to the exact ordering prefix that produced it. If an
+              // enclosing layer was rebuilt with a different DrawOrder, keeping the primitive's old
+              // order would mix two frame-local ordering domains. Fall back to the current tree and
+              // invalidate the remainder of this retained prefix instead of panicking in debug builds
+              // (or silently accepting the mismatch in release builds).
+              let retain_order = retain_order && !self.retained_prefix_invalid;
+              let order = if retain_order {
+                  let clipped_bounds = primitive
+                      .bounds()
+                      .intersect(&primitive.content_mask().bounds);
+                  if clipped_bounds.is_empty() {
+                      return;
+                  }
+                  if let Some(layer_order) = self.layer_stack.last().copied() {
+                      if layer_order != primitive.order() {
+                          self.retained_prefix_invalid = true;
+                      }
+                      layer_order
+                  } else {
+                      self.primitive_bounds
+                          .insert_with_order(clipped_bounds, primitive.order())
+                  }
+              } else if let Some(order) = self.order_for_primitive(primitive) {
+                  order
+              } else {
+                  return;
+              };
+          '''
+          new = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in new.splitlines()
+          ) + "\n"
+          if text.count(old) != 1:
+              raise SystemExit(f"replay_primitive prefix count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old = '''                PaintOperation::Primitive(primitive) => {
+                      if let Some(capture) = self.blur_captures.last_mut() {
+                          let operation_start = capture.scene.paint_operations.len();
+                          capture.scene.replay_primitive(primitive, retain_order);
+                          let captured_primitive = capture
+                              .scene
+                              .paint_operations
+                              .get(operation_start)
+                              .and_then(|operation| match operation {
+                                  PaintOperation::Primitive(primitive) => Some(primitive.clone()),
+                                  PaintOperation::StartLayer(_)
+                                  | PaintOperation::EndLayer
+                                  | PaintOperation::StartBlur(_)
+                                  | PaintOperation::EndBlur => None,
+                              });
+                          if let Some(primitive) = captured_primitive {
+                              self.paint_operations
+                                  .push(PaintOperation::Primitive(primitive));
+                          }
+                      } else {
+                          self.replay_primitive(primitive, retain_order);
+                      }
+                  }
+          '''
+          old = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in old.splitlines()
+          ) + "\n"
+          new = '''                PaintOperation::Primitive(primitive) => {
+                      if self.blur_captures.last().is_some() {
+                          let (captured_primitive, capture_prefix_invalid) = {
+                              let capture = self.blur_captures.last_mut().unwrap();
+                              let operation_start = capture.scene.paint_operations.len();
+                              capture.scene.replay_primitive(primitive, retain_order);
+                              let captured_primitive = capture
+                                  .scene
+                                  .paint_operations
+                                  .get(operation_start)
+                                  .and_then(|operation| match operation {
+                                      PaintOperation::Primitive(primitive) => Some(primitive.clone()),
+                                      PaintOperation::StartLayer(_)
+                                      | PaintOperation::EndLayer
+                                      | PaintOperation::StartBlur(_)
+                                      | PaintOperation::EndBlur => None,
+                                  });
+                              (captured_primitive, capture.scene.retained_prefix_invalid)
+                          };
+                          if capture_prefix_invalid {
+                              self.retained_prefix_invalid = true;
+                          }
+                          if let Some(primitive) = captured_primitive {
+                              self.paint_operations
+                                  .push(PaintOperation::Primitive(primitive));
+                          }
+                      } else {
+                          self.replay_primitive(primitive, retain_order);
+                      }
+                  }
+          '''
+          new = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in new.splitlines()
+          ) + "\n"
+          if text.count(old) != 1:
+              raise SystemExit(f"capture primitive replay block count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old = '''        if retain_order && self.paint_operations.len() == range_end {
+              self.retained_prefix_verified_len = range_end;
+          } else if retain_order {
+              self.retained_prefix_invalid = true;
+          }
+          '''
+          old = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in old.splitlines()
+          ) + "\n"
+          new = '''        if retain_order
+              && !self.retained_prefix_invalid
+              && self.paint_operations.len() == range_end
+          {
+              self.retained_prefix_verified_len = range_end;
+          } else if retain_order {
+              self.retained_prefix_invalid = true;
+          }
+          '''
+          new = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in new.splitlines()
+          ) + "\n"
+          if text.count(old) != 1:
+              raise SystemExit(f"retained prefix finalization count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          marker = "\nfn animation_sampled_blur_capture_bounds("
+          if text.count(marker) != 1:
+              raise SystemExit(f"display-list test insertion marker count={text.count(marker)}")
+          tests = r'''
+          #[cfg(test)]
+          mod retained_replay_order_tests {
+              use super::*;
+              use crate::{ContentMask, point, size};
+
+              fn test_bounds() -> Bounds<ScaledPixels> {
+                  Bounds::new(
+                      point(ScaledPixels(0.0), ScaledPixels(0.0)),
+                      size(ScaledPixels(100.0), ScaledPixels(100.0)),
+                  )
+              }
+
+              fn stale_quad(order: DrawOrder) -> Primitive {
+                  let bounds = test_bounds();
+                  Primitive::from(Quad {
+                      order,
+                      bounds,
+                      content_mask: ContentMask::new(bounds),
+                      ..Default::default()
+                  })
+              }
+
+              #[test]
+              fn stale_retained_order_rebinds_to_current_layer() {
+                  let mut scene = Scene::default();
+                  scene.push_layer(test_bounds());
+                  let current_layer_order = *scene.layer_stack.last().unwrap();
+                  let primitive = stale_quad(current_layer_order.saturating_add(17));
+
+                  scene.replay_primitive(&primitive, true);
+
+                  assert!(scene.retained_prefix_invalid);
+                  assert_eq!(scene.quads.len(), 1);
+                  assert_eq!(scene.quads[0].order, current_layer_order);
+                  let PaintOperation::Primitive(replayed) = scene.paint_operations.last().unwrap()
+                  else {
+                      panic!("expected replayed primitive");
+                  };
+                  assert_eq!(replayed.order(), current_layer_order);
+              }
+
+              #[test]
+              fn blur_capture_order_mismatch_invalidates_outer_replay_prefix() {
+                  let bounds = test_bounds();
+                  let mut current = Scene::default();
+                  current.blur_captures.push(BlurCaptureState {
+                      config: BlurCapture {
+                          animation_id: None,
+                          bounds,
+                          content_mask: ContentMask::new(bounds),
+                          radius: ScaledPixels(4.0),
+                          opacity: 1.0,
+                      },
+                      scene: Box::default(),
+                  });
+                  current
+                      .blur_captures
+                      .last_mut()
+                      .unwrap()
+                      .scene
+                      .push_layer(bounds);
+                  let current_layer_order = *current
+                      .blur_captures
+                      .last()
+                      .unwrap()
+                      .scene
+                      .layer_stack
+                      .last()
+                      .unwrap();
+
+                  let mut previous = Scene::default();
+                  previous
+                      .paint_operations
+                      .push(PaintOperation::Primitive(stale_quad(
+                          current_layer_order.saturating_add(17),
+                      )));
+
+                  current.replay(0..1, &previous);
+
+                  assert!(current.retained_prefix_invalid);
+                  assert_eq!(current.retained_prefix_verified_len, 0);
+                  let capture = current.blur_captures.last().unwrap();
+                  assert!(capture.scene.retained_prefix_invalid);
+                  assert_eq!(capture.scene.quads[0].order, current_layer_order);
+              }
+          }
+          '''
+          tests = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in tests.splitlines()
+          ) + "\n"
+          text = text.replace(marker, tests + marker, 1)
+
+          path.write_text(text, encoding="utf-8")
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/gpui/src/scene/display_list.rs
+          git diff --cached --check
+          git diff --cached --quiet && {
+            echo 'no replay-order fix generated' >&2
+            exit 1
+          }
+          git commit -m 'fix(gpui): retained replay 重绑当前图层绘制顺序'
+          git push origin HEAD:master
