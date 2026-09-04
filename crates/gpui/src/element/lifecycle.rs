@@ -145,6 +145,18 @@ fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
     ambiguity.iter().all(|flag| !flag.get())
 }
 
+#[inline]
+fn element_allows_outer_retained_replay<E: Element>() -> bool {
+    // AnyView owns a second retained cache whose state stores absolute frame-local prepaint/paint
+    // indices. If Drawable replays the AnyView wrapper itself, AnyView::prepaint/paint never run and
+    // those internal ranges are not rebased to the current frame. A variable-length sibling can then
+    // shift Scene indices and make a later AnyView hit replay an unrelated slice of the previous
+    // frame. Keep AnyView as the retained boundary: its own cache still reuses the subtree, but the
+    // generic outer element reconciler must not skip the lifecycle that refreshes its frame-local
+    // ranges.
+    TypeId::of::<E>() != TypeId::of::<crate::AnyView>()
+}
+
 fn retained_plain_text_key<E: Element>(
     element: &E,
     request_layout: &E::RequestLayoutState,
@@ -276,7 +288,8 @@ impl<E: Element> Drawable<E> {
                 let mut plain_text_key = (!targeted_replay || !identity_stable)
                     .then(|| retained_plain_text_key(&self.element, &request_layout, window))
                     .flatten();
-                let may_reconcile = identity_stable || plain_text_key.is_some();
+                let may_reconcile = element_allows_outer_retained_replay::<E>()
+                    && (identity_stable || plain_text_key.is_some());
 
                 let retained = may_reconcile
                     .then(|| {
