@@ -68,6 +68,18 @@ impl Borrow<GlobalElementId> for ReconcileKey {
     }
 }
 
+/// Inherited paint state that changes the pixels produced by an otherwise identical retained
+/// element. This is deliberately compact: targeted reconciliation already tracks the element's own
+/// style changes, while this key protects descendants from being replayed under stale ancestor
+/// opacity, transforms, or clipping.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RetainedPaintContext {
+    pub(crate) opacity: f32,
+    pub(crate) scale: f32,
+    pub(crate) translation: Point<Pixels>,
+    pub(crate) visual_content_mask: ContentMask<Pixels>,
+}
+
 /// Retained lifecycle ranges for one stable rendering identity path.
 ///
 /// `metadata_range` points into `Frame::retained_element_order`. Entries are emitted in post-order,
@@ -80,6 +92,8 @@ pub(crate) struct RetainedElementRange {
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) metadata_range: Range<usize>,
+    /// Inherited paint context under which this range was originally emitted.
+    pub(crate) paint_context: RetainedPaintContext,
     /// Exact self-scene style and child scene split for a reconciliation-safe `Div`.
     pub(crate) div_self_scene: Option<RetainedDivSelfScene>,
     /// Exact side-effect-free plain-text output identity used for generic dirty reconciliation.
@@ -185,19 +199,13 @@ impl PaintIndex {
         Some(Self {
             scene_index: rebase_index(self.scene_index, source.scene_index, target.scene_index)?,
             mouse_listeners_index: rebase_index(
-                self.mouse_listeners_index,
-                source.mouse_listeners_index,
-                target.mouse_listeners_index,
+                self.mouse_listeners_index, source.mouse_listeners_index, target.mouse_listeners_index,
             )?,
             input_handlers_index: rebase_index(
-                self.input_handlers_index,
-                source.input_handlers_index,
-                target.input_handlers_index,
+                self.input_handlers_index, source.input_handlers_index, target.input_handlers_index,
             )?,
             cursor_styles_index: rebase_index(
-                self.cursor_styles_index,
-                source.cursor_styles_index,
-                target.cursor_styles_index,
+                self.cursor_styles_index, source.cursor_styles_index, target.cursor_styles_index,
             )?,
             window_control_hitboxes_index: rebase_index(
                 self.window_control_hitboxes_index,
@@ -210,9 +218,7 @@ impl PaintIndex {
                 target.accessed_element_states_index,
             )?,
             tab_handle_index: rebase_index(
-                self.tab_handle_index,
-                source.tab_handle_index,
-                target.tab_handle_index,
+                self.tab_handle_index, source.tab_handle_index, target.tab_handle_index,
             )?,
             line_layout_index: self
                 .line_layout_index

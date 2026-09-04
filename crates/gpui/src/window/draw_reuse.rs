@@ -1,5 +1,6 @@
 use super::frame::{
     DeferredRetainedMetadata, DeferredRetainedReplay, ReconcileKey, RetainedElementRange,
+    RetainedPaintContext,
 };
 use super::state::ElementVisualTransform;
 use super::*;
@@ -420,6 +421,15 @@ impl Window {
         true
     }
 
+    pub(crate) fn current_retained_paint_context(&self) -> RetainedPaintContext {
+        RetainedPaintContext {
+            opacity: self.element_opacity,
+            scale: self.element_visual_transform.scale,
+            translation: self.element_visual_transform.translation,
+            visual_content_mask: self.visual_content_mask(),
+        }
+    }
+
     /// Returns a previously retained element range that is safe to replay in the current frame.
     ///
     /// Targeted retained frames keep the existing structural-identity rules. Generic dirty frames
@@ -441,6 +451,9 @@ impl Window {
         }
 
         let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
+        if retained.paint_context != self.current_retained_paint_context() {
+            return None;
+        }
         if targeted_replay {
             if !retained.identity_stable || !retained.subtree_stable {
                 let current_plain_text = plain_text_key?;
@@ -496,6 +509,7 @@ impl Window {
         subtree_stable: bool,
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
+        let paint_context = self.current_retained_paint_context();
         let key = ReconcileKey::from(retained_id);
         self.next_frame.retained_element_order.push(key.clone());
         let metadata_end = self.next_frame.retained_element_order.len();
@@ -506,6 +520,7 @@ impl Window {
                 prepaint_range,
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
+                paint_context,
                 div_self_scene,
                 plain_text_key,
                 identity_stable,
@@ -610,6 +625,7 @@ impl Window {
                     prepaint_range,
                     paint_range,
                     metadata_range: metadata_start..metadata_end,
+                    paint_context: source_range.paint_context.clone(),
                     div_self_scene,
                     plain_text_key: source_range.plain_text_key.clone(),
                     identity_stable: source_range.identity_stable,

@@ -749,19 +749,7 @@ impl Window {
     }
 
     pub(crate) fn force_view_cache_refresh(&self) -> bool {
-        if self.force_view_cache_refresh {
-            return true;
-        }
-
-        // Backdrop blur itself does not make every retained subtree unsafe. The stale-modal bug is
-        // specifically caused by replaying descendants that were recorded under an older inherited
-        // opacity/scale context while the modal transition was still in flight. Keep the barrier on
-        // those transformed/faded descendants only; unrelated background/page subtrees remain fully
-        // eligible for retained prepaint/paint reuse even while a fullscreen blur is present.
-        self.rendered_frame.scene.has_backdrop_blurs()
-            && (self.element_opacity != 1.0
-                || self.element_visual_transform.scale != 1.0
-                || self.element_visual_transform.translation != Point::default())
+        self.force_view_cache_refresh
     }
 
     fn record_animation_tick_dirty_bounds(

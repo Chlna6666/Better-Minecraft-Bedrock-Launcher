@@ -3,7 +3,7 @@ use crate::Styled;
 use crate::{
     AnyElement, AnyEntity, AnyWeakEntity, App, Bounds, ContentMask, Context, Element, ElementId,
     Entity, EntityId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, PaintIndex,
-    ParentElement, Pixels, PrepaintStateIndex, Render, Style, StyleRefinement, TextStyle,
+    ParentElement, Pixels, Point, PrepaintStateIndex, Render, Style, StyleRefinement, TextStyle,
     WeakEntity, div,
 };
 use crate::{Empty, Window};
@@ -23,11 +23,20 @@ struct AnyViewState {
     accessed_entities: FxHashSet<EntityId>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ViewPaintContext {
+    opacity: f32,
+    scale: f32,
+    translation: Point<Pixels>,
+    visual_content_mask: ContentMask<Pixels>,
+}
+
 #[derive(Default)]
 struct ViewCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
     text_style: TextStyle,
+    paint_context: ViewPaintContext,
     fingerprint: Option<u64>,
 }
 
@@ -302,6 +311,12 @@ impl Element for AnyView {
                 |element_state, window| {
                     let content_mask = window.content_mask();
                     let text_style = window.text_style();
+                    let paint_context = ViewPaintContext {
+                        opacity: window.element_opacity(),
+                        scale: window.element_visual_transform.scale,
+                        translation: window.element_visual_transform.translation,
+                        visual_content_mask: window.visual_content_mask(),
+                    };
 
                     let cache_fingerprint = self.cache_fingerprint();
                     let view_dirty = window.dirty_views.contains(&self.entity_id());
@@ -330,6 +345,9 @@ impl Element for AnyView {
                             ViewCacheDebugStatus::MissBounds
                         }
                         Some(state) if state.cache_key.content_mask != content_mask => {
+                            ViewCacheDebugStatus::MissContentMask
+                        }
+                        Some(state) if state.cache_key.paint_context != paint_context => {
                             ViewCacheDebugStatus::MissContentMask
                         }
                         Some(state) if state.cache_key.text_style != text_style => {
@@ -362,6 +380,7 @@ impl Element for AnyView {
                     if let Some(mut element_state) = element_state
                         && element_state.cache_key.bounds == bounds
                         && element_state.cache_key.content_mask == content_mask
+                        && element_state.cache_key.paint_context == paint_context
                         && element_state.cache_key.text_style == text_style
                         && element_state.cache_key.fingerprint == cache_fingerprint
                         && (!force_refresh || can_reuse_refresh || can_defer_dirty_view)
@@ -419,6 +438,7 @@ impl Element for AnyView {
                                 bounds,
                                 content_mask,
                                 text_style,
+                                paint_context,
                                 fingerprint: cache_fingerprint,
                             },
                         },

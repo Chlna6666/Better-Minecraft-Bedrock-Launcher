@@ -357,15 +357,17 @@ impl Element for Div {
                 // retry. Progressive deferral belongs at explicit retained boundaries such as
                 // progressive AnyView/deferred work, where work can actually be skipped safely.
                 if style.display != Display::None {
-                    window.with_element_offset(scroll_offset, |window| {
-                        for child in &mut self.children {
-                            child.prepaint(window, cx);
+                    window.with_element_opacity(style.opacity, |window| {
+                        window.with_element_offset(scroll_offset, |window| {
+                            for child in &mut self.children {
+                                child.prepaint(window, cx);
+                            }
+                        });
+
+                        if let Some(listener) = self.prepaint_listener.as_ref() {
+                            listener(children_bounds, window, cx);
                         }
                     });
-
-                    if let Some(listener) = self.prepaint_listener.as_ref() {
-                        listener(children_bounds, window, cx);
-                    }
                 }
 
                 DivPrepaint {

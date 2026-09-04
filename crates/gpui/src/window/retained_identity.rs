@@ -78,6 +78,9 @@ impl Window {
 
         let retained_id = self.current_retained_element_id()?;
         let parent = self.rendered_frame.retained_element_ranges.get(&retained_id)?;
+        if parent.paint_context != self.current_retained_paint_context() {
+            return None;
+        }
         let self_scene = parent.div_self_scene.as_ref()?;
         if parent.bounds != bounds || &self_scene.style != current_style {
             return None;
