@@ -91,9 +91,7 @@ impl AppBackgroundView {
             background_option: settings.background_option.to_string(),
             local_image_path: settings.local_image_path.to_string(),
             network_image_url: settings.network_image_url.to_string(),
-            background_blur: crate::config::config::clamp_background_blur(
-                settings.background_blur_preview,
-            ),
+            background_blur: normalize_background_blur_for_rendering(settings.background_blur_preview),
             network_image_refresh_nonce: settings.network_image_refresh_nonce,
         }
     }
@@ -143,7 +141,7 @@ impl AppBackgroundView {
         animation_policy: ImageAnimationPolicy,
     ) -> Div {
         let container = div().absolute().inset_0().bg(gpui::transparent_black());
-        let blur = crate::config::config::clamp_background_blur(blur);
+        let blur = normalize_background_blur_for_rendering(blur);
         let container = match source {
             Some(source) => {
                 let layer = self.render_background_layer(source, animation_policy);
@@ -162,7 +160,7 @@ impl AppBackgroundView {
             None => container,
         };
 
-        if blur <= 0.0 {
+        if blur == 0.0 {
             return container;
         }
 
@@ -231,6 +229,15 @@ impl AppBackgroundView {
             self.preloaded_background_resource = Some(resource);
             self.preloaded_background_task = task;
         }
+    }
+}
+
+fn normalize_background_blur_for_rendering(blur: f32) -> f32 {
+    let blur = crate::config::config::clamp_background_blur(blur);
+    if blur < BACKGROUND_GPU_BLUR_MIN_PX {
+        0.0
+    } else {
+        blur
     }
 }
 
@@ -313,6 +320,7 @@ mod tests {
         BACKGROUND_ANIMATION_MAX_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
         BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED, animation_suppression_changed,
         background_animation_policy, background_blur_overlay_color, background_uses_gpu_blur,
+        normalize_background_blur_for_rendering,
     };
 
     #[test]
@@ -341,11 +349,13 @@ mod tests {
     }
 
     #[test]
-    fn subpixel_background_blur_skips_invisible_gpu_work() {
+    fn zero_and_subpixel_background_blur_are_identity_effects() {
         assert!(BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED);
+        assert_eq!(normalize_background_blur_for_rendering(0.0), 0.0);
+        assert_eq!(normalize_background_blur_for_rendering(0.1), 0.0);
+        assert_eq!(normalize_background_blur_for_rendering(0.5), 0.0);
+        assert_eq!(normalize_background_blur_for_rendering(f32::NAN), 0.0);
         assert!(!background_uses_gpu_blur(0.0));
-        assert!(!background_uses_gpu_blur(0.1));
-        assert!(!background_uses_gpu_blur(0.5));
         assert!(background_uses_gpu_blur(1.0));
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
