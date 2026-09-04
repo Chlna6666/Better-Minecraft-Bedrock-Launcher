@@ -98,7 +98,9 @@ impl Window {
     /// Unlike [`Window::request_animation_frame`], this does not emit an application-level
     /// `Notify`. The owning view is marked dirty only so it can resample layout state, while the
     /// invalidator keeps the retained element path. Structural ancestors execute to reach the
-    /// target, but unrelated siblings remain eligible for retained prepaint/paint replay.
+    /// target, while descendants are allowed to prove reuse from their current bounds and inherited
+    /// paint context. This is important for clipped/truncated content: a changed overflow mask
+    /// naturally makes affected descendants miss retained replay, while stable siblings remain hot.
     pub(crate) fn request_layout_animation_frame(&self, retained_id: GlobalElementId) {
         let Some(entity) = self.current_view_or_root() else {
             return;
@@ -114,18 +116,15 @@ impl Window {
             );
         }
 
-        RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(move |window, _cx| {
+        // Use the shared next-frame queue so multiple layout-animation targets in one render pass
+        // request only one platform frame. Each callback still preserves its own retained path.
+        self.on_next_frame(move |window, _cx| {
             if window
                 .invalidator
-                .invalidate_retained_path(entity, Some(&retained_id), true)
+                .invalidate_retained_path(entity, Some(&retained_id), false)
             {
                 window.schedule_dirty_frame();
             }
-        }));
-
-        self.platform_window.request_frame(RequestFrameOptions {
-            require_presentation: true,
-            force_render: self.active.get(),
         });
     }
 
@@ -150,7 +149,7 @@ impl Window {
             let _ = ignore_window_not_found(handle.update(cx, |_, window, _cx| {
                 if window
                     .invalidator
-                    .invalidate_retained_path(entity, Some(&retained_id), true)
+                    .invalidate_retained_path(entity, Some(&retained_id), false)
                 {
                     window.schedule_dirty_frame();
                 }
