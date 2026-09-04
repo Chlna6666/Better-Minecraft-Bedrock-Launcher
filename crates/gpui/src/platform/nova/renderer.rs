@@ -19,6 +19,23 @@ const SWAPCHAIN_WARMUP_FRAME_COUNT: u8 = 1;
 /// full present is cheaper than the resulting per-frame composition copies.
 const PARTIAL_PRESENT_MAX_DAMAGE_AREA_RECIPROCAL: u64 = 4;
 
+fn surface_alpha_allows_partial_presentation(surface_alpha: SurfaceAlphaState) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // Transparent Windows surfaces are presented through a premultiplied composition
+        // swapchain. Until the rotating-backbuffer preservation contract is proven for that path,
+        // native dirty-rect presentation is unsafe: a local animation can otherwise expose stale
+        // or transparent pixels outside the requested damage after several buffer rotations.
+        !surface_alpha.outputs_premultiplied_alpha()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = surface_alpha;
+        true
+    }
+}
+
 pub(super) fn nova_present_mode_for_backend(
     _backend: RendererBackend,
     renderer_options: &RendererOptions,
@@ -162,6 +179,7 @@ impl NovaRenderer {
         }
         self.observe_render_plan(render_plan);
         let supports_partial = self.swapchain_warmup_frames == 0
+            && surface_alpha_allows_partial_presentation(self.surface_alpha)
             && self.backend.supports_partial_presentation(self.swapchain);
         let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
@@ -256,6 +274,7 @@ impl NovaRenderer {
         }
         self.observe_render_plan(render_plan);
         let supports_partial = self.swapchain_warmup_frames == 0
+            && surface_alpha_allows_partial_presentation(self.surface_alpha)
             && self.backend.supports_partial_presentation(self.swapchain);
         let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
@@ -588,6 +607,7 @@ fn force_full_backdrop_blur_refresh(cache_valid: bool, explicitly_forced: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn draw_step_scratch_aggressive_trim_shrinks_retained_capacity() {
         let mut scratch = DrawStepScratch::default();
@@ -608,5 +628,16 @@ mod tests {
     #[test]
     fn invalid_cache_still_forces_full_blur_refresh() {
         assert!(force_full_backdrop_blur_refresh(false, false));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn transparent_windows_surface_disables_native_partial_presentation() {
+        assert!(!surface_alpha_allows_partial_presentation(
+            SurfaceAlphaState::for_window_transparency(true)
+        ));
+        assert!(surface_alpha_allows_partial_presentation(
+            SurfaceAlphaState::for_window_transparency(false)
+        ));
     }
 }
