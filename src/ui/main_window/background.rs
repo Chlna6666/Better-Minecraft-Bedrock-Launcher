@@ -4,7 +4,6 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED: bool = true;
-const BACKGROUND_GPU_BLUR_MIN_PX: f32 = 0.75;
 // The configured background blur belongs to the background image itself. Using a fullscreen
 // backdrop-filter here makes every later scene primitive depend on a permanent full-window capture
 // and turns otherwise unrelated retained updates into backdrop-composition dependencies. Keep true
@@ -91,7 +90,9 @@ impl AppBackgroundView {
             background_option: settings.background_option.to_string(),
             local_image_path: settings.local_image_path.to_string(),
             network_image_url: settings.network_image_url.to_string(),
-            background_blur: normalize_background_blur_for_rendering(settings.background_blur_preview),
+            background_blur: normalize_background_blur_for_rendering(
+                settings.background_blur_preview,
+            ),
             network_image_refresh_nonce: settings.network_image_refresh_nonce,
         }
     }
@@ -234,15 +235,15 @@ impl AppBackgroundView {
 
 fn normalize_background_blur_for_rendering(blur: f32) -> f32 {
     let blur = crate::config::config::clamp_background_blur(blur);
-    if blur < BACKGROUND_GPU_BLUR_MIN_PX {
-        0.0
-    } else {
+    if blur.is_finite() && blur > 0.0 {
         blur
+    } else {
+        0.0
     }
 }
 
 fn background_uses_gpu_blur(blur: f32) -> bool {
-    BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED && blur.is_finite() && blur >= BACKGROUND_GPU_BLUR_MIN_PX
+    BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED && blur.is_finite() && blur > 0.0
 }
 
 fn background_foreground_blur_radius(blur: f32) -> Pixels {
@@ -349,13 +350,16 @@ mod tests {
     }
 
     #[test]
-    fn zero_and_subpixel_background_blur_are_identity_effects() {
+    fn only_zero_or_non_finite_background_blur_is_an_identity_effect() {
         assert!(BACKGROUND_GPU_FOREGROUND_BLUR_ENABLED);
         assert_eq!(normalize_background_blur_for_rendering(0.0), 0.0);
-        assert_eq!(normalize_background_blur_for_rendering(0.1), 0.0);
-        assert_eq!(normalize_background_blur_for_rendering(0.5), 0.0);
+        assert_eq!(normalize_background_blur_for_rendering(0.1), 0.1);
+        assert_eq!(normalize_background_blur_for_rendering(0.5), 0.5);
         assert_eq!(normalize_background_blur_for_rendering(f32::NAN), 0.0);
         assert!(!background_uses_gpu_blur(0.0));
+        assert!(!background_uses_gpu_blur(f32::NAN));
+        assert!(background_uses_gpu_blur(0.1));
+        assert!(background_uses_gpu_blur(0.5));
         assert!(background_uses_gpu_blur(1.0));
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
