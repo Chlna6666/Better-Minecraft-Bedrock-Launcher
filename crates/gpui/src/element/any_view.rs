@@ -247,6 +247,8 @@ impl Eq for AnyView {}
 impl Element for AnyView {
     type RequestLayoutState = Option<AnyElement>;
     type PrepaintState = Option<AnyElement>;
+    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
+        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
 
     fn id(&self) -> Option<ElementId> {
         Some(ElementId::View(self.entity_id()))
@@ -603,5 +605,7 @@ impl Render for EmptyView {
     }
 }
 
+#[cfg(test)]
+mod retained_boundary_tests;
 #[cfg(test)]
 mod tests;

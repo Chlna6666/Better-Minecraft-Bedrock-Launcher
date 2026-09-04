@@ -145,18 +145,6 @@ fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
     ambiguity.iter().all(|flag| !flag.get())
 }
 
-#[inline]
-fn element_allows_outer_retained_replay<E: Element>() -> bool {
-    // AnyView owns a second retained cache whose state stores absolute frame-local prepaint/paint
-    // indices. If Drawable replays the AnyView wrapper itself, AnyView::prepaint/paint never run and
-    // those internal ranges are not rebased to the current frame. A variable-length sibling can then
-    // shift Scene indices and make a later AnyView hit replay an unrelated slice of the previous
-    // frame. Keep AnyView as the retained boundary: its own cache still reuses the subtree, but the
-    // generic outer element reconciler must not skip the lifecycle that refreshes its frame-local
-    // ranges.
-    TypeId::of::<E>() != TypeId::of::<crate::AnyView>()
-}
-
 fn retained_plain_text_key<E: Element>(
     element: &E,
     request_layout: &E::RequestLayoutState,
@@ -288,7 +276,7 @@ impl<E: Element> Drawable<E> {
                 let mut plain_text_key = (!targeted_replay || !identity_stable)
                     .then(|| retained_plain_text_key(&self.element, &request_layout, window))
                     .flatten();
-                let may_reconcile = element_allows_outer_retained_replay::<E>()
+                let may_reconcile = E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay()
                     && (identity_stable || plain_text_key.is_some());
 
                 let retained = may_reconcile
@@ -407,7 +395,9 @@ impl<E: Element> Drawable<E> {
 
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
+                let outer_replay_safe = E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay();
                 let subtree_stable = identity_stable
+                    && outer_replay_safe
                     && window.next_frame.retained_unstable_identity_count
                         == unstable_identity_start;
                 window.record_retained_element_range(
@@ -421,6 +411,17 @@ impl<E: Element> Drawable<E> {
                     identity_stable,
                     subtree_stable,
                 );
+
+                // Reuse the existing O(1) subtree-stability propagation counter for explicit replay
+                // barriers as well as ambiguous identities. Ancestors snapshot this counter before
+                // painting children, so a frame-local cache boundary prevents an unrelated ancestor
+                // from replaying across it while the boundary's own internal cache remains usable.
+                if !outer_replay_safe {
+                    window.next_frame.retained_unstable_identity_count = window
+                        .next_frame
+                        .retained_unstable_identity_count
+                        .saturating_add(1);
+                }
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
