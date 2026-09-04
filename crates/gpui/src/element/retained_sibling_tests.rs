@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::{
     AnyWindowHandle, App, AppContext, Bounds, Context, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Render, TestAppContext, Window,
-    WindowOptions, point, px, size,
+    InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Render, Styled,
+    TestAppContext, Window, WindowOptions, point, px, size,
 };
 
 struct PaintCountLeaf {
