@@ -55,6 +55,9 @@ mod text_animation;
 mod traits;
 mod uniform_list;
 
+#[cfg(test)]
+mod retained_sibling_tests;
+
 pub use anchored::*;
 pub use animation::*;
 pub use any_element::*;
