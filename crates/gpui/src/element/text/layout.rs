@@ -24,6 +24,7 @@ struct TextLayoutInner {
     lines: SmallVec<[WrappedLine; 1]>,
     line_height: Pixels,
     wrap_width: Option<Pixels>,
+    truncate_width: Option<Pixels>,
     size: Option<Size<Pixels>>,
     bounds: Option<Bounds<Pixels>>,
 }
@@ -112,6 +113,7 @@ impl TextLayout {
                     && text_layout.paint_key == paint_key
                     && text_layout.size.is_some()
                     && wrap_width == text_layout.wrap_width
+                    && truncate_width == text_layout.truncate_width
                 {
                     return text_layout.size.unwrap();
                 }
@@ -149,6 +151,7 @@ impl TextLayout {
                         len: 0,
                         line_height,
                         wrap_width,
+                        truncate_width,
                         size: Some(Size::default()),
                         bounds: None,
                     });
@@ -169,6 +172,7 @@ impl TextLayout {
                     len,
                     line_height,
                     wrap_width,
+                    truncate_width,
                     size: Some(size),
                     bounds: None,
                 });
@@ -225,13 +229,7 @@ impl TextLayout {
         self.0
             .borrow()
             .as_ref()
-            .map(|state| {
-                state
-                    .lines
-                    .iter()
-                    .map(|line| line.layout.clone())
-                    .collect()
-            })
+            .map(|state| state.lines.iter().map(|line| line.layout.clone()).collect())
             .unwrap_or_default()
     }
 
@@ -593,8 +591,8 @@ mod tests {
     };
     use crate::element::text::StyledText;
     use crate::{
-        AvailableSpace, IntoElement, ParentElement as _, Render, SharedString, TestAppContext,
-        TextStyle, TextOverflow, Window, div, point, px, rgb, size,
+        AvailableSpace, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+        TestAppContext, TextOverflow, TextStyle, Window, div, point, px, rgb, size,
     };
     use std::sync::Arc;
 
@@ -665,7 +663,8 @@ mod tests {
         second.color = rgb(0x0000ff).into();
         let first_runs = [first];
         let second_runs = [second];
-        let geometry = text_layout_cache_key(&text, &first_runs, &text_style, font_size, line_height);
+        let geometry =
+            text_layout_cache_key(&text, &first_runs, &text_style, font_size, line_height);
         let first_paint = text_layout_paint_key(&first_runs);
         let second_paint = text_layout_paint_key(&second_runs);
 
@@ -676,9 +675,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn paint_change_refreshes_decorations_without_replacing_shaped_layout(
-        cx: &mut TestAppContext,
-    ) {
+    fn paint_change_refreshes_decorations_without_replacing_shaped_layout(cx: &mut TestAppContext) {
         let (_, visual) = cx.add_window_view(|_, _| crate::Empty);
         let layout = TextLayout::default();
         let available_space = size(
@@ -780,6 +777,50 @@ mod tests {
 
         let second_size = layout.0.borrow().as_ref().and_then(|state| state.size);
         assert!(second_size.is_some());
+    }
+
+    #[gpui::test]
+    fn text_layout_truncation_remeasures_when_available_width_changes(cx: &mut TestAppContext) {
+        let (_, visual) = cx.add_window_view(|_, _| crate::Empty);
+        let layout = TextLayout::default();
+        let text = SharedString::from(
+            "a deliberately long title that must be truncated when the container narrows",
+        );
+
+        let mut wide = StyledText::new(text.clone());
+        wide.layout = layout.clone();
+        visual.draw(
+            point(px(0.), px(0.)),
+            size(
+                AvailableSpace::Definite(px(320.)),
+                AvailableSpace::MinContent,
+            ),
+            |_, _| div().w(px(320.)).truncate().child(wide),
+        );
+        let wide_text = layout.text();
+
+        let mut narrow = StyledText::new(text.clone());
+        narrow.layout = layout.clone();
+        visual.draw(
+            point(px(0.), px(0.)),
+            size(
+                AvailableSpace::Definite(px(90.)),
+                AvailableSpace::MinContent,
+            ),
+            |_, _| div().w(px(90.)).truncate().child(narrow),
+        );
+        let narrow_text = layout.text();
+
+        assert_eq!(wide_text, text.as_ref());
+        assert!(
+            narrow_text.ends_with('…'),
+            "narrow truncate layout must be regenerated: {narrow_text:?}"
+        );
+        assert_ne!(narrow_text, wide_text);
+        assert_eq!(
+            layout.0.borrow().as_ref().unwrap().truncate_width,
+            Some(px(90.))
+        );
     }
 
     #[gpui::test]
