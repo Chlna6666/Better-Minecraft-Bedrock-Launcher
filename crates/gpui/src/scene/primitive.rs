@@ -288,6 +288,14 @@ impl PartialEq for PaintBlur {
             && self.content_mask == other.content_mask
             && self.radius == other.radius
             && self.opacity == other.opacity
+            && (Arc::ptr_eq(&self.content, &other.content)
+                || (self.content.paint_operations.len() == other.content.paint_operations.len()
+                    && self
+                        .content
+                        .paint_operations
+                        .iter()
+                        .zip(&other.content.paint_operations)
+                        .all(|(left, right)| left.visually_eq(right))))
     }
 }
 
