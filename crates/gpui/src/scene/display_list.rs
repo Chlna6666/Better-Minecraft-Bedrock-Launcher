@@ -749,6 +749,11 @@ impl Scene {
     }
 
     fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
+        // A retained-order proof belongs to the exact ordering prefix that produced it.
+        // If an enclosing layer was rebuilt with a different DrawOrder, keeping the
+        // primitive's old order would mix two frame-local ordering domains. Rebind to
+        // the current layer and invalidate the remainder of this retained prefix.
+        let retain_order = retain_order && !self.retained_prefix_invalid;
         let order = if retain_order {
             let clipped_bounds = primitive
                 .bounds()
@@ -757,7 +762,9 @@ impl Scene {
                 return;
             }
             if let Some(layer_order) = self.layer_stack.last().copied() {
-                debug_assert_eq!(layer_order, primitive.order());
+                if layer_order != primitive.order() {
+                    self.retained_prefix_invalid = true;
+                }
                 layer_order
             } else {
                 self.primitive_bounds
@@ -779,7 +786,6 @@ impl Scene {
         self.paint_operations
             .push(PaintOperation::Primitive(primitive));
     }
-
     fn push_replayed_primitive(
         &mut self,
         primitive: &Primitive,
@@ -872,20 +878,27 @@ impl Scene {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
-                    if let Some(capture) = self.blur_captures.last_mut() {
-                        let operation_start = capture.scene.paint_operations.len();
-                        capture.scene.replay_primitive(primitive, retain_order);
-                        let captured_primitive = capture
-                            .scene
-                            .paint_operations
-                            .get(operation_start)
-                            .and_then(|operation| match operation {
-                                PaintOperation::Primitive(primitive) => Some(primitive.clone()),
-                                PaintOperation::StartLayer(_)
-                                | PaintOperation::EndLayer
-                                | PaintOperation::StartBlur(_)
-                                | PaintOperation::EndBlur => None,
-                            });
+                    if self.blur_captures.last().is_some() {
+                        let (captured_primitive, capture_prefix_invalid) = {
+                            let capture = self.blur_captures.last_mut().unwrap();
+                            let operation_start = capture.scene.paint_operations.len();
+                            capture.scene.replay_primitive(primitive, retain_order);
+                            let captured_primitive = capture
+                                .scene
+                                .paint_operations
+                                .get(operation_start)
+                                .and_then(|operation| match operation {
+                                    PaintOperation::Primitive(primitive) => Some(primitive.clone()),
+                                    PaintOperation::StartLayer(_)
+                                    | PaintOperation::EndLayer
+                                    | PaintOperation::StartBlur(_)
+                                    | PaintOperation::EndBlur => None,
+                                });
+                            (captured_primitive, capture.scene.retained_prefix_invalid)
+                        };
+                        if capture_prefix_invalid {
+                            self.retained_prefix_invalid = true;
+                        }
                         if let Some(primitive) = captured_primitive {
                             self.paint_operations
                                 .push(PaintOperation::Primitive(primitive));
@@ -915,7 +928,8 @@ impl Scene {
                 PaintOperation::EndBlur => self.end_blur(),
             }
         }
-        if retain_order && self.paint_operations.len() == range_end {
+        if retain_order && !self.retained_prefix_invalid && self.paint_operations.len() == range_end
+        {
             self.retained_prefix_verified_len = range_end;
         } else if retain_order {
             self.retained_prefix_invalid = true;
@@ -1260,8 +1274,7 @@ fn collect_paint_operation_damage(
     let previous_changed = &previous[prefix_len..previous.len().saturating_sub(suffix_len)];
 
     if current_changed.len() == previous_changed.len() {
-        for (current_operation, previous_operation) in
-            current_changed.iter().zip(previous_changed)
+        for (current_operation, previous_operation) in current_changed.iter().zip(previous_changed)
         {
             if visit_opaque_solid_quad_move_damage(
                 current_operation,
