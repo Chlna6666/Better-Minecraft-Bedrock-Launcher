@@ -18,7 +18,7 @@ pub enum DispatchPhase {
     #[default]
     Bubble,
     /// During the initial capture phase, mouse event listeners are invoked back to front, and keyboard
-    /// listeners are invoked from the root of the tree downward toward the focused element. This phase
+    /// listeners are invoked from the root of the element tree downward toward the focused element. This phase
     /// is used for special purposes, such as clearing the "pressed" state for click events. If
     /// you stop event propagation during this phase, you need to know what you're doing. Handlers
     /// outside of the immediate region may rely on detecting non-local events during this phase.
@@ -36,6 +36,36 @@ impl DispatchPhase {
     #[inline]
     pub fn capture(self) -> bool {
         self == DispatchPhase::Capture
+    }
+}
+
+/// Dependency scope carried by a targeted retained invalidation.
+///
+/// `ElementOnly` is for paint-local changes whose descendants are provably unaffected.
+/// `ReconcileSubtree` means descendants must be visited far enough to prove whether they can reuse
+/// previous work, but they are not intrinsically dirty. `InvalidateSubtree` is the conservative
+/// barrier used when inherited context or opaque runtime state makes descendant reuse unsafe.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum RetainedInvalidationScope {
+    #[default]
+    ElementOnly,
+    ReconcileSubtree,
+    InvalidateSubtree,
+}
+
+impl RetainedInvalidationScope {
+    #[inline]
+    fn from_descendants_dirty(descendants_dirty: bool) -> Self {
+        if descendants_dirty {
+            Self::InvalidateSubtree
+        } else {
+            Self::ElementOnly
+        }
+    }
+
+    #[inline]
+    fn merged(self, other: Self) -> Self {
+        self.max(other)
     }
 }
 
@@ -76,10 +106,11 @@ impl Window {
         }
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
-        if self
-            .invalidator
-            .invalidate_retained_path(view_id, global_id, descendants_dirty)
-        {
+        if self.invalidator.invalidate_retained_path_with_scope(
+            view_id,
+            global_id,
+            RetainedInvalidationScope::from_descendants_dirty(descendants_dirty),
+        ) {
             self.schedule_dirty_frame();
         }
     }
@@ -106,11 +137,11 @@ struct WindowInvalidatorInner {
     /// is a replay-only window overlay. This mode is shared by interactions, animations, focus,
     /// and any future element-local invalidation source.
     pub pending_targeted_replay: bool,
-    /// Stable dirty retained paths and whether each target invalidates all descendants.
-    pub pending_targeted_elements: FxHashMap<GlobalElementId, bool>,
+    /// Stable dirty retained paths and the dependency scope each target carries.
+    pub pending_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
     /// Snapshot consumed by the frame currently being generated.
     pub active_targeted_replay: bool,
-    pub active_targeted_elements: FxHashMap<GlobalElementId, bool>,
+    pub active_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
 }
 
 #[derive(Clone)]
@@ -159,16 +190,31 @@ impl WindowInvalidator {
         }
     }
 
-    /// Marks a view dirty because one stable retained element path changed.
-    ///
-    /// No application-level `Notify` effect is emitted: the caller already owns the reason for
-    /// invalidation (interaction state, animation sampling, focus, window overlay, and so on). The
-    /// retained path is carried into the next frame so unrelated siblings remain replayable.
+    /// Compatibility entry point for callers that only know whether descendants are dirty.
     pub(in crate::window) fn invalidate_retained_path(
         &self,
         entity: EntityId,
         global_id: Option<&GlobalElementId>,
         descendants_dirty: bool,
+    ) -> bool {
+        self.invalidate_retained_path_with_scope(
+            entity,
+            global_id,
+            RetainedInvalidationScope::from_descendants_dirty(descendants_dirty),
+        )
+    }
+
+    /// Marks a view dirty because one stable retained element path changed, preserving the exact
+    /// dependency scope required below that path.
+    ///
+    /// No application-level `Notify` effect is emitted: the caller already owns the reason for
+    /// invalidation (interaction state, animation sampling, focus, window overlay, and so on). The
+    /// retained path is carried into the next frame so unrelated siblings remain replayable.
+    pub(in crate::window) fn invalidate_retained_path_with_scope(
+        &self,
+        entity: EntityId,
+        global_id: Option<&GlobalElementId>,
+        scope: RetainedInvalidationScope,
     ) -> bool {
         let mut inner = self.inner.borrow_mut();
         inner
@@ -195,8 +241,8 @@ impl WindowInvalidator {
             inner
                 .pending_targeted_elements
                 .entry(global_id.clone())
-                .and_modify(|existing_scope| *existing_scope |= descendants_dirty)
-                .or_insert(descendants_dirty);
+                .and_modify(|existing_scope| *existing_scope = existing_scope.merged(scope))
+                .or_insert(scope);
         }
         inner.dirty = true;
         true
@@ -246,19 +292,38 @@ impl WindowInvalidator {
         self.inner.borrow().active_targeted_replay
     }
 
-    /// Returns whether this stable retained path must execute normally in the active targeted
-    /// frame. Structural ancestors execute so traversal can reach a dirty target. Descendants run
-    /// only when that target explicitly carries subtree-context damage.
+    /// Returns whether this stable retained path is intrinsically dirty in the active targeted
+    /// frame. Structural ancestors execute so traversal can reach the target. `ReconcileSubtree`
+    /// descendants are intentionally not reported dirty here: they use the separate reconciliation
+    /// query below so the renderer can require proof before replay rather than repainting blindly.
     pub(in crate::window) fn retained_path_is_dirty(&self, global_id: &GlobalElementId) -> bool {
         let inner = self.inner.borrow();
         if !inner.active_targeted_replay {
             return true;
         }
-        inner.active_targeted_elements.iter().any(
-            |(dirty, descendants_dirty)| {
-                retained_path_requires_repaint(global_id, dirty, *descendants_dirty)
-            },
-        )
+        inner
+            .active_targeted_elements
+            .iter()
+            .any(|(dirty, scope)| retained_path_requires_repaint(global_id, dirty, *scope))
+    }
+
+    /// Returns true when `global_id` lies below a `ReconcileSubtree` target.
+    ///
+    /// Such an element is not known dirty, but an ancestor cannot hide it by replaying an old
+    /// subtree solely because its own bounds stayed fixed. Callers may still reuse the element when
+    /// they possess a semantic proof for the current frame (for example exact plain-text output).
+    pub(in crate::window) fn retained_path_requires_reconciliation(
+        &self,
+        global_id: &GlobalElementId,
+    ) -> bool {
+        let inner = self.inner.borrow();
+        if !inner.active_targeted_replay {
+            return false;
+        }
+        inner.active_targeted_elements.iter().any(|(dirty, scope)| {
+            *scope == RetainedInvalidationScope::ReconcileSubtree
+                && global_element_path_is_strict_prefix(dirty, global_id)
+        })
     }
 
     /// Returns true when `global_id` executes only because it is a structural ancestor of one or
@@ -266,7 +331,7 @@ impl WindowInvalidator {
     ///
     /// The ancestor still routes traversal to the changed child, but its own stable
     /// background/shadow/border primitives can be replayed. A direct hit on this path, or an
-    /// ancestor invalidation whose scope damages descendants, disables self-scene reuse.
+    /// ancestor invalidation whose scope damages/reconciles descendants, disables self-scene reuse.
     pub(in crate::window) fn retained_path_is_descendant_only(
         &self,
         global_id: &GlobalElementId,
@@ -277,9 +342,10 @@ impl WindowInvalidator {
         }
 
         let mut has_dirty_descendant = false;
-        for (dirty, descendants_dirty) in &inner.active_targeted_elements {
+        for (dirty, scope) in &inner.active_targeted_elements {
             if global_id == dirty
-                || (*descendants_dirty && global_element_path_is_prefix(dirty, global_id))
+                || (*scope != RetainedInvalidationScope::ElementOnly
+                    && global_element_path_is_prefix(dirty, global_id))
             {
                 return false;
             }
@@ -341,10 +407,11 @@ impl WindowInvalidator {
 fn retained_path_requires_repaint(
     candidate: &GlobalElementId,
     dirty: &GlobalElementId,
-    descendants_dirty: bool,
+    scope: RetainedInvalidationScope,
 ) -> bool {
     global_element_path_is_prefix(candidate, dirty)
-        || descendants_dirty && global_element_path_is_prefix(dirty, candidate)
+        || scope == RetainedInvalidationScope::InvalidateSubtree
+            && global_element_path_is_prefix(dirty, candidate)
 }
 
 fn global_element_path_is_prefix(prefix: &GlobalElementId, path: &GlobalElementId) -> bool {
@@ -375,10 +442,26 @@ mod retained_dirty_scope_tests {
         let descendant = path(&[0, 1, 2]);
         let sibling = path(&[0, 3]);
 
-        assert!(retained_path_requires_repaint(&ancestor, &dirty, false));
-        assert!(retained_path_requires_repaint(&dirty, &dirty, false));
-        assert!(!retained_path_requires_repaint(&descendant, &dirty, false));
-        assert!(!retained_path_requires_repaint(&sibling, &dirty, false));
+        assert!(retained_path_requires_repaint(
+            &ancestor,
+            &dirty,
+            RetainedInvalidationScope::ElementOnly
+        ));
+        assert!(retained_path_requires_repaint(
+            &dirty,
+            &dirty,
+            RetainedInvalidationScope::ElementOnly
+        ));
+        assert!(!retained_path_requires_repaint(
+            &descendant,
+            &dirty,
+            RetainedInvalidationScope::ElementOnly
+        ));
+        assert!(!retained_path_requires_repaint(
+            &sibling,
+            &dirty,
+            RetainedInvalidationScope::ElementOnly
+        ));
     }
 
     #[test]
@@ -388,10 +471,71 @@ mod retained_dirty_scope_tests {
         let descendant = path(&[0, 1, 2]);
         let sibling = path(&[0, 3]);
 
-        assert!(retained_path_requires_repaint(&ancestor, &dirty, true));
-        assert!(retained_path_requires_repaint(&dirty, &dirty, true));
-        assert!(retained_path_requires_repaint(&descendant, &dirty, true));
-        assert!(!retained_path_requires_repaint(&sibling, &dirty, true));
+        assert!(retained_path_requires_repaint(
+            &ancestor,
+            &dirty,
+            RetainedInvalidationScope::InvalidateSubtree
+        ));
+        assert!(retained_path_requires_repaint(
+            &dirty,
+            &dirty,
+            RetainedInvalidationScope::InvalidateSubtree
+        ));
+        assert!(retained_path_requires_repaint(
+            &descendant,
+            &dirty,
+            RetainedInvalidationScope::InvalidateSubtree
+        ));
+        assert!(!retained_path_requires_repaint(
+            &sibling,
+            &dirty,
+            RetainedInvalidationScope::InvalidateSubtree
+        ));
+    }
+
+    #[test]
+    fn reconcile_target_visits_descendants_without_marking_them_dirty() {
+        let invalidator = WindowInvalidator::new();
+        let dirty = path(&[0, 1]);
+        let descendant = path(&[0, 1, 2]);
+        let sibling = path(&[0, 3]);
+
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            EntityId::from_u64(1),
+            Some(&dirty),
+            RetainedInvalidationScope::ReconcileSubtree,
+        ));
+        invalidator.set_dirty(false);
+
+        assert!(invalidator.retained_path_is_dirty(&dirty));
+        assert!(!invalidator.retained_path_is_dirty(&descendant));
+        assert!(invalidator.retained_path_requires_reconciliation(&descendant));
+        assert!(!invalidator.retained_path_is_dirty(&sibling));
+        assert!(!invalidator.retained_path_requires_reconciliation(&sibling));
+    }
+
+    #[test]
+    fn stronger_scope_wins_when_targets_merge() {
+        let invalidator = WindowInvalidator::new();
+        let dirty = path(&[0, 1]);
+        let descendant = path(&[0, 1, 2]);
+
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            EntityId::from_u64(1),
+            Some(&dirty),
+            RetainedInvalidationScope::ReconcileSubtree,
+        ));
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            EntityId::from_u64(1),
+            Some(&dirty),
+            RetainedInvalidationScope::InvalidateSubtree,
+        ));
+        invalidator.set_dirty(false);
+
+        assert!(invalidator.retained_path_is_dirty(&descendant));
+        assert!(!invalidator.retained_path_requires_reconciliation(&descendant));
     }
 
     #[test]

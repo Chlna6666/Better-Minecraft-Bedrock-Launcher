@@ -1,5 +1,6 @@
 use super::*;
 use crate::{AnimationSpec, SceneAnimationId, TransitionProperty};
+use super::lifecycle::RetainedInvalidationScope;
 
 impl Window {
     /// Schedules the given function to be run at the end of the current effect cycle, allowing entities
@@ -97,11 +98,9 @@ impl Window {
     ///
     /// Unlike [`Window::request_animation_frame`], this does not emit an application-level
     /// `Notify`. The owning view is marked dirty only so it can resample layout state, while the
-    /// invalidator keeps the retained element path. A manually sampled layout animation may move,
-    /// resize, insert, remove, or restyle descendants while the target's own bounds stay unchanged
-    /// (for example an absolute indicator moving inside a stable relative/flex container). The
-    /// animation target therefore invalidates its subtree; siblings outside that target remain
-    /// eligible for retained replay.
+    /// invalidator keeps the retained element path. Layout animation descendants are reconciled,
+    /// not blindly invalidated: a stable relative/flex container must be traversed when an absolute
+    /// child moves, while unrelated siblings outside the target remain replayable.
     pub(crate) fn request_layout_animation_frame(&self, retained_id: GlobalElementId) {
         let Some(entity) = self.current_view_or_root() else {
             return;
@@ -117,14 +116,14 @@ impl Window {
             );
         }
 
-        // The target subtree is the dependency boundary for a manually sampled layout animation.
-        // Do not outer-replay descendants merely because an ancestor retained the same bounds: a
-        // relative/flex parent can stay fixed while an absolute child changes left/width every frame.
+        // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a fixed
+        // parent cannot hide a moving child, but reusable leaves/subtrees may still prove equality.
         self.on_next_frame(move |window, _cx| {
-            if window
-                .invalidator
-                .invalidate_retained_path(entity, Some(&retained_id), true)
-            {
+            if window.invalidator.invalidate_retained_path_with_scope(
+                entity,
+                Some(&retained_id),
+                RetainedInvalidationScope::ReconcileSubtree,
+            ) {
                 window.schedule_dirty_frame();
             }
         });
@@ -149,10 +148,11 @@ impl Window {
         self.spawn(cx, async move |cx| {
             cx.background_executor().timer(delay).await;
             let _ = ignore_window_not_found(handle.update(cx, |_, window, _cx| {
-                if window
-                    .invalidator
-                    .invalidate_retained_path(entity, Some(&retained_id), true)
-                {
+                if window.invalidator.invalidate_retained_path_with_scope(
+                    entity,
+                    Some(&retained_id),
+                    RetainedInvalidationScope::ReconcileSubtree,
+                ) {
                     window.schedule_dirty_frame();
                 }
             }));

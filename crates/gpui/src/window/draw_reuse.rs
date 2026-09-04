@@ -452,6 +452,17 @@ impl Window {
         if targeted_replay && self.invalidator.retained_path_is_dirty(retained_id) {
             return None;
         }
+        // ReconcileSubtree deliberately separates "visit descendants" from "all descendants are
+        // dirty". Until a candidate carries both layout- and semantic-subtree proofs, an ancestor
+        // inside that scope must not outer-replay and hide a moving/restyled child whose own bounds
+        // have not yet been inspected. This is the conservative bridge to fingerprinted replay.
+        if targeted_replay
+            && self
+                .invalidator
+                .retained_path_requires_reconciliation(retained_id)
+        {
+            return None;
+        }
 
         let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
         if retained.paint_context != self.current_retained_paint_context() {
