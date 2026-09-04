@@ -9,6 +9,7 @@ use crate::{
 
 struct PaintCountLeaf {
     id: &'static str,
+    inner: crate::Div,
     paints: Rc<Cell<usize>>,
 }
 
@@ -21,8 +22,8 @@ impl IntoElement for PaintCountLeaf {
 }
 
 impl Element for PaintCountLeaf {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
+    type RequestLayoutState = <crate::Div as Element>::RequestLayoutState;
+    type PrepaintState = <crate::Div as Element>::PrepaintState;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.into())
@@ -34,46 +35,47 @@ impl Element for PaintCountLeaf {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let layout = window.request_layout(
-            crate::Style::default()
-                .absolute()
-                .w(px(20.0))
-                .h(px(20.0)),
-            None,
-            cx,
-        );
-        (layout, ())
+        self.inner.request_layout(id, inspector_id, window, cx)
     }
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) {
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.inner
+            .prepaint(id, inspector_id, bounds, request_layout, window, cx)
     }
 
     fn paint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         self.paints.set(self.paints.get().saturating_add(1));
-        window.paint_quad(crate::quad(bounds, px(0.0), crate::white(), crate::transparent_black()));
-        let _ = cx;
+        self.inner.paint(
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            prepaint,
+            window,
+            cx,
+        );
     }
 }
 
@@ -162,12 +164,16 @@ impl Render for SiblingIsolationRoot {
             .relative()
             .w(px(240.0))
             .h(px(80.0))
-            .child(
-                crate::div().absolute().left(px(0.0)).child(PaintCountLeaf {
-                    id: "retained-static-left",
-                    paints: self.left_paints.clone(),
-                }),
-            )
+            .child(PaintCountLeaf {
+                id: "retained-static-left",
+                inner: crate::div()
+                    .absolute()
+                    .left(px(0.0))
+                    .w(px(20.0))
+                    .h(px(20.0))
+                    .bg(crate::white()),
+                paints: self.left_paints.clone(),
+            })
             .child(CapturedDiv {
                 id: "retained-dirty-middle",
                 inner: crate::div()
@@ -178,12 +184,16 @@ impl Render for SiblingIsolationRoot {
                     .bg(crate::red()),
                 path: self.dirty_path.clone(),
             })
-            .child(
-                crate::div().absolute().left(px(180.0)).child(PaintCountLeaf {
-                    id: "retained-static-right",
-                    paints: self.right_paints.clone(),
-                }),
-            )
+            .child(PaintCountLeaf {
+                id: "retained-static-right",
+                inner: crate::div()
+                    .absolute()
+                    .left(px(180.0))
+                    .w(px(20.0))
+                    .h(px(20.0))
+                    .bg(crate::white()),
+                paints: self.right_paints.clone(),
+            })
     }
 }
 
@@ -206,6 +216,13 @@ impl Render for ClipDependencyRoot {
                 .overflow_hidden()
                 .child(PaintCountLeaf {
                     id: "retained-clipped-child",
+                    inner: crate::div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .w(px(100.0))
+                        .h(px(20.0))
+                        .bg(crate::white()),
                     paints: self.child_paints.clone(),
                 }),
             path: self.clip_path.clone(),
