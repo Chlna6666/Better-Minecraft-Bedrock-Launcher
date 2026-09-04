@@ -243,7 +243,7 @@ impl Element for AnyView {
         Some(ElementId::View(self.entity_id()))
     }
 
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
     }
 
@@ -306,8 +306,13 @@ impl Element for AnyView {
                     let cache_fingerprint = self.cache_fingerprint();
                     let view_dirty = window.dirty_views.contains(&self.entity_id());
                     let force_refresh = window.force_view_cache_refresh();
-                    let can_reuse_refresh =
-                        self.reuse_on_window_refresh && force_refresh && !view_dirty;
+                    // Critical surfaces must honor a forced refresh. Those refreshes are also used
+                    // as resource/composition recovery barriers, so replaying a critical subtree can
+                    // otherwise carry stale atlas or offscreen-target references into the new frame.
+                    let can_reuse_refresh = self.reuse_on_window_refresh
+                        && !self.critical
+                        && force_refresh
+                        && !view_dirty;
                     let can_defer_dirty_view = view_dirty
                         && self.progressive
                         && !self.critical
