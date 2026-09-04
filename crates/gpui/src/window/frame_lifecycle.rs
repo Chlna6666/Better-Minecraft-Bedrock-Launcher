@@ -749,14 +749,19 @@ impl Window {
     }
 
     pub(crate) fn force_view_cache_refresh(&self) -> bool {
-        // A backdrop-filter scene is not only a GPU presentation dependency. Its descendants can
-        // also be painted under inherited opacity/scale while a modal transition is in flight.
-        // Replaying a retained CPU scene range that was recorded under an older inherited paint
-        // context preserves stale alpha/transform values even when Nova performs a full surface
-        // redraw. This is why focus loss/reactivation can "repair" the modal: that path refreshes
-        // the CPU scene. Until retained ranges carry an explicit inherited-paint-context key, do
-        // not reuse them while the previously presented scene contains backdrop filters.
-        self.force_view_cache_refresh || self.rendered_frame.scene.has_backdrop_blurs()
+        if self.force_view_cache_refresh {
+            return true;
+        }
+
+        // Backdrop blur itself does not make every retained subtree unsafe. The stale-modal bug is
+        // specifically caused by replaying descendants that were recorded under an older inherited
+        // opacity/scale context while the modal transition was still in flight. Keep the barrier on
+        // those transformed/faded descendants only; unrelated background/page subtrees remain fully
+        // eligible for retained prepaint/paint reuse even while a fullscreen blur is present.
+        self.rendered_frame.scene.has_backdrop_blurs()
+            && (self.element_opacity != 1.0
+                || self.element_visual_transform.scale != 1.0
+                || self.element_visual_transform.translation != Point::default())
     }
 
     fn record_animation_tick_dirty_bounds(
