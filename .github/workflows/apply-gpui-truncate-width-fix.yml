@@ -19,108 +19,26 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Apply truncate width cache fix
+      - name: Fix regression baseline
         shell: python
         run: |
           from pathlib import Path
-          import re
 
           path = Path("crates/gpui/src/element/text/layout.rs")
           text = path.read_text(encoding="utf-8")
+          if "truncate_width: Option<Pixels>" not in text:
+              raise SystemExit("truncate width production fix is missing")
 
-          old = "    wrap_width: Option<Pixels>,\n    size: Option<Size<Pixels>>,"
-          new = "    wrap_width: Option<Pixels>,\n    truncate_width: Option<Pixels>,\n    size: Option<Size<Pixels>>,"
-          if text.count(old) != 1:
-              raise SystemExit(f"TextLayoutInner width fields count={text.count(old)}")
-          text = text.replace(old, new, 1)
-
-          old = "                    && text_layout.size.is_some()\n                    && wrap_width == text_layout.wrap_width"
-          new = "                    && text_layout.size.is_some()\n                    && wrap_width == text_layout.wrap_width\n                    && truncate_width == text_layout.truncate_width"
-          if text.count(old) != 1:
-              raise SystemExit(f"truncate fast-path count={text.count(old)}")
-          text = text.replace(old, new, 1)
-
-          text, count = re.subn(
-              r"(?m)^(\s*)wrap_width,\n\1size:",
-              r"\1wrap_width,\n\1truncate_width,\n\1size:",
-              text,
-          )
-          if count != 2:
-              raise SystemExit(f"TextLayoutInner initializer count={count}")
-
-          old_import = "        AvailableSpace, IntoElement, ParentElement as _, Render, SharedString, TestAppContext,\n        TextStyle, TextOverflow, Window, div, point, px, rgb, size,"
-          new_import = "        AvailableSpace, IntoElement, ParentElement as _, Render, SharedString, Styled as _,\n        TestAppContext, TextStyle, TextOverflow, Window, div, point, px, rgb, size,"
-          if text.count(old_import) != 1:
-              raise SystemExit(f"test import block count={text.count(old_import)}")
-          text = text.replace(old_import, new_import, 1)
-
-          marker = "    #[gpui::test]\n    fn fresh_text_element_measures_after_retained_layout_cache_hit"
-          if text.count(marker) != 1:
-              raise SystemExit(f"test insertion marker count={text.count(marker)}")
-          test = '''    #[gpui::test]
-          fn text_layout_truncation_remeasures_when_available_width_changes(
-              cx: &mut TestAppContext,
-          ) {
-              let (_, visual) = cx.add_window_view(|_, _| crate::Empty);
-              let layout = TextLayout::default();
-              let text = SharedString::from(
-                  "a deliberately long title that must be truncated when the container narrows",
-              );
-
-              let mut wide = StyledText::new(text.clone());
-              wide.layout = layout.clone();
-              visual.draw(
-                  point(px(0.), px(0.)),
-                  size(
-                      AvailableSpace::Definite(px(900.)),
-                      AvailableSpace::MinContent,
-                  ),
-                  |_, _| div().w(px(900.)).truncate().child(wide),
-              );
-              let wide_text = layout.text();
-
-              let mut narrow = StyledText::new(text.clone());
-              narrow.layout = layout.clone();
-              visual.draw(
-                  point(px(0.), px(0.)),
-                  size(
-                      AvailableSpace::Definite(px(90.)),
-                      AvailableSpace::MinContent,
-                  ),
-                  |_, _| div().w(px(90.)).truncate().child(narrow),
-              );
-              let narrow_text = layout.text();
-
-              assert_eq!(wide_text, text.as_ref());
-              assert!(
-                  narrow_text.ends_with('…'),
-                  "narrow truncate layout must be regenerated: {narrow_text:?}"
-              );
-              assert_ne!(narrow_text, wide_text);
-              assert_eq!(
-                  layout.0.borrow().as_ref().unwrap().truncate_width,
-                  Some(px(90.))
-              );
-          }
-
-          '''
-          test = "\n".join(
-              line[10:] if line.startswith("          ") else line
-              for line in test.splitlines()
-          ) + "\n"
-          text = text.replace(marker, test + marker, 1)
-
+          start = text.index("    #[gpui::test]\n    fn text_layout_truncation_remeasures_when_available_width_changes")
+          end = text.index("    #[gpui::test]\n    fn fresh_text_element_measures_after_retained_layout_cache_hit", start)
+          block = text[start:end]
+          if block.count("px(320.)") != 2:
+              raise SystemExit(f"expected two 320px wide-baseline values, found {block.count('px(320.)')}")
+          block = block.replace("px(320.)", "px(900.)")
+          text = text[:start] + block + text[end:]
           path.write_text(text, encoding="utf-8")
 
-      - name: Format
-        run: cargo fmt --all
-
-      - name: Commit fix
+      - name: Commit test correction
         shell: bash
         run: |
           set -euo pipefail
@@ -129,8 +47,8 @@ jobs:
           git add crates/gpui/src/element/text/layout.rs
           git diff --cached --check
           git diff --cached --quiet && {
-            echo 'no truncate cache fix generated' >&2
+            echo 'no truncate regression correction generated' >&2
             exit 1
           }
-          git commit -m 'fix(gpui): truncate 宽度变化时重新测量文本'
+          git commit -m 'test(gpui): 修正 truncate 宽度回归基线'
           git push origin HEAD:master
