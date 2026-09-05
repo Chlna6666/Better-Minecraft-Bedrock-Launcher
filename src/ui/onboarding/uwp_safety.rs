@@ -337,11 +337,12 @@ pub fn render_uwp_safety_guide(
     window: &mut Window,
     cx: &App,
 ) -> impl IntoElement {
+    let now = window.animation_time();
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
-        theme.factor(std::time::Instant::now()),
+        theme.factor(now),
         theme.accent,
     );
     let i18n = cx.global::<I18n>().clone();
