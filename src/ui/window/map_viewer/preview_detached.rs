@@ -21,8 +21,8 @@ thread_local! {
 pub(super) struct Preview3dDetachDrag;
 
 impl Render for Preview3dDetachDrag {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = detached_theme_colors(cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = detached_theme_colors(window.animation_time(), cx);
         let i18n = cx.global::<I18n>().clone();
         div()
             .px(px(12.0))
@@ -144,7 +144,7 @@ impl DetachedPreview3dView {
 
 impl Render for DetachedPreview3dView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = detached_theme_colors(cx);
+        let colors = detached_theme_colors(window.animation_time(), cx);
         let i18n = cx.global::<I18n>().clone();
         let title = t!("MapViewer.preview_model");
         window.set_title(&title);
@@ -391,12 +391,12 @@ fn detached_preview_world_frame(
     }
 }
 
-fn detached_theme_colors(cx: &App) -> ThemeColors {
+fn detached_theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<ThemeState>();
     lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
-        theme.factor(Instant::now()),
+        theme.factor(now),
         theme.accent,
     )
 }
