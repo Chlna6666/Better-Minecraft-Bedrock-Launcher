@@ -9,7 +9,6 @@ use crate::ui::views::manage::level_dat_editor::{self, LevelDatJsonValidation};
 use crate::ui::views::manage::state::{ManageAssetEntry, ManagedVersionEntry};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use std::time::Instant;
 
 #[derive(Clone)]
 pub struct LevelDatCodeWindowInit {
@@ -73,12 +72,12 @@ impl LevelDatCodeWindowView {
         }
     }
 
-    fn theme_colors(&self, cx: &App) -> ThemeColors {
+    fn theme_colors(&self, now: std::time::Instant, cx: &App) -> ThemeColors {
         let theme = cx.global::<ThemeState>();
         lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(Instant::now()),
+            theme.factor(now),
             theme.accent,
         )
     }
@@ -243,7 +242,7 @@ impl Render for LevelDatCodeWindowView {
         let i18n = cx.global::<I18n>().clone();
         let window_title = t!("LevelDat.title");
         window.set_title(&window_title);
-        let colors = self.theme_colors(cx);
+        let colors = self.theme_colors(window.animation_time(), cx);
         let editor_text = self.json_editor.read(cx).value();
         let dirty = editor_text != self.saved_text;
         let line_count = editor_text.as_ref().lines().count().max(1);
