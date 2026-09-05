@@ -142,12 +142,12 @@ impl SkinPreviewWindowView {
         .detach();
     }
 
-    fn theme_colors(&self, cx: &App) -> ThemeColors {
+    fn theme_colors(&self, now: Instant, cx: &App) -> ThemeColors {
         let theme = cx.global::<ThemeState>();
         lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(Instant::now()),
+            theme.factor(now),
             theme.accent,
         )
     }
@@ -415,12 +415,12 @@ impl SkinPreviewWindowView {
 
 impl Render for SkinPreviewWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+        let now = window.animation_time();
         let i18n = cx.global::<I18n>().clone();
         let window_title = t!("SkinPreview.window_title", name = &self.title).to_string();
         window.set_title(&window_title);
         let preview_animating = self.walking && self.mesh.as_ref().is_some_and(Result::is_ok);
-        let colors = self.theme_colors(cx);
+        let colors = self.theme_colors(now, cx);
         let model_label = self.current_model_label();
         let skin_label = self.current_skin_label();
         let layer_label = if self.layer_mode.is_extruded() {
