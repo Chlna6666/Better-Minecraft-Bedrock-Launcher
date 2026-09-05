@@ -128,6 +128,62 @@ fn closing_progress(now: Instant, at: Instant) -> f32 {
     1.0 - ease_out_cubic(t)
 }
 
+fn dropdown_progress(phase: DropdownPhase, now: Instant) -> f32 {
+    match phase {
+        DropdownPhase::Closed => 0.0,
+        DropdownPhase::Open => 1.0,
+        DropdownPhase::Opening { at } => opening_progress(now, at),
+        DropdownPhase::Closing { at } => closing_progress(now, at),
+    }
+    .clamp(0.0, 1.0)
+}
+
+fn inverse_ease_out_cubic(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    1.0 - (1.0 - progress).cbrt()
+}
+
+fn opening_phase_from_progress(now: Instant, progress: f32) -> DropdownPhase {
+    let elapsed = Duration::from_secs_f32(
+        OPEN_DURATION_SECS * inverse_ease_out_cubic(progress.clamp(0.0, 1.0)),
+    );
+    DropdownPhase::Opening {
+        at: now.checked_sub(elapsed).unwrap_or(now),
+    }
+}
+
+fn closing_phase_from_progress(now: Instant, progress: f32) -> DropdownPhase {
+    let elapsed = Duration::from_secs_f32(
+        CLOSE_DURATION_SECS * inverse_ease_out_cubic(1.0 - progress.clamp(0.0, 1.0)),
+    );
+    DropdownPhase::Closing {
+        at: now.checked_sub(elapsed).unwrap_or(now),
+    }
+}
+
+fn toggle_dropdown_phase(phase: DropdownPhase, now: Instant) -> DropdownPhase {
+    match phase {
+        DropdownPhase::Closed => DropdownPhase::Opening { at: now },
+        DropdownPhase::Open => DropdownPhase::Closing { at: now },
+        DropdownPhase::Opening { .. } => {
+            closing_phase_from_progress(now, dropdown_progress(phase, now))
+        }
+        DropdownPhase::Closing { .. } => {
+            opening_phase_from_progress(now, dropdown_progress(phase, now))
+        }
+    }
+}
+
+fn begin_dropdown_close(phase: DropdownPhase, now: Instant) -> DropdownPhase {
+    match phase {
+        DropdownPhase::Closed | DropdownPhase::Closing { .. } => phase,
+        DropdownPhase::Open => DropdownPhase::Closing { at: now },
+        DropdownPhase::Opening { .. } => {
+            closing_phase_from_progress(now, dropdown_progress(phase, now))
+        }
+    }
+}
+
 fn phase_after_deadline(phase: DropdownPhase, now: Instant) -> DropdownPhase {
     match phase {
         DropdownPhase::Opening { at }
@@ -246,13 +302,7 @@ pub fn render_overlay(
     let menu_scroll_handle = active.menu_scroll_handle.clone();
     let options = active.options.clone();
     let selected_index = normalize_selected_index(active.selected_index, options.len());
-    let open_k = match active.phase {
-        DropdownPhase::Closed => 0.0,
-        DropdownPhase::Open => 1.0,
-        DropdownPhase::Opening { at } => opening_progress(now, at),
-        DropdownPhase::Closing { at } => closing_progress(now, at),
-    }
-    .clamp(0.0, 1.0);
+    let open_k = dropdown_progress(active.phase, now);
 
     if matches!(active.phase, DropdownPhase::Closing { .. }) && open_k <= 0.02 {
         return div().into_any_element();
@@ -403,7 +453,7 @@ pub fn render_overlay(
 
                                     let now = Instant::now();
                                     if let Err(err) = state.update(cx, |s, _| {
-                                        s.phase = DropdownPhase::Closing { at: now };
+                                        s.phase = begin_dropdown_close(s.phase, now);
                                     }) {
                                         cx.update_global(
                                             |overlay: &mut DropdownOverlayState, _cx| {
@@ -430,18 +480,44 @@ pub fn render_overlay(
             let state = active.state.clone();
             let parent_view_id = active.parent_view_id;
             let overlay_id = active.id.clone();
-            move |_, _window, cx| {
+            let trigger_bounds = active.trigger_bounds;
+            move |event, _window, cx| {
                 cx.stop_propagation();
                 let now = Instant::now();
-                if let Err(err) = state.update(cx, |s, _| {
-                    s.phase = DropdownPhase::Closing { at: now };
+                let clicked_trigger = trigger_bounds
+                    .as_ref()
+                    .is_some_and(|bounds| bounds.contains(&event.position));
+
+                match state.update(cx, |s, _| {
+                    let previous_phase = s.phase;
+                    let next_phase = if clicked_trigger {
+                        toggle_dropdown_phase(previous_phase, now)
+                    } else {
+                        begin_dropdown_close(previous_phase, now)
+                    };
+
+                    if clicked_trigger
+                        && !matches!(previous_phase, DropdownPhase::Opening { .. })
+                        && matches!(next_phase, DropdownPhase::Opening { .. })
+                    {
+                        s.open_generation = s.open_generation.wrapping_add(1);
+                        s.scroll_bound_generation = 0;
+                    }
+
+                    s.phase = next_phase;
+                    next_phase != previous_phase
                 }) {
-                    cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
-                        overlay.clear_if_matches(&overlay_id);
-                    });
-                    tracing::debug!("dropdown close from outside click skipped: {err:?}");
-                } else {
-                    cx.notify(parent_view_id);
+                    Ok(changed) => {
+                        if changed {
+                            cx.notify(parent_view_id);
+                        }
+                    }
+                    Err(err) => {
+                        cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
+                            overlay.clear_if_matches(&overlay_id);
+                        });
+                        tracing::debug!("dropdown overlay click skipped: {err:?}");
+                    }
                 }
             }
         })
@@ -582,13 +658,7 @@ impl RenderOnce for Dropdown {
         let trigger_bounds = snapshot.trigger_bounds;
 
         let now = Instant::now();
-        let open_k = match phase {
-            DropdownPhase::Closed => 0.0,
-            DropdownPhase::Open => 1.0,
-            DropdownPhase::Opening { at } => opening_progress(now, at),
-            DropdownPhase::Closing { at } => closing_progress(now, at),
-        }
-        .clamp(0.0, 1.0);
+        let open_k = dropdown_progress(phase, now);
 
         let phase_animating = matches!(
             phase,
@@ -653,19 +723,15 @@ impl RenderOnce for Dropdown {
 
                     let now = Instant::now();
                     state.update(cx, |s, _| {
-                        s.phase = match s.phase {
-                            DropdownPhase::Closed | DropdownPhase::Closing { .. } => {
-                                DropdownPhase::Opening { at: now }
-                            }
-                            DropdownPhase::Open | DropdownPhase::Opening { .. } => {
-                                DropdownPhase::Closing { at: now }
-                            }
-                        };
-
-                        if matches!(s.phase, DropdownPhase::Opening { .. }) {
+                        let previous_phase = s.phase;
+                        let next_phase = toggle_dropdown_phase(previous_phase, now);
+                        if !matches!(previous_phase, DropdownPhase::Opening { .. })
+                            && matches!(next_phase, DropdownPhase::Opening { .. })
+                        {
                             s.open_generation = s.open_generation.wrapping_add(1);
                             s.scroll_bound_generation = 0;
                         }
+                        s.phase = next_phase;
                     });
                     cx.notify(parent_view_id);
                 }
