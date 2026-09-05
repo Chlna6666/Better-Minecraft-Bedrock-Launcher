@@ -483,13 +483,13 @@ impl InputState {
         self.cursor_visible_last_frame = true;
     }
 
-    fn cursor_visible_now(&self, is_focused: bool) -> bool {
+    fn cursor_visible_at(&self, now: Instant, is_focused: bool) -> bool {
         if !is_focused {
             return false;
         }
 
         self.cursor_blink_started_at.is_none_or(|started_at| {
-            let elapsed = Instant::now().saturating_duration_since(started_at);
+            let elapsed = now.saturating_duration_since(started_at);
             elapsed.is_zero()
                 || elapsed.as_millis() % CURSOR_BLINK_PERIOD.as_millis()
                     < CURSOR_VISIBLE_WINDOW.as_millis()
@@ -545,7 +545,7 @@ impl InputState {
                 let _ = state.update(cx, |input, cx| {
                     input.cursor_blink_task_armed = false;
                     if input.focus_handle.is_focused(window)
-                        && input.cursor_visible_now(true) != visible
+                        && input.cursor_visible_at(Instant::now(), true) != visible
                     {
                         cx.notify();
                     }
@@ -1078,11 +1078,12 @@ impl Element for TextElement {
         let text_style = window.text_style();
         let line_height = text_style.line_height_in_pixels(window.rem_size());
         let text_bounds = centered_text_bounds(bounds, line_height);
+        let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let theme_colors = lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(Instant::now()),
+            theme.factor(now),
             theme.accent,
         );
         let text_color = theme_colors.text_primary;
@@ -1155,7 +1156,7 @@ impl Element for TextElement {
 
         let cursor_pos = line.x_for_index(cursor);
         let cursor_blink_enabled = is_focused && selected_range.is_empty();
-        let cursor_visible = input.cursor_visible_now(is_focused);
+        let cursor_visible = input.cursor_visible_at(now, is_focused);
         let (selection, cursor) = if selected_range.is_empty() || content_is_empty {
             let cursor = cursor_visible.then_some(fill(
                 Bounds::new(
@@ -1371,7 +1372,7 @@ impl RenderOnce for Input {
         let theme_colors = lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(Instant::now()),
+            theme.factor(window.animation_time()),
             theme.accent,
         );
         let dark_mode = theme_colors.bg.l < 0.5;
