@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 # Contract:
 #   current-frame visual sample -> Window::animation_time()
 #   event/scheduler/deadline/profiling -> Instant::now()
+#   wall clock is never a current-frame animation source
 #
 # The check is semantic-by-scope rather than a repository-wide ban on Instant::now().
 
@@ -16,7 +17,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $violations = [System.Collections.Generic.List[object]]::new()
 $lifecycleNames = @("render", "request_layout", "prepaint", "paint")
 $visualHelperPattern = '^(theme_colors|current_theme_colors|detached_theme_colors|render_.+|build_render_model|sync_.+_animation)$'
-$freshClockPattern = '(?:std::time::)?Instant::now\s*\(\s*\)'
+$freshVisualClockPattern = '(?:std::time::)?(?:Instant|SystemTime)::now\s*\(\s*\)'
 $explicitMonotonicMarker = 'animation-clock:\s*monotonic-ok'
 
 function Add-Violation {
@@ -116,7 +117,7 @@ foreach ($root in $Roots) {
             }
 
             for ($i = $range.Start; $i -le $range.End; $i++) {
-                if ($lines[$i] -notmatch $freshClockPattern) {
+                if ($lines[$i] -notmatch $freshVisualClockPattern) {
                     continue
                 }
                 if (Test-ExplicitMonotonicException -Lines $lines -Index $i) {
@@ -142,6 +143,7 @@ if ($violations.Count -gt 0) {
     Write-Host ""
     Write-Host "Current-frame visual sampling must use window.animation_time()." -ForegroundColor Yellow
     Write-Host "Real event/scheduler/deadline/profiling reads remain Instant::now()." -ForegroundColor Yellow
+    Write-Host "SystemTime::now() must not drive current-frame animation state." -ForegroundColor Yellow
     Write-Host "If a lifecycle read is intentionally monotonic and cannot affect visual sampling, document it with: // animation-clock: monotonic-ok" -ForegroundColor Yellow
     exit 1
 }
