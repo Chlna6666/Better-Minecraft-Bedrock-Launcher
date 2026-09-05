@@ -81,7 +81,6 @@ pub(crate) struct HomePageView {
 impl HomePageView {
     fn apply_local_versions_snapshot(&mut self, snapshot: &LocalVersionsSnapshot) {
         if self.applied_versions_revision == Some(snapshot.revision) {
-            // 版本列表与启动次数都未变化时只同步轻量状态，跳过整表克隆与重排。
             self.versions_loading = snapshot.loading;
             self.versions_error = snapshot.error.clone();
             if self.versions.is_empty() && !self.versions_loading {
@@ -198,7 +197,6 @@ impl HomePageView {
     fn sync_dropdown_animation(&mut self, now: Instant) -> f32 {
         let sample = self.dropdown_spring.sample(now);
         self.dropdown_animating = !sample.done;
-        // 允许轻微过冲（>1），让列表展开时有 Q 弹的“撑开”质感。
         sample.value.clamp(0.0, 1.08)
     }
 
@@ -749,7 +747,7 @@ impl Render for HomePageView {
             return div().into_any_element();
         }
 
-        let now = Instant::now();
+        let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let theme_k = theme.factor(now);
         let theme_dark = theme.target_dark;
@@ -898,7 +896,6 @@ impl Render for HomePageView {
             .h(px(72.0))
             .rounded(px(crate::ui::theme::tokens::radius::XL))
             .overflow_hidden()
-            // 现代化视觉：主色渐变 + 分层阴影（环境光 + 主色光晕）。
             .bg(linear_gradient(
                 135.0,
                 linear_color_stop(launch_bg, 0.0),
