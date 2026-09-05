@@ -47,8 +47,8 @@ impl MapTopBarView {
 impl EventEmitter<MapViewerAction> for MapTopBarView {}
 
 impl Render for MapTopBarView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme_colors(cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme_colors(window.animation_time(), cx);
         let i18n = cx.global::<I18n>().clone();
         let Some(snapshot) = self.snapshot.clone() else {
             return div().h(px(IDE_TOP_BAR_HEIGHT)).into_any_element();
@@ -345,12 +345,12 @@ fn top_command_button(
         .child(label.into())
 }
 
-fn theme_colors(cx: &App) -> ThemeColors {
+fn theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<crate::ui::state::theme::ThemeState>();
     crate::ui::theme::colors::lerp_theme_colors(
         &crate::ui::theme::colors::LightColors::colors(),
         &crate::ui::theme::colors::DarkColors::colors(),
-        theme.factor(std::time::Instant::now()),
+        theme.factor(now),
         theme.accent,
     )
 }
