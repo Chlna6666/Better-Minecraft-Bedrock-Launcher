@@ -102,12 +102,13 @@ pub fn render_onboarding_tour(
     window: &mut Window,
     cx: &App,
 ) -> AnyElement {
+    let now = window.animation_time();
     let theme = cx.global::<ThemeState>();
     let i18n = cx.global::<I18n>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
-        theme.factor(std::time::Instant::now()),
+        theme.factor(now),
         theme.accent,
     );
     let size = window.bounds().size;
