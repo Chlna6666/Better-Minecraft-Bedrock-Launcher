@@ -191,7 +191,7 @@ impl MapViewerWindowView {
 
 impl Render for MapViewerWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+        let now = window.animation_time();
         let i18n = cx.global::<I18n>().clone();
         let title = t!("MapViewer.window_title", name = &self.asset.display_name).to_string();
         window.set_title(&title);
@@ -213,7 +213,15 @@ impl Render for MapViewerWindowView {
             window,
             preview_3d_motion_active || paste_preview_auto_pan_active,
         );
-        let colors = self.theme_colors(cx);
+        let colors = {
+            let theme = cx.global::<ThemeState>();
+            lerp_theme_colors(
+                &LightColors::colors(),
+                &DarkColors::colors(),
+                theme.factor(now),
+                theme.accent,
+            )
+        };
         let top_bar_snapshot = self.top_bar_snapshot(&i18n);
         let tool_stripe_snapshot = self.tool_stripe_snapshot();
         let menu_overlay_snapshot = self.menu_overlay_snapshot();
