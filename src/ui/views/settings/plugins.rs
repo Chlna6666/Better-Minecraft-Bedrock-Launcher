@@ -80,9 +80,13 @@ struct PluginConfigOption {
 }
 
 impl PluginSettingsModel {
-    pub(super) fn snapshot(cx: &App, state: &SettingsPageState) -> Self {
+    pub(super) fn snapshot(
+        now: std::time::Instant,
+        cx: &App,
+        state: &SettingsPageState,
+    ) -> Self {
         if state.tab != SettingsTab::Plugins {
-            return Self::empty(cx, state);
+            return Self::empty(now, cx, state);
         }
 
         let statuses = crate::plugins::runtime::statuses(cx);
@@ -144,7 +148,7 @@ impl PluginSettingsModel {
         let colors = lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(std::time::Instant::now()),
+            theme.factor(now),
             theme.accent,
         );
 
@@ -161,12 +165,12 @@ impl PluginSettingsModel {
         }
     }
 
-    fn empty(cx: &App, state: &SettingsPageState) -> Self {
+    fn empty(now: std::time::Instant, cx: &App, state: &SettingsPageState) -> Self {
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(std::time::Instant::now()),
+            theme.factor(now),
             theme.accent,
         );
 

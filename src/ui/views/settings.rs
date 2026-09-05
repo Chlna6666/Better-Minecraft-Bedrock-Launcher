@@ -110,7 +110,7 @@ impl Render for SettingsPageView {
         plugins::ensure_plugin_resources(window, cx);
         let system_font_names = cx.text_system().font_names();
         let plugin_model =
-            plugins::PluginSettingsModel::snapshot(cx, cx.global::<SettingsPageState>());
+            plugins::PluginSettingsModel::snapshot(now, cx, cx.global::<SettingsPageState>());
         render_settings_page(
             colors,
             window_size.width,
