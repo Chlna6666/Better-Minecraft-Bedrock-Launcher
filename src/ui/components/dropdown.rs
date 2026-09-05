@@ -15,7 +15,6 @@ const MENU_MAX_HEIGHT: f32 = 240.0;
 const MENU_ROW_HEIGHT: f32 = 32.0;
 const MENU_VERTICAL_PADDING: f32 = 10.0;
 const MENU_GAP: f32 = 6.0;
-const MENU_TRANSLATE_PX: f32 = 6.0;
 const MENU_WINDOW_EDGE_PADDING: f32 = 10.0;
 const MENU_MIN_PREVIEW_ROWS: f32 = 3.0;
 const MENU_CONTENT_PADDING_X: f32 = 44.0;
@@ -239,6 +238,19 @@ fn effective_dropdown_height(available_height: Pixels, desired_height: Pixels) -
     }
 }
 
+fn dropdown_reveal_offsets(
+    open_up: bool,
+    menu_height: Pixels,
+    animated_height: Pixels,
+) -> (Pixels, Pixels) {
+    let reveal_offset = if open_up {
+        (menu_height - animated_height).max(px(0.0))
+    } else {
+        px(0.0)
+    };
+    (reveal_offset, -reveal_offset)
+}
+
 fn measure_dropdown_label_width(window: &Window, label: &SharedString) -> Pixels {
     if label.is_empty() {
         return px(0.0);
@@ -322,19 +334,9 @@ pub fn render_overlay(
     }
 
     let panel_opacity = active.panel_opacity;
-    let translate_y = px(if active.open_up {
-        -MENU_TRANSLATE_PX * (1.0 - open_k)
-    } else {
-        MENU_TRANSLATE_PX * (1.0 - open_k)
-    });
-    let panel_top_left = if active.open_up {
-        point(
-            active.top_left.x,
-            active.top_left.y + (active.menu_h - active.animated_h) + translate_y,
-        )
-    } else {
-        point(active.top_left.x, active.top_left.y + translate_y)
-    };
+    let (reveal_offset_y, content_offset_y) =
+        dropdown_reveal_offsets(active.open_up, active.menu_h, active.animated_h);
+    let panel_top_left = point(active.top_left.x, active.top_left.y + reveal_offset_y);
     let popup = div()
         .absolute()
         .left(panel_top_left.x)
@@ -377,99 +379,105 @@ pub fn render_overlay(
             cx.stop_propagation();
         })
         .child(
-            div().w(active.width).h(active.menu_h).child(
-                div()
-                    .id(active.scroll_id.clone())
-                    .size_full()
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(0.))
-                    .track_scroll(&menu_scroll_handle)
-                    .p(px(8.))
-                    .flex()
-                    .flex_col()
-                    .justify_start()
-                    .gap(px(4.))
-                    .children(options.iter().enumerate().map(|(ix, opt)| {
-                        let is_selected = ix == selected_index;
+            div()
+                .absolute()
+                .left(px(0.0))
+                .top(content_offset_y)
+                .w(active.width)
+                .h(active.menu_h)
+                .child(
+                    div()
+                        .id(active.scroll_id.clone())
+                        .size_full()
+                        .overflow_y_scroll()
+                        .scrollbar_width(px(0.))
+                        .track_scroll(&menu_scroll_handle)
+                        .p(px(8.))
+                        .flex()
+                        .flex_col()
+                        .justify_start()
+                        .gap(px(4.))
+                        .children(options.iter().enumerate().map(|(ix, opt)| {
+                            let is_selected = ix == selected_index;
 
-                        let item_bg = if is_selected {
-                            Hsla {
-                                a: 0.12,
-                                ..colors.accent
-                            }
-                        } else {
-                            Hsla {
-                                a: 0.0,
-                                ..colors.surface
-                            }
-                        };
-
-                        let item_fg = colors.text_primary;
-
-                        div()
-                            .h(px(MENU_ROW_HEIGHT))
-                            .rounded(px(crate::ui::theme::tokens::radius::MD))
-                            .px(px(10.))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .cursor_pointer()
-                            .bg(item_bg)
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .font_weight(if is_selected {
-                                        FontWeight::SEMIBOLD
-                                    } else {
-                                        FontWeight::MEDIUM
-                                    })
-                                    .text_color(item_fg)
-                                    .child(opt.label.clone()),
-                            )
-                            .when(is_selected, |this| {
-                                this.child(
-                                    svg()
-                                        .path(lucide_icons::icon_check())
-                                        .w(px(16.))
-                                        .h(px(16.))
-                                        .opacity(0.9)
-                                        .text_color(item_fg),
-                                )
-                            })
-                            .hover(|s| {
-                                s.bg(Hsla {
-                                    a: 0.60,
-                                    ..colors.surface_hover
-                                })
-                            })
-                            .on_mouse_down(MouseButton::Left, {
-                                let state = active.state.clone();
-                                let on_select = active.on_select.clone();
-                                let parent_view_id = active.parent_view_id;
-                                let overlay_id = active.id.clone();
-                                move |_ev, window, cx| {
-                                    cx.stop_propagation();
-                                    (on_select)(ix, window, cx);
-
-                                    let now = Instant::now();
-                                    if let Err(err) = state.update(cx, |s, _| {
-                                        s.phase = begin_dropdown_close(s.phase, now);
-                                    }) {
-                                        cx.update_global(
-                                            |overlay: &mut DropdownOverlayState, _cx| {
-                                                overlay.clear_if_matches(&overlay_id);
-                                            },
-                                        );
-                                        tracing::debug!(
-                                            "dropdown close after selection skipped: {err:?}"
-                                        );
-                                    } else {
-                                        cx.notify(parent_view_id);
-                                    }
+                            let item_bg = if is_selected {
+                                Hsla {
+                                    a: 0.12,
+                                    ..colors.accent
                                 }
-                            })
-                    })),
-            ),
+                            } else {
+                                Hsla {
+                                    a: 0.0,
+                                    ..colors.surface
+                                }
+                            };
+
+                            let item_fg = colors.text_primary;
+
+                            div()
+                                .h(px(MENU_ROW_HEIGHT))
+                                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                                .px(px(10.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .cursor_pointer()
+                                .bg(item_bg)
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(if is_selected {
+                                            FontWeight::SEMIBOLD
+                                        } else {
+                                            FontWeight::MEDIUM
+                                        })
+                                        .text_color(item_fg)
+                                        .child(opt.label.clone()),
+                                )
+                                .when(is_selected, |this| {
+                                    this.child(
+                                        svg()
+                                            .path(lucide_icons::icon_check())
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .opacity(0.9)
+                                            .text_color(item_fg),
+                                    )
+                                })
+                                .hover(|s| {
+                                    s.bg(Hsla {
+                                        a: 0.60,
+                                        ..colors.surface_hover
+                                    })
+                                })
+                                .on_mouse_down(MouseButton::Left, {
+                                    let state = active.state.clone();
+                                    let on_select = active.on_select.clone();
+                                    let parent_view_id = active.parent_view_id;
+                                    let overlay_id = active.id.clone();
+                                    move |_ev, window, cx| {
+                                        cx.stop_propagation();
+                                        (on_select)(ix, window, cx);
+
+                                        let now = Instant::now();
+                                        if let Err(err) = state.update(cx, |s, _| {
+                                            s.phase = begin_dropdown_close(s.phase, now);
+                                        }) {
+                                            cx.update_global(
+                                                |overlay: &mut DropdownOverlayState, _cx| {
+                                                    overlay.clear_if_matches(&overlay_id);
+                                                },
+                                            );
+                                            tracing::debug!(
+                                                "dropdown close after selection skipped: {err:?}"
+                                            );
+                                        } else {
+                                            cx.notify(parent_view_id);
+                                        }
+                                    }
+                                })
+                        })),
+                ),
         );
 
     div()
