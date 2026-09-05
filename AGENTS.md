@@ -16,6 +16,8 @@ UI 使用仓库内维护的 GPUI 与 nova-gfx 渲染路径；业务逻辑应保�
 - [`docs/ASYNC_RUNTIME_MODEL.md`](docs/ASYNC_RUNTIME_MODEL.md)：运行时所有权、任务终态和 GPUI 状态桥接。
 - [`src/ui/README.md`](src/ui/README.md)：UI 放置规则和当前 UI 细分结构。
 - [`docs/AI.md`](docs/AI.md)：GPUI、日志、异步、资源和验证约定。
+- [`docs/GPUI_ANIMATION_CONVENTIONS.md`](docs/GPUI_ANIMATION_CONVENTIONS.md)：动画帧时钟、retained animation、text geometry、Nova animation binding 与 invalidation 硬约束。
+- [`docs/GPUI_VENDOR_RENDERING.md`](docs/GPUI_VENDOR_RENDERING.md)：GPUI/Nova 渲染管线与 frame lifecycle。
 - [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md)：当前计划以及实体图标/脚本流水线。
 - [`docs/COMMIT_CONVENTIONS.md`](docs/COMMIT_CONVENTIONS.md)：提交信息和 Cocogitto hook。
 
@@ -126,6 +128,109 @@ Entity/Global 并调用 `cx.notify()`。
 `Render` 和 `RenderOnce`。新代码使用 async closure 形式的 `cx.spawn(async move |cx| ...)`；
 不要使用已废弃的 `Model`、`View`、`AppContext`、`ModelContext`、`WindowContext` 或
 `ViewContext`。
+
+## UI 动画、帧时钟与 retained rendering 硬规则
+
+这部分是 **BMCBL 全仓应用层规则**，不仅适用于 `src/ui`。任何位于 `src/plugins`、
+onboarding、独立窗口、主窗口、UI DSL 或其它应用模块中的 GPUI render/helper，只要
+会产生当前帧可见输出，都必须遵守本节。框架内部细则见 `crates/gpui/AGENTS.md` 和
+`crates/gpui/docs/animation_clock.md`。
+
+修改 animation、theme interpolation、layout motion、retained rendering、text
+positioning、frame scheduling 或 Nova-facing visual state 前，必须阅读
+`docs/GPUI_ANIMATION_CONVENTIONS.md` 与 `docs/GPUI_VENDOR_RENDERING.md`。
+
+### 一个 platform frame 只能有一个视觉动画时间样本
+
+当前帧可见动画采样必须使用：
+
+```rust
+let now = window.animation_time();
+```
+
+以下内容只要用于构建当前帧可见输出，就必须使用同一个 `now`：
+
+- `raw_progress` / `eased_progress`；
+- `SpringValue::sample/value/is_animating`；
+- `ThemeState::factor/is_animating`；
+- opacity / translation / scale / rotation / transform；
+- clip / reveal / visual bounds；
+- layout animation geometry；
+- navigation、modal、dropdown、tabs、toast、loading pulse 等 UI motion；
+- CPU retained state 与 renderer/Nova animation state 的比较或采样。
+
+禁止在 `Render`、`RenderOnce`、`Element::request_layout`、prepaint、paint，或这些路径
+调用的 helper 中使用新的 `Instant::now()` / `std::time::Instant::now()` 来计算当前帧
+可见状态。父元素用 `window.animation_time()`、child/helper 再自己调用
+`Instant::now()` 同样属于 bug。
+
+helper 不能因为签名里没有 `Window` 就偷偷使用实时钟。像 `theme_colors(cx)`、
+`current_theme_colors(cx)`、`detached_theme_colors(cx)`、`render_*()`、
+`build_render_model()`、`sync_*_animation()` 这类函数，如果输出依赖当前帧时间，必须由
+调用者显式传入 `now: Instant`、`&Window` 或已经计算出的 visual sample。
+
+### 真实 monotonic clock 仍然有自己的职责
+
+以下语义继续使用 `Instant::now()`，不要机械替换成 frame clock：
+
+- click/key/pointer 等真实输入事件发生时间；
+- animation start / retarget 的事件时间锚点；
+- timer/deadline/retry/timeout；
+- frame throttle、backpressure、watchdog、recent-input age；
+- profiling / elapsed measurement；
+- task/I/O bookkeeping 和不属于当前帧视觉采样的后台逻辑。
+
+原则是：**visual sample 用 frame clock；event/scheduler/profiling 用 monotonic clock。**
+
+### 文字与 subtree animation
+
+visual-only animation 不得通过改变祖先 `top/left/height/width/padding/margin` 让文字
+layout origin、wrapping width、baseline 或 glyph subpixel variant 每帧变化。应优先使用：
+
+```text
+final/stable child layout
+    -> retained clip or composite layer
+    -> inherited subtree animation binding
+    -> renderer/GPU presentation
+```
+
+Text / SVG / Image / Quad / Shadow 等属于同一个视觉对象时，优先让它们继承同一个
+retained/composite animation owner，而不是给每个 glyph/child 单独重算运动。
+
+### invalidation 与 frame scheduling
+
+- 使用最窄的 retained target；child hover/active/focus/animation 不应无理由扩大到整个 view。
+- 不得把 `cx.refresh_windows()` 当通用动画时钟。
+- 不得重新引入全局 recent-input / frame-backpressure bypass。
+- interactive animation 使用 per-target coalescing / latest-wins；不要排队旧动画样本。
+- static sibling 与 static text 在输出未变化时必须保持 retained reuse。
+- generic view invalidation 不应无理由清除兼容的 targeted replay plan。
+
+### UI/render 修改完成前必须审计
+
+不要只检查 `render()` 本体，必须沿 helper 调用链检查。至少搜索受影响路径中的：
+
+```text
+Instant::now()
+std::time::Instant::now()
+raw_progress(
+eased_progress(
+.sample(
+.value(
+.factor(
+.is_animating(
+theme_colors(
+current_theme_colors(
+request_animation_frame
+request_layout_animation_frame_if
+with_layout_animation_target
+```
+
+每一个时间读取都要按语义分类。存在 `Instant::now()` 不等于一定错误；**用 fresh
+monotonic sample 计算当前帧 visual output 才是错误。**
+
+动画/渲染性能修复保持小提交、可 A/B；不使用 GitHub CI 作为自动修复循环，由维护者
+本地 build/profile/验证。
 
 ## 异步运行时与 GPUI 状态契约
 
