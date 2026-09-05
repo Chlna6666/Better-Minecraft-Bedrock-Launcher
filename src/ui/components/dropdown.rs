@@ -357,7 +357,6 @@ pub fn render_overlay(
             a: 0.22,
             ..colors.border
         })
-        .opacity(panel_opacity)
         .on_scroll_wheel(|_, _window, cx| {
             cx.stop_propagation();
         })
@@ -479,6 +478,11 @@ pub fn render_overlay(
                                 })
                         })),
                 ),
+        )
+        .composite_layer()
+        .with_sampled_animation(
+            AnimationProperty::opacity(0.0, 1.0),
+            panel_opacity,
         );
 
     div()
