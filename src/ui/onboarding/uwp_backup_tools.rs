@@ -338,12 +338,13 @@ pub fn render_uwp_backup_tools(
     window: &mut Window,
     cx: &App,
 ) -> AnyElement {
+    let now = window.animation_time();
     let i18n = cx.global::<I18n>().clone();
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
-        theme.factor(std::time::Instant::now()),
+        theme.factor(now),
         theme.accent,
     );
     let bounds = window.bounds().size;
