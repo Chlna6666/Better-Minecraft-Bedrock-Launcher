@@ -33,7 +33,7 @@ pub fn render_launcher_overlay(
 
     let factor = snapshot.modal_factor.clamp(0.0, 1.0);
     let smooth = (factor * factor * (3.0 - 2.0 * factor)).clamp(0.0, 1.0);
-    let now = std::time::Instant::now();
+    let now = window.animation_time();
     let theme_state = cx.global::<ThemeState>();
     let i18n = cx.global::<I18n>().clone();
     let colors = lerp_theme_colors(
