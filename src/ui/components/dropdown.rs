@@ -480,7 +480,7 @@ pub fn render_overlay(
             let state = active.state.clone();
             let parent_view_id = active.parent_view_id;
             let overlay_id = active.id.clone();
-            let trigger_bounds = active.trigger_bounds;
+            let trigger_bounds = active.trigger_bounds.clone();
             move |event, _window, cx| {
                 cx.stop_propagation();
                 let now = Instant::now();
@@ -655,7 +655,7 @@ impl RenderOnce for Dropdown {
 
         let snapshot = state.read(cx);
         let phase = snapshot.phase;
-        let trigger_bounds = snapshot.trigger_bounds;
+        let trigger_bounds = snapshot.trigger_bounds.clone();
 
         let now = Instant::now();
         let open_k = dropdown_progress(phase, now);
@@ -807,7 +807,7 @@ impl RenderOnce for Dropdown {
         let desired_h =
             px(MENU_VERTICAL_PADDING) + row_h * (options.len() as f32) + px(MENU_VERTICAL_PADDING);
         let capped_h = desired_h.min(max_h);
-        let available_space = trigger_bounds.map(|bounds| {
+        let available_space = trigger_bounds.clone().map(|bounds| {
             let safe_top = px(MENU_WINDOW_EDGE_PADDING);
             let safe_bottom = window_size.height - px(MENU_WINDOW_EDGE_PADDING);
             let above = (bounds.origin.y - safe_top - px(MENU_GAP)).max(px(0.0));
@@ -837,6 +837,7 @@ impl RenderOnce for Dropdown {
         let max_left = (safe_right - menu_width).max(safe_left);
 
         let final_top_left = trigger_bounds
+            .as_ref()
             .map(|b| {
                 let left = b.origin.x.clamp(safe_left, max_left);
                 if open_up {
