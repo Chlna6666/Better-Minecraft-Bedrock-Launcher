@@ -183,7 +183,7 @@ impl Render for ManagePageView {
         self.sync_selected_version(cx);
         self.sync_data_requests(cx);
 
-        let now = Instant::now();
+        let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
