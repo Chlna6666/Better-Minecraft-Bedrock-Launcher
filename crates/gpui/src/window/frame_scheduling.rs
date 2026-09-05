@@ -116,14 +116,36 @@ impl Window {
             );
         }
 
-        // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a fixed
-        // parent cannot hide a moving child, but reusable leaves/subtrees may still prove equality.
-        self.on_next_frame(move |window, _cx| {
-            if window.invalidator.invalidate_retained_path_with_scope(
-                entity,
-                Some(&retained_id),
-                RetainedInvalidationScope::ReconcileSubtree,
-            ) {
+        // Queue the exact retained target, but arm only one drain callback for the whole window.
+        // Multiple requests for the same target before the next platform frame collapse in the
+        // invalidator queue; distinct targets share the same callback and are merged into the same
+        // targeted retained frame. The actual layout state is therefore sampled once, using the
+        // latest view state, instead of replaying stale expand/collapse invalidation callbacks.
+        if !self
+            .invalidator
+            .queue_layout_animation_target(entity, retained_id)
+        {
+            record_coalesced_refresh();
+            return;
+        }
+
+        self.on_next_frame(|window, _cx| {
+            let pending_targets = window.invalidator.take_pending_layout_animation_targets();
+            let mut needs_dirty_frame = false;
+
+            // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a
+            // fixed parent cannot hide a moving child, but reusable leaves/subtrees may still prove
+            // equality. All queued targets are applied before scheduling, so one VSync produces at
+            // most one dirty-frame request regardless of how many animations changed.
+            for (entity, retained_id) in pending_targets {
+                needs_dirty_frame |= window.invalidator.invalidate_retained_path_with_scope(
+                    entity,
+                    Some(&retained_id),
+                    RetainedInvalidationScope::ReconcileSubtree,
+                );
+            }
+
+            if needs_dirty_frame {
                 window.schedule_dirty_frame();
             }
         });

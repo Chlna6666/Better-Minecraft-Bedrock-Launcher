@@ -139,6 +139,12 @@ struct WindowInvalidatorInner {
     pub pending_targeted_replay: bool,
     /// Stable dirty retained paths and the dependency scope each target carries.
     pub pending_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
+    /// Layout-animation samples waiting for the next platform frame. This queue is intentionally
+    /// separate from `pending_targeted_elements`: requests made while the current frame is being
+    /// built must target the next VSync rather than mutating the active retained snapshot.
+    pub pending_layout_animation_targets: FxHashSet<(EntityId, GlobalElementId)>,
+    /// One window-level callback drains all pending layout-animation targets for the next VSync.
+    pub layout_animation_frame_callback_pending: bool,
     /// Snapshot consumed by the frame currently being generated.
     pub active_targeted_replay: bool,
     pub active_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
@@ -159,6 +165,8 @@ impl WindowInvalidator {
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
                 pending_targeted_replay: false,
                 pending_targeted_elements: FxHashMap::default(),
+                pending_layout_animation_targets: FxHashSet::default(),
+                layout_animation_frame_callback_pending: false,
                 active_targeted_replay: false,
                 active_targeted_elements: FxHashMap::default(),
             })),
@@ -170,6 +178,40 @@ impl WindowInvalidator {
         dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
     ) {
         self.inner.borrow_mut().dirty_frame_diagnostics = dirty_frame_diagnostics;
+    }
+
+    /// Queue one layout-animation retained target for the next VSync.
+    ///
+    /// The full `(EntityId, GlobalElementId)` identity is retained so equal structural paths in
+    /// different views never suppress each other. The return value says whether the caller must arm
+    /// the single window-level drain callback; subsequent same- or different-target requests are
+    /// folded into the already-pending callback.
+    pub(in crate::window) fn queue_layout_animation_target(
+        &self,
+        entity: EntityId,
+        retained_id: GlobalElementId,
+    ) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        inner
+            .pending_layout_animation_targets
+            .insert((entity, retained_id));
+
+        if inner.layout_animation_frame_callback_pending {
+            return false;
+        }
+
+        inner.layout_animation_frame_callback_pending = true;
+        true
+    }
+
+    /// Drain all layout-animation targets scheduled for this platform frame and reopen the queue
+    /// for requests produced while the frame is subsequently generated.
+    pub(in crate::window) fn take_pending_layout_animation_targets(
+        &self,
+    ) -> FxHashSet<(EntityId, GlobalElementId)> {
+        let mut inner = self.inner.borrow_mut();
+        inner.layout_animation_frame_callback_pending = false;
+        mem::take(&mut inner.pending_layout_animation_targets)
     }
 
     pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
@@ -576,6 +618,27 @@ mod retained_dirty_scope_tests {
         assert!(invalidator.active_targeted_replay());
         assert!(!invalidator.retained_path_is_dirty(&path(&[0])));
         assert!(!invalidator.retained_path_is_dirty(&path(&[0, 1, 2])));
+    }
+
+    #[test]
+    fn layout_animation_target_queue_coalesces_per_vsync() {
+        let invalidator = WindowInvalidator::new();
+        let entity = EntityId::from_u64(1);
+        let first = path(&[0, 1]);
+        let second = path(&[0, 2]);
+
+        assert!(invalidator.queue_layout_animation_target(entity, first.clone()));
+        assert!(!invalidator.queue_layout_animation_target(entity, first.clone()));
+        assert!(!invalidator.queue_layout_animation_target(entity, second.clone()));
+
+        let pending = invalidator.take_pending_layout_animation_targets();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.contains(&(entity, first.clone())));
+        assert!(pending.contains(&(entity, second)));
+
+        // Draining reopens the queue so a target sampled while the next frame is generated can
+        // schedule exactly one callback for the following VSync.
+        assert!(invalidator.queue_layout_animation_target(entity, first));
     }
 }
 
