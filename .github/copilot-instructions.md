@@ -1,12 +1,15 @@
 # BMCBL Repository AI Instructions
 
-For all BMCBL application code under `src/`, read `src/AGENTS.md` first. For
-`src/ui`, also read `src/ui/AGENTS.md`. For framework work under `crates/gpui`,
-read `crates/gpui/AGENTS.md` instead of applying application policy inside the
-framework.
+The repository-wide source of truth for AI/code-agent behavior is the root
+`AGENTS.md`. Read it before changing any BMCBL application or workspace code.
+
+For `src/ui`, also read `src/ui/AGENTS.md`. For framework work under
+`crates/gpui`, also read `crates/gpui/AGENTS.md` and
+`crates/gpui/docs/animation_clock.md`. Scoped rules extend the root rules; they
+do not replace or duplicate the repository-level contract.
 
 Animation and retained-rendering changes must follow
-`docs/GPUI_ANIMATION_CONVENTIONS.md`.
+`docs/GPUI_ANIMATION_CONVENTIONS.md` and `docs/GPUI_VENDOR_RENDERING.md`.
 
 Hard invariant for BMCBL UI code: all current-frame visual animation sampling
 uses the one timestamp exposed by `window.animation_time()`. Do not derive
