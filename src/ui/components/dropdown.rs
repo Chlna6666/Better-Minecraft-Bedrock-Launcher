@@ -1,4 +1,4 @@
-use crate::ui::animation::{ease_out_cubic, request_layout_animation_frame_if};
+use crate::ui::animation::ease_out_cubic;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
@@ -664,7 +664,6 @@ impl RenderOnce for Dropdown {
             phase,
             DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
         );
-        request_layout_animation_frame_if(window, phase_animating);
 
         if matches!(phase, DropdownPhase::Closing { .. }) && open_k <= 0.001 {
             state.update(cx, |s, _| s.phase = DropdownPhase::Closed);
@@ -713,7 +712,7 @@ impl RenderOnce for Dropdown {
                     ..colors.border
                 })
             })
-            .child(trigger_content)
+            .child(trigger_content.with_layout_animation_target(phase_animating))
             .on_click({
                 let state = state.clone();
                 move |_ev, _window, cx| {
