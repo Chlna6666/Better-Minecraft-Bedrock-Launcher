@@ -90,6 +90,16 @@ impl Window {
     }
 
     pub(crate) fn schedule_dirty_frame(&mut self) {
+        let now = Instant::now();
+        // Progressive backpressure is useful for background/heavy work, but carrying its retry
+        // delay across a fresh pointer/key event makes the next state sample visibly trail input.
+        // Interactive animation frames must consume the already-scheduled compositor opportunity
+        // immediately; clear only the progressive throttle, not the retained invalidation itself.
+        if self.recently_received_input(now) {
+            self.frame_throttle.clear_delay();
+            self.dirty_frame_throttle_pending = false;
+        }
+
         let mut should_request_frame = false;
         if self.invalidator.not_drawing() {
             if self.dirty_frame_scheduled || self.dirty_frame_throttle_pending {
@@ -123,7 +133,7 @@ impl Window {
                         self.rendered_frame.scene.len()
                     );
                 }
-            } else if self.frame_throttle.should_delay(Instant::now()) {
+            } else if self.frame_throttle.should_delay(now) {
                 self.dirty_frame_deferred_pending = false;
                 self.dirty_frame_throttle_pending = true;
                 record_coalesced_refresh();
@@ -709,6 +719,7 @@ impl Window {
     ) -> bool {
         !options.force_render
             && !options.require_presentation
+            && !self.recently_received_input(now)
             && self.transparent_caption_height.is_none()
             && self.dirty_views.is_empty()
             && self.animation_dirty_region.is_empty()
@@ -736,8 +747,12 @@ impl Window {
     fn allows_progressive_frame_degradation(&self) -> bool {
         self.has_completed_rendered_frame
             // The recovery frame after a degraded draw must present progress instead of
-            // repeatedly discarding dirty work.
+            // repeatedly discarding dirty work. Fresh input and targeted retained animation are
+            // also latency-sensitive: discarding those frames produces the visible "half beat"
+            // where the old framebuffer survives one retry interval after the click.
             && !self.recovering_degraded_draw
+            && !self.recently_received_input(Instant::now())
+            && !self.invalidator.active_targeted_replay()
             && self.transparent_caption_height.is_none()
     }
 
