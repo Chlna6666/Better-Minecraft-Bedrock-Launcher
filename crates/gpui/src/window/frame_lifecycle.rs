@@ -90,6 +90,25 @@ impl Window {
     }
 
     pub(crate) fn schedule_dirty_frame(&mut self) {
+        let now = Instant::now();
+        // Treat input newer than the current animation/frame timestamp as a one-shot latency edge.
+        // Only the first dirty frame after that input may cancel an inherited progressive throttle;
+        // run_platform_frame refreshes animation_time immediately, so subsequent animation frames
+        // return to the normal backpressure path instead of holding an input grace window open.
+        let fresh_input_edge = self.last_input_timestamp.get() > self.animation_time();
+        if fresh_input_edge
+            && (self.dirty_frame_throttle_pending || self.frame_throttle.should_delay(now))
+        {
+            self.frame_throttle.clear_delay();
+            self.dirty_frame_throttle_pending = false;
+            log::trace!(
+                "gpui input edge interrupted dirty-frame throttle: window={} dirty={} refreshing={}",
+                self.handle.window_id().as_u64(),
+                self.invalidator.is_dirty(),
+                self.refreshing
+            );
+        }
+
         let mut should_request_frame = false;
         if self.invalidator.not_drawing() {
             if self.dirty_frame_scheduled || self.dirty_frame_throttle_pending {
@@ -123,7 +142,7 @@ impl Window {
                         self.rendered_frame.scene.len()
                     );
                 }
-            } else if self.frame_throttle.should_delay(Instant::now()) {
+            } else if self.frame_throttle.should_delay(now) {
                 self.dirty_frame_deferred_pending = false;
                 self.dirty_frame_throttle_pending = true;
                 record_coalesced_refresh();

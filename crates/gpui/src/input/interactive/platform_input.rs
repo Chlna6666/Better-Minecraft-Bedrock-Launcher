@@ -93,8 +93,12 @@ pub(crate) enum PlatformInputDispatchClass {
 impl PlatformInputDispatchClass {
     pub(crate) fn extends_recent_input_present(self) -> bool {
         match self {
-            Self::PassivePointerMove | Self::PointerButton => false,
-            Self::InteractivePointerMove | Self::Scroll | Self::Keyboard | Self::DragDrop => true,
+            Self::PassivePointerMove => false,
+            Self::InteractivePointerMove
+            | Self::PointerButton
+            | Self::Scroll
+            | Self::Keyboard
+            | Self::DragDrop => true,
         }
     }
 }

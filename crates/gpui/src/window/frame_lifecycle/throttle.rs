@@ -71,8 +71,12 @@ impl WindowFrameThrottle {
     }
 
     pub(in crate::window) fn clear_delay(&mut self) {
+        if self.retry_after.is_none() && self.armed_retry_generation.is_none() {
+            return;
+        }
         self.retry_after = None;
         self.armed_retry_generation = None;
+        self.retry_generation = self.retry_generation.wrapping_add(1);
     }
 
     pub(super) fn record_frame_start(&mut self, now: Instant) {
@@ -224,5 +228,20 @@ mod tests {
         throttle.record_frame_start(now + Duration::from_millis(33));
 
         assert_eq!(throttle.retry_delay(), HIGH_REFRESH_FRAME_INTERVAL);
+    }
+
+    #[test]
+    fn clear_delay_invalidates_armed_retry_generation() {
+        let mut throttle = WindowFrameThrottle::default();
+        let now = Instant::now();
+        throttle.delay(now, Duration::from_millis(8));
+        let (_, generation) = throttle
+            .arm_retry_timer()
+            .expect("delayed throttle should arm one retry");
+
+        throttle.clear_delay();
+
+        assert!(!throttle.should_delay(now));
+        assert!(!throttle.retry_timer_fired(generation, now + Duration::from_millis(8)));
     }
 }
