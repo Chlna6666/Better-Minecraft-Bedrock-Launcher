@@ -97,7 +97,7 @@ impl SettingsPageView {
 
 impl Render for SettingsPageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = std::time::Instant::now();
+        let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),

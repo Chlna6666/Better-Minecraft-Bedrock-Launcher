@@ -155,7 +155,7 @@ impl AppChromeView {
 
 impl Render for AppChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+        let now = window.animation_time();
         let state = self.prepare_render_state(now, window, cx);
         let animating = state.theme_animating || state.nav_animating || state.auth.animating;
         let route = crate::ui::navigation::current_route_target(cx);

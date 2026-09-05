@@ -418,7 +418,7 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
         let current_control = self.control.clone();
 
         window.with_element_state(global_id, |state, window| {
-            let now = Instant::now();
+            let now = window.animation_time();
             let mut state = state.unwrap_or_else(|| DismissibleModalState {
                 opened_at: now,
                 control: current_control.clone(),
@@ -441,11 +441,10 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
             let layout_id = element.request_layout(window, cx);
 
             if sample.animating || sample.close_completed {
-                // This modal timeline is sampled manually from `Instant`; it is not owned by the
-                // animation engine. A targeted layout-engine frame can legally retain structural
-                // ancestors and therefore miss fullscreen backdrop/inherited-opacity changes. Use
-                // a regular animation frame so the owning view is notified and the complete modal
-                // composition is rebuilt for every open/close sample.
+                // This modal timeline is caller-sampled, but every visual value for the current
+                // platform frame uses the immutable Window frame clock. Keep a regular animation
+                // frame here because the fullscreen backdrop and inherited opacity span more than
+                // one narrow retained layout target.
                 window.request_animation_frame();
             }
             if state.take_close_completion(sample.close_completed) {

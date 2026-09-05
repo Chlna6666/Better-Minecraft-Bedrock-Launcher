@@ -3,7 +3,6 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::*;
-use std::time::Instant;
 
 #[path = "render/card.rs"]
 mod card;
@@ -28,7 +27,7 @@ pub(crate) use shell::{
 
 impl Render for TasksPageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+        let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),

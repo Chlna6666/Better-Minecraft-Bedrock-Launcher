@@ -173,6 +173,7 @@ impl RenderOnce for AnimatedSegmentTabs {
             return div().into_any_element();
         }
 
+        let now = window.animation_time();
         let colors = self.colors;
         let dark_mode = colors.bg.l < 0.5;
         let item_count = self.items.len();
@@ -216,13 +217,13 @@ impl RenderOnce for AnimatedSegmentTabs {
             state.update(cx, |tab_state, _| {
                 tab_state.previous_index = tab_state.active_index;
                 tab_state.active_index = selected_index;
-                tab_state.started_at = Some(Instant::now());
+                tab_state.started_at = Some(now);
             });
         }
 
         let snapshot = *state.read(cx);
         let (indicator_slot, indicator_animating) = if let Some(started_at) = snapshot.started_at {
-            let progress = raw_progress(Instant::now(), started_at, ANIMATED_TAB_DURATION);
+            let progress = raw_progress(now, started_at, ANIMATED_TAB_DURATION);
             let eased = ease_out_cubic(progress);
             let animating = progress < 1.0;
 
