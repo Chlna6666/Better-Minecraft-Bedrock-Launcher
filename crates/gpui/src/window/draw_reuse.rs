@@ -1,6 +1,6 @@
 use super::frame::{
     DeferredRetainedMetadata, DeferredRetainedReplay, ReconcileKey, RetainedElementRange,
-    RetainedPaintContext,
+    RetainedPaintContext, RetainedSemanticDescriptor, RetainedSemanticEntry, RetainedSemanticStamp,
 };
 use super::state::ElementVisualTransform;
 use super::*;
@@ -433,6 +433,97 @@ impl Window {
         }
     }
 
+    /// Register an exact semantic proof for the current request-layout subtree.
+    ///
+    /// Safe `Div` containers compose only direct-child semantic stamps, so ancestors compare O(n)
+    /// direct children rather than recursively walking every descendant again. A child generation
+    /// changes whenever its exact semantic descriptor changes; layout-only changes are proven by
+    /// the separate recursive Taffy fingerprint.
+    pub(crate) fn register_retained_layout_semantics(
+        &mut self,
+        retained_id: &GlobalElementId,
+        retained_segment: &ElementId,
+        layout_id: LayoutId,
+        request_layout: &dyn Any,
+        plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
+        identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+    ) {
+        let descriptor = if let Some((text, text_style, rem_size)) = plain_text_semantics {
+            RetainedSemanticDescriptor::PlainText {
+                text,
+                text_style,
+                rem_size,
+            }
+        } else {
+            let Some(div_layout) = request_layout.downcast_ref::<crate::DivLayout>() else {
+                return;
+            };
+            let Some(style) = div_layout.retained_semantic_key.clone() else {
+                return;
+            };
+            let mut children = SmallVec::with_capacity(div_layout.child_layout_ids.len());
+            for child_layout_id in &div_layout.child_layout_ids {
+                let Some(child) = self
+                    .next_frame
+                    .retained_layout_semantics
+                    .get(child_layout_id)
+                else {
+                    return;
+                };
+                if !child.identity_is_stable() {
+                    return;
+                }
+                children.push(child.stamp.clone());
+            }
+            RetainedSemanticDescriptor::Div { style, children }
+        };
+
+        let previous = self.rendered_frame.retained_element_ranges.get(retained_id);
+        let generation = if previous
+            .and_then(|range| range.semantic_descriptor.as_ref())
+            .is_some_and(|previous_descriptor| previous_descriptor == &descriptor)
+        {
+            previous
+                .and_then(|range| range.semantic_generation)
+                .unwrap_or(1)
+        } else if let Some(previous_generation) =
+            previous.and_then(|range| range.semantic_generation)
+        {
+            let Some(next_generation) = previous_generation.checked_add(1) else {
+                return;
+            };
+            next_generation
+        } else {
+            1
+        };
+
+        self.next_frame.retained_layout_semantics.insert(
+            layout_id,
+            RetainedSemanticEntry {
+                descriptor,
+                stamp: RetainedSemanticStamp {
+                    segment: retained_segment.clone(),
+                    generation,
+                },
+                identity_ambiguity,
+            },
+        );
+    }
+
+    fn retained_div_semantics_match(
+        &self,
+        retained: &RetainedElementRange,
+        layout_id: LayoutId,
+    ) -> bool {
+        let Some(current) = self.next_frame.retained_layout_semantics.get(&layout_id) else {
+            return false;
+        };
+        current.identity_is_stable()
+            && matches!(&current.descriptor, RetainedSemanticDescriptor::Div { .. })
+            && retained.semantic_descriptor.as_ref() == Some(&current.descriptor)
+            && retained.semantic_generation == Some(current.stamp.generation)
+    }
+
     /// Returns a previously retained element range that is safe to replay in the current frame.
     ///
     /// Targeted retained frames keep the existing structural-identity rules. Generic dirty frames
@@ -442,6 +533,7 @@ impl Window {
         &self,
         retained_id: &GlobalElementId,
         bounds: Bounds<Pixels>,
+        layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         plain_text_key: Option<&crate::element::RetainedPlainTextKey>,
     ) -> Option<RetainedElementRange> {
@@ -455,22 +547,26 @@ impl Window {
         }
 
         let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
+        let plain_text_proven = plain_text_key
+            .zip(retained.plain_text_key.as_ref())
+            .is_some_and(|(current, previous)| {
+                current == previous && retained_plain_text_range_is_side_effect_free(retained)
+            });
+        let div_semantics_proven = self.retained_div_semantics_match(retained, layout_id);
 
-        // A ReconcileSubtree path means the candidate is not intrinsically dirty, but an ancestor
-        // cannot hide descendant layout work merely because its own final bounds stayed unchanged.
-        // The first proof admitted here is deliberately narrow: recursive Taffy layout identity plus
-        // the existing exact side-effect-free plain-text output key. Non-text subtrees remain
-        // conservative until they provide a semantic subtree proof of their own.
+        // ReconcileSubtree means descendants may have changed even when this element's own bounds
+        // are stable. Replay is admitted only by two independent proofs: recursive layout identity
+        // and exact paint semantics. A moving absolute/flex/grid descendant changes the first;
+        // background/text/border changes propagate through semantic child generations and change
+        // the second. Unknown/custom/interactive subtrees remain conservative.
         if targeted_replay
             && self
                 .invalidator
                 .retained_path_requires_reconciliation(retained_id)
         {
-            let current_plain_text = plain_text_key?;
             if retained.layout_fingerprint.is_none()
                 || retained.layout_fingerprint != layout_fingerprint
-                || retained.plain_text_key.as_ref()? != current_plain_text
-                || !retained_plain_text_range_is_side_effect_free(retained)
+                || (!div_semantics_proven && !plain_text_proven)
             {
                 return None;
             }
@@ -481,10 +577,7 @@ impl Window {
         }
         if targeted_replay {
             if !retained.identity_stable || !retained.subtree_stable {
-                let current_plain_text = plain_text_key?;
-                if retained.plain_text_key.as_ref()? != current_plain_text
-                    || !retained_plain_text_range_is_side_effect_free(retained)
-                {
+                if !plain_text_proven {
                     return None;
                 }
             } else if retained_id_is_anonymous(retained_id)
@@ -492,13 +585,8 @@ impl Window {
             {
                 return None;
             }
-        } else {
-            let current_plain_text = plain_text_key?;
-            if retained.plain_text_key.as_ref()? != current_plain_text
-                || !retained_plain_text_range_is_side_effect_free(retained)
-            {
-                return None;
-            }
+        } else if !plain_text_proven {
+            return None;
         }
 
         if retained.bounds != bounds
@@ -525,6 +613,7 @@ impl Window {
         &mut self,
         retained_id: GlobalElementId,
         bounds: Bounds<Pixels>,
+        layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
@@ -536,6 +625,15 @@ impl Window {
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let paint_context = self.current_retained_paint_context();
+        let semantic_proof = self
+            .next_frame
+            .retained_layout_semantics
+            .get(&layout_id)
+            .filter(|entry| entry.identity_is_stable())
+            .map(|entry| (entry.descriptor.clone(), entry.stamp.generation));
+        let (semantic_descriptor, semantic_generation) = semantic_proof
+            .map(|(descriptor, generation)| (Some(descriptor), Some(generation)))
+            .unwrap_or((None, None));
         let key = ReconcileKey::from(retained_id);
         self.next_frame.retained_element_order.push(key.clone());
         let metadata_end = self.next_frame.retained_element_order.len();
@@ -544,6 +642,8 @@ impl Window {
             RetainedElementRange {
                 bounds,
                 layout_fingerprint,
+                semantic_descriptor,
+                semantic_generation,
                 prepaint_range,
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
@@ -650,6 +750,8 @@ impl Window {
                 RetainedElementRange {
                     bounds: source_range.bounds,
                     layout_fingerprint: source_range.layout_fingerprint,
+                    semantic_descriptor: source_range.semantic_descriptor.clone(),
+                    semantic_generation: source_range.semantic_generation,
                     prepaint_range,
                     paint_range,
                     metadata_range: metadata_start..metadata_end,

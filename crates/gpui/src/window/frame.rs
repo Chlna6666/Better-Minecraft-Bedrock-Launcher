@@ -1,6 +1,8 @@
 use super::state::ElementVisualTransform;
 use super::*;
-use crate::element::{RetainedDivSelfScene, RetainedPlainTextKey};
+use crate::element::{
+    RetainedDivSelfScene, RetainedDivSemanticKey, RetainedPlainTextKey,
+};
 use std::borrow::Borrow;
 
 pub(crate) struct DeferredDraw {
@@ -83,6 +85,49 @@ pub(crate) struct RetainedPaintContext {
     pub(crate) rem_size: Pixels,
 }
 
+/// Parent-local semantic identity for one proven child subtree.
+///
+/// `segment` prevents two same-generation siblings from becoming interchangeable when their
+/// order changes, while `generation` changes only when that child's exact direct semantics or
+/// proven descendant stamps change.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RetainedSemanticStamp {
+    pub(crate) segment: ElementId,
+    pub(crate) generation: u64,
+}
+
+/// Exact request-layout-time semantics for a retained subtree that is safe to skip as a unit.
+///
+/// The descriptor is intentionally recursive only through compact direct-child stamps. This keeps
+/// comparison O(number of direct children) instead of recursively re-walking a large subtree for
+/// every ancestor candidate.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RetainedSemanticDescriptor {
+    PlainText {
+        text: SharedString,
+        text_style: TextStyle,
+        rem_size: Pixels,
+    },
+    Div {
+        style: RetainedDivSemanticKey,
+        children: SmallVec<[RetainedSemanticStamp; 2]>,
+    },
+}
+
+/// Current-frame semantic proof registered as soon as an element finishes request-layout.
+#[derive(Clone)]
+pub(crate) struct RetainedSemanticEntry {
+    pub(crate) descriptor: RetainedSemanticDescriptor,
+    pub(crate) stamp: RetainedSemanticStamp,
+    pub(crate) identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+}
+
+impl RetainedSemanticEntry {
+    pub(crate) fn identity_is_stable(&self) -> bool {
+        self.identity_ambiguity.iter().all(|flag| !flag.get())
+    }
+}
+
 /// Retained lifecycle ranges for one stable rendering identity path.
 ///
 /// `metadata_range` points into `Frame::retained_element_order`. Entries are emitted in post-order,
@@ -94,6 +139,10 @@ pub(crate) struct RetainedElementRange {
     pub(crate) bounds: Bounds<Pixels>,
     /// Recursive layout proof captured from the Taffy subtree that produced this element.
     pub(crate) layout_fingerprint: Option<u64>,
+    /// Exact direct semantics plus compact child semantic stamps for proof-based reconciliation.
+    pub(crate) semantic_descriptor: Option<RetainedSemanticDescriptor>,
+    /// Monotonic generation for this retained identity's semantic descriptor.
+    pub(crate) semantic_generation: Option<u64>,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) metadata_range: Range<usize>,
@@ -131,6 +180,8 @@ pub(crate) struct Frame {
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
     pub(crate) retained_element_order: Vec<ReconcileKey>,
+    /// Current request-layout semantic proofs keyed by the newly allocated layout node.
+    pub(crate) retained_layout_semantics: FxHashMap<LayoutId, RetainedSemanticEntry>,
     /// Number of ambiguous retained identities painted into this frame. Drawable snapshots this
     /// counter before and after child paint to derive subtree stability in O(1).
     pub(crate) retained_unstable_identity_count: usize,
@@ -218,7 +269,9 @@ impl PaintIndex {
                 target.window_control_hitboxes_index,
             )?,
             accessed_element_states_index: rebase_index(
-                self.accessed_element_states_index, source.accessed_element_states_index, target.accessed_element_states_index,
+                self.accessed_element_states_index,
+                source.accessed_element_states_index,
+                target.accessed_element_states_index,
             )?,
             tab_handle_index: rebase_index(
                 self.tab_handle_index, source.tab_handle_index, target.tab_handle_index,
@@ -255,6 +308,7 @@ impl Frame {
             retained_scene_segments: Vec::new(),
             retained_element_ranges: FxHashMap::default(),
             retained_element_order: Vec::new(),
+            retained_layout_semantics: FxHashMap::default(),
             retained_unstable_identity_count: 0,
 
             #[cfg(any(test, feature = "test-support"))]
@@ -289,6 +343,7 @@ impl Frame {
         self.retained_scene_segments.clear();
         self.retained_element_ranges.clear();
         self.retained_element_order.clear();
+        self.retained_layout_semantics.clear();
         self.retained_unstable_identity_count = 0;
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
@@ -389,6 +444,7 @@ impl Frame {
             + self.retained_scene_segments.capacity()
             + self.retained_element_ranges.capacity()
             + self.retained_element_order.capacity()
+            + self.retained_layout_semantics.capacity()
             + self.debug_container_capacity()
     }
 
@@ -439,6 +495,12 @@ impl Frame {
             self.retained_element_ranges
                 .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_element_ranges.len()));
         }
+        if self.retained_layout_semantics.capacity()
+            > FRAME_MIN_RETAINED_CAPACITY.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.retained_layout_semantics
+                .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_layout_semantics.len()));
+        }
     }
 
     pub(super) fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
@@ -468,6 +530,8 @@ impl Frame {
                 self.retained_element_ranges
                     .shrink_to(floor.max(self.retained_element_ranges.len()));
                 self.retained_element_order.shrink_to(floor);
+                self.retained_layout_semantics
+                    .shrink_to(floor.max(self.retained_layout_semantics.len()));
                 #[cfg(any(test, feature = "test-support"))]
                 self.debug_bounds
                     .shrink_to(floor.max(self.debug_bounds.len()));

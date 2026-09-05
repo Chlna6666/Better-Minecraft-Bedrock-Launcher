@@ -126,6 +126,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         retained_identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
+        layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         request_layout: RequestLayoutState,
         prepaint: PrepaintState,
@@ -144,6 +145,21 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
 
 fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
     ambiguity.iter().all(|flag| !flag.get())
+}
+
+fn retained_plain_text_semantics<E: Element>(
+    element: &E,
+    window: &Window,
+) -> Option<(SharedString, TextStyle, Pixels)> {
+    let element = element as &dyn Any;
+    let text = if let Some(text) = element.downcast_ref::<SharedString>() {
+        text.clone()
+    } else if let Some(text) = element.downcast_ref::<&'static str>() {
+        SharedString::from(*text)
+    } else {
+        return None;
+    };
+    Some((text, window.text_style(), window.rem_size()))
 }
 
 fn retained_plain_text_key<E: Element>(
@@ -228,6 +244,15 @@ impl<E: Element> Drawable<E> {
                     window,
                     cx,
                 );
+                let plain_text_semantics = retained_plain_text_semantics(&self.element, window);
+                window.register_retained_layout_semantics(
+                    &retained_id,
+                    &retained_segment,
+                    layout_id,
+                    &request_layout as &dyn Any,
+                    plain_text_semantics,
+                    retained_identity_ambiguity.clone(),
+                );
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
@@ -275,8 +300,8 @@ impl<E: Element> Drawable<E> {
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
                 let targeted_replay = window.retained_replay_is_targeted();
-                // ReconcileSubtree proof needs the exact text output even for a stable identity.
-                // Non-text elements exit this helper after two cheap type checks.
+                // ReconcileSubtree proof needs exact shaped text output. Non-text elements exit
+                // this helper after two cheap type checks; safe Divs use semantic generations.
                 let mut plain_text_key =
                     retained_plain_text_key(&self.element, &request_layout, window);
                 let may_reconcile = E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay()
@@ -288,6 +313,7 @@ impl<E: Element> Drawable<E> {
                             window.reusable_retained_element(
                                 &retained_id,
                                 bounds,
+                                layout_id,
                                 layout_fingerprint,
                                 plain_text_key.as_ref(),
                             )
@@ -346,6 +372,7 @@ impl<E: Element> Drawable<E> {
                     retained_identity_ambiguity,
                     inspector_id,
                     bounds,
+                    layout_id,
                     layout_fingerprint,
                     request_layout,
                     prepaint,
@@ -367,6 +394,7 @@ impl<E: Element> Drawable<E> {
                 retained_identity_ambiguity,
                 inspector_id,
                 bounds,
+                layout_id,
                 layout_fingerprint,
                 mut request_layout,
                 mut prepaint,
@@ -409,6 +437,7 @@ impl<E: Element> Drawable<E> {
                 window.record_retained_element_range(
                     retained_id,
                     bounds,
+                    layout_id,
                     layout_fingerprint,
                     prepaint_range,
                     paint_start..paint_end,
