@@ -519,7 +519,7 @@ pub fn render_view_tree(
         return fallback_panel(format!("Invalid plugin view: {error}")).into_any_element();
     }
 
-    let colors = current_theme_colors(cx);
+    let colors = current_theme_colors(window.animation_time(), cx);
     render_node(&tree.root, plugin_id, page_id, window, cx, colors)
 }
 
@@ -530,7 +530,7 @@ pub fn render_validated_view_tree(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let colors = current_theme_colors(cx);
+    let colors = current_theme_colors(window.animation_time(), cx);
     render_node(&tree.root, plugin_id, page_id, window, cx, colors)
 }
 
@@ -1022,12 +1022,12 @@ fn image_replacement_element(label: SharedString, colors: ThemeColors) -> gpui::
         .child(label)
 }
 
-fn current_theme_colors(cx: &App) -> ThemeColors {
+fn current_theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<ThemeState>();
     lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),
-        theme.factor(std::time::Instant::now()),
+        theme.factor(now),
         theme.accent,
     )
 }
