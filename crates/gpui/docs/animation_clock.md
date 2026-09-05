@@ -1,8 +1,9 @@
 # GPUI Frame Animation Clock Contract
 
 This document is the framework-local source of truth for animation time inside
-`crates/gpui`. BMCBL application rules are documented in
-`docs/GPUI_ANIMATION_CONVENTIONS.md` and `src/AGENTS.md`.
+`crates/gpui`. Repository-wide BMCBL rules live in the root `AGENTS.md`;
+application/rendering details are documented in
+`docs/GPUI_ANIMATION_CONVENTIONS.md`.
 
 ## Ownership
 
