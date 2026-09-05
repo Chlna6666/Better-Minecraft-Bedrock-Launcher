@@ -225,7 +225,7 @@ impl CurseForgeResultsListView {
 
 impl Render for CurseForgeResultsListView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = std::time::Instant::now();
+        let now = window.animation_time();
         let theme = cx.global::<crate::ui::state::theme::ThemeState>();
         let colors = crate::ui::theme::colors::lerp_theme_colors(
             &crate::ui::theme::colors::LightColors::colors(),
