@@ -30,7 +30,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui::{InteractiveElement, ParentElement, Styled};
 use lucide_gpui::icons as lucide_icons;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 const IMPORT_WINDOW_NARROW_WIDTH_PX: f32 = 520.0;
@@ -60,6 +60,7 @@ pub struct ImportWindowView {
     conflict: Option<ImportCheckResult>,
     show_conflict_dialog: bool,
     is_inspecting: bool,
+    inspect_started_at: Instant,
     is_importing: bool,
     launch_after_import: bool,
     close_after_launch_completion: bool,
@@ -114,6 +115,7 @@ impl ImportWindowView {
             conflict: None,
             show_conflict_dialog: false,
             is_inspecting: false,
+            inspect_started_at: Instant::now(),
             is_importing: false,
             launch_after_import: false,
             close_after_launch_completion: false,
@@ -160,6 +162,7 @@ impl ImportWindowView {
             return;
         }
         self.is_inspecting = true;
+        self.inspect_started_at = Instant::now();
         self.preview = None;
 
         let file_path = self.import_context.file_path.display().to_string();
@@ -486,12 +489,12 @@ impl ImportWindowView {
         cx.notify();
     }
 
-    fn theme_colors(&self, cx: &App) -> ThemeColors {
+    fn theme_colors(&self, now: Instant, cx: &App) -> ThemeColors {
         let theme = cx.global::<ThemeState>();
         lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(Instant::now()),
+            theme.factor(now),
             theme.accent,
         )
     }
@@ -551,22 +554,22 @@ impl ImportWindowView {
 
 impl Render for ImportWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
-        sync_launcher_state(now, cx);
+        let frame_now = window.animation_time();
+        sync_launcher_state(frame_now, cx);
         let window_width_px = if self.presentation == ImportPresentation::Overlay {
             ((window.bounds().size.width / px(1.0)) - 32.0).min(900.0)
         } else {
             window.bounds().size.width / px(1.0)
         };
         let use_two_column_layout = window_width_px >= IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX;
-        let colors = self.theme_colors(cx);
+        let colors = self.theme_colors(frame_now, cx);
         let is_overlay = self.presentation == ImportPresentation::Overlay;
         let content_padding = if is_overlay { 16.0 } else { 20.0 };
         let column_gap = if is_overlay { 16.0 } else { 24.0 };
         let sidebar_dropdown_width = px((window_width_px - 40.0).clamp(240.0, 520.0));
         let versions = read_local_versions_snapshot(cx);
-        let launcher_snapshot = read_launcher_snapshot(now, cx);
-        let launcher_modal_animating = cx.global::<LauncherState>().is_modal_animating(now);
+        let launcher_snapshot = read_launcher_snapshot(frame_now, cx);
+        let launcher_modal_animating = cx.global::<LauncherState>().is_modal_animating(frame_now);
         if self.close_after_launch_completion
             && !self.launch_completion_close_scheduled
             && launcher_snapshot
@@ -633,10 +636,15 @@ impl Render for ImportWindowView {
                                                         .min_h(px(0.))
                                                         .overflow_y_scrollbar()
                                                         .child(
-                                                            render_preview_card(self, &colors, cx)
-                                                                .with_layout_animation_target(
-                                                                    self.is_inspecting,
-                                                                ),
+                                                            render_preview_card(
+                                                                self,
+                                                                &colors,
+                                                                frame_now,
+                                                                cx,
+                                                            )
+                                                            .with_layout_animation_target(
+                                                                self.is_inspecting,
+                                                            ),
                                                         ),
                                                 )
                                                 .child(
@@ -676,10 +684,15 @@ impl Render for ImportWindowView {
                                                 .flex_col()
                                                 .gap(px(14.))
                                                 .child(
-                                                    render_preview_card(self, &colors, cx)
-                                                        .with_layout_animation_target(
-                                                            self.is_inspecting,
-                                                        ),
+                                                    render_preview_card(
+                                                        self,
+                                                        &colors,
+                                                        frame_now,
+                                                        cx,
+                                                    )
+                                                    .with_layout_animation_target(
+                                                        self.is_inspecting,
+                                                    ),
                                                 )
                                                 .child(render_versions_card(
                                                     self,
@@ -755,27 +768,33 @@ impl Render for ImportWindowView {
         let toast_state = cx.global::<toast::ToastState>();
         let window_id = window.window_handle().window_id();
         if self.presentation == ImportPresentation::Window
-            && toast::has_visible_toasts(window_id, now, toast_state)
+            && toast::has_visible_toasts(window_id, frame_now, toast_state)
         {
-            root = root.child(toast::render_overlay(window, cx, &colors, now, toast_state));
+            root = root.child(toast::render_overlay(
+                window,
+                cx,
+                &colors,
+                frame_now,
+                toast_state,
+            ));
         }
         if self.presentation == ImportPresentation::Window
-            && toast::has_visible_breadcrumb(window_id, now, toast_state)
+            && toast::has_visible_breadcrumb(window_id, frame_now, toast_state)
         {
             root = root.child(toast::render_breadcrumb_overlay(
                 window,
                 cx,
                 &colors,
-                now,
+                frame_now,
                 toast_state,
             ));
         }
 
         let dropdown_state = cx.global::<dropdown::DropdownOverlayState>();
         if self.presentation == ImportPresentation::Window
-            && dropdown::has_visible_overlay(now, dropdown_state)
+            && dropdown::has_visible_overlay(frame_now, dropdown_state)
         {
-            root = root.child(dropdown::render_overlay(window, now, dropdown_state));
+            root = root.child(dropdown::render_overlay(window, frame_now, dropdown_state));
         }
 
         root
@@ -1119,13 +1138,15 @@ fn image_format_for_preview_icon(format: PreviewImageFormat) -> ImageFormat {
     }
 }
 
-fn spinning_icon(path: &'static str, size_px: f32, color: Hsla) -> Svg {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let cycle_ms = 900_u128;
-    let rotation = ((elapsed % cycle_ms) as f32 / cycle_ms as f32) * std::f32::consts::TAU;
+fn spinning_icon(
+    now: Instant,
+    started_at: Instant,
+    path: &'static str,
+    size_px: f32,
+    color: Hsla,
+) -> Svg {
+    let elapsed = now.saturating_duration_since(started_at).as_secs_f32();
+    let rotation = (elapsed / 0.9).fract() * std::f32::consts::TAU;
     svg()
         .path(path)
         .w(px(size_px))
@@ -1134,7 +1155,12 @@ fn spinning_icon(path: &'static str, size_px: f32, color: Hsla) -> Svg {
         .with_transformation(Transformation::rotate(radians(rotation)))
 }
 
-fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) -> AnyElement {
+fn render_preview_card(
+    this: &ImportWindowView,
+    colors: &ThemeColors,
+    now: Instant,
+    cx: &App,
+) -> AnyElement {
     let i18n = cx.global::<I18n>();
     if this.is_inspecting {
         return section_shell(colors)
@@ -1142,6 +1168,8 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
             .items_center()
             .gap(px(8.))
             .child(spinning_icon(
+                now,
+                this.inspect_started_at,
                 lucide_icons::icon_loader_circle(),
                 18.0,
                 colors.accent,
