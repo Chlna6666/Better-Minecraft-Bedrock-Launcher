@@ -38,17 +38,3 @@ pub fn dark_colors() -> &'static ThemeColors {
     static DARK: OnceLock<ThemeColors> = OnceLock::new();
     DARK.get_or_init(DarkColors::colors)
 }
-
-/// 读取当前主题插值后的色板。
-///
-/// 收敛各视图重复的“读 ThemeState → factor → lerp”样板；主题动画进行中
-/// 会返回当帧的插值结果。
-pub fn theme_colors(cx: &gpui::App) -> ThemeColors {
-    let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-    lerp_theme_colors(
-        light_colors(),
-        dark_colors(),
-        theme.factor(std::time::Instant::now()),
-        theme.accent,
-    )
-}
