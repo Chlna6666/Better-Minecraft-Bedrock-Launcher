@@ -386,8 +386,8 @@ impl MapCanvasView {
 impl EventEmitter<MapCanvasAction> for MapCanvasView {}
 
 impl Render for MapCanvasView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme_colors(cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme_colors(window.animation_time(), cx);
         let frame_revision = self.frame_revision;
         let tile_revision = (frame_revision, self.tile_revision);
         div()
@@ -1951,12 +1951,12 @@ fn hud_pill(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-fn theme_colors(cx: &App) -> ThemeColors {
+fn theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<crate::ui::state::theme::ThemeState>();
     crate::ui::theme::colors::lerp_theme_colors(
         &crate::ui::theme::colors::LightColors::colors(),
         &crate::ui::theme::colors::DarkColors::colors(),
-        theme.factor(std::time::Instant::now()),
+        theme.factor(now),
         theme.accent,
     )
 }
