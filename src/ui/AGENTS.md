@@ -1,7 +1,7 @@
 # BMCBL UI Agent Rules
 
-These rules apply to every file under `src/ui` and extend the application-wide
-rules in `src/AGENTS.md`.
+These rules apply to every file under `src/ui` and extend the repository-wide
+rules in the root `AGENTS.md`.
 
 Read `docs/GPUI_ANIMATION_CONVENTIONS.md` before changing animation, layout,
 retained rendering, text positioning, frame scheduling, theme interpolation, or
