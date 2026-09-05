@@ -474,7 +474,7 @@ impl DownloadPageView {
 
 impl Render for DownloadPageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+        let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
