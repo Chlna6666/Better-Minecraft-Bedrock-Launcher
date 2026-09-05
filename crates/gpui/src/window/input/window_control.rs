@@ -4,11 +4,27 @@ impl Window {
     pub(in crate::window::input) fn window_control_area_under_mouse(
         &self,
     ) -> Option<WindowControlArea> {
+        let frontmost_hitbox = self.mouse_hit_test.ids.first().copied();
+
         self.rendered_frame
             .window_control_hitboxes
             .iter()
             .rev()
-            .find_map(|(area, hitbox)| hitbox.is_hovered(self).then_some(*area))
+            .find_map(|(area, hitbox)| {
+                if !hitbox.is_hovered(self) {
+                    return None;
+                }
+
+                // A drag region is only allowed to pre-empt normal mouse dispatch when that drag
+                // hitbox is actually the frontmost interactive region under the pointer. Without
+                // this guard an oversized/stale retained titlebar hitbox can remain in the hover
+                // set behind a button and consume MouseDown before the button's listener runs.
+                if *area == WindowControlArea::Drag && frontmost_hitbox != Some(hitbox.id) {
+                    return None;
+                }
+
+                Some(*area)
+            })
             .or_else(|| self.transparent_caption_area_under_mouse())
     }
 
