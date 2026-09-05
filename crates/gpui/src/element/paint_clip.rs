@@ -6,7 +6,9 @@ use crate::{
 /// The fixed edge from which a vertical paint-only reveal exposes its child.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VerticalRevealEdge {
+    /// Reveal downward while keeping the child's top edge fixed.
     Top,
+    /// Reveal upward while keeping the child's bottom edge fixed.
     Bottom,
 }
 
@@ -17,6 +19,11 @@ pub enum VerticalRevealEdge {
 /// mask changes, so descendant text keeps stable glyph origins and subpixel variants while the
 /// visible portion of the subtree is revealed from one fixed edge.
 pub trait PaintClipExt: IntoElement + Sized + 'static {
+    /// Wraps this element in a paint-only vertical reveal clip.
+    ///
+    /// `visible_height` controls the currently exposed height without changing the child's layout
+    /// bounds. `edge` selects which vertical edge remains fixed while the visible region grows or
+    /// shrinks.
     #[track_caller]
     fn with_vertical_reveal_clip(
         self,
@@ -34,6 +41,10 @@ pub trait PaintClipExt: IntoElement + Sized + 'static {
 
 impl<E: IntoElement + Sized + 'static> PaintClipExt for E {}
 
+/// Element wrapper that applies a vertical content mask during prepaint and paint only.
+///
+/// Layout is delegated unchanged to the wrapped child, which keeps descendant geometry stable while
+/// the reveal animation changes only the visible paint region.
 pub struct VerticalRevealClipElement<E> {
     source: &'static core::panic::Location<'static>,
     element: Option<E>,
