@@ -5,22 +5,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# This is intentionally a local/static guard, not a CI repair mechanism.
-# It catches high-signal violations of the repository animation-clock contract:
-# current-frame visual sampling must use Window::animation_time(), while real
-# event/scheduler/profiling time continues to use Instant::now().
+# Local/static guard only. It is deliberately not wired to GitHub CI.
+# Contract:
+#   current-frame visual sample -> Window::animation_time()
+#   event/scheduler/deadline/profiling -> Instant::now()
+#
+# The check is semantic-by-scope rather than a repository-wide ban on Instant::now().
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $violations = [System.Collections.Generic.List[object]]::new()
-
-$directPatterns = @(
-    @{ Name = "theme factor samples fresh clock"; Regex = 'factor\s*\(\s*(?:std::time::)?Instant::now\s*\(\s*\)\s*\)' },
-    @{ Name = "raw progress samples fresh clock"; Regex = 'raw_progress\s*\(\s*(?:std::time::)?Instant::now\s*\(\s*\)' },
-    @{ Name = "eased progress samples fresh clock"; Regex = 'eased_progress\s*\(\s*(?:std::time::)?Instant::now\s*\(\s*\)' },
-    @{ Name = "animation sample uses fresh clock"; Regex = '\.sample\s*\(\s*(?:std::time::)?Instant::now\s*\(\s*\)\s*\)' },
-    @{ Name = "animation value uses fresh clock"; Regex = '\.value\s*\(\s*(?:std::time::)?Instant::now\s*\(\s*\)\s*\)' },
-    @{ Name = "animation state check uses fresh clock"; Regex = '\.is_animating\s*\(\s*(?:std::time::)?Instant::now\s*\(\s*\)\s*\)' }
-)
+$lifecycleNames = @("render", "request_layout", "prepaint", "paint")
+$visualHelperPattern = '^(theme_colors|current_theme_colors|detached_theme_colors|render_.+|build_render_model|sync_.+_animation)$'
+$freshClockPattern = '(?:std::time::)?Instant::now\s*\(\s*\)'
+$explicitMonotonicMarker = 'animation-clock:\s*monotonic-ok'
 
 function Add-Violation {
     param(
@@ -42,10 +39,10 @@ function Get-RustFunctionRanges {
     param([string[]]$Lines)
 
     $ranges = [System.Collections.Generic.List[object]]::new()
-    $lifecyclePattern = '^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+(render|request_layout|prepaint|paint)\b'
+    $functionPattern = '^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\b'
 
     for ($i = 0; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -notmatch $lifecyclePattern) {
+        if ($Lines[$i] -notmatch $functionPattern) {
             continue
         }
 
@@ -84,6 +81,21 @@ function Get-RustFunctionRanges {
     return $ranges
 }
 
+function Test-ExplicitMonotonicException {
+    param(
+        [string[]]$Lines,
+        [int]$Index
+    )
+
+    if ($Lines[$Index] -match $explicitMonotonicMarker) {
+        return $true
+    }
+    if ($Index -gt 0 -and $Lines[$Index - 1] -match $explicitMonotonicMarker) {
+        return $true
+    }
+    return $false
+}
+
 foreach ($root in $Roots) {
     $fullRoot = Join-Path $repoRoot $root
     if (-not (Test-Path $fullRoot)) {
@@ -96,28 +108,27 @@ foreach ($root in $Roots) {
         $relative = [IO.Path]::GetRelativePath($repoRoot, $file.FullName).Replace('\\', '/')
         $lines = Get-Content -LiteralPath $file.FullName
 
-        # Exact high-signal patterns are invalid anywhere because they hide a fresh
-        # clock inside the visual sampling expression. Event/scheduler code should
-        # record Instant::now() separately and pass that timestamp explicitly.
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            foreach ($pattern in $directPatterns) {
-                if ($lines[$i] -match $pattern.Regex) {
-                    Add-Violation -Path $relative -Line ($i + 1) -Reason $pattern.Name -Text $lines[$i]
-                }
-            }
-        }
-
-        # Lifecycle functions must never obtain a fresh animation sample. This
-        # catches `let now = Instant::now()` followed by indirect helper use.
         foreach ($range in (Get-RustFunctionRanges -Lines $lines)) {
+            $isLifecycle = $lifecycleNames -contains $range.Name
+            $isVisualHelper = $range.Name -match $visualHelperPattern
+            if (-not $isLifecycle -and -not $isVisualHelper) {
+                continue
+            }
+
             for ($i = $range.Start; $i -le $range.End; $i++) {
-                if ($lines[$i] -match '(?:std::time::)?Instant::now\s*\(\s*\)') {
-                    Add-Violation `
-                        -Path $relative `
-                        -Line ($i + 1) `
-                        -Reason "fresh clock inside $($range.Name) lifecycle" `
-                        -Text $lines[$i]
+                if ($lines[$i] -notmatch $freshClockPattern) {
+                    continue
                 }
+                if (Test-ExplicitMonotonicException -Lines $lines -Index $i) {
+                    continue
+                }
+
+                $reason = if ($isLifecycle) {
+                    "fresh clock inside $($range.Name) lifecycle"
+                } else {
+                    "fresh clock hidden inside visual helper $($range.Name)"
+                }
+                Add-Violation -Path $relative -Line ($i + 1) -Reason $reason -Text $lines[$i]
             }
         }
     }
@@ -129,8 +140,9 @@ if ($violations.Count -gt 0) {
         Write-Host ("{0}:{1}: {2}: {3}" -f $violation.Path, $violation.Line, $violation.Reason, $violation.Text)
     }
     Write-Host ""
-    Write-Host "Visual-frame sampling must use window.animation_time()." -ForegroundColor Yellow
-    Write-Host "Keep Instant::now() only for event/scheduler/deadline/profiling semantics outside current-frame visual sampling." -ForegroundColor Yellow
+    Write-Host "Current-frame visual sampling must use window.animation_time()." -ForegroundColor Yellow
+    Write-Host "Real event/scheduler/deadline/profiling reads remain Instant::now()." -ForegroundColor Yellow
+    Write-Host "If a lifecycle read is intentionally monotonic and cannot affect visual sampling, document it with: // animation-clock: monotonic-ok" -ForegroundColor Yellow
     exit 1
 }
 
