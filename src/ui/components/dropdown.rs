@@ -303,13 +303,14 @@ fn desired_dropdown_menu_width(
 
 pub fn render_overlay(
     window: &mut Window,
-    now: Instant,
+    _now: Instant,
     state: &DropdownOverlayState,
 ) -> AnyElement {
     let Some(active) = state.active.as_ref() else {
         return div().into_any_element();
     };
 
+    let now = window.animation_time();
     let colors = active.colors;
     let menu_scroll_handle = active.menu_scroll_handle.clone();
     let options = active.options.clone();
@@ -665,7 +666,7 @@ impl RenderOnce for Dropdown {
         let phase = snapshot.phase;
         let trigger_bounds = snapshot.trigger_bounds.clone();
 
-        let now = Instant::now();
+        let now = window.animation_time();
         let open_k = dropdown_progress(phase, now);
 
         let phase_animating = matches!(

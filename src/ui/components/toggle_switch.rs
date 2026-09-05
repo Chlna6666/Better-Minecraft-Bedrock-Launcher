@@ -37,7 +37,13 @@ impl ToggleSwitchView {
         }
     }
 
-    fn sync(&mut self, colors: ThemeColors, enabled: bool, on_toggle: Rc<dyn Fn(&mut App)>) {
+    fn sync(
+        &mut self,
+        colors: ThemeColors,
+        enabled: bool,
+        on_toggle: Rc<dyn Fn(&mut App)>,
+        now: Instant,
+    ) {
         self.colors = colors;
         self.on_toggle = on_toggle;
         if self.enabled == enabled {
@@ -45,11 +51,10 @@ impl ToggleSwitchView {
         }
 
         self.enabled = enabled;
-        let at = Instant::now();
         self.phase = if enabled {
-            TogglePhase::Opening { at }
+            TogglePhase::Opening { at: now }
         } else {
-            TogglePhase::Closing { at }
+            TogglePhase::Closing { at: now }
         };
     }
 
@@ -109,8 +114,8 @@ impl ToggleSwitchView {
 }
 
 impl Render for ToggleSwitchView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let (progress, animating) = self.animation_progress(Instant::now());
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let (progress, animating) = self.animation_progress(window.animation_time());
         self.render_track(progress)
             .with_layout_animation_target(animating)
     }
@@ -146,8 +151,9 @@ impl RenderOnce for ToggleSwitch {
         let view = window.use_keyed_state(self.id, cx, |_, _| {
             ToggleSwitchView::new(self.colors, self.enabled, initial_on_toggle)
         });
+        let now = window.animation_time();
         view.update(cx, |view, _cx| {
-            view.sync(self.colors, self.enabled, self.on_toggle);
+            view.sync(self.colors, self.enabled, self.on_toggle, now);
         });
         AnyView::from(view)
     }
@@ -203,11 +209,12 @@ mod tests {
 
     #[test]
     fn sync_starts_animation_only_when_value_changes() {
+        let now = Instant::now();
         let mut view = test_view(false);
-        view.sync(LightColors::colors(), false, Rc::new(|_| {}));
+        view.sync(LightColors::colors(), false, Rc::new(|_| {}), now);
         assert_eq!(view.phase, TogglePhase::Stable);
 
-        view.sync(LightColors::colors(), true, Rc::new(|_| {}));
+        view.sync(LightColors::colors(), true, Rc::new(|_| {}), now);
         assert!(matches!(view.phase, TogglePhase::Opening { .. }));
     }
 

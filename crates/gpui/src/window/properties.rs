@@ -61,7 +61,12 @@ impl Window {
             .unwrap_or(self.rem_size)
     }
 
-    pub(crate) fn animation_time(&self) -> Instant {
+    /// Returns the immutable timestamp captured at the start of the current platform frame.
+    ///
+    /// Render-time animation sampling should use this value instead of calling `Instant::now()`
+    /// independently. Layout, paint and renderer-owned scene animations then observe the same
+    /// timeline sample for the entire frame, even when CPU work makes the frame expensive.
+    pub fn animation_time(&self) -> Instant {
         self.animation_time.get()
     }
 

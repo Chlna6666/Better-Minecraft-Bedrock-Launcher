@@ -266,7 +266,7 @@ pub fn request_layout_animation_frame_if_active(window: &mut Window, animating: 
 /// Request layout-animation samples until the supplied deadline.
 #[track_caller]
 pub fn request_layout_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
-    if deadline.is_some_and(|deadline| Instant::now() < deadline) {
+    if deadline.is_some_and(|deadline| window.animation_time() < deadline) {
         window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
