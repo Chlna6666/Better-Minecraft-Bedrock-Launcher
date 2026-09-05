@@ -313,8 +313,8 @@ impl CurseForgeResourcePanelView {
 
 #[hook_render]
 impl Render for CurseForgeResourcePanelView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let now = window.animation_time();
         let theme = cx.global::<crate::ui::state::theme::ThemeState>();
         let colors = crate::ui::theme::colors::lerp_theme_colors(
             &crate::ui::theme::colors::LightColors::colors(),
@@ -421,8 +421,8 @@ impl CurseForgeSidebarView {
 }
 
 impl Render for CurseForgeSidebarView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let now = window.animation_time();
         let theme = cx.global::<crate::ui::state::theme::ThemeState>();
         let colors = crate::ui::theme::colors::lerp_theme_colors(
             &crate::ui::theme::colors::LightColors::colors(),
@@ -465,7 +465,7 @@ impl CurseForgeContentView {
 
 impl Render for CurseForgeContentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = std::time::Instant::now();
+        let now = window.animation_time();
         let theme = cx.global::<crate::ui::state::theme::ThemeState>();
         let colors = crate::ui::theme::colors::lerp_theme_colors(
             &crate::ui::theme::colors::LightColors::colors(),
@@ -1876,6 +1876,7 @@ fn render_curseforge_results_list(
     window: &mut Window,
     cx: &mut Context<CurseForgeResultsListView>,
 ) -> Div {
+    let frame_now = window.animation_time();
     let i18n = cx.global::<I18n>().clone();
     let (
         results_loading,
@@ -2008,7 +2009,7 @@ fn render_curseforge_results_list(
     let reveal_warmup_pending = if !animate_cards || results_loading {
         false
     } else if let Some(started_at) = results_transition_at {
-        let elapsed_ms = std::time::Instant::now()
+        let elapsed_ms = frame_now
             .saturating_duration_since(started_at)
             .as_millis() as u64;
         elapsed_ms < CURSEFORGE_RESULTS_REVEAL_WARMUP_MS
@@ -2030,7 +2031,7 @@ fn render_curseforge_results_list(
     let default_install_target = default_install_target_for_results(cx);
 
     let transition_started_at = results_transition_at;
-    let transition_now = std::time::Instant::now();
+    let transition_now = frame_now;
     for (visible_index, cached_card_props) in this
         .cached_page_card_props
         .iter()
@@ -3741,7 +3742,6 @@ fn render_curseforge_install_modal(
                         ..colors.settings_field_bg
                     })
                     .child(
-                        // info summary row: 目标路径
                         div()
                             .w_full()
                             .flex()
@@ -3780,7 +3780,6 @@ fn render_curseforge_install_modal(
                             ),
                     )
                     .child(
-                        // info summary row: 隔离状态
                         div()
                             .w_full()
                             .flex()
@@ -3819,7 +3818,6 @@ fn render_curseforge_install_modal(
                             ),
                     )
                     .child(
-                        // info summary row: 版本类型
                         div()
                             .w_full()
                             .flex()
