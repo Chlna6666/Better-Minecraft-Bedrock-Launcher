@@ -132,7 +132,7 @@ pub(super) fn custom_mesh_3d_resource_bindings(
             resource: ResourceBindingResource::Buffer(BufferBinding {
                 buffer: parameters_buffer,
                 offset: 0,
-                size: (MAX_CUSTOM_MESH_3D_DRAWS * PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES) as u64,
+                size: CUSTOM_MESH_3D_PARAMETERS_REGION_BYTES as u64,
                 stride: Some(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES as u32),
             }),
         },
@@ -143,6 +143,15 @@ pub(super) fn custom_mesh_3d_resource_bindings(
                 offset: 0,
                 size: (vertex_capacity * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
                 stride: Some(PACKED_CUSTOM_MESH_3D_VERTEX_BYTES as u32),
+            }),
+        },
+        ResourceBinding {
+            binding: 22,
+            resource: ResourceBindingResource::Buffer(BufferBinding {
+                buffer: parameters_buffer,
+                offset: CUSTOM_MESH_3D_PARAMETERS_REGION_BYTES as u64,
+                size: CUSTOM_MESH_3D_ANIMATION_REGION_BYTES as u64,
+                stride: Some(PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES as u32),
             }),
         },
     ]

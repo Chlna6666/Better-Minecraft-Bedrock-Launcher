@@ -6,6 +6,11 @@ struct SkinPreviewDrawParameters {
     view_proj_model: mat4x4<f32>,
 };
 
+struct MeshAnimation {
+    property_and_flags: vec4<u32>,
+    sampled: vec4<f32>,
+};
+
 struct GlobalParams {
     viewport_size: vec2<f32>,
     premultiplied_alpha: u32,
@@ -30,6 +35,7 @@ struct SkinPreviewVarying {
 @group(0) @binding(0) var<uniform> globals: GlobalParams;
 @group(0) @binding(20) var<storage, read> skin_preview_draw_parameters: array<SkinPreviewDrawParameters>;
 @group(0) @binding(21) var<storage, read> skin_preview_vertices: array<SkinPreviewVertex>;
+@group(0) @binding(22) var<storage, read> skin_preview_animations: array<MeshAnimation>;
 
 fn decode_skin_preview_color(encoded: u32) -> vec4<f32> {
     let red = f32(encoded & 0xffu) / 255.0;
@@ -44,6 +50,24 @@ fn decode_skin_preview_edge_mask(encoded: u32) -> u32 {
     return ((encoded >> 24u) & 0xffu) >> 5u;
 }
 
+fn mesh_animation_active(animation: MeshAnimation) -> bool {
+    return animation.property_and_flags.y != 0u;
+}
+
+fn mesh_animation_opacity(animation: MeshAnimation) -> f32 {
+    if (!mesh_animation_active(animation)) {
+        return 1.0;
+    }
+    let property = animation.property_and_flags.x;
+    if (property == 1u) {
+        return animation.sampled.x;
+    }
+    if (property == 4u) {
+        return animation.sampled.y;
+    }
+    return 1.0;
+}
+
 @vertex
 fn vs_skin_preview(
     @builtin(vertex_index) vertex_index: u32,
@@ -51,8 +75,34 @@ fn vs_skin_preview(
 ) -> SkinPreviewVarying {
     let vertex = skin_preview_vertices[vertex_index];
     let draw_parameters = skin_preview_draw_parameters[instance_index];
+    let animation = skin_preview_animations[instance_index];
+
+    // GPUI animation transforms the 2D draw envelope. It does not alter the 3D model/camera matrix.
+    let base_bounds_origin = draw_parameters.bounds_origin;
+    let base_bounds_size = draw_parameters.bounds_size;
+    var bounds_origin = base_bounds_origin;
+    var bounds_size = base_bounds_size;
+    var content_origin = draw_parameters.content_mask_origin;
+    var content_size = draw_parameters.content_mask_size;
+    if (mesh_animation_active(animation)) {
+        let property = animation.property_and_flags.x;
+        if (property == 3u) {
+            bounds_origin = bounds_origin + animation.sampled.xy;
+        } else if (property == 2u || property == 4u) {
+            let scale = animation.sampled.x;
+            var pivot = base_bounds_origin + base_bounds_size * vec2<f32>(0.5, 0.5);
+            if (property == 4u) {
+                pivot = animation.sampled.zw;
+            }
+            bounds_origin = pivot + (bounds_origin - pivot) * scale;
+            bounds_size = bounds_size * scale;
+            content_origin = pivot + (content_origin - pivot) * scale;
+            content_size = content_size * scale;
+        }
+    }
+
     let encoded_view_proj_model = draw_parameters.view_proj_model;
-    let opacity = clamp(encoded_view_proj_model[0].w, 0.0, 1.0);
+    let opacity = clamp(encoded_view_proj_model[0].w, 0.0, 1.0) * mesh_animation_opacity(animation);
     let pixel_offset = vec2<f32>(encoded_view_proj_model[1].w, encoded_view_proj_model[2].w);
     let depth_bias = clamp(encoded_view_proj_model[3].w - 1.0, 0.0, 0.01);
     let view_proj_model = mat4x4<f32>(
@@ -65,11 +115,9 @@ fn vs_skin_preview(
     let clip_position = view_proj_model * model_position;
     let ndc = clip_position.xyz / max(clip_position.w, 0.0001);
 
-    let edge_inset = min(vec2<f32>(6.0, 6.0), draw_parameters.bounds_size * vec2<f32>(0.08, 0.08));
-    let mesh_origin = draw_parameters.bounds_origin + edge_inset;
-    let mesh_size = max(draw_parameters.bounds_size - edge_inset * vec2<f32>(2.0, 2.0), vec2<f32>(1.0, 1.0));
-    let content_origin = draw_parameters.content_mask_origin;
-    let content_size = draw_parameters.content_mask_size;
+    let edge_inset = min(vec2<f32>(6.0, 6.0), bounds_size * vec2<f32>(0.08, 0.08));
+    let mesh_origin = bounds_origin + edge_inset;
+    let mesh_size = max(bounds_size - edge_inset * vec2<f32>(2.0, 2.0), vec2<f32>(1.0, 1.0));
     let draw_origin = max(mesh_origin, content_origin);
     let draw_max = min(mesh_origin + mesh_size, content_origin + content_size);
     let draw_rect_size = max(draw_max - draw_origin, vec2<f32>(0.0, 0.0));
@@ -79,6 +127,7 @@ fn vs_skin_preview(
     let draw_size = vec2<f32>(square_size, square_size);
     let unit = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
     let pixel_position = square_origin + unit * draw_size + pixel_offset;
+    let clip_origin = square_origin + pixel_offset;
     let viewport_size = max(globals.viewport_size, vec2<f32>(1.0));
     let device_position = pixel_position / viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
 
@@ -95,8 +144,8 @@ fn vs_skin_preview(
     let depth = clamp(0.5 - ndc.z * 0.5 + depth_bias, 0.0, 1.0);
     out.position = vec4<f32>(device_position, depth, 1.0);
     out.color = vec4<f32>(decoded_color.rgb, decoded_color.a * opacity);
-    let top_left = pixel_position - square_origin;
-    let bottom_right = square_origin + draw_size - pixel_position;
+    let top_left = pixel_position - clip_origin;
+    let bottom_right = clip_origin + draw_size - pixel_position;
     out.clip_distances = vec4<f32>(top_left.x, bottom_right.x, top_left.y, bottom_right.y);
     out.barycentric = barycentric;
     out.edge_mask = decode_skin_preview_edge_mask(vertex.color_rgba8);

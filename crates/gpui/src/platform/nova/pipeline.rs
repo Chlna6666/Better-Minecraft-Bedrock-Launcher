@@ -271,11 +271,11 @@ where
 
     let opaque_or_cutout =
         fragment_entry_point.ends_with("_opaque") || fragment_entry_point.ends_with("_cutout");
-    let blend_mode = if opaque_or_cutout {
-        BlendMode::Replace
-    } else {
-        BlendMode::PremultipliedAlpha
-    };
+    // Renderer-owned opacity/transform animations can fade a draw that is otherwise classified as
+    // opaque. Keep every custom-mesh material on premultiplied blending so alpha sampled from the
+    // per-draw animation sidecar is composited correctly without rebuilding pipelines mid-frame.
+    // At alpha=1 this is visually equivalent to Replace for the existing opaque/cutout shaders.
+    let blend_mode = BlendMode::PremultipliedAlpha;
 
     device
         .create_render_pipeline(

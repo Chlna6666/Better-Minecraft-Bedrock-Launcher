@@ -240,6 +240,11 @@ where
                     binding_type: ResourceBindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
+                ResourceSetLayoutEntry {
+                    binding: 22,
+                    binding_type: ResourceBindingType::StorageBuffer,
+                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                },
             ],
         })?;
     let quad_pipeline_layout =

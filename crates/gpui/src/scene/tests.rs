@@ -736,6 +736,7 @@ fn scene_batches_use_draw_order_then_primitive_kind() {
         parameters: GpuMesh3dDrawParameters {
             view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
         },
+        animation_id: None,
     });
     scene.insert_primitive(Quad {
         bounds,
@@ -982,6 +983,7 @@ fn scene_batches_gpu_mesh_3d_in_draw_order() {
         content_mask,
         mesh: mesh.clone(),
         parameters,
+        animation_id: None,
     });
     scene.finish();
 

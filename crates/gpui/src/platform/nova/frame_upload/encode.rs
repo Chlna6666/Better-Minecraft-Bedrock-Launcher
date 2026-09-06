@@ -20,6 +20,7 @@ impl FrameUpload {
         for value in &scene.animation_values {
             write_scene_animation_value(self, summary, value);
         }
+        self.rebuild_custom_mesh_3d_animations();
     }
 
     pub(in crate::platform::nova) fn encode(
@@ -67,6 +68,8 @@ impl FrameUpload {
             self.animated_primitives.clear();
             self.sampled_animation_values.clear();
             self.custom_mesh_3d_parameters.clear();
+            self.custom_mesh_3d_animation_ids.clear();
+            self.custom_mesh_3d_animations.clear();
             self.custom_mesh_3d_meshes.clear();
             self.custom_mesh_3d_shaders.clear();
             self.custom_mesh_3d_ids.clear();
@@ -84,6 +87,9 @@ impl FrameUpload {
             self.animation_values.reserve(PACKED_ANIMATION_VALUE_BYTES);
             self.custom_mesh_3d_parameters
                 .reserve(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES);
+            self.custom_mesh_3d_animation_ids.reserve(1);
+            self.custom_mesh_3d_animations
+                .reserve(PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES);
             write_f32_vec(&mut self.globals, drawable_size.width as f32);
             write_f32_vec(&mut self.globals, drawable_size.height as f32);
             write_u32_vec(&mut self.globals, u32::from(premultiplied_alpha));
@@ -554,6 +560,8 @@ impl FrameUpload {
                             &mut self.custom_mesh_3d_parameters,
                             painted,
                         );
+                        self.custom_mesh_3d_animation_ids
+                            .push(painted.animation_id);
                         for range in validated_ranges.into_iter().flatten() {
                             self.batches.push(UploadedBatch::CustomMesh3d {
                                 mesh_id: painted.mesh.id,
@@ -568,6 +576,7 @@ impl FrameUpload {
             }
         }
         if reset {
+            self.rebuild_custom_mesh_3d_animations();
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes_for_current_frame();
         }

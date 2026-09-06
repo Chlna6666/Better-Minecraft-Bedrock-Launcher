@@ -560,6 +560,12 @@ impl Window {
             content_mask,
             mesh,
             parameters,
+            animation_id: self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]),
         });
     }
 

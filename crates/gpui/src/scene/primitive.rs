@@ -76,9 +76,8 @@ impl Primitive {
             (Self::PolychromeSprite(left), Self::PolychromeSprite(right)) => left == right,
             (Self::BackdropBlur(left), Self::BackdropBlur(right)) => left.visually_eq(right),
             (Self::Blur(left), Self::Blur(right)) => left == right,
-            (Self::Surface(_), Self::Surface(_)) | (Self::GpuMesh3d(_), Self::GpuMesh3d(_)) => {
-                false
-            }
+            (Self::GpuMesh3d(left), Self::GpuMesh3d(right)) => left.visually_eq(right),
+            (Self::Surface(_), Self::Surface(_)) => false,
             _ => false,
         }
     }
@@ -168,10 +167,8 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => sprite.animation_id,
             Primitive::BackdropBlur(blur) => blur.animation_id,
             Primitive::Blur(blur) => blur.animation_id,
-            Primitive::Path(_)
-            | Primitive::Underline(_)
-            | Primitive::Surface(_)
-            | Primitive::GpuMesh3d(_) => None,
+            Primitive::GpuMesh3d(mesh) => mesh.animation_id,
+            Primitive::Path(_) | Primitive::Underline(_) | Primitive::Surface(_) => None,
         }
     }
 
@@ -183,10 +180,8 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => sprite.animation_id = Some(animation_id),
             Primitive::BackdropBlur(blur) => blur.animation_id = Some(animation_id),
             Primitive::Blur(blur) => blur.animation_id = Some(animation_id),
-            Primitive::Path(_)
-            | Primitive::Underline(_)
-            | Primitive::Surface(_)
-            | Primitive::GpuMesh3d(_) => {}
+            Primitive::GpuMesh3d(mesh) => mesh.set_animation_id(animation_id),
+            Primitive::Path(_) | Primitive::Underline(_) | Primitive::Surface(_) => {}
         }
     }
 }

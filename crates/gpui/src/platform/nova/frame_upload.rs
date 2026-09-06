@@ -11,6 +11,7 @@ mod element_blur_animation;
 mod encode;
 mod frame;
 mod layers;
+mod mesh_animation;
 mod path_cache;
 mod quality;
 mod retained_animation;

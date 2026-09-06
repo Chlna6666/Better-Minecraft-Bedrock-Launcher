@@ -129,6 +129,13 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) animated_visual_bounds_scratch:
         Vec<crate::Bounds<crate::ScaledPixels>>,
     pub(in crate::platform::nova) custom_mesh_3d_parameters: Vec<u8>,
+    /// Animation ownership parallel to custom-mesh draw parameters. Index i always describes the
+    /// same draw as parameter record i, including None entries for non-animated mesh draws.
+    pub(in crate::platform::nova) custom_mesh_3d_animation_ids:
+        Vec<Option<crate::SceneAnimationId>>,
+    /// Dynamic 32-byte animation records uploaded into the sidecar region of the per-frame custom
+    /// mesh parameter buffer and addressed directly by instance_index in the mesh shaders.
+    pub(in crate::platform::nova) custom_mesh_3d_animations: Vec<u8>,
     pub(in crate::platform::nova) custom_mesh_3d_meshes: Vec<Arc<GpuMesh3d>>,
     pub(in crate::platform::nova) custom_mesh_3d_shaders: Vec<Arc<GpuMesh3dShader>>,
     pub(in crate::platform::nova) custom_mesh_3d_ids: FxHashSet<GpuMesh3dId>,

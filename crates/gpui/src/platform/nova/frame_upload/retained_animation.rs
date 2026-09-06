@@ -18,6 +18,7 @@ impl FrameUpload {
         self.sampled_animation_values.clear();
         summary.animation_value_count = 0;
         self.append_retained_animation_values(scene, summary);
+        self.rebuild_custom_mesh_3d_animations();
     }
 
     fn append_retained_animation_values(

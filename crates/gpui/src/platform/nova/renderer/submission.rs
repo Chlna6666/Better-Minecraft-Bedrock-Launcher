@@ -5,6 +5,7 @@ impl NovaRenderer {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
             self.wait_for_pending_submissions()?;
             self.activate_frame_resources(0)?;
+            self.upload_custom_mesh_3d_animation_sidecar()?;
             return Ok(());
         }
         self.poll_pending_submissions()?;
@@ -13,6 +14,43 @@ impl NovaRenderer {
         }
         let frame_resource_index = self.next_available_frame_resource_index()?;
         self.activate_frame_resources(frame_resource_index)?;
+        self.upload_custom_mesh_3d_animation_sidecar()?;
+        Ok(())
+    }
+
+    /// Upload only the frame-local custom-mesh visual-animation records after the frame resource
+    /// slot has been activated. Static draw parameters occupy the first region of the same buffer;
+    /// this write targets binding 22's disjoint tail region and therefore never invalidates or
+    /// rewrites mesh parameters, vertices, or indices during retained animation frames.
+    fn upload_custom_mesh_3d_animation_sidecar(&mut self) -> Result<()> {
+        let bytes = &self.frame_upload.custom_mesh_3d_animations;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let buffer = self.custom_mesh_3d_parameters_buffer;
+        let offset = CUSTOM_MESH_3D_PARAMETERS_REGION_BYTES as u64;
+        match &mut self.backend {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => device.write_buffer(buffer, offset, bytes)?,
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => device.write_buffer(buffer, offset, bytes)?,
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => device.write_buffer(buffer, offset, bytes)?,
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {
+                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+            }
+        }
         Ok(())
     }
 

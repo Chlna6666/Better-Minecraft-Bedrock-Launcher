@@ -1210,6 +1210,7 @@ fn frame_upload_lists_repeated_custom_gpu_mesh_once() {
             content_mask: content_mask.clone(),
             mesh: mesh.clone(),
             parameters,
+            animation_id: None,
         });
     }
     scene.finish();
@@ -1288,6 +1289,7 @@ fn frame_upload_skips_custom_gpu_mesh_with_out_of_bounds_index() {
         parameters: GpuMesh3dDrawParameters {
             view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
         },
+        animation_id: None,
     });
     scene.finish();
 

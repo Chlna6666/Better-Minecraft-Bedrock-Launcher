@@ -1,4 +1,4 @@
-use crate::{Bounds, ContentMask, ScaledPixels, WgslShaderSource};
+use crate::{Bounds, ContentMask, ScaledPixels, SceneAnimationId, WgslShaderSource};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering::SeqCst},
@@ -141,6 +141,12 @@ impl GpuMesh3d {
     }
 }
 
+/// Internal scene draw for one GPU-resident 3D mesh.
+///
+/// `animation_id` is renderer-owned GPUI visual-animation metadata. Application code never
+/// supplies it: [`Window::paint_gpu_mesh_3d`](crate::Window::paint_gpu_mesh_3d) automatically
+/// attaches the currently active CSS-style visual transition when one exists. The 3D camera/model
+/// transform remains exclusively in `parameters.view_projection_model`.
 #[derive(Clone, Debug)]
 pub(crate) struct PaintGpuMesh3d {
     pub order: DrawOrder,
@@ -148,6 +154,40 @@ pub(crate) struct PaintGpuMesh3d {
     pub content_mask: ContentMask<ScaledPixels>,
     pub mesh: Arc<GpuMesh3d>,
     pub parameters: GpuMesh3dDrawParameters,
+    pub(crate) animation_id: Option<SceneAnimationId>,
+}
+
+impl PaintGpuMesh3d {
+    pub(crate) fn new(
+        bounds: Bounds<ScaledPixels>,
+        content_mask: ContentMask<ScaledPixels>,
+        mesh: Arc<GpuMesh3d>,
+        parameters: GpuMesh3dDrawParameters,
+    ) -> Self {
+        Self {
+            order: 0,
+            bounds,
+            content_mask,
+            mesh,
+            parameters,
+            animation_id: None,
+        }
+    }
+
+    pub(crate) fn set_animation_id(&mut self, animation_id: SceneAnimationId) {
+        self.animation_id = Some(animation_id);
+    }
+
+    pub(crate) fn visually_eq(&self, other: &Self) -> bool {
+        self.order == other.order
+            && self.bounds == other.bounds
+            && self.content_mask == other.content_mask
+            && self.mesh.id == other.mesh.id
+            && self.mesh.generation == other.mesh.generation
+            && self.mesh.shader.id == other.mesh.shader.id
+            && self.parameters == other.parameters
+            && self.animation_id == other.animation_id
+    }
 }
 
 impl From<PaintGpuMesh3d> for Primitive {
