@@ -1,7 +1,7 @@
 use std::{
     any::TypeId,
     cell::RefCell,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::Arc,
     time::Instant,
 };
@@ -16,6 +16,7 @@ const WARM_SIZED_IMAGE_CACHE_ITEMS: usize = 128;
 const WARM_SIZED_IMAGE_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
 type SizedImageWarmCacheHandle = Rc<RefCell<SizedImageWarmCache>>;
+type SizedImageWarmCacheWeak = Weak<RefCell<SizedImageWarmCache>>;
 
 /// Playback and loading values retained by ordinary image elements between frames.
 pub(crate) struct ImageElementState {
@@ -94,7 +95,7 @@ impl SizedImageWarmCache {
 
 fn sized_image_warm_cache(cx: &mut App) -> SizedImageWarmCacheHandle {
     cx.globals_by_type
-        .entry(TypeId::of::<SizedImageWarmCache>())
+        .entry(TypeId::of::<SizedImageWarmCacheHandle>())
         .or_insert_with(|| {
             Box::new(Rc::new(RefCell::new(SizedImageWarmCache::default())))
         })
@@ -112,13 +113,16 @@ fn sized_image_warm_cache(cx: &mut App) -> SizedImageWarmCacheHandle {
 pub(super) struct SizedImageRequestLease {
     request: ImageRenderRequest,
     app: AsyncApp,
-    warm_cache: SizedImageWarmCacheHandle,
+    // The warm cache owns warm leases, so leases keep only a weak back-reference. This avoids an
+    // App-lifetime Rc cycle while preserving zero-owner-gap promotion between warm and active state.
+    warm_cache: SizedImageWarmCacheWeak,
 }
 
 impl SizedImageRequestLease {
     pub(super) fn acquire(request: &ImageRenderRequest, cx: &mut App) -> Self {
         let warm_cache = sized_image_warm_cache(cx);
-        if let Some(lease) = warm_cache.borrow_mut().take(request) {
+        let warm_hit = { warm_cache.borrow_mut().take(request) };
+        if let Some(lease) = warm_hit {
             return lease;
         }
 
@@ -126,7 +130,7 @@ impl SizedImageRequestLease {
         Self {
             request: request.clone(),
             app: cx.to_async(),
-            warm_cache,
+            warm_cache: Rc::downgrade(&warm_cache),
         }
     }
 
@@ -153,11 +157,14 @@ impl SizedImageRequestLease {
     }
 
     fn defer_warm(self, image: Option<Arc<RenderImage>>) {
+        let Some(warm_cache) = self.warm_cache.upgrade() else {
+            self.defer_release(image);
+            return;
+        };
         let estimated_bytes = image
             .as_ref()
             .map(|image| image.cache_cost_byte_len())
             .unwrap_or_default();
-        let warm_cache = self.warm_cache.clone();
         let releases = warm_cache.borrow_mut().insert(self, estimated_bytes);
 
         // The loader task remains the canonical decoded-image owner while the warm lease is
