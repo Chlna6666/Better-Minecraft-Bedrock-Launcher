@@ -38,6 +38,19 @@ struct FrameWorkDecision {
     skip_frame: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirtyFrameSchedulingClass {
+    Normal,
+    InteractiveAnimation,
+}
+
+impl DirtyFrameSchedulingClass {
+    #[inline]
+    fn bypasses_progressive_throttle(self) -> bool {
+        matches!(self, Self::InteractiveAnimation)
+    }
+}
+
 impl Window {
     pub(crate) fn request_initial_frame(&mut self) {
         if self.has_completed_rendered_frame || self.dirty_frame_scheduled || self.refreshing {
@@ -90,7 +103,19 @@ impl Window {
     }
 
     pub(crate) fn schedule_dirty_frame(&mut self) {
+        self.schedule_dirty_frame_with_class(DirtyFrameSchedulingClass::Normal);
+    }
+
+    /// Schedule one exact retained layout-animation frame without inheriting background progressive
+    /// retry pacing. This does not clear or mutate the throttle: unrelated/background dirty work
+    /// keeps its retry deadline, while this animation sample alone may request the next active frame.
+    pub(crate) fn schedule_interactive_animation_frame(&mut self) {
+        self.schedule_dirty_frame_with_class(DirtyFrameSchedulingClass::InteractiveAnimation);
+    }
+
+    fn schedule_dirty_frame_with_class(&mut self, class: DirtyFrameSchedulingClass) {
         let now = Instant::now();
+        let bypass_progressive_throttle = class.bypasses_progressive_throttle();
         // Treat input newer than the current animation/frame timestamp as a one-shot latency edge.
         // Only the first dirty frame after that input may cancel an inherited progressive throttle;
         // run_platform_frame refreshes animation_time immediately, so subsequent animation frames
@@ -111,13 +136,16 @@ impl Window {
 
         let mut should_request_frame = false;
         if self.invalidator.not_drawing() {
-            if self.dirty_frame_scheduled || self.dirty_frame_throttle_pending {
+            if self.dirty_frame_scheduled
+                || (!bypass_progressive_throttle && self.dirty_frame_throttle_pending)
+            {
                 record_coalesced_refresh();
                 log::trace!(
-                    "gpui dirty frame coalesced: window={} dirty={} refreshing={}",
+                    "gpui dirty frame coalesced: window={} dirty={} refreshing={} class={:?}",
                     self.handle.window_id().as_u64(),
                     self.invalidator.is_dirty(),
-                    self.refreshing
+                    self.refreshing,
+                    class
                 );
             } else if self.should_defer_dirty_frame() {
                 if self.dirty_frame_deferred_pending {
@@ -142,7 +170,7 @@ impl Window {
                         self.rendered_frame.scene.len()
                     );
                 }
-            } else if self.frame_throttle.should_delay(now) {
+            } else if !bypass_progressive_throttle && self.frame_throttle.should_delay(now) {
                 self.dirty_frame_deferred_pending = false;
                 self.dirty_frame_throttle_pending = true;
                 record_coalesced_refresh();
@@ -162,10 +190,11 @@ impl Window {
         }
         if should_request_frame {
             log::trace!(
-                "gpui dirty frame requested: window={} dirty={} refreshing={}",
+                "gpui dirty frame requested: window={} dirty={} refreshing={} class={:?}",
                 self.handle.window_id().as_u64(),
                 self.invalidator.is_dirty(),
-                self.refreshing
+                self.refreshing,
+                class
             );
             self.request_platform_frame(RequestFrameOptions::from_refresh());
         }

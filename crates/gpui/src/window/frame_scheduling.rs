@@ -141,7 +141,7 @@ impl Window {
                 Some(&retained_id),
                 RetainedInvalidationScope::ReconcileSubtree,
             ) {
-                window.schedule_dirty_frame();
+                window.schedule_interactive_animation_frame();
             }
         });
     }
@@ -186,7 +186,7 @@ impl Window {
                     Some(&retained_id),
                     RetainedInvalidationScope::ReconcileSubtree,
                 ) {
-                    window.schedule_dirty_frame();
+                    window.schedule_interactive_animation_frame();
                 }
             }));
         })
