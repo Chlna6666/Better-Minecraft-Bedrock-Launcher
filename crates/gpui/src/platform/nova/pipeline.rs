@@ -128,25 +128,58 @@ where
             )
         })?;
     #[cfg(target_os = "windows")]
-    let subpixel_sprites = device
-        .create_render_pipeline(
-            &RenderPipelineDescriptor {
-                label: Some(format!("{} RGB subpixel sprite pipeline", descriptor.label)),
-                vertex_shader: descriptor.subpixel_vertex,
-                vertex_entry_point: "vs_subpixel_sprite".to_string(),
-                fragment_shader: descriptor.subpixel_fragment,
-                fragment_entry_point: "fs_subpixel_sprite".to_string(),
-                vertex_buffers: Vec::new(),
-                render_pass: descriptor.render_pass,
-                pipeline_layout: Some(descriptor.mono_pipeline_layout),
-                color_format: descriptor.color_format,
-                blend_mode: BlendMode::SubpixelDualSource,
-                primitive_topology: PrimitiveTopology::TriangleStrip,
-                depth_state: None,
-            },
-            descriptor.size,
-        )
-        .context("creating nova RGB subpixel sprite render pipeline")?;
+    let subpixel_sprites = {
+        // ClearType dual-source blending assumes an opaque destination. On a premultiplied
+        // transparent swapchain it overwrites the destination alpha for every glyph fragment,
+        // exposing glyph-sized rectangles during DWM composition. Keep RGB ClearType for opaque
+        // windows, but collapse subpixel coverage to grayscale and use normal premultiplied
+        // blending when the window itself is transparent.
+        let transparent_surface = descriptor.blend_mode == BlendMode::PremultipliedAlpha;
+        device
+            .create_render_pipeline(
+                &RenderPipelineDescriptor {
+                    label: Some(format!(
+                        "{} {} subpixel sprite pipeline",
+                        descriptor.label,
+                        if transparent_surface {
+                            "transparent grayscale"
+                        } else {
+                            "RGB"
+                        }
+                    )),
+                    vertex_shader: descriptor.subpixel_vertex,
+                    vertex_entry_point: "vs_subpixel_sprite".to_string(),
+                    fragment_shader: descriptor.subpixel_fragment,
+                    fragment_entry_point: if transparent_surface {
+                        "fs_subpixel_sprite_grayscale".to_string()
+                    } else {
+                        "fs_subpixel_sprite".to_string()
+                    },
+                    vertex_buffers: Vec::new(),
+                    render_pass: descriptor.render_pass,
+                    pipeline_layout: Some(descriptor.mono_pipeline_layout),
+                    color_format: descriptor.color_format,
+                    blend_mode: if transparent_surface {
+                        descriptor.blend_mode
+                    } else {
+                        BlendMode::SubpixelDualSource
+                    },
+                    primitive_topology: PrimitiveTopology::TriangleStrip,
+                    depth_state: None,
+                },
+                descriptor.size,
+            )
+            .with_context(|| {
+                format!(
+                    "creating nova {} subpixel sprite render pipeline",
+                    if transparent_surface {
+                        "transparent grayscale"
+                    } else {
+                        "RGB"
+                    }
+                )
+            })?
+    };
     let poly_sprites = device
         .create_render_pipeline(
             &RenderPipelineDescriptor {
