@@ -133,12 +133,14 @@ struct WindowInvalidatorInner {
     pub draw_phase: DrawPhase,
     pub dirty_views: FxHashSet<EntityId>,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
-    /// True only while every queued invalidation supplies a stable retained target, or the frame
-    /// is a replay-only window overlay. This mode is shared by interactions, animations, focus,
-    /// and any future element-local invalidation source.
+    /// True while the queued frame still has enough provenance to make retained replay decisions
+    /// per view. Exact element targets and generic-dirty views may coexist in the same frame.
     pub pending_targeted_replay: bool,
     /// Stable dirty retained paths and the dependency scope each target carries.
     pub pending_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
+    /// Views that received a generic application invalidation while selective replay remained
+    /// available for unrelated views. These views and their descendants stay conservative.
+    pub pending_generic_dirty_views: FxHashSet<EntityId>,
     /// Layout-animation frame tickets that have already been armed for an exact retained target.
     /// Keeping this per target prevents repeated samples from stacking stale next-frame callbacks.
     pub pending_layout_animation_frames: FxHashSet<(EntityId, GlobalElementId)>,
@@ -150,6 +152,7 @@ struct WindowInvalidatorInner {
     /// Snapshot consumed by the frame currently being generated.
     pub active_targeted_replay: bool,
     pub active_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
+    pub active_generic_dirty_views: FxHashSet<EntityId>,
 }
 
 #[derive(Clone)]
@@ -167,11 +170,13 @@ impl WindowInvalidator {
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
                 pending_targeted_replay: false,
                 pending_targeted_elements: FxHashMap::default(),
+                pending_generic_dirty_views: FxHashSet::default(),
                 pending_layout_animation_frames: FxHashSet::default(),
                 pending_layout_animation_deadlines: FxHashMap::default(),
                 layout_animation_deadline_generation: 0,
                 active_targeted_replay: false,
                 active_targeted_elements: FxHashMap::default(),
+                active_generic_dirty_views: FxHashSet::default(),
             })),
         }
     }
@@ -262,14 +267,20 @@ impl WindowInvalidator {
 
     pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
         let mut inner = self.inner.borrow_mut();
-        inner.pending_targeted_replay = false;
-        inner.pending_targeted_elements.clear();
         inner
             .dirty_frame_diagnostics
             .borrow_mut()
             .record_notify_invalidation(entity);
         inner.dirty_views.insert(entity);
         if inner.draw_phase == DrawPhase::None {
+            if !inner.dirty {
+                inner.pending_targeted_replay = true;
+                inner.pending_targeted_elements.clear();
+                inner.pending_generic_dirty_views.clear();
+            }
+            if inner.pending_targeted_replay {
+                inner.pending_generic_dirty_views.insert(entity);
+            }
             inner.dirty = true;
             cx.push_effect(Effect::Notify { emitter: entity });
             true
@@ -316,21 +327,21 @@ impl WindowInvalidator {
         }
 
         if !inner.dirty {
-            inner.pending_targeted_replay = global_id.is_some();
+            inner.pending_targeted_replay = true;
             inner.pending_targeted_elements.clear();
-        } else if inner.pending_targeted_replay && global_id.is_none() {
-            inner.pending_targeted_replay = false;
-            inner.pending_targeted_elements.clear();
+            inner.pending_generic_dirty_views.clear();
         }
 
-        if inner.pending_targeted_replay
-            && let Some(global_id) = global_id
-        {
-            inner
-                .pending_targeted_elements
-                .entry(global_id.clone())
-                .and_modify(|existing_scope| *existing_scope = existing_scope.merged(scope))
-                .or_insert(scope);
+        if inner.pending_targeted_replay {
+            if let Some(global_id) = global_id {
+                inner
+                    .pending_targeted_elements
+                    .entry(global_id.clone())
+                    .and_modify(|existing_scope| *existing_scope = existing_scope.merged(scope))
+                    .or_insert(scope);
+            } else {
+                inner.pending_generic_dirty_views.insert(entity);
+            }
         }
         inner.dirty = true;
         true
@@ -340,19 +351,26 @@ impl WindowInvalidator {
         self.inner.borrow().dirty
     }
 
-    /// Marks a generic frame dirty. This is a conservative invalidation and disables targeted
-    /// retained replay because the caller has not supplied a trustworthy retained path.
+    /// Marks a generic frame dirty. This is a conservative invalidation and disables selective
+    /// retained replay because the caller has not supplied any view- or element-level provenance.
     pub fn set_dirty(&self, is_dirty: bool) {
         let mut inner = self.inner.borrow_mut();
         if is_dirty {
             inner.pending_targeted_replay = false;
             inner.pending_targeted_elements.clear();
+            inner.pending_generic_dirty_views.clear();
             inner.active_targeted_replay = false;
             inner.active_targeted_elements.clear();
+            inner.active_generic_dirty_views.clear();
         } else {
             inner.active_targeted_replay = inner.pending_targeted_replay;
             inner.active_targeted_elements = mem::take(&mut inner.pending_targeted_elements);
+            inner.active_generic_dirty_views = mem::take(&mut inner.pending_generic_dirty_views);
             inner.pending_targeted_replay = false;
+            if !inner.active_targeted_replay {
+                inner.active_targeted_elements.clear();
+                inner.active_generic_dirty_views.clear();
+            }
         }
         inner.dirty = is_dirty;
     }
@@ -360,8 +378,9 @@ impl WindowInvalidator {
     /// Schedules a frame whose only window-level change is outside the retained application tree.
     ///
     /// An empty target set means every stable retained element is eligible for replay. If a
-    /// targeted invalidation is queued before this frame starts, its path is merged into the same
-    /// replay frame. A pre-existing generic dirty request is never upgraded to targeted replay.
+    /// targeted or per-view generic invalidation is queued before this frame starts, its provenance
+    /// is merged into the same selective replay frame. A pre-existing global dirty request is never
+    /// upgraded to selective replay.
     pub(in crate::window) fn set_replay_only_dirty(&self) {
         let mut inner = self.inner.borrow_mut();
         if inner.draw_phase != DrawPhase::None {
@@ -372,12 +391,20 @@ impl WindowInvalidator {
         if !inner.dirty {
             inner.pending_targeted_replay = true;
             inner.pending_targeted_elements.clear();
+            inner.pending_generic_dirty_views.clear();
         }
         inner.dirty = true;
     }
 
     pub(in crate::window) fn active_targeted_replay(&self) -> bool {
         self.inner.borrow().active_targeted_replay
+    }
+
+    pub(in crate::window) fn active_generic_view_is_dirty(&self, entity: EntityId) -> bool {
+        self.inner
+            .borrow()
+            .active_generic_dirty_views
+            .contains(&entity)
     }
 
     /// Returns whether this stable retained path is intrinsically dirty in the active targeted
@@ -664,6 +691,55 @@ mod retained_dirty_scope_tests {
         assert!(invalidator.active_targeted_replay());
         assert!(!invalidator.retained_path_is_dirty(&path(&[0])));
         assert!(!invalidator.retained_path_is_dirty(&path(&[0, 1, 2])));
+    }
+
+    #[test]
+    fn generic_view_invalidation_preserves_unrelated_targeted_replay() {
+        let invalidator = WindowInvalidator::new();
+        let targeted_view = EntityId::from_u64(1);
+        let generic_view = EntityId::from_u64(2);
+        let dirty = path(&[0, 1]);
+
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            targeted_view,
+            Some(&dirty),
+            RetainedInvalidationScope::ReconcileSubtree,
+        ));
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            generic_view,
+            None,
+            RetainedInvalidationScope::InvalidateSubtree,
+        ));
+        invalidator.set_dirty(false);
+
+        assert!(invalidator.active_targeted_replay());
+        assert!(!invalidator.active_generic_view_is_dirty(targeted_view));
+        assert!(invalidator.active_generic_view_is_dirty(generic_view));
+        assert!(invalidator.retained_path_is_dirty(&dirty));
+    }
+
+    #[test]
+    fn generic_view_invalidation_wins_over_same_view_target() {
+        let invalidator = WindowInvalidator::new();
+        let view = EntityId::from_u64(1);
+        let dirty = path(&[0, 1]);
+
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            view,
+            Some(&dirty),
+            RetainedInvalidationScope::ElementOnly,
+        ));
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            view,
+            None,
+            RetainedInvalidationScope::InvalidateSubtree,
+        ));
+        invalidator.set_dirty(false);
+
+        assert!(invalidator.active_targeted_replay());
+        assert!(invalidator.active_generic_view_is_dirty(view));
     }
 
     #[test]

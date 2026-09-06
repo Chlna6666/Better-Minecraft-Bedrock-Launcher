@@ -541,7 +541,7 @@ impl Window {
             return None;
         }
 
-        let targeted_replay = self.invalidator.active_targeted_replay();
+        let targeted_replay = self.retained_replay_is_targeted();
         if targeted_replay && self.invalidator.retained_path_is_dirty(retained_id) {
             return None;
         }

@@ -13,9 +13,28 @@ pub(crate) struct RetainedSelfSceneRanges {
 }
 
 impl Window {
-    /// Returns whether the current frame was scheduled through a retained-path targeted invalidation.
+    /// Returns whether the current view may use retained-path selective replay in this frame.
+    ///
+    /// A generic application notification is conservative for the notified view and every nested
+    /// view below it, because the parent may have changed inherited layout/paint context. A generic
+    /// dirty child does not poison its ancestors: they still rerender to route traversal to the
+    /// child, but proven-stable retained elements in those ancestors remain replayable.
     pub(crate) fn retained_replay_is_targeted(&self) -> bool {
-        self.invalidator.active_targeted_replay()
+        if !self.invalidator.active_targeted_replay() {
+            return false;
+        }
+        let Some(view_id) = self.current_view_or_root() else {
+            return false;
+        };
+        if self.invalidator.active_generic_view_is_dirty(view_id) {
+            return false;
+        }
+        !self
+            .rendered_frame
+            .dispatch_tree
+            .view_path(view_id)
+            .into_iter()
+            .any(|ancestor| self.invalidator.active_generic_view_is_dirty(ancestor))
     }
 
     /// Execute lazy child construction with a fresh parent-local retained slot namespace.
