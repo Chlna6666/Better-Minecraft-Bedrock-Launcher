@@ -1,11 +1,25 @@
 use super::*;
 
 impl NovaRenderer {
+    fn reset_live_resize_stretch(&mut self) {
+        if let Err(error) = self
+            .backend
+            .set_swapchain_content_stretch(self.swapchain, None)
+        {
+            log::warn!("failed to reset nova-gfx live-resize stretch: {error:#}");
+        }
+    }
+
     pub(crate) fn resize(&mut self, size: Size<DevicePixels>) -> Result<()> {
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         let next_size = DrawableSize { width, height };
         if next_size == self.current_size {
+            // A previous native resize event may have installed a compositor content stretch even
+            // when the final coalesced drawable size returns to the existing swapchain size. The
+            // old early return left that fractional scale active indefinitely, softening the whole
+            // framebuffer (especially small text) until a later real resize/maximize happened.
+            self.reset_live_resize_stretch();
             return Ok(());
         }
         self.prepare_for_resize()?;
@@ -131,12 +145,7 @@ impl NovaRenderer {
         self.surface_config = surface_config;
         self.current_size = next_size;
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
-        if let Err(error) = self
-            .backend
-            .set_swapchain_content_stretch(self.swapchain, None)
-        {
-            log::warn!("failed to reset nova-gfx live-resize stretch: {error:#}");
-        }
+        self.reset_live_resize_stretch();
         Ok(())
     }
 
@@ -151,6 +160,10 @@ impl NovaRenderer {
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         if width == self.current_size.width && height == self.current_size.height {
+            // This can be the final event of a coalesced resize burst. Explicitly remove any
+            // stretch installed by an earlier event instead of assuming an equal size means the
+            // compositor is already at identity scale.
+            self.reset_live_resize_stretch();
             return;
         }
         let scale = [
