@@ -1,4 +1,5 @@
 use super::*;
+use gfx_core::GfxResourceDevice;
 
 impl NovaRenderer {
     pub(super) fn prepare_for_frame_submission(&mut self) -> Result<()> {
