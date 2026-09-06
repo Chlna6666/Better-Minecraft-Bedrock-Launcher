@@ -1475,6 +1475,11 @@ fn animation_sampled_blur_capture_bounds(
             sampled[0],
             crate::point(ScaledPixels(sampled[2]), ScaledPixels(sampled[3])),
         ),
+        TransitionProperty::Rotation => rotated_animation_bounds(
+            bounds,
+            sampled[0],
+            crate::point(ScaledPixels(sampled[1]), ScaledPixels(sampled[2])),
+        ),
         // Opacity changes pixels but not geometry, so the whole composite output is source damage
         // for a later backdrop barrier.
         TransitionProperty::Opacity => bounds,
@@ -1515,7 +1520,11 @@ fn animation_sampled_bounds(
             sampled[0],
             crate::point(ScaledPixels(sampled[2]), ScaledPixels(sampled[3])),
         ),
-        TransitionProperty::Rotation => rotated_animation_bounds(primitive, sampled[0]),
+        TransitionProperty::Rotation => rotated_animation_bounds(
+            bounds,
+            sampled[0],
+            crate::point(ScaledPixels(sampled[1]), ScaledPixels(sampled[2])),
+        ),
         _ => bounds,
     }
 }
@@ -1547,67 +1556,54 @@ fn scaled_animation_bounds(
     }
 }
 
-fn rotated_animation_bounds(primitive: &Primitive, angle: f32) -> Bounds<ScaledPixels> {
-    let Primitive::MonochromeSprite(sprite) = primitive else {
-        return primitive.visual_bounds();
-    };
-    if !angle.is_finite() {
-        return primitive.visual_bounds();
+fn rotated_animation_bounds(
+    bounds: Bounds<ScaledPixels>,
+    angle: f32,
+    origin: crate::Point<ScaledPixels>,
+) -> Bounds<ScaledPixels> {
+    if !angle.is_finite() || !origin.x.0.is_finite() || !origin.y.0.is_finite() {
+        return bounds;
     }
-    let center = sprite.bounds.center();
-    let rotation = super::TransformationMatrix::unit()
-        .translate(center)
-        .rotate(crate::radians(angle))
-        .translate(crate::point(
-            ScaledPixels(-center.x.0),
-            ScaledPixels(-center.y.0),
-        ));
-    let transform = sprite.transformation.compose(rotation);
-    let left = sprite.bounds.left().0;
-    let right = sprite.bounds.right().0;
-    let top = sprite.bounds.top().0;
-    let bottom = sprite.bounds.bottom().0;
-    let corners = [[left, top], [right, top], [left, bottom], [right, bottom]];
-    let transformed = corners.map(|[x, y]| {
+    let (sin, cos) = angle.sin_cos();
+    let rotate = |point: crate::Point<ScaledPixels>| {
+        let x = point.x.0 - origin.x.0;
+        let y = point.y.0 - origin.y.0;
         crate::point(
-            ScaledPixels(
-                transform.translation[0]
-                    + transform.rotation_scale[0][0] * x
-                    + transform.rotation_scale[0][1] * y,
-            ),
-            ScaledPixels(
-                transform.translation[1]
-                    + transform.rotation_scale[1][0] * x
-                    + transform.rotation_scale[1][1] * y,
-            ),
+            ScaledPixels(origin.x.0 + x * cos - y * sin),
+            ScaledPixels(origin.y.0 + x * sin + y * cos),
         )
-    });
-    let min_x = transformed
+    };
+    let corners = [
+        rotate(crate::point(bounds.left(), bounds.top())),
+        rotate(crate::point(bounds.right(), bounds.top())),
+        rotate(crate::point(bounds.left(), bounds.bottom())),
+        rotate(crate::point(bounds.right(), bounds.bottom())),
+    ];
+    let min_x = corners
         .iter()
         .map(|point| point.x)
         .min_by(|left, right| left.0.total_cmp(&right.0))
-        .unwrap_or_default();
-    let max_x = transformed
+        .unwrap_or(bounds.left());
+    let max_x = corners
         .iter()
         .map(|point| point.x)
         .max_by(|left, right| left.0.total_cmp(&right.0))
-        .unwrap_or_default();
-    let min_y = transformed
+        .unwrap_or(bounds.right());
+    let min_y = corners
         .iter()
         .map(|point| point.y)
         .min_by(|left, right| left.0.total_cmp(&right.0))
-        .unwrap_or_default();
-    let max_y = transformed
+        .unwrap_or(bounds.top());
+    let max_y = corners
         .iter()
         .map(|point| point.y)
         .max_by(|left, right| left.0.total_cmp(&right.0))
-        .unwrap_or_default();
+        .unwrap_or(bounds.bottom());
     Bounds::new(
         crate::point(min_x, min_y),
         crate::size(max_x - min_x, max_y - min_y),
     )
     .dilate(ScaledPixels(1.0))
-    .intersect(&sprite.content_mask.bounds)
 }
 
 fn backdrop_blur_influence_radius(blur: &PaintBackdropBlur) -> ScaledPixels {
