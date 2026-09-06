@@ -5,7 +5,7 @@ struct AnimationValue {
     animation_id: u32,
     property: u32,
     progress: f32,
-    active: u32,
+    enabled: u32,
     from_value: vec4<f32>,
     to_value: vec4<f32>,
     pad: vec4<u32>,
@@ -35,7 +35,7 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
     }
 
     let value = b_animation_values[slot_plus_one - 1u];
-    if (value.active == 0u) {
+    if (value.enabled == 0u) {
         return animation;
     }
     // Rust's animation packer normalizes non-finite progress to zero before upload.
