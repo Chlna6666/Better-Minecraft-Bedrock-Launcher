@@ -11,6 +11,7 @@ fn is_gpu_indexed_kind(kind: AnimatedPrimitiveKind) -> bool {
     matches!(
         kind,
         AnimatedPrimitiveKind::Quad
+            | AnimatedPrimitiveKind::Shadow
             | AnimatedPrimitiveKind::MonochromeSprite
             | AnimatedPrimitiveKind::PolychromeSprite
     )
@@ -35,10 +36,10 @@ fn clear_record_heads(bytes: &mut [u8], stride: usize) {
 impl FrameUpload {
     /// Promotes ordinary 2D primitives to the renderer-owned indexed animation ABI.
     ///
-    /// Quad, glyph and image records already carry a draw-order u32 that Nova shaders never read.
-    /// After scene batching has finished, reuse that lane as `animation_slot + 1` (zero means no
-    /// animation). Many primitives can therefore reference one compact timeline record and retained
-    /// animation frames no longer clone/mutate/re-serialize every glyph or image primitive.
+    /// Quad, shadow, glyph and image records already carry a draw-order u32 that Nova shaders
+    /// never read. After scene batching has finished, reuse that lane as `animation_slot + 1`
+    /// (zero means no animation). Many primitives can therefore reference one compact timeline
+    /// record and retained animation frames no longer clone/mutate/re-serialize those primitives.
     pub(in crate::platform::nova) fn promote_gpu_indexed_animations(&mut self) {
         self.gpu_indexed_animation_slots.clear();
         self.gpu_indexed_animation_values.clear();
@@ -97,6 +98,7 @@ impl FrameUpload {
         // shaders. Clear every record first so static/non-animated primitives retain the zero
         // sentinel and only promoted records receive a slot index.
         clear_record_heads(&mut self.quads, PACKED_QUAD_BYTES);
+        clear_record_heads(&mut self.shadows, PACKED_SHADOW_BYTES);
         clear_record_heads(&mut self.mono_sprites, PACKED_MONO_SPRITE_BYTES);
         clear_record_heads(&mut self.poly_sprites, PACKED_POLY_SPRITE_BYTES);
 
@@ -113,13 +115,14 @@ impl FrameUpload {
             let slot_plus_one = self.gpu_indexed_animation_slots[&animation_id] + 1;
             let (bytes, stride) = match primitive.kind {
                 AnimatedPrimitiveKind::Quad => (&mut self.quads, PACKED_QUAD_BYTES),
+                AnimatedPrimitiveKind::Shadow => (&mut self.shadows, PACKED_SHADOW_BYTES),
                 AnimatedPrimitiveKind::MonochromeSprite => {
                     (&mut self.mono_sprites, PACKED_MONO_SPRITE_BYTES)
                 }
                 AnimatedPrimitiveKind::PolychromeSprite => {
                     (&mut self.poly_sprites, PACKED_POLY_SPRITE_BYTES)
                 }
-                AnimatedPrimitiveKind::Shadow | AnimatedPrimitiveKind::BackdropBlur => {
+                AnimatedPrimitiveKind::BackdropBlur => {
                     unreachable!("filtered before indexed primitive patch")
                 }
             };
@@ -232,20 +235,11 @@ mod tests {
     }
 
     #[test]
-    fn cpu_driven_shadow_remains_in_animated_uploads() {
-        let quad_id = crate::SceneAnimationId(3);
-        let shadow_id = crate::SceneAnimationId(4);
-        let quad = AnimatedUpload::new(
-            crate::Primitive::Quad(crate::Quad {
-                animation_id: Some(quad_id),
-                ..Default::default()
-            }),
-            AnimatedPrimitiveKind::Quad,
-            0,
-        );
+    fn shadow_animation_uses_gpu_slot() {
+        let id = crate::SceneAnimationId(4);
         let shadow = AnimatedUpload::new(
             crate::Primitive::Shadow(crate::Shadow {
-                animation_id: Some(shadow_id),
+                animation_id: Some(id),
                 ..Default::default()
             }),
             AnimatedPrimitiveKind::Shadow,
@@ -253,28 +247,22 @@ mod tests {
         );
         let mut upload = FrameUpload {
             globals: vec![0; GLOBAL_UPLOAD_BYTES],
-            quads: vec![0; PACKED_QUAD_BYTES],
             shadows: vec![0; PACKED_SHADOW_BYTES],
-            animated_primitives: vec![quad, shadow],
+            animated_primitives: vec![shadow],
             ..Default::default()
         };
         write_animation_binding(
             &mut upload.animation_bindings,
-            quad_id,
-            AnimatedPrimitiveKind::Quad,
-            0,
-        );
-        write_animation_binding(
-            &mut upload.animation_bindings,
-            shadow_id,
+            id,
             AnimatedPrimitiveKind::Shadow,
             0,
         );
 
         upload.promote_gpu_indexed_animations();
 
-        assert_eq!(upload.animated_primitives.len(), 1);
-        assert_eq!(upload.animated_primitives[0].kind, AnimatedPrimitiveKind::Shadow);
+        assert_eq!(upload.gpu_indexed_animation_slots.len(), 1);
+        assert_eq!(read_u32(&upload.shadows, 0), 1);
+        assert!(upload.animated_primitives.is_empty());
     }
 
     #[test]

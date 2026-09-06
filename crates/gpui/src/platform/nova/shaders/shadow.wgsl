@@ -22,7 +22,7 @@ fn blur_along_x(x: f32, y: f32, inverse_sigma: f32, corner: f32, half_size: vec2
 // --- shadows --- //
 
 struct Shadow {
-    order: u32,
+    animation_slot: u32,
     blur_radius: f32,
     bounds: Bounds,
     corner_radii: Corners,
@@ -47,6 +47,13 @@ struct ShadowVarying {
 fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> ShadowVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     var shadow = b_shadows[instance_id];
+    let animation = resolve_visual_animation(shadow.animation_slot, shadow.bounds);
+    shadow.bounds = animation_bounds(shadow.bounds, animation);
+    shadow.content_mask = animation_content_mask(shadow.content_mask, animation);
+    shadow.corner_radii = animation_corners(shadow.corner_radii, animation);
+    if (animation.scales_geometry != 0u) {
+        shadow.blur_radius *= animation.scale;
+    }
     let shadow_bounds = shadow.bounds;
 
     let margin = 3.0 * shadow.blur_radius;
@@ -58,6 +65,7 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
     var out = ShadowVarying();
     out.position = to_device_position(unit_vertex, shadow.bounds);
     out.color = rgba_to_vec4(shadow.color);
+    out.color.a *= animation.opacity;
     out.blur_radius = shadow.blur_radius;
     out.bounds = vec4<f32>(shadow_bounds.origin, shadow_bounds.size);
     out.corner_radii = vec4<f32>(

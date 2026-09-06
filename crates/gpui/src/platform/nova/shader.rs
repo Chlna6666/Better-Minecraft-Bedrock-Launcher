@@ -39,6 +39,7 @@ pub(super) const NOVA_QUAD_SHADER_SOURCE: &str = concat!(
 #[allow(dead_code)]
 pub(super) const NOVA_SHADOW_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
     include_str!("shaders/shape.wgsl"),
     include_str!("shaders/shadow.wgsl"),
 );

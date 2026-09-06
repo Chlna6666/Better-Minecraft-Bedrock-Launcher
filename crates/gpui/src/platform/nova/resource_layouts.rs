@@ -62,6 +62,11 @@ where
                     binding_type: ResourceBindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
+                ResourceSetLayoutEntry {
+                    binding: 17,
+                    binding_type: ResourceBindingType::StorageBuffer,
+                    stages: ShaderStages::VERTEX,
+                },
             ],
         })?;
     let path_rasterization_resource_set_layout =

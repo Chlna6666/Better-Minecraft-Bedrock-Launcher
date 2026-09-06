@@ -103,6 +103,7 @@ where
                     stride: Some(PACKED_SHADOW_BYTES as u32),
                 }),
             },
+            animation_value_binding(),
         ],
     })?;
     let path_rasterization_resource_set = device.create_resource_set(&ResourceSetDescriptor {
