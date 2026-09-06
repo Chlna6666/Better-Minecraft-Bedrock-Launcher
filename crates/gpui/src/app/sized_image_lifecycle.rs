@@ -18,10 +18,11 @@ impl App {
 
     /// Retires a decoded image from every live window atlas.
     ///
-    /// The currently-updated window can be temporarily removed from `App.windows`, so callers may
-    /// pass it explicitly. Other windows are still scanned because image asset ownership is global,
-    /// while atlas residency is per-window.
-    pub(crate) fn drop_image(
+    /// Image asset ownership is global, but atlas residency is per-window. The currently-updated
+    /// window can be temporarily removed from `App.windows`, so callers that are already updating a
+    /// window may pass it explicitly; external application code can pass `None` and let GPUI retire
+    /// the image from all registered windows.
+    pub fn drop_image(
         &mut self,
         image: Arc<RenderImage>,
         current_window: Option<&mut Window>,
