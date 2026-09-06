@@ -233,11 +233,15 @@ impl HomePageView {
             return div().into_any_element();
         }
 
+        // Only the clip shell participates in layout. Its bottom edge is fixed by the launcher
+        // column, so changing the reveal height cannot move the full-height content below. The
+        // glyph/image subtree is laid out once at the final geometry and each row's stagger is a
+        // scene translation, keeping text, icons and hit-tested card geometry on one motion path.
+        let reveal = dropdown_factor.clamp(0.0, 1.0);
         div()
             .w_full()
-            .h(px(desired_list_h_px * dropdown_factor))
+            .h(px(desired_list_h_px * reveal))
             .relative()
-            .top(px(10.0 * (1.0 - dropdown_factor)))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .bg(list_bg)
@@ -248,36 +252,43 @@ impl HomePageView {
                     h: 0.0,
                     s: 0.0,
                     l: 0.0,
-                    a: 0.10 * dropdown_factor,
+                    a: 0.10 * reveal,
                 },
                 blur_radius: px(40.0),
                 spread_radius: px(-5.0),
                 offset: point(px(0.0), px(20.0)),
             }])
-            .opacity(dropdown_factor.min(1.0))
+            .opacity(reveal)
             .child(
                 div()
-                    .id("home-version-list-scroll")
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(0.0))
-                    .h_full()
-                    .p(px(6.0))
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .h(px(desired_list_h_px))
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .children(self.versions.iter().enumerate().map(|(index, version)| {
-                                self.render_dropdown_item(
-                                    index,
-                                    version,
-                                    kind_labels[index].clone(),
-                                    theme_colors,
-                                    accent,
-                                    dropdown_factor,
-                                    item_height_px,
-                                    cx,
-                                )
-                            })),
+                            .id("home-version-list-scroll")
+                            .overflow_y_scroll()
+                            .scrollbar_width(px(0.0))
+                            .h_full()
+                            .p(px(6.0))
+                            .child(
+                                div().flex().flex_col().children(
+                                    self.versions.iter().enumerate().map(|(index, version)| {
+                                        self.render_dropdown_item(
+                                            index,
+                                            version,
+                                            kind_labels[index].clone(),
+                                            theme_colors,
+                                            accent,
+                                            dropdown_factor,
+                                            item_height_px,
+                                            cx,
+                                        )
+                                    }),
+                                ),
+                            ),
                     ),
             )
             .into_any_element()
@@ -359,11 +370,9 @@ impl HomePageView {
             theme_colors.accent
         };
 
-        div()
+        let item = div()
             .id(SharedString::from(format!("home-version-item-{index}")))
-            .relative()
-            .top(px(10.0 * (1.0 - item_factor)))
-            .opacity(item_factor)
+            .opacity(item_factor.clamp(0.0, 1.0))
             .w_full()
             .h(px(item_height_px))
             .px(px(12.0))
@@ -459,8 +468,20 @@ impl HomePageView {
                     this.begin_dropdown_transition(false);
                     cx.notify();
                 }),
+            );
+
+        if self.dropdown_animating {
+            item.with_sampled_animation(
+                AnimationProperty::translation(
+                    point(px(0.0), px(10.0)),
+                    point(px(0.0), px(0.0)),
+                ),
+                item_factor,
             )
             .into_any_element()
+        } else {
+            item.into_any_element()
+        }
     }
 
     fn render_launch_primary(
