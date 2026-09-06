@@ -342,11 +342,10 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint();
 
-        // Scene primitives currently carry one animation id. A nested local animation must not
-        // replace a parent translation/scale/opacity binding, otherwise text and other descendants
-        // stop following the parent motion. Promote the parent animation to a retained compositor
-        // layer and paint the nested animation inside it; the compositor then carries parent motion
-        // while child primitives keep their own local animation id.
+        // Scene primitives currently carry one animation id. Promote an existing parent visual
+        // animation to a retained composite before entering a nested animation so the child cannot
+        // replace the parent's motion binding. Re-entering this method is safe because
+        // `paint_element_blur` temporarily removes the promoted parent binding while capturing.
         if self.scene_animation.is_some_and(|(_, parent_property)| {
             matches!(
                 parent_property,
@@ -354,15 +353,23 @@ impl Window {
                     | crate::TransitionProperty::Scale
                     | crate::TransitionProperty::Transform
                     | crate::TransitionProperty::Translation
+                    | crate::TransitionProperty::Rotation
             )
         }) {
             let capture_bounds = self.content_mask().bounds;
             return self.paint_composite_layer(capture_bounds, |window| {
-                let previous_animation = window.scene_animation.replace((animation_id, property));
-                let result = paint(window);
-                window.scene_animation = previous_animation;
-                result
+                window.with_scene_animation(animation_id, property, paint)
             });
+        }
+
+        // Rotation is a subtree transform, not a glyph property. Bind it to one zero-filter
+        // retained composite so backgrounds, images, SVGs and text share one pivot and one sample.
+        if property == crate::TransitionProperty::Rotation {
+            let previous_animation = self.scene_animation.replace((animation_id, property));
+            let capture_bounds = self.content_mask().bounds;
+            let result = self.paint_composite_layer(capture_bounds, paint);
+            self.scene_animation = previous_animation;
+            return result;
         }
 
         let previous_animation = self.scene_animation.replace((animation_id, property));
