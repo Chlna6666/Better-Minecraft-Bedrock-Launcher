@@ -92,17 +92,29 @@ impl AnimationProperty {
     }
 
     fn resolved_values(self, bounds: Bounds<Pixels>, scale_factor: f32) -> ([f32; 4], [f32; 4]) {
-        if self.property != TransitionProperty::Transform {
-            return (self.from, self.to);
+        match self.property {
+            TransitionProperty::Transform => {
+                let origin = TransformOrigin::new(self.from[2], self.from[3]).resolve(bounds);
+                let mut from = self.from;
+                let mut to = self.to;
+                from[2] = origin.x.0 * scale_factor;
+                from[3] = origin.y.0 * scale_factor;
+                to[2] = from[2];
+                to[3] = from[3];
+                (from, to)
+            }
+            TransitionProperty::Rotation => {
+                let center = bounds.center();
+                let mut from = self.from;
+                let mut to = self.to;
+                from[1] = center.x.0 * scale_factor;
+                from[2] = center.y.0 * scale_factor;
+                to[1] = from[1];
+                to[2] = from[2];
+                (from, to)
+            }
+            _ => (self.from, self.to),
         }
-        let origin = TransformOrigin::new(self.from[2], self.from[3]).resolve(bounds);
-        let mut from = self.from;
-        let mut to = self.to;
-        from[2] = origin.x.0 * scale_factor;
-        from[3] = origin.y.0 * scale_factor;
-        to[2] = from[2];
-        to[3] = from[3];
-        (from, to)
     }
 
     fn dirty_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -459,6 +471,8 @@ struct SceneAnimationState {
     property: AnimationProperty,
     spec: AnimationSpec,
     spring: Option<crate::Spring>,
+    from: [f32; 4],
+    to: [f32; 4],
 }
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
@@ -552,6 +566,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
         let spring = self.animations[0].spring;
+        let (from, to) = property.resolved_values(bounds, window.scale_factor());
         // Custom curves may overshoot by an arbitrary amount. Translation starts conservatively at
         // viewport scope; a physical spring can be tightened after paint reveals actual scene bounds.
         let dirty_bounds = if property.property == TransitionProperty::Translation {
@@ -565,7 +580,9 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                     Some(state)
                         if state.property == property
                             && state.spec == spec
-                            && state.spring == spring =>
+                            && state.spring == spring
+                            && state.from == from
+                            && state.to == to =>
                     {
                         state
                     }
@@ -575,8 +592,8 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                             property.property,
                             spec.clone(),
                             dirty_bounds,
-                            property.from,
-                            property.to,
+                            from,
+                            to,
                         );
                         if let Some(spring) = spring {
                             window.set_scene_animation_spring(global_id, property.property, spring);
@@ -586,6 +603,8 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                             property,
                             spec,
                             spring,
+                            from,
+                            to,
                         }
                     }
                 };
@@ -722,6 +741,19 @@ mod tests {
         assert_eq!(property.from, [0.0, 0.0, 0.0, 0.0]);
         assert_eq!(property.to, [1.0, 0.0, 0.0, 0.0]);
         assert_eq!(spec.driver, AnimationDriver::Auto);
+    }
+
+    #[test]
+    fn resolved_rotation_uses_shared_element_center() {
+        let property = AnimationProperty::rotation(crate::radians(0.0), crate::radians(1.0));
+        let bounds = Bounds::new(
+            Point::new(crate::px(10.0), crate::px(20.0)),
+            crate::size(crate::px(30.0), crate::px(40.0)),
+        );
+        let (from, to) = property.resolved_values(bounds, 2.0);
+
+        assert_eq!(from, [0.0, 50.0, 80.0, 0.0]);
+        assert_eq!(to, [1.0, 50.0, 80.0, 0.0]);
     }
 
     #[test]
