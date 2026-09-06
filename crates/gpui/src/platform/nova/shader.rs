@@ -24,7 +24,19 @@ pub(super) const NOVA_SUBPIXEL_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/animation.wgsl"),
     include_str!("shaders/text.wgsl"),
     include_str!("shaders/sprite_common.wgsl"),
+    include_str!("shaders/subpixel_sprite_common.wgsl"),
     include_str!("shaders/subpixel_sprite.wgsl"),
+);
+
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(super) const NOVA_SUBPIXEL_GRAYSCALE_SHADER_SOURCE: &str = concat!(
+    include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
+    include_str!("shaders/text.wgsl"),
+    include_str!("shaders/sprite_common.wgsl"),
+    include_str!("shaders/subpixel_sprite_common.wgsl"),
+    include_str!("shaders/subpixel_sprite_grayscale.wgsl"),
 );
 
 #[allow(dead_code)]
@@ -259,7 +271,7 @@ pub(super) fn compile_nova_shader_binaries(
         .context("compiling nova RGB subpixel sprite fragment shader")?,
         #[cfg(target_os = "windows")]
         subpixel_grayscale_fragment: compile(
-            NOVA_SUBPIXEL_SPRITE_SHADER_SOURCE,
+            NOVA_SUBPIXEL_GRAYSCALE_SHADER_SOURCE,
             ShaderStage::Fragment,
             "fs_subpixel_sprite_grayscale",
         )

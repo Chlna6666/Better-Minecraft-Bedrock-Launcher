@@ -38,33 +38,52 @@ fn check_nova_wgsl_shaders() {
     use std::collections::BTreeSet;
 
     const CORE: &str = "./src/platform/nova/shaders/core.wgsl";
+    const ANIMATION: &str = "./src/platform/nova/shaders/animation.wgsl";
     const SHAPE: &str = "./src/platform/nova/shaders/shape.wgsl";
     const QUAD_COMMON: &str = "./src/platform/nova/shaders/quad_common.wgsl";
+    const TEXT: &str = "./src/platform/nova/shaders/text.wgsl";
+    const SPRITE_COMMON: &str = "./src/platform/nova/shaders/sprite_common.wgsl";
+    const SUBPIXEL_COMMON: &str = "./src/platform/nova/shaders/subpixel_sprite_common.wgsl";
 
     let shader_bundles = [
         (
             "nova solid quad shader",
             "",
-            &[CORE, "./src/platform/nova/shaders/solid_quad.wgsl"][..],
+            &[CORE, ANIMATION, "./src/platform/nova/shaders/solid_quad.wgsl"][..],
         ),
         (
             "nova mono sprite shader",
             "",
             &[
                 CORE,
-                "./src/platform/nova/shaders/text.wgsl",
-                "./src/platform/nova/shaders/sprite_common.wgsl",
+                ANIMATION,
+                TEXT,
+                SPRITE_COMMON,
                 "./src/platform/nova/shaders/mono_sprite.wgsl",
             ][..],
         ),
         (
-            "nova subpixel sprite shader",
+            "nova RGB subpixel sprite shader",
             "enable dual_source_blending;\n",
             &[
                 CORE,
-                "./src/platform/nova/shaders/text.wgsl",
-                "./src/platform/nova/shaders/sprite_common.wgsl",
+                ANIMATION,
+                TEXT,
+                SPRITE_COMMON,
+                SUBPIXEL_COMMON,
                 "./src/platform/nova/shaders/subpixel_sprite.wgsl",
+            ][..],
+        ),
+        (
+            "nova transparent subpixel sprite shader",
+            "",
+            &[
+                CORE,
+                ANIMATION,
+                TEXT,
+                SPRITE_COMMON,
+                SUBPIXEL_COMMON,
+                "./src/platform/nova/shaders/subpixel_sprite_grayscale.wgsl",
             ][..],
         ),
         (
@@ -72,6 +91,7 @@ fn check_nova_wgsl_shaders() {
             "",
             &[
                 CORE,
+                ANIMATION,
                 SHAPE,
                 QUAD_COMMON,
                 "./src/platform/nova/shaders/quad.wgsl",
@@ -80,7 +100,7 @@ fn check_nova_wgsl_shaders() {
         (
             "nova shadow shader",
             "",
-            &[CORE, SHAPE, "./src/platform/nova/shaders/shadow.wgsl"][..],
+            &[CORE, ANIMATION, SHAPE, "./src/platform/nova/shaders/shadow.wgsl"][..],
         ),
         (
             "nova path shader",
@@ -90,7 +110,12 @@ fn check_nova_wgsl_shaders() {
         (
             "nova poly sprite shader",
             "",
-            &[CORE, SHAPE, "./src/platform/nova/shaders/poly_sprite.wgsl"][..],
+            &[
+                CORE,
+                ANIMATION,
+                SHAPE,
+                "./src/platform/nova/shaders/poly_sprite.wgsl",
+            ][..],
         ),
         (
             "nova underline shader",
