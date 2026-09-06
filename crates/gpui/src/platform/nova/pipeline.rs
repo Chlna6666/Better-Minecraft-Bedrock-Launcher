@@ -149,7 +149,11 @@ where
                     )),
                     vertex_shader: descriptor.subpixel_vertex,
                     vertex_entry_point: "vs_subpixel_sprite".to_string(),
-                    fragment_shader: descriptor.subpixel_fragment,
+                    fragment_shader: if transparent_surface {
+                        descriptor.subpixel_grayscale_fragment
+                    } else {
+                        descriptor.subpixel_fragment
+                    },
                     fragment_entry_point: if transparent_surface {
                         "fs_subpixel_sprite_grayscale".to_string()
                     } else {

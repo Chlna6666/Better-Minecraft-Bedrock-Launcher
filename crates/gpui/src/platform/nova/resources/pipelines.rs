@@ -41,6 +41,8 @@ where
             subpixel_vertex: shaders.subpixel_vertex,
             #[cfg(target_os = "windows")]
             subpixel_fragment: shaders.subpixel_fragment,
+            #[cfg(target_os = "windows")]
+            subpixel_grayscale_fragment: shaders.subpixel_grayscale_fragment,
             poly_vertex: shaders.poly_vertex,
             poly_fragment: shaders.poly_fragment,
             underline_vertex: shaders.underline_vertex,
@@ -76,6 +78,8 @@ where
             subpixel_vertex: shaders.subpixel_vertex,
             #[cfg(target_os = "windows")]
             subpixel_fragment: shaders.subpixel_fragment,
+            #[cfg(target_os = "windows")]
+            subpixel_grayscale_fragment: shaders.subpixel_grayscale_fragment,
             poly_vertex: shaders.poly_vertex,
             poly_fragment: shaders.poly_fragment,
             underline_vertex: shaders.underline_vertex,

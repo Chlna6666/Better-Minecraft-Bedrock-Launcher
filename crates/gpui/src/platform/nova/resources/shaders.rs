@@ -21,6 +21,8 @@ pub(super) struct RendererShaders {
     pub(super) subpixel_vertex: ShaderModuleId,
     #[cfg(target_os = "windows")]
     pub(super) subpixel_fragment: ShaderModuleId,
+    #[cfg(target_os = "windows")]
+    pub(super) subpixel_grayscale_fragment: ShaderModuleId,
     pub(super) poly_vertex: ShaderModuleId,
     pub(super) poly_fragment: ShaderModuleId,
     pub(super) underline_vertex: ShaderModuleId,
@@ -126,6 +128,15 @@ where
             binary: shader_binaries.subpixel_fragment,
         })
         .context("creating nova RGB subpixel sprite fragment shader module")?;
+    #[cfg(target_os = "windows")]
+    let subpixel_grayscale_fragment = device
+        .create_shader_module(&ShaderModuleDescriptor {
+            label: Some(format!(
+                "{label} transparent subpixel sprite fragment shader"
+            )),
+            binary: shader_binaries.subpixel_grayscale_fragment,
+        })
+        .context("creating nova transparent subpixel sprite fragment shader module")?;
     let poly_vertex = device
         .create_shader_module(&ShaderModuleDescriptor {
             label: Some(format!("{label} poly sprite vertex shader")),
@@ -198,6 +209,8 @@ where
         subpixel_vertex,
         #[cfg(target_os = "windows")]
         subpixel_fragment,
+        #[cfg(target_os = "windows")]
+        subpixel_grayscale_fragment,
         poly_vertex,
         poly_fragment,
         underline_vertex,
