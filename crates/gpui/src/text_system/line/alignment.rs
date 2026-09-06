@@ -5,6 +5,14 @@ pub(super) fn snap_baseline_offset_to_device_pixels(
     baseline_offset_y: Pixels,
     scale_factor: f32,
 ) -> Pixels {
+    if crate::element::layout_animation_text_motion_active() {
+        // A layout-animation target already keeps glyph raster phase stable and moves the atlas
+        // sprite continuously in device space. Snapping the absolute line baseline here would
+        // reintroduce a one-device-pixel step before paint_glyph sees the origin, which is most
+        // visible on small/light text while its parent moves on a spring.
+        return baseline_offset_y;
+    }
+
     px((((origin_y + baseline_offset_y).0 * scale_factor).round() / scale_factor) - origin_y.0)
 }
 
