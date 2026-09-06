@@ -162,8 +162,8 @@ impl Window {
     ///
     /// When an outer renderer-owned visual animation is active, promote that animation to the
     /// final filtered composite instead of binding it to every primitive in the captured subtree.
-    /// The child scene therefore remains a stable raster/filter input while translation, scale and
-    /// opacity update only one tiny composite record.
+    /// The child scene therefore remains a stable raster/filter input while translation, scale,
+    /// rotation and opacity update only one tiny composite record.
     pub(crate) fn paint_element_blur<R>(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -187,6 +187,7 @@ impl Window {
                     | crate::TransitionProperty::Scale
                     | crate::TransitionProperty::Transform
                     | crate::TransitionProperty::Translation
+                    | crate::TransitionProperty::Rotation
             )
             .then_some((animation_id, property))
         });
