@@ -1514,7 +1514,9 @@ fn animation_sampled_bounds(
                 size: bounds.size,
             }
         }
-        TransitionProperty::Scale => scaled_animation_bounds(bounds, sampled[0], bounds.center()),
+        TransitionProperty::Scale => {
+            scaled_animation_bounds(bounds, sampled[0], primitive.bounds().center())
+        }
         TransitionProperty::Transform => scaled_animation_bounds(
             bounds,
             sampled[0],
@@ -1689,5 +1691,42 @@ fn paint_operations_match_for_damage(
             }
         }
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_damage_uses_unclipped_primitive_center() {
+        let primitive_bounds = Bounds::new(
+            crate::point(ScaledPixels(0.0), ScaledPixels(0.0)),
+            crate::size(ScaledPixels(100.0), ScaledPixels(100.0)),
+        );
+        let clipped_bounds = Bounds::new(
+            crate::point(ScaledPixels(50.0), ScaledPixels(0.0)),
+            crate::size(ScaledPixels(50.0), ScaledPixels(100.0)),
+        );
+        let primitive = Primitive::Quad(Quad {
+            bounds: primitive_bounds,
+            content_mask: crate::ContentMask::new(clipped_bounds),
+            ..Quad::default()
+        });
+        let value = SceneAnimationValue {
+            animation_id: SceneAnimationId(0),
+            property: TransitionProperty::Scale,
+            progress: 1.0,
+            from: [1.0, 0.0, 0.0, 0.0],
+            to: [2.0, 0.0, 0.0, 0.0],
+        };
+
+        assert_eq!(
+            animation_sampled_bounds(&primitive, Some(&value)),
+            Bounds::new(
+                crate::point(ScaledPixels(50.0), ScaledPixels(-50.0)),
+                crate::size(ScaledPixels(100.0), ScaledPixels(200.0)),
+            )
+        );
     }
 }
