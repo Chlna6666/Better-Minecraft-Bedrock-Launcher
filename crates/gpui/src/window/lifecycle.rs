@@ -139,6 +139,14 @@ struct WindowInvalidatorInner {
     pub pending_targeted_replay: bool,
     /// Stable dirty retained paths and the dependency scope each target carries.
     pub pending_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
+    /// Layout-animation frame tickets that have already been armed for an exact retained target.
+    /// Keeping this per target prevents repeated samples from stacking stale next-frame callbacks.
+    pub pending_layout_animation_frames: FxHashSet<(EntityId, GlobalElementId)>,
+    /// Delayed layout-animation tickets keyed by the exact retained target. The earliest deadline
+    /// wins; generation changes make superseded timers exit without touching retained state.
+    pub pending_layout_animation_deadlines:
+        FxHashMap<(EntityId, GlobalElementId), (Instant, u64)>,
+    pub layout_animation_deadline_generation: u64,
     /// Snapshot consumed by the frame currently being generated.
     pub active_targeted_replay: bool,
     pub active_targeted_elements: FxHashMap<GlobalElementId, RetainedInvalidationScope>,
@@ -159,6 +167,9 @@ impl WindowInvalidator {
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
                 pending_targeted_replay: false,
                 pending_targeted_elements: FxHashMap::default(),
+                pending_layout_animation_frames: FxHashSet::default(),
+                pending_layout_animation_deadlines: FxHashMap::default(),
+                layout_animation_deadline_generation: 0,
                 active_targeted_replay: false,
                 active_targeted_elements: FxHashMap::default(),
             })),
@@ -170,6 +181,83 @@ impl WindowInvalidator {
         dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
     ) {
         self.inner.borrow_mut().dirty_frame_diagnostics = dirty_frame_diagnostics;
+    }
+
+    /// Arms one immediate layout-animation ticket for an exact retained target.
+    ///
+    /// Repeated requests for the same target before its callback runs are coalesced. An immediate
+    /// sample also supersedes any delayed ticket for that target, so an old timer cannot enqueue a
+    /// second stale frame after fresh state has already requested the next VSync.
+    pub(in crate::window) fn arm_layout_animation_frame(
+        &self,
+        entity: EntityId,
+        retained_id: &GlobalElementId,
+    ) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        let key = (entity, retained_id.clone());
+        inner.pending_layout_animation_deadlines.remove(&key);
+        inner.pending_layout_animation_frames.insert(key)
+    }
+
+    /// Consumes the immediate ticket owned by one layout-animation callback.
+    pub(in crate::window) fn take_layout_animation_frame(
+        &self,
+        entity: EntityId,
+        retained_id: &GlobalElementId,
+    ) -> bool {
+        self.inner
+            .borrow_mut()
+            .pending_layout_animation_frames
+            .remove(&(entity, retained_id.clone()))
+    }
+
+    /// Arms or tightens a delayed layout-animation sample for one exact retained target.
+    ///
+    /// Returns the generation assigned to a newly armed timer. `None` means an immediate ticket is
+    /// already pending or an earlier/equal deadline already covers the requested sample.
+    pub(in crate::window) fn arm_layout_animation_deadline(
+        &self,
+        entity: EntityId,
+        retained_id: &GlobalElementId,
+        deadline: Instant,
+    ) -> Option<u64> {
+        let mut inner = self.inner.borrow_mut();
+        let key = (entity, retained_id.clone());
+        if inner.pending_layout_animation_frames.contains(&key)
+            || inner
+                .pending_layout_animation_deadlines
+                .get(&key)
+                .is_some_and(|(pending_deadline, _)| *pending_deadline <= deadline)
+        {
+            return None;
+        }
+
+        inner.layout_animation_deadline_generation =
+            inner.layout_animation_deadline_generation.wrapping_add(1);
+        let generation = inner.layout_animation_deadline_generation;
+        inner
+            .pending_layout_animation_deadlines
+            .insert(key, (deadline, generation));
+        Some(generation)
+    }
+
+    /// Consumes a delayed ticket only if this timer still owns the target/deadline generation.
+    pub(in crate::window) fn take_layout_animation_deadline(
+        &self,
+        entity: EntityId,
+        retained_id: &GlobalElementId,
+        deadline: Instant,
+        generation: u64,
+    ) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        let key = (entity, retained_id.clone());
+        if inner.pending_layout_animation_deadlines.get(&key).copied()
+            != Some((deadline, generation))
+        {
+            return false;
+        }
+        inner.pending_layout_animation_deadlines.remove(&key);
+        true
     }
 
     pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
@@ -576,6 +664,70 @@ mod retained_dirty_scope_tests {
         assert!(invalidator.active_targeted_replay());
         assert!(!invalidator.retained_path_is_dirty(&path(&[0])));
         assert!(!invalidator.retained_path_is_dirty(&path(&[0, 1, 2])));
+    }
+
+    #[test]
+    fn layout_animation_frame_ticket_is_per_target() {
+        let invalidator = WindowInvalidator::new();
+        let entity = EntityId::from_u64(1);
+        let first = path(&[0, 1]);
+        let second = path(&[0, 2]);
+
+        assert!(invalidator.arm_layout_animation_frame(entity, &first));
+        assert!(!invalidator.arm_layout_animation_frame(entity, &first));
+        assert!(invalidator.arm_layout_animation_frame(entity, &second));
+        assert!(invalidator.take_layout_animation_frame(entity, &first));
+        assert!(!invalidator.take_layout_animation_frame(entity, &first));
+        assert!(invalidator.take_layout_animation_frame(entity, &second));
+    }
+
+    #[test]
+    fn immediate_layout_animation_ticket_supersedes_delayed_ticket() {
+        let invalidator = WindowInvalidator::new();
+        let entity = EntityId::from_u64(1);
+        let target = path(&[0, 1]);
+        let deadline = Instant::now() + Duration::from_millis(8);
+        let generation = invalidator
+            .arm_layout_animation_deadline(entity, &target, deadline)
+            .expect("first delayed ticket");
+
+        assert!(invalidator.arm_layout_animation_frame(entity, &target));
+        assert!(!invalidator.take_layout_animation_deadline(
+            entity,
+            &target,
+            deadline,
+            generation,
+        ));
+    }
+
+    #[test]
+    fn earlier_layout_animation_deadline_replaces_later_generation() {
+        let invalidator = WindowInvalidator::new();
+        let entity = EntityId::from_u64(1);
+        let target = path(&[0, 1]);
+        let now = Instant::now();
+        let later = now + Duration::from_millis(12);
+        let earlier = now + Duration::from_millis(4);
+        let old_generation = invalidator
+            .arm_layout_animation_deadline(entity, &target, later)
+            .expect("initial delayed ticket");
+        let new_generation = invalidator
+            .arm_layout_animation_deadline(entity, &target, earlier)
+            .expect("earlier delayed ticket");
+
+        assert_ne!(old_generation, new_generation);
+        assert!(!invalidator.take_layout_animation_deadline(
+            entity,
+            &target,
+            later,
+            old_generation,
+        ));
+        assert!(invalidator.take_layout_animation_deadline(
+            entity,
+            &target,
+            earlier,
+            new_generation,
+        ));
     }
 }
 

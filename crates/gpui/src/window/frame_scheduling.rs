@@ -116,9 +116,26 @@ impl Window {
             );
         }
 
+        // One exact retained target owns at most one next-frame callback. Animation progress is
+        // sampled from the window clock when the dirty frame actually renders, so duplicate
+        // callbacks carry no useful historical state; they only create stale frame pressure.
+        if !self
+            .invalidator
+            .arm_layout_animation_frame(entity, &retained_id)
+        {
+            record_coalesced_refresh();
+            return;
+        }
+
         // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a fixed
         // parent cannot hide a moving child, but reusable leaves/subtrees may still prove equality.
         self.on_next_frame(move |window, _cx| {
+            if !window
+                .invalidator
+                .take_layout_animation_frame(entity, &retained_id)
+            {
+                return;
+            }
             if window.invalidator.invalidate_retained_path_with_scope(
                 entity,
                 Some(&retained_id),
@@ -143,11 +160,27 @@ impl Window {
         let Some(entity) = self.current_view_or_root() else {
             return;
         };
+        let Some(generation) = self
+            .invalidator
+            .arm_layout_animation_deadline(entity, &retained_id, deadline)
+        else {
+            record_coalesced_refresh();
+            return;
+        };
+
         let handle = self.handle;
         let delay = deadline.saturating_duration_since(Instant::now());
         self.spawn(cx, async move |cx| {
             cx.background_executor().timer(delay).await;
             let _ = ignore_window_not_found(handle.update(cx, |_, window, _cx| {
+                if !window.invalidator.take_layout_animation_deadline(
+                    entity,
+                    &retained_id,
+                    deadline,
+                    generation,
+                ) {
+                    return;
+                }
                 if window.invalidator.invalidate_retained_path_with_scope(
                     entity,
                     Some(&retained_id),
