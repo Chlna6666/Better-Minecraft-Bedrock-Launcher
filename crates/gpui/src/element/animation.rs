@@ -325,6 +325,11 @@ pub struct LayoutAnimationTargetElement<E> {
     animating: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct LayoutAnimationTargetState {
+    animating: bool,
+}
+
 impl<E: IntoElement + 'static> IntoElement for LayoutAnimationTargetElement<E> {
     type Element = Self;
 
@@ -352,10 +357,30 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
+        let retained_id = window
+            .current_retained_element_id()
+            .expect("layout animation target must have a retained identity");
+        let settling = window.with_element_state(
+            &retained_id,
+            |state: Option<LayoutAnimationTargetState>, _window| {
+                let previous = state.unwrap_or_default();
+                (
+                    previous.animating && !self.animating,
+                    LayoutAnimationTargetState {
+                        animating: self.animating,
+                    },
+                )
+            },
+        );
+
+        if settling {
+            // The last layout-motion frame may contain glyph sprites at fractional device Y so the
+            // animation remains visually continuous. Retained plain-text replay must not promote
+            // that moving raster into the static endpoint: force this settle frame through normal
+            // static glyph paint/snap once. Subsequent static frames return to retained replay.
+            window.refresh();
+        }
         if self.animating {
-            let retained_id = window
-                .current_retained_element_id()
-                .expect("layout animation target must have a retained identity");
             window.request_layout_animation_frame(retained_id);
         }
 
