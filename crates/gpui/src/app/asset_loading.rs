@@ -1,4 +1,4 @@
-use std::{any::TypeId, sync::Arc};
+use std::{any::TypeId, collections::VecDeque, sync::Arc};
 
 use anyhow::Result;
 use collections::FxHashMap;
@@ -13,6 +13,9 @@ use crate::{
 use super::App;
 
 type AssetId = (TypeId, u64);
+
+const SIZED_IMAGE_WARM_MAX_ITEMS: usize = 384;
+const SIZED_IMAGE_WARM_MAX_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Default)]
 struct TransientAssetGenerations {
@@ -69,6 +72,62 @@ impl SizedImageElementOwners {
     }
 }
 
+#[derive(Default)]
+struct SizedImageWarmCache {
+    order: VecDeque<AssetId>,
+    bytes: FxHashMap<AssetId, usize>,
+    total_bytes: usize,
+}
+
+impl SizedImageWarmCache {
+    fn contains(&self, asset_id: AssetId) -> bool {
+        self.bytes.contains_key(&asset_id)
+    }
+
+    fn touch(&mut self, asset_id: AssetId, bytes: usize) {
+        if let Some(previous) = self.bytes.insert(asset_id, bytes) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous);
+            self.order.retain(|queued| *queued != asset_id);
+        }
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+        self.order.push_back(asset_id);
+    }
+
+    fn remove(&mut self, asset_id: AssetId) -> bool {
+        let Some(bytes) = self.bytes.remove(&asset_id) else {
+            return false;
+        };
+        self.total_bytes = self.total_bytes.saturating_sub(bytes);
+        self.order.retain(|queued| *queued != asset_id);
+        true
+    }
+
+    fn take_lru_over_limit(&mut self) -> Vec<AssetId> {
+        let mut evicted = Vec::new();
+        while self.bytes.len() > SIZED_IMAGE_WARM_MAX_ITEMS
+            || self.total_bytes > SIZED_IMAGE_WARM_MAX_BYTES
+        {
+            let Some(candidate) = self.order.pop_front() else {
+                break;
+            };
+            let Some(bytes) = self.bytes.remove(&candidate) else {
+                continue;
+            };
+            self.total_bytes = self.total_bytes.saturating_sub(bytes);
+            evicted.push(candidate);
+        }
+        evicted
+    }
+
+    fn drain_all(&mut self) -> Vec<AssetId> {
+        let evicted = self.bytes.keys().copied().collect::<Vec<_>>();
+        self.bytes.clear();
+        self.order.clear();
+        self.total_bytes = 0;
+        evicted
+    }
+}
+
 fn transient_asset_state(cx: &mut App) -> &mut TransientAssetGenerations {
     cx.globals_by_type
         .entry(TypeId::of::<TransientAssetGenerations>())
@@ -114,6 +173,67 @@ fn sized_image_element_ref_count(cx: &App, asset_id: AssetId) -> usize {
         .map_or(0, |state| state.count(asset_id))
 }
 
+fn sized_image_warm_state(cx: &mut App) -> &mut SizedImageWarmCache {
+    cx.globals_by_type
+        .entry(TypeId::of::<SizedImageWarmCache>())
+        .or_insert_with(|| Box::new(SizedImageWarmCache::default()))
+        .downcast_mut::<SizedImageWarmCache>()
+        .expect("sized image warm cache state type mismatch")
+}
+
+fn sized_image_warm_contains(cx: &App, asset_id: AssetId) -> bool {
+    cx.globals_by_type
+        .get(&TypeId::of::<SizedImageWarmCache>())
+        .and_then(|state| state.downcast_ref::<SizedImageWarmCache>())
+        .is_some_and(|state| state.contains(asset_id))
+}
+
+fn mark_sized_image_warm(cx: &mut App, asset_id: AssetId, bytes: usize) -> Vec<AssetId> {
+    let state = sized_image_warm_state(cx);
+    state.touch(asset_id, bytes);
+    state.take_lru_over_limit()
+}
+
+fn remove_sized_image_warm_entry(cx: &mut App, asset_id: AssetId) {
+    if let Some(state) = cx
+        .globals_by_type
+        .get_mut(&TypeId::of::<SizedImageWarmCache>())
+        .and_then(|state| state.downcast_mut::<SizedImageWarmCache>())
+    {
+        state.remove(asset_id);
+    }
+}
+
+fn take_all_sized_image_warm_entries(cx: &mut App) -> Vec<AssetId> {
+    let Some(state) = cx
+        .globals_by_type
+        .get_mut(&TypeId::of::<SizedImageWarmCache>())
+        .and_then(|state| state.downcast_mut::<SizedImageWarmCache>())
+    else {
+        return Vec::new();
+    };
+    state.drain_all()
+}
+
+fn drop_sized_image_asset(
+    cx: &mut App,
+    asset_id: AssetId,
+    current_window: Option<&mut Window>,
+) {
+    remove_sized_image_warm_entry(cx, asset_id);
+    let image = cx
+        .loading_assets
+        .remove(&asset_id)
+        .and_then(|task| task.downcast::<SizedImageTask>().ok())
+        .map(|task| *task)
+        .and_then(|task| task.now_or_never())
+        .and_then(Result::ok);
+    if let Some(image) = image {
+        cx.drop_image(image, current_window);
+    }
+    drop_image_asset_retained(asset_id.1);
+}
+
 #[cfg(test)]
 #[path = "asset_loading_tests.rs"]
 mod asset_loading_tests;
@@ -135,6 +255,12 @@ impl App {
 
         if matches!(level, ImageMemoryTrimLevel::Light) {
             return;
+        }
+
+        if matches!(level, ImageMemoryTrimLevel::Aggressive) {
+            for asset_id in take_all_sized_image_warm_entries(self) {
+                drop_sized_image_asset(self, asset_id, None);
+            }
         }
 
         // Completed compressed-image tasks are reusable cache state rather than active image
@@ -178,6 +304,12 @@ impl App {
             if !is_image || sized_image_element_ref_count(self, *asset_id) != 0 {
                 continue;
             }
+            if asset_id.0 == target_type
+                && matches!(level, ImageMemoryTrimLevel::Moderate)
+                && sized_image_warm_contains(self, *asset_id)
+            {
+                continue;
+            }
             let Some(task) =
                 task.downcast_ref::<Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>>()
             else {
@@ -193,6 +325,7 @@ impl App {
 
         for (asset_id, image) in evicted {
             self.loading_assets.remove(&asset_id);
+            remove_sized_image_warm_entry(self, asset_id);
             self.drop_image(image, None);
             if asset_id.0 == target_type {
                 drop_image_asset_retained(asset_id.1);
@@ -202,6 +335,7 @@ impl App {
 
     pub(crate) fn retain_sized_image_element_request(&mut self, request: &ImageRenderRequest) {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
+        remove_sized_image_warm_entry(self, asset_id);
         sized_image_owner_state(self).retain(asset_id);
     }
 
@@ -220,18 +354,33 @@ impl App {
             return;
         }
 
-        let cached_image = self
+        let cached_task = self
             .loading_assets
-            .remove(&asset_id)
-            .and_then(|task| task.downcast::<SizedImageTask>().ok())
-            .map(|task| *task)
-            .and_then(|task| task.now_or_never())
+            .get(&asset_id)
+            .and_then(|task| task.downcast_ref::<SizedImageTask>())
+            .cloned();
+        let cached_image = cached_task
+            .as_ref()
+            .and_then(|task| task.clone().now_or_never())
             .and_then(Result::ok);
 
         if let Some(image) = fallback_image.or(cached_image) {
-            self.drop_image(image, current_window);
+            if cached_task.is_some() {
+                let warm_evictions =
+                    mark_sized_image_warm(self, asset_id, image.cache_cost_byte_len());
+                let mut current_window = current_window;
+                for evicted in warm_evictions {
+                    drop_sized_image_asset(self, evicted, current_window.as_deref_mut());
+                }
+            } else {
+                self.drop_image(image, current_window);
+                drop_image_asset_retained(asset_id.1);
+            }
+        } else {
+            self.loading_assets.remove(&asset_id);
+            remove_sized_image_warm_entry(self, asset_id);
+            drop_image_asset_retained(asset_id.1);
         }
-        drop_image_asset_retained(asset_id.1);
     }
 
     #[cfg(test)]
@@ -266,6 +415,9 @@ impl App {
                 .get(&asset_id)
                 .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
                 .cloned();
+        }
+        if TypeId::of::<A>() == TypeId::of::<crate::SizedImageLoader>() {
+            remove_sized_image_warm_entry(self, asset_id);
         }
         self.loading_assets
             .remove(&asset_id)
@@ -457,46 +609,5 @@ impl App {
         }
 
         Some(task)
-    }
-
-    /// Removes a target-size image processing and drops its completed render image from window atlases.
-    ///
-    /// This should be preferred over [`remove_sized_image`](Self::remove_sized_image)
-    /// when a caller has the current window available, such as when replacing a bounds-aware
-    /// background image.
-    pub fn remove_sized_image_from_windows(
-        &mut self,
-        source: &AssetLocation,
-        logical_size: Size<Pixels>,
-        scale_factor: f32,
-        object_fit: ObjectFit,
-        current_window: Option<&mut Window>,
-    ) -> Option<SizedImageTask> {
-        let target_source =
-            self.image_render_request(source.clone(), logical_size, scale_factor, object_fit)?;
-        self.remove_image_render_request_in(&target_source, current_window)
-    }
-
-    /// Retires an image's window-side lookup state and GPU atlas allocations.
-    ///
-    /// Backends defer the physical GPU resource destruction until it is safe for submitted frames;
-    /// a quick repaint can cancel a still-pending image retirement and reuse the existing upload.
-    /// If the current window is being updated, it will be removed from `App.windows`; use
-    /// `current_window` to include it explicitly.
-    pub fn drop_image(&mut self, image: Arc<RenderImage>, current_window: Option<&mut Window>) {
-        // Remove the texture from all other windows.
-        for window in self.windows.values_mut().flatten() {
-            _ = window.drop_image(image.clone());
-        }
-
-        // Remove the texture from the current window.
-        if let Some(window) = current_window {
-            _ = window.drop_image(image);
-        }
-    }
-
-    /// Returns the image pipeline configuration used by newly rendered image elements.
-    pub fn image_pipeline_config(&self) -> ImagePipelineConfig {
-        self.image_pipeline_config
     }
 }
