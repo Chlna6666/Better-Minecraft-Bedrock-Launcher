@@ -341,6 +341,30 @@ impl Window {
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.invalidator.debug_assert_paint();
+
+        // Scene primitives currently carry one animation id. A nested local animation must not
+        // replace a parent translation/scale/opacity binding, otherwise text and other descendants
+        // stop following the parent motion. Promote the parent animation to a retained compositor
+        // layer and paint the nested animation inside it; the compositor then carries parent motion
+        // while child primitives keep their own local animation id.
+        if self.scene_animation.is_some_and(|(_, parent_property)| {
+            matches!(
+                parent_property,
+                crate::TransitionProperty::Opacity
+                    | crate::TransitionProperty::Scale
+                    | crate::TransitionProperty::Transform
+                    | crate::TransitionProperty::Translation
+            )
+        }) {
+            let capture_bounds = self.content_mask().bounds;
+            return self.paint_composite_layer(capture_bounds, |window| {
+                let previous_animation = window.scene_animation.replace((animation_id, property));
+                let result = paint(window);
+                window.scene_animation = previous_animation;
+                result
+            });
+        }
+
         let previous_animation = self.scene_animation.replace((animation_id, property));
         let result = paint(self);
         self.scene_animation = previous_animation;
