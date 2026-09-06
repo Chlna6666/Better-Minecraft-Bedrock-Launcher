@@ -162,6 +162,17 @@ impl NovaRenderer {
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         if self.current_size.width == width && self.current_size.height == height {
+            // A native resize burst may temporarily stretch the old compositor surface and then
+            // coalesce back to the swapchain's existing drawable size. Treating that as a pure
+            // no-op leaves the temporary transform alive indefinitely, so windowed content can
+            // remain linearly scaled/soft until a later real resize (for example maximize) clears
+            // it. Reassert identity even when no buffer resize is required.
+            if let Err(error) = self
+                .backend
+                .set_swapchain_content_stretch(self.swapchain, None)
+            {
+                log::warn!("failed to reset nova-gfx coalesced resize stretch: {error:#}");
+            }
             return Ok(true);
         }
 
