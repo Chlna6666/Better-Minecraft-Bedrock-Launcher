@@ -135,6 +135,28 @@ mod tests {
         }
     }
 
+    fn opacity_value(animation_id: crate::SceneAnimationId) -> crate::SceneAnimationValue {
+        crate::SceneAnimationValue {
+            animation_id,
+            property: crate::TransitionProperty::Opacity,
+            progress: 0.5,
+            from: [0.2, 0.0, 0.0, 0.0],
+            to: [1.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    fn test_tile(kind: crate::AtlasTextureKind) -> crate::AtlasTile {
+        crate::AtlasTile {
+            texture_id: crate::AtlasTextureId { index: 0, kind },
+            tile_id: crate::TileId(0),
+            padding: 1,
+            bounds: crate::bounds(
+                crate::point(crate::DevicePixels(1), crate::DevicePixels(1)),
+                crate::size(crate::DevicePixels(1), crate::DevicePixels(1)),
+            ),
+        }
+    }
+
     #[test]
     fn retained_static_element_blur_with_only_composite_animation_skips_filter_work() {
         let animation_id = crate::SceneAnimationId(7);
@@ -183,5 +205,93 @@ mod tests {
         };
 
         assert!(!upload.composite_only_element_blur_indices().contains(&9));
+    }
+
+    #[test]
+    fn nested_parent_translation_keeps_child_opacity_on_quad_glyph_and_image() {
+        let parent_animation_id = crate::SceneAnimationId(7);
+        let child_animation_id = crate::SceneAnimationId(8);
+        let child_bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(4.0), crate::ScaledPixels(6.0)),
+            crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(16.0)),
+        );
+        let content_mask = crate::ContentMask::new(child_bounds);
+        let mut child = crate::Scene::default();
+
+        child.insert_animated_primitive(
+            crate::Quad {
+                bounds: child_bounds,
+                content_mask: content_mask.clone(),
+                ..Default::default()
+            },
+            child_animation_id,
+        );
+        child.insert_animated_primitive(
+            crate::MonochromeSprite {
+                order: 1,
+                pad: crate::MonochromeSpriteSampling::Glyph as u32,
+                animation_id: None,
+                bounds: child_bounds,
+                content_mask: content_mask.clone(),
+                color: crate::Hsla::default().into(),
+                tile: test_tile(crate::AtlasTextureKind::Monochrome),
+                transformation: crate::TransformationMatrix::unit(),
+            },
+            child_animation_id,
+        );
+        child.insert_animated_primitive(
+            crate::PolychromeSprite {
+                order: 2,
+                pad: 0,
+                grayscale: false,
+                opacity: 1.0,
+                animation_id: None,
+                bounds: child_bounds,
+                content_mask,
+                corner_radii: Default::default(),
+                tile: test_tile(crate::AtlasTextureKind::Rgba),
+            },
+            child_animation_id,
+        );
+        child.push_animation_value(opacity_value(child_animation_id));
+
+        let mut scene = crate::Scene::default();
+        scene.insert_primitive(test_blur(parent_animation_id, child));
+        scene.push_animation_value(active_value(parent_animation_id));
+
+        assert_eq!(scene.blurs.len(), 1);
+        let parent = &scene.blurs[0];
+        assert_eq!(parent.animation_id, Some(parent_animation_id));
+        assert_eq!(scene.animation_values.len(), 1);
+        assert_eq!(
+            scene.animation_values[0].property,
+            crate::TransitionProperty::Translation
+        );
+        assert_eq!(scene.animation_values[0].animation_id, parent_animation_id);
+
+        let child = parent.content.as_ref();
+        assert_eq!(child.quads.len(), 1);
+        assert_eq!(child.monochrome_sprites.len(), 1);
+        assert_eq!(child.polychrome_sprites.len(), 1);
+        assert_eq!(child.quads[0].animation_id, Some(child_animation_id));
+        assert_eq!(
+            child.monochrome_sprites[0].animation_id,
+            Some(child_animation_id)
+        );
+        assert_eq!(
+            child.polychrome_sprites[0].animation_id,
+            Some(child_animation_id)
+        );
+        assert_eq!(child.animation_values.len(), 1);
+        assert_eq!(
+            child.animation_values[0].property,
+            crate::TransitionProperty::Opacity
+        );
+        assert_eq!(child.animation_values[0].animation_id, child_animation_id);
+
+        let child_animation_ids = child.animation_ids();
+        assert_eq!(child_animation_ids.len(), 1);
+        assert!(child_animation_ids.contains(&child_animation_id));
+        assert!(!child_animation_ids.contains(&parent_animation_id));
     }
 }
