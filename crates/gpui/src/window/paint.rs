@@ -409,7 +409,15 @@ impl Window {
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
-        let (_, subpixel_variant) = glyph_device_origin(origin, Point::default(), scale_factor);
+        let layout_text_motion = crate::element::layout_animation_text_motion_active();
+        let subpixel_variant = if layout_text_motion {
+            // During a layout animation the logical origin changes every sample. Rasterize once at
+            // a stable phase and move the atlas sprite fractionally; this matches composited text
+            // motion and avoids per-frame ClearType phase churn / device-pixel snapping.
+            Default::default()
+        } else {
+            glyph_device_origin(origin, Point::default(), scale_factor).1
+        };
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
@@ -436,7 +444,11 @@ impl Window {
                 );
                 return Ok(());
             };
-            let (origin, _) = glyph_device_origin(origin, raster_bounds.origin, scale_factor);
+            let origin = if layout_text_motion {
+                origin.scale(scale_factor) + raster_bounds.origin.map(Into::into)
+            } else {
+                glyph_device_origin(origin, raster_bounds.origin, scale_factor).0
+            };
             let bounds = self.visual_device_bounds(
                 Bounds {
                     origin,
@@ -509,10 +521,14 @@ impl Window {
                 return Ok(());
             };
 
+            let sprite_origin = if crate::element::layout_animation_text_motion_active() {
+                glyph_origin + raster_bounds.origin.map(Into::into)
+            } else {
+                glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into)
+            };
             let bounds = self.visual_device_bounds(
                 Bounds {
-                    origin: glyph_origin.map(|px| px.floor())
-                        + raster_bounds.origin.map(Into::into),
+                    origin: sprite_origin,
                     size: tile.bounds.size.map(Into::into),
                 },
                 scale_factor,

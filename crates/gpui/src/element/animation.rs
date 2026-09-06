@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -20,6 +21,35 @@ const REPEATING_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(3);
 // numerical guard so retained partial-presentation damage cannot clip an extremal undamped sample.
 const SPRING_TRANSLATION_PROGRESS_MIN: f32 = -0.05;
 const SPRING_TRANSLATION_PROGRESS_MAX: f32 = 2.05;
+
+thread_local! {
+    static LAYOUT_ANIMATION_TEXT_MOTION_DEPTH: Cell<u16> = const { Cell::new(0) };
+}
+
+pub(crate) fn layout_animation_text_motion_active() -> bool {
+    LAYOUT_ANIMATION_TEXT_MOTION_DEPTH.with(|depth| depth.get() != 0)
+}
+
+fn with_layout_animation_text_motion<R>(f: impl FnOnce() -> R) -> R {
+    LAYOUT_ANIMATION_TEXT_MOTION_DEPTH.with(|depth| {
+        let previous = depth.get();
+        depth.set(previous.saturating_add(1));
+
+        struct RestoreDepth<'a> {
+            depth: &'a Cell<u16>,
+            previous: u16,
+        }
+
+        impl Drop for RestoreDepth<'_> {
+            fn drop(&mut self) {
+                self.depth.set(self.previous);
+            }
+        }
+
+        let _restore = RestoreDepth { depth, previous };
+        f()
+    })
+}
 
 /// An animation that can be applied to an element.
 #[derive(Clone)]
@@ -359,7 +389,14 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        element.paint(window, cx);
+        if self.animating {
+            // Layout animation changes logical glyph origins every sample. Mark this synchronous
+            // paint scope so text can keep one raster phase and move the atlas sprite continuously
+            // instead of re-snapping its bitmap to device pixels every frame.
+            with_layout_animation_text_motion(|| element.paint(window, cx));
+        } else {
+            element.paint(window, cx);
+        }
     }
 }
 
