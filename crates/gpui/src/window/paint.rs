@@ -410,14 +410,11 @@ impl Window {
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
         let layout_text_motion = crate::element::layout_animation_text_motion_active();
-        let subpixel_variant = if layout_text_motion {
-            // During a layout animation the logical origin changes every sample. Rasterize once at
-            // a stable phase and move the atlas sprite fractionally; this matches composited text
-            // motion and avoids per-frame ClearType phase churn / device-pixel snapping.
-            Default::default()
-        } else {
-            glyph_device_origin(origin, Point::default(), scale_factor).1
-        };
+        // Horizontal ClearType phase is part of the glyph's static raster identity. Preserve it
+        // during layout motion so the retained endpoint is pixel-identical to normal Windows text;
+        // only the vertical sprite coordinate needs to remain continuous for vertical springs.
+        let (_, subpixel_variant) =
+            glyph_device_origin(origin, Point::default(), scale_factor);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
@@ -444,10 +441,14 @@ impl Window {
                 );
                 return Ok(());
             };
+            let snapped_origin =
+                glyph_device_origin(origin, raster_bounds.origin, scale_factor).0;
             let origin = if layout_text_motion {
-                origin.scale(scale_factor) + raster_bounds.origin.map(Into::into)
+                let moving_origin =
+                    origin.scale(scale_factor) + raster_bounds.origin.map(Into::into);
+                Point::new(snapped_origin.x, moving_origin.y)
             } else {
-                glyph_device_origin(origin, raster_bounds.origin, scale_factor).0
+                snapped_origin
             };
             let bounds = self.visual_device_bounds(
                 Bounds {
@@ -521,10 +522,12 @@ impl Window {
                 return Ok(());
             };
 
+            let raster_origin = raster_bounds.origin.map(Into::into);
+            let snapped_origin = glyph_origin.map(|px| px.floor()) + raster_origin;
             let sprite_origin = if crate::element::layout_animation_text_motion_active() {
-                glyph_origin + raster_bounds.origin.map(Into::into)
+                Point::new(snapped_origin.x, glyph_origin.y + raster_origin.y)
             } else {
-                glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into)
+                snapped_origin
             };
             let bounds = self.visual_device_bounds(
                 Bounds {
