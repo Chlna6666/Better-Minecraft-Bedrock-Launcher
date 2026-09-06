@@ -1,16 +1,24 @@
 use crate::{LineLayout, Pixels, Point, TextAlign, WrapBoundary, px};
 
+fn snap_local_baseline_offset_to_device_pixels(
+    baseline_offset_y: Pixels,
+    scale_factor: f32,
+) -> Pixels {
+    px((baseline_offset_y.0 * scale_factor).round() / scale_factor)
+}
+
 pub(super) fn snap_baseline_offset_to_device_pixels(
     origin_y: Pixels,
     baseline_offset_y: Pixels,
     scale_factor: f32,
 ) -> Pixels {
     if crate::element::layout_animation_text_motion_active() {
-        // A layout-animation target already keeps glyph raster phase stable and moves the atlas
-        // sprite continuously in device space. Snapping the absolute line baseline here would
-        // reintroduce a one-device-pixel step before paint_glyph sees the origin, which is most
-        // visible on small/light text while its parent moves on a spring.
-        return baseline_offset_y;
+        // Keep the baseline's local device-pixel phase stable while the parent origin moves on a
+        // spring. Snapping the absolute baseline would jump by one device pixel as origin_y crosses
+        // half-pixel boundaries, while leaving the offset completely unsnapped makes the final
+        // retained animation frame differ from the normal static text raster and can leave small
+        // text permanently soft until a resize forces repaint.
+        return snap_local_baseline_offset_to_device_pixels(baseline_offset_y, scale_factor);
     }
 
     px((((origin_y + baseline_offset_y).0 * scale_factor).round() / scale_factor) - origin_y.0)
@@ -64,5 +72,23 @@ mod tests {
 
         assert_approximately_eq(snapped, px(10.8));
         assert_approximately_eq(px(2.2) + snapped, px(13.0));
+    }
+
+    #[test]
+    fn layout_motion_uses_one_local_baseline_phase() {
+        let snapped = snap_local_baseline_offset_to_device_pixels(px(12.3), 1.5);
+
+        assert_approximately_eq(snapped, px(12.0));
+        assert_approximately_eq(px(snapped.0 * 1.5), px(18.0));
+    }
+
+    #[test]
+    fn layout_motion_endpoint_matches_static_baseline_on_integer_origin() {
+        let local = snap_local_baseline_offset_to_device_pixels(px(10.4), 1.0);
+        let static_offset =
+            snap_baseline_offset_to_device_pixels(px(4.0), px(10.4), 1.0);
+
+        assert_approximately_eq(local, static_offset);
+        assert_approximately_eq(px(4.0) + local, px(14.0));
     }
 }
