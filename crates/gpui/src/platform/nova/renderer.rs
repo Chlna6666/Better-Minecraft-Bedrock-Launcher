@@ -100,7 +100,6 @@ pub(crate) struct NovaRenderer {
     underline_buffer: BufferId,
     backdrop_blur_pass_buffer: BufferId,
     backdrop_blur_buffer: BufferId,
-    animation_binding_buffer: BufferId,
     animation_value_buffer: BufferId,
     custom_mesh_3d_parameters_buffer: BufferId,
     custom_mesh_3d_vertices_buffer: BufferId,
@@ -397,9 +396,6 @@ impl NovaRenderer {
             return;
         }
 
-        // Atlas content is shared. Until the atlas dependency tracker becomes tile-granular, a
-        // pending upload that is actually sampled below a backdrop is a non-spatial invalidation
-        // and must rebuild the corresponding cache family conservatively.
         let source_atlases = self.frame_upload.backdrop_source_atlas_texture_ids();
         if self.atlas.pending_uploads_touch_any(&source_atlases) {
             self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
@@ -475,7 +471,6 @@ impl NovaRenderer {
         self.underline_buffer = resources.buffers.underline_buffer;
         self.backdrop_blur_pass_buffer = resources.buffers.backdrop_blur_pass_buffer;
         self.backdrop_blur_buffer = resources.buffers.backdrop_blur_buffer;
-        self.animation_binding_buffer = resources.buffers.animation_binding_buffer;
         self.animation_value_buffer = resources.buffers.animation_value_buffer;
         self.custom_mesh_3d_parameters_buffer = resources.buffers.custom_mesh_3d_parameters_buffer;
         self.quad_resource_set = resources.resource_sets.quad_resource_set;

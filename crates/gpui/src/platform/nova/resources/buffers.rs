@@ -15,7 +15,6 @@ pub(in crate::platform::nova) struct FrameResourceBuffers {
     pub(in crate::platform::nova) underline_buffer: BufferId,
     pub(in crate::platform::nova) backdrop_blur_pass_buffer: BufferId,
     pub(in crate::platform::nova) backdrop_blur_buffer: BufferId,
-    pub(in crate::platform::nova) animation_binding_buffer: BufferId,
     pub(in crate::platform::nova) animation_value_buffer: BufferId,
     pub(in crate::platform::nova) custom_mesh_3d_parameters_buffer: BufferId,
 }
@@ -174,10 +173,6 @@ where
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
-    // No shader or upload path consumes a separate binding buffer anymore. Keep the legacy handle
-    // alias temporarily so renderer frame-slot plumbing can be removed independently without
-    // retaining a second allocation.
-    let animation_binding_buffer = animation_value_buffer;
     let custom_mesh_3d_parameters_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} custom GPU mesh 3D params + animation sidecar")),
         size: CUSTOM_MESH_3D_FRAME_BUFFER_BYTES as u64,
@@ -197,7 +192,6 @@ where
         underline_buffer,
         backdrop_blur_pass_buffer,
         backdrop_blur_buffer,
-        animation_binding_buffer,
         animation_value_buffer,
         custom_mesh_3d_parameters_buffer,
     })

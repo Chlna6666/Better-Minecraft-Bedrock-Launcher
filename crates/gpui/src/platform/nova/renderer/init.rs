@@ -22,7 +22,6 @@ where
     };
     let hwnd = HWND(handle.hwnd.get() as *mut _);
     let mut client_rect = RECT::default();
-    // SAFETY: `hwnd` comes from the live window borrowed for renderer initialization.
     unsafe { GetClientRect(hwnd, &mut client_rect).ok()? };
     let width = client_rect.right.saturating_sub(client_rect.left);
     let height = client_rect.bottom.saturating_sub(client_rect.top);
@@ -101,11 +100,6 @@ impl NovaRenderer {
             + 'static,
     {
         let metrics_started_at = Instant::now();
-        // Windows can report a fractional logical size during hidden-window startup. Rebuilding
-        // physical pixels from that logical size may differ from the real HWND client area by one
-        // pixel, which makes the whole scene (most visibly glyph atlas sprites) be resampled until
-        // the first native resize. Match gpui-ce's native-pixel contract by treating the actual
-        // client rect as authoritative before the swapchain and all size-dependent resources exist.
         let drawable_size = resolve_initial_drawable_size(window, drawable_size);
         let width = drawable_size.width.0.max(1) as u32;
         let height = drawable_size.height.0.max(1) as u32;
@@ -176,9 +170,6 @@ impl NovaRenderer {
                         .buffers
                         .backdrop_blur_pass_buffer,
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
-                    animation_binding_buffer: current_frame_resources
-                        .buffers
-                        .animation_binding_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
                     custom_mesh_3d_parameters_buffer: current_frame_resources
                         .buffers
@@ -303,9 +294,6 @@ impl NovaRenderer {
                         .buffers
                         .backdrop_blur_pass_buffer,
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
-                    animation_binding_buffer: current_frame_resources
-                        .buffers
-                        .animation_binding_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
                     custom_mesh_3d_parameters_buffer: current_frame_resources
                         .buffers
@@ -454,9 +442,6 @@ impl NovaRenderer {
                         .buffers
                         .backdrop_blur_pass_buffer,
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
-                    animation_binding_buffer: current_frame_resources
-                        .buffers
-                        .animation_binding_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
                     custom_mesh_3d_parameters_buffer: current_frame_resources
                         .buffers
