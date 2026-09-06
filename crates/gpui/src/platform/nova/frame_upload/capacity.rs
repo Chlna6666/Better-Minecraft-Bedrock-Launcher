@@ -20,7 +20,6 @@ impl FrameUpload {
             self.isolated_blur_source_indices_cache.capacity() * std::mem::size_of::<u32>(),
             self.backdrop_source_atlas_texture_ids_cache.capacity()
                 * std::mem::size_of::<AtlasTextureId>(),
-            self.animation_bindings.capacity(),
             self.animation_values.capacity(),
             self.animated_primitives.capacity() * std::mem::size_of::<AnimatedUpload>(),
             self.sampled_animation_values.capacity()
@@ -87,11 +86,6 @@ impl FrameUpload {
         trim_upload_vec(&mut self.backdrop_blur_configs, 8, multiplier);
         trim_upload_vec(&mut self.blur_content_ranges_cache, 8, multiplier);
         trim_upload_vec(&mut self.isolated_blur_source_indices_cache, 8, multiplier);
-        trim_upload_vec(
-            &mut self.animation_bindings,
-            64 * PACKED_ANIMATION_BINDING_BYTES,
-            multiplier,
-        );
         trim_upload_vec(
             &mut self.animation_values,
             64 * PACKED_ANIMATION_VALUE_BYTES,
@@ -225,7 +219,6 @@ impl FrameUpload {
             .saturating_add(self.underlines.len())
             .saturating_add(self.backdrop_blur_passes.len())
             .saturating_add(self.backdrop_blurs.len())
-            .saturating_add(self.animation_bindings.len())
             .saturating_add(self.animation_values.len())
             .saturating_add(self.custom_mesh_3d_parameters.len())
     }
@@ -233,7 +226,6 @@ impl FrameUpload {
     pub(in crate::platform::nova) fn mapped_upload_bytes(&self, has_backdrop_blurs: bool) -> usize {
         let mut bytes = self
             .uploaded_bytes()
-            .saturating_sub(self.animation_bindings.len())
             .saturating_sub(self.animation_values.len());
         if !has_backdrop_blurs {
             bytes = bytes
@@ -262,10 +254,7 @@ impl FrameUpload {
                 .backdrop_blur_passes
                 .len()
                 .saturating_add(self.backdrop_blurs.len()),
-            animation_bytes: self
-                .animation_bindings
-                .len()
-                .saturating_add(self.animation_values.len()),
+            animation_bytes: self.animation_values.len(),
             custom_mesh_parameter_bytes: self.custom_mesh_3d_parameters.len(),
         }
     }

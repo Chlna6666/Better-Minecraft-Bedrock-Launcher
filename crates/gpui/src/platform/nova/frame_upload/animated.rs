@@ -165,8 +165,10 @@ impl AnimatedByteMetadata {
 }
 
 /// A retained primitive and its small, independently uploadable animated range.
-/// Nova's current shaders consume primitive buffers, not the animation metadata.
+/// Animation ownership is stored directly so GPU promotion never needs a parallel packed binding
+/// stream or a second parse to recover `(animation_id, kind, index)`.
 pub(in crate::platform::nova) struct AnimatedUpload {
+    pub(in crate::platform::nova) animation_id: SceneAnimationId,
     pub(in crate::platform::nova) kind: AnimatedPrimitiveKind,
     pub(in crate::platform::nova) index: u32,
     pub(in crate::platform::nova) bytes: AnimatedByteMetadata,
@@ -212,7 +214,11 @@ impl BackdropBlurAnimationSample {
 
 impl AnimatedUpload {
     pub(super) fn new(primitive: Primitive, kind: AnimatedPrimitiveKind, index: u32) -> Self {
+        let animation_id = primitive
+            .animation_id()
+            .expect("animated upload requires animation ownership");
         Self {
+            animation_id,
             primitive,
             kind,
             index,
@@ -242,10 +248,7 @@ impl AnimatedUpload {
         bytes: &mut Vec<u8>,
     ) -> AnimatedPrimitiveSample {
         let mut primitive = self.primitive.clone();
-        let resolved_value = primitive
-            .animation_id()
-            .and_then(|animation_id| values.get(&animation_id))
-            .copied();
+        let resolved_value = values.get(&self.animation_id).copied();
         let composite_rotation = resolved_value.filter(|value| {
             value.property == TransitionProperty::Rotation
                 && matches!(primitive, Primitive::Blur(_))
@@ -291,9 +294,6 @@ impl AnimatedUpload {
             Primitive::BackdropBlur(blur) => write_backdrop_blur(bytes, &blur, size),
             Primitive::Blur(blur) => {
                 write_paint_blur(bytes, &blur, size);
-                // Element/composite records deliberately use two geometries in one 136-byte record:
-                // the normal bounds slot remains the immutable source/filter footprint, while the
-                // auxiliary slot written by write_paint_blur contains the sampled display bounds.
                 if let Primitive::Blur(base) = &self.primitive {
                     write_packed_bounds_at(bytes, BLUR_SOURCE_BOUNDS_OFFSET, base.bounds);
                 }
@@ -311,7 +311,7 @@ impl AnimatedUpload {
     }
 
     fn animation_id(&self) -> Option<SceneAnimationId> {
-        self.primitive.animation_id()
+        Some(self.animation_id)
     }
 
     fn order(&self) -> u32 {
@@ -341,9 +341,6 @@ impl FrameUpload {
         self.backdrop_blur_ignore_animation_damage_indices.clear();
         self.backdrop_blur_passes_dirty_this_frame = false;
 
-        // Resolve each animation value once per frame. Animated primitives can heavily outnumber
-        // animation timelines (for example hundreds of glyphs sharing one retained transform), so
-        // the old per-primitive linear search and interpolation scaled as O(primitives * values).
         let resolved_animation_values = resolve_animation_values(&self.sampled_animation_values);
 
         let mut current_animation_ids =
@@ -366,9 +363,6 @@ impl FrameUpload {
         for primitive in &self.animated_primitives {
             let sample = primitive.sample_resolved(&resolved_animation_values, size, &mut staging);
             sampled_visual_bounds.push(sample.visual_bounds);
-            // GPU composite state always receives the sampled primitive. Filter planning does not
-            // have to use these same bytes: root backdrop configs can independently select retained
-            // base geometry, while element blur records keep base source bounds inside the record.
             let buffer = match primitive.kind {
                 AnimatedPrimitiveKind::Quad => &mut self.quads,
                 AnimatedPrimitiveKind::Shadow => &mut self.shadows,
@@ -397,9 +391,6 @@ impl FrameUpload {
             }
         }
 
-        // A filter that temporarily escaped the retained base footprint may have cleared pixels
-        // needed by the base result. The first frame that re-enters the base footprint therefore
-        // performs one restoring refresh using the base filter geometry.
         let mut filter_refresh_indices =
             std::mem::take(&mut self.backdrop_blur_filter_refresh_scratch);
         filter_refresh_indices.clear();
@@ -412,9 +403,6 @@ impl FrameUpload {
         }
 
         if !filter_refresh_indices.is_empty() {
-            // Keep ignore-self-damage empty while canonical configs are rebuilt so retained target
-            // identity continues to carry real draw orders. Dynamic draw-time configs apply the
-            // sentinel only after this refresh has completed.
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes_for_current_frame();
             self.backdrop_blur_passes_dirty_this_frame = true;
@@ -488,9 +476,6 @@ impl FrameUpload {
             }
     }
 
-    /// Returns whether animated root-backdrop state changed Gaussian pass/config data this frame.
-    /// Composite-only root or element blur animation still uploads its tiny primitive range, but it
-    /// does not rewrite the pass buffer and does not imply offscreen filter work.
     pub(in crate::platform::nova) fn has_animated_backdrop_blurs(&self) -> bool {
         self.backdrop_blur_passes_dirty_this_frame
     }
@@ -627,8 +612,6 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
                 _ => {}
             }
         }
-        // Rotation is a subtree transform. High-level animation binding promotes it to one
-        // zero-filter PaintBlur composite; raw primitives must never rotate independently.
         TransitionProperty::Rotation => {}
         TransitionProperty::Scale => apply_scale(primitive, sampled[0], None),
         TransitionProperty::Transform => {
@@ -691,16 +674,11 @@ fn apply_scale(
             sprite.corner_radii = sprite.corner_radii.map(|value| *value * scale);
         }
         Primitive::BackdropBlur(blur) => {
-            // Visual scale is a composite transform. It must not alter Gaussian sigma; changing
-            // sigma would rebuild H/V filter coefficients every animation frame even though the
-            // already-filtered backdrop texture can simply be sampled by a smaller composite quad.
             blur.bounds = scale_bounds(blur.bounds);
             scale_mask(&mut blur.content_mask);
             blur.corner_radii = blur.corner_radii.map(|value| *value * scale);
         }
         Primitive::Blur(blur) => {
-            // Same contract as a retained compositor layer: only final display geometry changes.
-            // Source/filter bounds and Gaussian sigma are restored/kept from the base primitive.
             blur.bounds = scale_bounds(blur.bounds);
             scale_mask(&mut blur.content_mask);
         }

@@ -63,6 +63,7 @@ impl FrameUpload {
             self.backdrop_blur_passes.clear();
             self.backdrop_blurs.clear();
             self.backdrop_blur_configs.clear();
+            #[cfg(test)]
             self.animation_bindings.clear();
             self.animation_values.clear();
             self.animated_primitives.clear();
@@ -82,8 +83,8 @@ impl FrameUpload {
             self.path_sprites.reserve(PACKED_PATH_SPRITE_BYTES);
             self.backdrop_blur_passes.reserve(BACKDROP_BLUR_PASS_BYTES);
             self.backdrop_blurs.reserve(PACKED_BACKDROP_BLUR_BYTES);
-            self.animation_bindings
-                .reserve(PACKED_ANIMATION_BINDING_BYTES);
+            #[cfg(test)]
+            self.animation_bindings.reserve(PACKED_ANIMATION_BINDING_BYTES);
             self.animation_values.reserve(PACKED_ANIMATION_VALUE_BYTES);
             self.custom_mesh_3d_parameters
                 .reserve(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES);
@@ -141,7 +142,7 @@ impl FrameUpload {
                         }
                         let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
                         write_quad(&mut self.quads, quad);
-                        write_scene_animation_binding(
+                        register_scene_animated_primitive(
                             self,
                             &mut summary,
                             quad.animation_id
@@ -172,7 +173,7 @@ impl FrameUpload {
                         }
                         let primitive_index = (self.shadows.len() / PACKED_SHADOW_BYTES) as u32;
                         write_shadow(&mut self.shadows, shadow);
-                        write_scene_animation_binding(
+                        register_scene_animated_primitive(
                             self,
                             &mut summary,
                             shadow
@@ -203,7 +204,7 @@ impl FrameUpload {
                         let primitive_index =
                             (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
                         write_monochrome_sprite(&mut self.mono_sprites, sprite);
-                        write_scene_animation_binding(
+                        register_scene_animated_primitive(
                             self,
                             &mut summary,
                             sprite
@@ -236,7 +237,7 @@ impl FrameUpload {
                         let primitive_index =
                             (self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES) as u32;
                         write_polychrome_sprite(&mut self.poly_sprites, sprite);
-                        write_scene_animation_binding(
+                        register_scene_animated_primitive(
                             self,
                             &mut summary,
                             sprite
@@ -369,7 +370,7 @@ impl FrameUpload {
                                 border_widths: Default::default(),
                             };
                             write_quad(&mut self.quads, &quad);
-                            write_scene_animation_binding(
+                            register_scene_animated_primitive(
                                 self,
                                 &mut summary,
                                 quad.animation_id
@@ -400,7 +401,7 @@ impl FrameUpload {
                         let primitive_index =
                             (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
                         write_backdrop_blur(&mut self.backdrop_blurs, blur, drawable_size);
-                        write_scene_animation_binding(
+                        register_scene_animated_primitive(
                             self,
                             &mut summary,
                             blur.animation_id
@@ -602,8 +603,6 @@ impl FrameUpload {
                 Default::default()
             },
         };
-        // Pack the paint parameters into a reusable scratch buffer and hash them, instead of
-        // allocating an owned byte key per path per frame.
         self.path_paint_key_scratch.clear();
         write_content_mask(&mut self.path_paint_key_scratch, &content_mask);
         write_background(&mut self.path_paint_key_scratch, &path.color);
@@ -632,8 +631,6 @@ impl FrameUpload {
             vertex_count,
         };
         if self.path_rasterization_cache.len() >= MAX_PATH_RASTERIZATION_CACHE_ENTRIES {
-            // Evict roughly half of the entries instead of clearing everything, so the frame
-            // after hitting the limit does not pay a 100% miss rate.
             let mut keep = false;
             self.path_rasterization_cache.retain(|_, _| {
                 keep = !keep;
@@ -646,13 +643,6 @@ impl FrameUpload {
         Some(entry)
     }
 
-    /// Returns the vertex-content hash for `path`, reusing the previous frame's hash when the
-    /// generation, vertex count, and first/last vertex positions all match.
-    ///
-    /// The probes are required because `Path::transform_uniform` rewrites vertex positions
-    /// without bumping `geometry_generation`; a uniform transform that changes any vertex also
-    /// moves the first and last vertices, so the memo stays sound while skipping the
-    /// per-vertex hash on the hot unchanged path.
     fn path_geometry_hash_for(&mut self, path: &crate::Path<crate::ScaledPixels>) -> u64 {
         let (Some(first), Some(last)) = (path.vertices.first(), path.vertices.last()) else {
             return path_geometry_hash(&path.vertices);
@@ -748,7 +738,7 @@ fn mesh_range_within_vertices(
     Some(range)
 }
 
-fn write_scene_animation_binding(
+fn register_scene_animated_primitive(
     upload: &mut FrameUpload,
     summary: &mut FrameUploadSummary,
     primitive: Option<crate::Primitive>,
@@ -758,18 +748,21 @@ fn write_scene_animation_binding(
     let Some(primitive) = primitive else {
         return;
     };
-    let Some(animation_id) = primitive.animation_id() else {
-        return;
-    };
-    if upload.animation_bindings.len() / PACKED_ANIMATION_BINDING_BYTES >= MAX_ANIMATION_BINDINGS {
+    if upload.animated_primitives.len() >= MAX_ANIMATION_VALUES {
         return;
     }
-    write_animation_binding(
-        &mut upload.animation_bindings,
-        animation_id,
-        primitive_kind,
-        primitive_index,
-    );
+    #[cfg(test)]
+    {
+        let animation_id = primitive
+            .animation_id()
+            .expect("animated primitive registration requires ownership");
+        write_animation_binding(
+            &mut upload.animation_bindings,
+            animation_id,
+            primitive_kind,
+            primitive_index,
+        );
+    }
     summary.animation_binding_count = summary.animation_binding_count.saturating_add(1);
     upload.animated_primitives.push(AnimatedUpload::new(
         primitive,

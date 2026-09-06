@@ -2,9 +2,8 @@ use super::*;
 
 impl FrameUpload {
     /// Register the final composite record of every animated element blur after the static scene has
-    /// been encoded. `BeginBlur` indices already describe the exact shared blur-buffer slots, so we
-    /// can add animation bindings without perturbing the recursive encoder or the captured child
-    /// batches.
+    /// been encoded. `BeginBlur` indices already describe the exact shared blur-buffer slots, so
+    /// ownership can be attached directly to AnimatedUpload without a parallel binding stream.
     pub(in crate::platform::nova) fn register_element_blur_animations(
         &mut self,
         scene: &crate::Scene,
@@ -42,22 +41,12 @@ impl FrameUpload {
         );
 
         for (blur, index) in blurs.into_iter().zip(blur_indices) {
-            let Some(animation_id) = blur.animation_id else {
+            if blur.animation_id.is_none() {
                 continue;
-            };
-            if self.animation_bindings.len() / PACKED_ANIMATION_BINDING_BYTES
-                >= MAX_ANIMATION_BINDINGS
-            {
+            }
+            if self.animated_primitives.len() >= MAX_ANIMATION_VALUES {
                 break;
             }
-            // Root backdrop and element blur composites share the same GPU buffer/record kind.
-            // AnimatedUpload's Primitive variant keeps their filter semantics distinct on the CPU.
-            write_animation_binding(
-                &mut self.animation_bindings,
-                animation_id,
-                AnimatedPrimitiveKind::BackdropBlur,
-                index,
-            );
             summary.animation_binding_count = summary.animation_binding_count.saturating_add(1);
             self.animated_primitives.push(AnimatedUpload::new(
                 crate::Primitive::Blur(blur.clone()),
@@ -96,9 +85,6 @@ impl FrameUpload {
 }
 
 fn collect_element_blurs<'a>(scene: &'a crate::Scene, output: &mut Vec<&'a crate::PaintBlur>) {
-    // Scene::blurs is sorted by draw order during finish(), which is also the order in which the
-    // prepared blur batches are recursively encoded. Descend immediately after every parent to
-    // mirror `encode_scene()`'s BeginBlur -> child -> EndBlur sequence.
     for blur in &scene.blurs {
         output.push(blur);
         collect_element_blurs(&blur.content, output);

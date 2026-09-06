@@ -1,9 +1,6 @@
 use super::*;
 
 const INDEXED_ANIMATION_ENABLED_OFFSET: usize = 12;
-const ANIMATION_BINDING_ID_OFFSET: usize = 0;
-const ANIMATION_BINDING_KIND_OFFSET: usize = 4;
-const ANIMATION_BINDING_INDEX_OFFSET: usize = 8;
 const ANIMATION_VALUE_ACTIVE_OFFSET: usize = 12;
 
 #[inline]
@@ -31,8 +28,9 @@ impl FrameUpload {
     /// Promotes ordinary 2D primitives to the renderer-owned indexed animation ABI.
     ///
     /// Quad, shadow, glyph and image packers emit a zero animation-slot sentinel directly because
-    /// Scene batching has already consumed draw order. Promotion therefore only patches animated
-    /// records with `animation_slot + 1`; static records never need a second full-buffer clear pass.
+    /// Scene batching has already consumed draw order. Animation ownership lives on AnimatedUpload,
+    /// so promotion patches only animated records and never serializes/parses a parallel binding
+    /// stream.
     pub(in crate::platform::nova) fn promote_gpu_indexed_animations(&mut self) {
         self.gpu_indexed_animation_slots.clear();
         self.gpu_indexed_animation_values.clear();
@@ -42,35 +40,11 @@ impl FrameUpload {
         }
         write_u32(&mut self.globals, INDEXED_ANIMATION_ENABLED_OFFSET, 0);
 
-        let binding_count = self.animation_bindings.len() / PACKED_ANIMATION_BINDING_BYTES;
-        if self.animation_bindings.len() % PACKED_ANIMATION_BINDING_BYTES != 0
-            || binding_count != self.animated_primitives.len()
-        {
-            debug_assert!(
-                false,
-                "nova animation bindings and retained animated primitives diverged"
-            );
-            return;
-        }
-
-        for (primitive, binding) in self
-            .animated_primitives
-            .iter()
-            .zip(self.animation_bindings.chunks_exact(PACKED_ANIMATION_BINDING_BYTES))
-        {
+        for primitive in &self.animated_primitives {
             if !is_gpu_indexed_kind(primitive.kind) {
                 continue;
             }
-            debug_assert_eq!(
-                read_u32(binding, ANIMATION_BINDING_KIND_OFFSET),
-                primitive.kind as u32
-            );
-            debug_assert_eq!(
-                read_u32(binding, ANIMATION_BINDING_INDEX_OFFSET),
-                primitive.index
-            );
-            let animation_id =
-                crate::SceneAnimationId(read_u32(binding, ANIMATION_BINDING_ID_OFFSET));
+            let animation_id = primitive.animation_id;
             if !self.gpu_indexed_animation_slots.contains_key(&animation_id) {
                 let slot = u32::try_from(self.gpu_indexed_animation_slots.len())
                     .expect("nova animation slot count fits u32");
@@ -87,17 +61,11 @@ impl FrameUpload {
             return;
         }
 
-        for (primitive, binding) in self
-            .animated_primitives
-            .iter()
-            .zip(self.animation_bindings.chunks_exact(PACKED_ANIMATION_BINDING_BYTES))
-        {
+        for primitive in &self.animated_primitives {
             if !is_gpu_indexed_kind(primitive.kind) {
                 continue;
             }
-            let animation_id =
-                crate::SceneAnimationId(read_u32(binding, ANIMATION_BINDING_ID_OFFSET));
-            let slot_plus_one = self.gpu_indexed_animation_slots[&animation_id] + 1;
+            let slot_plus_one = self.gpu_indexed_animation_slots[&primitive.animation_id] + 1;
             let (bytes, stride) = match primitive.kind {
                 AnimatedPrimitiveKind::Quad => (&mut self.quads, PACKED_QUAD_BYTES),
                 AnimatedPrimitiveKind::Shadow => (&mut self.shadows, PACKED_SHADOW_BYTES),
@@ -167,8 +135,6 @@ impl FrameUpload {
             let destination = &mut self.gpu_indexed_animation_values
                 [offset..offset + PACKED_ANIMATION_VALUE_BYTES];
             destination.copy_from_slice(source);
-            // The source ABI reserved this u32 as padding. Indexed shaders reinterpret it as the
-            // active flag without changing the 64-byte storage stride.
             write_u32(destination, ANIMATION_VALUE_ACTIVE_OFFSET, 1);
         }
     }
@@ -197,18 +163,6 @@ mod tests {
             animated_primitives: vec![primitive(0), primitive(1)],
             ..Default::default()
         };
-        write_animation_binding(
-            &mut upload.animation_bindings,
-            id,
-            AnimatedPrimitiveKind::Quad,
-            0,
-        );
-        write_animation_binding(
-            &mut upload.animation_bindings,
-            id,
-            AnimatedPrimitiveKind::Quad,
-            1,
-        );
 
         upload.promote_gpu_indexed_animations();
 
@@ -236,12 +190,6 @@ mod tests {
             animated_primitives: vec![shadow],
             ..Default::default()
         };
-        write_animation_binding(
-            &mut upload.animation_bindings,
-            id,
-            AnimatedPrimitiveKind::Shadow,
-            0,
-        );
 
         upload.promote_gpu_indexed_animations();
 

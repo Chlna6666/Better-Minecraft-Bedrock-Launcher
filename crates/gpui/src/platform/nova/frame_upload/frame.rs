@@ -78,70 +78,38 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_passes: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blurs: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
-    /// Parsed BeginBlur/EndBlur topology. Batches are static for a retained upload, so compute this
-    /// once when blur configs refresh and let target planning/present/draw-step code borrow it.
     pub(in crate::platform::nova) blur_content_ranges_cache: Vec<BlurContentRange>,
-    /// Sorted unique element-blur indices derived from the same static topology. GPU target
-    /// compatibility checks can borrow this directly instead of collect + sort + dedup every frame.
     pub(in crate::platform::nova) isolated_blur_source_indices_cache: Vec<u32>,
-    /// Atlas textures sampled before the earliest blur barrier. This is derived only from the
-    /// static retained batch stream and shared by renderer cache planning and present-time damage
-    /// checks, so keep it behind Arc for cheap same-frame reuse without cloning hash buckets.
     pub(in crate::platform::nova) backdrop_source_atlas_texture_ids_cache:
         Arc<FxHashSet<AtlasTextureId>>,
-    /// Animated backdrop indices whose current composite geometry fits entirely inside the
-    /// unanimated filter footprint. These use the base blur geometry for filter planning while
-    /// the GPU primitive buffer still receives the sampled composite geometry/opacity.
     pub(in crate::platform::nova) backdrop_blur_use_base_filter_indices: FxHashSet<u32>,
-    /// Animated backdrop indices that sampled outside their base filter footprint on the previous
-    /// frame. The transition back into the base footprint performs one restoring filter refresh.
     pub(in crate::platform::nova) backdrop_blur_filter_dirty_indices: FxHashSet<u32>,
-    /// Reusable set used to build the next frame's filter-dirty state without allocating a fresh
-    /// hash table every animation frame.
     pub(in crate::platform::nova) backdrop_blur_filter_dirty_scratch: FxHashSet<u32>,
-    /// Reusable union/difference scratch for one-shot restoring filter refreshes.
     pub(in crate::platform::nova) backdrop_blur_filter_refresh_scratch: FxHashSet<u32>,
-    /// Composite-only backdrop animations that may ignore the Scene-level self-animation
-    /// `mark_full` damage entry for this frame.
     pub(in crate::platform::nova) backdrop_blur_ignore_animation_damage_indices: FxHashSet<u32>,
-    /// Whether animated backdrop state changed Gaussian pass/config data this frame.
     pub(in crate::platform::nova) backdrop_blur_passes_dirty_this_frame: bool,
-    /// True when the static encoded display list was retained for the current frame. Composite-only
-    /// blur animation is only allowed to suppress self damage in this mode.
     pub(in crate::platform::nova) retained_static_reused: bool,
-    /// Animation ids that were sampled on the previous frame. Keeping one frame of history makes
-    /// source-animation completion conservative instead of accidentally treating it as idle.
     pub(in crate::platform::nova) backdrop_blur_previous_animation_ids:
         FxHashSet<crate::SceneAnimationId>,
-    /// Reusable current-frame animation-id set. At frame end it is swapped with the previous set,
-    /// so both hash-table allocations stay hot across animation frames.
     pub(in crate::platform::nova) backdrop_blur_current_animation_ids_scratch:
         FxHashSet<crate::SceneAnimationId>,
+    /// Legacy packed ownership records exist only in test builds so old ABI/packer assertions can
+    /// validate the removed format without retaining a production staging allocation or hot-path
+    /// serialization.
+    #[cfg(test)]
     pub(in crate::platform::nova) animation_bindings: Vec<u8>,
     pub(in crate::platform::nova) animation_values: Vec<u8>,
     pub(in crate::platform::nova) animated_primitives: Vec<AnimatedUpload>,
     pub(in crate::platform::nova) sampled_animation_values: Vec<crate::SceneAnimationValue>,
-    /// Stable renderer-owned animation slots for GPU-indexed Quad / glyph / image primitives.
-    /// Many primitives may point at the same slot, so one 64-byte timeline record drives an entire
-    /// text run or image group without rewriting any packed primitive bytes on animation frames.
     pub(in crate::platform::nova) gpu_indexed_animation_slots:
         FxHashMap<crate::SceneAnimationId, u32>,
-    /// Dense dynamic value table addressed by `gpu_indexed_animation_slots`. It is rebuilt from the
-    /// compact Scene animation-value stream and uploaded with one contiguous buffer write per frame.
     pub(in crate::platform::nova) gpu_indexed_animation_values: Vec<u8>,
-    /// One shared serialization scratch for CPU-driven animated primitives. Quad / glyph / image
-    /// animations promoted to the indexed GPU ABI never enter this hot clone/mutate/serialize path.
     pub(in crate::platform::nova) animated_primitive_staging: Vec<u8>,
-    /// Reused sampled visual bounds used by backdrop damage dependency checks.
     pub(in crate::platform::nova) animated_visual_bounds_scratch:
         Vec<crate::Bounds<crate::ScaledPixels>>,
     pub(in crate::platform::nova) custom_mesh_3d_parameters: Vec<u8>,
-    /// Animation ownership parallel to custom-mesh draw parameters. Index i always describes the
-    /// same draw as parameter record i, including None entries for non-animated mesh draws.
     pub(in crate::platform::nova) custom_mesh_3d_animation_ids:
         Vec<Option<crate::SceneAnimationId>>,
-    /// Dynamic 32-byte animation records uploaded into the sidecar region of the per-frame custom
-    /// mesh parameter buffer and addressed directly by instance_index in the mesh shaders.
     pub(in crate::platform::nova) custom_mesh_3d_animations: Vec<u8>,
     pub(in crate::platform::nova) custom_mesh_3d_meshes: Vec<Arc<GpuMesh3d>>,
     pub(in crate::platform::nova) custom_mesh_3d_shaders: Vec<Arc<GpuMesh3dShader>>,
