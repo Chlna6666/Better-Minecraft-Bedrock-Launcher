@@ -316,8 +316,16 @@ pub(super) fn write_paint_blur(
     write_u32_vec(bytes, 1);
 }
 
+#[inline]
+fn write_animation_slot_placeholder(bytes: &mut Vec<u8>) {
+    // Scene batching has already consumed draw order. Nova's ordinary primitive shaders use this
+    // first u32 exclusively as animation_slot, so emit the zero sentinel directly instead of
+    // writing order and clearing every packed record in a second promotion pass.
+    write_u32_vec(bytes, 0);
+}
+
 pub(super) fn write_quad(bytes: &mut Vec<u8>, quad: &Quad) {
-    write_u32_vec(bytes, quad.order);
+    write_animation_slot_placeholder(bytes);
     write_u32_vec(bytes, quad.border_style as u32);
     write_bounds_scaled(bytes, &quad.bounds);
     write_content_mask(bytes, &quad.content_mask);
@@ -328,7 +336,7 @@ pub(super) fn write_quad(bytes: &mut Vec<u8>, quad: &Quad) {
 }
 
 pub(super) fn write_shadow(bytes: &mut Vec<u8>, shadow: &Shadow) {
-    write_u32_vec(bytes, shadow.order);
+    write_animation_slot_placeholder(bytes);
     write_f32_vec(bytes, shadow.blur_radius.0);
     write_bounds_scaled(bytes, &shadow.bounds);
     write_corners(bytes, &shadow.corner_radii);
@@ -355,7 +363,7 @@ pub(super) fn write_path_sprite(bytes: &mut Vec<u8>, bounds: &Bounds<crate::Scal
 }
 
 pub(super) fn write_monochrome_sprite(bytes: &mut Vec<u8>, sprite: &MonochromeSprite) {
-    write_u32_vec(bytes, sprite.order);
+    write_animation_slot_placeholder(bytes);
     write_u32_vec(bytes, sprite.pad);
     write_bounds_scaled(bytes, &sprite.bounds);
     write_content_mask(bytes, &sprite.content_mask);
@@ -365,7 +373,7 @@ pub(super) fn write_monochrome_sprite(bytes: &mut Vec<u8>, sprite: &MonochromeSp
 }
 
 pub(super) fn write_polychrome_sprite(bytes: &mut Vec<u8>, sprite: &PolychromeSprite) {
-    write_u32_vec(bytes, sprite.order);
+    write_animation_slot_placeholder(bytes);
     write_u32_vec(bytes, sprite.pad);
     write_u32_vec(bytes, u32::from(sprite.grayscale));
     write_f32_vec(bytes, sprite.opacity);

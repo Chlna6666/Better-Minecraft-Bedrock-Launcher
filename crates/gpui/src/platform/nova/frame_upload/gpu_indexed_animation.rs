@@ -27,19 +27,12 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
 }
 
-fn clear_record_heads(bytes: &mut [u8], stride: usize) {
-    for record in bytes.chunks_exact_mut(stride) {
-        write_u32(record, 0, 0);
-    }
-}
-
 impl FrameUpload {
     /// Promotes ordinary 2D primitives to the renderer-owned indexed animation ABI.
     ///
-    /// Quad, shadow, glyph and image records already carry a draw-order u32 that Nova shaders
-    /// never read. After scene batching has finished, reuse that lane as `animation_slot + 1`
-    /// (zero means no animation). Many primitives can therefore reference one compact timeline
-    /// record and retained animation frames no longer clone/mutate/re-serialize those primitives.
+    /// Quad, shadow, glyph and image packers emit a zero animation-slot sentinel directly because
+    /// Scene batching has already consumed draw order. Promotion therefore only patches animated
+    /// records with `animation_slot + 1`; static records never need a second full-buffer clear pass.
     pub(in crate::platform::nova) fn promote_gpu_indexed_animations(&mut self) {
         self.gpu_indexed_animation_slots.clear();
         self.gpu_indexed_animation_values.clear();
@@ -93,14 +86,6 @@ impl FrameUpload {
         if self.gpu_indexed_animation_slots.is_empty() {
             return;
         }
-
-        // Draw order is consumed by Scene batching before packing and is never read by these Nova
-        // shaders. Clear every record first so static/non-animated primitives retain the zero
-        // sentinel and only promoted records receive a slot index.
-        clear_record_heads(&mut self.quads, PACKED_QUAD_BYTES);
-        clear_record_heads(&mut self.shadows, PACKED_SHADOW_BYTES);
-        clear_record_heads(&mut self.mono_sprites, PACKED_MONO_SPRITE_BYTES);
-        clear_record_heads(&mut self.poly_sprites, PACKED_POLY_SPRITE_BYTES);
 
         for (primitive, binding) in self
             .animated_primitives
