@@ -27,25 +27,44 @@ pub(super) fn render_sized_image(
     let ImageSource::Asset(resource) = source else {
         return None;
     };
-    if cx.image_pipeline_config().bounds_policy == ImageBoundsPolicy::Visible
-        && bounds
+    let decode_visible = cx.image_pipeline_config().bounds_policy != ImageBoundsPolicy::Visible
+        || !bounds
             .intersect(&window.visual_content_mask().bounds)
-            .is_empty()
-    {
-        return None;
-    }
-    let target = image_size_for_window(bounds, window)?;
-    let requested = ImageRenderRequest::new(resource, target, window.scale_factor(), object_fit);
-
+            .is_empty();
     let animation_config = animation_policy
         .apply_to(cx.image_pipeline_config().animated)
         .clamped();
+
     if let Some(global_id) = global_id {
         return window.with_element_state(
             global_id,
             |state: Option<SizedImageElementState>, window| {
                 let mut state = state
                     .unwrap_or_else(|| SizedImageElementState::new(layout_state.frame.clone()));
+
+                // Visibility is a decode/work-scheduling policy, not an ownership policy. A
+                // retained or overscanned image can be clipped for one frame while a window is
+                // deactivated/reactivated or while scroll/layout bounds settle. Always carry its
+                // element state through that frame so the committed sized-image lease, decoded
+                // bitmap and atlas residency remain alive. Only suppress *new* decode work while
+                // the element is outside the visual mask.
+                if !decode_visible {
+                    return (None, state);
+                }
+
+                // Target-size resolution can also be temporarily unavailable while layout bounds
+                // settle. Treat that exactly like visibility gating: keep the last committed
+                // working set resident and retry on a later frame instead of turning a transient
+                // geometry state into an image-cache eviction.
+                let Some(target) = image_size_for_window(bounds, window) else {
+                    return (None, state);
+                };
+                let requested = ImageRenderRequest::new(
+                    resource.clone(),
+                    target,
+                    window.scale_factor(),
+                    object_fit,
+                );
 
                 // The committed lease owns the request currently visible on screen. The pending
                 // lease owns only the newest replacement. Replacing B with C moves ownership to C
@@ -136,6 +155,11 @@ pub(super) fn render_sized_image(
         );
     }
 
+    if !decode_visible {
+        return None;
+    }
+    let target = image_size_for_window(bounds, window)?;
+    let requested = ImageRenderRequest::new(resource, target, window.scale_factor(), object_fit);
     let render_image = window.use_asset::<SizedImageLoader>(&requested, cx)?.ok()?;
     let frame = render_image.frame(0)?;
     Some((render_image, frame))
