@@ -12,15 +12,17 @@ pub(super) fn snap_baseline_offset_to_device_pixels(
     baseline_offset_y: Pixels,
     scale_factor: f32,
 ) -> Pixels {
-    // Text rasterization must be anchored to the final device-pixel baseline even while the parent
-    // row/card is being layout-animated. Keeping only the local baseline phase stable makes small
-    // labels such as version numbers sample at fractional device Y positions in non-maximized
-    // windows, which shows up as gray 13px text blur and text/card motion desynchronization.
-    let absolute_baseline_y = origin_y + snap_local_baseline_offset_to_device_pixels(
-        baseline_offset_y,
-        scale_factor,
-    );
-    px(((absolute_baseline_y.0 * scale_factor).round() / scale_factor) - origin_y.0)
+    if crate::element::layout_animation_text_motion_active() {
+        // The row/card origin moves continuously while a layout spring is active. Snapping the
+        // absolute baseline on every sample quantizes only the glyph to whole device pixels while
+        // its background keeps moving fractionally, producing the visible one-pixel stepping of
+        // small labels such as version numbers. Keep one local raster phase during motion and let
+        // paint_glyph move the already-rasterized sprite continuously with the element. The
+        // LayoutAnimationTarget settle frame rebuilds the subtree once with the normal static snap.
+        return snap_local_baseline_offset_to_device_pixels(baseline_offset_y, scale_factor);
+    }
+
+    px((((origin_y + baseline_offset_y).0 * scale_factor).round() / scale_factor) - origin_y.0)
 }
 
 pub(super) fn aligned_origin_x(
@@ -74,19 +76,19 @@ mod tests {
     }
 
     #[test]
-    fn layout_motion_uses_device_pixel_baseline() {
-        let snapped = snap_baseline_offset_to_device_pixels(px(0.25), px(12.3), 1.5);
+    fn layout_motion_local_phase_is_device_aligned() {
+        let snapped = snap_local_baseline_offset_to_device_pixels(px(12.3), 1.5);
 
-        assert_approximately_eq(px((px(0.25) + snapped).0 * 1.5), px(19.0));
+        assert_approximately_eq(snapped, px(12.0));
+        assert_approximately_eq(px(snapped.0 * 1.5), px(18.0));
     }
 
     #[test]
-    fn layout_motion_endpoint_matches_static_baseline_on_integer_origin() {
-        let local = snap_baseline_offset_to_device_pixels(px(4.0), px(10.4), 1.0);
-        let static_offset =
-            snap_baseline_offset_to_device_pixels(px(4.0), px(10.4), 1.0);
+    fn layout_motion_local_phase_does_not_quantize_parent_origin() {
+        let local = snap_local_baseline_offset_to_device_pixels(px(10.4), 1.0);
 
-        assert_approximately_eq(local, static_offset);
-        assert_approximately_eq(px(4.0) + local, px(14.0));
+        assert_approximately_eq(local, px(10.0));
+        assert_approximately_eq(px(4.25) + local, px(14.25));
+        assert_approximately_eq(px(4.75) + local, px(14.75));
     }
 }
