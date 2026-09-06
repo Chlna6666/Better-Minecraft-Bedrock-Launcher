@@ -44,7 +44,6 @@ where
         )?);
     }
 
-    // Placeholder-sized: promoted to full capacity on first actual mesh use.
     let custom_mesh_3d_vertices_buffer =
         create_custom_mesh_3d_vertices_buffer(device, label, CUSTOM_MESH_3D_PLACEHOLDER_VERTICES)?;
     let custom_mesh_3d_indices_buffer =
@@ -159,7 +158,6 @@ where
     })?;
     let backdrop_blur_pass_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} backdrop blur passes")),
-        // The separable Gaussian path stores one horizontal and one vertical record per blur.
         size: (MAX_BACKDROP_BLURS * 2 * BACKDROP_BLUR_PASS_BYTES) as u64,
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
@@ -170,18 +168,16 @@ where
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
-    let animation_binding_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} animation bindings")),
-        size: (MAX_ANIMATION_BINDINGS * PACKED_ANIMATION_BINDING_BYTES) as u64,
-        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
-        memory_location: MemoryLocation::CpuToGpu,
-    })?;
     let animation_value_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} animation values")),
         size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
+    // No shader or upload path consumes a separate binding buffer anymore. Keep the legacy handle
+    // alias temporarily so renderer frame-slot plumbing can be removed independently without
+    // retaining a second allocation.
+    let animation_binding_buffer = animation_value_buffer;
     let custom_mesh_3d_parameters_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} custom GPU mesh 3D params + animation sidecar")),
         size: CUSTOM_MESH_3D_FRAME_BUFFER_BYTES as u64,
