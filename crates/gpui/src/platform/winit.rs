@@ -1,6 +1,35 @@
 #![allow(dead_code)]
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::{CursorStyle, Pixels, Point, ResizeEdge, Size, point, px, size};
+
+#[cfg(target_os = "windows")]
+static WINDOWS_NATIVE_WINDOW_MOVE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_native_window_move_active() -> bool {
+    WINDOWS_NATIVE_WINDOW_MOVE_DEPTH.load(Ordering::Acquire) != 0
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsNativeWindowMoveGuard;
+
+#[cfg(target_os = "windows")]
+impl WindowsNativeWindowMoveGuard {
+    fn begin() -> Self {
+        WINDOWS_NATIVE_WINDOW_MOVE_DEPTH.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsNativeWindowMoveGuard {
+    fn drop(&mut self) {
+        WINDOWS_NATIVE_WINDOW_MOVE_DEPTH.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 pub(crate) fn request_window_inner_size(window: &winit::window::Window, size: Size<Pixels>) {
     let _ = window.request_inner_size(winit::dpi::Size::Logical(logical_size_to_winit(size)));
@@ -9,6 +38,9 @@ pub(crate) fn request_window_inner_size(window: &winit::window::Window, size: Si
 pub(crate) fn start_window_move(
     window: &winit::window::Window,
 ) -> Result<(), winit::error::ExternalError> {
+    #[cfg(target_os = "windows")]
+    let _native_move_guard = WindowsNativeWindowMoveGuard::begin();
+
     window.drag_window()
 }
 

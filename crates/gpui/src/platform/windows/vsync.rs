@@ -85,8 +85,22 @@ pub(super) fn spawn_vsync_thread(
             let mut last_foreground_tick = None;
             let mut last_background_tick = None;
             while !thread_scheduler.shutdown.load(Ordering::Acquire) {
-                if !thread_scheduler.frame_pending.swap(false, Ordering::AcqRel) {
+                if !thread_scheduler.frame_pending.load(Ordering::Acquire) {
                     std::thread::park();
+                    continue;
+                }
+
+                if crate::platform::winit::windows_native_window_move_active() {
+                    // Native HWND movement is compositor-owned. Keep the last rendered surface
+                    // stable while DWM moves it and preserve the coalesced frame request for one
+                    // catch-up render after drag_window returns. Presenting each DWM tick here can
+                    // race the HWND position with newly submitted client surfaces and visibly shake
+                    // the whole window, including images and text.
+                    std::thread::sleep(DEFAULT_VSYNC_INTERVAL);
+                    continue;
+                }
+
+                if !thread_scheduler.frame_pending.swap(false, Ordering::AcqRel) {
                     continue;
                 }
 
