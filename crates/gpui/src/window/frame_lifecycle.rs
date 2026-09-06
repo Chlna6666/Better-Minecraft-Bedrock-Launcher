@@ -797,7 +797,7 @@ impl Window {
     }
 
     pub(crate) fn force_view_cache_refresh(&self) -> bool {
-        self.force_view_cache_refresh || crate::element::layout_animation_settle_refresh_active()
+        self.force_view_cache_refresh
     }
 
     fn record_animation_tick_dirty_bounds(

@@ -84,9 +84,6 @@ pub use text_animation::*;
 pub use traits::*;
 pub use uniform_list::*;
 
-pub(crate) use animation::{
-    layout_animation_settle_refresh_active, layout_animation_text_motion_active,
-};
 pub(crate) use div::{
     DivPrepaint, RetainedDivSelfScene, RetainedDivSelfSceneStyle, RetainedDivSemanticKey,
 };

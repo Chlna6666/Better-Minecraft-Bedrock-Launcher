@@ -409,12 +409,7 @@ impl Window {
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
-        let layout_text_motion = crate::element::layout_animation_text_motion_active();
-        // Horizontal ClearType phase is part of the glyph's static raster identity. Preserve it
-        // during layout motion so the retained endpoint is pixel-identical to normal Windows text;
-        // only the vertical sprite coordinate needs to remain continuous for vertical springs.
-        let (_, subpixel_variant) =
-            glyph_device_origin(origin, Point::default(), scale_factor);
+        let (_, subpixel_variant) = glyph_device_origin(origin, Point::default(), scale_factor);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
@@ -441,15 +436,7 @@ impl Window {
                 );
                 return Ok(());
             };
-            let snapped_origin =
-                glyph_device_origin(origin, raster_bounds.origin, scale_factor).0;
-            let origin = if layout_text_motion {
-                let moving_origin =
-                    origin.scale(scale_factor) + raster_bounds.origin.map(Into::into);
-                Point::new(snapped_origin.x, moving_origin.y)
-            } else {
-                snapped_origin
-            };
+            let (origin, _) = glyph_device_origin(origin, raster_bounds.origin, scale_factor);
             let bounds = self.visual_device_bounds(
                 Bounds {
                     origin,
@@ -522,16 +509,10 @@ impl Window {
                 return Ok(());
             };
 
-            let raster_origin = raster_bounds.origin.map(Into::into);
-            let snapped_origin = glyph_origin.map(|px| px.floor()) + raster_origin;
-            let sprite_origin = if crate::element::layout_animation_text_motion_active() {
-                Point::new(snapped_origin.x, glyph_origin.y + raster_origin.y)
-            } else {
-                snapped_origin
-            };
             let bounds = self.visual_device_bounds(
                 Bounds {
-                    origin: sprite_origin,
+                    origin: glyph_origin.map(|px| px.floor())
+                        + raster_bounds.origin.map(Into::into),
                     size: tile.bounds.size.map(Into::into),
                 },
                 scale_factor,
