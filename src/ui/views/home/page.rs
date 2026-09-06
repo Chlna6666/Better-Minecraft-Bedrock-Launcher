@@ -233,11 +233,12 @@ impl HomePageView {
             return div().into_any_element();
         }
 
-        div()
+        let dropdown = div()
             .w_full()
-            .h(px(desired_list_h_px * dropdown_factor))
-            .relative()
-            .top(px(10.0 * (1.0 - dropdown_factor)))
+            // Keep the glyph-bearing subtree at its final layout geometry while the spring runs.
+            // Visual motion is applied below through a renderer-owned SceneAnimationId so glyph
+            // raster origins and Windows subpixel variants do not change from frame to frame.
+            .h(px(desired_list_h_px))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .bg(list_bg)
@@ -279,8 +280,21 @@ impl HomePageView {
                                 )
                             })),
                     ),
-            )
-            .into_any_element()
+            );
+
+        if self.dropdown_animating {
+            dropdown
+                .with_sampled_animation(
+                    AnimationProperty::translation(
+                        point(px(0.0), px(10.0)),
+                        point(px(0.0), px(0.0)),
+                    ),
+                    dropdown_factor,
+                )
+                .into_any_element()
+        } else {
+            dropdown.into_any_element()
+        }
     }
 
     fn render_dropdown_item(
@@ -361,8 +375,8 @@ impl HomePageView {
 
         div()
             .id(SharedString::from(format!("home-version-item-{index}")))
-            .relative()
-            .top(px(10.0 * (1.0 - item_factor)))
+            // Do not animate row position through layout. The parent dropdown owns one visual
+            // translation; stagger remains opacity-only so every glyph keeps one raster phase.
             .opacity(item_factor)
             .w_full()
             .h(px(item_height_px))
@@ -613,6 +627,7 @@ impl HomePageView {
         theme_colors: &crate::ui::theme::colors::ThemeColors,
         theme_dark: bool,
         entrance_eased: f32,
+        entrance_animating: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -656,9 +671,6 @@ impl HomePageView {
             side_margin_px
         };
 
-        let left_offset_px = -40.0 * (1.0 - entrance_eased);
-        let panel_left = left_px + left_offset_px;
-
         let mut panel_bg = theme_colors.settings_panel_bg;
         panel_bg.a = if theme_dark { 0.70 } else { 0.76 };
         let mut panel_border = theme_colors.border;
@@ -667,7 +679,7 @@ impl HomePageView {
         let mut panel = div()
             .id("home-plugin-sidebar")
             .absolute()
-            .left(px(panel_left))
+            .left(px(left_px))
             .top(px(top_px))
             .w(px(width_px))
             .max_h(px(max_height_px))
@@ -720,7 +732,19 @@ impl HomePageView {
             ));
         }
 
-        panel.into_any_element()
+        if entrance_animating {
+            panel
+                .with_sampled_animation(
+                    AnimationProperty::translation(
+                        point(px(-40.0), px(0.0)),
+                        point(px(0.0), px(0.0)),
+                    ),
+                    entrance_eased,
+                )
+                .into_any_element()
+        } else {
+            panel.into_any_element()
+        }
     }
 }
 
@@ -839,7 +863,10 @@ impl Render for HomePageView {
         let mut launcher_root = div()
             .absolute()
             .right(px(40.0))
-            .bottom(px(40.0 - 20.0 * (1.0 - entrance_eased)))
+            // Keep the launcher's logical layout at the endpoint. Entrance motion is a sampled
+            // renderer-owned translation below, so its text is never reshaped/rasterized at a
+            // different device-space phase during the spring.
+            .bottom(px(40.0))
             .opacity(entrance_eased.clamp(0.0, 1.0))
             .w(px(launcher_width_px))
             .flex()
@@ -957,6 +984,19 @@ impl Render for HomePageView {
         launcher_root = launcher_root.child(launch_bar);
         let launcher_animating =
             self.dropdown_animating || entrance_animating || initial_versions_loading;
+        let launcher_root = if entrance_animating {
+            launcher_root
+                .with_sampled_animation(
+                    AnimationProperty::translation(
+                        point(px(0.0), px(20.0)),
+                        point(px(0.0), px(0.0)),
+                    ),
+                    entrance_eased,
+                )
+                .into_any_element()
+        } else {
+            launcher_root.into_any_element()
+        };
 
         let mut overlay = div().absolute().inset_0().child(
             launcher_root.with_layout_animation_target(launcher_animating),
@@ -973,6 +1013,7 @@ impl Render for HomePageView {
                     &theme_colors,
                     theme_dark,
                     entrance_eased,
+                    entrance_animating,
                     window,
                     cx,
                 )
