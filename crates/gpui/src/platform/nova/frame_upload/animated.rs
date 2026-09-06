@@ -3,7 +3,10 @@ use crate::{Primitive, SceneAnimationId, SceneAnimationValue, TransitionProperty
 use smallvec::SmallVec;
 
 const BLUR_SOURCE_BOUNDS_OFFSET: usize = 16;
+const BLUR_ROTATION_METADATA_OFFSET: usize = 80;
 const BLUR_DISPLAY_BOUNDS_OFFSET: usize = 96;
+const BLUR_COMPOSITE_KIND_OFFSET: usize = 132;
+const ROTATED_COMPOSITE_KIND: u32 = 2;
 const ENGINE_ANIMATION_ID_BASE: u32 = 1 << 31;
 const DENSE_LOOKUP_MAX_SPAN: usize = 4096;
 const DENSE_LOOKUP_DENSITY_FACTOR: usize = 4;
@@ -239,13 +242,31 @@ impl AnimatedUpload {
         bytes: &mut Vec<u8>,
     ) -> AnimatedPrimitiveSample {
         let mut primitive = self.primitive.clone();
-        if let Some(value) = primitive
+        let resolved_value = primitive
             .animation_id()
             .and_then(|animation_id| values.get(&animation_id))
+            .copied();
+        let composite_rotation = resolved_value.filter(|value| {
+            value.property == TransitionProperty::Rotation
+                && matches!(primitive, Primitive::Blur(_))
+        });
+        if let Some(value) = resolved_value
+            && composite_rotation.is_none()
         {
-            apply_resolved_value(&mut primitive, *value);
+            apply_resolved_value(&mut primitive, value);
         }
-        let visual_bounds = primitive.visual_bounds();
+        let visual_bounds = composite_rotation
+            .map(|value| {
+                rotated_bounds(
+                    primitive.visual_bounds(),
+                    value.sampled[0],
+                    crate::point(
+                        crate::ScaledPixels(value.sampled[1]),
+                        crate::ScaledPixels(value.sampled[2]),
+                    ),
+                )
+            })
+            .unwrap_or_else(|| primitive.visual_bounds());
         let backdrop_blur = match (&self.primitive, &primitive) {
             (Primitive::BackdropBlur(base), Primitive::BackdropBlur(sampled)) => {
                 Some(BackdropBlurAnimationSample {
@@ -275,6 +296,9 @@ impl AnimatedUpload {
                 // auxiliary slot written by write_paint_blur contains the sampled display bounds.
                 if let Primitive::Blur(base) = &self.primitive {
                     write_packed_bounds_at(bytes, BLUR_SOURCE_BOUNDS_OFFSET, base.bounds);
+                }
+                if let Some(rotation) = composite_rotation {
+                    write_rotation_composite_metadata(bytes, rotation);
                 }
             }
             _ => {}
@@ -498,6 +522,18 @@ fn write_packed_bounds_at(
     }
 }
 
+fn write_rotation_composite_metadata(bytes: &mut [u8], value: ResolvedAnimationValue) {
+    for (index, component) in [value.sampled[0], value.sampled[1], value.sampled[2], 0.0]
+        .into_iter()
+        .enumerate()
+    {
+        let offset = BLUR_ROTATION_METADATA_OFFSET + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&component.to_ne_bytes());
+    }
+    bytes[BLUR_COMPOSITE_KIND_OFFSET..BLUR_COMPOSITE_KIND_OFFSET + 4]
+        .copy_from_slice(&ROTATED_COMPOSITE_KIND.to_ne_bytes());
+}
+
 fn read_packed_bounds_at(bytes: &[u8], offset: usize) -> [f32; 4] {
     std::array::from_fn(|index| {
         let start = offset + index * 4;
@@ -513,6 +549,55 @@ fn bounds_contains(
         && inner.top() >= outer.top()
         && inner.right() <= outer.right()
         && inner.bottom() <= outer.bottom()
+}
+
+fn rotated_bounds(
+    bounds: crate::Bounds<crate::ScaledPixels>,
+    angle: f32,
+    origin: crate::Point<crate::ScaledPixels>,
+) -> crate::Bounds<crate::ScaledPixels> {
+    if !angle.is_finite() || !origin.x.0.is_finite() || !origin.y.0.is_finite() {
+        return bounds;
+    }
+    let (sin, cos) = angle.sin_cos();
+    let rotate = |point: crate::Point<crate::ScaledPixels>| {
+        let x = point.x.0 - origin.x.0;
+        let y = point.y.0 - origin.y.0;
+        crate::point(
+            crate::ScaledPixels(origin.x.0 + x * cos - y * sin),
+            crate::ScaledPixels(origin.y.0 + x * sin + y * cos),
+        )
+    };
+    let corners = [
+        rotate(crate::point(bounds.left(), bounds.top())),
+        rotate(crate::point(bounds.right(), bounds.top())),
+        rotate(crate::point(bounds.left(), bounds.bottom())),
+        rotate(crate::point(bounds.right(), bounds.bottom())),
+    ];
+    let min_x = corners
+        .iter()
+        .map(|point| point.x)
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or(bounds.left());
+    let max_x = corners
+        .iter()
+        .map(|point| point.x)
+        .max_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or(bounds.right());
+    let min_y = corners
+        .iter()
+        .map(|point| point.y)
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or(bounds.top());
+    let max_y = corners
+        .iter()
+        .map(|point| point.y)
+        .max_by(|left, right| left.0.total_cmp(&right.0))
+        .unwrap_or(bounds.bottom());
+    crate::Bounds::new(
+        crate::point(min_x, min_y),
+        crate::size(max_x - min_x, max_y - min_y),
+    )
 }
 
 fn apply_value(primitive: &mut Primitive, value: &SceneAnimationValue) {
@@ -542,19 +627,9 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
                 _ => {}
             }
         }
-        TransitionProperty::Rotation => {
-            if let Primitive::MonochromeSprite(sprite) = primitive {
-                let center = sprite.bounds.center();
-                let rotation = crate::TransformationMatrix::unit()
-                    .translate(center)
-                    .rotate(crate::radians(sampled[0]))
-                    .translate(crate::point(
-                        crate::ScaledPixels(-center.x.0),
-                        crate::ScaledPixels(-center.y.0),
-                    ));
-                sprite.transformation = sprite.transformation.compose(rotation);
-            }
-        }
+        // Rotation is a subtree transform. High-level animation binding promotes it to one
+        // zero-filter PaintBlur composite; raw primitives must never rotate independently.
+        TransitionProperty::Rotation => {}
         TransitionProperty::Scale => apply_scale(primitive, sampled[0], None),
         TransitionProperty::Transform => {
             apply_opacity(primitive, sampled[1].clamp(0.0, 1.0));
@@ -920,53 +995,64 @@ mod tests {
     }
 
     #[test]
-    fn retained_rotation_keeps_the_sprite_center_fixed() {
-        let mut primitive = Primitive::MonochromeSprite(MonochromeSprite {
-            order: 0,
-            pad: 0,
-            animation_id: None,
-            bounds: crate::bounds(
-                crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
-                crate::size(crate::ScaledPixels(30.0), crate::ScaledPixels(40.0)),
-            ),
+    fn retained_rotation_is_one_composite_with_a_shared_pivot() {
+        let id = crate::SceneAnimationId(17);
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(30.0), crate::ScaledPixels(40.0)),
+        );
+        let blur = crate::PaintBlur {
+            order: 3,
+            animation_id: Some(id),
+            bounds,
             content_mask: crate::ContentMask {
-                bounds: crate::bounds(
-                    crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
-                    crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(100.0)),
-                ),
+                bounds,
+                corner_bounds: bounds,
                 ..Default::default()
             },
-            color: crate::Hsla::default().into(),
-            tile: crate::AtlasTile {
-                texture_id: crate::AtlasTextureId {
-                    index: 0,
-                    kind: crate::AtlasTextureKind::Monochrome,
-                },
-                tile_id: crate::TileId(0),
-                padding: 1,
-                bounds: crate::bounds(
-                    crate::point(crate::DevicePixels(0), crate::DevicePixels(0)),
-                    crate::size(crate::DevicePixels(1), crate::DevicePixels(1)),
-                ),
-            },
-            transformation: crate::TransformationMatrix::unit(),
-        });
-        apply_value(
-            &mut primitive,
-            &SceneAnimationValue {
-                animation_id: crate::SceneAnimationId(1),
-                property: TransitionProperty::Rotation,
-                progress: 1.0,
-                from: [0.0; 4],
-                to: [std::f32::consts::FRAC_PI_2, 0.0, 0.0, 0.0],
-            },
-        );
-        let Primitive::MonochromeSprite(sprite) = primitive else {
-            panic!("monochrome sprite");
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
         };
-        let center = crate::point(crate::px(25.0), crate::px(40.0));
-        let transformed = sprite.transformation.apply(center);
-        assert!((transformed.x.0 - center.x.0).abs() < 0.0001);
-        assert!((transformed.y.0 - center.y.0).abs() < 0.0001);
+        let upload = AnimatedUpload::new(
+            Primitive::Blur(blur),
+            AnimatedPrimitiveKind::BackdropBlur,
+            2,
+        );
+        let values = [SceneAnimationValue {
+            animation_id: id,
+            property: TransitionProperty::Rotation,
+            progress: 1.0,
+            from: [0.0, 25.0, 40.0, 0.0],
+            to: [std::f32::consts::FRAC_PI_2, 25.0, 40.0, 0.0],
+        }];
+        let resolved = resolve_animation_values(&values);
+        let mut bytes = Vec::new();
+        let sample = upload.sample_resolved(
+            &resolved,
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
+            &mut bytes,
+        );
+
+        let rotation: [f32; 4] = std::array::from_fn(|index| {
+            let offset = BLUR_ROTATION_METADATA_OFFSET + index * 4;
+            f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        });
+        assert_eq!(rotation, [std::f32::consts::FRAC_PI_2, 25.0, 40.0, 0.0]);
+        assert_eq!(
+            u32::from_ne_bytes(
+                bytes[BLUR_COMPOSITE_KIND_OFFSET..BLUR_COMPOSITE_KIND_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            ROTATED_COMPOSITE_KIND
+        );
+        assert_eq!(sample.visual_bounds.origin.x, crate::ScaledPixels(5.0));
+        assert_eq!(sample.visual_bounds.origin.y, crate::ScaledPixels(25.0));
+        assert_eq!(sample.visual_bounds.size.width, crate::ScaledPixels(40.0));
+        assert_eq!(sample.visual_bounds.size.height, crate::ScaledPixels(30.0));
     }
 }
