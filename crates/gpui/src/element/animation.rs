@@ -24,14 +24,40 @@ const SPRING_TRANSLATION_PROGRESS_MAX: f32 = 2.05;
 
 thread_local! {
     static LAYOUT_ANIMATION_TEXT_MOTION_DEPTH: Cell<u16> = const { Cell::new(0) };
+    static LAYOUT_ANIMATION_SETTLE_REFRESH_DEPTH: Cell<u16> = const { Cell::new(0) };
 }
 
 pub(crate) fn layout_animation_text_motion_active() -> bool {
     LAYOUT_ANIMATION_TEXT_MOTION_DEPTH.with(|depth| depth.get() != 0)
 }
 
+pub(crate) fn layout_animation_settle_refresh_active() -> bool {
+    LAYOUT_ANIMATION_SETTLE_REFRESH_DEPTH.with(|depth| depth.get() != 0)
+}
+
 fn with_layout_animation_text_motion<R>(f: impl FnOnce() -> R) -> R {
     LAYOUT_ANIMATION_TEXT_MOTION_DEPTH.with(|depth| {
+        let previous = depth.get();
+        depth.set(previous.saturating_add(1));
+
+        struct RestoreDepth<'a> {
+            depth: &'a Cell<u16>,
+            previous: u16,
+        }
+
+        impl Drop for RestoreDepth<'_> {
+            fn drop(&mut self) {
+                self.depth.set(self.previous);
+            }
+        }
+
+        let _restore = RestoreDepth { depth, previous };
+        f()
+    })
+}
+
+fn with_layout_animation_settle_refresh<R>(f: impl FnOnce() -> R) -> R {
+    LAYOUT_ANIMATION_SETTLE_REFRESH_DEPTH.with(|depth| {
         let previous = depth.get();
         depth.set(previous.saturating_add(1));
 
@@ -330,6 +356,13 @@ struct LayoutAnimationTargetState {
     animating: bool,
 }
 
+fn layout_animation_target_settling(
+    previous: LayoutAnimationTargetState,
+    animating: bool,
+) -> bool {
+    previous.animating && !animating
+}
+
 impl<E: IntoElement + 'static> IntoElement for LayoutAnimationTargetElement<E> {
     type Element = Self;
 
@@ -339,7 +372,7 @@ impl<E: IntoElement + 'static> IntoElement for LayoutAnimationTargetElement<E> {
 }
 
 impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
-    type RequestLayoutState = AnyElement;
+    type RequestLayoutState = (AnyElement, bool);
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -365,7 +398,7 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
             |state: Option<LayoutAnimationTargetState>, _window| {
                 let previous = state.unwrap_or_default();
                 (
-                    previous.animating && !self.animating,
+                    layout_animation_target_settling(previous, self.animating),
                     LayoutAnimationTargetState {
                         animating: self.animating,
                     },
@@ -373,13 +406,6 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
             },
         );
 
-        if settling {
-            // The last layout-motion frame may contain glyph sprites at fractional device Y so the
-            // animation remains visually continuous. Retained plain-text replay must not promote
-            // that moving raster into the static endpoint: force this settle frame through normal
-            // static glyph paint/snap once. Subsequent static frames return to retained replay.
-            window.refresh();
-        }
         if self.animating {
             window.request_layout_animation_frame(retained_id);
         }
@@ -389,7 +415,16 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
             .take()
             .expect("layout animation target should only be laid out once")
             .into_any_element();
-        (element.request_layout(window, cx), element)
+        let layout_id = if settling {
+            // The last layout-motion frame can retain glyph sprites whose Y origin is fractional.
+            // Disable retained/view-cache reuse only while traversing this target on its settle
+            // frame so the subtree rebuilds its normal static pixel-snapped raster. Unrelated
+            // siblings stay replayable and no extra full-window refresh is scheduled.
+            with_layout_animation_settle_refresh(|| element.request_layout(window, cx))
+        } else {
+            element.request_layout(window, cx)
+        };
+        (layout_id, (element, settling))
     }
 
     fn prepaint(
@@ -397,11 +432,16 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
+        state: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        element.prepaint(window, cx);
+        let (element, settling) = state;
+        if *settling {
+            with_layout_animation_settle_refresh(|| element.prepaint(window, cx));
+        } else {
+            element.prepaint(window, cx);
+        }
     }
 
     fn paint(
@@ -409,16 +449,19 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
+        state: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let (element, settling) = state;
         if self.animating {
             // Layout animation changes logical glyph origins every sample. Mark this synchronous
             // paint scope so text can keep one raster phase and move the atlas sprite continuously
             // instead of re-snapping its bitmap to device pixels every frame.
             with_layout_animation_text_motion(|| element.paint(window, cx));
+        } else if *settling {
+            with_layout_animation_settle_refresh(|| element.paint(window, cx));
         } else {
             element.paint(window, cx);
         }
@@ -891,6 +934,30 @@ mod tests {
             next_animation_frame_delay(false, false, true),
             Some(Duration::ZERO)
         );
+    }
+
+    #[test]
+    fn layout_animation_target_settles_only_on_active_to_static_edge() {
+        let idle = LayoutAnimationTargetState { animating: false };
+        let active = LayoutAnimationTargetState { animating: true };
+
+        assert!(!layout_animation_target_settling(idle, false));
+        assert!(!layout_animation_target_settling(idle, true));
+        assert!(!layout_animation_target_settling(active, true));
+        assert!(layout_animation_target_settling(active, false));
+    }
+
+    #[test]
+    fn layout_animation_settle_refresh_scope_is_nested_and_restored() {
+        assert!(!layout_animation_settle_refresh_active());
+        with_layout_animation_settle_refresh(|| {
+            assert!(layout_animation_settle_refresh_active());
+            with_layout_animation_settle_refresh(|| {
+                assert!(layout_animation_settle_refresh_active());
+            });
+            assert!(layout_animation_settle_refresh_active());
+        });
+        assert!(!layout_animation_settle_refresh_active());
     }
 }
 
