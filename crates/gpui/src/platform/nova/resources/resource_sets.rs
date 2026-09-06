@@ -47,6 +47,15 @@ pub(super) fn create_renderer_resource_sets<D>(
 where
     D: BackendResources,
 {
+    let animation_value_binding = || ResourceBinding {
+        binding: 17,
+        resource: ResourceBindingResource::Buffer(BufferBinding {
+            buffer: buffers.animation_value_buffer,
+            offset: 0,
+            size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
+            stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
+        }),
+    };
     let quad_resource_set = device.create_resource_set(&ResourceSetDescriptor {
         label: Some(format!("{label} quad resource set")),
         layout: layouts.quad_resource_set_layout,
@@ -69,6 +78,7 @@ where
                     stride: Some(PACKED_QUAD_BYTES as u32),
                 }),
             },
+            animation_value_binding(),
         ],
     })?;
     let shadow_resource_set = device.create_resource_set(&ResourceSetDescriptor {

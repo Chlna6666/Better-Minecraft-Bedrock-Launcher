@@ -3,12 +3,14 @@ use super::*;
 #[allow(dead_code)]
 pub(super) const NOVA_SOLID_QUAD_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
     include_str!("shaders/solid_quad.wgsl"),
 );
 
 #[allow(dead_code)]
 pub(super) const NOVA_MONO_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
     include_str!("shaders/text.wgsl"),
     include_str!("shaders/sprite_common.wgsl"),
     include_str!("shaders/mono_sprite.wgsl"),
@@ -19,6 +21,7 @@ pub(super) const NOVA_MONO_SPRITE_SHADER_SOURCE: &str = concat!(
 pub(super) const NOVA_SUBPIXEL_SPRITE_SHADER_SOURCE: &str = concat!(
     "enable dual_source_blending;\n",
     include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
     include_str!("shaders/text.wgsl"),
     include_str!("shaders/sprite_common.wgsl"),
     include_str!("shaders/subpixel_sprite.wgsl"),
@@ -27,6 +30,7 @@ pub(super) const NOVA_SUBPIXEL_SPRITE_SHADER_SOURCE: &str = concat!(
 #[allow(dead_code)]
 pub(super) const NOVA_QUAD_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
     include_str!("shaders/shape.wgsl"),
     include_str!("shaders/quad_common.wgsl"),
     include_str!("shaders/quad.wgsl"),
@@ -55,6 +59,7 @@ pub(super) const NOVA_UNDERLINE_SHADER_SOURCE: &str = concat!(
 #[allow(dead_code)]
 pub(super) const NOVA_POLY_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
     include_str!("shaders/shape.wgsl"),
     include_str!("shaders/poly_sprite.wgsl"),
 );

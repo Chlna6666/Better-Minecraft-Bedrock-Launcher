@@ -279,6 +279,18 @@ fn uses_poly_sprite_resource_sets(
         )
 }
 
+fn indexed_animation_binding(buffers: FrameResourceBuffers) -> ResourceBinding {
+    ResourceBinding {
+        binding: 17,
+        resource: ResourceBindingResource::Buffer(BufferBinding {
+            buffer: buffers.animation_value_buffer,
+            offset: 0,
+            size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
+            stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
+        }),
+    }
+}
+
 fn create_mono_atlas_resource_set<D>(
     device: &mut D,
     label: &str,
@@ -335,6 +347,7 @@ where
                     stride: Some(PACKED_MONO_SPRITE_BYTES as u32),
                 }),
             },
+            indexed_animation_binding(buffers),
         ],
     })?)
 }
@@ -386,6 +399,7 @@ where
                     stride: Some(PACKED_POLY_SPRITE_BYTES as u32),
                 }),
             },
+            indexed_animation_binding(buffers),
         ],
     })?)
 }

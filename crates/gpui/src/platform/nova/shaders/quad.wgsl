@@ -8,7 +8,7 @@ const DASH_VELOCITY_NUMERATOR: f32 = 1.0 / DASH_PERIOD_PER_WIDTH;
 
 // Keep in sync with solid_quad.wgsl; both read the same packed Quad buffer.
 struct Quad {
-    order: u32,
+    animation_slot: u32,
     border_style: u32,
     bounds: Bounds,
     content_mask: ContentMask,
@@ -31,15 +31,19 @@ struct QuadVarying {
     @location(6) @interpolate(flat) background_tag: u32,
     @location(7) @interpolate(flat) content_mask_bounds: vec4<f32>,
     @location(8) @interpolate(flat) content_mask_radii: vec4<f32>,
+    @location(9) @interpolate(flat) animation_slot: u32,
 }
 
 @vertex
 fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> QuadVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let quad = b_quads[instance_id];
+    let animation = resolve_visual_animation(quad.animation_slot, quad.bounds);
+    let bounds = animation_bounds(quad.bounds, animation);
+    let content_mask = animation_content_mask(quad.content_mask, animation);
 
     var out = QuadVarying();
-    out.position = to_device_position(unit_vertex, quad.bounds);
+    out.position = to_device_position(unit_vertex, bounds);
 
     let gradient = prepare_gradient_color(
         quad.background.tag,
@@ -50,12 +54,17 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     out.background_solid = gradient.solid;
     out.background_color0 = gradient.color0;
     out.background_color1 = gradient.color1;
+    out.background_solid.a *= animation.opacity;
+    out.background_color0.a *= animation.opacity;
+    out.background_color1.a *= animation.opacity;
     out.background_tag = quad.background.tag;
     out.border_color = rgba_to_vec4(quad.border_color);
+    out.border_color.a *= animation.opacity;
     out.quad_id = instance_id;
-    out.clip_distances = distance_from_clip_rect(unit_vertex, quad.bounds, quad.content_mask.bounds);
-    out.content_mask_bounds = vec4<f32>(quad.content_mask.corner_bounds.origin, quad.content_mask.corner_bounds.size);
-    out.content_mask_radii = vec4<f32>(quad.content_mask.corner_radii.top_left, quad.content_mask.corner_radii.top_right, quad.content_mask.corner_radii.bottom_right, quad.content_mask.corner_radii.bottom_left);
+    out.clip_distances = distance_from_clip_rect(unit_vertex, bounds, content_mask.bounds);
+    out.content_mask_bounds = vec4<f32>(content_mask.corner_bounds.origin, content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(content_mask.corner_radii.top_left, content_mask.corner_radii.top_right, content_mask.corner_radii.bottom_right, content_mask.corner_radii.bottom_left);
+    out.animation_slot = quad.animation_slot;
     return out;
 }
 
@@ -76,7 +85,11 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    let quad = b_quads[input.quad_id];
+    var quad = b_quads[input.quad_id];
+    let animation = resolve_visual_animation(input.animation_slot, quad.bounds);
+    quad.bounds = animation_bounds(quad.bounds, animation);
+    quad.corner_radii = animation_corners(quad.corner_radii, animation);
+    quad.border_widths = animation_edges(quad.border_widths, animation);
 
     var background_color = input.background_solid;
     if (input.background_tag != 0u) {
@@ -327,8 +340,8 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
                             t = upto_l - corner_t * dash_velocity;
                         } else {
                             dash_velocity = corner_dash_velocity_tl;
-                            // Added because radians is 0 to pi/2 when going
-                            // clockwise around the top-left corner, since both
+                            // Added because radians is 0 to pi/2 when
+                            // going clockwise around the top-left corner, since both
                             // axis were flipped
                             t = upto_tl + corner_t * dash_velocity;
                         }

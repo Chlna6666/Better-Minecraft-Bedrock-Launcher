@@ -10,6 +10,7 @@ mod capacity;
 mod element_blur_animation;
 mod encode;
 mod frame;
+mod gpu_indexed_animation;
 mod layers;
 mod mesh_animation;
 mod path_cache;

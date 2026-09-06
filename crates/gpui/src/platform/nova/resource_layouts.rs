@@ -41,6 +41,11 @@ where
                     binding_type: ResourceBindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
+                ResourceSetLayoutEntry {
+                    binding: 17,
+                    binding_type: ResourceBindingType::StorageBuffer,
+                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                },
             ],
         })?;
     let shadow_resource_set_layout =
@@ -130,6 +135,11 @@ where
                     binding_type: ResourceBindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
+                ResourceSetLayoutEntry {
+                    binding: 17,
+                    binding_type: ResourceBindingType::StorageBuffer,
+                    stages: ShaderStages::VERTEX,
+                },
             ],
         })?;
     let poly_resource_set_layout =
@@ -153,6 +163,11 @@ where
                 },
                 ResourceSetLayoutEntry {
                     binding: 9,
+                    binding_type: ResourceBindingType::StorageBuffer,
+                    stages: ShaderStages::VERTEX,
+                },
+                ResourceSetLayoutEntry {
+                    binding: 17,
                     binding_type: ResourceBindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },

@@ -408,9 +408,12 @@ impl NovaRenderer {
             // Parse it once here and reuse the retained slice throughout target planning, present
             // damage and draw-step construction instead of rebuilding temporary Vecs per consumer.
             self.frame_upload.refresh_blur_content_ranges();
-            // Capture static content before animation sampling mutates the packed primitive bytes.
-            // Animation topology is part of the token so removing an animation forces one restoring
-            // full-stream upload instead of leaving the last sampled primitive resident on the GPU.
+            // Promote ordinary Quad/glyph/image animation before hashing static streams. The
+            // otherwise-unused packed draw-order lane becomes a stable animation slot and promoted
+            // records leave `animated_primitives`, eliminating per-glyph CPU serialization.
+            self.frame_upload.promote_gpu_indexed_animations();
+            // Capture static content after slot assignment but before CPU-driven Shadow/Blur
+            // sampling mutates its packed primitive bytes.
             let static_signature = StaticUploadSignature::from_frame_upload(&self.frame_upload);
             self.retained_upload.replace(
                 key,
@@ -419,10 +422,13 @@ impl NovaRenderer {
                 static_signature,
             );
         }
-        // The animation sampler needs to know whether static scene pixels were retained. Only then
-        // may composite-only blur animation suppress self damage; a rebuilt display list can contain
-        // real source changes inside or before the same filter layer.
-        self.frame_upload.retained_static_reused = reusable;
+        // GPU-indexed source animations are intentionally absent from `animated_primitives`.
+        // During their active/previous-frame window, disable aggressive retained blur self-damage
+        // suppression so a filtered backdrop cannot reuse stale source pixels.
+        let gpu_indexed_animation_blocks_blur_reuse =
+            self.frame_upload.gpu_indexed_animation_affects_blur_history();
+        self.frame_upload.retained_static_reused =
+            reusable && !gpu_indexed_animation_blocks_blur_reuse;
         self.frame_upload
             .sample_animated_primitives(self.current_size);
 

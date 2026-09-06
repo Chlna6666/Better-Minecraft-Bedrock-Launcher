@@ -121,9 +121,16 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) animation_values: Vec<u8>,
     pub(in crate::platform::nova) animated_primitives: Vec<AnimatedUpload>,
     pub(in crate::platform::nova) sampled_animation_values: Vec<crate::SceneAnimationValue>,
-    /// One shared serialization scratch for all animated primitives. The largest current record is
-    /// 136 bytes, so this replaces thousands of per-primitive tiny Vec allocations in glyph-heavy
-    /// retained animations while keeping the packed GPU buffers contiguous.
+    /// Stable renderer-owned animation slots for GPU-indexed Quad / glyph / image primitives.
+    /// Many primitives may point at the same slot, so one 64-byte timeline record drives an entire
+    /// text run or image group without rewriting any packed primitive bytes on animation frames.
+    pub(in crate::platform::nova) gpu_indexed_animation_slots:
+        FxHashMap<crate::SceneAnimationId, u32>,
+    /// Dense dynamic value table addressed by `gpu_indexed_animation_slots`. It is rebuilt from the
+    /// compact Scene animation-value stream and uploaded with one contiguous buffer write per frame.
+    pub(in crate::platform::nova) gpu_indexed_animation_values: Vec<u8>,
+    /// One shared serialization scratch for CPU-driven animated primitives. Quad / glyph / image
+    /// animations promoted to the indexed GPU ABI never enter this hot clone/mutate/serialize path.
     pub(in crate::platform::nova) animated_primitive_staging: Vec<u8>,
     /// Reused sampled visual bounds used by backdrop damage dependency checks.
     pub(in crate::platform::nova) animated_visual_bounds_scratch:

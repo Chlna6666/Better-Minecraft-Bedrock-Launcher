@@ -1,7 +1,7 @@
 // --- polychrome sprites --- //
 
 struct PolychromeSprite {
-    order: u32,
+    animation_slot: u32,
     pad: u32,
     grayscale: u32,
     opacity: f32,
@@ -31,21 +31,25 @@ struct PolySpriteVarying {
 fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> PolySpriteVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let sprite = b_poly_sprites[instance_id];
+    let animation = resolve_visual_animation(sprite.animation_slot, sprite.bounds);
+    let bounds = animation_bounds(sprite.bounds, animation);
+    let content_mask = animation_content_mask(sprite.content_mask, animation);
+    let corner_radii = animation_corners(sprite.corner_radii, animation);
 
     var out = PolySpriteVarying();
-    out.position = to_device_position(unit_vertex, sprite.bounds);
+    out.position = to_device_position(unit_vertex, bounds);
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
     out.grayscale = sprite.grayscale;
-    out.opacity = sprite.opacity;
-    out.clip_distances = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask.bounds);
-    out.content_mask_bounds = vec4<f32>(sprite.content_mask.corner_bounds.origin, sprite.content_mask.corner_bounds.size);
-    out.content_mask_radii = vec4<f32>(sprite.content_mask.corner_radii.top_left, sprite.content_mask.corner_radii.top_right, sprite.content_mask.corner_radii.bottom_right, sprite.content_mask.corner_radii.bottom_left);
-    out.bounds = vec4<f32>(sprite.bounds.origin, sprite.bounds.size);
+    out.opacity = sprite.opacity * animation.opacity;
+    out.clip_distances = distance_from_clip_rect(unit_vertex, bounds, content_mask.bounds);
+    out.content_mask_bounds = vec4<f32>(content_mask.corner_bounds.origin, content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(content_mask.corner_radii.top_left, content_mask.corner_radii.top_right, content_mask.corner_radii.bottom_right, content_mask.corner_radii.bottom_left);
+    out.bounds = vec4<f32>(bounds.origin, bounds.size);
     out.corner_radii = vec4<f32>(
-        sprite.corner_radii.top_left,
-        sprite.corner_radii.top_right,
-        sprite.corner_radii.bottom_right,
-        sprite.corner_radii.bottom_left,
+        corner_radii.top_left,
+        corner_radii.top_right,
+        corner_radii.bottom_right,
+        corner_radii.bottom_left,
     );
     out.tile_origin = vec2<i32>(sprite.tile.bounds.origin);
     out.tile_size = max(vec2<i32>(1), vec2<i32>(sprite.tile.bounds.size));
