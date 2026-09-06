@@ -542,7 +542,38 @@ impl Window {
         }
 
         let targeted_replay = self.retained_replay_is_targeted();
-        if targeted_replay && self.invalidator.retained_path_is_dirty(retained_id) {
+        let current_view = if targeted_replay {
+            self.current_view_or_root()
+        } else {
+            None
+        };
+        let current_view_path = current_view.map(|view| {
+            self.rendered_frame.dispatch_tree.view_path(view)
+        });
+        let target_owner_shares_current_view_route = |owner: EntityId| {
+            let Some(current_view) = current_view else {
+                return false;
+            };
+            if owner == current_view {
+                return true;
+            }
+            if current_view_path
+                .as_ref()
+                .is_some_and(|path| path.contains(&owner))
+            {
+                return true;
+            }
+            self.rendered_frame
+                .dispatch_tree
+                .view_path(owner)
+                .contains(&current_view)
+        };
+        if targeted_replay
+            && self.invalidator.retained_path_is_dirty_for_view_route(
+                retained_id,
+                &target_owner_shares_current_view_route,
+            )
+        {
             return None;
         }
 
@@ -562,7 +593,10 @@ impl Window {
         if targeted_replay
             && self
                 .invalidator
-                .retained_path_requires_reconciliation(retained_id)
+                .retained_path_requires_reconciliation_for_view_route(
+                    retained_id,
+                    &target_owner_shares_current_view_route,
+                )
         {
             if retained.layout_fingerprint.is_none()
                 || retained.layout_fingerprint != layout_fingerprint
