@@ -51,6 +51,7 @@ struct BackdropBlurVarying {
     @location(6) @interpolate(flat) content_mask_bounds: vec4<f32>,
     @location(7) @interpolate(flat) content_mask_radii: vec4<f32>,
     @location(8) @interpolate(flat) opacity: f32,
+    @location(9) local_position: vec2<f32>,
 }
 
 // For wide kernels write_backdrop_blur_pass() uses sigma = radius and tap_step = 3 * sigma / 8. The
@@ -144,19 +145,33 @@ fn vs_backdrop_blur(
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let blur = b_backdrop_blurs[instance_id];
     let source_position = blur.bounds.origin + unit_vertex * blur.bounds.size;
-    let is_element_composite = blur.composite_kind == 1u;
+    let is_element_composite = blur.composite_kind != 0u;
+    let is_rotated_composite = blur.composite_kind == 2u;
     var display_origin = blur.bounds.origin;
     var display_size = blur.bounds.size;
     if (is_element_composite) {
         display_origin = vec2<f32>(blur.tint.h, blur.tint.s);
         display_size = vec2<f32>(blur.tint.l, blur.tint.a);
     }
-    let display_position = display_origin + unit_vertex * display_size;
+    let local_display_position = display_origin + unit_vertex * display_size;
+    var display_position = local_display_position;
+    if (is_rotated_composite) {
+        let angle = blur.corner_radii.top_left;
+        let pivot = vec2<f32>(blur.corner_radii.top_right, blur.corner_radii.bottom_right);
+        let delta = local_display_position - pivot;
+        let sine = sin(angle);
+        let cosine = cos(angle);
+        display_position = pivot + vec2<f32>(
+            delta.x * cosine - delta.y * sine,
+            delta.x * sine + delta.y * cosine,
+        );
+    }
 
     var out = BackdropBlurVarying();
     out.position = to_device_position_impl(display_position);
+    out.local_position = local_display_position;
     out.texture_coords = source_position / max(blur.blurred_size, vec2<f32>(1.0));
-    out.clip_distances = distance_from_clip_rect_impl(display_position, blur.content_mask.bounds);
+    out.clip_distances = distance_from_clip_rect_impl(local_display_position, blur.content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(
         blur.content_mask.corner_bounds.origin,
         blur.content_mask.corner_bounds.size,
@@ -168,12 +183,13 @@ fn vs_backdrop_blur(
         blur.content_mask.corner_radii.bottom_left,
     );
     out.bounds = vec4<f32>(display_origin, display_size);
-    out.corner_radii = vec4<f32>(
+    let packed_corner_radii = vec4<f32>(
         blur.corner_radii.top_left,
         blur.corner_radii.top_right,
         blur.corner_radii.bottom_right,
         blur.corner_radii.bottom_left,
     );
+    out.corner_radii = select(packed_corner_radii, vec4<f32>(0.0), is_rotated_composite);
     out.saturation = blur.saturation;
     out.opacity = blur.opacity;
     out.tint = select(hsla_to_rgba(blur.tint), vec4<f32>(0.0), is_element_composite);
@@ -191,14 +207,14 @@ fn fs_backdrop_blur(input: BackdropBlurVarying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
     let clip_coverage = content_mask_coverage_from_packed(
-        input.position.xy,
+        input.local_position,
         input.content_mask_bounds,
         input.content_mask_radii,
     );
     if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
-    let distance = quad_sdf_from_packed(input.position.xy, input.bounds, input.corner_radii);
+    let distance = quad_sdf_from_packed(input.local_position, input.bounds, input.corner_radii);
     let alpha = saturate(SDF_ANTIALIAS_THRESHOLD - distance);
     if (alpha <= 0.0) {
         return vec4<f32>(0.0);
