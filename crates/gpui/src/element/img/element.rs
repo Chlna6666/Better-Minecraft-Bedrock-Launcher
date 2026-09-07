@@ -205,6 +205,7 @@ impl Element for Img {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut layout_state = ImageLayout {
+            image: None,
             frame: None,
             replacement: None,
         };
@@ -305,6 +306,7 @@ impl Element for Img {
                             }
 
                             layout_state.frame = Some(frame);
+                            layout_state.image = Some(data);
                         }
                         Some(_err) => {
                             if let Some(fallback) = self.style.fallback.as_ref() {
@@ -450,13 +452,9 @@ impl Element for Img {
                     return;
                 }
 
-                if let Some(Ok(render_image)) = source.use_render_image(
-                    self.image_cache
-                        .clone()
-                        .or_else(|| window.image_cache_stack.last().cloned()),
-                    window,
-                    cx,
-                ) {
+                // Keep layout and paint on the same resolved image. Another element can evict
+                // its cache entry between these phases; querying again can lose a ready frame.
+                if let Some(render_image) = layout_state.image.clone() {
                     let animation_config = animation_policy
                         .apply_to(cx.image_pipeline_config().animated)
                         .clamped();
