@@ -5,6 +5,44 @@ use crate::{
 use std::{fmt::Debug, ops::Range};
 use taffy::geometry::{Point as TaffyPoint, Rect as TaffyRect, Size as TaffySize};
 
+#[inline]
+fn round_half_toward_zero(value: f32) -> f32 {
+    (value.abs() - 0.5).ceil().copysign(value)
+}
+
+#[inline]
+fn round_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
+    round_half_toward_zero(logical * scale_factor)
+}
+
+#[inline]
+fn round_stroke_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
+    if logical == 0.0 {
+        0.0
+    } else {
+        round_to_device_pixel(logical.max(0.0), scale_factor).max(1.0)
+    }
+}
+
+fn border_widths_to_taffy(
+    widths: &Edges<AbsoluteLength>,
+    rem_size: Pixels,
+    scale_factor: f32,
+) -> TaffyRect<taffy::style::LengthPercentage> {
+    let snap = |width: &AbsoluteLength| {
+        taffy::style::LengthPercentage::length(round_stroke_to_device_pixel(
+            width.to_pixels(rem_size).0,
+            scale_factor,
+        ))
+    };
+    TaffyRect {
+        top: snap(&widths.top),
+        right: snap(&widths.right),
+        bottom: snap(&widths.bottom),
+        left: snap(&widths.left),
+    }
+}
+
 pub(super) trait ToTaffy<Output> {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> Output;
 }
@@ -115,8 +153,13 @@ impl ToTaffy<taffy::style::Style> for LayoutStyle {
             unit: &Option<u16>,
         ) -> Vec<taffy::GridTemplateComponent<T>> {
             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
-            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
-                .unwrap_or_default()
+            unit.map(|count| {
+                vec![repeat(
+                    count,
+                    vec![minmax(length(0.0_f32), fr(1.0_f32))],
+                )]
+            })
+            .unwrap_or_default()
         }
 
         let has_grid =
@@ -135,7 +178,7 @@ impl ToTaffy<taffy::style::Style> for LayoutStyle {
                 aspect_ratio: self.aspect_ratio,
                 margin: self.margin.to_taffy(rem_size, scale_factor),
                 padding: self.padding.to_taffy(rem_size, scale_factor),
-                border: self.border_widths.to_taffy(rem_size, scale_factor),
+                border: border_widths_to_taffy(&self.border_widths, rem_size, scale_factor),
                 align_items: self.align_items.map(|x| x.into()),
                 align_self: self.align_self.map(|x| x.into()),
                 align_content: self.align_content.map(|x| x.into()),
@@ -162,7 +205,7 @@ impl ToTaffy<taffy::style::Style> for LayoutStyle {
             aspect_ratio: self.aspect_ratio,
             margin: self.margin.to_taffy(rem_size, scale_factor),
             padding: self.padding.to_taffy(rem_size, scale_factor),
-            border: self.border_widths.to_taffy(rem_size, scale_factor),
+            border: border_widths_to_taffy(&self.border_widths, rem_size, scale_factor),
             align_items: self.align_items.map(|x| x.into()),
             align_self: self.align_self.map(|x| x.into()),
             align_content: self.align_content.map(|x| x.into()),
@@ -192,16 +235,7 @@ impl ToTaffy<taffy::style::Style> for LayoutStyle {
 
 impl ToTaffy<f32> for AbsoluteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> f32 {
-        match self {
-            AbsoluteLength::Pixels(pixels) => {
-                let pixels: f32 = pixels.into();
-                pixels * scale_factor
-            }
-            AbsoluteLength::Rems(rems) => {
-                let pixels: f32 = (*rems * rem_size).into();
-                pixels * scale_factor
-            }
-        }
+        round_to_device_pixel(self.to_pixels(rem_size).0, scale_factor)
     }
 }
 
@@ -230,16 +264,7 @@ impl ToTaffy<taffy::style::Dimension> for Length {
 impl ToTaffy<taffy::style::LengthPercentage> for DefiniteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::LengthPercentage {
         match self {
-            DefiniteLength::Absolute(length) => match length {
-                AbsoluteLength::Pixels(pixels) => {
-                    let pixels: f32 = pixels.into();
-                    taffy::style::LengthPercentage::length(pixels * scale_factor)
-                }
-                AbsoluteLength::Rems(rems) => {
-                    let pixels: f32 = (*rems * rem_size).into();
-                    taffy::style::LengthPercentage::length(pixels * scale_factor)
-                }
-            },
+            DefiniteLength::Absolute(length) => length.to_taffy(rem_size, scale_factor),
             DefiniteLength::Fraction(fraction) => {
                 taffy::style::LengthPercentage::percent(*fraction)
             }
@@ -250,16 +275,9 @@ impl ToTaffy<taffy::style::LengthPercentage> for DefiniteLength {
 impl ToTaffy<taffy::style::LengthPercentageAuto> for DefiniteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::LengthPercentageAuto {
         match self {
-            DefiniteLength::Absolute(length) => match length {
-                AbsoluteLength::Pixels(pixels) => {
-                    let pixels: f32 = pixels.into();
-                    taffy::style::LengthPercentageAuto::length(pixels * scale_factor)
-                }
-                AbsoluteLength::Rems(rems) => {
-                    let pixels: f32 = (*rems * rem_size).into();
-                    taffy::style::LengthPercentageAuto::length(pixels * scale_factor)
-                }
-            },
+            DefiniteLength::Absolute(length) => {
+                taffy::style::LengthPercentageAuto::length(length.to_taffy(rem_size, scale_factor))
+            }
             DefiniteLength::Fraction(fraction) => {
                 taffy::style::LengthPercentageAuto::percent(*fraction)
             }
@@ -270,15 +288,9 @@ impl ToTaffy<taffy::style::LengthPercentageAuto> for DefiniteLength {
 impl ToTaffy<taffy::style::Dimension> for DefiniteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::Dimension {
         match self {
-            DefiniteLength::Absolute(length) => match length {
-                AbsoluteLength::Pixels(pixels) => {
-                    let pixels: f32 = pixels.into();
-                    taffy::style::Dimension::length(pixels * scale_factor)
-                }
-                AbsoluteLength::Rems(rems) => {
-                    taffy::style::Dimension::length((*rems * rem_size * scale_factor).into())
-                }
-            },
+            DefiniteLength::Absolute(length) => {
+                taffy::style::Dimension::length(length.to_taffy(rem_size, scale_factor))
+            }
             DefiniteLength::Fraction(fraction) => taffy::style::Dimension::percent(*fraction),
         }
     }
@@ -286,16 +298,9 @@ impl ToTaffy<taffy::style::Dimension> for DefiniteLength {
 
 impl ToTaffy<taffy::style::LengthPercentage> for AbsoluteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::LengthPercentage {
-        match self {
-            AbsoluteLength::Pixels(pixels) => {
-                let pixels: f32 = pixels.into();
-                taffy::style::LengthPercentage::length(pixels * scale_factor)
-            }
-            AbsoluteLength::Rems(rems) => {
-                let pixels: f32 = (*rems * rem_size).into();
-                taffy::style::LengthPercentage::length(pixels * scale_factor)
-            }
-        }
+        taffy::style::LengthPercentage::length(
+            <AbsoluteLength as ToTaffy<f32>>::to_taffy(self, rem_size, scale_factor),
+        )
     }
 }
 
@@ -377,8 +382,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::ToTaffy;
-    use crate::{LayoutStyle, Style, performance_metrics_snapshot, px};
+    use super::{ToTaffy, border_widths_to_taffy};
+    use crate::{AbsoluteLength, Edges, LayoutStyle, Style, performance_metrics_snapshot, px};
 
     #[test]
     fn style_to_taffy_records_single_conversion() {
@@ -397,5 +402,30 @@ mod tests {
         assert!(taffy_style.grid_template_columns.is_empty());
         assert_eq!(taffy_style.grid_row, Default::default());
         assert_eq!(taffy_style.grid_column, Default::default());
+    }
+
+    #[test]
+    fn absolute_lengths_snap_before_taffy_layout() {
+        let length = AbsoluteLength::Pixels(px(1.0));
+        assert_eq!(<AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.5), 1.0);
+
+        let length = AbsoluteLength::Pixels(px(1.6));
+        assert_eq!(<AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.0), 2.0);
+    }
+
+    #[test]
+    fn border_widths_keep_nonzero_strokes_visible() {
+        let widths = Edges {
+            top: AbsoluteLength::Pixels(px(0.0)),
+            right: AbsoluteLength::Pixels(px(0.4)),
+            bottom: AbsoluteLength::Pixels(px(0.5)),
+            left: AbsoluteLength::Pixels(px(1.6)),
+        };
+        let border = border_widths_to_taffy(&widths, px(16.0), 1.0);
+
+        assert_eq!(border.top, taffy::style::LengthPercentage::length(0.0));
+        assert_eq!(border.right, taffy::style::LengthPercentage::length(1.0));
+        assert_eq!(border.bottom, taffy::style::LengthPercentage::length(1.0));
+        assert_eq!(border.left, taffy::style::LengthPercentage::length(2.0));
     }
 }
