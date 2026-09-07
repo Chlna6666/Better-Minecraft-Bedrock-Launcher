@@ -825,7 +825,7 @@ impl VisualTestContext {
             window.with_absolute_element_offset(origin, |window| element.prepaint(window, cx));
 
             window.invalidator.set_phase(DrawPhase::Paint);
-            let (request_layout_state, prepaint_state) = element.paint(window, cx);
+            let (request_layout_state, prepaint_state) = element.paint_for_test(window, cx);
 
             window.invalidator.set_phase(DrawPhase::None);
             window.refresh();

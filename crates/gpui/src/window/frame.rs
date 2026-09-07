@@ -251,6 +251,11 @@ pub(crate) struct PaintIndex {
 }
 
 impl PaintIndex {
+    #[cfg(test)]
+    pub(crate) fn scene_index(&self) -> usize {
+        self.scene_index
+    }
+
     pub(crate) fn rebased_from(&self, source: &Self, target: &Self) -> Option<Self> {
         Some(Self {
             scene_index: rebase_index(self.scene_index, source.scene_index, target.scene_index)?,

@@ -140,7 +140,9 @@ fn any_view_scene_ranges(window: &Window) -> Vec<Range<usize>> {
                 .inner
                 .downcast_ref::<Option<AnyViewState>>()?
                 .as_ref()
-                .map(|state| state.paint_range.start.scene_index..state.paint_range.end.scene_index)
+                .map(|state| {
+                    state.paint_range.start.scene_index()..state.paint_range.end.scene_index()
+                })
         })
         .collect::<Vec<_>>();
     ranges.sort_by_key(|range| range.start);

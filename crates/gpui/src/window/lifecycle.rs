@@ -644,7 +644,7 @@ mod retained_dirty_scope_tests {
 
         invalidator.set_dirty(false);
         assert!(invalidator.invalidate_retained_path_with_scope(
-            EntityId::from_u64(1),
+            EntityId::from(1),
             Some(&dirty),
             RetainedInvalidationScope::ReconcileSubtree,
         ));
@@ -665,12 +665,12 @@ mod retained_dirty_scope_tests {
 
         invalidator.set_dirty(false);
         assert!(invalidator.invalidate_retained_path_with_scope(
-            EntityId::from_u64(1),
+            EntityId::from(1),
             Some(&dirty),
             RetainedInvalidationScope::ReconcileSubtree,
         ));
         assert!(invalidator.invalidate_retained_path_with_scope(
-            EntityId::from_u64(1),
+            EntityId::from(1),
             Some(&dirty),
             RetainedInvalidationScope::InvalidateSubtree,
         ));
@@ -683,8 +683,8 @@ mod retained_dirty_scope_tests {
     #[test]
     fn identical_retained_paths_keep_view_owned_scope() {
         let invalidator = WindowInvalidator::new();
-        let first_view = EntityId::from_u64(1);
-        let second_view = EntityId::from_u64(2);
+        let first_view = EntityId::from(1);
+        let second_view = EntityId::from(2);
         let dirty = path(&[0, 1]);
         let descendant = path(&[0, 1, 2]);
 
@@ -718,7 +718,7 @@ mod retained_dirty_scope_tests {
         let dirty = path(&[0, 1]);
 
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path(EntityId::from_u64(1), Some(&dirty), false));
+        assert!(invalidator.invalidate_retained_path(EntityId::from(1), Some(&dirty), false));
         invalidator.set_dirty(false);
 
         assert!(invalidator.retained_path_is_descendant_only(&ancestor));
@@ -732,7 +732,7 @@ mod retained_dirty_scope_tests {
         let descendant = path(&[0, 1]);
 
         invalidator.set_dirty(false);
-        assert!(invalidator.invalidate_retained_path(EntityId::from_u64(1), Some(&dirty), true));
+        assert!(invalidator.invalidate_retained_path(EntityId::from(1), Some(&dirty), true));
         invalidator.set_dirty(false);
 
         assert!(!invalidator.retained_path_is_descendant_only(&dirty));
@@ -754,8 +754,8 @@ mod retained_dirty_scope_tests {
     #[test]
     fn generic_view_invalidation_preserves_unrelated_targeted_replay() {
         let invalidator = WindowInvalidator::new();
-        let targeted_view = EntityId::from_u64(1);
-        let generic_view = EntityId::from_u64(2);
+        let targeted_view = EntityId::from(1);
+        let generic_view = EntityId::from(2);
         let dirty = path(&[0, 1]);
 
         invalidator.set_dirty(false);
@@ -780,7 +780,7 @@ mod retained_dirty_scope_tests {
     #[test]
     fn generic_view_invalidation_wins_over_same_view_target() {
         let invalidator = WindowInvalidator::new();
-        let view = EntityId::from_u64(1);
+        let view = EntityId::from(1);
         let dirty = path(&[0, 1]);
 
         invalidator.set_dirty(false);
@@ -803,7 +803,7 @@ mod retained_dirty_scope_tests {
     #[test]
     fn layout_animation_frame_ticket_is_per_target() {
         let invalidator = WindowInvalidator::new();
-        let entity = EntityId::from_u64(1);
+        let entity = EntityId::from(1);
         let first = path(&[0, 1]);
         let second = path(&[0, 2]);
 
@@ -818,7 +818,7 @@ mod retained_dirty_scope_tests {
     #[test]
     fn immediate_layout_animation_ticket_supersedes_delayed_ticket() {
         let invalidator = WindowInvalidator::new();
-        let entity = EntityId::from_u64(1);
+        let entity = EntityId::from(1);
         let target = path(&[0, 1]);
         let deadline = Instant::now() + Duration::from_millis(8);
         let generation = invalidator
@@ -837,7 +837,7 @@ mod retained_dirty_scope_tests {
     #[test]
     fn earlier_layout_animation_deadline_replaces_later_generation() {
         let invalidator = WindowInvalidator::new();
-        let entity = EntityId::from_u64(1);
+        let entity = EntityId::from(1);
         let target = path(&[0, 1]);
         let now = Instant::now();
         let later = now + Duration::from_millis(12);

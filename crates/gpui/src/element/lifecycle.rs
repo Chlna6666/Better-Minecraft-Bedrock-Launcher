@@ -93,6 +93,10 @@ pub struct Drawable<E: Element> {
     retained_source_location: Option<&'static core::panic::Location<'static>>,
     retained_source_ordinal: Option<u32>,
     phase: ElementDrawPhase<E::RequestLayoutState, E::PrepaintState>,
+    #[cfg(any(test, feature = "test-support"))]
+    painted_state: Option<(E::RequestLayoutState, E::PrepaintState)>,
+    #[cfg(any(test, feature = "test-support"))]
+    capture_paint_state: bool,
 }
 
 #[derive(Default)]
@@ -193,7 +197,24 @@ impl<E: Element> Drawable<E> {
             retained_source_location: None,
             retained_source_ordinal: None,
             phase: ElementDrawPhase::Start,
+            #[cfg(any(test, feature = "test-support"))]
+            painted_state: None,
+            #[cfg(any(test, feature = "test-support"))]
+            capture_paint_state: false,
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn paint_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (E::RequestLayoutState, E::PrepaintState) {
+        self.capture_paint_state = true;
+        self.paint(window, cx);
+        self.painted_state
+            .take()
+            .expect("test element must paint rather than replay")
     }
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
@@ -464,6 +485,12 @@ impl<E: Element> Drawable<E> {
                 }
 
                 self.phase = ElementDrawPhase::Painted;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    if self.capture_paint_state {
+                        self.painted_state = Some((request_layout, prepaint));
+                    }
+                }
             }
             ElementDrawPhase::Retained {
                 bounds,
