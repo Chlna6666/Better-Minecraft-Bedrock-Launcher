@@ -1,5 +1,16 @@
 use super::*;
 
+#[inline]
+fn snap_measured_size_to_device_pixels(
+    measured: Size<Pixels>,
+    scale_factor: f32,
+) -> Size<Pixels> {
+    measured.map(|axis| {
+        let device_pixels = (axis.0.max(0.0) * scale_factor).ceil();
+        Pixels(device_pixels / scale_factor)
+    })
+}
+
 impl Window {
     /// Add a node to the layout tree for the current frame. Takes the `Style` of the element for which
     /// layout is being requested, along with the layout ids of any children. This method is called during
@@ -42,7 +53,7 @@ impl Window {
     >(
         &mut self,
         style: Style,
-        measure: F,
+        mut measure: F,
     ) -> LayoutId {
         self.invalidator.debug_assert_prepaint();
 
@@ -51,7 +62,12 @@ impl Window {
         self.layout_engine
             .as_mut()
             .unwrap()
-            .request_measured_layout(style, rem_size, scale_factor, measure)
+            .request_measured_layout(style, rem_size, scale_factor, move |known, available, window, cx| {
+                snap_measured_size_to_device_pixels(
+                    measure(known, available, window, cx),
+                    scale_factor,
+                )
+            })
     }
 
     pub(crate) fn request_measured_layout_with_fingerprint<
@@ -61,7 +77,7 @@ impl Window {
         &mut self,
         style: Style,
         fingerprint_seed: u64,
-        measure: F,
+        mut measure: F,
     ) -> LayoutId {
         self.invalidator.debug_assert_prepaint();
 
@@ -75,7 +91,12 @@ impl Window {
                 rem_size,
                 scale_factor,
                 fingerprint_seed,
-                measure,
+                move |known, available, window, cx| {
+                    snap_measured_size_to_device_pixels(
+                        measure(known, available, window, cx),
+                        scale_factor,
+                    )
+                },
             )
     }
 
