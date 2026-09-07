@@ -666,12 +666,19 @@ impl DirectWriteState {
                 &mut grid_fit_mode,
             )?;
         }
-        let rendering_mode = match rendering_mode {
-            DWRITE_RENDERING_MODE1_OUTLINE => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
-            m => m,
+        let use_subpixel_rendering = should_use_subpixel_rendering(components, params);
+        // Natural/GDI modes only antialias horizontally. A grayscale atlas needs vertical
+        // coverage as well, especially at the curved tops of small digits. Keep the platform's
+        // grid fitting, but use symmetric coverage for grayscale on every renderer backend.
+        let rendering_mode = if !use_subpixel_rendering
+            || rendering_mode == DWRITE_RENDERING_MODE1_OUTLINE
+        {
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
+        } else {
+            rendering_mode
         };
 
-        let antialias_mode = if should_use_subpixel_rendering(components, params) {
+        let antialias_mode = if use_subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
         } else {
             DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
