@@ -3,50 +3,13 @@ use std::{any::TypeId, sync::Arc};
 use futures::FutureExt;
 
 use crate::{
-    ImagePipelineConfig, ImageRenderRequest, RenderImage, SizedImageLoader, SizedImageTask, Window,
+    ImageRenderRequest, RenderImage, SizedImageLoader, SizedImageTask, Window,
     drop_image_asset_retained, hash,
 };
 
 use super::App;
 
 impl App {
-    /// Returns the active image pipeline configuration for callers that should not depend on the
-    /// concrete App field layout.
-    pub fn image_pipeline_config(&self) -> ImagePipelineConfig {
-        self.image_pipeline_config
-    }
-
-    /// Retires a decoded image from every live window atlas.
-    ///
-    /// Image asset ownership is global, but atlas residency is per-window. The currently-updated
-    /// window can be temporarily removed from `App.windows`, so callers that are already updating a
-    /// window may pass it explicitly; external application code can pass `None` and let GPUI retire
-    /// the image from all registered windows.
-    pub fn drop_image(
-        &mut self,
-        image: Arc<RenderImage>,
-        current_window: Option<&mut Window>,
-    ) {
-        let image_id = image.id;
-        for window in self.windows.values_mut().flatten() {
-            if let Err(error) = window.drop_image(image.clone()) {
-                log::warn!(
-                    "failed to drop image from window atlas: image_id={:?}: {error:#}",
-                    image_id
-                );
-            }
-        }
-
-        if let Some(window) = current_window {
-            if let Err(error) = window.drop_image(image) {
-                log::warn!(
-                    "failed to drop image from current window atlas: image_id={:?}: {error:#}",
-                    image_id
-                );
-            }
-        }
-    }
-
     /// Releases one element-owned sized-image request and cleans up an orphaned decode that may
     /// finish after the last owner has already left the element tree.
     ///
