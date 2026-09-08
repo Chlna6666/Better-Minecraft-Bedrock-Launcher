@@ -568,6 +568,46 @@ fn content_bounds_change_still_dirties_window(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn content_bounds_change_only_invalidates_viewport_dependent_views(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, cx| {
+        let dependent = EntityId::from(91);
+        let independent = EntityId::from(92);
+        window
+            .viewport_dependent_views
+            .borrow_mut()
+            .insert(dependent);
+        window.invalidator.invalidate_view(independent, cx);
+        window.invalidator.take_views();
+        window.force_view_cache_refresh = false;
+
+        {
+            let test_window = window.platform_window.as_test().unwrap();
+            test_window.0.lock().bounds.size.width += px(1.);
+        }
+        window.content_bounds_changed(cx);
+
+        assert!(!window.force_view_cache_refresh);
+        let dirty_views = window.invalidator.take_views();
+        assert!(dirty_views.contains(&dependent));
+        assert!(!dirty_views.contains(&independent));
+    });
+}
+
+#[gpui::test]
+fn viewport_size_records_the_current_rendered_view(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let view = EntityId::from(93);
+        window.with_rendered_view(view, |window| {
+            let _ = window.viewport_size();
+        });
+
+        assert!(window.viewport_dependent_views.borrow().contains(&view));
+    });
+}
+
+#[gpui::test]
 fn background_pointer_button_does_not_request_frame(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

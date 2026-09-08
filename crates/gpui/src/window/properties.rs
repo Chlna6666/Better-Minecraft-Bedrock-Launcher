@@ -22,6 +22,9 @@ impl Window {
 
     /// Returns the size of the drawable area within the window.
     pub fn viewport_size(&self) -> Size<Pixels> {
+        if let Some(view_id) = self.rendered_entity_stack.last().copied() {
+            self.viewport_dependent_views.borrow_mut().insert(view_id);
+        }
         self.viewport_size
     }
 

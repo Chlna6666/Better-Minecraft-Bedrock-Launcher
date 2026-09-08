@@ -158,6 +158,9 @@ impl Window {
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
+        self.viewport_dependent_views.borrow_mut().retain(|view_id| {
+            !self.rendered_frame.dispatch_tree.view_path(*view_id).is_empty()
+        });
         let live_scene_animation_ids = self.rendered_frame.scene.animation_ids();
         self.animation_engine
             .borrow_mut()

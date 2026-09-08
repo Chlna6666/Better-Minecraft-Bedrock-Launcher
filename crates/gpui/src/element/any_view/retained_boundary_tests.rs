@@ -100,7 +100,10 @@ struct FrameLocalBoundaryRoot {
 
 impl Render for FrameLocalBoundaryRoot {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let mut variable = crate::div().flex().flex_col();
+        // Keep this sibling out of normal flow. The regression exercises frame-local range
+        // rebasing when an earlier scene span changes length, not a cached view moving to new
+        // bounds (which correctly requires a cache miss).
+        let mut variable = crate::div().absolute().flex().flex_col();
         for _ in 0..self.variable_primitives {
             variable = variable.child(
                 crate::div()

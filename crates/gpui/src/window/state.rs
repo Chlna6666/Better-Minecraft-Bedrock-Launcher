@@ -200,6 +200,10 @@ pub struct Window {
     pub(crate) retained_child_slot_stack: SmallVec<[u32; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
+    /// Views whose rendered output has read [`Window::viewport_size`]. A content resize dirties
+    /// only these views; cached siblings whose bounds and dependencies stay unchanged remain
+    /// eligible for retained replay.
+    pub(crate) viewport_dependent_views: RefCell<FxHashSet<EntityId>>,
     /// Per-view bounds accumulation frames for the paint phase, parallel to the painted views
     /// in `rendered_entity_stack`. Child views fold their already computed bounds into their
     /// parent's frame so each scene operation is scanned exactly once regardless of nesting

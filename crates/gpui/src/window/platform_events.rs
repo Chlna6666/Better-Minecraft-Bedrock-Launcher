@@ -69,7 +69,16 @@ impl Window {
         }
         self.force_full_redraw.set(true);
 
-        self.refresh();
+        let viewport_dependent_views = self
+            .viewport_dependent_views
+            .borrow()
+            .iter()
+            .copied()
+            .collect::<SmallVec<[_; 8]>>();
+        for view_id in viewport_dependent_views {
+            self.invalidator.invalidate_view(view_id, cx);
+        }
+        self.redraw_without_view_cache_refresh();
 
         self.bounds_observers
             .clone()
