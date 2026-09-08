@@ -587,6 +587,7 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
             appears_transparent: true,
             ..Default::default()
         });
+        options.window_corner_preference = WindowCornerPreference::Rounded;
         // The main view paints every client pixel itself, so the native surface does not need an
         // alpha channel. Keeping the WSI surface opaque lets DX12 use an HWND flip swapchain
         // instead of DirectComposition and lets Vulkan request OPAQUE composite alpha. Both paths

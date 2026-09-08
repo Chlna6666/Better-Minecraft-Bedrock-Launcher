@@ -19,6 +19,13 @@ use slotmap::Key;
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, WPARAM},
+        Graphics::{
+            Dwm::{
+                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+                DwmSetWindowAttribute,
+            },
+            Gdi::{CreateRoundRectRgn, DeleteObject, HGDIOBJ, SetWindowRgn},
+        },
         System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
         UI::{
             Controls::*,
@@ -132,6 +139,57 @@ fn window_corner_preference_to_windows(
         WindowCornerPreference::Rounded => Some(CornerPreference::Round),
         WindowCornerPreference::RoundedSmall => Some(CornerPreference::RoundSmall),
         WindowCornerPreference::Square => Some(CornerPreference::DoNotRound),
+    }
+}
+
+fn fallback_corner_radius(hwnd: HWND, preference: WindowCornerPreference) -> Option<Pixels> {
+    let (dwm_preference, radius) = match preference {
+        WindowCornerPreference::SystemDefault => return None,
+        WindowCornerPreference::Rounded => (DWMWCP_ROUND, Some(px(8.0))),
+        WindowCornerPreference::RoundedSmall => (DWMWCP_ROUNDSMALL, Some(px(4.0))),
+        WindowCornerPreference::Square => (DWMWCP_DONOTROUND, None),
+    };
+    // Windows 11 accepts this DWM attribute. Windows 10 returns an unsupported-attribute error,
+    // in which case a window region supplies the same visible corner without an alpha surface.
+    let applied = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &raw const dwm_preference as *const c_void,
+            std::mem::size_of_val(&dwm_preference) as u32,
+        )
+    }
+    .is_ok();
+    (!applied).then_some(radius).flatten()
+}
+
+fn apply_fallback_corner_region(
+    hwnd: HWND,
+    size: Size<DevicePixels>,
+    scale_factor: f32,
+    radius: Pixels,
+    maximized: bool,
+) {
+    if maximized {
+        // SAFETY: The HWND is live and a null region restores the full rectangular window.
+        unsafe { SetWindowRgn(hwnd, None, true) };
+        return;
+    }
+    let width = size.width.0.max(1);
+    let height = size.height.0.max(1);
+    let diameter = (radius.0 * scale_factor * 2.0).round().max(1.0) as i32;
+    // The right and bottom edges are exclusive. Including one extra device pixel keeps the last
+    // row and column inside the region while retaining the requested corner radius.
+    let region = unsafe { CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter) };
+    if region.is_invalid() {
+        log::warn!("failed to create Windows fallback rounded-corner region");
+        return;
+    }
+    // On success Windows owns the region handle. Delete it only if ownership was not transferred.
+    if unsafe { SetWindowRgn(hwnd, Some(region), true) } == 0
+        && !unsafe { DeleteObject(HGDIOBJ(region.0)) }.as_bool()
+    {
+        log::warn!("failed to dispose an unused Windows rounded-corner region");
     }
 }
 
@@ -670,6 +728,7 @@ pub(crate) struct WindowsWindowInner {
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
     pub(crate) renderer_resize_retry_pending: Cell<bool>,
+    fallback_corner_radius: Option<Pixels>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
 }
 
@@ -789,7 +848,9 @@ impl WindowsWindow {
                 renderer_backend,
             ));
         if !use_native_decorations {
-            attributes = attributes.with_undecorated_shadow(true);
+            // Do not enable winit's undecorated-shadow workaround here. On Windows it shifts the
+            // client rectangle by one physical pixel in WM_NCCALCSIZE; the resulting DWM/client
+            // mismatch softens the whole surface and makes live resize visibly lag behind it.
             if let Some(corner_preference) = client_corner_preference {
                 attributes = attributes.with_corner_preference(corner_preference);
             }
@@ -816,13 +877,29 @@ impl WindowsWindow {
             width: Pixels(actual_inner_size.width as f32 / scale_factor),
             height: Pixels(actual_inner_size.height as f32 / scale_factor),
         };
+        let fallback_corner_radius = if use_native_decorations {
+            None
+        } else {
+            hwnd.and_then(|hwnd| fallback_corner_radius(hwnd, params.window_corner_preference))
+        };
+        if let (Some(hwnd), Some(radius)) = (hwnd, fallback_corner_radius) {
+            apply_fallback_corner_region(
+                hwnd,
+                Size {
+                    width: DevicePixels(actual_inner_size.width as i32),
+                    height: DevicePixels(actual_inner_size.height as i32),
+                },
+                scale_factor,
+                radius,
+                winit_window.is_maximized(),
+            );
+        }
         if params.window_icon.is_none()
             && let Some(hwnd) = hwnd
         {
             Self::apply_process_default_window_icon(hwnd);
         }
         if !use_native_decorations {
-            winit_window.set_undecorated_shadow(true);
             if let Some(corner_preference) = client_corner_preference {
                 winit_window.set_corner_preference(corner_preference);
             }
@@ -867,6 +944,7 @@ impl WindowsWindow {
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
             renderer_resize_retry_pending: Cell::new(false),
+            fallback_corner_radius,
             winit_window: cell,
         }));
         window.start_renderer_initialization(background_executor, renderer_initialization);
@@ -974,6 +1052,15 @@ impl WindowsWindow {
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
+        if let (Some(hwnd), Some(radius)) = (self.native_hwnd(), self.0.fallback_corner_radius) {
+            apply_fallback_corner_region(
+                hwnd,
+                resize.drawable_size,
+                resize.scale_factor,
+                radius,
+                self.native_is_maximized().unwrap_or(false),
+            );
+        }
         // Compositor-backed swapchains do not scale on their own, so stretch the previous
         // frame over the new client size right now, before the next frame applies the
         // resize to the swapchain buffers. This mirrors the scaling DXGI performs for

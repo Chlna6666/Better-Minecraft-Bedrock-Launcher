@@ -601,9 +601,14 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // Keep the last presented buffer covering the client area while a
-                // coalesced resize is pending, just like the composition swapchain.
-                Scaling: DXGI_SCALING_STRETCH,
+                // GPUI keeps an opaque HWND swapchain in physical client pixels. Letting DXGI
+                // stretch a stale buffer can leave the stable window one sample away from 1:1
+                // after a coalesced resize, which is especially visible on small text.
+                Scaling: if config.alpha_mode == CompositeAlphaMode::Opaque {
+                    DXGI_SCALING_NONE
+                } else {
+                    DXGI_SCALING_STRETCH
+                },
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
