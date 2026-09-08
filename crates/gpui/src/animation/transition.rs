@@ -29,6 +29,8 @@ pub enum TransitionProperty {
     Scale,
     /// Rotation.
     Rotation,
+    /// Paint-only vertical reveal clip.
+    ClipReveal,
     /// Background or foreground color.
     Color,
     /// Blur radius.
@@ -82,7 +84,12 @@ impl TransitionProperty {
     pub fn supports_gpu_driver(self) -> bool {
         matches!(
             self,
-            Self::Opacity | Self::Transform | Self::Translation | Self::Scale | Self::Rotation
+            Self::Opacity
+                | Self::Transform
+                | Self::Translation
+                | Self::Scale
+                | Self::Rotation
+                | Self::ClipReveal
         )
     }
 }

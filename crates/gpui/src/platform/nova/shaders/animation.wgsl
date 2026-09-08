@@ -18,6 +18,9 @@ struct VisualAnimation {
     scale: f32,
     opacity: f32,
     scales_geometry: u32,
+    clip_top: f32,
+    clip_bottom: f32,
+    clips_geometry: u32,
 }
 
 fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimation {
@@ -27,6 +30,9 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
     animation.scale = 1.0;
     animation.opacity = 1.0;
     animation.scales_geometry = 0u;
+    animation.clip_top = 0.0;
+    animation.clip_bottom = 0.0;
+    animation.clips_geometry = 0u;
 
     // GlobalParams.pad is renderer-owned in Nova and becomes an ABI feature gate. This keeps the
     // same shader binaries safe for static streams whose first u32 still contains legacy draw order.
@@ -63,6 +69,13 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
             animation.scale = max(sampled.x, 0.0);
             animation.scales_geometry = 1u;
         }
+        // Paint-only vertical reveal. Values are absolute device-pixel edges shared by the
+        // retained subtree composite, so individual glyph and image bounds do not move.
+        case 8u: {
+            animation.clip_top = min(sampled.x, sampled.y);
+            animation.clip_bottom = max(sampled.x, sampled.y);
+            animation.clips_geometry = 1u;
+        }
         // Rotation is promoted to a retained subtree composite; raw 2D primitives must not rotate
         // independently. Other transition properties are likewise no-ops in the old CPU path.
         default: {}
@@ -93,6 +106,13 @@ fn animation_content_mask(mask: ContentMask, animation: VisualAnimation) -> Cont
         result.corner_radii.top_right *= animation.scale;
         result.corner_radii.bottom_right *= animation.scale;
         result.corner_radii.bottom_left *= animation.scale;
+    }
+    if (animation.clips_geometry != 0u) {
+        let mask_bottom = result.bounds.origin.y + result.bounds.size.y;
+        let clipped_top = max(result.bounds.origin.y, animation.clip_top);
+        let clipped_bottom = min(mask_bottom, animation.clip_bottom);
+        result.bounds.origin.y = clipped_top;
+        result.bounds.size.y = max(clipped_bottom - clipped_top, 0.0);
     }
     return result;
 }

@@ -613,6 +613,7 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
             }
         }
         TransitionProperty::Rotation => {}
+        TransitionProperty::ClipReveal => apply_clip_reveal(primitive, sampled[0], sampled[1]),
         TransitionProperty::Scale => apply_scale(primitive, sampled[0], None),
         TransitionProperty::Transform => {
             apply_opacity(primitive, sampled[1].clamp(0.0, 1.0));
@@ -627,6 +628,27 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
         }
         _ => {}
     }
+}
+
+fn apply_clip_reveal(primitive: &mut Primitive, top: f32, bottom: f32) {
+    if !top.is_finite() || !bottom.is_finite() {
+        return;
+    }
+    let mask = match primitive {
+        Primitive::Quad(value) => &mut value.content_mask,
+        Primitive::Shadow(value) => &mut value.content_mask,
+        Primitive::MonochromeSprite(value) => &mut value.content_mask,
+        Primitive::PolychromeSprite(value) => &mut value.content_mask,
+        Primitive::BackdropBlur(value) => &mut value.content_mask,
+        Primitive::Blur(value) => &mut value.content_mask,
+        _ => return,
+    };
+    let clip_top = crate::ScaledPixels(top.min(bottom));
+    let clip_bottom = crate::ScaledPixels(top.max(bottom));
+    let clipped_top = mask.bounds.top().max(clip_top);
+    let clipped_bottom = mask.bounds.bottom().min(clip_bottom);
+    mask.bounds.origin.y = clipped_top;
+    mask.bounds.size.height = (clipped_bottom - clipped_top).max(crate::ScaledPixels(0.0));
 }
 
 fn apply_scale(
@@ -841,6 +863,35 @@ mod tests {
             panic!("quad");
         };
         assert_eq!(quad.border_color.a, 1.0);
+    }
+
+    #[test]
+    fn retained_clip_reveal_changes_only_the_content_mask() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(80.0)),
+        );
+        let mut primitive = Primitive::Quad(Quad {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            ..Default::default()
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(1),
+                property: TransitionProperty::ClipReveal,
+                progress: 0.5,
+                from: [20.0, 20.0, 0.0, 0.0],
+                to: [20.0, 100.0, 0.0, 0.0],
+            },
+        );
+        let Primitive::Quad(quad) = primitive else {
+            panic!("quad");
+        };
+        assert_eq!(quad.bounds, bounds);
+        assert_eq!(quad.content_mask.bounds.origin.y, crate::ScaledPixels(20.0));
+        assert_eq!(quad.content_mask.bounds.size.height, crate::ScaledPixels(40.0));
     }
 
     #[test]

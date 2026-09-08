@@ -188,6 +188,7 @@ impl Window {
                     | crate::TransitionProperty::Transform
                     | crate::TransitionProperty::Translation
                     | crate::TransitionProperty::Rotation
+                    | crate::TransitionProperty::ClipReveal
             )
             .then_some((animation_id, property))
         });

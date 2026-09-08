@@ -665,6 +665,10 @@ fn nova_animation_property_maps_only_gpu_eligible_transitions() {
         Some(AnimationProperty::Transform)
     );
     assert_eq!(
+        AnimationProperty::from_transition_property(crate::TransitionProperty::ClipReveal),
+        Some(AnimationProperty::ClipReveal)
+    );
+    assert_eq!(
         AnimationProperty::from_transition_property(crate::TransitionProperty::Color),
         Some(AnimationProperty::SolidColor)
     );

@@ -76,6 +76,26 @@ impl AnimationProperty {
         }
     }
 
+    /// Animate a vertical reveal from one fixed edge without changing child layout.
+    ///
+    /// Fractions are relative to the element's final height. The renderer applies one shared clip
+    /// to the retained subtree, so text baselines and child geometry stay fixed for the animation.
+    pub fn vertical_reveal(
+        edge: crate::VerticalRevealEdge,
+        from_fraction: f32,
+        to_fraction: f32,
+    ) -> Self {
+        let edge = match edge {
+            crate::VerticalRevealEdge::Top => 0.0,
+            crate::VerticalRevealEdge::Bottom => 1.0,
+        };
+        Self {
+            property: TransitionProperty::ClipReveal,
+            from: [from_fraction.clamp(0.0, 1.0), edge, 0.0, 0.0],
+            to: [to_fraction.clamp(0.0, 1.0), edge, 0.0, 0.0],
+        }
+    }
+
     /// Animate scale and opacity around one normalized transform origin.
     pub fn scale_opacity(
         from_scale: f32,
@@ -112,6 +132,20 @@ impl AnimationProperty {
                 to[1] = from[1];
                 to[2] = from[2];
                 (from, to)
+            }
+            TransitionProperty::ClipReveal => {
+                let top = bounds.origin.y.0 * scale_factor;
+                let bottom = bounds.bottom().0 * scale_factor;
+                let height = bottom - top;
+                let resolve = |value: [f32; 4]| {
+                    let visible_height = height * value[0].clamp(0.0, 1.0);
+                    if value[1] < 0.5 {
+                        [top, top + visible_height, 0.0, 0.0]
+                    } else {
+                        [bottom - visible_height, bottom, 0.0, 0.0]
+                    }
+                };
+                (resolve(self.from), resolve(self.to))
             }
             _ => (self.from, self.to),
         }
@@ -754,6 +788,27 @@ mod tests {
 
         assert_eq!(from, [0.0, 50.0, 80.0, 0.0]);
         assert_eq!(to, [1.0, 50.0, 80.0, 0.0]);
+    }
+
+    #[test]
+    fn resolved_vertical_reveal_uses_shared_device_pixel_edges() {
+        let bounds = Bounds::new(
+            Point::new(crate::px(10.0), crate::px(20.0)),
+            crate::size(crate::px(30.0), crate::px(40.0)),
+        );
+
+        let top = AnimationProperty::vertical_reveal(crate::VerticalRevealEdge::Top, 0.0, 1.0);
+        assert_eq!(
+            top.resolved_values(bounds, 2.0),
+            ([40.0, 40.0, 0.0, 0.0], [40.0, 120.0, 0.0, 0.0])
+        );
+
+        let bottom =
+            AnimationProperty::vertical_reveal(crate::VerticalRevealEdge::Bottom, 0.25, 1.0);
+        assert_eq!(
+            bottom.resolved_values(bounds, 2.0),
+            ([100.0, 120.0, 0.0, 0.0], [40.0, 120.0, 0.0, 0.0])
+        );
     }
 
     #[test]

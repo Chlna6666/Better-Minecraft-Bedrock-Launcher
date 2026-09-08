@@ -354,6 +354,7 @@ impl Window {
                     | crate::TransitionProperty::Transform
                     | crate::TransitionProperty::Translation
                     | crate::TransitionProperty::Rotation
+                    | crate::TransitionProperty::ClipReveal
             )
         }) {
             let capture_bounds = self.content_mask().bounds;
@@ -364,7 +365,10 @@ impl Window {
 
         // Rotation is a subtree transform, not a glyph property. Bind it to one zero-filter
         // retained composite so backgrounds, images, SVGs and text share one pivot and one sample.
-        if property == crate::TransitionProperty::Rotation {
+        if matches!(
+            property,
+            crate::TransitionProperty::Rotation | crate::TransitionProperty::ClipReveal
+        ) {
             let previous_animation = self.scene_animation.replace((animation_id, property));
             let capture_bounds = self.content_mask().bounds;
             let result = self.paint_composite_layer(capture_bounds, paint);
