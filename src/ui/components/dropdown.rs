@@ -290,14 +290,13 @@ fn desired_dropdown_menu_width(
 
 pub fn render_overlay(
     window: &mut Window,
-    _now: Instant,
+    now: Instant,
     state: &DropdownOverlayState,
 ) -> AnyElement {
     let Some(active) = state.active.as_ref() else {
         return div().into_any_element();
     };
 
-    let now = window.animation_time();
     let colors = active.colors;
     let menu_scroll_handle = active.menu_scroll_handle.clone();
     let options = active.options.clone();
@@ -327,6 +326,7 @@ pub fn render_overlay(
     } else {
         VerticalRevealEdge::Top
     };
+    let reveal_fraction = (f32::from(active.animated_h) / f32::from(active.menu_h)).clamp(0.0, 1.0);
     let popup = div()
         .absolute()
         .left(active.top_left.x)
@@ -460,12 +460,12 @@ pub fn render_overlay(
                         })
                 })),
         )
-        .with_vertical_reveal_clip(active.animated_h, reveal_edge)
         .composite_layer()
         .with_sampled_animation(
-            AnimationProperty::opacity(0.0, 1.0),
-            panel_opacity,
-        );
+            AnimationProperty::vertical_reveal(reveal_edge, 0.0, 1.0),
+            reveal_fraction,
+        )
+        .with_sampled_animation(AnimationProperty::opacity(0.0, 1.0), panel_opacity);
 
     div()
         .absolute()

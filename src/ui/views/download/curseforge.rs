@@ -2160,7 +2160,6 @@ fn render_curseforge_result_card(
         1.0
     };
     let reveal_opacity = (0.25 + reveal_progress * 0.75).clamp(0.0, 1.0);
-    let reveal_translate_y = px((1.0 - reveal_progress) * 10.0);
     let primary_tag = props.primary_tag_label.clone().map(|primary_tag_label| {
         div()
             .flex()
@@ -2202,8 +2201,6 @@ fn render_curseforge_result_card(
             }
         })
         .opacity(reveal_opacity)
-        .relative()
-        .top(reveal_translate_y)
         .px(px(12.))
         .py(px(9.))
         .flex()
@@ -2395,6 +2392,10 @@ fn render_curseforge_result_card(
                         .font_weight(FontWeight::MEDIUM)
                         .child(t!("common.install")),
                 ),
+        )
+        .with_sampled_animation(
+            AnimationProperty::translation(point(px(0.0), px(10.0)), Point::default()),
+            reveal_progress,
         )
         .into_any_element()
 }
