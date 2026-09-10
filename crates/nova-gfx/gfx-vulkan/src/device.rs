@@ -1646,8 +1646,11 @@ impl VulkanDevice {
             )
         };
         let image_index = match acquire_result {
-            Ok((image_index, _suboptimal)) => image_index,
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(None),
+            Ok((image_index, false)) => image_index,
+            Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                self.reconfigure_outdated_swapchain(swapchain_id)?;
+                return Err(GfxError::SurfaceOutdated);
+            }
             Err(error) => return Err(VulkanError::from(error).into()),
         };
         Ok(Some(VulkanPresentFrame {
@@ -1717,9 +1720,28 @@ impl VulkanDevice {
                 .queue_present(self.present_queue, &present_info)
         };
         match present_result {
-            Ok(_) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => Ok(()),
+            Ok(false) => Ok(()),
+            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
+                self.reconfigure_outdated_swapchain(swapchain_id)?;
+                Err(GfxError::SurfaceOutdated)
+            }
             Err(error) => Err(VulkanError::from(error).into()),
         }
+    }
+
+    fn reconfigure_outdated_swapchain(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+    ) -> Result<()> {
+        // A failed queue_present can leave the just-submitted command encoder in the deferred
+        // queue with a fence owned by the current swapchain. Drain it while those synchronization
+        // objects are still live, before reconfigure_swapchain destroys the old swapchain.
+        // SAFETY: The Vulkan device is live; waiting here is the recovery path for an outdated
+        // presentation surface, not the ordinary frame path.
+        unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
+        self.poll_cleanup();
+        let config = self.swapchains.get(swapchain_id)?.config;
+        self.reconfigure_swapchain(swapchain_id, config)
     }
 
     fn damage_to_present_rect(damage: ScissorRect) -> Result<vk::RectLayerKHR> {
@@ -3968,9 +3990,8 @@ fn create_native_render_pass(
         .attachment(0)
         .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
     let color_attachments = [color_attachment_ref];
-    let depth_attachment = depth_format.map(|depth_format| {
-        depth_attachment_description(depth_format, config)
-    });
+    let depth_attachment =
+        depth_format.map(|depth_format| depth_attachment_description(depth_format, config));
     let depth_attachment_ref = vk::AttachmentReference::default()
         .attachment(1)
         .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -3983,8 +4004,8 @@ fn create_native_render_pass(
     let dependency_stage_mask = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
         | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
         | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS;
-    let source_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+    let source_access_mask =
+        vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
     let destination_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_READ
         | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
         | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
@@ -4968,9 +4989,18 @@ mod tests {
 
         assert_eq!(clear.load_op, vk::AttachmentLoadOp::CLEAR);
         assert_eq!(load.load_op, vk::AttachmentLoadOp::LOAD);
-        assert_eq!(clear.initial_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        assert_eq!(clear.final_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        assert_eq!(load.initial_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        assert_eq!(
+            clear.initial_layout,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        );
+        assert_eq!(
+            clear.final_layout,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        );
+        assert_eq!(
+            load.initial_layout,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        );
         assert_eq!(load.final_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
     }
 

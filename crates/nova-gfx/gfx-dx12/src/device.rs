@@ -554,36 +554,6 @@ mod platform {
                 .map_err(|error| GfxError::Backend(error.to_string()))
         }
 
-        /// Resets any live-resize stretch on a composition visual to identity.
-        ///
-        /// Runs right after `ResizeBuffers`. The new back buffers hold undefined
-        /// content, so this commit must only publish the transform reset; the next
-        /// `Present` publishes the freshly rendered frame. Resetting before that
-        /// frame also keeps DWM from scaling the new buffer by the old stretch ratio.
-        fn reset_composition_stretch(composition: &Dx12Composition) -> Result<()> {
-            let identity = Matrix3x2 {
-                M11: 1.0,
-                M12: 0.0,
-                M21: 0.0,
-                M22: 1.0,
-                M31: 0.0,
-                M32: 0.0,
-            };
-            // SAFETY: The composition device, visual, and transform are live members
-            // of the swapchain record and outlive this call.
-            unsafe {
-                composition
-                    .transform
-                    .SetMatrix(&raw const identity)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
-                composition
-                    .visual
-                    .SetTransform(&composition.transform)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
-                Self::commit_composition(composition)
-            }
-        }
-
         fn build_hwnd_swapchain(
             &self,
             hwnd: HWND,
@@ -601,14 +571,11 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // GPUI keeps an opaque HWND swapchain in physical client pixels. Letting DXGI
-                // stretch a stale buffer can leave the stable window one sample away from 1:1
-                // after a coalesced resize, which is especially visible on small text.
-                Scaling: if config.alpha_mode == CompositeAlphaMode::Opaque {
-                    DXGI_SCALING_NONE
-                } else {
-                    DXGI_SCALING_STRETCH
-                },
+                // During interactive resizing the HWND client area changes before ResizeBuffers
+                // can publish a frame at the new extent. DXGI scaling keeps the last presented
+                // frame covering that temporary margin; once the buffers match the client size
+                // the mapping is 1:1 again.
+                Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
@@ -765,10 +732,6 @@ mod platform {
                     ))
                 })?;
                 return Err(error);
-            }
-
-            if let Some(composition) = swapchain.composition.as_ref() {
-                Self::reset_composition_stretch(composition)?;
             }
 
             Ok(())

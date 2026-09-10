@@ -60,6 +60,9 @@ pub enum GfxError {
     /// A required graphics capability or resource was not available.
     #[error("graphics resource is unavailable: {0}")]
     Unavailable(String),
+    /// The native presentation surface changed and the current frame must be retried.
+    #[error("graphics presentation surface is outdated")]
+    SurfaceOutdated,
     /// A descriptor, handle, or command was invalid.
     #[error("invalid graphics input: {0}")]
     InvalidInput(String),
