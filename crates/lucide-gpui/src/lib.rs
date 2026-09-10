@@ -1,62 +1,74 @@
 use anyhow::anyhow;
 use gpui::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
 
-pub struct Assets;
-
-pub(crate) mod registry {
-    use super::*;
-
-    fn registry() -> &'static RwLock<HashMap<&'static str, &'static [u8]>> {
-        static REGISTRY: OnceLock<RwLock<HashMap<&'static str, &'static [u8]>>> = OnceLock::new();
-        REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
-    }
-
-    pub fn register(path: &'static str, bytes: &'static [u8]) {
-        if let Ok(mut map) = registry().write() {
-            map.insert(path, bytes);
-        }
-    }
-
-    pub fn get(path: &str) -> Option<&'static [u8]> {
-        let map = registry().read().ok()?;
-        map.get(path).copied()
-    }
-
-    pub fn list(prefix: &str) -> Vec<SharedString> {
-        let map = match registry().read() {
-            Ok(map) => map,
-            Err(_) => return Vec::new(),
-        };
-        map.keys()
-            .filter(|key| key.starts_with(prefix))
-            .map(|key| SharedString::from(*key))
-            .collect()
-    }
+struct IconEntry {
+    path: &'static str,
+    offset: usize,
+    len: usize,
 }
+
+include!(concat!(env!("OUT_DIR"), "/lucide_icons.rs"));
+
+static ICON_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lucide_icons.bin"));
+
+#[doc(hidden)]
+#[must_use]
+pub const fn __icon_path(index: usize) -> &'static str {
+    ICONS[index].path
+}
+
+fn icon(path: &str) -> Option<&'static IconEntry> {
+    ICONS
+        .binary_search_by(|entry| entry.path.cmp(path))
+        .ok()
+        .map(|index| &ICONS[index])
+}
+
+/// A BMCBL-private GPUI asset source for the selected Lucide icon payload.
+pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        Ok(registry::get(path).map(Cow::Borrowed))
+        let Some(icon) = icon(path) else {
+            return Ok(None);
+        };
+        let end = icon
+            .offset
+            .checked_add(icon.len)
+            .ok_or_else(|| anyhow!("Lucide icon range overflow for {path}"))?;
+        let bytes = ICON_BYTES
+            .get(icon.offset..end)
+            .ok_or_else(|| anyhow!("invalid Lucide icon range for {path}"))?;
+        Ok(Some(Cow::Borrowed(bytes)))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        if path.is_empty() || path == "lucide" || path == "lucide/" {
-            return Ok(registry::list("lucide/"));
-        }
-
-        if registry::get(path).is_some() {
-            return Ok(vec![SharedString::from(path.to_string())]);
-        }
-
-        if path.starts_with("lucide/") || path == "lucide" {
-            return Err(anyhow!("could not find asset at path \"{path}\"").into());
-        }
-
-        Ok(Vec::new())
+        Ok(ICONS
+            .iter()
+            .filter(|entry| entry.path.starts_with(path))
+            .map(|entry| SharedString::from(entry.path))
+            .collect())
     }
 }
 
-include!(concat!(env!("OUT_DIR"), "/icons_gen.rs"));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icon_macro_matches_embedded_asset() {
+        let path = icon!(circle_alert);
+        let bytes = Assets
+            .load(path)
+            .expect("payload loads")
+            .expect("icon exists");
+        assert!(bytes.starts_with(b"<svg"));
+    }
+
+    #[test]
+    fn generated_index_is_sorted_and_unique() {
+        assert!(ICONS.windows(2).all(|pair| pair[0].path < pair[1].path));
+        assert_eq!(ICON_BYTES.len(), ICON_BYTES_LEN);
+    }
+}
