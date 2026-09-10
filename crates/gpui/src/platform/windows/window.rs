@@ -6,8 +6,9 @@
 
 use std::{
     cell::{Cell, OnceCell, RefCell},
+    collections::{HashMap, HashSet},
     ffi::c_void,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,15 +25,21 @@ use windows::{
                 DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
                 DwmSetWindowAttribute,
             },
-            Gdi::{CreateRoundRectRgn, DeleteObject, HGDIOBJ, SetWindowRgn},
+            Gdi::{
+                CreateRoundRectRgn, DeleteObject, HGDIOBJ, RDW_INVALIDATE, RDW_NOERASE,
+                RDW_UPDATENOW, RedrawWindow, SetWindowRgn,
+            },
         },
         System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
         UI::{
             Controls::*,
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic, IsZoomed,
-                LR_DEFAULTSIZE, LR_SHARED, LoadImageW, SW_RESTORE, SendMessageW,
-                SetForegroundWindow, ShowWindow, WM_SETICON,
+                KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, SW_RESTORE, SendMessageW,
+                SetForegroundWindow, SetTimer, ShowWindow, USER_TIMER_MINIMUM, WM_ENTERSIZEMOVE,
+                WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SETICON, WM_SIZE, WM_TIMER,
+                WM_WINDOWPOSCHANGED,
             },
         },
     },
@@ -45,10 +52,10 @@ use crate::diagnostics::performance_metrics::{
 };
 use crate::platform::windows::with_dll_library;
 use crate::platform::winit::{
-    maximize_window, minimize_window, request_window_inner_size,
-    restore_window as restore_winit_window, start_window_move as start_winit_window_move,
-    start_window_resize as start_winit_window_resize, toggle_window_fullscreen,
-    toggle_window_maximized,
+    begin_windows_native_size_move, end_windows_native_size_move, maximize_window, minimize_window,
+    request_window_inner_size, restore_window as restore_winit_window,
+    start_window_move as start_winit_window_move, start_window_resize as start_winit_window_resize,
+    toggle_window_fullscreen, toggle_window_maximized,
 };
 use crate::platform::{NovaRenderer, NovaRendererAtlas};
 use crate::*;
@@ -60,6 +67,206 @@ use winit::raw_window_handle::HasWindowHandle as _;
 use winit::window::Window as WinitWindow;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
+
+const SIZE_MOVE_LOOP_SUBCLASS_ID: usize = 0x4750_5549;
+const SIZE_MOVE_LOOP_TIMER_ID: usize = 0x4750_5549;
+
+thread_local! {
+    static WINDOWS_IN_SIZE_MOVE_LOOP: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
+    static WINDOWS_BY_HWND: RefCell<HashMap<isize, Weak<WindowsWindowInner>>> =
+        RefCell::new(HashMap::new());
+}
+
+fn register_native_window(hwnd: HWND, window: &WindowsWindow) {
+    WINDOWS_BY_HWND.with(|windows| {
+        windows
+            .borrow_mut()
+            .insert(hwnd.0 as isize, Rc::downgrade(&window.0));
+    });
+}
+
+fn unregister_native_window(hwnd: HWND) {
+    WINDOWS_BY_HWND.with(|windows| {
+        windows.borrow_mut().remove(&(hwnd.0 as isize));
+    });
+}
+
+fn native_window(hwnd: HWND) -> Option<WindowsWindow> {
+    WINDOWS_BY_HWND.with(|windows| {
+        let mut windows = windows.borrow_mut();
+        let window = windows
+            .get(&(hwnd.0 as isize))
+            .and_then(Weak::upgrade)
+            .map(WindowsWindow);
+        if window.is_none() {
+            windows.remove(&(hwnd.0 as isize));
+        }
+        window
+    })
+}
+
+fn enter_size_move_loop(hwnd: HWND) {
+    let entered =
+        WINDOWS_IN_SIZE_MOVE_LOOP.with(|windows| windows.borrow_mut().insert(hwnd.0 as isize));
+    if entered {
+        begin_windows_native_size_move();
+    }
+}
+
+fn leave_size_move_loop(hwnd: HWND) {
+    let left =
+        WINDOWS_IN_SIZE_MOVE_LOOP.with(|windows| windows.borrow_mut().remove(&(hwnd.0 as isize)));
+    if left {
+        end_windows_native_size_move();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SizeMoveLoopAction {
+    Start,
+    Tick,
+    Finish,
+    SyncExtent,
+    SuppressErase,
+    Destroy,
+    Forward,
+}
+
+fn size_move_loop_action(message: u32, timer_id: usize) -> SizeMoveLoopAction {
+    match message {
+        WM_ENTERSIZEMOVE => SizeMoveLoopAction::Start,
+        WM_TIMER if timer_id == SIZE_MOVE_LOOP_TIMER_ID => SizeMoveLoopAction::Tick,
+        WM_EXITSIZEMOVE => SizeMoveLoopAction::Finish,
+        WM_SIZE | WM_WINDOWPOSCHANGED => SizeMoveLoopAction::SyncExtent,
+        WM_ERASEBKGND => SizeMoveLoopAction::SuppressErase,
+        WM_NCDESTROY => SizeMoveLoopAction::Destroy,
+        _ => SizeMoveLoopAction::Forward,
+    }
+}
+
+fn redraw_size_move_frame(hwnd: HWND) {
+    // `RDW_UPDATENOW` sends WM_PAINT while Win32 is inside its modal size/move loop. Winit then
+    // emits `RedrawRequested`, which consumes one latest-wins resize generation and presents it.
+    if !unsafe {
+        RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE,
+        )
+    }
+    .as_bool()
+    {
+        log::warn!("failed to redraw GPUI window from the native size/move loop");
+    }
+}
+
+fn dispatch_size_move_frame(hwnd: HWND) {
+    let Some(window) = native_window(hwnd) else {
+        redraw_size_move_frame(hwnd);
+        return;
+    };
+
+    // Mature Win32 loops such as SDL drive their live-resize update directly from this timer.
+    // Going through WM_PAINT alone is insufficient because winit may buffer RedrawRequested while
+    // its event-loop runner is already borrowed by another window event.
+    window.sync_current_native_size();
+    window.dispatch_pending_update();
+}
+
+unsafe extern "system" fn size_move_loop_subclass_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass_id: usize,
+    _reference_data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    match size_move_loop_action(message, wparam.0) {
+        SizeMoveLoopAction::Start => {
+            // Track the actual Win32 modal loop as well as GPUI-initiated drag calls. Native
+            // decorated windows can enter this path without calling winit's drag helpers.
+            enter_size_move_loop(hwnd);
+            let timer = unsafe {
+                SetTimer(
+                    Some(hwnd),
+                    SIZE_MOVE_LOOP_TIMER_ID,
+                    USER_TIMER_MINIMUM,
+                    None,
+                )
+            };
+            if timer == 0 {
+                log::warn!("failed to start GPUI native size/move redraw timer");
+            }
+        }
+        SizeMoveLoopAction::Tick => {
+            dispatch_size_move_frame(hwnd);
+            return windows::Win32::Foundation::LRESULT(0);
+        }
+        SizeMoveLoopAction::Finish => {
+            if let Err(error) = unsafe { KillTimer(Some(hwnd), SIZE_MOVE_LOOP_TIMER_ID) } {
+                log::warn!("failed to stop GPUI native size/move redraw timer: {error}");
+            }
+            let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+            // Flush the final coalesced extent after winit has left its native size/move state.
+            dispatch_size_move_frame(hwnd);
+            leave_size_move_loop(hwnd);
+            return result;
+        }
+        SizeMoveLoopAction::SyncExtent => {
+            // Let the default/winit chain commit the non-client and client rectangles first, then
+            // query the authoritative client extent. WM_WINDOWPOSCHANGED can generate WM_SIZE
+            // recursively; `sync_size` deduplicates that pair.
+            let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+            if let Some(window) = native_window(hwnd) {
+                window.sync_current_native_size();
+                if !window.is_in_native_size_move_loop() {
+                    window.dispatch_pending_update();
+                }
+            }
+            return result;
+        }
+        // The GPU surface owns the complete client area. Letting DefWindowProc erase an enlarged
+        // update region exposes the class background brush before the next swapchain present.
+        SizeMoveLoopAction::SuppressErase => {
+            return windows::Win32::Foundation::LRESULT(1);
+        }
+        SizeMoveLoopAction::Destroy => {
+            unregister_native_window(hwnd);
+            leave_size_move_loop(hwnd);
+            let _ = unsafe { KillTimer(Some(hwnd), SIZE_MOVE_LOOP_TIMER_ID) };
+            if !unsafe {
+                RemoveWindowSubclass(
+                    hwnd,
+                    Some(size_move_loop_subclass_proc),
+                    SIZE_MOVE_LOOP_SUBCLASS_ID,
+                )
+            }
+            .as_bool()
+            {
+                log::debug!("GPUI native size/move window subclass was already removed");
+            }
+        }
+        SizeMoveLoopAction::Forward => {}
+    }
+
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+fn install_size_move_loop_subclass(hwnd: HWND) {
+    if !unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(size_move_loop_subclass_proc),
+            SIZE_MOVE_LOOP_SUBCLASS_ID,
+            0,
+        )
+    }
+    .as_bool()
+    {
+        log::warn!("failed to install GPUI native size/move window subclass");
+    }
+}
 
 fn should_use_native_decorations(params: &WindowParams) -> bool {
     if params.kind == WindowKind::PopUp {
@@ -725,6 +932,7 @@ pub(crate) struct WindowsWindowInner {
     renderer_atlas: NovaRendererAtlas,
     presentation_state: Cell<WindowsWindowPresentationState>,
     pending_resize: Cell<Option<PendingWindowsResize>>,
+    frame_dispatch_in_progress: Cell<bool>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
     pub(crate) renderer_resize_retry_pending: Cell<bool>,
@@ -869,6 +1077,7 @@ impl WindowsWindow {
             .context("creating winit window")?;
         let hwnd = Self::native_hwnd_from_winit_window(&winit_window);
         if let Some(hwnd) = hwnd {
+            install_size_move_loop_subclass(hwnd);
             apply_window_background_appearance(hwnd, params.window_background);
         }
         let scale_factor = winit_window.scale_factor() as f32;
@@ -941,12 +1150,16 @@ impl WindowsWindow {
             renderer_atlas,
             presentation_state: Cell::new(presentation_state),
             pending_resize: Cell::new(None),
+            frame_dispatch_in_progress: Cell::new(false),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
             renderer_resize_retry_pending: Cell::new(false),
             fallback_corner_radius,
             winit_window: cell,
         }));
+        if let Some(hwnd) = hwnd {
+            register_native_window(hwnd, &window);
+        }
         window.start_renderer_initialization(background_executor, renderer_initialization);
         Ok(window)
     }
@@ -1073,6 +1286,68 @@ impl WindowsWindow {
         }
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
         self.request_frame(RequestFrameOptions::from_refresh());
+    }
+
+    pub(crate) fn sync_size(
+        &self,
+        physical_size: winit::dpi::PhysicalSize<u32>,
+        scale_factor: f32,
+    ) {
+        if physical_size.width == 0 || physical_size.height == 0 {
+            return;
+        }
+
+        let logical_size = Size {
+            width: Pixels(physical_size.width as f32 / scale_factor),
+            height: Pixels(physical_size.height as f32 / scale_factor),
+        };
+        let Ok(state) = self.try_borrow_state() else {
+            log::warn!("window state is already borrowed while synchronizing Windows size");
+            return;
+        };
+        if state.logical_size.get() == logical_size && state.scale_factor.get() == scale_factor {
+            return;
+        }
+        state.logical_size.set(logical_size);
+        state.scale_factor.set(scale_factor);
+        drop(state);
+
+        self.queue_resize(PendingWindowsResize {
+            logical_size,
+            drawable_size: Size {
+                width: DevicePixels(physical_size.width as i32),
+                height: DevicePixels(physical_size.height as i32),
+            },
+            scale_factor,
+        });
+    }
+
+    fn sync_current_native_size(&self) {
+        let physical_size = self.window().inner_size();
+        let scale_factor = self.window().scale_factor() as f32;
+        self.sync_size(physical_size, scale_factor);
+    }
+
+    pub(crate) fn is_in_native_size_move_loop(&self) -> bool {
+        let Some(hwnd) = self.native_hwnd() else {
+            return false;
+        };
+        WINDOWS_IN_SIZE_MOVE_LOOP.with(|windows| windows.borrow().contains(&(hwnd.0 as isize)))
+    }
+
+    pub(crate) fn dispatch_pending_update(&self) {
+        // A frame callback may synchronously pump another native message. Leave any newly queued
+        // resize/frame request in its latest-wins slot for the next timer or redraw instead of
+        // taking it while the callback is temporarily removed from `Callbacks`.
+        if self.0.frame_dispatch_in_progress.replace(true) {
+            return;
+        }
+        self.dispatch_pending_resize();
+        let options = self.take_pending_frame_request();
+        if options.requires_frame() {
+            self.invoke_request_frame(options);
+        }
+        self.0.frame_dispatch_in_progress.set(false);
     }
 
     pub(crate) fn dispatch_pending_resize(&self) {
@@ -1364,6 +1639,10 @@ impl PlatformWindow for WindowsWindow {
         }
     }
 
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.0.state.borrow().background_appearance.get()
+    }
+
     fn show(&self) {
         self.update_presentation_state(WindowsWindowPresentationState::request_show);
         self.request_frame(RequestFrameOptions {
@@ -1476,37 +1755,51 @@ impl PlatformWindow for WindowsWindow {
         self.0.state.borrow_mut().callbacks.appearance_changed = Some(callback);
     }
 
-    fn draw(&self, render_plan: FrameRenderPlan<'_>) {
+    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
         if !self.try_apply_queued_renderer_resize() {
-            return;
+            return PlatformFrameResult::Deferred;
         }
         let draw_result = {
             let mut renderer_state = self.0.renderer.borrow_mut();
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
-                return;
+                return PlatformFrameResult::Deferred;
             };
             renderer.draw(render_plan)
         };
         match draw_result {
-            Ok(()) => self.mark_first_frame_presented(),
-            Err(error) => log::error!("failed to draw Windows frame: {error:#}"),
+            Ok(()) => {
+                self.mark_first_frame_presented();
+                PlatformFrameResult::Submitted
+            }
+            Err(error) => {
+                log::error!("failed to draw Windows frame: {error:#}");
+                self.request_frame(RequestFrameOptions::from_refresh());
+                PlatformFrameResult::Deferred
+            }
         }
     }
 
-    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) {
+    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
         if !self.try_apply_queued_renderer_resize() {
-            return;
+            return PlatformFrameResult::Deferred;
         }
         let present_result = {
             let mut renderer_state = self.0.renderer.borrow_mut();
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
-                return;
+                return PlatformFrameResult::Deferred;
             };
             renderer.present_framebuffer_only(render_plan)
         };
         match present_result {
-            Ok(()) => self.mark_first_frame_presented(),
-            Err(error) => log::error!("failed to present Windows framebuffer: {error:#}"),
+            Ok(()) => {
+                self.mark_first_frame_presented();
+                PlatformFrameResult::Submitted
+            }
+            Err(error) => {
+                log::error!("failed to present Windows framebuffer: {error:#}");
+                self.request_frame(RequestFrameOptions::from_refresh());
+                PlatformFrameResult::Deferred
+            }
         }
     }
 
@@ -1595,10 +1888,10 @@ impl ClickState {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClickState, NativeWindowVisibilityAction, WindowsWindowPresentationState,
-        clear_pending_frame_request_after_timeout, merge_frame_request,
-        renderer_backend_candidates, should_use_native_decorations,
-        should_use_no_redirection_bitmap,
+        ClickState, NativeWindowVisibilityAction, SIZE_MOVE_LOOP_TIMER_ID, SizeMoveLoopAction,
+        WindowsWindowPresentationState, clear_pending_frame_request_after_timeout,
+        merge_frame_request, renderer_backend_candidates, should_use_native_decorations,
+        should_use_no_redirection_bitmap, size_move_loop_action,
     };
     use crate::{
         DevicePixels, MouseButton, RendererBackend, RendererOptions, RequestFrameOptions,
@@ -1606,6 +1899,10 @@ mod tests {
         WindowParams, point,
     };
     use std::time::Duration;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SIZE, WM_TIMER,
+        WM_WINDOWPOSCHANGED,
+    };
 
     #[test]
     fn test_double_click_interval() {
@@ -1702,6 +1999,42 @@ mod tests {
             true,
             RendererBackend::NovaVulkan,
         ));
+    }
+
+    #[test]
+    fn native_size_move_messages_drive_one_timer_and_a_final_flush() {
+        assert_eq!(
+            size_move_loop_action(WM_ENTERSIZEMOVE, 0),
+            SizeMoveLoopAction::Start
+        );
+        assert_eq!(
+            size_move_loop_action(WM_TIMER, SIZE_MOVE_LOOP_TIMER_ID),
+            SizeMoveLoopAction::Tick
+        );
+        assert_eq!(
+            size_move_loop_action(WM_TIMER, SIZE_MOVE_LOOP_TIMER_ID + 1),
+            SizeMoveLoopAction::Forward
+        );
+        assert_eq!(
+            size_move_loop_action(WM_EXITSIZEMOVE, 0),
+            SizeMoveLoopAction::Finish
+        );
+        assert_eq!(
+            size_move_loop_action(WM_SIZE, 0),
+            SizeMoveLoopAction::SyncExtent
+        );
+        assert_eq!(
+            size_move_loop_action(WM_WINDOWPOSCHANGED, 0),
+            SizeMoveLoopAction::SyncExtent
+        );
+        assert_eq!(
+            size_move_loop_action(WM_ERASEBKGND, 0),
+            SizeMoveLoopAction::SuppressErase
+        );
+        assert_eq!(
+            size_move_loop_action(WM_NCDESTROY, 0),
+            SizeMoveLoopAction::Destroy
+        );
     }
 
     #[test]

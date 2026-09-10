@@ -90,12 +90,11 @@ pub(super) fn spawn_vsync_thread(
                     continue;
                 }
 
-                if crate::platform::winit::windows_native_window_move_active() {
-                    // Native HWND movement is compositor-owned. Keep the last rendered surface
-                    // stable while DWM moves it and preserve the coalesced frame request for one
-                    // catch-up render after drag_window returns. Presenting each DWM tick here can
-                    // race the HWND position with newly submitted client surfaces and visibly shake
-                    // the whole window, including images and text.
+                if crate::platform::winit::windows_native_size_move_active() {
+                    // The native modal size/move loop has its own WM_TIMER frame pump. Preserve
+                    // the coalesced VSync request for one catch-up render after the loop exits
+                    // instead of dispatching the same work twice. This covers both GPUI client
+                    // decorations and native Windows title bars/borders.
                     std::thread::sleep(DEFAULT_VSYNC_INTERVAL);
                     continue;
                 }

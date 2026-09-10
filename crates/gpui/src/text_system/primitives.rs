@@ -183,6 +183,8 @@ pub(crate) struct RenderGlyphParams {
     pub(crate) font_size: Pixels,
     pub(crate) subpixel_variant: Point<u8>,
     pub(crate) scale_factor: f32,
+    /// Force single-channel coverage when the glyph is composed into a transparent surface.
+    pub(crate) grayscale_antialiasing: bool,
     pub(crate) is_emoji: bool,
     pub(crate) is_cjk: bool,
 }
@@ -196,6 +198,7 @@ impl Hash for RenderGlyphParams {
         self.font_size.0.to_bits().hash(state);
         self.subpixel_variant.hash(state);
         self.scale_factor.to_bits().hash(state);
+        self.grayscale_antialiasing.hash(state);
         self.is_emoji.hash(state);
         self.is_cjk.hash(state);
     }

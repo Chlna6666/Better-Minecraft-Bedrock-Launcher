@@ -27,7 +27,7 @@ impl AtlasKey {
             AtlasKey::Glyph(params) => {
                 if params.is_emoji {
                     AtlasTextureKind::Bgra
-                } else if cfg!(target_os = "windows") {
+                } else if cfg!(target_os = "windows") && !params.grayscale_antialiasing {
                     AtlasTextureKind::Subpixel
                 } else {
                     AtlasTextureKind::Monochrome

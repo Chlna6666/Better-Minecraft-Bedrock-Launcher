@@ -944,14 +944,14 @@ impl WindowsApplication {
         event_loop.set_control_flow(control_flow);
     }
 
+    fn dispatch_pending_window_update(window: &WindowsWindow) {
+        window.dispatch_pending_update();
+    }
+
     fn dispatch_pending_window_updates(&self) {
         let windows: Vec<_> = self.windows.values().cloned().collect();
         for window in windows {
-            window.dispatch_pending_resize();
-            let options = window.take_pending_frame_request();
-            if options.requires_frame() {
-                window.invoke_request_frame(options);
-            }
+            Self::dispatch_pending_window_update(&window);
         }
     }
 
@@ -960,29 +960,7 @@ impl WindowsApplication {
         physical_size: winit::dpi::PhysicalSize<u32>,
         scale_factor: f32,
     ) {
-        if physical_size.width == 0 || physical_size.height == 0 {
-            return;
-        }
-
-        let logical_size = Size {
-            width: Pixels(physical_size.width as f32 / scale_factor),
-            height: Pixels(physical_size.height as f32 / scale_factor),
-        };
-        if let Ok(state) = window.try_borrow_state() {
-            state.logical_size.set(logical_size);
-            state.scale_factor.set(scale_factor);
-        } else {
-            log::warn!("window state is already borrowed while synchronizing Windows size");
-        }
-
-        window.queue_resize(PendingWindowsResize {
-            logical_size,
-            drawable_size: Size {
-                width: DevicePixels(physical_size.width as i32),
-                height: DevicePixels(physical_size.height as i32),
-            },
-            scale_factor,
-        });
+        window.sync_size(physical_size, scale_factor);
     }
 
     fn refresh_display_cache(&mut self, event_loop: &ActiveEventLoop) {
@@ -1094,6 +1072,14 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::Resized(physical_size) => {
                 let scale_factor = window.scale_factor();
                 Self::sync_window_size(&window, physical_size, scale_factor);
+                // During the Win32 modal size/move loop, WM_SIZE only publishes the newest extent
+                // and stretches the last complete frame. The native timer owns rendering so a slow
+                // layout/GPU resize cannot block every pointer message, and buffered winit resize
+                // events cannot render the same extent twice. Outside that loop, preserve the
+                // normal immediate resize behavior.
+                if !window.is_in_native_size_move_loop() {
+                    Self::dispatch_pending_window_update(&window);
+                }
             }
             winit::event::WindowEvent::Moved(_) => {
                 self.refresh_display_cache(event_loop);
@@ -1116,6 +1102,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let physical_size = window.window().inner_size();
                 Self::sync_window_size(&window, physical_size, scale_factor as f32);
+                if !window.is_in_native_size_move_loop() {
+                    Self::dispatch_pending_window_update(&window);
+                }
                 self.refresh_display_cache(event_loop);
             }
             winit::event::WindowEvent::ThemeChanged(_) => {
@@ -1149,11 +1138,10 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 }
             }
             winit::event::WindowEvent::RedrawRequested => {
-                window.dispatch_pending_resize();
-                let options = window.take_pending_frame_request();
-                if options.requires_frame() {
-                    window.invoke_request_frame(options);
-                }
+                // WM_PAINT is also the foreground-task/frame pump while Win32 is inside its modal
+                // size/move loop. Run queued work before consuming the newest resize generation.
+                self.run_foreground_tasks(event_loop);
+                Self::dispatch_pending_window_update(&window);
             }
             winit::event::WindowEvent::CursorEntered { .. } => {
                 self.hovered_window_id = Some(window_id);

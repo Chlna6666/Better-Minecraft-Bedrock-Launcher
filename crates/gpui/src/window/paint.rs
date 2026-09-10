@@ -417,6 +417,8 @@ impl Window {
             font_size,
             subpixel_variant,
             scale_factor,
+            grayscale_antialiasing: self.platform_window.background_appearance()
+                != WindowBackgroundAppearance::Opaque,
             is_emoji: false,
             is_cjk,
         };
@@ -491,6 +493,7 @@ impl Window {
             // We don't render emojis with subpixel variants.
             subpixel_variant: Default::default(),
             scale_factor,
+            grayscale_antialiasing: true,
             is_emoji: true,
             is_cjk: false,
         };

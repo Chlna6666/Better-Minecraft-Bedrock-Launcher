@@ -670,13 +670,12 @@ impl DirectWriteState {
         // Natural/GDI modes only antialias horizontally. A grayscale atlas needs vertical
         // coverage as well, especially at the curved tops of small digits. Keep the platform's
         // grid fitting, but use symmetric coverage for grayscale on every renderer backend.
-        let rendering_mode = if !use_subpixel_rendering
-            || rendering_mode == DWRITE_RENDERING_MODE1_OUTLINE
-        {
-            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
-        } else {
-            rendering_mode
-        };
+        let rendering_mode =
+            if !use_subpixel_rendering || rendering_mode == DWRITE_RENDERING_MODE1_OUTLINE {
+                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
+            } else {
+                rendering_mode
+            };
 
         let antialias_mode = if use_subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
@@ -798,11 +797,10 @@ impl DirectWriteState {
         glyph_analysis: Option<&IDWriteGlyphRunAnalysis>,
     ) -> Result<Vec<u8>> {
         if !should_use_subpixel_rendering(components, params) {
-            return Ok(self
-                .rasterize_grayscale(components, params, glyph_bounds, glyph_analysis)?
-                .into_iter()
-                .flat_map(|alpha| [alpha, alpha, alpha, 255])
-                .collect());
+            // Monochrome atlas uploads consume exactly one coverage byte per pixel. Expanding
+            // grayscale coverage to BGRA here makes the uploader interpret B/G/R/A bytes as four
+            // adjacent pixels, producing periodic striped glyphs on transparent windows.
+            return self.rasterize_grayscale(components, params, glyph_bounds, glyph_analysis);
         }
 
         let owned_analysis;
@@ -1557,12 +1555,13 @@ fn should_use_subpixel_rendering(
     components: &DirectWriteComponents,
     params: &RenderGlyphParams,
 ) -> bool {
-    should_use_subpixel_rendering_for_size(
-        components.subpixel_rendering_enabled,
-        params.is_emoji,
-        params.font_size.0,
-        params.scale_factor,
-    )
+    !params.grayscale_antialiasing
+        && should_use_subpixel_rendering_for_size(
+            components.subpixel_rendering_enabled,
+            params.is_emoji,
+            params.font_size.0,
+            params.scale_factor,
+        )
 }
 
 fn should_use_subpixel_rendering_for_size(
@@ -1700,6 +1699,7 @@ mod tests {
             font_size: glyph.font_size,
             subpixel_variant: point(0, 0),
             scale_factor: 1.0,
+            grayscale_antialiasing: true,
             is_emoji: glyph.is_emoji,
             is_cjk: glyph.is_cjk,
         };
@@ -1710,16 +1710,8 @@ mod tests {
         let GlyphRasterization::Bitmap { size, bytes } = rasterization else {
             anyhow::bail!("ordinary system text unexpectedly produced color layers");
         };
-        assert_eq!(
-            bytes.len(),
-            size.width.0 as usize * size.height.0 as usize * 4
-        );
+        assert_eq!(bytes.len(), size.width.0 as usize * size.height.0 as usize);
         assert!(bytes.iter().any(|byte| *byte != 0));
-        assert!(
-            bytes
-                .chunks_exact(4)
-                .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2])
-        );
         Ok(())
     }
 
@@ -1748,6 +1740,7 @@ mod tests {
             font_size: glyph.font_size,
             subpixel_variant: point(0, 0),
             scale_factor: 1.0,
+            grayscale_antialiasing: true,
             is_emoji: true,
             is_cjk: false,
         };

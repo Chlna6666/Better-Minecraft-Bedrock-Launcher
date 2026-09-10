@@ -70,6 +70,7 @@ pub(crate) fn rasterize_platform_title(
                 font_size: glyph.font_size,
                 subpixel_variant,
                 scale_factor,
+                grayscale_antialiasing: true,
                 is_emoji: glyph.is_emoji,
                 is_cjk: glyph.is_cjk,
             };
