@@ -89,6 +89,66 @@ pub fn record_scene_pack_time(duration: Duration) {
     );
 }
 
+/// Records the CPU work used to encode and signature the latest Nova scene.
+pub(crate) fn record_nova_scene_prepare_metrics(
+    encode_time: Duration,
+    signature_time: Duration,
+    hashed_bytes: usize,
+    retained_chunk_hits: usize,
+    retained_chunk_misses: usize,
+    retained_chunk_reused_bytes: usize,
+    retained_key_hit: bool,
+    static_stream_hits: usize,
+    static_stream_misses: usize,
+) {
+    let metrics = shared_metrics();
+    metrics.scene_encode_micros.store(
+        encode_time.as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+    metrics.scene_signature_micros.store(
+        signature_time.as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+    metrics
+        .scene_hashed_bytes
+        .store(hashed_bytes as u64, Ordering::Relaxed);
+    metrics
+        .retained_chunk_hits
+        .store(retained_chunk_hits as u64, Ordering::Relaxed);
+    metrics
+        .retained_chunk_misses
+        .store(retained_chunk_misses as u64, Ordering::Relaxed);
+    metrics
+        .retained_chunk_reused_bytes
+        .store(retained_chunk_reused_bytes as u64, Ordering::Relaxed);
+    metrics
+        .retained_upload_key_hit
+        .store(u64::from(retained_key_hit), Ordering::Relaxed);
+    metrics
+        .static_stream_hits
+        .store(static_stream_hits as u64, Ordering::Relaxed);
+    metrics
+        .static_stream_misses
+        .store(static_stream_misses as u64, Ordering::Relaxed);
+}
+
+/// Records time blocked waiting for a reusable Nova frame-resource slot.
+pub(crate) fn record_frame_slot_wait(duration: Duration) {
+    shared_metrics().frame_slot_wait_micros.store(
+        duration.as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+}
+
+/// Records CPU time spent queueing Nova frame-buffer writes.
+pub(crate) fn record_nova_buffer_upload_time(duration: Duration) {
+    shared_metrics().buffer_upload_micros.store(
+        duration.as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+}
+
 /// Records upload bytes for the latest frame.
 pub fn record_upload_bytes(bytes: usize) {
     shared_metrics()
@@ -107,6 +167,19 @@ pub fn record_pod_upload_bytes(bytes: usize) {
 pub fn reset_frame_upload_metrics() {
     let metrics = shared_metrics();
     metrics.scene_pack_micros.store(0, Ordering::Relaxed);
+    metrics.scene_encode_micros.store(0, Ordering::Relaxed);
+    metrics.scene_signature_micros.store(0, Ordering::Relaxed);
+    metrics.scene_hashed_bytes.store(0, Ordering::Relaxed);
+    metrics.retained_chunk_hits.store(0, Ordering::Relaxed);
+    metrics.retained_chunk_misses.store(0, Ordering::Relaxed);
+    metrics
+        .retained_chunk_reused_bytes
+        .store(0, Ordering::Relaxed);
+    metrics.retained_upload_key_hit.store(0, Ordering::Relaxed);
+    metrics.static_stream_hits.store(0, Ordering::Relaxed);
+    metrics.static_stream_misses.store(0, Ordering::Relaxed);
+    metrics.frame_slot_wait_micros.store(0, Ordering::Relaxed);
+    metrics.buffer_upload_micros.store(0, Ordering::Relaxed);
     metrics.atlas_upload_bytes.store(0, Ordering::Relaxed);
     metrics.atlas_upload_tiles.store(0, Ordering::Relaxed);
     metrics.atlas_upload_micros.store(0, Ordering::Relaxed);

@@ -1,4 +1,6 @@
 use super::*;
+use std::hash::Hasher;
+use std::ops::Range;
 
 /// Primitives clipped to a zero-area mask are invisible on screen but can produce
 /// undefined shader coverage (white garbage) in the rasterizer, so they are culled
@@ -76,6 +78,7 @@ impl FrameUpload {
             self.custom_mesh_3d_ids.clear();
             self.custom_mesh_3d_shader_ids.clear();
             self.batches.clear();
+            self.resident_quad_spans.clear();
             self.globals.reserve(GLOBAL_UPLOAD_BYTES);
             self.text_raster_params.reserve(TEXT_RASTER_UPLOAD_BYTES);
             self.path_rasterization_vertices
@@ -84,7 +87,8 @@ impl FrameUpload {
             self.backdrop_blur_passes.reserve(BACKDROP_BLUR_PASS_BYTES);
             self.backdrop_blurs.reserve(PACKED_BACKDROP_BLUR_BYTES);
             #[cfg(test)]
-            self.animation_bindings.reserve(PACKED_ANIMATION_BINDING_BYTES);
+            self.animation_bindings
+                .reserve(PACKED_ANIMATION_BINDING_BYTES);
             self.animation_values.reserve(PACKED_ANIMATION_VALUE_BYTES);
             self.custom_mesh_3d_parameters
                 .reserve(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES);
@@ -131,35 +135,12 @@ impl FrameUpload {
         for batch in scene.prepared_batches() {
             match batch {
                 PreparedSceneBatch::Quads(quad_run) => {
-                    let first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-                    let mut count = 0_u32;
-                    for quad in &scene.quads[quad_run.range.clone()] {
-                        if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
-                            break;
-                        }
-                        if clip_is_degenerate(&quad.content_mask) {
-                            continue;
-                        }
-                        let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-                        write_quad(&mut self.quads, quad);
-                        register_scene_animated_primitive(
-                            self,
-                            &mut summary,
-                            quad.animation_id
-                                .map(|_| crate::Primitive::Quad(quad.clone())),
-                            AnimatedPrimitiveKind::Quad,
-                            primitive_index,
-                        );
-                        count = count.saturating_add(1);
-                    }
-                    if count > 0 {
-                        self.batches.push(if quad_run.is_solid {
-                            UploadedBatch::SolidQuads { first, count }
-                        } else {
-                            UploadedBatch::Quads { first, count }
-                        });
-                        summary.quad_count = summary.quad_count.saturating_add(count);
-                    }
+                    self.encode_quad_batch_with_retained_chunks(
+                        scene,
+                        quad_run.range.clone(),
+                        quad_run.is_solid,
+                        &mut summary,
+                    );
                 }
                 PreparedSceneBatch::Shadows(range) => {
                     let first = (self.shadows.len() / PACKED_SHADOW_BYTES) as u32;
@@ -561,8 +542,7 @@ impl FrameUpload {
                             &mut self.custom_mesh_3d_parameters,
                             painted,
                         );
-                        self.custom_mesh_3d_animation_ids
-                            .push(painted.animation_id);
+                        self.custom_mesh_3d_animation_ids.push(painted.animation_id);
                         for range in validated_ranges.into_iter().flatten() {
                             self.batches.push(UploadedBatch::CustomMesh3d {
                                 mesh_id: painted.mesh.id,
@@ -577,11 +557,157 @@ impl FrameUpload {
             }
         }
         if reset {
+            let active_chunks: FxHashSet<_> = scene
+                .prepared_retained_quad_chunks()
+                .iter()
+                .map(|chunk| chunk.id.clone())
+                .collect();
+            self.retained_quad_chunks
+                .retain(|id, _| active_chunks.contains(id));
             self.rebuild_custom_mesh_3d_animations();
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes_for_current_frame();
         }
         summary
+    }
+
+    fn encode_quad_batch_with_retained_chunks(
+        &mut self,
+        scene: &crate::Scene,
+        range: Range<usize>,
+        is_solid: bool,
+        summary: &mut FrameUploadSummary,
+    ) {
+        let mut cursor = range.start;
+        for chunk in scene.prepared_retained_quad_chunks() {
+            if chunk.quad_range.end <= range.start || chunk.quad_range.start >= range.end {
+                continue;
+            }
+            if chunk.quad_range.start < cursor
+                || chunk.quad_range.end > range.end
+                || chunk.is_solid != is_solid
+            {
+                continue;
+            }
+            self.encode_quad_range(
+                &scene.quads[cursor..chunk.quad_range.start],
+                is_solid,
+                summary,
+            );
+            if !self.reuse_retained_quad_chunk(chunk, summary) {
+                summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
+                let byte_start = self.quads.len();
+                let count = self.encode_quad_range(
+                    &scene.quads[chunk.quad_range.clone()],
+                    is_solid,
+                    summary,
+                );
+                if count == chunk.quad_range.len() as u32 {
+                    let byte_end = self.quads.len();
+                    let bytes = self.quads[byte_start..].to_vec();
+                    let mut hasher = collections::FxHasher::default();
+                    hasher.write(&bytes);
+                    let byte_hash = hasher.finish();
+                    self.resident_quad_spans.push(RetainedResidentSpan {
+                        id: chunk.id.clone(),
+                        range: byte_start..byte_end,
+                        byte_hash,
+                    });
+                    self.retained_quad_chunks.insert(
+                        chunk.id.clone(),
+                        PackedRetainedQuadChunk {
+                            bytes,
+                            byte_hash,
+                            quad_count: count,
+                            is_solid,
+                        },
+                    );
+                }
+            }
+            cursor = chunk.quad_range.end;
+        }
+        self.encode_quad_range(&scene.quads[cursor..range.end], is_solid, summary);
+    }
+
+    fn reuse_retained_quad_chunk(
+        &mut self,
+        chunk: &crate::PreparedRetainedQuadChunk,
+        summary: &mut FrameUploadSummary,
+    ) -> bool {
+        if !chunk.replayed {
+            return false;
+        }
+        let Some(cached) = self.retained_quad_chunks.get(&chunk.id) else {
+            return false;
+        };
+        if cached.is_solid != chunk.is_solid
+            || self.quads.len() / PACKED_QUAD_BYTES + cached.quad_count as usize > MAX_QUADS
+        {
+            return false;
+        }
+        let byte_start = self.quads.len();
+        let first = (byte_start / PACKED_QUAD_BYTES) as u32;
+        self.quads.extend_from_slice(&cached.bytes);
+        self.resident_quad_spans.push(RetainedResidentSpan {
+            id: chunk.id.clone(),
+            range: byte_start..self.quads.len(),
+            byte_hash: cached.byte_hash,
+        });
+        self.batches.push(if cached.is_solid {
+            UploadedBatch::SolidQuads {
+                first,
+                count: cached.quad_count,
+            }
+        } else {
+            UploadedBatch::Quads {
+                first,
+                count: cached.quad_count,
+            }
+        });
+        summary.quad_count = summary.quad_count.saturating_add(cached.quad_count);
+        summary.retained_chunk_hits = summary.retained_chunk_hits.saturating_add(1);
+        summary.retained_chunk_reused_bytes = summary
+            .retained_chunk_reused_bytes
+            .saturating_add(cached.bytes.len());
+        true
+    }
+
+    fn encode_quad_range(
+        &mut self,
+        quads: &[Quad],
+        is_solid: bool,
+        summary: &mut FrameUploadSummary,
+    ) -> u32 {
+        let first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
+        let mut count = 0_u32;
+        for quad in quads {
+            if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
+                break;
+            }
+            if clip_is_degenerate(&quad.content_mask) {
+                continue;
+            }
+            let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
+            write_quad(&mut self.quads, quad);
+            register_scene_animated_primitive(
+                self,
+                summary,
+                quad.animation_id
+                    .map(|_| crate::Primitive::Quad(quad.clone())),
+                AnimatedPrimitiveKind::Quad,
+                primitive_index,
+            );
+            count = count.saturating_add(1);
+        }
+        if count > 0 {
+            self.batches.push(if is_solid {
+                UploadedBatch::SolidQuads { first, count }
+            } else {
+                UploadedBatch::Quads { first, count }
+            });
+            summary.quad_count = summary.quad_count.saturating_add(count);
+        }
+        count
     }
 
     fn encoded_path_rasterization(

@@ -1,5 +1,5 @@
 use super::display::PlatformDisplay;
-use super::frame::{FrameRenderPlan, RequestFrameOptions};
+use super::frame::{FrameRenderPlan, PlatformFrameResult, RequestFrameOptions};
 use super::{
     ClipboardItem, CursorStyle, GlyphRasterization, Menu, MenuItem, OwnedMenu, PathPromptOptions,
     PlatformAtlas, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
@@ -154,6 +154,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_hovered(&self) -> bool;
     fn set_title(&mut self, title: &str);
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        WindowBackgroundAppearance::Opaque
+    }
     fn show(&self) {}
     fn hide_window(&self) {}
     fn minimize(&self);
@@ -178,8 +181,10 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>);
     fn on_close(&self, callback: Box<dyn FnOnce()>);
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
-    fn draw(&self, render_plan: FrameRenderPlan<'_>);
-    fn present_framebuffer_only(&self, _render_plan: FrameRenderPlan<'_>) {}
+    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult;
+    fn present_framebuffer_only(&self, _render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
+        PlatformFrameResult::Submitted
+    }
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
 

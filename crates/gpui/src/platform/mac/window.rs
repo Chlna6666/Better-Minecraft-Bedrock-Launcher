@@ -1495,9 +1495,10 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().toggle_tab_bar_callback = Some(callback);
     }
 
-    fn draw(&self, render_plan: crate::FrameRenderPlan<'_>) {
+    fn draw(&self, render_plan: crate::FrameRenderPlan<'_>) -> crate::PlatformFrameResult {
         let mut this = self.0.lock();
         this.renderer.draw(render_plan.scene);
+        crate::PlatformFrameResult::Submitted
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

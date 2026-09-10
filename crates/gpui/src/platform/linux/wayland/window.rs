@@ -43,10 +43,10 @@ use crate::WindowKind;
 use crate::{
     AnyWindowHandle, Bounds, CursorStyle, Decorations, DevicePixels, FrameRenderPlan, Globals,
     GpuSpecs, GpuiMemoryTrimLevel, Modifiers, MouseButton, Output, Pixels, PlatformDisplay,
-    PlatformInput, Point, PromptButton, PromptLevel, RendererOptions, RequestFrameOptions,
-    ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControlArea, WindowControls, WindowDecorations, WindowParams, point, px,
-    size,
+    PlatformFrameResult, PlatformInput, Point, PromptButton, PromptLevel, RendererOptions,
+    RequestFrameOptions, ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
+    WindowParams, point, px, size,
 };
 use crate::{
     Capslock,
@@ -1458,17 +1458,19 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
-    fn draw(&self, render_plan: FrameRenderPlan<'_>) {
+    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
         let mut state = self.borrow_mut();
         state.renderer.draw(render_plan).log_err();
+        PlatformFrameResult::Submitted
     }
 
-    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) {
+    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
         let mut state = self.borrow_mut();
         state
             .renderer
             .present_framebuffer_only(render_plan)
             .log_err();
+        PlatformFrameResult::Submitted
     }
 
     fn completed_frame(&self) {

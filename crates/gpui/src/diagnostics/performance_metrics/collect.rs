@@ -47,8 +47,33 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
     let gpu_submission_wait_max_micros = shared_metrics()
         .gpu_submission_wait_max_micros
         .load(Ordering::Relaxed);
+    let surface_resize_wait_micros = shared_metrics()
+        .surface_resize_wait_micros
+        .load(Ordering::Relaxed);
+    let surface_resize_swapchain_micros = shared_metrics()
+        .surface_resize_swapchain_micros
+        .load(Ordering::Relaxed);
+    let surface_resize_resources_micros = shared_metrics()
+        .surface_resize_resources_micros
+        .load(Ordering::Relaxed);
+    let surface_resize_total_micros = shared_metrics()
+        .surface_resize_total_micros
+        .load(Ordering::Relaxed);
+    let surface_resize_max_micros = shared_metrics()
+        .surface_resize_max_micros
+        .load(Ordering::Relaxed);
     let atlas_upload_micros = shared_metrics().atlas_upload_micros.load(Ordering::Relaxed);
     let scene_pack_micros = shared_metrics().scene_pack_micros.load(Ordering::Relaxed);
+    let scene_encode_micros = shared_metrics().scene_encode_micros.load(Ordering::Relaxed);
+    let scene_signature_micros = shared_metrics()
+        .scene_signature_micros
+        .load(Ordering::Relaxed);
+    let frame_slot_wait_micros = shared_metrics()
+        .frame_slot_wait_micros
+        .load(Ordering::Relaxed);
+    let buffer_upload_micros = shared_metrics()
+        .buffer_upload_micros
+        .load(Ordering::Relaxed);
     let image_processing_micros = shared_metrics()
         .image_processing_micros
         .load(Ordering::Relaxed);
@@ -244,7 +269,44 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         gpu_submission_slow_wait_count: shared_metrics()
             .gpu_submission_slow_wait_count
             .load(Ordering::Relaxed) as usize,
+        surface_resize_wait_time: (surface_resize_wait_micros > 0)
+            .then(|| Duration::from_micros(surface_resize_wait_micros)),
+        surface_resize_swapchain_time: (surface_resize_swapchain_micros > 0)
+            .then(|| Duration::from_micros(surface_resize_swapchain_micros)),
+        surface_resize_resources_time: (surface_resize_resources_micros > 0)
+            .then(|| Duration::from_micros(surface_resize_resources_micros)),
+        surface_resize_total_time: (surface_resize_total_micros > 0)
+            .then(|| Duration::from_micros(surface_resize_total_micros)),
+        surface_resize_count: shared_metrics()
+            .surface_resize_count
+            .load(Ordering::Relaxed) as usize,
+        surface_resize_max_time: (surface_resize_max_micros > 0)
+            .then(|| Duration::from_micros(surface_resize_max_micros)),
         scene_pack_time: (scene_pack_micros > 0).then(|| Duration::from_micros(scene_pack_micros)),
+        scene_encode_time: (scene_encode_micros > 0)
+            .then(|| Duration::from_micros(scene_encode_micros)),
+        scene_signature_time: (scene_signature_micros > 0)
+            .then(|| Duration::from_micros(scene_signature_micros)),
+        scene_hashed_bytes: shared_metrics().scene_hashed_bytes.load(Ordering::Relaxed) as usize,
+        retained_chunk_hits: shared_metrics().retained_chunk_hits.load(Ordering::Relaxed) as usize,
+        retained_chunk_misses: shared_metrics()
+            .retained_chunk_misses
+            .load(Ordering::Relaxed) as usize,
+        retained_chunk_reused_bytes: shared_metrics()
+            .retained_chunk_reused_bytes
+            .load(Ordering::Relaxed) as usize,
+        retained_upload_key_hit: shared_metrics()
+            .retained_upload_key_hit
+            .load(Ordering::Relaxed)
+            != 0,
+        static_stream_hits: shared_metrics().static_stream_hits.load(Ordering::Relaxed) as usize,
+        static_stream_misses: shared_metrics()
+            .static_stream_misses
+            .load(Ordering::Relaxed) as usize,
+        frame_slot_wait_time: (frame_slot_wait_micros > 0)
+            .then(|| Duration::from_micros(frame_slot_wait_micros)),
+        buffer_upload_time: (buffer_upload_micros > 0)
+            .then(|| Duration::from_micros(buffer_upload_micros)),
         atlas_upload_time: (atlas_upload_micros > 0)
             .then(|| Duration::from_micros(atlas_upload_micros)),
         last_image_processing_compressed_bytes: shared_metrics()

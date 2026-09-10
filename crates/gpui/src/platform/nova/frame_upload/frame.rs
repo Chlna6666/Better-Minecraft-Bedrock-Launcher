@@ -1,4 +1,19 @@
 use super::*;
+use std::ops::Range;
+
+pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
+    pub(in crate::platform::nova) bytes: Vec<u8>,
+    pub(in crate::platform::nova) byte_hash: u64,
+    pub(in crate::platform::nova) quad_count: u32,
+    pub(in crate::platform::nova) is_solid: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::platform::nova) struct RetainedResidentSpan {
+    pub(in crate::platform::nova) id: RetainedChunkId,
+    pub(in crate::platform::nova) range: Range<usize>,
+    pub(in crate::platform::nova) byte_hash: u64,
+}
 
 #[derive(Clone, Copy, Default)]
 pub(in crate::platform::nova) struct FrameUploadSummary {
@@ -12,6 +27,9 @@ pub(in crate::platform::nova) struct FrameUploadSummary {
     pub(in crate::platform::nova) poly_sprite_count: u32,
     pub(in crate::platform::nova) underline_count: u32,
     pub(in crate::platform::nova) backdrop_blur_count: u32,
+    pub(in crate::platform::nova) retained_chunk_hits: usize,
+    pub(in crate::platform::nova) retained_chunk_misses: usize,
+    pub(in crate::platform::nova) retained_chunk_reused_bytes: usize,
     pub(in crate::platform::nova) unsupported_batches: UnsupportedBatchSummary,
 }
 
@@ -41,6 +59,15 @@ impl FrameUploadSummary {
         self.backdrop_blur_count = self
             .backdrop_blur_count
             .saturating_add(other.backdrop_blur_count);
+        self.retained_chunk_hits = self
+            .retained_chunk_hits
+            .saturating_add(other.retained_chunk_hits);
+        self.retained_chunk_misses = self
+            .retained_chunk_misses
+            .saturating_add(other.retained_chunk_misses);
+        self.retained_chunk_reused_bytes = self
+            .retained_chunk_reused_bytes
+            .saturating_add(other.retained_chunk_reused_bytes);
         self.unsupported_batches.paths = self
             .unsupported_batches
             .paths
@@ -122,4 +149,7 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) path_geometry_hash_memo:
         FxHashMap<crate::PathCacheId, PathGeometryHashMemo>,
     pub(in crate::platform::nova) path_paint_key_scratch: Vec<u8>,
+    pub(in crate::platform::nova) retained_quad_chunks:
+        FxHashMap<RetainedChunkId, PackedRetainedQuadChunk>,
+    pub(in crate::platform::nova) resident_quad_spans: Vec<RetainedResidentSpan>,
 }

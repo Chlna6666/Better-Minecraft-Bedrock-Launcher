@@ -10,9 +10,9 @@ use crate::platform::NovaRenderer;
 use crate::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, FrameRenderPlan,
     GpuSpecs, GpuiMemoryTrimLevel, Modifiers, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
-    RendererOptions, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size, Tiling,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+    PromptLevel, RendererOptions, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size,
+    Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
     WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
 };
 
@@ -1553,17 +1553,19 @@ impl PlatformWindow for X11Window {
         self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
-    fn draw(&self, render_plan: FrameRenderPlan<'_>) {
+    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
         let mut inner = self.0.state.borrow_mut();
         inner.renderer.draw(render_plan).log_err();
+        PlatformFrameResult::Submitted
     }
 
-    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) {
+    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
         let mut inner = self.0.state.borrow_mut();
         inner
             .renderer
             .present_framebuffer_only(render_plan)
             .log_err();
+        PlatformFrameResult::Submitted
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

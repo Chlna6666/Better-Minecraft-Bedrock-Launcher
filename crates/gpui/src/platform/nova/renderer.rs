@@ -1,5 +1,6 @@
 use super::*;
 
+mod chunk_upload;
 mod custom_mesh_pipeline;
 mod draw_steps;
 mod init;
@@ -173,6 +174,15 @@ impl NovaRenderer {
     }
 
     pub(crate) fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
+        let started_at = Instant::now();
+        let result = self.draw_frame(render_plan);
+        let elapsed = started_at.elapsed();
+        crate::diagnostics::performance_metrics::record_frame_backend_draw_time(elapsed);
+        crate::diagnostics::performance_metrics::record_first_frame_backend_draw_time(elapsed);
+        result
+    }
+
+    fn draw_frame(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
         if !self.apply_pending_drawable_size()? {
             return Ok(());
         }

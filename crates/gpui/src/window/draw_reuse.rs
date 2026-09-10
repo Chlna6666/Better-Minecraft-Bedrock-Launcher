@@ -138,8 +138,7 @@ impl Window {
             }
             let paint_end = self.paint_index();
             deferred_draw.paint_range = paint_start..paint_end;
-            retained_metadata.metadata_range =
-                metadata_start..self.retained_element_metadata_len();
+            retained_metadata.metadata_range = metadata_start..self.retained_element_metadata_len();
             retained_metadata.replay_source = None;
         }
         self.next_frame.deferred_draws = deferred_draws;
@@ -279,13 +278,14 @@ impl Window {
             self.next_frame.focus = self.focus;
         }
 
-        let deferred_range =
-            range.start.deferred_draws_index..range.end.deferred_draws_index;
+        let deferred_range = range.start.deferred_draws_index..range.end.deferred_draws_index;
+        self.next_frame.deferred_retained_metadata.resize_with(
+            self.next_frame.deferred_draws.len(),
+            DeferredRetainedMetadata::default,
+        );
         self.next_frame
             .deferred_retained_metadata
-            .resize_with(self.next_frame.deferred_draws.len(), DeferredRetainedMetadata::default);
-        self.next_frame.deferred_retained_metadata.extend(
-            deferred_range.clone().map(|index| {
+            .extend(deferred_range.clone().map(|index| {
                 let deferred_draw = &self.rendered_frame.deferred_draws[index];
                 let metadata = &self.rendered_frame.deferred_retained_metadata[index];
                 DeferredRetainedMetadata {
@@ -296,8 +296,7 @@ impl Window {
                         metadata_range: metadata.metadata_range.clone(),
                     }),
                 }
-            }),
-        );
+            }));
         self.next_frame.deferred_draws.extend(
             self.rendered_frame.deferred_draws[deferred_range]
                 .iter()
@@ -411,9 +410,8 @@ impl Window {
                 [range.start.tab_handle_index..range.end.tab_handle_index],
         );
 
-        self.text_system.reuse_layouts(
-            range.start.line_layout_index.clone()..range.end.line_layout_index,
-        );
+        self.text_system
+            .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index);
         let old_scene_range = range.start.scene_index..range.end.scene_index;
         self.next_frame
             .scene
@@ -547,9 +545,8 @@ impl Window {
         } else {
             None
         };
-        let current_view_path = current_view.map(|view| {
-            self.rendered_frame.dispatch_tree.view_path(view)
-        });
+        let current_view_path =
+            current_view.map(|view| self.rendered_frame.dispatch_tree.view_path(view));
         let target_owner_shares_current_view_route = |owner: EntityId| {
             let Some(current_view) = current_view else {
                 return false;
@@ -577,7 +574,10 @@ impl Window {
             return None;
         }
 
-        let retained = self.rendered_frame.retained_element_ranges.get(retained_id)?;
+        let retained = self
+            .rendered_frame
+            .retained_element_ranges
+            .get(retained_id)?;
         let plain_text_proven = plain_text_key
             .zip(retained.plain_text_key.as_ref())
             .is_some_and(|(current, previous)| {
@@ -668,6 +668,16 @@ impl Window {
         let (semantic_descriptor, semantic_generation) = semantic_proof
             .map(|(descriptor, generation)| (Some(descriptor), Some(generation)))
             .unwrap_or((None, None));
+        if identity_stable
+            && subtree_stable
+            && let Some(generation) = semantic_generation
+        {
+            self.next_frame.scene.record_retained_chunk(
+                retained_id.clone(),
+                generation,
+                paint_range.start.scene_index..paint_range.end.scene_index,
+            );
+        }
         let key = ReconcileKey::from(retained_id);
         self.next_frame.retained_element_order.push(key.clone());
         let metadata_end = self.next_frame.retained_element_order.len();
@@ -742,21 +752,22 @@ impl Window {
             else {
                 return false;
             };
-            let div_self_scene = if let Some(source_self_scene) = source_range.div_self_scene.as_ref() {
-                let Some(child_scene_range) = rebase_scene_range(
-                    &source_self_scene.child_scene_range,
-                    source_paint,
-                    target_paint,
-                ) else {
-                    return false;
+            let div_self_scene =
+                if let Some(source_self_scene) = source_range.div_self_scene.as_ref() {
+                    let Some(child_scene_range) = rebase_scene_range(
+                        &source_self_scene.child_scene_range,
+                        source_paint,
+                        target_paint,
+                    ) else {
+                        return false;
+                    };
+                    Some(crate::element::RetainedDivSelfScene {
+                        style: source_self_scene.style.clone(),
+                        child_scene_range,
+                    })
+                } else {
+                    None
                 };
-                Some(crate::element::RetainedDivSelfScene {
-                    style: source_self_scene.style.clone(),
-                    child_scene_range,
-                })
-            } else {
-                None
-            };
             let Some(metadata_start_offset) = source_range
                 .metadata_range
                 .start
@@ -818,7 +829,8 @@ fn retained_plain_text_range_is_side_effect_free(retained: &RetainedElementRange
         && prepaint.start.hitboxes_index == prepaint.end.hitboxes_index
         && prepaint.start.tooltips_index == prepaint.end.tooltips_index
         && prepaint.start.deferred_draws_index == prepaint.end.deferred_draws_index
-        && prepaint.start.accessed_element_states_index == prepaint.end.accessed_element_states_index
+        && prepaint.start.accessed_element_states_index
+            == prepaint.end.accessed_element_states_index
         && paint.start.mouse_listeners_index == paint.end.mouse_listeners_index
         && paint.start.input_handlers_index == paint.end.input_handlers_index
         && paint.start.cursor_styles_index == paint.end.cursor_styles_index
@@ -835,7 +847,8 @@ fn retained_range_contains_frame_bound_interactivity(retained: &RetainedElementR
         || prepaint.start.tooltips_index != prepaint.end.tooltips_index
         || prepaint.start.deferred_draws_index != prepaint.end.deferred_draws_index
         || prepaint.start.dispatch_tree_index != prepaint.end.dispatch_tree_index
-        || prepaint.start.accessed_element_states_index != prepaint.end.accessed_element_states_index
+        || prepaint.start.accessed_element_states_index
+            != prepaint.end.accessed_element_states_index
         || paint.start.mouse_listeners_index != paint.end.mouse_listeners_index
         || paint.start.input_handlers_index != paint.end.input_handlers_index
         || paint.start.cursor_styles_index != paint.end.cursor_styles_index

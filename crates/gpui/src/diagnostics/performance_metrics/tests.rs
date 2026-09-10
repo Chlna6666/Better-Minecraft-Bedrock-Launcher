@@ -123,6 +123,19 @@ fn records_extended_gpu_metrics() {
     reset_frame_upload_metrics();
     let before = performance_metrics_snapshot();
     record_scene_pack_time(Duration::from_micros(11));
+    record_nova_scene_prepare_metrics(
+        Duration::from_micros(7),
+        Duration::from_micros(3),
+        4096,
+        4,
+        2,
+        2048,
+        false,
+        9,
+        3,
+    );
+    record_frame_slot_wait(Duration::from_micros(13));
+    record_nova_buffer_upload_time(Duration::from_micros(17));
     record_atlas_upload_metrics(64, 1, Duration::from_micros(2));
     record_atlas_upload_metrics(32, 2, Duration::from_micros(3));
     record_prepared_command_count(32);
@@ -157,6 +170,12 @@ fn records_extended_gpu_metrics() {
     record_backdrop_blur_primitive_count(2);
     record_gpu_submission_wait(Duration::from_millis(2));
     record_gpu_submission_wait(Duration::from_millis(9));
+    record_surface_resize(
+        Duration::from_millis(2),
+        Duration::from_millis(5),
+        Duration::from_millis(3),
+        Duration::from_millis(10),
+    );
     record_gpu_surface_metrics("Bgra8Unorm", "PreMultiplied", "Mailbox", 3, 2);
     record_dirty_region_metrics(2, 4096);
     record_partial_redraw();
@@ -171,6 +190,23 @@ fn records_extended_gpu_metrics() {
     assert_eq!(snapshot.atlas_upload_bytes, 96);
     assert_eq!(snapshot.atlas_upload_tiles, 3);
     assert_eq!(snapshot.scene_pack_time, Some(Duration::from_micros(11)));
+    assert_eq!(snapshot.scene_encode_time, Some(Duration::from_micros(7)));
+    assert_eq!(
+        snapshot.scene_signature_time,
+        Some(Duration::from_micros(3))
+    );
+    assert_eq!(snapshot.scene_hashed_bytes, 4096);
+    assert_eq!(snapshot.retained_chunk_hits, 4);
+    assert_eq!(snapshot.retained_chunk_misses, 2);
+    assert_eq!(snapshot.retained_chunk_reused_bytes, 2048);
+    assert!(!snapshot.retained_upload_key_hit);
+    assert_eq!(snapshot.static_stream_hits, 9);
+    assert_eq!(snapshot.static_stream_misses, 3);
+    assert_eq!(
+        snapshot.frame_slot_wait_time,
+        Some(Duration::from_micros(13))
+    );
+    assert_eq!(snapshot.buffer_upload_time, Some(Duration::from_micros(17)));
     assert_eq!(snapshot.atlas_upload_time, Some(Duration::from_micros(5)));
     assert_eq!(snapshot.upload_bytes, 1280);
     assert_eq!(snapshot.encoded_scene_primitives, 23);
@@ -232,6 +268,31 @@ fn records_extended_gpu_metrics() {
             .is_some_and(|duration| duration >= Duration::from_millis(9))
     );
     assert!(snapshot.gpu_submission_slow_wait_count > before.gpu_submission_slow_wait_count);
+    assert_eq!(
+        snapshot.surface_resize_wait_time,
+        Some(Duration::from_millis(2))
+    );
+    assert_eq!(
+        snapshot.surface_resize_swapchain_time,
+        Some(Duration::from_millis(5))
+    );
+    assert_eq!(
+        snapshot.surface_resize_resources_time,
+        Some(Duration::from_millis(3))
+    );
+    assert_eq!(
+        snapshot.surface_resize_total_time,
+        Some(Duration::from_millis(10))
+    );
+    assert_eq!(
+        snapshot.surface_resize_count,
+        before.surface_resize_count + 1
+    );
+    assert!(
+        snapshot
+            .surface_resize_max_time
+            .is_some_and(|duration| duration >= Duration::from_millis(10))
+    );
     assert_eq!(snapshot.gpu_surface_reconfigure_count, 3);
     assert_eq!(snapshot.gpu_surface_error_count, 2);
     assert_eq!(snapshot.dirty_rect_count, 2);
@@ -239,6 +300,38 @@ fn records_extended_gpu_metrics() {
     assert!(snapshot.partial_redraw_count > 0);
     assert!(snapshot.full_redraw_fallback_count > 0);
     assert_eq!(snapshot.gpu_retained_bytes, 123_456);
+}
+
+#[test]
+fn resets_latest_nova_scene_prepare_metrics() {
+    let _lock = lock_performance_metrics();
+    record_nova_scene_prepare_metrics(
+        Duration::from_micros(7),
+        Duration::from_micros(3),
+        4096,
+        4,
+        2,
+        2048,
+        true,
+        12,
+        0,
+    );
+    record_frame_slot_wait(Duration::from_micros(13));
+    record_nova_buffer_upload_time(Duration::from_micros(17));
+
+    reset_frame_upload_metrics();
+    let snapshot = performance_metrics_snapshot();
+    assert_eq!(snapshot.scene_encode_time, None);
+    assert_eq!(snapshot.scene_signature_time, None);
+    assert_eq!(snapshot.scene_hashed_bytes, 0);
+    assert_eq!(snapshot.retained_chunk_hits, 0);
+    assert_eq!(snapshot.retained_chunk_misses, 0);
+    assert_eq!(snapshot.retained_chunk_reused_bytes, 0);
+    assert!(!snapshot.retained_upload_key_hit);
+    assert_eq!(snapshot.static_stream_hits, 0);
+    assert_eq!(snapshot.static_stream_misses, 0);
+    assert_eq!(snapshot.frame_slot_wait_time, None);
+    assert_eq!(snapshot.buffer_upload_time, None);
 }
 
 #[test]

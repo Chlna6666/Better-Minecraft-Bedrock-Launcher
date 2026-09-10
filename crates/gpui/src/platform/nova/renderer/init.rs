@@ -111,6 +111,13 @@ impl NovaRenderer {
             Self::alpha_state_for_window_transparency_on_backend(backend, transparent);
         surface_config.alpha_mode = surface_alpha.swapchain_mode;
         let present_mode = surface_config.present_mode;
+        crate::diagnostics::performance_metrics::record_gpu_surface_metrics(
+            &format!("{:?}", surface_config.format),
+            &format!("{:?}", surface_config.alpha_mode),
+            &format!("{present_mode:?}"),
+            0,
+            0,
+        );
         let current_size = DrawableSize { width, height };
         match backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]

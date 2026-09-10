@@ -4,7 +4,14 @@ use gfx_core::GfxResourceDevice;
 impl NovaRenderer {
     pub(super) fn prepare_for_frame_submission(&mut self) -> Result<()> {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
+            let had_pending_submissions = !self.pending_submissions.is_empty();
+            let wait_started_at = Instant::now();
             self.wait_for_pending_submissions()?;
+            if had_pending_submissions {
+                crate::diagnostics::performance_metrics::record_frame_slot_wait(
+                    wait_started_at.elapsed(),
+                );
+            }
             self.activate_frame_resources(0)?;
             self.upload_gpu_indexed_animation_values()?;
             self.upload_custom_mesh_3d_animation_sidecar()?;
@@ -121,7 +128,9 @@ impl NovaRenderer {
         };
         let started_at = Instant::now();
         let result = self.backend.wait_submission(submission);
-        crate::diagnostics::performance_metrics::record_gpu_submission_wait(started_at.elapsed());
+        let elapsed = started_at.elapsed();
+        crate::diagnostics::performance_metrics::record_gpu_submission_wait(elapsed);
+        crate::diagnostics::performance_metrics::record_frame_slot_wait(elapsed);
         result?;
         self.pending_submissions.remove(0);
         Ok(())

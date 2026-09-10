@@ -28,6 +28,12 @@ impl RequestFrameOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PlatformFrameResult {
+    Submitted,
+    Deferred,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DirtyRect {
     pub(crate) bounds: Bounds<ScaledPixels>,

@@ -1,9 +1,13 @@
 use super::*;
 use crate::{
-    AtlasTextureId, AtlasTile, Bounds, ContentMask, DevicePixels, Edges, Hsla, ScaledPixels,
-    WgslShaderSource, bounds, point, px, size,
+    AtlasTextureId, AtlasTile, Bounds, ContentMask, DevicePixels, Edges, GlobalElementId, Hsla,
+    ScaledPixels, WgslShaderSource, bounds, point, px, size,
 };
-use std::sync::{Arc, OnceLock};
+use smallvec::smallvec;
+use std::{
+    ops::Range,
+    sync::{Arc, OnceLock},
+};
 
 #[test]
 fn scene_revision_tracks_static_commits_not_animation_samples() {
@@ -1024,4 +1028,84 @@ fn gpu_mesh_3d_generation_is_stable_for_draw_parameter_changes() {
     assert_ne!(parameters_a, parameters_b);
     assert_eq!(mesh.id, before_id);
     assert_eq!(mesh.generation, before_generation);
+}
+
+fn append_retained_test_quads(scene: &mut Scene, count: usize) -> Range<usize> {
+    let start = scene.len();
+    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
+    for _ in 0..count {
+        scene.insert_primitive(Quad {
+            bounds,
+            content_mask: ContentMask {
+                bounds,
+                ..Default::default()
+            },
+            ..Quad::default()
+        });
+    }
+    start..scene.len()
+}
+
+#[test]
+fn retained_quad_chunk_keeps_exact_identity_and_generation_on_replay() {
+    let identity = GlobalElementId(smallvec!["retained-chunk".into()]);
+    let mut previous = Scene::default();
+    let range = append_retained_test_quads(&mut previous, 32);
+    previous.record_retained_chunk(identity, 7, range.clone());
+    previous.finish();
+
+    let first = previous.prepared_retained_quad_chunks();
+    assert_eq!(first.len(), 1);
+    assert!(!first[0].replayed);
+
+    let mut replayed = Scene::default();
+    replayed.replay(range, &previous);
+    replayed.finish();
+
+    let second = replayed.prepared_retained_quad_chunks();
+    assert_eq!(second.len(), 1);
+    assert!(second[0].replayed);
+    assert_eq!(second[0].id, first[0].id);
+}
+
+#[test]
+fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
+    let mut left = Scene::default();
+    let left_range = append_retained_test_quads(&mut left, 32);
+    left.record_retained_chunk(
+        GlobalElementId(smallvec!["left-chunk".into()]),
+        3,
+        left_range,
+    );
+    left.finish();
+
+    let mut right = Scene::default();
+    let right_range = append_retained_test_quads(&mut right, 32);
+    right.record_retained_chunk(
+        GlobalElementId(smallvec!["right-chunk".into()]),
+        3,
+        right_range,
+    );
+    right.finish();
+
+    assert_ne!(
+        left.prepared_retained_quad_chunks()[0].id,
+        right.prepared_retained_quad_chunks()[0].id
+    );
+}
+
+#[test]
+fn retained_quad_chunk_rejects_layer_and_effect_barriers() {
+    let identity = GlobalElementId(smallvec!["barrier-chunk".into()]);
+    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
+    let mut scene = Scene::default();
+    let start = scene.len();
+    scene.push_layer(bounds);
+    append_retained_test_quads(&mut scene, 32);
+    scene.pop_layer();
+    let end = scene.len();
+    scene.record_retained_chunk(identity, 1, start..end);
+    scene.finish();
+
+    assert!(scene.prepared_retained_quad_chunks().is_empty());
 }

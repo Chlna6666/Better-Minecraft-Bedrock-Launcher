@@ -6,28 +6,41 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::{CursorStyle, Pixels, Point, ResizeEdge, Size, point, px, size};
 
 #[cfg(target_os = "windows")]
-static WINDOWS_NATIVE_WINDOW_MOVE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static WINDOWS_NATIVE_SIZE_MOVE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_os = "windows")]
-pub(crate) fn windows_native_window_move_active() -> bool {
-    WINDOWS_NATIVE_WINDOW_MOVE_DEPTH.load(Ordering::Acquire) != 0
+pub(crate) fn windows_native_size_move_active() -> bool {
+    WINDOWS_NATIVE_SIZE_MOVE_DEPTH.load(Ordering::Acquire) != 0
 }
 
 #[cfg(target_os = "windows")]
-struct WindowsNativeWindowMoveGuard;
+pub(crate) fn begin_windows_native_size_move() {
+    WINDOWS_NATIVE_SIZE_MOVE_DEPTH.fetch_add(1, Ordering::AcqRel);
+}
 
 #[cfg(target_os = "windows")]
-impl WindowsNativeWindowMoveGuard {
+pub(crate) fn end_windows_native_size_move() {
+    let _ =
+        WINDOWS_NATIVE_SIZE_MOVE_DEPTH.fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+            depth.checked_sub(1)
+        });
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsNativeSizeMoveGuard;
+
+#[cfg(target_os = "windows")]
+impl WindowsNativeSizeMoveGuard {
     fn begin() -> Self {
-        WINDOWS_NATIVE_WINDOW_MOVE_DEPTH.fetch_add(1, Ordering::AcqRel);
+        begin_windows_native_size_move();
         Self
     }
 }
 
 #[cfg(target_os = "windows")]
-impl Drop for WindowsNativeWindowMoveGuard {
+impl Drop for WindowsNativeSizeMoveGuard {
     fn drop(&mut self) {
-        WINDOWS_NATIVE_WINDOW_MOVE_DEPTH.fetch_sub(1, Ordering::AcqRel);
+        end_windows_native_size_move();
     }
 }
 
@@ -39,7 +52,7 @@ pub(crate) fn start_window_move(
     window: &winit::window::Window,
 ) -> Result<(), winit::error::ExternalError> {
     #[cfg(target_os = "windows")]
-    let _native_move_guard = WindowsNativeWindowMoveGuard::begin();
+    let _native_move_guard = WindowsNativeSizeMoveGuard::begin();
 
     window.drag_window()
 }
@@ -48,6 +61,9 @@ pub(crate) fn start_window_resize(
     window: &winit::window::Window,
     edge: ResizeEdge,
 ) -> Result<(), winit::error::ExternalError> {
+    #[cfg(target_os = "windows")]
+    let _native_resize_guard = WindowsNativeSizeMoveGuard::begin();
+
     window.drag_resize_window(resize_edge_to_winit(edge))
 }
 

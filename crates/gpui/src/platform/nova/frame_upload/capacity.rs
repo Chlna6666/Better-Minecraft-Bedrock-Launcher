@@ -3,7 +3,7 @@ use super::*;
 impl FrameUpload {
     #[cfg(feature = "bench")]
     pub(in crate::platform::nova) fn retained_byte_capacity(&self) -> usize {
-        [
+        let stream_capacity = [
             self.globals.capacity(),
             self.text_raster_params.capacity(),
             self.quads.capacity(),
@@ -31,7 +31,17 @@ impl FrameUpload {
             self.path_paint_key_scratch.capacity(),
         ]
         .into_iter()
-        .fold(0, usize::saturating_add)
+        .fold(0, usize::saturating_add);
+        let chunk_capacity = self
+            .retained_quad_chunks
+            .values()
+            .map(|chunk| chunk.bytes.capacity())
+            .fold(0, usize::saturating_add);
+        stream_capacity
+            .saturating_add(chunk_capacity)
+            .saturating_add(
+                self.resident_quad_spans.capacity() * std::mem::size_of::<RetainedResidentSpan>(),
+            )
     }
 
     pub(in crate::platform::nova) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
@@ -155,6 +165,20 @@ impl FrameUpload {
                 trim_upload_vec(&mut self.path_paint_key_scratch, 128, multiplier);
             }
         }
+
+        self.resident_quad_spans.clear();
+        if matches!(
+            level,
+            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
+        ) {
+            self.retained_quad_chunks.clear();
+        }
+        self.retained_quad_chunks.shrink_to(match level {
+            GpuiMemoryTrimLevel::Light => 64,
+            GpuiMemoryTrimLevel::Moderate => 16,
+            GpuiMemoryTrimLevel::Aggressive => 0,
+        });
+        trim_upload_vec(&mut self.resident_quad_spans, 16, multiplier);
     }
 
     /// Rebuild the set of atlas textures that can feed the earliest blur barrier.

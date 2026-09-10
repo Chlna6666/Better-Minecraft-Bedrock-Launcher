@@ -1904,6 +1904,22 @@ fn present_framebuffer_only_clears_needs_present(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn deferred_platform_draw_preserves_needs_present(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        test_window.set_frame_result(PlatformFrameResult::Deferred);
+        window.needs_present.set(true);
+
+        let result = window.present();
+
+        assert_eq!(result, PlatformFrameResult::Deferred);
+        assert!(window.needs_present.get());
+        assert_eq!(test_window.draw_count(), 1);
+    });
+}
+
+#[gpui::test]
 fn clean_active_window_frame_skips_present(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {

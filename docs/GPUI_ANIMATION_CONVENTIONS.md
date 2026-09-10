@@ -94,6 +94,71 @@ static child primitives
 
 Do not multiply the same dynamic opacity/transform independently into every glyph or child primitive if the final composite can own it.
 
+### Large collections and page-sized subtrees
+
+Performance work on lists, grids, tab bodies, dialogs with long text, and page-sized panels MUST
+preserve the established motion contract: spring parameters, interruption behavior, overshoot,
+stagger, opacity, geometry and text quality. Do not replace an intentional spring/layout animation
+with a simpler reveal or a threshold jump merely to reduce work. Bound the work first through
+virtualization, stable identity and the narrowest animation target.
+
+When a transition is visual-only and a retained transform has been verified pixel-equivalent, keep
+child layout at the final geometry. The number of rows must not multiply the amount of changing
+animation state outside the visible range.
+
+Preferred pattern when it is visually equivalent:
+
+```text
+stable/virtualized collection layout
+        -> retained composite layer
+        -> one clip/translation/opacity animation
+        -> targeted presentation
+```
+
+- Do not remove an existing intentional `height`/`width` spring or visible-row stagger as a
+  performance shortcut. If layout motion is part of the design, virtualize the collection and
+  restrict per-frame geometry work to the visible range and the smallest owning subtree.
+- When removing an item must close its layout slot, keep the item's inner visual tree at its final
+  geometry and animate that retained composite independently. Collapse only a small outer overflow
+  shell, then remove the item when the exit state reaches its terminal value. Do not scale the
+  child's padding, text metrics, or internal spacing on every exit sample.
+- Do not apply per-row `top`/`left`/margin/padding animation to stagger a long collection. If a
+  stagger is product-critical, cap it to the currently visible range and measure it separately.
+- A scroll container clips content but does not imply virtualization. Large collections must use a
+  visible-range or uniform-list implementation so offscreen rows are not rebuilt during animation.
+- Use stable domain identity for row element IDs. Do not allocate IDs from `format!("...{index}")`
+  during each frame when a stable key already exists.
+- Metadata derived only from a domain revision or language revision should be prepared when that
+  revision changes, not reconstructed for every animation sample.
+- Animated text content such as Minecraft obfuscation must use `window.animation_time()`, stop
+  scheduling while the window is inactive, and attach the layout-frame request to the narrowest
+  text subtree. Static surrounding rows or page content must not become the animation clock.
+- `with_layout_animation_target` narrows retained invalidation; it does not make a changing layout
+  compositor-only and it does not prevent the owning view from rendering. Use it only as the frame
+  driver for genuinely caller-sampled layout state. Prefer `composite_layer` plus
+  `AnimationProperty::{vertical_reveal, translation, opacity}` for visual-only collection motion.
+- Do not place a text-heavy page behind an offscreen composite transform unless DirectWrite
+  grayscale/subpixel output, fractional translation, image readiness and final-frame pixels have
+  been verified. A composite that changes glyph rasterization, clips text, leaves stale pixels or
+  delays newly loaded images is not an acceptable optimization.
+
+For an interruptible reveal driven by application state, sample the spring from the platform-frame
+timestamp, keep the collection at full height, and apply the sample to a retained clip:
+
+```rust
+let progress = spring.sample(window.animation_time()).value.clamp(0.0, 1.0);
+let panel = panel
+    .composite_layer()
+    .with_sampled_animation(
+        AnimationProperty::vertical_reveal(VerticalRevealEdge::Bottom, 0.0, 1.0),
+        progress,
+    );
+```
+
+When the renderer-owned animation engine can own the complete transition and retarget semantics,
+prefer `with_animation(... Animation::spring(...).with_property(...))`; it can advance presentation
+without rerendering the view on every sample.
+
 ## 5. Nova GPU animation binding
 
 The target architecture is shader-consumed animation metadata:
@@ -158,6 +223,10 @@ Before merging an animation/rendering change:
 - Event start/retarget timestamps keep `Instant::now()`.
 - Confirm static text does not receive changing layout bounds for a visual-only effect.
 - Confirm a complex animated subtree has one stable retained/composite owner where practical.
+- For lists/grids/page bodies, confirm row count does not scale the number of per-frame layout
+  mutations and that offscreen rows are bounded.
+- Confirm `with_layout_animation_target` is not being used as a substitute for a retained
+  clip/composite on visual-only motion.
 - Confirm animation frame requests are targeted and coalesced.
 - Confirm Nova does not upload unrelated primitive ranges for a visual-only animation.
 - Confirm no global frame-throttle bypass was introduced.

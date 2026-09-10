@@ -1,8 +1,9 @@
 use crate::{
     AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DispatchEventResult, GpuSpecs,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PromptButton, RequestFrameOptions, Size, TestPlatform, TileId, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
+    Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameResult, PlatformInput,
+    PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Size,
+    TestPlatform, TileId, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowParams,
 };
 use collections::HashMap;
 use parking_lot::Mutex;
@@ -38,6 +39,7 @@ pub(crate) struct TestWindowState {
     start_window_move_count: Rc<Cell<usize>>,
     draw_count: Rc<Cell<usize>>,
     present_framebuffer_only_count: Rc<Cell<usize>>,
+    frame_result: PlatformFrameResult,
     draw_delay: Duration,
     input_handler: Option<PlatformInputHandler>,
     is_maximized: bool,
@@ -95,6 +97,7 @@ impl TestWindow {
             start_window_move_count: Rc::new(Cell::new(0)),
             draw_count: Rc::new(Cell::new(0)),
             present_framebuffer_only_count: Rc::new(Cell::new(0)),
+            frame_result: PlatformFrameResult::Submitted,
             draw_delay: Duration::ZERO,
             input_handler: None,
             is_maximized: false,
@@ -174,6 +177,11 @@ impl TestWindow {
     #[cfg(test)]
     pub(crate) fn set_draw_delay(&self, delay: Duration) {
         self.0.lock().draw_delay = delay;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_frame_result(&self, result: PlatformFrameResult) {
+        self.0.lock().frame_result = result;
     }
 
     #[cfg(test)]
@@ -375,20 +383,26 @@ impl PlatformWindow for TestWindow {
 
     fn on_appearance_changed(&self, _callback: Box<dyn FnMut()>) {}
 
-    fn draw(&self, _render_plan: crate::FrameRenderPlan<'_>) {
+    fn draw(&self, _render_plan: crate::FrameRenderPlan<'_>) -> PlatformFrameResult {
         let lock = self.0.lock();
         lock.draw_count.set(lock.draw_count.get().saturating_add(1));
         let draw_delay = lock.draw_delay;
+        let frame_result = lock.frame_result;
         drop(lock);
         if !draw_delay.is_zero() {
             thread::sleep(draw_delay);
         }
+        frame_result
     }
 
-    fn present_framebuffer_only(&self, _render_plan: crate::FrameRenderPlan<'_>) {
+    fn present_framebuffer_only(
+        &self,
+        _render_plan: crate::FrameRenderPlan<'_>,
+    ) -> PlatformFrameResult {
         let lock = self.0.lock();
         lock.present_framebuffer_only_count
             .set(lock.present_framebuffer_only_count.get() + 1);
+        lock.frame_result
     }
 
     fn sprite_atlas(&self) -> sync::Arc<dyn crate::PlatformAtlas> {

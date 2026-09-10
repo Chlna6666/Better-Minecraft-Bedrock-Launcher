@@ -1,4 +1,4 @@
-use crate::{Bounds, ScaledPixels, SceneFrameMetrics, TransitionProperty};
+use crate::{Bounds, GlobalElementId, ScaledPixels, SceneFrameMetrics, TransitionProperty};
 use collections::FxHashSet;
 
 use super::BoundsTree;
@@ -41,6 +41,43 @@ pub(crate) struct Scene {
     recent_peak_paint_operations: usize,
     recent_peak_primitives: usize,
     blur_captures: Vec<BlurCaptureState>,
+    retained_chunk_candidates: Vec<RetainedChunkCandidate>,
+    prepared_retained_quad_chunks: Vec<PreparedRetainedQuadChunk>,
+}
+
+/// Exact retained subtree identity used by Nova's packed-chunk cache.
+///
+/// The full structural element path is retained instead of a shortened hash, so two distinct
+/// anonymous or repeated paths cannot alias. `generation` is produced by the existing retained
+/// semantic proof and changes whenever the subtree's proven paint semantics change.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct RetainedChunkId {
+    identity: GlobalElementId,
+    generation: u64,
+}
+
+impl RetainedChunkId {
+    pub(crate) fn new(identity: GlobalElementId, generation: u64) -> Self {
+        Self {
+            identity,
+            generation,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RetainedChunkCandidate {
+    id: RetainedChunkId,
+    scene_range: Range<usize>,
+    replayed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedRetainedQuadChunk {
+    pub(crate) id: RetainedChunkId,
+    pub(crate) quad_range: Range<usize>,
+    pub(crate) replayed: bool,
+    pub(crate) is_solid: bool,
 }
 
 struct BlurCaptureState {
@@ -65,6 +102,7 @@ enum ScenePrimitiveKind {
 const SCENE_IDLE_TRIM_FRAMES: u16 = 45;
 const SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER: usize = 2;
 const SCENE_MIN_RETAINED_CAPACITY: usize = 24;
+const MIN_RETAINED_QUAD_CHUNK_PRIMITIVES: usize = 32;
 const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
 
 #[derive(Clone, Debug, Default)]
@@ -166,6 +204,8 @@ impl Scene {
         self.retained_prefix_invalid = false;
         self.retained_prefix_verified_len = 0;
         self.blur_captures.clear();
+        self.retained_chunk_candidates.clear();
+        self.prepared_retained_quad_chunks.clear();
 
         if primitive_count_before_clear == 0 {
             self.idle_clear_frames = self.idle_clear_frames.saturating_add(1);
@@ -181,6 +221,26 @@ impl Scene {
 
     pub fn len(&self) -> usize {
         self.paint_operations.len()
+    }
+
+    pub(crate) fn record_retained_chunk(
+        &mut self,
+        identity: GlobalElementId,
+        generation: u64,
+        scene_range: Range<usize>,
+    ) {
+        if scene_range.is_empty() {
+            return;
+        }
+        self.retained_chunk_candidates.push(RetainedChunkCandidate {
+            id: RetainedChunkId::new(identity, generation),
+            scene_range,
+            replayed: false,
+        });
+    }
+
+    pub(crate) fn prepared_retained_quad_chunks(&self) -> &[PreparedRetainedQuadChunk] {
+        &self.prepared_retained_quad_chunks
     }
 
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
@@ -868,6 +928,7 @@ impl Scene {
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         self.revision = 0;
+        let replay_start = self.paint_operations.len();
         let range_end = range.end;
         let retain_order = !self.retained_prefix_invalid
             && self.paint_operations.len() == range.start
@@ -875,7 +936,7 @@ impl Scene {
         if !retain_order {
             self.retained_prefix_invalid = true;
         }
-        for operation in &prev_scene.paint_operations[range] {
+        for operation in &prev_scene.paint_operations[range.clone()] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
                     if self.blur_captures.last().is_some() {
@@ -931,6 +992,18 @@ impl Scene {
         if retain_order && !self.retained_prefix_invalid && self.paint_operations.len() == range_end
         {
             self.retained_prefix_verified_len = range_end;
+            for chunk in &prev_scene.retained_chunk_candidates {
+                if chunk.scene_range.start < range.start || chunk.scene_range.end > range.end {
+                    continue;
+                }
+                let start = replay_start + chunk.scene_range.start - range.start;
+                let end = replay_start + chunk.scene_range.end - range.start;
+                self.retained_chunk_candidates.push(RetainedChunkCandidate {
+                    id: chunk.id.clone(),
+                    scene_range: start..end,
+                    replayed: true,
+                });
+            }
         } else if retain_order {
             self.retained_prefix_invalid = true;
         }
@@ -979,6 +1052,7 @@ impl Scene {
         self.blurs.sort_unstable_by_key(|blur| blur.order);
         self.gpu_meshes_3d.sort_unstable_by_key(|mesh| mesh.order);
         self.prepare_batches();
+        self.prepare_retained_quad_chunks();
         if let Some(previous) = previous
             && self.paint_operations.len() == previous.paint_operations.len()
             && self
@@ -1226,6 +1300,98 @@ impl Scene {
         self.prepared_batches.batch_count = self.prepared_batches.batches.len();
         self.prepared_batches.primitive_count = self.primitive_count();
         self.prepared_batches.retained_capacity = self.prepared_batches.batches.capacity();
+    }
+
+    fn prepare_retained_quad_chunks(&mut self) {
+        let mut prepared = Vec::new();
+        for candidate in &self.retained_chunk_candidates {
+            let Some(operations) = self.paint_operations.get(candidate.scene_range.clone()) else {
+                continue;
+            };
+            if operations.len() < MIN_RETAINED_QUAD_CHUNK_PRIMITIVES {
+                continue;
+            }
+
+            let mut first_order = DrawOrder::MAX;
+            let mut last_order = DrawOrder::MIN;
+            let mut is_solid = None;
+            let mut quad_count = 0usize;
+            let mut safe = true;
+            for operation in operations {
+                let PaintOperation::Primitive(Primitive::Quad(quad)) = operation else {
+                    safe = false;
+                    break;
+                };
+                if quad.animation_id.is_some() {
+                    safe = false;
+                    break;
+                }
+                let quad_is_solid = is_solid_quad(quad);
+                if is_solid.is_some_and(|current| current != quad_is_solid) {
+                    safe = false;
+                    break;
+                }
+                is_solid = Some(quad_is_solid);
+                first_order = first_order.min(quad.order);
+                last_order = last_order.max(quad.order);
+                quad_count = quad_count.saturating_add(1);
+            }
+            if !safe || quad_count < MIN_RETAINED_QUAD_CHUNK_PRIMITIVES {
+                continue;
+            }
+
+            let order_is_exclusive =
+                self.paint_operations
+                    .iter()
+                    .enumerate()
+                    .all(|(index, operation)| {
+                        if candidate.scene_range.contains(&index) {
+                            return true;
+                        }
+                        match operation {
+                            PaintOperation::Primitive(primitive) => {
+                                let order = primitive.order();
+                                order < first_order || order > last_order
+                            }
+                            PaintOperation::StartLayer(_)
+                            | PaintOperation::EndLayer
+                            | PaintOperation::StartBlur(_)
+                            | PaintOperation::EndBlur => true,
+                        }
+                    });
+            if !order_is_exclusive {
+                continue;
+            }
+
+            let quad_start = self.quads.partition_point(|quad| quad.order < first_order);
+            let quad_end = self.quads.partition_point(|quad| quad.order <= last_order);
+            if quad_end.saturating_sub(quad_start) != quad_count {
+                continue;
+            }
+            prepared.push(PreparedRetainedQuadChunk {
+                id: candidate.id.clone(),
+                quad_range: quad_start..quad_end,
+                replayed: candidate.replayed,
+                is_solid: is_solid.unwrap_or(false),
+            });
+        }
+
+        prepared.sort_unstable_by(|left, right| {
+            left.quad_range
+                .start
+                .cmp(&right.quad_range.start)
+                .then_with(|| right.quad_range.end.cmp(&left.quad_range.end))
+                .then_with(|| left.id.identity.0.len().cmp(&right.id.identity.0.len()))
+        });
+        let mut retained_end = 0usize;
+        prepared.retain(|chunk| {
+            if chunk.quad_range.start < retained_end {
+                return false;
+            }
+            retained_end = chunk.quad_range.end;
+            true
+        });
+        self.prepared_retained_quad_chunks = prepared;
     }
 }
 

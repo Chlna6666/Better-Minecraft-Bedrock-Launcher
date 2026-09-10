@@ -149,6 +149,10 @@ name = "drag_drop"
 path = "examples/drag_drop.rs"
 
 [[example]]
+name = "gpui_perf_lab"
+path = "examples/gpui_perf_lab.rs"
+
+[[example]]
 name = "gif_viewer"
 path = "examples/gif_viewer.rs"
 

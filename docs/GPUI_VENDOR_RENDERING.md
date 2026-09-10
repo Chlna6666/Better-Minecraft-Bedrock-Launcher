@@ -435,6 +435,36 @@ cache.
 This path is important for event-driven rendering because it allows GPU output
 or platform presentation to happen without forcing a CPU scene rebuild.
 
+## Retained Packed Chunks
+
+The retained element semantic generation is also the source of truth for packed
+chunk identity. GPUI records only exact, stable subtree paths; Nova does not
+derive chunk identity from a shortened hash or an application-provided ID.
+Nested candidates are collapsed to the largest safe span.
+
+The first production slice promotes a span only when it contains at least 32
+static quads, has an exclusive draw-order interval, and contains no layer, blur,
+surface, custom-mesh, animation, or mixed-pipeline barrier. On a partial dirty
+frame, a replayed chunk with the same identity and generation reuses its packed
+quad bytes. Static signature construction combines the cached chunk token and
+hashes only uncached byte spans. A generation change, reordered/nonexclusive
+draw order, or any barrier uses normal encoding and whole-stream fallback.
+
+Each frame-resource slot also retains the exact identity, generation, byte range,
+and packed-content hash of the quad chunks successfully presented through that slot. When a later
+frame keeps a chunk at the same range, Nova writes only the dirty gaps around the
+resident chunk. A generation change dirties that chunk; a changed position,
+invalid range, or uninitialized slot conservatively falls back to the complete
+quad stream. Slot selection waits for the submission that owns the slot before
+any range is overwritten, so DX12 and Vulkan share the same fence-safe rule.
+
+This fixed-layout residency is the first GPU slab slice. It avoids uploading a
+clean chunk when a sibling changes without changing draw offsets or painter
+order. It is not yet a movable/free-list arena: compacting or relocating chunks,
+reusing retired holes, and drawing noncontiguous allocations require explicit
+submission retirement and draw-step cost validation before they become a
+production path.
+
 ## Retained Resources And Memory Trim
 
 GPUI keeps renderer resources across frames:
@@ -442,10 +472,20 @@ GPUI keeps renderer resources across frames:
 - shader modules and render pipelines;
 - sprite atlas textures;
 - frame upload buffers;
+- retained packed quad chunks;
 - draw step scratch buffers;
 - backdrop blur targets;
 - custom mesh pipeline and mesh buffers;
 - text layout and glyph atlas state.
+
+On Windows, glyph antialiasing follows the destination window surface. Opaque
+surfaces may use DirectWrite RGB ClearType coverage. Transparent or blurred
+surfaces must request DirectWrite grayscale coverage and store it in the
+monochrome atlas; converting an already rasterized ClearType mask to grayscale
+in the fragment shader is not equivalent and produces jagged vertical curves
+and small digits. The surface choice is part of the glyph atlas key so changing
+window appearance cannot reuse coverage generated for the other mode. Nova
+DX12 and Nova Vulkan share this rule.
 
 Idle windows advance trim policy from no trim to light and moderate levels.
 Trim may shrink retained CPU buffers, atlas capacity, custom mesh caches, and
@@ -464,6 +504,36 @@ Useful diagnostics include:
 
 When changing renderer code, record what metric proves the change works. Do
 not weaken rendering correctness to hit an arbitrary memory or CPU number.
+
+### GPUI performance lab
+
+`gpui_perf_lab` opens a real Nova window and writes one JSON report to stdout.
+Run the same scenario separately for DX12 and Vulkan; do not substitute the
+headless test platform for backend measurements.
+
+```powershell
+cargo run --manifest-path crates/gpui/Cargo.toml --example gpui_perf_lab --no-default-features --features nova-gfx-dx12 -- --backend=nova-dx12 --scenario=single-dirty --refresh-rate=120 --frames=600
+cargo run --manifest-path crates/gpui/Cargo.toml --example gpui_perf_lab --no-default-features --features nova-gfx-vulkan -- --backend=nova-vulkan --scenario=single-dirty --refresh-rate=120 --frames=600
+```
+
+Available scenarios are `static-idle`, `single-dirty`, `scroll-10k`,
+`cjk-cold`, `cjk-hot`, `texture-stress`, `overdraw-modal`, `effects`, and
+`animation`. Except for the deliberately cold CJK run, the lab discards 120
+warm-up frames. Reports contain raw samples and p50/p95/p99/max summaries.
+Stage durations are CPU wall times: `layout` is the accumulated Taffy compute
+time, `prepaint` includes layout work, and `backend_draw` covers Nova packing,
+uploads, command submission, and presentation. GPU pass time still requires
+PIX or RenderDoc, and frame pacing still requires PresentMon/ETW.
+
+`static_stream_hits` and `static_stream_misses` count retained upload-mask
+entries, not GPU write calls. A retained-key hit means the complete static
+upload signature matched. Hashed bytes include static primitive streams and
+the animation-topology signature input, excluding packed bytes represented by a
+reused chunk token. `retained_chunk_hits`, `retained_chunk_misses`, and
+`retained_chunk_reused_bytes` expose the chunk path separately. These definitions
+must remain stable across before/after reports. `quad_upload_bytes` records bytes
+actually written after fixed-layout retained ranges are removed, rather than the
+full logical quad stream length.
 
 ## BMCBL Change Rules
 

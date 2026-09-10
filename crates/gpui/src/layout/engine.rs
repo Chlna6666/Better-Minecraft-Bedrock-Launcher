@@ -5,7 +5,10 @@ use crate::{
 use collections::{FxHashMap, FxHashSet, FxHasher};
 use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
-use std::hash::{Hash, Hasher};
+use std::{
+    hash::{Hash, Hasher},
+    time::{Duration, Instant},
+};
 use taffy::TaffyTree;
 
 use super::{
@@ -66,6 +69,7 @@ pub struct TaffyLayoutEngine {
     pub(super) layout_cache_misses: usize,
     pub(super) layout_cache_reused_roots: usize,
     pub(super) layout_cache_saved_roots: usize,
+    layout_time: Duration,
 }
 
 fn promote_percentage_axis(wrapper: &mut Length, child: &mut Length) -> bool {
@@ -113,6 +117,7 @@ impl TaffyLayoutEngine {
             layout_cache_misses: 0,
             layout_cache_reused_roots: 0,
             layout_cache_saved_roots: 0,
+            layout_time: Duration::ZERO,
         }
     }
 
@@ -135,6 +140,7 @@ impl TaffyLayoutEngine {
         self.layout_cache_misses = 0;
         self.layout_cache_reused_roots = 0;
         self.layout_cache_saved_roots = 0;
+        self.layout_time = Duration::ZERO;
     }
 
     pub(crate) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
@@ -334,6 +340,7 @@ impl TaffyLayoutEngine {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let started_at = Instant::now();
         self.roots_computed = self.roots_computed.saturating_add(1);
         let root_key = self.root_cache_key(id, available_space);
         if let Some(root_key) = root_key {
@@ -342,6 +349,7 @@ impl TaffyLayoutEngine {
                 self.computed_root_keys.push((root_key, id));
                 self.layout_cache_hits = self.layout_cache_hits.saturating_add(1);
                 self.layout_cache_reused_roots = self.layout_cache_reused_roots.saturating_add(1);
+                self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
                 return;
             }
             self.layout_cache_misses = self.layout_cache_misses.saturating_add(1);
@@ -426,6 +434,11 @@ impl TaffyLayoutEngine {
         if let Some(root_key) = root_key {
             self.computed_root_keys.push((root_key, id));
         }
+        self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
+    }
+
+    pub(crate) fn frame_layout_time(&self) -> Duration {
+        self.layout_time
     }
 
     pub fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels> {

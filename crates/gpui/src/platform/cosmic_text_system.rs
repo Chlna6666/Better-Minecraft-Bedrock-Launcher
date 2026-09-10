@@ -2136,6 +2136,7 @@ mod tests {
                             font_size: glyph.font_size,
                             subpixel_variant: Point::default(),
                             scale_factor: 1.0,
+                            grayscale_antialiasing: true,
                             is_emoji: false,
                             is_cjk: glyph.is_cjk,
                         };
@@ -2188,6 +2189,7 @@ mod tests {
                             font_size: glyph.font_size,
                             subpixel_variant: Point::default(),
                             scale_factor: 1.0,
+                            grayscale_antialiasing: true,
                             is_emoji: false,
                             is_cjk: true,
                         };
@@ -2245,6 +2247,7 @@ mod tests {
                     font_size: glyph.font_size,
                     subpixel_variant: Point::default(),
                     scale_factor: 1.0,
+                    grayscale_antialiasing: true,
                     is_emoji: false,
                     is_cjk: true,
                 };
@@ -2287,6 +2290,7 @@ mod tests {
             font_size: px(13.),
             subpixel_variant: Point::default(),
             scale_factor: 1.0,
+            grayscale_antialiasing: true,
             is_emoji: false,
             is_cjk: false,
         };
@@ -2683,6 +2687,7 @@ mod tests {
             font_size: glyph.font_size,
             subpixel_variant: Point::default(),
             scale_factor: 1.0,
+            grayscale_antialiasing: true,
             is_emoji: false,
             is_cjk: glyph.is_cjk,
         };

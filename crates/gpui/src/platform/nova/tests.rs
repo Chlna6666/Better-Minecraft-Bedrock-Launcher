@@ -1,10 +1,11 @@
 use super::*;
 use crate::{
-    FontId, GlyphId, GpuMesh3dDrawParameters, GpuMesh3dDrawRanges, GpuMesh3dVertex, ImageId,
-    ImagePixelFormat, PaintGpuMesh3d, RenderGlyphParams, RenderImageParams, TileId,
-    WgslShaderSource, px, size,
+    FontId, GlobalElementId, GlyphId, GpuMesh3dDrawParameters, GpuMesh3dDrawRanges,
+    GpuMesh3dVertex, ImageId, ImagePixelFormat, PaintGpuMesh3d, RenderGlyphParams,
+    RenderImageParams, TileId, WgslShaderSource, bounds, point, px, size,
 };
 use gfx_core::{DrawIndexedStepDescriptor, IndexBufferBinding, IndexFormat, RenderStepDescriptor};
+use smallvec::smallvec;
 use std::cell::Cell;
 
 fn force_atlas_full(atlas: &NovaAtlas) {
@@ -17,6 +18,30 @@ fn force_atlas_full(atlas: &NovaAtlas) {
     ] {
         state.disable_allocator_for_test(texture_kind);
     }
+}
+
+fn retained_quad_scene(generation: u64) -> crate::Scene {
+    let bounds = bounds(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
+    let mut scene = crate::Scene::default();
+    let start = scene.len();
+    for _ in 0..32 {
+        scene.insert_primitive(Quad {
+            bounds,
+            content_mask: crate::ContentMask {
+                bounds,
+                ..Default::default()
+            },
+            ..Quad::default()
+        });
+    }
+    let end = scene.len();
+    scene.record_retained_chunk(
+        GlobalElementId(smallvec!["nova-retained-quad".into()]),
+        generation,
+        start..end,
+    );
+    scene.finish();
+    scene
 }
 
 fn fallback_tile(atlas: &NovaAtlas, texture_kind: AtlasTextureKind) -> AtlasTile {
@@ -115,6 +140,7 @@ fn glyph_atlas_insert_update_remove() {
         font_size: px(14.0),
         subpixel_variant: Point { x: 0, y: 0 },
         scale_factor: 1.0,
+        grayscale_antialiasing: false,
         is_emoji: false,
         is_cjk: false,
     });
@@ -146,6 +172,31 @@ fn glyph_atlas_insert_update_remove() {
     assert!(missing.is_none());
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn transparent_window_glyphs_use_monochrome_atlas() {
+    let mut params = RenderGlyphParams {
+        font_id: FontId(1),
+        glyph_id: GlyphId(2),
+        font_size: px(14.0),
+        subpixel_variant: Point { x: 0, y: 0 },
+        scale_factor: 1.0,
+        grayscale_antialiasing: true,
+        is_emoji: false,
+        is_cjk: false,
+    };
+
+    assert_eq!(
+        AtlasKey::Glyph(params.clone()).texture_kind(),
+        AtlasTextureKind::Monochrome
+    );
+    params.grayscale_antialiasing = false;
+    assert_eq!(
+        AtlasKey::Glyph(params).texture_kind(),
+        AtlasTextureKind::Subpixel
+    );
+}
+
 #[test]
 fn glyph_atlas_preserves_existing_tiles_when_full() {
     let atlas = NovaAtlas::new();
@@ -156,6 +207,7 @@ fn glyph_atlas_preserves_existing_tiles_when_full() {
         font_size: px(14.0),
         subpixel_variant: Point { x: 0, y: 0 },
         scale_factor: 1.0,
+        grayscale_antialiasing: false,
         is_emoji: false,
         is_cjk: false,
     });
@@ -178,6 +230,7 @@ fn glyph_atlas_preserves_existing_tiles_when_full() {
         font_size: px(14.0),
         subpixel_variant: Point { x: 0, y: 0 },
         scale_factor: 1.0,
+        grayscale_antialiasing: false,
         is_emoji: false,
         is_cjk: false,
     };
@@ -269,6 +322,7 @@ fn atlas_fallback_tiles_are_not_deallocated_through_cached_keys() {
         font_size: px(14.0),
         subpixel_variant: Point { x: 0, y: 0 },
         scale_factor: 1.0,
+        grayscale_antialiasing: false,
         is_emoji: false,
         is_cjk: false,
     };
@@ -322,6 +376,7 @@ fn full_color_atlas_does_not_starve_monochrome_glyphs() {
         font_size: px(14.0),
         subpixel_variant: Point { x: 0, y: 0 },
         scale_factor: 1.0,
+        grayscale_antialiasing: false,
         is_emoji: false,
         is_cjk: false,
     };
@@ -828,6 +883,64 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
         BackdropBlurQuality::Full,
     );
     assert_eq!(read_u32_at(&upload.globals, 8), 1);
+}
+
+#[test]
+fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
+    let previous = retained_quad_scene(1);
+    let mut upload = FrameUpload::default();
+    let rendering_parameters = RenderingParameters::from_env();
+    let drawable_size = DrawableSize {
+        width: 640,
+        height: 480,
+    };
+    let first_summary = upload.encode(
+        &previous,
+        drawable_size,
+        &rendering_parameters,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(upload.retained_quad_chunks.len(), 1);
+    assert_eq!(first_summary.retained_chunk_hits, 0);
+    assert_eq!(upload.resident_quad_spans.len(), 1);
+
+    let mut partially_dirty = crate::Scene::default();
+    partially_dirty.replay(0..previous.len(), &previous);
+    partially_dirty.insert_primitive(Quad {
+        bounds: bounds(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0),
+        content_mask: crate::ContentMask {
+            bounds: bounds(point(px(0.0), px(0.0)), size(px(100.0), px(100.0))).scale(1.0),
+            ..Default::default()
+        },
+        ..Quad::default()
+    });
+    partially_dirty.finish();
+    let replay_summary = upload.encode(
+        &partially_dirty,
+        drawable_size,
+        &rendering_parameters,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(replay_summary.retained_chunk_hits, 1);
+    assert_eq!(
+        upload.resident_quad_spans[0].range.len(),
+        32 * PACKED_QUAD_BYTES
+    );
+    assert_eq!(upload.resident_quad_spans.len(), 1);
+
+    let changed_generation = retained_quad_scene(2);
+    let changed_summary = upload.encode(
+        &changed_generation,
+        drawable_size,
+        &rendering_parameters,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(changed_summary.retained_chunk_hits, 0);
+    assert_eq!(upload.resident_quad_spans.len(), 1);
+    assert_eq!(upload.retained_quad_chunks.len(), 1);
 }
 
 #[test]

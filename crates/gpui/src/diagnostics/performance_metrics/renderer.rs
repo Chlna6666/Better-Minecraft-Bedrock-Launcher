@@ -197,3 +197,31 @@ pub fn record_gpu_submission_wait(elapsed: Duration) {
             .fetch_add(1, Ordering::Relaxed);
     }
 }
+
+/// Records the phases of one completed renderer surface resize transaction.
+pub fn record_surface_resize(
+    wait: Duration,
+    swapchain: Duration,
+    resources: Duration,
+    total: Duration,
+) {
+    let metrics = shared_metrics();
+    let duration_micros = |duration: Duration| duration.as_micros().min(u64::MAX as u128) as u64;
+    let total_micros = duration_micros(total);
+    metrics
+        .surface_resize_wait_micros
+        .store(duration_micros(wait), Ordering::Relaxed);
+    metrics
+        .surface_resize_swapchain_micros
+        .store(duration_micros(swapchain), Ordering::Relaxed);
+    metrics
+        .surface_resize_resources_micros
+        .store(duration_micros(resources), Ordering::Relaxed);
+    metrics
+        .surface_resize_total_micros
+        .store(total_micros, Ordering::Relaxed);
+    metrics.surface_resize_count.fetch_add(1, Ordering::Relaxed);
+    metrics
+        .surface_resize_max_micros
+        .fetch_max(total_micros, Ordering::Relaxed);
+}

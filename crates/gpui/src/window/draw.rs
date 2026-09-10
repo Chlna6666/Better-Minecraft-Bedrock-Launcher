@@ -5,6 +5,15 @@ struct RetainedEntitySegments<'a> {
     segments: SmallVec<[&'a RetainedSceneSegment; 1]>,
 }
 
+fn record_draw_phase_metrics(metrics: FramePhaseMetrics) {
+    record_first_frame_build_time(metrics.build);
+    record_first_frame_layout_time(metrics.layout);
+    record_first_frame_prepaint_time(metrics.prepaint);
+    record_first_frame_paint_time(metrics.paint);
+    record_first_frame_scene_finish_time(metrics.scene_finish);
+    record_frame_phase_metrics(metrics);
+}
+
 impl<'a> RetainedEntitySegments<'a> {
     fn new(segment: &'a RetainedSceneSegment) -> Self {
         Self {
@@ -24,15 +33,19 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        let frame_started_at = Instant::now();
         let previous_scene_was_empty = self.rendered_frame.scene.len() == 0;
         let debug_force_full_redraw = self.begin_debug_visualization_frame(cx);
         let force_full_redraw = self.force_full_redraw.get() || debug_force_full_redraw;
         let (restored_input_handler_index, directly_dirty_views) = self.begin_draw_cycle(cx);
-        self.draw_roots(cx);
+        let mut phase_metrics = self.draw_roots(cx);
         self.next_frame.window_active = self.active.get();
 
         if self.draw_was_degraded && self.has_completed_rendered_frame {
-            return self.finish_degraded_draw(restored_input_handler_index);
+            let result = self.finish_degraded_draw(restored_input_handler_index);
+            phase_metrics.build = frame_started_at.elapsed();
+            record_draw_phase_metrics(phase_metrics);
+            return result;
         }
 
         // Register requested input handler with the platform window.
@@ -46,12 +59,15 @@ impl Window {
             self.platform_window.set_input_handler(input_handler);
         }
 
-        self.finish_completed_draw(
+        phase_metrics.scene_finish = self.finish_completed_draw(
             previous_scene_was_empty,
             force_full_redraw,
             &directly_dirty_views,
             cx,
-        )
+        );
+        phase_metrics.build = frame_started_at.elapsed();
+        record_draw_phase_metrics(phase_metrics);
+        ArenaClearNeeded
     }
 
     fn begin_draw_cycle(&mut self, cx: &mut App) -> (Option<usize>, SmallVec<[EntityId; 8]>) {
@@ -127,9 +143,11 @@ impl Window {
         force_full_redraw: bool,
         directly_dirty_views: &[EntityId],
         cx: &mut App,
-    ) -> ArenaClearNeeded {
+    ) -> Duration {
         self.finish_layout_and_text_frame();
+        let scene_finish_started_at = Instant::now();
         self.next_frame.finish(&mut self.rendered_frame);
+        let scene_finish_time = scene_finish_started_at.elapsed();
         let scene_animation_values = self
             .animation_engine
             .borrow()
@@ -158,9 +176,15 @@ impl Window {
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
-        self.viewport_dependent_views.borrow_mut().retain(|view_id| {
-            !self.rendered_frame.dispatch_tree.view_path(*view_id).is_empty()
-        });
+        self.viewport_dependent_views
+            .borrow_mut()
+            .retain(|view_id| {
+                !self
+                    .rendered_frame
+                    .dispatch_tree
+                    .view_path(*view_id)
+                    .is_empty()
+            });
         let live_scene_animation_ids = self.rendered_frame.scene.animation_ids();
         self.animation_engine
             .borrow_mut()
@@ -199,7 +223,7 @@ impl Window {
         self.finish_debug_visualization_frame(cx);
         self.draw_deadline = None;
 
-        ArenaClearNeeded
+        scene_finish_time
     }
 
     fn finish_layout_and_text_frame(&mut self) {
@@ -468,20 +492,28 @@ impl Window {
     }
 
     #[profiling::function]
-    pub(super) fn present(&self) {
-        self.platform_window.draw(self.render_plan());
-        self.needs_present.set(false);
+    pub(super) fn present(&self) -> PlatformFrameResult {
+        let result = self.platform_window.draw(self.render_plan());
+        if result == PlatformFrameResult::Submitted {
+            self.needs_present.set(false);
+        }
         profiling::finish_frame!();
+        result
     }
 
-    pub(super) fn present_framebuffer_only(&self) {
-        self.platform_window
+    pub(super) fn present_framebuffer_only(&self) -> PlatformFrameResult {
+        let result = self
+            .platform_window
             .present_framebuffer_only(self.render_plan());
-        self.needs_present.set(false);
+        if result == PlatformFrameResult::Submitted {
+            self.needs_present.set(false);
+        }
         profiling::finish_frame!();
+        result
     }
 
-    fn draw_roots(&mut self, cx: &mut App) {
+    fn draw_roots(&mut self, cx: &mut App) -> FramePhaseMetrics {
+        let prepaint_started_at = Instant::now();
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
 
@@ -544,7 +576,9 @@ impl Window {
         }
 
         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        let prepaint_time = prepaint_started_at.elapsed();
 
+        let paint_started_at = Instant::now();
         self.invalidator.set_phase(DrawPhase::Paint);
         self.with_critical_draw(|window| root_element.paint(window, cx));
 
@@ -577,6 +611,15 @@ impl Window {
         self.paint_inspector_hitbox(cx);
 
         self.paint_debug_surface_update_flash(cx);
+        FramePhaseMetrics {
+            layout: self
+                .layout_engine
+                .as_ref()
+                .map_or(Duration::ZERO, TaffyLayoutEngine::frame_layout_time),
+            prepaint: prepaint_time,
+            paint: paint_started_at.elapsed(),
+            ..FramePhaseMetrics::default()
+        }
     }
 
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {

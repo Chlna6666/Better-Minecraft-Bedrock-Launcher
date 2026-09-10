@@ -96,8 +96,42 @@ pub struct PerformanceMetricsSnapshot {
     pub gpu_submission_wait_max_time: Option<Duration>,
     /// Number of GPU submission waits that exceeded the frame-time threshold.
     pub gpu_submission_slow_wait_count: usize,
+    /// Time spent retiring tracked renderer submissions for the latest surface resize.
+    pub surface_resize_wait_time: Option<Duration>,
+    /// Time spent in the backend swapchain resize for the latest surface resize.
+    pub surface_resize_swapchain_time: Option<Duration>,
+    /// Time spent rebuilding size-dependent renderer resources for the latest surface resize.
+    pub surface_resize_resources_time: Option<Duration>,
+    /// End-to-end duration of the latest completed surface resize transaction.
+    pub surface_resize_total_time: Option<Duration>,
+    /// Number of completed surface resize transactions since process start.
+    pub surface_resize_count: usize,
+    /// Longest completed surface resize transaction since process start.
+    pub surface_resize_max_time: Option<Duration>,
     /// CPU time spent packing the latest scene into Nova upload buffers.
     pub scene_pack_time: Option<Duration>,
+    /// CPU time spent encoding scene primitives and batches for the latest Nova frame.
+    pub scene_encode_time: Option<Duration>,
+    /// CPU time spent building static upload signatures for the latest Nova frame.
+    pub scene_signature_time: Option<Duration>,
+    /// Static-signature input bytes hashed for the latest Nova frame.
+    pub scene_hashed_bytes: usize,
+    /// Stable packed chunks reused by the latest Nova frame.
+    pub retained_chunk_hits: usize,
+    /// Eligible packed chunks encoded by the latest Nova frame.
+    pub retained_chunk_misses: usize,
+    /// Packed primitive bytes copied from retained chunk storage without re-encoding.
+    pub retained_chunk_reused_bytes: usize,
+    /// Whether the latest Nova frame reused the exact retained upload key.
+    pub retained_upload_key_hit: bool,
+    /// Static stream mask entries already resident in the active frame-resource slot.
+    pub static_stream_hits: usize,
+    /// Dirty static stream mask entries in the active frame-resource slot.
+    pub static_stream_misses: usize,
+    /// CPU time blocked waiting for a reusable Nova frame-resource slot.
+    pub frame_slot_wait_time: Option<Duration>,
+    /// CPU time spent queueing Nova frame-buffer writes in the latest submission.
+    pub buffer_upload_time: Option<Duration>,
     /// Time spent queueing platform atlas upload commands during the latest reported frame.
     pub atlas_upload_time: Option<Duration>,
     /// Compressed bytes in the most recently decoded image.

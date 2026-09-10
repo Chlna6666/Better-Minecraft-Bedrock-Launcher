@@ -494,14 +494,13 @@ impl Window {
             frame_started_at,
         );
 
-        record_frame_decision(
-            decision.drew_frame(),
-            decision.submit_visible_frame,
-            decision.skip_frame,
-        );
-        record_window_frame_disposition(self.handle.window_id().as_u64(), decision.disposition());
         self.log_frame_work_decision(frame_options, decision, cx);
-        self.execute_frame_work(frame_options, decision, frame_budget, cx);
+        let presented_frame = self.execute_frame_work(frame_options, decision, frame_budget, cx);
+        record_frame_decision(decision.drew_frame(), presented_frame, decision.skip_frame);
+        record_window_frame_disposition(
+            self.handle.window_id().as_u64(),
+            decision.disposition(presented_frame),
+        );
     }
 
     fn run_animation_engine_frame(&mut self) {
@@ -627,10 +626,11 @@ impl Window {
         decision: FrameWorkDecision,
         frame_budget: Duration,
         cx: &mut App,
-    ) {
-        if decision.degrade_to_present {
-            self.present_framebuffer_only();
+    ) -> bool {
+        let presented_frame = if decision.degrade_to_present {
+            let result = self.present_framebuffer_only();
             self.refreshing = false;
+            result == PlatformFrameResult::Submitted
         } else if decision.defer_inactive_dirty_draw {
             self.refreshing = false;
             log::trace!(
@@ -642,21 +642,25 @@ impl Window {
                 decision.activity.pending_present,
                 self.rendered_frame.scene.len()
             );
+            false
         } else if decision.draw_frame {
-            self.draw_visible_frame(frame_options.require_presentation, frame_budget, cx);
+            self.draw_visible_frame(frame_options.require_presentation, frame_budget, cx)
         } else if decision.present_frame {
-            self.present_framebuffer_only();
+            self.present_framebuffer_only() == PlatformFrameResult::Submitted
         } else if decision.activity.active {
             record_retained_frame_skip();
+            false
         } else {
             record_inactive_present_skip();
-        }
+            false
+        };
 
         self.complete_frame(if decision.defer_inactive_dirty_draw {
             FrameCompletion::DeferredInactiveDirty
         } else {
             FrameCompletion::Normal
         });
+        presented_frame
     }
 
     fn draw_visible_frame(
@@ -664,15 +668,18 @@ impl Window {
         require_presentation: bool,
         frame_budget: Duration,
         cx: &mut App,
-    ) {
+    ) -> bool {
         let draw_started_at = Instant::now();
         let arena_clear_needed = measure("frame generation", || self.draw(cx));
         let draw_elapsed = draw_started_at.elapsed();
-        if require_presentation || self.needs_present.get() {
-            measure("frame presentation", || self.present());
-        }
+        let presented_frame = if require_presentation || self.needs_present.get() {
+            measure("frame presentation", || self.present()) == PlatformFrameResult::Submitted
+        } else {
+            false
+        };
         measure("frame arena clear", || arena_clear_needed.clear());
         self.finish_draw_budget_accounting(draw_elapsed, frame_budget, cx);
+        presented_frame
     }
 
     fn finish_draw_budget_accounting(
@@ -904,10 +911,10 @@ impl FrameWorkDecision {
         self.draw_frame && !self.degrade_to_present
     }
 
-    const fn disposition(self) -> WindowFrameDisposition {
+    const fn disposition(self, presented_frame: bool) -> WindowFrameDisposition {
         WindowFrameDisposition {
             drew_frame: self.drew_frame(),
-            presented_frame: self.submit_visible_frame,
+            presented_frame,
             skipped_frame: self.skip_frame,
         }
     }

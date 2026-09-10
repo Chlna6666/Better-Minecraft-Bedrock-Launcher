@@ -1,3 +1,4 @@
+use super::chunk_upload::QuadUploadPlan;
 use super::draw_steps::{PreparedBackdropBlurGroup, PreparedElementBlurLayer};
 use super::retained_upload::StaticUploadMask;
 use super::*;
@@ -43,19 +44,19 @@ fn upload_frame_buffers<D>(
     frame_upload: &FrameUpload,
     has_backdrop_blurs: bool,
     static_uploads: StaticUploadMask,
+    quad_upload_plan: &QuadUploadPlan,
 ) -> Result<()>
 where
     D: BackendResources,
 {
+    let started_at = Instant::now();
     if static_uploads.global {
         device.write_buffer(buffers.global, 0, &frame_upload.globals)?;
     }
     if static_uploads.text_raster {
         device.write_buffer(buffers.text_raster, 0, &frame_upload.text_raster_params)?;
     }
-    if static_uploads.quad && !frame_upload.quads.is_empty() {
-        device.write_buffer(buffers.quad, 0, &frame_upload.quads)?;
-    }
+    upload_quad_buffer(device, buffers.quad, &frame_upload.quads, quad_upload_plan)?;
     if static_uploads.shadow && !frame_upload.shadows.is_empty() {
         device.write_buffer(buffers.shadow, 0, &frame_upload.shadows)?;
     }
@@ -103,7 +104,27 @@ where
     // A partial static refresh may leave other primitive streams resident. Those clean streams can
     // still contain active animations, so refresh only their animated ranges. Streams uploaded in
     // full above already contain the sampled bytes and deliberately skip duplicate range writes.
-    upload_animated_buffers(device, buffers, frame_upload, static_uploads)
+    upload_animated_buffers(device, buffers, frame_upload, static_uploads)?;
+    crate::diagnostics::performance_metrics::record_nova_buffer_upload_time(started_at.elapsed());
+    Ok(())
+}
+
+fn upload_quad_buffer<D: BackendResources>(
+    device: &mut D,
+    buffer: BufferId,
+    source: &[u8],
+    plan: &QuadUploadPlan,
+) -> Result<()> {
+    match plan {
+        QuadUploadPlan::None => {}
+        QuadUploadPlan::Full => device.write_buffer(buffer, 0, source)?,
+        QuadUploadPlan::Ranges(ranges) => {
+            for range in ranges {
+                device.write_buffer(buffer, range.start as u64, &source[range.clone()])?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn upload_animated_buffer_kind<D: BackendResources>(
@@ -677,16 +698,26 @@ impl NovaRenderer {
         let static_uploads = self
             .retained_upload
             .static_upload_mask(self.current_frame_resource_index);
+        let quad_upload_plan = self.retained_upload.quad_upload_plan(
+            self.current_frame_resource_index,
+            self.frame_upload.quads.len(),
+        );
         let upload_static = !static_uploads.is_empty();
         let animated_upload_bytes = self.frame_upload.animated_upload_bytes();
-        let mapped_upload_bytes = if upload_static {
+        let mut mapped_upload_bytes = if upload_static {
             static_uploads.mapped_upload_bytes(&self.frame_upload, has_backdrop_blurs)
         } else {
             animated_upload_bytes
         };
+        if static_uploads.quad {
+            mapped_upload_bytes = mapped_upload_bytes
+                .saturating_sub(self.frame_upload.quads.len())
+                .saturating_add(quad_upload_plan.uploaded_bytes(self.frame_upload.quads.len()));
+        }
         let uploaded_bytes = mapped_upload_bytes;
         let breakdown = if upload_static {
             let mut breakdown = self.frame_upload.upload_breakdown();
+            breakdown.quad_bytes = quad_upload_plan.uploaded_bytes(self.frame_upload.quads.len());
             breakdown.animation_bytes = 0;
             breakdown
         } else {
@@ -826,6 +857,7 @@ impl NovaRenderer {
                     &self.frame_upload,
                     has_backdrop_blurs,
                     static_uploads,
+                    &quad_upload_plan,
                 )?;
                 let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
                 let atlas_started = Instant::now();
@@ -931,6 +963,7 @@ impl NovaRenderer {
                     &self.frame_upload,
                     has_backdrop_blurs,
                     static_uploads,
+                    &quad_upload_plan,
                 )?;
                 let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
                     self.gpu_atlas_textures
@@ -1011,6 +1044,7 @@ impl NovaRenderer {
                     &self.frame_upload,
                     has_backdrop_blurs,
                     static_uploads,
+                    &quad_upload_plan,
                 )?;
                 let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
                 let atlas_started = Instant::now();
@@ -1147,6 +1181,11 @@ impl NovaRenderer {
             );
         }
         render_result?;
+        // A composition swapchain may still be stretching the last old-size frame while its
+        // buffers are rebuilt. Only publish the identity transform after the first new-size
+        // frame has been successfully presented; resetting it during ResizeBuffers exposes
+        // undefined backbuffer contents as black client-area margins.
+        self.reset_live_resize_stretch();
         self.retained_upload
             .mark_uploaded(self.current_frame_resource_index);
         if has_backdrop_blurs {

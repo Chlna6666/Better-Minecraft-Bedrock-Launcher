@@ -1,7 +1,7 @@
 use super::*;
 
 impl NovaRenderer {
-    fn reset_live_resize_stretch(&mut self) {
+    pub(super) fn reset_live_resize_stretch(&mut self) {
         if let Err(error) = self
             .backend
             .set_swapchain_content_stretch(self.swapchain, None)
@@ -11,6 +11,7 @@ impl NovaRenderer {
     }
 
     pub(crate) fn resize(&mut self, size: Size<DevicePixels>) -> Result<()> {
+        let resize_started_at = Instant::now();
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         let next_size = DrawableSize { width, height };
@@ -22,7 +23,9 @@ impl NovaRenderer {
             self.reset_live_resize_stretch();
             return Ok(());
         }
+        let wait_started_at = Instant::now();
         self.prepare_for_resize()?;
+        let submission_wait = wait_started_at.elapsed();
         let target_size = Extent2d::new(width, height)?;
         let surface_config = SurfaceConfig {
             size: target_size,
@@ -36,13 +39,13 @@ impl NovaRenderer {
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
         let old_depth_texture = self.depth_texture;
         let old_depth_texture_view = self.depth_texture_view;
+        let swapchain_resize;
         let (next_path_mask_target, next_backdrop_blur_targets): (
             PathMaskTarget,
             Option<BackdropBlurTargets>,
         ) = match &mut self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
-                resize_dx12_swapchain(device, self.swapchain, surface_config)?;
                 let next_path_mask_target =
                     create_path_mask_target(device, "gpui nova dx12", path_mask_target_descriptor)?;
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
@@ -56,6 +59,24 @@ impl NovaRenderer {
                 };
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova dx12", target_size)?;
+                // Keep the last presented swapchain valid while the expensive size-dependent
+                // targets are prepared. Replacing its buffers first exposes an unpresented
+                // surface to DWM for the remainder of this transaction during live resize.
+                let swapchain_started_at = Instant::now();
+                if let Err(error) = resize_dx12_swapchain(device, self.swapchain, surface_config) {
+                    destroy_path_mask_target(device, next_path_mask_target, "DX12");
+                    if let Some(targets) = next_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(device, targets, "DX12");
+                    }
+                    destroy_depth_target(
+                        device,
+                        next_depth_texture,
+                        next_depth_texture_view,
+                        "DX12",
+                    );
+                    return Err(error);
+                }
+                swapchain_resize = swapchain_started_at.elapsed();
                 destroy_path_mask_target(device, old_path_mask_target, "DX12");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX12");
@@ -67,7 +88,9 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => {
+                let swapchain_started_at = Instant::now();
                 device.resize_swapchain(self.swapchain, width, height)?;
+                swapchain_resize = swapchain_started_at.elapsed();
                 let next_path_mask_target = create_path_mask_target(
                     device,
                     "gpui nova metal",
@@ -98,7 +121,6 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
             NovaBackend::Vulkan(device) => {
-                resize_vulkan_swapchain(device, self.swapchain, surface_config)?;
                 let next_path_mask_target = create_path_mask_target(
                     device,
                     "gpui nova vulkan",
@@ -115,6 +137,24 @@ impl NovaRenderer {
                 };
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova vulkan", target_size)?;
+                // Vulkan has no DXGI content-stretch fallback. Delay replacing the live
+                // swapchain until all offscreen targets for its first new-size frame are ready.
+                let swapchain_started_at = Instant::now();
+                if let Err(error) = resize_vulkan_swapchain(device, self.swapchain, surface_config)
+                {
+                    destroy_path_mask_target(device, next_path_mask_target, "Vulkan");
+                    if let Some(targets) = next_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(device, targets, "Vulkan");
+                    }
+                    destroy_depth_target(
+                        device,
+                        next_depth_texture,
+                        next_depth_texture_view,
+                        "Vulkan",
+                    );
+                    return Err(error);
+                }
+                swapchain_resize = swapchain_started_at.elapsed();
                 destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Vulkan");
@@ -145,7 +185,14 @@ impl NovaRenderer {
         self.surface_config = surface_config;
         self.current_size = next_size;
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
-        self.reset_live_resize_stretch();
+        let total = resize_started_at.elapsed();
+        let resources = total.saturating_sub(submission_wait.saturating_add(swapchain_resize));
+        crate::diagnostics::performance_metrics::record_surface_resize(
+            submission_wait,
+            swapchain_resize,
+            resources,
+            total,
+        );
         Ok(())
     }
 
