@@ -645,6 +645,10 @@ impl Scene {
         });
     }
 
+    pub(crate) fn is_capturing_blur(&self) -> bool {
+        !self.blur_captures.is_empty()
+    }
+
     pub(crate) fn end_blur(&mut self) {
         self.revision = 0;
         let Some(capture) = self.blur_captures.pop() else {

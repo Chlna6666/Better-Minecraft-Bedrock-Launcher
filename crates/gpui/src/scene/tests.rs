@@ -424,6 +424,27 @@ fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
 }
 
 #[test]
+fn blur_capture_state_tracks_nested_captures() {
+    let capture = BlurCapture {
+        animation_id: None,
+        bounds: Bounds::default(),
+        content_mask: ContentMask::default(),
+        radius: ScaledPixels(1.0),
+        opacity: 1.0,
+    };
+    let mut scene = Scene::default();
+
+    assert!(!scene.is_capturing_blur());
+    scene.begin_blur(capture.clone());
+    scene.begin_blur(capture);
+    assert!(scene.is_capturing_blur());
+    scene.end_blur();
+    assert!(scene.is_capturing_blur());
+    scene.end_blur();
+    assert!(!scene.is_capturing_blur());
+}
+
+#[test]
 fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
     let mut previous = Scene::default();
     previous.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));

@@ -417,8 +417,10 @@ impl Window {
             font_size,
             subpixel_variant,
             scale_factor,
-            grayscale_antialiasing: self.platform_window.background_appearance()
-                != WindowBackgroundAppearance::Opaque,
+            grayscale_antialiasing: glyphs_require_grayscale_antialiasing(
+                self.platform_window.background_appearance(),
+                self.next_frame.scene.is_capturing_blur(),
+            ),
             is_emoji: false,
             is_cjk,
         };
@@ -551,5 +553,35 @@ impl Window {
         self.scene_animation.and_then(|(animation_id, property)| {
             properties.contains(&property).then_some(animation_id)
         })
+    }
+}
+
+fn glyphs_require_grayscale_antialiasing(
+    background_appearance: WindowBackgroundAppearance,
+    is_capturing_blur: bool,
+) -> bool {
+    // Element blur captures into a transparent texture. ClearType dual-source blending assumes an
+    // opaque destination and otherwise writes opaque alpha across the whole glyph sprite quad.
+    is_capturing_blur || background_appearance != WindowBackgroundAppearance::Opaque
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opaque_window_blur_capture_uses_grayscale_glyphs() {
+        assert!(glyphs_require_grayscale_antialiasing(
+            WindowBackgroundAppearance::Opaque,
+            true,
+        ));
+    }
+
+    #[test]
+    fn opaque_main_target_keeps_subpixel_glyphs() {
+        assert!(!glyphs_require_grayscale_antialiasing(
+            WindowBackgroundAppearance::Opaque,
+            false,
+        ));
     }
 }
