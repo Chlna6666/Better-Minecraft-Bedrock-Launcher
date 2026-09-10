@@ -3,7 +3,6 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{AboutSponsorEntry, SettingsPageState};
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -74,7 +73,7 @@ pub(super) fn render_sponsors_modal(
                     .child(icon_btn(
                         colors,
                         t!("AboutSection.sponsors.support_link"),
-                        lucide_icons::icon_link(),
+                        lucide_gpui::icon!(link),
                         true,
                         Rc::new(|cx: &mut App| {
                             cx.open_url("https://afdian.com/a/Chlna6666");
@@ -83,7 +82,7 @@ pub(super) fn render_sponsors_modal(
                     .child(icon_btn(
                         colors,
                         t!("common.close"),
-                        lucide_icons::icon_x(),
+                        lucide_gpui::icon!(x),
                         true,
                         close_button,
                     )),
@@ -374,7 +373,7 @@ fn sponsor_pager(colors: &ThemeColors, page: usize, max_page: usize) -> Div {
         .child(icon_btn(
             colors,
             SharedString::from("previous"),
-            lucide_icons::icon_chevron_left(),
+            lucide_gpui::icon!(chevron_left),
             page > 0,
             previous,
         ))
@@ -389,7 +388,7 @@ fn sponsor_pager(colors: &ThemeColors, page: usize, max_page: usize) -> Div {
         .child(icon_btn(
             colors,
             SharedString::from("next"),
-            lucide_icons::icon_chevron_right(),
+            lucide_gpui::icon!(chevron_right),
             page < max_page,
             next,
         ))

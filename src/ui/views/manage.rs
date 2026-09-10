@@ -37,7 +37,6 @@ use crate::utils::file_picker::{
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;

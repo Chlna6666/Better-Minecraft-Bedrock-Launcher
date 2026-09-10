@@ -111,6 +111,15 @@ impl MapViewerUiState {
             self.right_panel_width = self.right_panel_width.max(RIGHT_PANEL_MIN_WIDTH);
         }
     }
+
+    pub fn close_player_panes(&mut self) {
+        if self.active_left_panel == MapViewerLeftPanel::Players {
+            self.left_panel_open = false;
+        }
+        if self.active_right_panel == MapViewerRightPanel::Player {
+            self.set_right_panel_open(false);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -265,6 +274,22 @@ mod tests {
             + IDE_SPLITTER_WIDTH
             + state.right_panel_width;
         assert!(920.0 - reserved >= MIN_CENTER_WIDTH);
+    }
+
+    #[test]
+    fn closing_player_context_hides_both_player_panes() {
+        let mut state = MapViewerUiState {
+            left_panel_open: true,
+            right_panel_open: true,
+            active_left_panel: MapViewerLeftPanel::Players,
+            active_right_panel: MapViewerRightPanel::Player,
+            ..MapViewerUiState::default()
+        };
+
+        state.close_player_panes();
+
+        assert!(!state.left_panel_open);
+        assert!(!state.right_panel_open);
     }
 
     #[test]

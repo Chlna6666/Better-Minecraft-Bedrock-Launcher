@@ -76,7 +76,7 @@ pub(super) fn append_map_asset_actions(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-map-preview-{}", asset.key)),
-                lucide_icons::icon_eye(),
+                lucide_gpui::icon!(eye),
             )
             .on_mouse_down(MouseButton::Left, {
                 let version = version.clone();
@@ -101,7 +101,7 @@ pub(super) fn append_map_asset_actions(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-map-edit-{}", asset.key)),
-                lucide_icons::icon_file_pen_line(),
+                lucide_gpui::icon!(file_pen_line),
             )
             .on_mouse_down(MouseButton::Left, {
                 let key = action_key.clone();
@@ -117,7 +117,7 @@ pub(super) fn append_map_asset_actions(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-map-backup-{}", asset.key)),
-                lucide_icons::icon_archive(),
+                lucide_gpui::icon!(archive),
             )
             .on_mouse_down(MouseButton::Left, {
                 let key = action_key.clone();
@@ -133,7 +133,7 @@ pub(super) fn append_map_asset_actions(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-map-export-{}", asset.key)),
-                lucide_icons::icon_share_2(),
+                lucide_gpui::icon!(share_2),
             )
             .on_mouse_down(MouseButton::Left, {
                 let key = action_key.clone();
@@ -149,7 +149,7 @@ pub(super) fn append_map_asset_actions(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-map-launch-{}", asset.key)),
-                lucide_icons::icon_play(),
+                lucide_gpui::icon!(play),
             )
             .on_mouse_down(MouseButton::Left, {
                 let version = version.clone();

@@ -19,7 +19,6 @@ use crate::utils::file_ops;
 use gpui::AnimationExt;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -1037,14 +1036,14 @@ fn render_pager(
                 .gap(px(8.))
                 .child(nav_btn(
                     "download-nav-prev",
-                    lucide_icons::icon_chevron_left(),
+                    lucide_gpui::icon!(chevron_left),
                     prev_enabled,
                     Box::new(|s| s.page_index = s.page_index.saturating_sub(1)),
                 ))
                 .child(page_row)
                 .child(nav_btn(
                     "download-nav-next",
-                    lucide_icons::icon_chevron_right(),
+                    lucide_gpui::icon!(chevron_right),
                     next_enabled,
                     Box::new(|s| s.page_index = s.page_index.saturating_add(1)),
                 )),
@@ -1320,7 +1319,7 @@ fn render_version_row(
                         .relative()
                         .hover(move |s| if is_interactive { s.opacity(0.85) } else { s })
                         .active(move |s| if is_interactive { s.scale(0.96) } else { s })
-                        .child(themed_icon(lucide_icons::icon_download(), 16.0, btn_fg))
+                        .child(themed_icon(lucide_gpui::icon!(download), 16.0, btn_fg))
                         .child(btn_label)
                 }
             }
@@ -1977,7 +1976,7 @@ where
                 ),
         )
         .child(themed_icon(
-            lucide_icons::icon_chevron_right(),
+            lucide_gpui::icon!(chevron_right),
             14.0,
             colors.text_secondary,
         ))
@@ -2041,7 +2040,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDi
                 .justify_center()
                 .text_color(colors.text_secondary)
                 .child(themed_icon(
-                    lucide_icons::icon_x(),
+                    lucide_gpui::icon!(x),
                     16.0,
                     colors.text_secondary,
                 ))
@@ -2096,7 +2095,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDi
                         .items_center()
                         .justify_center()
                         .child(themed_icon(
-                            lucide_icons::icon_package(),
+                            lucide_gpui::icon!(package),
                             14.0,
                             colors.text_secondary,
                         )),
@@ -2175,7 +2174,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDi
                         .justify_center()
                         .text_color(colors.accent)
                         .child(themed_icon(
-                            lucide_icons::icon_folder_open(),
+                            lucide_gpui::icon!(folder_open),
                             14.0,
                             colors.accent,
                         ))
@@ -2206,7 +2205,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDi
         .gap(px(6.))
         .child(render_local_action_card(
             colors,
-            lucide_icons::icon_download(),
+            lucide_gpui::icon!(download),
             colors.accent,
             t!("DownloadPage.local_install"),
             t!("DownloadPage.local_install_desc"),
@@ -2227,7 +2226,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDi
         ))
         .child(render_local_action_card(
             colors,
-            lucide_icons::icon_rotate_cw(),
+            lucide_gpui::icon!(rotate_cw),
             colors.text_secondary,
             t!("DownloadPage.redownload"),
             t!("DownloadPage.redownload_desc"),
@@ -2241,7 +2240,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDi
         ))
         .child(render_local_action_card(
             colors,
-            lucide_icons::icon_trash_2(),
+            lucide_gpui::icon!(trash_2),
             colors.danger,
             t!("DownloadPage.delete_local_package"),
             t!("DownloadPage.delete_local_package_desc"),
@@ -2805,7 +2804,7 @@ pub(super) fn render_game_dialog(
                                 .items_center()
                                 .justify_center()
                                 .child(themed_icon(
-                                    lucide_icons::icon_download(),
+                                    lucide_gpui::icon!(download),
                                     18.0,
                                     colors.accent,
                                 )),

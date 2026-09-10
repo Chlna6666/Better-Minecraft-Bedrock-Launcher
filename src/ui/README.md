@@ -357,6 +357,29 @@ inside their focused submodules rather than expanding the root files.
 - Keep render methods free of expensive data assembly. Prepare snapshots before
   rendering where possible.
 
+### Data-driven list contract
+
+- A collection whose size comes from versions, downloads, resources, files,
+  plugins, servers, peers, logs, or other runtime data must not materialize all
+  rows in `render`. Use GPUI `uniform_list` for a bounded viewport with fixed
+  row pitch, or `components/virtual_list.rs` when the page already owns the
+  outer scroll viewport and spacer-based windowing.
+- Use semantic row identity from the domain object (for example a version
+  folder, task id, resource id, or peer client id). Array indices are not
+  retained identity when sorting, filtering, insertion, or deletion can move a
+  row.
+- Virtualization must preserve the original row geometry and motion. Row pitch
+  includes gaps and padding; opening, spring overshoot, interruption, selection
+  and scroll-to-selected behavior are acceptance requirements, not optional
+  simplifications.
+- Image-heavy rows create and request images only for the render window. Keep a
+  small overscan for smooth scrolling, but do not prebuild every offscreen image
+  element merely to populate a cache.
+- Fixed small collections such as navigation tabs, a capped toast stack, or a
+  short static menu do not need virtualization. Variable-height rich content
+  (Markdown, HTML, nested forms) needs block measurement/caching rather than
+  being forced into `uniform_list`.
+
 ## Network And Background Work
 
 All network work must happen off the UI thread. Preferred patterns:

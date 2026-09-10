@@ -1,5 +1,4 @@
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use super::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
 use crate::ui::components::scroll::ScrollableElement as _;
@@ -606,19 +605,19 @@ fn render_welcome(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .child(intro(colors, t!("Onboarding.welcome.intro")))
         .child(feature(
             colors,
-            lucide_icons::icon_download(),
+            lucide_gpui::icon!(download),
             t!("Onboarding.welcome.get_game"),
             t!("Onboarding.welcome.get_game_detail"),
         ))
         .child(feature(
             colors,
-            lucide_icons::icon_activity(),
+            lucide_gpui::icon!(activity),
             t!("Onboarding.welcome.tasks"),
             t!("Onboarding.welcome.tasks_detail"),
         ))
         .child(feature(
             colors,
-            lucide_icons::icon_settings_2(),
+            lucide_gpui::icon!(settings_2),
             t!("Onboarding.welcome.manage"),
             t!("Onboarding.welcome.manage_detail"),
         ))
@@ -637,19 +636,19 @@ fn render_download_navigation(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         ))
         .child(feature(
             colors,
-            lucide_icons::icon_box(),
+            lucide_gpui::icon!(box),
             t!("Onboarding.common.game"),
             t!("Onboarding.download.game_detail"),
         ))
         .child(feature(
             colors,
-            lucide_icons::icon_package(),
+            lucide_gpui::icon!(package),
             t!("Onboarding.common.resource_pack"),
             t!("Onboarding.download.resource_detail"),
         ))
         .child(feature(
             colors,
-            lucide_icons::icon_layers(),
+            lucide_gpui::icon!(layers),
             t!("Onboarding.common.mods"),
             t!("Onboarding.download.mod_detail"),
         ))
@@ -928,7 +927,7 @@ fn render_platform(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18
     if state.platform_scanning {
         body = body.child(status(
             colors,
-            lucide_icons::icon_loader_circle(),
+            lucide_gpui::icon!(loader_circle),
             t!("Onboarding.platform.scanning"),
             false,
         ));
@@ -936,7 +935,7 @@ fn render_platform(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18
         let error = i18n.resolve(error);
         body = body.child(dynamic_status(
             colors,
-            lucide_icons::icon_triangle_alert(),
+            lucide_gpui::icon!(triangle_alert),
             error,
             true,
         ));
@@ -973,7 +972,7 @@ fn render_finish(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                         .justify_center()
                         .child(
                             svg()
-                                .path(lucide_icons::icon_circle_check())
+                                .path(lucide_gpui::icon!(circle_check))
                                 .size(px(21.0))
                                 .text_color(colors.accent),
                         ),
@@ -988,13 +987,13 @@ fn render_finish(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         )
         .child(feature(
             colors,
-            lucide_icons::icon_download(),
+            lucide_gpui::icon!(download),
             t!("Onboarding.finish.no_game"),
             t!("Onboarding.finish.no_game_detail"),
         ))
         .child(feature(
             colors,
-            lucide_icons::icon_settings_2(),
+            lucide_gpui::icon!(settings_2),
             t!("Onboarding.finish.has_version"),
             t!("Onboarding.finish.has_version_detail"),
         ))
@@ -1049,57 +1048,57 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n)
 fn scene_header(scene: OnboardingScene, i18n: &I18n) -> (&'static str, SharedString, SharedString) {
     match scene {
         OnboardingScene::Welcome => (
-            lucide_icons::icon_route(),
+            lucide_gpui::icon!(route),
             t!("Onboarding.header.welcome"),
             t!("Onboarding.header.welcome_detail"),
         ),
         OnboardingScene::DownloadNavigation => (
-            lucide_icons::icon_download(),
+            lucide_gpui::icon!(download),
             t!("Onboarding.header.download"),
             t!("Onboarding.header.download_detail"),
         ),
         OnboardingScene::GameDownload => (
-            lucide_icons::icon_box(),
+            lucide_gpui::icon!(box),
             t!("Onboarding.header.game"),
             t!("Onboarding.header.game_detail"),
         ),
         OnboardingScene::ResourcePackDownload => (
-            lucide_icons::icon_package(),
+            lucide_gpui::icon!(package),
             t!("Onboarding.header.resource"),
             t!("Onboarding.header.resource_detail"),
         ),
         OnboardingScene::ModDownload => (
-            lucide_icons::icon_layers(),
+            lucide_gpui::icon!(layers),
             t!("Onboarding.header.mod"),
             t!("Onboarding.header.mod_detail"),
         ),
         OnboardingScene::ImportPackage => (
-            lucide_icons::icon_upload(),
+            lucide_gpui::icon!(upload),
             t!("Onboarding.header.import"),
             t!("Onboarding.header.import_detail"),
         ),
         OnboardingScene::TasksOverview => (
-            lucide_icons::icon_activity(),
+            lucide_gpui::icon!(activity),
             t!("Onboarding.header.tasks"),
             t!("Onboarding.header.tasks_detail"),
         ),
         OnboardingScene::ManageOverview => (
-            lucide_icons::icon_settings_2(),
+            lucide_gpui::icon!(settings_2),
             t!("Onboarding.header.manage"),
             t!("Onboarding.header.manage_detail"),
         ),
         OnboardingScene::ManageContent => (
-            lucide_icons::icon_package(),
+            lucide_gpui::icon!(package),
             t!("Onboarding.header.content"),
             t!("Onboarding.header.content_detail"),
         ),
         OnboardingScene::SettingsOverview => (
-            lucide_icons::icon_settings(),
+            lucide_gpui::icon!(settings),
             t!("Onboarding.header.settings"),
             t!("Onboarding.header.settings_detail"),
         ),
         OnboardingScene::ToolsOverview => (
-            lucide_icons::icon_wrench(),
+            lucide_gpui::icon!(wrench),
             t!("Onboarding.header.tools"),
             t!("Onboarding.header.tools_detail"),
         ),
@@ -1107,7 +1106,7 @@ fn scene_header(scene: OnboardingScene, i18n: &I18n) -> (&'static str, SharedStr
             #[cfg(target_os = "windows")]
             {
                 (
-                    lucide_icons::icon_shield_check(),
+                    lucide_gpui::icon!(shield_check),
                     t!("Onboarding.header.windows"),
                     t!("Onboarding.header.windows_detail"),
                 )
@@ -1115,14 +1114,14 @@ fn scene_header(scene: OnboardingScene, i18n: &I18n) -> (&'static str, SharedStr
             #[cfg(target_os = "linux")]
             {
                 (
-                    lucide_icons::icon_box(),
+                    lucide_gpui::icon!(box),
                     t!("Onboarding.header.linux"),
                     t!("Onboarding.header.linux_detail"),
                 )
             }
         }
         OnboardingScene::Finish => (
-            lucide_icons::icon_circle_check(),
+            lucide_gpui::icon!(circle_check),
             t!("Onboarding.header.finish"),
             t!("Onboarding.header.finish_detail"),
         ),
@@ -1599,7 +1598,7 @@ fn demo_asset_row(
         .gap(px(8.0))
         .child(
             svg()
-                .path(lucide_icons::icon_package())
+                .path(lucide_gpui::icon!(package))
                 .size(px(15.0))
                 .text_color(colors.accent),
         )
@@ -1814,7 +1813,7 @@ fn route_badge(colors: &ThemeColors, label: impl Into<SharedString>) -> Div {
         .gap(px(6.0))
         .child(
             svg()
-                .path(lucide_icons::icon_map_pin())
+                .path(lucide_gpui::icon!(map_pin))
                 .size(px(12.0))
                 .text_color(colors.accent),
         )
@@ -1830,7 +1829,7 @@ fn route_badge(colors: &ThemeColors, label: impl Into<SharedString>) -> Div {
 }
 
 fn tip(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
-    status(colors, lucide_icons::icon_info(), text, false)
+    status(colors, lucide_gpui::icon!(info), text, false)
 }
 
 fn status(
@@ -1917,9 +1916,9 @@ fn platform_summary(
             colors.accent
         };
         let icon = if item.warning {
-            lucide_icons::icon_triangle_alert()
+            lucide_gpui::icon!(triangle_alert)
         } else {
-            lucide_icons::icon_circle_check()
+            lucide_gpui::icon!(circle_check)
         };
         items = items.child(
             div()

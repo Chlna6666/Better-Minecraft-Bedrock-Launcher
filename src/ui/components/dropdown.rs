@@ -3,7 +3,6 @@ use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -13,8 +12,10 @@ const CLOSE_DURATION_SECS: f32 = 0.16;
 const TRIGGER_HEIGHT: f32 = 40.0;
 const MENU_MAX_HEIGHT: f32 = 240.0;
 const MENU_ROW_HEIGHT: f32 = 32.0;
-const MENU_VERTICAL_PADDING: f32 = 10.0;
 const MENU_GAP: f32 = 6.0;
+const MENU_ROW_PITCH: f32 = MENU_ROW_HEIGHT + MENU_GAP;
+const MENU_PADDING_TOP: f32 = 8.0;
+const MENU_PADDING_BOTTOM: f32 = 4.0;
 const MENU_WINDOW_EDGE_PADDING: f32 = 10.0;
 const MENU_MIN_PREVIEW_ROWS: f32 = 3.0;
 const MENU_CONTENT_PADDING_X: f32 = 44.0;
@@ -43,7 +44,7 @@ impl From<SharedString> for DropdownOption {
 struct DropdownState {
     phase: DropdownPhase,
     trigger_bounds: Option<Bounds<Pixels>>,
-    menu_scroll_handle: ScrollHandle,
+    menu_scroll_handle: UniformListScrollHandle,
     open_generation: u64,
     scroll_bound_generation: u64,
 }
@@ -73,7 +74,7 @@ struct DropdownOverlaySnapshot {
     trigger_bounds: Option<Bounds<Pixels>>,
     options: Rc<Vec<DropdownOption>>,
     selected_index: usize,
-    menu_scroll_handle: ScrollHandle,
+    menu_scroll_handle: UniformListScrollHandle,
     on_select: Rc<dyn Fn(usize, &mut Window, &mut App)>,
     scroll_id: SharedString,
     top_left: Point<Pixels>,
@@ -82,6 +83,17 @@ struct DropdownOverlaySnapshot {
     menu_h: Pixels,
     animated_h: Pixels,
     panel_opacity: f32,
+}
+
+#[derive(Clone)]
+struct DropdownOptionContext {
+    colors: ThemeColors,
+    options: Rc<Vec<DropdownOption>>,
+    selected_index: usize,
+    state: WeakEntity<DropdownState>,
+    on_select: Rc<dyn Fn(usize, &mut Window, &mut App)>,
+    parent_view_id: EntityId,
+    overlay_id: ElementId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -201,7 +213,11 @@ fn phase_after_deadline(phase: DropdownPhase, now: Instant) -> DropdownPhase {
 }
 
 fn dropdown_min_preview_height() -> Pixels {
-    px(MENU_VERTICAL_PADDING * 2.0 + MENU_ROW_HEIGHT * MENU_MIN_PREVIEW_ROWS)
+    desired_dropdown_height(MENU_MIN_PREVIEW_ROWS)
+}
+
+fn desired_dropdown_height(option_count: f32) -> Pixels {
+    px(MENU_PADDING_TOP + MENU_ROW_PITCH * option_count + MENU_PADDING_BOTTOM)
 }
 
 fn choose_dropdown_direction(
@@ -288,6 +304,86 @@ fn desired_dropdown_menu_width(
         .min(max_width)
 }
 
+fn dropdown_option_row(context: &DropdownOptionContext, index: usize) -> AnyElement {
+    let option = &context.options[index];
+    let is_selected = index == context.selected_index;
+    let item_bg = if is_selected {
+        Hsla {
+            a: 0.12,
+            ..context.colors.accent
+        }
+    } else {
+        Hsla {
+            a: 0.0,
+            ..context.colors.surface
+        }
+    };
+    let item_fg = context.colors.text_primary;
+    let state = context.state.clone();
+    let on_select = context.on_select.clone();
+    let parent_view_id = context.parent_view_id;
+    let overlay_id = context.overlay_id.clone();
+
+    div()
+        .h(px(MENU_ROW_PITCH))
+        .pb(px(MENU_GAP))
+        .child(
+            div()
+                .h(px(MENU_ROW_HEIGHT))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .cursor_pointer()
+                .bg(item_bg)
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(if is_selected {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::MEDIUM
+                        })
+                        .text_color(item_fg)
+                        .child(option.label.clone()),
+                )
+                .when(is_selected, |this| {
+                    this.child(
+                        svg()
+                            .path(lucide_gpui::icon!(check))
+                            .w(px(16.))
+                            .h(px(16.))
+                            .opacity(0.9)
+                            .text_color(item_fg),
+                    )
+                })
+                .hover(|style| {
+                    style.bg(Hsla {
+                        a: 0.60,
+                        ..context.colors.surface_hover
+                    })
+                })
+                .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
+                    cx.stop_propagation();
+                    (on_select)(index, window, cx);
+
+                    let now = Instant::now();
+                    if let Err(error) = state.update(cx, |state, _| {
+                        state.phase = begin_dropdown_close(state.phase, now);
+                    }) {
+                        cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
+                            overlay.clear_if_matches(&overlay_id);
+                        });
+                        tracing::debug!("dropdown close after selection skipped: {error:?}");
+                    } else {
+                        cx.notify(parent_view_id);
+                    }
+                }),
+        )
+        .into_any_element()
+}
+
 pub fn render_overlay(
     window: &mut Window,
     now: Instant,
@@ -327,6 +423,27 @@ pub fn render_overlay(
         VerticalRevealEdge::Top
     };
     let reveal_fraction = (f32::from(active.animated_h) / f32::from(active.menu_h)).clamp(0.0, 1.0);
+    let option_context = DropdownOptionContext {
+        colors,
+        options: options.clone(),
+        selected_index,
+        state: active.state.clone(),
+        on_select: active.on_select.clone(),
+        parent_view_id: active.parent_view_id,
+        overlay_id: active.id.clone(),
+    };
+    let option_count = options.len();
+    let option_list = uniform_list(
+        active.scroll_id.clone(),
+        option_count,
+        move |range, _window, _cx| {
+            range
+                .map(|index| dropdown_option_row(&option_context, index))
+                .collect::<Vec<_>>()
+        },
+    )
+    .track_scroll(menu_scroll_handle)
+    .h_full();
     let popup = div()
         .absolute()
         .left(active.top_left.x)
@@ -369,96 +486,11 @@ pub fn render_overlay(
         })
         .child(
             div()
-                .id(active.scroll_id.clone())
                 .size_full()
-                .overflow_y_scroll()
-                .scrollbar_width(px(0.))
-                .track_scroll(&menu_scroll_handle)
-                .p(px(8.))
-                .flex()
-                .flex_col()
-                .justify_start()
-                .gap(px(4.))
-                .children(options.iter().enumerate().map(|(ix, opt)| {
-                    let is_selected = ix == selected_index;
-
-                    let item_bg = if is_selected {
-                        Hsla {
-                            a: 0.12,
-                            ..colors.accent
-                        }
-                    } else {
-                        Hsla {
-                            a: 0.0,
-                            ..colors.surface
-                        }
-                    };
-
-                    let item_fg = colors.text_primary;
-
-                    div()
-                        .h(px(MENU_ROW_HEIGHT))
-                        .rounded(px(crate::ui::theme::tokens::radius::MD))
-                        .px(px(10.))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .cursor_pointer()
-                        .bg(item_bg)
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(if is_selected {
-                                    FontWeight::SEMIBOLD
-                                } else {
-                                    FontWeight::MEDIUM
-                                })
-                                .text_color(item_fg)
-                                .child(opt.label.clone()),
-                        )
-                        .when(is_selected, |this| {
-                            this.child(
-                                svg()
-                                    .path(lucide_icons::icon_check())
-                                    .w(px(16.))
-                                    .h(px(16.))
-                                    .opacity(0.9)
-                                    .text_color(item_fg),
-                            )
-                        })
-                        .hover(|s| {
-                            s.bg(Hsla {
-                                a: 0.60,
-                                ..colors.surface_hover
-                            })
-                        })
-                        .on_mouse_down(MouseButton::Left, {
-                            let state = active.state.clone();
-                            let on_select = active.on_select.clone();
-                            let parent_view_id = active.parent_view_id;
-                            let overlay_id = active.id.clone();
-                            move |_ev, window, cx| {
-                                cx.stop_propagation();
-                                (on_select)(ix, window, cx);
-
-                                let now = Instant::now();
-                                if let Err(err) = state.update(cx, |s, _| {
-                                    s.phase = begin_dropdown_close(s.phase, now);
-                                }) {
-                                    cx.update_global(
-                                        |overlay: &mut DropdownOverlayState, _cx| {
-                                            overlay.clear_if_matches(&overlay_id);
-                                        },
-                                    );
-                                    tracing::debug!(
-                                        "dropdown close after selection skipped: {err:?}"
-                                    );
-                                } else {
-                                    cx.notify(parent_view_id);
-                                }
-                            }
-                        })
-                })),
+                .px(px(8.))
+                .pt(px(8.))
+                .pb(px(4.))
+                .child(option_list),
         )
         .composite_layer()
         .with_sampled_animation(
@@ -640,7 +672,7 @@ impl RenderOnce for Dropdown {
         let state = window.use_keyed_state(id.clone(), cx, |_, _| DropdownState {
             phase: DropdownPhase::Closed,
             trigger_bounds: None,
-            menu_scroll_handle: ScrollHandle::new(),
+            menu_scroll_handle: UniformListScrollHandle::new(),
             open_generation: 0,
             scroll_bound_generation: 0,
         });
@@ -782,7 +814,8 @@ impl RenderOnce for Dropdown {
                 }
 
                 if selected_index != usize::MAX {
-                    s.menu_scroll_handle.scroll_to_item(selected_index);
+                    s.menu_scroll_handle
+                        .scroll_to_item(selected_index, ScrollStrategy::Top);
                 }
                 s.scroll_bound_generation = s.open_generation;
             });
@@ -794,12 +827,10 @@ impl RenderOnce for Dropdown {
             size: bounds.size,
         });
         let window_size = window.bounds().size;
-        let row_h = px(MENU_ROW_HEIGHT);
         let menu_width =
             desired_dropdown_menu_width(window, width, options.as_ref(), window_size.width);
         let max_h = px(MENU_MAX_HEIGHT);
-        let desired_h =
-            px(MENU_VERTICAL_PADDING) + row_h * (options.len() as f32) + px(MENU_VERTICAL_PADDING);
+        let desired_h = desired_dropdown_height(options.len() as f32);
         let capped_h = desired_h.min(max_h);
         let available_space = trigger_bounds.clone().map(|bounds| {
             let safe_top = px(MENU_WINDOW_EDGE_PADDING);
@@ -916,7 +947,7 @@ fn default_dropdown_trigger(
     label: &SharedString,
 ) -> AnyElement {
     let chevron = svg()
-        .path(lucide_icons::icon_chevron_down())
+        .path(lucide_gpui::icon!(chevron_down))
         .w(px(16.))
         .h(px(16.))
         .opacity(if enabled { 0.80 } else { 0.35 })
@@ -948,4 +979,17 @@ fn default_dropdown_trigger(
         )
         .child(chevron)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropdown_height_matches_virtual_row_pitch() {
+        assert_eq!(desired_dropdown_height(0.0), px(12.0));
+        assert_eq!(desired_dropdown_height(1.0), px(50.0));
+        assert_eq!(desired_dropdown_height(3.0), px(126.0));
+        assert_eq!(dropdown_min_preview_height(), px(126.0));
+    }
 }

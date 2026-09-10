@@ -9,7 +9,6 @@ use crate::ui::views::tools::state::{OnlineBlockingIssue, ToolsPageState};
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::time::Duration;
 
 use super::actions;
@@ -89,7 +88,7 @@ fn render_abandoned_nodes(
                 .items_start()
                 .gap(px(10.))
                 .child(themed_icon(
-                    lucide_icons::icon_triangle_alert(),
+                    lucide_gpui::icon!(triangle_alert),
                     18.0,
                     colors.stat_orange_text,
                 ))
@@ -176,7 +175,7 @@ fn render_blocking_issue(
                 .items_start()
                 .gap(px(10.))
                 .child(themed_icon(
-                    lucide_icons::icon_triangle_alert(),
+                    lucide_gpui::icon!(triangle_alert),
                     18.0,
                     colors.danger,
                 ))
@@ -220,7 +219,7 @@ fn render_blocking_issue(
                                 } else {
                                     t!("Online.recheck")
                                 },
-                                lucide_icons::icon_refresh_cw(),
+                                lucide_gpui::icon!(refresh_cw),
                                 state.discovery_retrying,
                                 false,
                             )
@@ -235,7 +234,7 @@ fn render_blocking_issue(
                                 colors,
                                 "online-force-stop-minecraft",
                                 t!("Online.terminate_app"),
-                                lucide_icons::icon_circle_x(),
+                                lucide_gpui::icon!(circle_x),
                                 state.discovery_retrying,
                                 true,
                             )
@@ -297,7 +296,7 @@ fn notice_close_button(id: &'static str, foreground: Hsla) -> Stateful<Div> {
             })
         })
         .active(|style| style.scale(0.88))
-        .child(themed_icon(lucide_icons::icon_x(), 16.0, foreground))
+        .child(themed_icon(lucide_gpui::icon!(x), 16.0, foreground))
 }
 
 fn render_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
@@ -353,7 +352,7 @@ fn render_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> D
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(colors.accent)
                                             .child(themed_icon(
-                                                lucide_icons::icon_wifi(),
+                                                lucide_gpui::icon!(wifi),
                                                 13.0,
                                                 colors.accent,
                                             ))
@@ -380,7 +379,7 @@ fn render_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> D
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(colors.accent)
                                             .child(themed_icon(
-                                                lucide_icons::icon_users(),
+                                                lucide_gpui::icon!(users),
                                                 13.0,
                                                 colors.accent,
                                             ))
@@ -446,15 +445,15 @@ fn render_quick_action(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState
         (
             "online-stop",
             t!("Online.disconnect"),
-            lucide_icons::icon_log_out(),
+            lucide_gpui::icon!(log_out),
         )
     } else if state.online_operation.is_busy() {
-        ("online-cancel", t!("common.cancel"), lucide_icons::icon_x())
+        ("online-cancel", t!("common.cancel"), lucide_gpui::icon!(x))
     } else {
         (
             "online-stop",
             t!("Online.disconnect"),
-            lucide_icons::icon_log_out(),
+            lucide_gpui::icon!(log_out),
         )
     };
     action_button(colors, id, label, icon, stopping, true).when(!stopping, |this| {
@@ -483,7 +482,7 @@ fn render_connecting_state(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageS
         .gap(px(12.))
         .child(
             svg()
-                .path(lucide_icons::icon_loader_circle())
+                .path(lucide_gpui::icon!(loader_circle))
                 .size(px(20.))
                 .text_color(colors.accent)
                 .with_animation(
@@ -588,7 +587,7 @@ fn render_create_description(colors: &ThemeColors, i18n: &I18n) -> Div {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(themed_icon(lucide_icons::icon_plus(), 19.0, colors.accent)),
+                .child(themed_icon(lucide_gpui::icon!(plus), 19.0, colors.accent)),
         )
         .child(
             div()
@@ -617,7 +616,7 @@ fn render_create_button(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> St
         colors,
         "online-create-room",
         t!("Online.create_now"),
-        lucide_icons::icon_arrow_right(),
+        lucide_gpui::icon!(arrow_right),
         disabled,
         false,
     )
@@ -674,7 +673,7 @@ fn render_join_controls(
             icon_button(
                 colors,
                 "online-room-paste",
-                lucide_icons::icon_clipboard(),
+                lucide_gpui::icon!(clipboard),
                 disabled,
             )
             .when(!disabled, |this| {
@@ -691,7 +690,7 @@ fn render_join_button(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> Stat
         colors,
         "online-join-room",
         t!("Online.join"),
-        lucide_icons::icon_log_in(),
+        lucide_gpui::icon!(log_in),
         disabled,
         false,
     )
@@ -710,7 +709,7 @@ fn render_join_input(colors: &ThemeColors, state: &ToolsPageState) -> Div {
             .focus_bordered(false)
             .cleanable(true)
             .prefix(themed_icon(
-                lucide_icons::icon_hash(),
+                lucide_gpui::icon!(hash),
                 16.0,
                 colors.text_muted,
             ))
@@ -768,7 +767,7 @@ fn render_host_room_code(colors: &ThemeColors, i18n: &I18n, room_code: SharedStr
                 colors,
                 "online-copy-room-code",
                 t!("Online.copy"),
-                lucide_icons::icon_copy(),
+                lucide_gpui::icon!(copy),
                 false,
                 false,
             )

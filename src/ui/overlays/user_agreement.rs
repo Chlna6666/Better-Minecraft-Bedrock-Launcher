@@ -6,7 +6,6 @@ use crate::ui::state::agreement::AgreementState;
 use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -89,7 +88,7 @@ pub fn render_user_agreement_modal(
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_shield_check())
+                        .path(lucide_gpui::icon!(shield_check))
                         .w(px(20.))
                         .h(px(20.))
                         .text_color(colors.accent),
@@ -121,7 +120,7 @@ pub fn render_user_agreement_modal(
                     .hover(|this| this.bg(colors.surface_hover))
                     .child(
                         svg()
-                            .path(lucide_icons::icon_x())
+                            .path(lucide_gpui::icon!(x))
                             .w(px(16.))
                             .h(px(16.))
                             .text_color(colors.text_primary),

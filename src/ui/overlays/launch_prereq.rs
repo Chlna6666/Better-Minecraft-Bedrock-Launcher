@@ -2,7 +2,6 @@ use std::time::Instant;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use crate::core::minecraft::launcher::preflight::{LaunchPlatform, detect_launch_platform};
 use crate::ui::components::modal;
@@ -88,7 +87,7 @@ pub fn render_launch_prereq_overlay(
     if let Some(admin_notice) = state.admin_notice.as_ref() {
         content = content.child(status_banner(
             &colors,
-            lucide_icons::icon_shield_alert(),
+            lucide_gpui::icon!(shield_alert),
             colors.stat_orange_bg,
             colors.stat_orange_text,
             admin_notice.clone(),
@@ -97,7 +96,7 @@ pub fn render_launch_prereq_overlay(
     if let Some(error_message) = state.error_message.as_ref() {
         content = content.child(status_banner(
             &colors,
-            lucide_icons::icon_circle_x(),
+            lucide_gpui::icon!(circle_x),
             Hsla {
                 a: 0.14,
                 ..colors.danger
@@ -184,7 +183,7 @@ fn render_progress_section(
                         .gap(px(10.))
                         .child(spinning_icon_shell(
                             colors,
-                            lucide_icons::icon_loader_circle(),
+                            lucide_gpui::icon!(loader_circle),
                             colors.accent,
                             state.busy_animation_rotation(now),
                         ))
@@ -266,7 +265,7 @@ fn render_issue_sections(
 
         sections = sections.child(issue_card(
             colors,
-            lucide_icons::icon_wrench(),
+            lucide_gpui::icon!(wrench),
             colors.stat_orange_text,
             t!("LaunchPrereq.issueDeveloperMode.title"),
             t!("LaunchPrereq.issueDeveloperMode.description"),
@@ -312,7 +311,7 @@ fn render_issue_sections(
                             .items_start()
                             .child(icon_shell(
                                 colors,
-                                lucide_icons::icon_package_plus(),
+                                lucide_gpui::icon!(package_plus),
                                 colors.accent,
                             ))
                             .child(
@@ -392,7 +391,7 @@ fn render_issue_sections(
                             .gap(px(12.))
                             .child(icon_shell(
                                 colors,
-                                lucide_icons::icon_gamepad_2(),
+                                lucide_gpui::icon!(gamepad_2),
                                 colors.stat_green_text,
                             ))
                             .child(
@@ -470,7 +469,7 @@ fn render_issue_sections(
                             .gap(px(12.))
                             .child(icon_shell(
                                 colors,
-                                lucide_icons::icon_package(),
+                                lucide_gpui::icon!(package),
                                 colors.stat_orange_text,
                             ))
                             .child(
@@ -605,7 +604,7 @@ fn render_shell(
                         .gap(px(12.))
                         .child(icon_shell(
                             colors,
-                            lucide_icons::icon_shield_check(),
+                            lucide_gpui::icon!(shield_check),
                             colors.accent,
                         ))
                         .child(

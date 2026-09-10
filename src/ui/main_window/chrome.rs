@@ -7,7 +7,6 @@ use crate::ui::state::update::UpdateState;
 use crate::ui::theme::{dark_colors, glass_backdrop_blur_style, lerp_theme_colors, light_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::time::Instant;
 
 pub(crate) struct AppChromeState {
@@ -26,6 +25,7 @@ impl Global for AppChromeState {}
 
 #[derive(Clone)]
 struct NavItem {
+    id: SharedString,
     icon_path: &'static str,
     image_icon_path: Option<std::path::PathBuf>,
     label: SharedString,
@@ -50,57 +50,63 @@ pub(super) fn render_app_chrome(
     let window_width_px = state.window_width / px(1.);
     let labels_layout_factor = state.labels_layout_factor.clamp(0.0, 1.0);
     let labels_opacity_factor = state.labels_opacity_factor.clamp(0.0, 1.0);
+    let nav_animating = state.nav_animating;
     let mut nav_items = vec![
         (
-            lucide_icons::icon_house(),
+            lucide_gpui::icon!(house),
             t!("Sidebar.launch"),
             AppRoute::Home,
         ),
         (
-            lucide_icons::icon_download(),
+            lucide_gpui::icon!(download),
             t!("Sidebar.download"),
             AppRoute::Download,
         ),
         (
-            lucide_icons::icon_list(),
+            lucide_gpui::icon!(list),
             t!("Sidebar.versions"),
             AppRoute::Manage,
         ),
         (
-            lucide_icons::icon_wrench(),
+            lucide_gpui::icon!(wrench),
             t!("Sidebar.tools"),
             AppRoute::Tools,
         ),
         (
-            lucide_icons::icon_activity(),
+            lucide_gpui::icon!(activity),
             t!("Tasks.nav_title"),
             AppRoute::Tasks,
         ),
         (
-            lucide_icons::icon_settings(),
+            lucide_gpui::icon!(settings),
             t!("Sidebar.settings"),
             AppRoute::Settings,
         ),
     ]
     .into_iter()
     .map(|(icon_path, label, target)| NavItem {
+        id: target.pathname().into(),
         icon_path,
         image_icon_path: None,
         label,
         target: RouteTarget::Builtin(target),
     })
     .collect::<Vec<_>>();
-    nav_items.extend(state.plugin_navigation_pages.iter().map(|page| NavItem {
-        icon_path: lucide_icons::icon_plug(),
-        image_icon_path: page.icon_path.clone(),
-        label: page.navigation.as_ref().map_or_else(
-            || page.title.clone(),
-            |navigation| SharedString::from(navigation.label.clone()),
-        ),
-        target: RouteTarget::Plugin {
+    nav_items.extend(state.plugin_navigation_pages.iter().map(|page| {
+        let target = RouteTarget::Plugin {
             plugin_id: page.plugin_id.clone(),
             page_id: page.page_id.clone(),
-        },
+        };
+        NavItem {
+            id: target.pathname().into(),
+            icon_path: lucide_gpui::icon!(plug),
+            image_icon_path: page.icon_path.clone(),
+            label: page.navigation.as_ref().map_or_else(
+                || page.title.clone(),
+                |navigation| SharedString::from(navigation.label.clone()),
+            ),
+            target,
+        }
     }));
 
     let link_padding_x = if window_width_px <= 1000.0 {
@@ -171,7 +177,7 @@ pub(super) fn render_app_chrome(
             // as white blocks during interactive resize.
             let show_label = labels_layout_factor > 0.02 && labels_opacity_factor > 0.02;
             div()
-                .id(SharedString::from(format!("main-nav-{index}")))
+                .id((ElementId::from("main-nav"), item.id.clone()))
                 .relative()
                 .w(item_width)
                 .h(item_height)
@@ -210,7 +216,8 @@ pub(super) fn render_app_chrome(
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(item.label.clone())
                 }))
-        }));
+        }))
+        .with_layout_animation_target(nav_animating);
 
     let auth_inline = auth::trigger(&state.auth, &colors);
 
@@ -239,9 +246,9 @@ pub(super) fn render_app_chrome(
             icon_button(
                 "theme-toggle-linux",
                 if state.theme_target_dark {
-                    lucide_icons::icon_sun()
+                    lucide_gpui::icon!(sun)
                 } else {
-                    lucide_icons::icon_moon()
+                    lucide_gpui::icon!(moon)
                 },
             )
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -250,7 +257,7 @@ pub(super) fn render_app_chrome(
             }),
         )
         .child(
-            icon_button("window-minimize-linux", lucide_icons::icon_minus())
+            icon_button("window-minimize-linux", lucide_gpui::icon!(minus))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     // Do not hide the native window on mouse-down. GPUI must first receive the
                     // corresponding mouse-up so the transient :active state cannot survive a
@@ -263,7 +270,7 @@ pub(super) fn render_app_chrome(
                 }),
         )
         .child(
-            icon_button("window-close-linux", lucide_icons::icon_x())
+            icon_button("window-close-linux", lucide_gpui::icon!(x))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
                 })

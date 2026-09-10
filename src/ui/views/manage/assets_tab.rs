@@ -209,7 +209,7 @@ fn append_skin_pack_asset_actions(
         compact_icon_button(
             colors,
             SharedString::from(format!("manage-skin-preview-{}", asset.key)),
-            lucide_icons::icon_box(),
+            lucide_gpui::icon!(box),
         )
         .on_mouse_down(MouseButton::Left, {
             let key = action_key.clone();
@@ -262,7 +262,7 @@ fn skin_default_action_button(
         .cursor_pointer()
         .child(
             svg()
-                .path(lucide_icons::icon_star())
+                .path(lucide_gpui::icon!(star))
                 .w(px(13.))
                 .h(px(13.))
                 .text_color(icon_color),
@@ -798,10 +798,10 @@ pub(super) fn render_asset_row(
     .map_or_else(
         || {
             let icon = match asset.kind {
-                state::ManageAssetKind::Mod => lucide_icons::icon_layers(),
-                state::ManageAssetKind::ResourcePack => lucide_icons::icon_package(),
-                state::ManageAssetKind::SkinPack => lucide_icons::icon_user(),
-                state::ManageAssetKind::Map => lucide_icons::icon_map(),
+                state::ManageAssetKind::Mod => lucide_gpui::icon!(layers),
+                state::ManageAssetKind::ResourcePack => lucide_gpui::icon!(package),
+                state::ManageAssetKind::SkinPack => lucide_gpui::icon!(user),
+                state::ManageAssetKind::Map => lucide_gpui::icon!(map),
             };
 
             div()
@@ -828,10 +828,10 @@ pub(super) fn render_asset_row(
         },
         |icon_path| {
             let icon = match asset.kind {
-                state::ManageAssetKind::Mod => lucide_icons::icon_layers(),
-                state::ManageAssetKind::ResourcePack => lucide_icons::icon_package(),
-                state::ManageAssetKind::SkinPack => lucide_icons::icon_user(),
-                state::ManageAssetKind::Map => lucide_icons::icon_map(),
+                state::ManageAssetKind::Mod => lucide_gpui::icon!(layers),
+                state::ManageAssetKind::ResourcePack => lucide_gpui::icon!(package),
+                state::ManageAssetKind::SkinPack => lucide_gpui::icon!(user),
+                state::ManageAssetKind::Map => lucide_gpui::icon!(map),
             };
             rounded_manage_thumbnail(colors, &icon_path, icon.into(), thumbnail_background)
         },
@@ -946,7 +946,7 @@ pub(super) fn render_asset_row(
         compact_icon_button(
             colors,
             SharedString::from(format!("manage-open-asset-{}", asset.key)),
-            lucide_icons::icon_folder_open(),
+            lucide_gpui::icon!(folder_open),
         )
         .on_mouse_down(MouseButton::Left, {
             let path = asset_for_folder.clone();
@@ -1045,7 +1045,7 @@ pub(super) fn render_asset_row(
                                 .when(is_selected, |this| {
                                     this.child(
                                         svg()
-                                            .path(lucide_icons::icon_check())
+                                            .path(lucide_gpui::icon!(check))
                                             .w(px(11.))
                                             .h(px(11.))
                                             .text_color(colors.accent),

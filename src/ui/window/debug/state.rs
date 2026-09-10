@@ -137,6 +137,12 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_frame_paint_time_ms: f32,
     pub gpui_frame_scene_finish_time_ms: f32,
     pub gpui_frame_backend_draw_time_ms: f32,
+    pub gpui_surface_resize_wait_time_ms: f32,
+    pub gpui_surface_resize_swapchain_time_ms: f32,
+    pub gpui_surface_resize_resources_time_ms: f32,
+    pub gpui_surface_resize_total_time_ms: f32,
+    pub gpui_surface_resize_max_time_ms: f32,
+    pub gpui_surface_resize_count: usize,
     pub gpui_layout_nodes: usize,
     pub gpui_measured_layout_nodes: usize,
     pub gpui_layout_roots: usize,
@@ -547,6 +553,16 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
     snapshot.gpui_frame_paint_time_ms = duration_to_ms(gpui_metrics.frame_paint_time);
     snapshot.gpui_frame_scene_finish_time_ms = duration_to_ms(gpui_metrics.frame_scene_finish_time);
     snapshot.gpui_frame_backend_draw_time_ms = duration_to_ms(gpui_metrics.frame_backend_draw_time);
+    snapshot.gpui_surface_resize_wait_time_ms =
+        duration_to_ms(gpui_metrics.surface_resize_wait_time);
+    snapshot.gpui_surface_resize_swapchain_time_ms =
+        duration_to_ms(gpui_metrics.surface_resize_swapchain_time);
+    snapshot.gpui_surface_resize_resources_time_ms =
+        duration_to_ms(gpui_metrics.surface_resize_resources_time);
+    snapshot.gpui_surface_resize_total_time_ms =
+        duration_to_ms(gpui_metrics.surface_resize_total_time);
+    snapshot.gpui_surface_resize_max_time_ms = duration_to_ms(gpui_metrics.surface_resize_max_time);
+    snapshot.gpui_surface_resize_count = gpui_metrics.surface_resize_count;
     snapshot.gpui_layout_nodes = gpui_metrics.layout_nodes;
     snapshot.gpui_measured_layout_nodes = gpui_metrics.measured_layout_nodes;
     snapshot.gpui_layout_roots = gpui_metrics.layout_roots;

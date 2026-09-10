@@ -3012,7 +3012,7 @@ fn render_video_block(
                             .items_center()
                             .justify_center()
                             .child(themed_icon(
-                                lucide_gpui::icons::icon_play(),
+                                lucide_gpui::icon!(play),
                                 22.0,
                                 colors.btn_primary_text,
                             )),
@@ -3065,7 +3065,7 @@ fn render_video_block(
                             .font_weight(FontWeight::BOLD)
                             .text_color(colors.btn_primary_text)
                             .child(themed_icon(
-                                lucide_gpui::icons::icon_external_link(),
+                                lucide_gpui::icon!(external_link),
                                 16.0,
                                 colors.btn_primary_text,
                             ))

@@ -4,10 +4,9 @@ use super::state::{MapViewerBottomTab, MapViewerLeftPanel, MapViewerRightPanel};
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::{
-    App, Context, CursorStyle, EventEmitter, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Styled, Window, div, prelude::FluentBuilder as _, px,
+    App, Context, CursorStyle, Div, EventEmitter, Hsla, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Render, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
-use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MapToolStripeSnapshot {
@@ -54,16 +53,16 @@ impl Render for MapToolStripeView {
             .flex_none()
             .h_full()
             .min_h(px(0.0))
-            .py(px(8.0))
+            .py(px(6.0))
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(2.0))
             .bg(colors.surface)
             .child(stripe_button(
                 "stripe-tools",
                 &colors,
-                lucide_icons::icon_wrench(),
+                lucide_gpui::icon!(wrench),
                 t!("MapViewer.tools"),
                 snapshot.left_panel_open && snapshot.active_left_panel == MapViewerLeftPanel::Tools,
                 cx.listener(|_this, _event, _window, cx| {
@@ -73,9 +72,23 @@ impl Render for MapToolStripeView {
                 }),
             ))
             .child(stripe_button(
+                "stripe-players",
+                &colors,
+                lucide_gpui::icon!(users),
+                t!("MapViewer.players"),
+                snapshot.left_panel_open
+                    && snapshot.active_left_panel == MapViewerLeftPanel::Players,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(MapViewerAction::ToggleLeftPanelKind(
+                        MapViewerLeftPanel::Players,
+                    ));
+                }),
+            ))
+            .child(stripe_separator(&colors))
+            .child(stripe_button(
                 "stripe-chunks",
                 &colors,
-                lucide_icons::icon_layers(),
+                lucide_gpui::icon!(layers),
                 t!("MapViewer.chunks"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::ChunkTree,
@@ -86,22 +99,9 @@ impl Render for MapToolStripeView {
                 }),
             ))
             .child(stripe_button(
-                "stripe-players",
-                &colors,
-                lucide_icons::icon_users(),
-                t!("MapViewer.players"),
-                snapshot.left_panel_open
-                    && snapshot.active_left_panel == MapViewerLeftPanel::Players,
-                cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::ToggleLeftPanelKind(
-                        MapViewerLeftPanel::Players,
-                    ));
-                }),
-            ))
-            .child(stripe_button(
                 "stripe-details",
                 &colors,
-                lucide_icons::icon_info(),
+                lucide_gpui::icon!(info),
                 t!("MapViewer.details"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::Details,
@@ -111,10 +111,11 @@ impl Render for MapToolStripeView {
                     ));
                 }),
             ))
+            .child(stripe_separator(&colors))
             .child(stripe_button(
                 "stripe-3d",
                 &colors,
-                lucide_icons::icon_box(),
+                lucide_gpui::icon!(box),
                 "3D",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Preview3d,
@@ -127,7 +128,7 @@ impl Render for MapToolStripeView {
             .child(stripe_button(
                 "stripe-nbt",
                 &colors,
-                lucide_icons::icon_file_text(),
+                lucide_gpui::icon!(file_text),
                 "NBT",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Nbt,
@@ -135,10 +136,11 @@ impl Render for MapToolStripeView {
                     cx.emit(MapViewerAction::ToggleRightPanel(MapViewerRightPanel::Nbt));
                 }),
             ))
+            .child(div().flex_1())
             .child(stripe_button(
                 "stripe-diagnostics",
                 &colors,
-                lucide_icons::icon_activity(),
+                lucide_gpui::icon!(activity),
                 t!("MapViewer.diagnostics"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::Diagnostics,
@@ -151,7 +153,7 @@ impl Render for MapToolStripeView {
             .child(stripe_button(
                 "stripe-history",
                 &colors,
-                lucide_icons::icon_history(),
+                lucide_gpui::icon!(history),
                 t!("MapViewer.history"),
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::History,
@@ -161,7 +163,6 @@ impl Render for MapToolStripeView {
                     ));
                 }),
             ))
-            .child(div().flex_1())
     }
 }
 
@@ -173,6 +174,13 @@ fn theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
         theme.factor(now),
         theme.accent,
     )
+}
+
+fn stripe_separator(colors: &ThemeColors) -> Div {
+    div().w(px(24.0)).h(px(1.0)).my(px(3.0)).bg(Hsla {
+        a: super::layout::CHROME_HAIRLINE_ALPHA,
+        ..colors.border
+    })
 }
 
 fn stripe_button(
@@ -197,17 +205,20 @@ fn stripe_button(
     div()
         .id(id)
         .relative()
-        .w(px(IDE_LEFT_STRIPE_WIDTH - 10.0))
-        .h(px(46.0))
+        .w(px(IDE_LEFT_STRIPE_WIDTH - 8.0))
+        .h(px(42.0))
         .flex()
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(3.0))
-        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .gap(px(2.0))
+        .rounded(px(crate::ui::theme::tokens::radius::XS))
         .cursor(CursorStyle::PointingHand)
         .bg(if active {
-            active_bg
+            Hsla {
+                a: 0.12,
+                ..active_bg
+            }
         } else {
             gpui::transparent_black()
         })
@@ -217,20 +228,23 @@ fn stripe_button(
                 div()
                     .absolute()
                     .left(px(0.0))
-                    .top(px(8.0))
-                    .bottom(px(8.0))
+                    .top(px(6.0))
+                    .bottom(px(6.0))
                     .w(px(super::layout::CHROME_ACTIVE_RAIL_WIDTH))
                     .bg(accent),
             )
         })
         .child(crate::ui::components::icon::themed_icon(
             icon_path,
-            super::layout::CHROME_ICON_SIZE,
+            super::layout::CHROME_ICON_SIZE - 2.0,
             foreground,
         ))
         .child(
             div()
-                .text_size(px(10.0))
+                .max_w(px(IDE_LEFT_STRIPE_WIDTH - 10.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(9.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(foreground)
                 .child(label.into()),

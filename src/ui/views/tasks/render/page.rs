@@ -6,7 +6,6 @@ use crate::ui::views::tasks::{
     TaskCardMotionKind, TaskCardViewModel, TasksPageRenderModel, TasksPageView,
 };
 use gpui::prelude::FluentBuilder as _;
-use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
 
 fn loading_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
@@ -49,7 +48,7 @@ fn empty_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                         .items_center()
                         .justify_center()
                         .child(themed_icon(
-                            lucide_icons::icon_inbox(),
+                            lucide_gpui::icon!(inbox),
                             26.0,
                             task_visual_accent(TaskVisualKind::Download, colors),
                         )),

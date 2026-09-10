@@ -245,7 +245,7 @@ pub(super) fn render_screenshot_row(
         rounded_manage_thumbnail(
             colors,
             &entry.image_path,
-            lucide_icons::icon_image().into(),
+            lucide_gpui::icon!(image).into(),
             thumbnail_background,
         )
     } else {
@@ -259,7 +259,7 @@ pub(super) fn render_screenshot_row(
             .justify_center()
             .child(
                 svg()
-                    .path(lucide_icons::icon_image())
+                    .path(lucide_gpui::icon!(image))
                     .w(px(16.))
                     .h(px(16.))
                     .text_color(colors.text_secondary),
@@ -301,7 +301,7 @@ pub(super) fn render_screenshot_row(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-screenshot-open-folder-{}", entry.key)),
-                lucide_icons::icon_folder_open(),
+                lucide_gpui::icon!(folder_open),
             )
             .on_mouse_down(MouseButton::Left, {
                 let folder = entry.folder_path.clone();
@@ -314,7 +314,7 @@ pub(super) fn render_screenshot_row(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-screenshot-preview-{}", entry.key)),
-                lucide_icons::icon_eye(),
+                lucide_gpui::icon!(eye),
             )
             .on_mouse_down(MouseButton::Left, {
                 let image = entry.image_path.clone();
@@ -327,7 +327,7 @@ pub(super) fn render_screenshot_row(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-screenshot-delete-{}", entry.key)),
-                lucide_icons::icon_trash_2(),
+                lucide_gpui::icon!(trash_2),
             )
             .on_mouse_down(MouseButton::Left, {
                 cx.listener(move |this, _, _, cx| {

@@ -1,11 +1,11 @@
 use gpui::{Bounds, Pixels, point, px, size};
 
-pub const IDE_TOP_BAR_HEIGHT: f32 = 62.0;
-pub const IDE_LEFT_STRIPE_WIDTH: f32 = 76.0;
-pub const IDE_LEFT_DOCK_WIDTH: f32 = 280.0;
+pub const IDE_TOP_BAR_HEIGHT: f32 = 54.0;
+pub const IDE_LEFT_STRIPE_WIDTH: f32 = 52.0;
+pub const IDE_LEFT_DOCK_WIDTH: f32 = 264.0;
 pub const IDE_SPLITTER_WIDTH: f32 = 6.0;
 pub const IDE_DIVIDER_WIDTH: f32 = 1.0;
-pub const IDE_STATUS_BAR_HEIGHT: f32 = 30.0;
+pub const IDE_STATUS_BAR_HEIGHT: f32 = 24.0;
 
 // Chrome design tokens — unify the alpha layers scattered across the map_viewer
 // chrome so top bar / docks / status bar share one consistent visual hierarchy.

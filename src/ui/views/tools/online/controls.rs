@@ -4,7 +4,6 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use super::online_state_text;
 use super::widgets::icon_button;
@@ -77,7 +76,7 @@ fn render_session_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSta
             icon_button(
                 colors,
                 "online-settings",
-                lucide_icons::icon_settings(),
+                lucide_gpui::icon!(settings),
                 false,
             )
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
@@ -106,7 +105,7 @@ fn render_session_identity(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(themed_icon(lucide_icons::icon_radio_tower(), 17.0, accent)),
+                .child(themed_icon(lucide_gpui::icon!(radio_tower), 17.0, accent)),
         )
         .child(
             div()

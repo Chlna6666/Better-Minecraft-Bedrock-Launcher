@@ -290,7 +290,7 @@ impl ManagePageView {
                                 .child(
                                     sidebar_icon_button(
                                         "manage-import-version",
-                                        lucide_icons::icon_plus(),
+                                        lucide_gpui::icon!(plus),
                                         colors,
                                     )
                                     .on_mouse_down(
@@ -303,7 +303,7 @@ impl ManagePageView {
                                 .child(
                                     sidebar_icon_button(
                                         "manage-refresh-version",
-                                        lucide_icons::icon_refresh_cw(),
+                                        lucide_gpui::icon!(refresh_cw),
                                         colors,
                                     )
                                     .on_mouse_down(
@@ -725,7 +725,6 @@ impl ManagePageView {
         } else {
             0.0
         };
-
         let main_panel = crate::ui::components::page_shell::split_content_panel(colors)
             .opacity(version_opacity)
             .relative()
@@ -753,7 +752,7 @@ impl ManagePageView {
                                 |_| {
                                     toolbar_glyph_button(
                                         "manage-resume-level-dat-editor",
-                                        lucide_icons::icon_file_pen_line(),
+                                        lucide_gpui::icon!(file_pen_line),
                                         colors,
                                     )
                                     .on_mouse_down(
@@ -768,7 +767,7 @@ impl ManagePageView {
                             .child(
                                 toolbar_glyph_button(
                                     "manage-open-folder",
-                                    lucide_icons::icon_folder_open(),
+                                    lucide_gpui::icon!(folder_open),
                                     colors,
                                 )
                                 .on_mouse_down(
@@ -781,7 +780,7 @@ impl ManagePageView {
                             .child(
                                 toolbar_glyph_button(
                                     "manage-create-shortcut",
-                                    lucide_icons::icon_external_link(),
+                                    lucide_gpui::icon!(external_link),
                                     colors,
                                 )
                                 .on_mouse_down(
@@ -794,7 +793,7 @@ impl ManagePageView {
                             .child(
                                 toolbar_glyph_button(
                                     "manage-version-settings",
-                                    lucide_icons::icon_settings(),
+                                    lucide_gpui::icon!(settings),
                                     colors,
                                 )
                                 .on_mouse_down(
@@ -807,7 +806,7 @@ impl ManagePageView {
                             .child(
                                 toolbar_glyph_button(
                                     "manage-delete-version",
-                                    lucide_icons::icon_trash_2(),
+                                    lucide_gpui::icon!(trash_2),
                                     colors,
                                 )
                                 .on_mouse_down(
@@ -820,7 +819,7 @@ impl ManagePageView {
                             .child(
                                 toolbar_glyph_button(
                                     "manage-launch-version",
-                                    lucide_icons::icon_play(),
+                                    lucide_gpui::icon!(play),
                                     colors,
                                 )
                                 .on_mouse_down(

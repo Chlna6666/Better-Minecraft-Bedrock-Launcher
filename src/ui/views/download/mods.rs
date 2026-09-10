@@ -8,7 +8,6 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 type ModPanelRenderSignature = (
     usize,
@@ -198,7 +197,7 @@ fn render_loading_state(colors: &ThemeColors, i18n: &I18n) -> Div {
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_refresh_cw())
+                        .path(lucide_gpui::icon!(refresh_cw))
                         .size(px(32.))
                         .text_color(colors.accent),
                 ),
@@ -241,7 +240,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString, i18n: &I18n) -> 
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_info())
+                        .path(lucide_gpui::icon!(info))
                         .size(px(32.))
                         .text_color(colors.danger),
                 ),
@@ -285,7 +284,7 @@ fn render_empty_state(colors: &ThemeColors, i18n: &I18n) -> Div {
         .gap(px(12.))
         .child(
             svg()
-                .path(lucide_icons::icon_search_x())
+                .path(lucide_gpui::icon!(search_x))
                 .size(px(48.))
                 .text_color(colors.text_muted),
         )
@@ -432,7 +431,7 @@ fn render_mod_card(
             .justify_center()
             .child(
                 svg()
-                    .path(lucide_icons::icon_layers())
+                    .path(lucide_gpui::icon!(layers))
                     .size(px(24.))
                     .text_color(colors.accent),
             )
@@ -566,7 +565,7 @@ fn render_mod_card(
                                 .gap(px(3.))
                                 .child(
                                     svg()
-                                        .path(lucide_icons::icon_star())
+                                        .path(lucide_gpui::icon!(star))
                                         .size(px(12.))
                                         .text_color(colors.text_muted),
                                 )
@@ -624,7 +623,7 @@ fn render_pagination(
         .justify_center()
         .gap(px(12.))
         .child(
-            IconButton::new("mod-prev-page", lucide_icons::icon_chevron_left())
+            IconButton::new("mod-prev-page", lucide_gpui::icon!(chevron_left))
                 .icon_color(colors.text_secondary)
                 .w(px(32.))
                 .h(px(32.))
@@ -650,7 +649,7 @@ fn render_pagination(
                 )),
         )
         .child(
-            IconButton::new("mod-next-page", lucide_icons::icon_chevron_right())
+            IconButton::new("mod-next-page", lucide_gpui::icon!(chevron_right))
                 .icon_color(colors.text_secondary)
                 .w(px(32.))
                 .h(px(32.))
@@ -829,7 +828,7 @@ pub(super) fn render_detail_modal_content(
                         .justify_center()
                         .child(
                             svg()
-                                .path(lucide_icons::icon_layers())
+                                .path(lucide_gpui::icon!(layers))
                                 .size(px(26.))
                                 .text_color(colors.accent),
                         )
@@ -867,7 +866,7 @@ pub(super) fn render_detail_modal_content(
                                         .gap(px(4.))
                                         .child(
                                             svg()
-                                                .path(lucide_icons::icon_star())
+                                                .path(lucide_gpui::icon!(star))
                                                 .size(px(13.))
                                                 .text_color(colors.accent),
                                         )
@@ -891,7 +890,7 @@ pub(super) fn render_detail_modal_content(
                 ),
         )
         .child(
-            IconButton::new("mod-modal-header-close", lucide_icons::icon_x())
+            IconButton::new("mod-modal-header-close", lucide_gpui::icon!(x))
                 .icon_color(colors.text_muted)
                 .w(px(28.))
                 .h(px(28.))

@@ -1030,7 +1030,7 @@ fn render_log_console(
 
 impl Render for DebugView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+        let now = window.animation_time();
         let theme_k = cx.global::<ThemeState>().factor(now);
         let locale = cx.global::<I18n>().locale();
         let copy = DebugCopy::from_locale(locale);
@@ -2269,6 +2269,18 @@ impl Render for DebugView {
                                         runtime.gpui_direct_present_count,
                                         runtime.gpui_retained_present_count,
                                         runtime.gpui_backdrop_blur_frame_count
+                                    )),
+                                ),
+                                (
+                                    SharedString::from("Surface resize"),
+                                    SharedString::from(format!(
+                                        "wait {:.2} / swapchain {:.2} / resources {:.2} / total {:.2} ms · max {:.2} ms · {} 次",
+                                        runtime.gpui_surface_resize_wait_time_ms,
+                                        runtime.gpui_surface_resize_swapchain_time_ms,
+                                        runtime.gpui_surface_resize_resources_time_ms,
+                                        runtime.gpui_surface_resize_total_time_ms,
+                                        runtime.gpui_surface_resize_max_time_ms,
+                                        runtime.gpui_surface_resize_count
                                     )),
                                 ),
                             ],

@@ -11,7 +11,6 @@ use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::time::Duration;
 
 pub fn render_linux_runtime_overlay(
@@ -48,21 +47,21 @@ pub fn render_linux_runtime_overlay(
     if let Some(reason) = check.and_then(|check| check.missing_reason.as_ref()) {
         details = details.child(info_row(
             colors,
-            lucide_icons::icon_circle_alert(),
+            lucide_gpui::icon!(circle_alert),
             t!("LinuxRuntime.detection_result"),
             SharedString::from(reason.to_string()),
         ));
     }
     details = details.child(info_row(
         colors,
-        lucide_icons::icon_package(),
+        lucide_gpui::icon!(package),
         t!("LinuxRuntime.distribution"),
         distribution,
     ));
     if let Some(plan) = check.and_then(|check| check.install_plan.as_ref()) {
         details = details.child(info_row(
             colors,
-            lucide_icons::icon_terminal(),
+            lucide_gpui::icon!(terminal),
             t!("LinuxRuntime.authorized_action"),
             plan.command_preview().into(),
         ));
@@ -181,7 +180,7 @@ pub fn render_linux_runtime_overlay(
                     .justify_center()
                     .child(
                         svg()
-                            .path(lucide_icons::icon_shield_alert())
+                            .path(lucide_gpui::icon!(shield_alert))
                             .size(px(21.))
                             .text_color(colors.stat_orange_text),
                     ),
@@ -252,7 +251,7 @@ pub fn render_linux_runtime_overlay(
                     .gap(px(8.))
                     .child(
                         svg()
-                            .path(lucide_icons::icon_shield_check())
+                            .path(lucide_gpui::icon!(shield_check))
                             .size(px(16.))
                             .text_color(colors.stat_green_text),
                     )

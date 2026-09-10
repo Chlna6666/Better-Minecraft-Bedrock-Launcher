@@ -8,7 +8,6 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::manage::ManagePageView;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::path::PathBuf;
 use tracing::warn;
 
@@ -126,7 +125,7 @@ pub(super) fn render_card(
                                 .items_center()
                                 .justify_center()
                                 .child(themed_icon(
-                                    lucide_icons::icon_layers(),
+                                    lucide_gpui::icon!(layers),
                                     19.0,
                                     colors.accent,
                                 )),

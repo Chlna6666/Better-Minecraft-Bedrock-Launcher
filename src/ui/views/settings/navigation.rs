@@ -3,7 +3,6 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::layout::SettingsLayout;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 pub(super) fn render_tabs(
     colors: &ThemeColors,
@@ -125,14 +124,14 @@ pub(super) fn render_tabs(
         .gap(px(6.))
         .child(tab(
             "settings-tab-game",
-            lucide_icons::icon_gamepad_2(),
+            lucide_gpui::icon!(gamepad_2),
             t!("Settings.tabs.game"),
             SettingsTab::Game,
             active,
         ))
         .child(tab(
             "settings-tab-launcher",
-            lucide_icons::icon_rocket(),
+            lucide_gpui::icon!(rocket),
             t!("Settings.tabs.launcher"),
             SettingsTab::Launcher,
             active,
@@ -141,7 +140,7 @@ pub(super) fn render_tabs(
     #[cfg(target_os = "linux")]
     let container = container.child(tab(
         "settings-tab-proton-gdk",
-        lucide_icons::icon_box(),
+        lucide_gpui::icon!(box),
         SharedString::from("Proton-GDK"),
         SettingsTab::ProtonGdk,
         active,
@@ -150,21 +149,21 @@ pub(super) fn render_tabs(
     container
         .child(tab(
             "settings-tab-customize",
-            lucide_icons::icon_palette(),
+            lucide_gpui::icon!(palette),
             t!("Settings.tabs.customization"),
             SettingsTab::Customization,
             active,
         ))
         .child(tab(
             "settings-tab-plugins",
-            lucide_icons::icon_plug(),
+            lucide_gpui::icon!(plug),
             t!("Settings.tabs.plugins"),
             SettingsTab::Plugins,
             active,
         ))
         .child(tab(
             "settings-tab-about",
-            lucide_icons::icon_info(),
+            lucide_gpui::icon!(info),
             t!("Settings.tabs.about"),
             SettingsTab::About,
             active,

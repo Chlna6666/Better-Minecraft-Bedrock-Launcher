@@ -1861,10 +1861,10 @@ fn center_stage_layout_accounts_for_stripe_and_docks() {
         MIN_CENTER_WIDTH,
         MIN_CENTER_HEIGHT,
     );
-    assert_eq!(rect.left(), px(354.0));
-    assert_eq!(rect.top(), px(62.0));
-    assert_eq!(rect.size.width, px(500.0));
-    assert_eq!(rect.size.height, px(502.0));
+    assert_eq!(rect.left(), px(318.0));
+    assert_eq!(rect.top(), px(54.0));
+    assert_eq!(rect.size.width, px(536.0));
+    assert_eq!(rect.size.height, px(516.0));
 
     let collapsed = center_stage_rect_for_layout(
         920.0,
@@ -1877,7 +1877,7 @@ fn center_stage_layout_accounts_for_stripe_and_docks() {
         MIN_CENTER_WIDTH,
         MIN_CENTER_HEIGHT,
     );
-    assert_eq!(collapsed.left(), px(77.0));
+    assert_eq!(collapsed.left(), px(53.0));
     assert!(collapsed.size.width >= px(MIN_CENTER_WIDTH));
 }
 
@@ -2024,6 +2024,42 @@ fn entity_avatar_keys_accept_namespaced_identifiers() {
         Some("shulker".to_string())
     );
     assert_eq!(normalize_entity_avatar_key("  "), None);
+}
+
+#[test]
+fn entity_screen_cluster_key_is_invariant_to_viewport_translation() {
+    let layout = RenderLayout::default();
+    let source = MapViewport {
+        scale: 0.1,
+        ..test_viewport(0.0, 0.0, 1_200.0, 800.0)
+    };
+    let translated = MapViewport {
+        scale: 0.1,
+        ..test_viewport(-437.5, 281.25, 1_200.0, 800.0)
+    };
+
+    assert_eq!(
+        entity_screen_cluster_key(1471.0, -346.0, source, layout),
+        entity_screen_cluster_key(1471.0, -346.0, translated, layout),
+    );
+}
+
+#[test]
+fn entity_screen_cluster_cells_remain_anchored_to_world_coordinates() {
+    let layout = RenderLayout::default();
+    let viewport = MapViewport {
+        scale: 0.1,
+        ..test_viewport(0.0, 0.0, 1_200.0, 800.0)
+    };
+
+    assert_eq!(
+        entity_screen_cluster_key(1.0, 1.0, viewport, layout),
+        entity_screen_cluster_key(239.0, 239.0, viewport, layout),
+    );
+    assert_ne!(
+        entity_screen_cluster_key(239.0, 239.0, viewport, layout),
+        entity_screen_cluster_key(241.0, 241.0, viewport, layout),
+    );
 }
 
 #[::core::prelude::v1::test]

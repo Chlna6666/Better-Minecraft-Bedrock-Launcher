@@ -4,7 +4,6 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::rc::Rc;
 
 use super::icon_btn;
@@ -93,7 +92,7 @@ pub(super) fn render_dependencies_modal(
                 .gap(px(10.))
                 .child(
                     svg()
-                        .path(lucide_icons::icon_package())
+                        .path(lucide_gpui::icon!(package))
                         .w(px(16.))
                         .h(px(16.))
                         .text_color(colors.accent),
@@ -109,7 +108,7 @@ pub(super) fn render_dependencies_modal(
         .child(icon_btn(
             colors,
             t!("common.close"),
-            lucide_icons::icon_x(),
+            lucide_gpui::icon!(x),
             true,
             close_button,
         ));
@@ -516,7 +515,7 @@ fn dependency_source_button(
         .hover(|this| this.bg(colors.surface_hover))
         .child(
             svg()
-                .path(lucide_icons::icon_external_link())
+                .path(lucide_gpui::icon!(external_link))
                 .w(px(15.))
                 .h(px(15.))
                 .text_color(colors.text_primary),

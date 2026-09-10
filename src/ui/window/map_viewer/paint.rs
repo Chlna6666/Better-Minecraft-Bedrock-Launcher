@@ -26,6 +26,12 @@ struct EntityChunkClusterKey {
     image_identity: usize,
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub(super) struct EntityScreenClusterKey {
+    cell_x: i32,
+    cell_z: i32,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct EntityChunkClusterAccum {
     sum_block_x: f64,
@@ -35,8 +41,7 @@ struct EntityChunkClusterAccum {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct EntityScreenClusterCell {
-    generation: u32,
+struct EntityScreenClusterAccum {
     sum_block_x: f64,
     sum_block_z: f64,
     count: u32,
@@ -48,9 +53,8 @@ struct EntityScreenClusterCell {
 struct EntityLodScratch {
     chunk_clusters: HashMap<EntityChunkClusterKey, EntityChunkClusterAccum>,
     chunk_cluster_order: Vec<EntityChunkClusterKey>,
-    screen_cells: Vec<EntityScreenClusterCell>,
-    active_screen_cells: Vec<usize>,
-    screen_generation: u32,
+    screen_clusters: HashMap<EntityScreenClusterKey, EntityScreenClusterAccum>,
+    screen_cluster_order: Vec<EntityScreenClusterKey>,
 }
 
 impl EntityLodScratch {
@@ -59,20 +63,9 @@ impl EntityLodScratch {
         self.chunk_cluster_order.clear();
     }
 
-    fn begin_screen_frame(&mut self, required_cells: usize) -> u32 {
-        self.screen_generation = self.screen_generation.wrapping_add(1);
-        if self.screen_generation == 0 {
-            for cell in &mut self.screen_cells {
-                cell.generation = 0;
-            }
-            self.screen_generation = 1;
-        }
-        if self.screen_cells.len() < required_cells {
-            self.screen_cells
-                .resize(required_cells, EntityScreenClusterCell::default());
-        }
-        self.active_screen_cells.clear();
-        self.screen_generation
+    fn begin_screen_frame(&mut self) {
+        self.screen_clusters.clear();
+        self.screen_cluster_order.clear();
     }
 }
 
@@ -150,6 +143,21 @@ fn entity_lod_mode(viewport: MapViewport, layout: RenderLayout) -> EntityLodMode
         EntityLodMode::ChunkType
     } else {
         EntityLodMode::ScreenCluster
+    }
+}
+
+pub(super) fn entity_screen_cluster_key(
+    block_x: f32,
+    block_z: f32,
+    viewport: MapViewport,
+    layout: RenderLayout,
+) -> EntityScreenClusterKey {
+    let pixels_per_block = layout.pixels_per_block as f32 / layout.blocks_per_pixel.max(1) as f32
+        * viewport.scale.max(MIN_VIEWPORT_SCALE);
+    let cell_blocks = ENTITY_SCREEN_CLUSTER_CELL_PX / pixels_per_block;
+    EntityScreenClusterKey {
+        cell_x: (block_x / cell_blocks).floor() as i32,
+        cell_z: (block_z / cell_blocks).floor() as i32,
     }
 }
 
@@ -324,9 +332,6 @@ fn paint_chunk_clustered_entity_avatars(
             let block_x = (cluster.sum_block_x / f64::from(count)) as f32;
             let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
             let representative = &overlay_paint.entity_points[cluster.representative_index];
-            paint_entity_cluster_backdrop(
-                bounds, viewport, layout, block_x, block_z, count, icon_size, window,
-            );
             let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
                 paint_entity_cluster_fallback(
                     bounds, viewport, layout, block_x, block_z, count, window,
@@ -355,71 +360,59 @@ fn paint_screen_clustered_entity_avatars(
     entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
     window: &mut Window,
 ) {
-    let left = bounds.left() / px(1.0);
-    let top = bounds.top() / px(1.0);
-    let width = (bounds.size.width / px(1.0)).max(1.0);
-    let height = (bounds.size.height / px(1.0)).max(1.0);
-    let columns = (width / ENTITY_SCREEN_CLUSTER_CELL_PX).ceil().max(1.0) as usize;
-    let rows = (height / ENTITY_SCREEN_CLUSTER_CELL_PX).ceil().max(1.0) as usize;
-    let required_cells = columns.saturating_mul(rows);
-
     ENTITY_LOD_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        let generation = scratch.begin_screen_frame(required_cells);
+        scratch.begin_screen_frame();
         for (index, point) in overlay_paint.entity_points.iter().enumerate() {
-            let Some((screen_x, screen_y)) =
-                entity_screen_position(bounds, viewport, layout, point, 0.0)
-            else {
-                continue;
-            };
-            let cell_x = (((screen_x - left) / ENTITY_SCREEN_CLUSTER_CELL_PX).floor() as usize)
-                .min(columns.saturating_sub(1));
-            let cell_y = (((screen_y - top) / ENTITY_SCREEN_CLUSTER_CELL_PX).floor() as usize)
-                .min(rows.saturating_sub(1));
-            let cell_index = cell_y.saturating_mul(columns).saturating_add(cell_x);
-            if cell_index >= required_cells {
+            if entity_screen_position(
+                bounds,
+                viewport,
+                layout,
+                point,
+                ENTITY_SCREEN_CLUSTER_CELL_PX,
+            )
+            .is_none()
+            {
                 continue;
             }
+            let key = entity_screen_cluster_key(point.block_x, point.block_z, viewport, layout);
             let has_avatar = entity_avatar_arc(point, entity_avatar_pool).is_some();
-            let is_new = scratch.screen_cells[cell_index].generation != generation;
-            if is_new {
-                scratch.active_screen_cells.push(cell_index);
-                scratch.screen_cells[cell_index] = EntityScreenClusterCell {
-                    generation,
-                    sum_block_x: f64::from(point.block_x),
-                    sum_block_z: f64::from(point.block_z),
-                    count: 1,
-                    representative_index: index,
-                    representative_has_avatar: has_avatar,
-                };
-                continue;
-            }
-            let cell = &mut scratch.screen_cells[cell_index];
-            cell.sum_block_x += f64::from(point.block_x);
-            cell.sum_block_z += f64::from(point.block_z);
-            cell.count = cell.count.saturating_add(1);
-            if !cell.representative_has_avatar && has_avatar {
-                cell.representative_index = index;
-                cell.representative_has_avatar = true;
+            if let Some(cluster) = scratch.screen_clusters.get_mut(&key) {
+                cluster.sum_block_x += f64::from(point.block_x);
+                cluster.sum_block_z += f64::from(point.block_z);
+                cluster.count = cluster.count.saturating_add(1);
+                if !cluster.representative_has_avatar && has_avatar {
+                    cluster.representative_index = index;
+                    cluster.representative_has_avatar = true;
+                }
+            } else {
+                scratch.screen_cluster_order.push(key);
+                scratch.screen_clusters.insert(
+                    key,
+                    EntityScreenClusterAccum {
+                        sum_block_x: f64::from(point.block_x),
+                        sum_block_z: f64::from(point.block_z),
+                        count: 1,
+                        representative_index: index,
+                        representative_has_avatar: has_avatar,
+                    },
+                );
             }
         }
 
         let icon_size = 13.0;
-        let mut avatar_requests = Vec::with_capacity(scratch.active_screen_cells.len());
-        for cell_index in scratch.active_screen_cells.iter().copied() {
-            let cell = scratch.screen_cells[cell_index];
-            if cell.generation != generation || cell.count == 0 {
+        let mut avatar_requests = Vec::with_capacity(scratch.screen_cluster_order.len());
+        for key in scratch.screen_cluster_order.iter().copied() {
+            let Some(cluster) = scratch.screen_clusters.get(&key).copied() else {
                 continue;
-            }
-            let block_x = (cell.sum_block_x / f64::from(cell.count)) as f32;
-            let block_z = (cell.sum_block_z / f64::from(cell.count)) as f32;
-            let representative = &overlay_paint.entity_points[cell.representative_index];
-            paint_entity_cluster_backdrop(
-                bounds, viewport, layout, block_x, block_z, cell.count, icon_size, window,
-            );
+            };
+            let count = cluster.count.max(1);
+            let block_x = (cluster.sum_block_x / f64::from(count)) as f32;
+            let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
+            let representative = &overlay_paint.entity_points[cluster.representative_index];
             let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
                 paint_entity_cluster_fallback(
-                    bounds, viewport, layout, block_x, block_z, cell.count, window,
+                    bounds, viewport, layout, block_x, block_z, count, window,
                 );
                 continue;
             };
@@ -435,58 +428,6 @@ fn paint_screen_clustered_entity_avatars(
         }
         paint_entity_avatar_requests(avatar_requests, window);
     });
-}
-
-fn paint_entity_cluster_backdrop(
-    bounds: Bounds<Pixels>,
-    viewport: MapViewport,
-    layout: RenderLayout,
-    block_x: f32,
-    block_z: f32,
-    count: u32,
-    icon_size: f32,
-    window: &mut Window,
-) {
-    if count <= 1 {
-        return;
-    }
-    let x = overlay_marker_screen_x(bounds, viewport, layout, block_x);
-    let y = overlay_marker_screen_y(bounds, viewport, layout, block_z);
-    let density = ((count as f32 + 1.0).log2() * 1.15).clamp(1.5, 7.0);
-    let outer_size = icon_size + density * 2.0;
-    let outer = px(outer_size);
-    window.paint_quad(
-        fill(
-            Bounds {
-                origin: point(px(x) - outer / 2.0, px(y) - outer / 2.0),
-                size: size(outer, outer),
-            },
-            Hsla {
-                a: 0.72,
-                ..rgb(0x0f172a).into()
-            },
-        )
-        .corner_radii(px((outer_size * 0.28).clamp(3.5, 7.0))),
-    );
-    let badge_size = (4.0 + (count as f32 + 1.0).log2()).clamp(5.0, 10.0);
-    let badge = px(badge_size);
-    let icon_half = px(icon_size) / 2.0;
-    window.paint_quad(
-        fill(
-            Bounds {
-                origin: point(
-                    px(x) + icon_half - badge * 0.62,
-                    px(y) + icon_half - badge * 0.62,
-                ),
-                size: size(badge, badge),
-            },
-            Hsla {
-                a: 0.96,
-                ..rgb(0x22c55e).into()
-            },
-        )
-        .corner_radii(badge / 2.0),
-    );
 }
 
 fn paint_entity_cluster_fallback(

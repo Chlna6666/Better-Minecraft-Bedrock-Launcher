@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use super::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
 use crate::ui::components::scroll::ScrollableElement as _;
@@ -126,21 +125,21 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
                 .child(animated_welcome_feature(
                     &colors,
                     0,
-                    lucide_icons::icon_download(),
+                    lucide_gpui::icon!(download),
                     t!("Onboarding.welcome.get_game"),
                     t!("Onboarding.welcome.get_game_detail"),
                 ))
                 .child(animated_welcome_feature(
                     &colors,
                     1,
-                    lucide_icons::icon_activity(),
+                    lucide_gpui::icon!(activity),
                     t!("Onboarding.welcome.tasks"),
                     t!("Onboarding.welcome.tasks_detail"),
                 ))
                 .child(animated_welcome_feature(
                     &colors,
                     2,
-                    lucide_icons::icon_settings_2(),
+                    lucide_gpui::icon!(settings_2),
                     t!("Onboarding.welcome.manage"),
                     t!("Onboarding.welcome.manage_detail"),
                 ))
@@ -159,7 +158,7 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
                         .gap(px(8.0))
                         .child(
                             svg()
-                                .path(lucide_icons::icon_info())
+                                .path(lucide_gpui::icon!(info))
                                 .size(px(15.0))
                                 .text_color(colors.text_muted),
                         )
@@ -245,7 +244,7 @@ fn render_welcome_header(state: &OnboardingTourState, colors: &ThemeColors, i18n
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_route())
+                        .path(lucide_gpui::icon!(route))
                         .size(px(21.0))
                         .text_color(colors.accent),
                 ),
@@ -436,7 +435,7 @@ fn render_welcome_footer(colors: &ThemeColors, i18n: &I18n) -> Div {
                 .child(t!("Onboarding.next"))
                 .child(
                     svg()
-                        .path(lucide_icons::icon_arrow_right())
+                        .path(lucide_gpui::icon!(arrow_right))
                         .size(px(15.0))
                         .text_color(colors.btn_primary_text),
                 )

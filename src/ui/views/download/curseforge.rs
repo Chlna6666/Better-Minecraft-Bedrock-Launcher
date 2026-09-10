@@ -16,7 +16,6 @@ use gpui::AnimationExt;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_hooks::{hook_element, hook_render};
-use lucide_gpui::icons as lucide_icons;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -879,7 +878,7 @@ fn render_curseforge_detail_files_panel(
                     .font_weight(FontWeight::BOLD)
                     .text_color(colors.btn_primary_text)
                     .child(themed_icon(
-                        lucide_icons::icon_download(),
+                        lucide_gpui::icon!(download),
                         16.0,
                         colors.btn_primary_text,
                     ))
@@ -1082,7 +1081,7 @@ fn render_curseforge_sidebar(
         } else {
             colors.text_primary
         };
-        themed_icon(lucide_icons::icon_package(), 16.0, fg).into_any_element()
+        themed_icon(lucide_gpui::icon!(package), 16.0, fg).into_any_element()
     };
 
     let sidebar_category_icon = |icon_url: Option<SharedString>, active: bool| -> AnyElement {
@@ -1137,7 +1136,7 @@ fn render_curseforge_sidebar(
                         .items_center()
                         .justify_center()
                         .child(themed_icon(
-                            lucide_icons::icon_image(),
+                            lucide_gpui::icon!(image),
                             11.0,
                             colors.text_muted,
                         ))
@@ -1258,7 +1257,7 @@ fn render_curseforge_sidebar(
                 .child(t!("CurseForge.subcategories")),
         )
         .child(themed_icon(
-            lucide_icons::icon_chevron_down(),
+            lucide_gpui::icon!(chevron_down),
             16.0,
             colors.text_secondary,
         ))
@@ -1362,7 +1361,7 @@ fn render_curseforge_sidebar(
                 .justify_center()
                 .gap(px(8.))
                 .child(themed_icon(
-                    lucide_icons::icon_clipboard(),
+                    lucide_gpui::icon!(clipboard),
                     16.0,
                     colors.text_secondary,
                 ))
@@ -2009,9 +2008,7 @@ fn render_curseforge_results_list(
     let reveal_warmup_pending = if !animate_cards || results_loading {
         false
     } else if let Some(started_at) = results_transition_at {
-        let elapsed_ms = frame_now
-            .saturating_duration_since(started_at)
-            .as_millis() as u64;
+        let elapsed_ms = frame_now.saturating_duration_since(started_at).as_millis() as u64;
         elapsed_ms < CURSEFORGE_RESULTS_REVEAL_WARMUP_MS
     } else {
         false
@@ -2303,7 +2300,7 @@ fn render_curseforge_result_card(
                                     .min_w(px(0.))
                                     .max_w(px(180.))
                                     .overflow_hidden()
-                                    .child(meta_icon(lucide_icons::icon_user()))
+                                    .child(meta_icon(lucide_gpui::icon!(user)))
                                     .child(
                                         div()
                                             .min_w(px(0.))
@@ -2339,7 +2336,7 @@ fn render_curseforge_result_card(
                                             .items_center()
                                             .gap(px(4.))
                                             .flex_none()
-                                            .child(meta_icon(lucide_icons::icon_download()))
+                                            .child(meta_icon(lucide_gpui::icon!(download)))
                                             .child(props.download_count_label.clone()),
                                     )
                                     .child(
@@ -2348,7 +2345,7 @@ fn render_curseforge_result_card(
                                             .items_center()
                                             .gap(px(4.))
                                             .flex_none()
-                                            .child(meta_icon(lucide_icons::icon_calendar()))
+                                            .child(meta_icon(lucide_gpui::icon!(calendar)))
                                             .child(props.date_modified_label.clone()),
                                     )
                             })
@@ -2664,7 +2661,7 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
                 .items_center()
                 .gap(px(8.))
                 .child(nav_btn(
-                    lucide_icons::icon_chevron_left(),
+                    lucide_gpui::icon!(chevron_left),
                     prev_enabled,
                     Box::new(|s| {
                         s.curseforge_page_index = s.curseforge_page_index.saturating_sub(1)
@@ -2673,7 +2670,7 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
                 ))
                 .child(page_row)
                 .child(nav_btn(
-                    lucide_icons::icon_chevron_right(),
+                    lucide_gpui::icon!(chevron_right),
                     next_enabled,
                     Box::new(|s| {
                         s.curseforge_page_index = s.curseforge_page_index.saturating_add(1)
@@ -2726,7 +2723,7 @@ fn render_curseforge_install_close_button(colors: &ThemeColors) -> Div {
         .items_center()
         .justify_center()
         .child(themed_icon(
-            lucide_icons::icon_x(),
+            lucide_gpui::icon!(x),
             16.0,
             colors.text_secondary,
         ))
@@ -2783,7 +2780,7 @@ fn render_curseforge_install_header(
                         .items_center()
                         .justify_center()
                         .child(themed_icon(
-                            lucide_icons::icon_package(),
+                            lucide_gpui::icon!(package),
                             20.0,
                             colors.accent,
                         )),
@@ -2904,7 +2901,7 @@ fn render_install_target_dropdown(
         enabled && has_versions,
         move |colors, _width, _height, enabled, open_k, label| {
             let chevron = svg()
-                .path(lucide_icons::icon_chevron_down())
+                .path(lucide_gpui::icon!(chevron_down))
                 .w(px(18.))
                 .h(px(18.))
                 .text_color(colors.text_secondary)
@@ -2928,7 +2925,7 @@ fn render_install_target_dropdown(
                         .items_center()
                         .gap(px(10.))
                         .child(themed_icon(
-                            lucide_icons::icon_folder_open(),
+                            lucide_gpui::icon!(folder_open),
                             16.0,
                             if enabled {
                                 colors.accent
@@ -3094,7 +3091,7 @@ fn render_curseforge_install_file_option(
                             colors.btn_primary_text
                         })
                         .child(themed_icon(
-                            lucide_icons::icon_download(),
+                            lucide_gpui::icon!(download),
                             15.0,
                             if disabled {
                                 colors.text_muted
@@ -3464,7 +3461,7 @@ fn render_curseforge_install_modal(
                 .items_center()
                 .gap(px(8.))
                 .child(themed_icon(
-                    lucide_icons::icon_download(),
+                    lucide_gpui::icon!(download),
                     18.0,
                     if primary_enabled {
                         colors.btn_primary_text
@@ -3764,7 +3761,7 @@ fn render_curseforge_install_modal(
                                     .items_center()
                                     .gap(px(4.))
                                     .child(themed_icon(
-                                        lucide_icons::icon_folder_tree(),
+                                        lucide_gpui::icon!(folder_tree),
                                         12.0,
                                         colors.text_secondary,
                                     ))
@@ -3802,7 +3799,7 @@ fn render_curseforge_install_modal(
                                     .items_center()
                                     .gap(px(4.))
                                     .child(themed_icon(
-                                        lucide_icons::icon_hard_drive(),
+                                        lucide_gpui::icon!(hard_drive),
                                         12.0,
                                         colors.text_secondary,
                                     ))
@@ -3840,7 +3837,7 @@ fn render_curseforge_install_modal(
                                     .items_center()
                                     .gap(px(4.))
                                     .child(themed_icon(
-                                        lucide_icons::icon_boxes(),
+                                        lucide_gpui::icon!(boxes),
                                         12.0,
                                         colors.text_secondary,
                                     ))
@@ -4110,7 +4107,7 @@ fn render_curseforge_mod_page_modal(
                 .child(
                     toolbar_button(
                         t!("CurseForge.back_to_list"),
-                        lucide_icons::icon_arrow_left(),
+                        lucide_gpui::icon!(arrow_left),
                         false,
                     )
                     .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
@@ -4161,7 +4158,7 @@ fn render_curseforge_mod_page_modal(
                     .child(
                         toolbar_button(
                             t!("CurseForge.direct_download"),
-                            lucide_icons::icon_download(),
+                            lucide_gpui::icon!(download),
                             true,
                         )
                         .on_mouse_down(MouseButton::Left, {
@@ -4176,7 +4173,7 @@ fn render_curseforge_mod_page_modal(
                             }
                         }),
                     )
-                    .child(icon_button(lucide_icons::icon_globe()).on_mouse_down(
+                    .child(icon_button(lucide_gpui::icon!(globe)).on_mouse_down(
                         MouseButton::Left,
                         {
                             let open_link = open_link.clone();
@@ -4185,7 +4182,7 @@ fn render_curseforge_mod_page_modal(
                             }
                         },
                     ))
-                    .child(icon_button(lucide_icons::icon_copy()).on_mouse_down(
+                    .child(icon_button(lucide_gpui::icon!(copy)).on_mouse_down(
                         MouseButton::Left,
                         {
                             let mod_entry = mod_entry.clone();
@@ -4194,7 +4191,7 @@ fn render_curseforge_mod_page_modal(
                             }
                         },
                     ))
-                    .child(icon_button(lucide_icons::icon_share_2()).on_mouse_down(
+                    .child(icon_button(lucide_gpui::icon!(share_2)).on_mouse_down(
                         MouseButton::Left,
                         {
                             let mod_entry = mod_entry.clone();
@@ -4203,7 +4200,7 @@ fn render_curseforge_mod_page_modal(
                             }
                         },
                     ))
-                    .child(icon_button(lucide_icons::icon_file_text()).on_mouse_down(
+                    .child(icon_button(lucide_gpui::icon!(file_text)).on_mouse_down(
                         MouseButton::Left,
                         {
                             let mod_entry = mod_entry.clone();
@@ -4459,12 +4456,12 @@ fn render_curseforge_mod_page_modal(
                                             .flex()
                                             .gap(px(10.))
                                             .child(stat_card(
-                                                lucide_icons::icon_download(),
+                                                lucide_gpui::icon!(download),
                                                 t!("CurseForge.downloads"),
                                                 downloads.clone(),
                                             ))
                                             .child(stat_card(
-                                                lucide_icons::icon_calendar_days(),
+                                                lucide_gpui::icon!(calendar_days),
                                                 t!("CurseForge.updated_at"),
                                                 updated_at.clone(),
                                             )),
@@ -4573,7 +4570,7 @@ fn render_curseforge_mod_page_modal(
                                                         .items_center()
                                                         .gap(px(8.))
                                                         .child(themed_icon(
-                                                            lucide_icons::icon_scroll_text(),
+                                                            lucide_gpui::icon!(scroll_text),
                                                             14.0,
                                                             colors.accent,
                                                         ))

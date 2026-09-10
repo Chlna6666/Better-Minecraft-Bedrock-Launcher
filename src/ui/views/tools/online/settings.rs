@@ -8,7 +8,6 @@ use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::rc::Rc;
 
 use super::controls::persist_tools_online_settings;
@@ -117,7 +116,7 @@ fn render_settings_header(colors: &ThemeColors, i18n: &I18n, close: DismissActio
             icon_button(
                 colors,
                 "online-settings-close",
-                lucide_icons::icon_x(),
+                lucide_gpui::icon!(x),
                 false,
             )
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| close(cx)),
@@ -159,7 +158,7 @@ fn render_settings_footer(colors: &ThemeColors, i18n: &I18n) -> Div {
                 colors,
                 "online-settings-done",
                 t!("Online.settings_done"),
-                lucide_icons::icon_check(),
+                lucide_gpui::icon!(check),
                 false,
                 false,
             )

@@ -7,7 +7,6 @@ use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use super::widgets::subtle_button;
 
@@ -25,7 +24,7 @@ pub(super) fn render_advanced_section(
             } else {
                 t!("Online.room_options")
             },
-            lucide_icons::icon_sliders_horizontal(),
+            lucide_gpui::icon!(sliders_horizontal),
             state.online_operation.is_busy(),
         )
         .when(!state.online_operation.is_busy(), |this| {

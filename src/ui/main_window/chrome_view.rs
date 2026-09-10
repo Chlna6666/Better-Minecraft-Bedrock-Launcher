@@ -157,7 +157,7 @@ impl Render for AppChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let state = self.prepare_render_state(now, window, cx);
-        let animating = state.theme_animating || state.nav_animating || state.auth.animating;
+        let animating = state.theme_animating;
         let route = crate::ui::navigation::current_route_target(cx);
         let update_modal_open = cx.global::<UpdateState>().show_modal;
         chrome::render_app_chrome(state, route, update_modal_open)

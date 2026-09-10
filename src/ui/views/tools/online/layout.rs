@@ -5,7 +5,6 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use super::{controls, peers, room, settings};
 
@@ -86,7 +85,7 @@ fn render_activity_header(colors: &ThemeColors, i18n: &I18n) -> Div {
         .items_center()
         .gap(px(8.))
         .child(themed_icon(
-            lucide_icons::icon_activity(),
+            lucide_gpui::icon!(activity),
             16.0,
             colors.text_secondary,
         ))

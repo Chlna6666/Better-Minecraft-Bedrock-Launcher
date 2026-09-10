@@ -1,4 +1,3 @@
-use crate::ui::animation::request_layout_animation_frame_if;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::*;
 use once_cell::sync::Lazy;
@@ -37,7 +36,7 @@ struct ParsedMinecraftText {
     text: String,
     runs: Vec<MinecraftTextRunSpec>,
     has_glyphs: bool,
-    has_obfuscated: bool,
+    has_animatable_obfuscated_ascii: bool,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -120,14 +119,18 @@ impl RenderOnce for MinecraftFormattedText {
             return div().into_any_element();
         }
 
-        if parsed.has_obfuscated && self.animate_obfuscated {
-            request_layout_animation_frame_if(window, true);
-            let frame = obfuscated_frame_tick();
+        let animate_obfuscated = parsed.has_animatable_obfuscated_ascii
+            && self.animate_obfuscated
+            && window.is_window_active();
+        if animate_obfuscated {
+            let frame = obfuscated_frame_tick(window.animation_time());
             parsed = apply_obfuscated_frame(&parsed, frame);
         }
 
         if parsed.has_glyphs {
-            return render_glyph_text(self, &parsed).into_any_element();
+            return render_glyph_text(self, &parsed)
+                .with_layout_animation_target(animate_obfuscated)
+                .into_any_element();
         }
 
         let runs = build_text_runs(&parsed.runs);
@@ -144,6 +147,7 @@ impl RenderOnce for MinecraftFormattedText {
 
         container
             .child(StyledText::new(SharedString::from(parsed.text)).with_runs(runs))
+            .with_layout_animation_target(animate_obfuscated)
             .into_any_element()
     }
 }
@@ -376,7 +380,7 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
     let mut current_color = default_color;
     let mut run_start = 0usize;
     let mut has_glyphs = false;
-    let mut has_obfuscated = false;
+    let mut has_animatable_obfuscated_ascii = false;
 
     let chars = input.char_indices().collect::<Vec<_>>();
     let mut index = 0usize;
@@ -425,7 +429,6 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
                 }
                 'k' => {
                     style.obfuscated = true;
-                    has_obfuscated = true;
                 }
                 'l' => {
                     style.bold = true;
@@ -456,6 +459,9 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
         if glyph_code_point(ch).is_some() {
             has_glyphs = true;
         }
+        if style.obfuscated && is_obfuscatable_char(ch) {
+            has_animatable_obfuscated_ascii = true;
+        }
         output.push(ch);
         index += 1;
     }
@@ -482,7 +488,7 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
         text: output,
         runs,
         has_glyphs,
-        has_obfuscated,
+        has_animatable_obfuscated_ascii,
     }
 }
 
@@ -537,13 +543,13 @@ fn make_text_run(len: usize, piece_style: InlinePieceStyle) -> TextRun {
     }
 }
 
-fn obfuscated_frame_tick() -> u64 {
+fn obfuscated_frame_tick(now: Instant) -> u64 {
     static START: Lazy<Instant> = Lazy::new(Instant::now);
-    START.elapsed().as_millis() as u64 / OBFUSCATED_FRAME.as_millis() as u64
+    now.saturating_duration_since(*START).as_millis() as u64 / OBFUSCATED_FRAME.as_millis() as u64
 }
 
 fn apply_obfuscated_frame(parsed: &ParsedMinecraftText, frame: u64) -> ParsedMinecraftText {
-    if !parsed.has_obfuscated {
+    if !parsed.has_animatable_obfuscated_ascii {
         return parsed.clone();
     }
 
@@ -563,12 +569,12 @@ fn apply_obfuscated_frame(parsed: &ParsedMinecraftText, frame: u64) -> ParsedMin
         text,
         runs: parsed.runs.clone(),
         has_glyphs: parsed.has_glyphs,
-        has_obfuscated: parsed.has_obfuscated,
+        has_animatable_obfuscated_ascii: parsed.has_animatable_obfuscated_ascii,
     }
 }
 
 fn obfuscate_char(ch: char, frame: u64, index: usize) -> char {
-    if ch.is_whitespace() || !ch.is_ascii() || glyph_code_point(ch).is_some() {
+    if !is_obfuscatable_char(ch) {
         return ch;
     }
 
@@ -579,6 +585,10 @@ fn obfuscate_char(ch: char, frame: u64, index: usize) -> char {
         .wrapping_add(index as u64 * 0x85EB_CA6B)
         .wrapping_add(ch as u64);
     OBFUSCATED_ASCII[(seed as usize) % OBFUSCATED_ASCII.len()] as char
+}
+
+fn is_obfuscatable_char(ch: char) -> bool {
+    ch.is_ascii() && !ch.is_whitespace() && glyph_code_point(ch).is_none()
 }
 
 fn minecraft_format_color(code: char, default_color: Hsla) -> Option<Hsla> {
@@ -705,7 +715,7 @@ mod tests {
         let first = apply_obfuscated_frame(&parsed, 1);
         let second = apply_obfuscated_frame(&parsed, 2);
 
-        assert!(parsed.has_obfuscated);
+        assert!(parsed.has_animatable_obfuscated_ascii);
         assert_eq!(first.text.len(), parsed.text.len());
         assert_eq!(second.text.len(), parsed.text.len());
         assert_ne!(first.text, second.text);
@@ -719,6 +729,14 @@ mod tests {
         assert_eq!(first.text, "Hello");
         assert_eq!(second.text, "Hello");
         assert_eq!(first.runs.len(), second.runs.len());
-        assert!(!first.has_obfuscated);
+        assert!(!first.has_animatable_obfuscated_ascii);
+    }
+
+    #[test]
+    fn obfuscated_non_ascii_text_does_not_request_animation_work() {
+        let parsed = parse_minecraft_formatted_text("§k中文🙂", rgb(0xffffff).into());
+
+        assert!(!parsed.has_animatable_obfuscated_ascii);
+        assert_eq!(apply_obfuscated_frame(&parsed, 42).text, "中文🙂");
     }
 }

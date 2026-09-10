@@ -5,7 +5,6 @@ use crate::ui::views::settings::state::SettingsPageState;
 use crate::utils::app_info;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::rc::Rc;
 
 use super::rows::tab_title;
@@ -66,7 +65,7 @@ pub(super) fn render_about_tab(
         t!("AboutSection.dev.description"),
         Some(IconAction {
             title: t!("AboutSection.dev.sponsor"),
-            icon_path: lucide_icons::icon_link(),
+            icon_path: lucide_gpui::icon!(link),
             enabled: true,
             on_click: Rc::new(|cx: &mut App| {
                 cx.open_url("https://afdian.com/a/Chlna6666");
@@ -87,9 +86,9 @@ pub(super) fn render_about_tab(
         Some(IconAction {
             title: update_btn_title,
             icon_path: if checking {
-                lucide_icons::icon_loader()
+                lucide_gpui::icon!(loader)
             } else {
-                lucide_icons::icon_refresh_cw()
+                lucide_gpui::icon!(refresh_cw)
             },
             enabled: !checking,
             on_click: Rc::new(move |cx: &mut App| {
@@ -581,7 +580,7 @@ fn thanks_card(
             .child(icon_btn(
                 colors,
                 view_label_btn,
-                lucide_icons::icon_external_link(),
+                lucide_gpui::icon!(external_link),
                 true,
                 on_click,
             ));
@@ -665,7 +664,7 @@ fn render_dependencies_card(colors: &ThemeColors, i18n: &I18n) -> Stateful<Div> 
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_package())
+                        .path(lucide_gpui::icon!(package))
                         .w(px(19.))
                         .h(px(19.))
                         .text_color(colors.accent),
@@ -697,7 +696,7 @@ fn render_dependencies_card(colors: &ThemeColors, i18n: &I18n) -> Stateful<Div> 
         .child(icon_btn(
             colors,
             t!("AboutSection.common.view"),
-            lucide_icons::icon_external_link(),
+            lucide_gpui::icon!(external_link),
             true,
             open_dependencies,
         ))

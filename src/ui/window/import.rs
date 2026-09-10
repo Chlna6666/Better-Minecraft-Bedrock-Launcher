@@ -228,7 +228,9 @@ fn import_window_options(cx: &mut App) -> WindowOptions {
             appears_transparent: true,
             ..Default::default()
         });
-        options.window_background = WindowBackgroundAppearance::Transparent;
+        // This view paints every client pixel. An opaque surface preserves the custom titlebar
+        // while keeping a normal DWM redirection bitmap, so capture tools can identify the HWND.
+        options.window_background = WindowBackgroundAppearance::Opaque;
     }
 
     options

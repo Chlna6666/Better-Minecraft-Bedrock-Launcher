@@ -1,7 +1,6 @@
 #![cfg(any(target_os = "windows", target_os = "linux"))]
 
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
@@ -68,7 +67,7 @@ pub(super) fn render_onboarding_card(colors: &ThemeColors, i18n: &I18n) -> Div {
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_route())
+                        .path(lucide_gpui::icon!(route))
                         .w(px(19.))
                         .h(px(19.))
                         .text_color(colors.accent),

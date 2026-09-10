@@ -3,7 +3,6 @@ use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
-use lucide_gpui::icons as lucide_icons;
 
 impl MapViewerWindowView {
     pub(super) fn render_bottom_dock(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
@@ -40,22 +39,22 @@ impl MapViewerWindowView {
         let i18n = cx.global::<I18n>().clone();
         let tabs: [(&'static str, SharedString, MapViewerBottomTab); 4] = [
             (
-                lucide_icons::icon_layers(),
+                lucide_gpui::icon!(layers),
                 t!("MapViewer.chunk_tree"),
                 MapViewerBottomTab::ChunkTree,
             ),
             (
-                lucide_icons::icon_info(),
+                lucide_gpui::icon!(info),
                 t!("MapViewer.details"),
                 MapViewerBottomTab::Details,
             ),
             (
-                lucide_icons::icon_activity(),
+                lucide_gpui::icon!(activity),
                 t!("MapViewer.diagnostics"),
                 MapViewerBottomTab::Diagnostics,
             ),
             (
-                lucide_icons::icon_history(),
+                lucide_gpui::icon!(history),
                 t!("MapViewer.history"),
                 MapViewerBottomTab::History,
             ),
@@ -103,7 +102,7 @@ impl MapViewerWindowView {
                     })
                     .child(t!("MapViewer.collapse"))
                     .child(themed_icon(
-                        lucide_icons::icon_chevron_down(),
+                        lucide_gpui::icon!(chevron_down),
                         CHROME_TAB_ICON_SIZE,
                         colors.text_muted,
                     ))

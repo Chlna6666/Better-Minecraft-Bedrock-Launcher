@@ -462,6 +462,7 @@ impl MapViewerWindowView {
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
+        let requested_id = id.clone();
         self.status = SharedString::from(format!("正在读取玩家 {}...", player_id_label(&id)));
         cx.notify();
 
@@ -485,7 +486,9 @@ impl MapViewerWindowView {
                 return Ok(());
             };
             view.update(cx, move |this, cx| {
-                if this.players.generation != generation {
+                if this.players.generation != generation
+                    || this.players.selected.as_ref() != Some(&requested_id)
+                {
                     return;
                 }
                 this.players.loading = false;

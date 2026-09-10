@@ -16,7 +16,6 @@ use crate::utils::updater::ReleaseSummary;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui::{AnimationExt, StatefulInteractiveElement as _};
-use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -401,7 +400,7 @@ pub fn render_update_modal(
                 })
                 .child(
                     svg()
-                        .path(lucide_icons::icon_x())
+                        .path(lucide_gpui::icon!(x))
                         .w(px(16.))
                         .h(px(16.))
                         .text_color(colors.text_muted),
@@ -595,21 +594,21 @@ pub fn render_update_modal(
                     .child(stat_metric(
                         t!("UpdateModal.progress.speed"),
                         format_bytes_per_sec(speed),
-                        lucide_icons::icon_activity(),
+                        lucide_gpui::icon!(activity),
                         colors.accent,
                         &colors,
                     ))
                     .child(stat_metric(
                         t!("UpdateModal.progress.eta"),
                         eta,
-                        lucide_icons::icon_clock(),
+                        lucide_gpui::icon!(clock),
                         colors.stat_orange_text,
                         &colors,
                     ))
                     .child(stat_metric(
                         t!("UpdateModal.progress.downloaded"),
                         format!("{} / {}", format_bytes(done), total_label),
-                        lucide_icons::icon_database(),
+                        lucide_gpui::icon!(database),
                         colors.stat_green_text,
                         &colors,
                     )),
@@ -693,7 +692,7 @@ pub fn render_update_modal(
                         })
                         .child(
                             svg()
-                                .path(lucide_icons::icon_x())
+                                .path(lucide_gpui::icon!(x))
                                 .size(px(14.))
                                 .text_color(colors.danger),
                         )
@@ -703,9 +702,9 @@ pub fn render_update_modal(
                         .as_ref()
                         .is_some_and(|snapshot| snapshot.stage.as_ref() == "extracting");
                     let download_icon_path = if is_extracting {
-                        lucide_icons::icon_package()
+                        lucide_gpui::icon!(package)
                     } else {
-                        lucide_icons::icon_download()
+                        lucide_gpui::icon!(download)
                     };
                     let download_title = if is_extracting {
                         t!("UpdateModal.summary.extracting_title")
@@ -858,7 +857,7 @@ pub fn render_update_modal(
                                 .gap(px(6.))
                                 .child(
                                     svg()
-                                        .path(lucide_icons::icon_external_link())
+                                        .path(lucide_gpui::icon!(external_link))
                                         .w(px(14.))
                                         .h(px(14.))
                                         .text_color(colors.accent),
@@ -1016,7 +1015,7 @@ pub fn render_update_modal(
                                 .py(px(6.))
                                 .child(
                                     svg()
-                                        .path(lucide_icons::icon_clock())
+                                        .path(lucide_gpui::icon!(clock))
                                         .w(px(14.))
                                         .h(px(14.))
                                         .text_color(colors.text_secondary),
@@ -1041,7 +1040,7 @@ pub fn render_update_modal(
                                 .py(px(6.))
                                 .child(
                                     svg()
-                                        .path(lucide_icons::icon_database())
+                                        .path(lucide_gpui::icon!(database))
                                         .w(px(14.))
                                         .h(px(14.))
                                         .text_color(colors.text_secondary),
@@ -1075,7 +1074,7 @@ pub fn render_update_modal(
                                 .gap(px(8.))
                                 .child(
                                     svg()
-                                        .path(lucide_icons::icon_tag())
+                                        .path(lucide_gpui::icon!(tag))
                                         .w(px(14.))
                                         .h(px(14.))
                                         .text_color(colors.text_muted),

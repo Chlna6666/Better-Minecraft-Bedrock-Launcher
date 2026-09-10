@@ -1,6 +1,5 @@
 use super::*;
 use crate::ui::components::icon::themed_icon;
-use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskVisualKind {
@@ -72,9 +71,9 @@ pub(crate) fn task_visual_kind(stage: &str, status: &str) -> TaskVisualKind {
 
 pub(crate) fn task_visual_icon(kind: TaskVisualKind) -> &'static str {
     match kind {
-        TaskVisualKind::Download => lucide_icons::icon_download(),
-        TaskVisualKind::Install => lucide_icons::icon_package(),
-        TaskVisualKind::Extract => lucide_icons::icon_box(),
+        TaskVisualKind::Download => lucide_gpui::icon!(download),
+        TaskVisualKind::Install => lucide_gpui::icon!(package),
+        TaskVisualKind::Extract => lucide_gpui::icon!(box),
     }
 }
 

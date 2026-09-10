@@ -2,7 +2,6 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AppContext as _, BorrowAppContext as _, *};
-use lucide_gpui::icons as lucide_icons;
 use std::path::{Path, PathBuf};
 
 use crate::core::minecraft::uwp_backup::{
@@ -451,21 +450,21 @@ pub fn render_uwp_backup_tools(
             )
             .child(compact_action_button(
                 "uwp-manual-backup-export-compact",
-                lucide_icons::icon_download(),
+                lucide_gpui::icon!(download),
                 colors,
                 can_export,
                 |_event, window, cx| start_export(window, cx),
             ))
             .child(compact_action_button(
                 "uwp-manual-backup-open-data-compact",
-                lucide_icons::icon_folder_open(),
+                lucide_gpui::icon!(folder_open),
                 colors,
                 can_open_data,
                 |_event, _window, cx| open_user_data(cx),
             ))
             .child(compact_action_button(
                 "uwp-manual-backup-open-migrations-compact",
-                lucide_icons::icon_folder_open(),
+                lucide_gpui::icon!(folder_open),
                 colors,
                 true,
                 |_event, _window, cx| open_migration_backups(cx),
@@ -486,7 +485,7 @@ pub fn render_uwp_backup_tools(
             } else {
                 t!("UwpBackup.export_backup")
             },
-            lucide_icons::icon_download(),
+            lucide_gpui::icon!(download),
             colors,
             can_export,
             |_event, window, cx| start_export(window, cx),
@@ -494,7 +493,7 @@ pub fn render_uwp_backup_tools(
         .child(action_button(
             "uwp-manual-backup-open-data",
             t!("UwpBackup.data_directory"),
-            lucide_icons::icon_folder_open(),
+            lucide_gpui::icon!(folder_open),
             colors,
             can_open_data,
             |_event, _window, cx| open_user_data(cx),
@@ -502,7 +501,7 @@ pub fn render_uwp_backup_tools(
         .child(action_button(
             "uwp-manual-backup-open-migrations",
             t!("UwpBackup.migration_backup"),
-            lucide_icons::icon_folder_open(),
+            lucide_gpui::icon!(folder_open),
             colors,
             true,
             |_event, _window, cx| open_migration_backups(cx),
@@ -554,7 +553,7 @@ pub fn render_uwp_backup_tools(
                         .justify_center()
                         .child(
                             svg()
-                                .path(lucide_icons::icon_shield_check())
+                                .path(lucide_gpui::icon!(shield_check))
                                 .size(px(15.0))
                                 .text_color(colors.accent),
                         ),

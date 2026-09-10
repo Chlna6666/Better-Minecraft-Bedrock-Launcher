@@ -8,7 +8,6 @@ use crate::ui::views::settings::state::{
 };
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::rc::Rc;
 use std::time::Duration;
 use tracing::warn;
@@ -153,7 +152,7 @@ pub(super) fn launcher_connectivity_row(
                 ..colors.surface_hover
             })
             .child(themed_icon(
-                lucide_icons::icon_chevron_right(),
+                lucide_gpui::icon!(chevron_right),
                 16.0,
                 colors.text_secondary,
             )),
@@ -251,7 +250,7 @@ pub(super) fn render_connectivity_modal(
                                 .justify_center()
                                 .child(
                                     svg()
-                                        .path(lucide_icons::icon_globe())
+                                        .path(lucide_gpui::icon!(globe))
                                         .w(px(18.))
                                         .h(px(18.))
                                         .text_color(colors.accent),
@@ -285,14 +284,14 @@ pub(super) fn render_connectivity_modal(
                         .child(icon_button(
                             colors,
                             "launcher-connectivity-refresh",
-                            lucide_icons::icon_refresh_cw(),
+                            lucide_gpui::icon!(refresh_cw),
                             !busy,
                             refresh,
                         ))
                         .child(icon_button(
                             colors,
                             "launcher-connectivity-close",
-                            lucide_icons::icon_x(),
+                            lucide_gpui::icon!(x),
                             true,
                             close_button.clone(),
                         )),
@@ -666,7 +665,7 @@ fn connectivity_item_row(
             status_badge(
                 foreground,
                 background,
-                lucide_icons::icon_check(),
+                lucide_gpui::icon!(check),
                 format!("{milliseconds} ms"),
             )
         }
@@ -676,7 +675,7 @@ fn connectivity_item_row(
                 a: 0.15,
                 ..colors.danger
             },
-            lucide_icons::icon_x(),
+            lucide_gpui::icon!(x),
             t!("Connectivity.status.error"),
         ),
     };

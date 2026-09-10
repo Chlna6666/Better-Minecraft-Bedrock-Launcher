@@ -502,7 +502,7 @@ pub(super) fn render_server_row(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-server-edit-{}", entry.key)),
-                lucide_icons::icon_file_pen_line(),
+                lucide_gpui::icon!(file_pen_line),
             )
             .on_mouse_down(MouseButton::Left, {
                 let key = entry.key.clone();
@@ -518,7 +518,7 @@ pub(super) fn render_server_row(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-server-refresh-{}", entry.key)),
-                lucide_icons::icon_refresh_cw(),
+                lucide_gpui::icon!(refresh_cw),
             )
             .on_mouse_down(MouseButton::Left, {
                 cx.listener(move |this, _, _, cx| {
@@ -533,7 +533,7 @@ pub(super) fn render_server_row(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-server-delete-{}", entry.key)),
-                lucide_icons::icon_trash_2(),
+                lucide_gpui::icon!(trash_2),
             )
             .on_mouse_down(MouseButton::Left, {
                 let key = entry.key.clone();
@@ -591,7 +591,7 @@ pub(super) fn render_server_row(
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_server())
+                        .path(lucide_gpui::icon!(server))
                         .w(px(16.))
                         .h(px(16.))
                         .text_color(colors.text_secondary),

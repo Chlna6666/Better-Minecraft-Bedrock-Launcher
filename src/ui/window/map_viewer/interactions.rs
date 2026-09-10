@@ -319,6 +319,10 @@ impl MapViewerWindowView {
         if !self.ui_state.right_panel_open {
             return;
         }
+        if self.ui_state.active_right_panel == MapViewerRightPanel::Player {
+            self.close_player_workspace(cx);
+            return;
+        }
         if self.ui_state.active_right_panel == MapViewerRightPanel::Preview3d {
             self.clear_preview_3d_resources(false);
         }
@@ -388,7 +392,11 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         if self.ui_state.left_panel_open && self.ui_state.active_left_panel == panel {
-            self.toggle_left_panel(cx);
+            if panel == MapViewerLeftPanel::Players {
+                self.close_player_workspace(cx);
+            } else {
+                self.toggle_left_panel(cx);
+            }
             return;
         }
         self.ui_state.active_left_panel = panel;
@@ -404,6 +412,7 @@ impl MapViewerWindowView {
                 return;
             }
         } else if self.ui_state.active_right_panel == MapViewerRightPanel::Player {
+            self.clear_player_workspace_context();
             self.ui_state.set_right_panel_open(false);
         }
         self.update_viewport_after_dock_change(cx);

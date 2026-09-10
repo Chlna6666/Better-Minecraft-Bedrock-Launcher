@@ -20,7 +20,6 @@ use crate::ui::views::settings::state::{
 use bmcbl_plugin_api::LogLevel;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -562,13 +561,13 @@ fn plugin_list(
                         .items_center()
                         .gap(px(4.))
                         .child(
-                            icon_only_button(colors, lucide_icons::icon_file_up(), true)
+                            icon_only_button(colors, lucide_gpui::icon!(file_up), true)
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     import_plugin_package_from_picker(cx);
                                 }),
                         )
                         .child(
-                            icon_only_button(colors, lucide_icons::icon_refresh_cw(), true)
+                            icon_only_button(colors, lucide_gpui::icon!(refresh_cw), true)
                                 .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                                     crate::plugins::runtime::reload_plugins(cx);
                                 }),
@@ -921,7 +920,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                         .items_center()
                         .gap(px(6.))
                         .child(
-                            small_icon_button(colors, "重载", lucide_icons::icon_refresh_cw())
+                            small_icon_button(colors, "重载", lucide_gpui::icon!(refresh_cw))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     match crate::plugins::runtime::reload_plugin(
                                         cx,
@@ -940,7 +939,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                 }),
                         )
                         .child(
-                            small_icon_button(colors, "诊断", lucide_icons::icon_activity())
+                            small_icon_button(colors, "诊断", lucide_gpui::icon!(activity))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     match crate::plugins::runtime::export_plugin_diagnostics(
                                         cx,
@@ -967,7 +966,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                 }),
                         )
                         .child(
-                            small_icon_button(colors, "卸载", lucide_icons::icon_trash_2())
+                            small_icon_button(colors, "卸载", lucide_gpui::icon!(trash_2))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     match crate::plugins::runtime::uninstall_plugin(
                                         cx,
@@ -1595,7 +1594,7 @@ fn plugin_icon(status: &PluginStatus, colors: &ThemeColors, size: Pixels) -> Any
             .items_center()
             .justify_center()
             .child(themed_icon(
-                lucide_icons::icon_plug(),
+                lucide_gpui::icon!(plug),
                 (size / px(1.) * 0.58).clamp(12.0, 24.0),
                 colors.accent,
             ))

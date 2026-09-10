@@ -19,7 +19,6 @@ use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_hooks::{hook_element, hook_render};
-use lucide_gpui::icons as lucide_icons;
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
@@ -66,6 +65,8 @@ pub(crate) struct HomePageView {
     versions_error: Option<SharedString>,
     versions: Vec<LaunchVersionEntry>,
     applied_versions_revision: Option<u64>,
+    version_kind_labels: Vec<SharedString>,
+    version_kind_labels_key: Option<(u64, u64)>,
     selected_folder: Option<SharedString>,
     dropdown_open: bool,
     /// 下拉展开进度弹簧：展开 Q 弹、收起干脆，中途切换目标不跳变。
@@ -90,6 +91,7 @@ impl HomePageView {
         }
 
         self.applied_versions_revision = Some(snapshot.revision);
+        self.version_kind_labels_key = None;
         self.versions_loading = snapshot.loading;
         self.versions_error = snapshot.error.clone();
         self.versions = snapshot.versions.iter().cloned().collect();
@@ -145,6 +147,8 @@ impl HomePageView {
             versions_error,
             versions,
             applied_versions_revision: None,
+            version_kind_labels: Vec::new(),
+            version_kind_labels_key: None,
             selected_folder,
             dropdown_open: false,
             dropdown_spring: SpringValue::new(0.0).with_spring(spring_bouncy()),
@@ -194,6 +198,22 @@ impl HomePageView {
         crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(force_refresh, cx);
     }
 
+    fn refresh_version_kind_labels(&mut self, i18n: &I18n) {
+        let key = (
+            self.applied_versions_revision.unwrap_or_default(),
+            i18n.revision(),
+        );
+        if self.version_kind_labels_key == Some(key) {
+            return;
+        }
+        self.version_kind_labels = self
+            .versions
+            .iter()
+            .map(|version| kind_label(i18n, version.kind.as_ref()))
+            .collect();
+        self.version_kind_labels_key = Some(key);
+    }
+
     fn sync_dropdown_animation(&mut self, now: Instant) -> f32 {
         let sample = self.dropdown_spring.sample(now);
         self.dropdown_animating = !sample.done;
@@ -219,7 +239,6 @@ impl HomePageView {
 
     fn render_dropdown(
         &self,
-        kind_labels: &[SharedString],
         theme_colors: &crate::ui::theme::colors::ThemeColors,
         accent: Hsla,
         list_bg: Hsla,
@@ -233,6 +252,31 @@ impl HomePageView {
             return div().into_any_element();
         }
 
+        let version_count = self.versions.len();
+        let theme_colors = theme_colors.clone();
+        let versions = uniform_list(
+            "home-version-list-scroll",
+            version_count,
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                range
+                    .filter_map(|index| {
+                        let version = this.versions.get(index)?.clone();
+                        let kind_label = this.version_kind_labels.get(index)?.clone();
+                        Some(this.render_dropdown_item(
+                            index,
+                            &version,
+                            kind_label,
+                            &theme_colors,
+                            accent,
+                            dropdown_factor,
+                            item_height_px,
+                            cx,
+                        ))
+                    })
+                    .collect()
+            }),
+        )
+        .h_full();
         div()
             .w_full()
             .h(px(desired_list_h_px * dropdown_factor))
@@ -255,31 +299,7 @@ impl HomePageView {
                 offset: point(px(0.0), px(20.0)),
             }])
             .opacity(dropdown_factor.min(1.0))
-            .child(
-                div()
-                    .id("home-version-list-scroll")
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(0.0))
-                    .h_full()
-                    .p(px(6.0))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .children(self.versions.iter().enumerate().map(|(index, version)| {
-                                self.render_dropdown_item(
-                                    index,
-                                    version,
-                                    kind_labels[index].clone(),
-                                    theme_colors,
-                                    accent,
-                                    dropdown_factor,
-                                    item_height_px,
-                                    cx,
-                                )
-                            })),
-                    ),
-            )
+            .child(div().h_full().p(px(6.0)).child(versions))
             .into_any_element()
     }
 
@@ -360,7 +380,7 @@ impl HomePageView {
         };
 
         div()
-            .id(SharedString::from(format!("home-version-item-{index}")))
+            .id((ElementId::from("home-version-item"), folder.clone()))
             .relative()
             .top(px(10.0 * (1.0 - item_factor)))
             .opacity(item_factor)
@@ -447,7 +467,7 @@ impl HomePageView {
             .when(selected, |style| {
                 style.child(
                     svg()
-                        .path(lucide_icons::icon_circle_check())
+                        .path(lucide_gpui::icon!(circle_check))
                         .size(px(16.0))
                         .text_color(Hsla { a: 0.9, ..accent }),
                 )
@@ -513,12 +533,12 @@ impl HomePageView {
                         * 2.0
                         * std::f32::consts::PI
                         * 1.0;
-                    icon_path(lucide_icons::icon_loader_circle())
+                    icon_path(lucide_gpui::icon!(loader_circle))
                         .size(px(40.0))
                         .text_color(rgb(0xffffff))
                         .with_transformation(Transformation::rotate(radians(angle)))
                 } else {
-                    icon_path(lucide_icons::icon_play())
+                    icon_path(lucide_gpui::icon!(play))
                         .size(px(48.0))
                         .text_color(rgb(0xffffff))
                 };
@@ -564,11 +584,11 @@ impl HomePageView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let chevron = if is_empty {
-            icon_path(lucide_icons::icon_download())
+            icon_path(lucide_gpui::icon!(download))
                 .size(px(20.0))
                 .text_color(rgb(0xffffff))
         } else {
-            icon_path(lucide_icons::icon_chevron_down())
+            icon_path(lucide_gpui::icon!(chevron_down))
                 .size(px(16.0))
                 .text_color(rgb(0xffffff))
                 .with_transformation(Transformation::rotate(radians(
@@ -796,12 +816,9 @@ impl Render for HomePageView {
         } else {
             t!("common.all_versions")
         };
-        let kind_labels = dropdown_visible.then(|| {
-            self.versions
-                .iter()
-                .map(|version| kind_label(i18n, version.kind.as_ref()))
-                .collect::<Vec<_>>()
-        });
+        if dropdown_visible {
+            self.refresh_version_kind_labels(i18n);
+        }
 
         let accent = theme_colors.accent;
         let launch_bg = Hsla { a: 1.0, ..accent };
@@ -941,26 +958,28 @@ impl Render for HomePageView {
             );
 
         if !is_empty && dropdown_visible {
-            launcher_root = launcher_root.child(self.render_dropdown(
-                kind_labels.as_deref().unwrap_or(&[]),
-                &theme_colors,
-                accent,
-                list_bg,
-                list_border,
-                desired_list_h_px,
-                dropdown_factor,
-                item_height_px,
-                cx,
-            ));
+            launcher_root = launcher_root.child(
+                self.render_dropdown(
+                    &theme_colors,
+                    accent,
+                    list_bg,
+                    list_border,
+                    desired_list_h_px,
+                    dropdown_factor,
+                    item_height_px,
+                    cx,
+                )
+                .with_layout_animation_target(self.dropdown_animating),
+            );
         }
 
         launcher_root = launcher_root.child(launch_bar);
-        let launcher_animating =
-            self.dropdown_animating || entrance_animating || initial_versions_loading;
+        let launcher_animating = entrance_animating || initial_versions_loading;
 
-        let mut overlay = div().absolute().inset_0().child(
-            launcher_root.with_layout_animation_target(launcher_animating),
-        );
+        let mut overlay = div()
+            .absolute()
+            .inset_0()
+            .child(launcher_root.with_layout_animation_target(launcher_animating));
         let sidebar_registrations = crate::plugins::runtime::injection_registrations(
             cx,
             InjectionSlot::HomeSidebar,

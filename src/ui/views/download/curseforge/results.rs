@@ -262,7 +262,7 @@ pub(crate) fn render_result_logo_placeholder(colors: ThemeColors) -> AnyElement 
         .items_center()
         .justify_center()
         .child(themed_icon(
-            lucide_icons::icon_image(),
+            lucide_gpui::icon!(image),
             16.0,
             colors.text_muted,
         ))

@@ -29,7 +29,6 @@ use crate::ui::window::import::ImportWindowTarget;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui::{InteractiveElement, ParentElement, Styled};
-use lucide_gpui::icons as lucide_icons;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
@@ -637,10 +636,7 @@ impl Render for ImportWindowView {
                                                         .overflow_y_scrollbar()
                                                         .child(
                                                             render_preview_card(
-                                                                self,
-                                                                &colors,
-                                                                frame_now,
-                                                                cx,
+                                                                self, &colors, frame_now, cx,
                                                             )
                                                             .with_layout_animation_target(
                                                                 self.is_inspecting,
@@ -685,10 +681,7 @@ impl Render for ImportWindowView {
                                                 .gap(px(14.))
                                                 .child(
                                                     render_preview_card(
-                                                        self,
-                                                        &colors,
-                                                        frame_now,
-                                                        cx,
+                                                        self, &colors, frame_now, cx,
                                                     )
                                                     .with_layout_animation_target(
                                                         self.is_inspecting,
@@ -872,7 +865,7 @@ fn render_window_header(
                             a: 0.10,
                             ..colors.accent
                         })
-                        .child(icon(lucide_icons::icon_package_open(), 15.0, colors.accent)),
+                        .child(icon(lucide_gpui::icon!(package_open), 15.0, colors.accent)),
                 )
                 .child(
                     div()
@@ -923,7 +916,7 @@ fn render_overlay_controls(
         .justify_end()
         .items_center()
         .child(
-            titlebar_button(colors, lucide_icons::icon_x(), true, false)
+            titlebar_button(colors, lucide_gpui::icon!(x), true, false)
                 .id("import-overlay-close")
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1055,7 +1048,7 @@ fn render_window_controls(
         .items_center()
         .gap(px(4.))
         .child(
-            titlebar_button(colors, lucide_icons::icon_minus(), false, compact)
+            titlebar_button(colors, lucide_gpui::icon!(minus), false, compact)
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, window, cx| {
                     cx.stop_propagation();
@@ -1063,7 +1056,7 @@ fn render_window_controls(
                 }),
         )
         .child(
-            titlebar_button(colors, lucide_icons::icon_x(), true, compact)
+            titlebar_button(colors, lucide_gpui::icon!(x), true, compact)
                 .id("import-window-close")
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1111,7 +1104,7 @@ fn preview_icon(
                 .items_center()
                 .justify_center()
                 .child(icon(
-                    lucide_icons::icon_package(),
+                    lucide_gpui::icon!(package),
                     (size_px / 2.4).max(14.0),
                     colors.text_muted,
                 )),
@@ -1170,7 +1163,7 @@ fn render_preview_card(
             .child(spinning_icon(
                 now,
                 this.inspect_started_at,
-                lucide_icons::icon_loader_circle(),
+                lucide_gpui::icon!(loader_circle),
                 18.0,
                 colors.accent,
             ))
@@ -1245,19 +1238,19 @@ fn render_preview_card(
                             colors,
                             map_name_label,
                             SharedString::from(preview.name.clone()),
-                            lucide_icons::icon_map(),
+                            lucide_gpui::icon!(map),
                         ))
                         .child(preview_info_row(
                             colors,
                             map_type_label,
                             ImportWindowView::kind_label(&preview.kind, cx),
-                            lucide_icons::icon_map_pinned(),
+                            lucide_gpui::icon!(map_pinned),
                         ))
                         .child(preview_info_row(
                             colors,
                             file_size_label,
                             SharedString::from(format_size(preview.size)),
-                            lucide_icons::icon_hard_drive_download(),
+                            lucide_gpui::icon!(hard_drive_download),
                         )),
                 );
 
@@ -1372,27 +1365,27 @@ fn render_preview_card(
                             colors,
                             template_name_label,
                             SharedString::from(preview.name.clone()),
-                            lucide_icons::icon_package_open(),
+                            lucide_gpui::icon!(package_open),
                         ))
                         .child(preview_info_row(
                             colors,
                             template_type_label,
                             ImportWindowView::kind_label(&preview.kind, cx),
-                            lucide_icons::icon_layout_template(),
+                            lucide_gpui::icon!(layout_template),
                         ))
                         .when_some(preview.version.as_ref(), |this, version| {
                             this.child(preview_info_row(
                                 colors,
                                 template_version_label,
                                 SharedString::from(version.clone()),
-                                lucide_icons::icon_tag(),
+                                lucide_gpui::icon!(tag),
                             ))
                         })
                         .child(preview_info_row(
                             colors,
                             file_size_label,
                             SharedString::from(format_size(preview.size)),
-                            lucide_icons::icon_hard_drive_download(),
+                            lucide_gpui::icon!(hard_drive_download),
                         )),
                 );
 
@@ -1538,7 +1531,7 @@ fn render_preview_card(
                     .items_center()
                     .gap(px(6.))
                     .child(icon(
-                        lucide_icons::icon_layers_2(),
+                        lucide_gpui::icon!(layers_2),
                         14.0,
                         colors.text_secondary,
                     ))
@@ -1620,7 +1613,7 @@ fn render_preview_card(
                 .flex()
                 .gap(px(10.))
                 .items_center()
-                .child(icon(lucide_icons::icon_file_up(), 24.0, colors.text_muted))
+                .child(icon(lucide_gpui::icon!(file_up), 24.0, colors.text_muted))
                 .child(
                     div()
                         .text_size(px(12.))
@@ -1704,7 +1697,7 @@ fn render_versions_card(
             !target_locked,
             move |colors, _width, _trigger_height, enabled, open_k, label| {
                 let chevron = svg()
-                    .path(lucide_icons::icon_chevron_down())
+                    .path(lucide_gpui::icon!(chevron_down))
                     .w(px(18.))
                     .h(px(18.))
                     .text_color(colors.text_secondary)
@@ -1728,7 +1721,7 @@ fn render_versions_card(
                             .items_center()
                             .gap(px(10.))
                             .child(icon(
-                                lucide_icons::icon_folder_open(),
+                                lucide_gpui::icon!(folder_open),
                                 16.0,
                                 if enabled {
                                     colors.accent
@@ -1856,7 +1849,7 @@ fn render_embedded_pack_list(
             .items_center()
             .gap(px(6.))
             .child(icon(
-                lucide_icons::icon_package_plus(),
+                lucide_gpui::icon!(package_plus),
                 14.0,
                 colors.text_secondary,
             ))
@@ -1948,7 +1941,7 @@ fn render_world_pack_reference_list(
                 .items_center()
                 .gap(px(6.))
                 .child(icon(
-                    lucide_icons::icon_list_ordered(),
+                    lucide_gpui::icon!(list_ordered),
                     14.0,
                     colors.text_secondary,
                 ))
@@ -2036,14 +2029,14 @@ fn render_world_pack_reference_list(
                     colors,
                     t!("Import.dependencyUuid"),
                     SharedString::from(reference.uuid.clone()),
-                    lucide_icons::icon_tag(),
+                    lucide_gpui::icon!(tag),
                 ))
                 .when_some(matched_pack, |this, pack_name| {
                     this.child(preview_info_row(
                         colors,
                         t!("Import.matchedPack"),
                         pack_name,
-                        lucide_icons::icon_package_open(),
+                        lucide_gpui::icon!(package_open),
                     ))
                 })
                 .when(!matched, |this| {
@@ -2071,7 +2064,7 @@ fn render_world_pack_reference_list(
                         colors,
                         t!("Import.packVersion"),
                         SharedString::from(version.clone()),
-                        lucide_icons::icon_tag(),
+                        lucide_gpui::icon!(tag),
                     ))
                 })
                 .when_some(reference.subpack.as_ref(), |this, subpack| {
@@ -2079,7 +2072,7 @@ fn render_world_pack_reference_list(
                         colors,
                         t!("Import.subpackName"),
                         SharedString::from(subpack.clone()),
-                        lucide_icons::icon_boxes(),
+                        lucide_gpui::icon!(boxes),
                     ))
                 }),
         );
@@ -2146,7 +2139,7 @@ fn info_summary_panel(
                 .gap(px(10.))
                 .items_center()
                 .child(icon(
-                    lucide_icons::icon_badge_info(),
+                    lucide_gpui::icon!(badge_info),
                     16.0,
                     colors.text_muted,
                 ))
@@ -2180,19 +2173,19 @@ fn info_summary_panel(
             colors,
             t!("Import.targetPath"),
             target_path,
-            lucide_icons::icon_folder_tree(),
+            lucide_gpui::icon!(folder_tree),
         ))
         .child(info_summary_row(
             colors,
             t!("Import.isolationStatus"),
             isolation,
-            lucide_icons::icon_hard_drive(),
+            lucide_gpui::icon!(hard_drive),
         ))
         .child(info_summary_row(
             colors,
             t!("Import.versionType"),
             version_type,
-            lucide_icons::icon_boxes(),
+            lucide_gpui::icon!(boxes),
         ))
         .into_any_element()
 }
@@ -2340,8 +2333,8 @@ fn render_status_box(this: &ImportWindowView, colors: &ThemeColors) -> Option<An
         StatusKind::Success => colors.stat_green_text,
     };
     let icon_path = match kind {
-        StatusKind::Error => lucide_icons::icon_circle_alert(),
-        StatusKind::Success => lucide_icons::icon_circle_check_big(),
+        StatusKind::Error => lucide_gpui::icon!(circle_alert),
+        StatusKind::Success => lucide_gpui::icon!(circle_check_big),
     };
     Some(
         div()
@@ -2473,7 +2466,7 @@ fn render_conflict_dialog(
                                                 .items_center()
                                                 .gap(px(12.))
                                                 .child(icon(
-                                                    lucide_icons::icon_triangle_alert(),
+                                                    lucide_gpui::icon!(triangle_alert),
                                                     24.0,
                                                     colors.danger,
                                                 ))
@@ -2536,7 +2529,7 @@ fn render_conflict_dialog(
                                         .gap(px(12.))
                                         .items_start()
                                         .child(icon(
-                                            lucide_icons::icon_folder_git_2(),
+                                            lucide_gpui::icon!(folder_git_2),
                                             18.0,
                                             colors.accent,
                                         ))
@@ -2680,7 +2673,7 @@ fn render_conflict_compare_panel(
                         .items_center()
                         .justify_center()
                         .child(icon(
-                            lucide_icons::icon_arrow_right(),
+                            lucide_gpui::icon!(arrow_right),
                             16.0,
                             colors.text_muted,
                         )),

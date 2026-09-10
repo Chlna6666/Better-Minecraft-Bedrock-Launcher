@@ -150,7 +150,6 @@ fn animated_settings_panel(
     };
 
     // 整页位移必须包含文字、路径和嵌套裁剪；局部图元的 retained 动画尚不覆盖这些语义。
-
     div()
         .w_full()
         .min_w(px(0.))

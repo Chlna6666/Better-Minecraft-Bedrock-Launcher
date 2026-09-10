@@ -163,7 +163,7 @@ pub(super) fn render_skin_selector(
                 selector_icon_button(
                     colors,
                     "skin-preview-selector-page-previous",
-                    lucide_gpui::icons::icon_chevron_left(),
+                    lucide_gpui::icon!(chevron_left),
                 )
                 .on_mouse_down(
                     MouseButton::Left,
@@ -177,7 +177,7 @@ pub(super) fn render_skin_selector(
                 selector_icon_button(
                     colors,
                     "skin-preview-selector-page-next",
-                    lucide_gpui::icons::icon_chevron_right(),
+                    lucide_gpui::icon!(chevron_right),
                 )
                 .on_mouse_down(
                     MouseButton::Left,
@@ -284,9 +284,9 @@ fn selector_toggle_button(colors: &ThemeColors, expanded: bool) -> Stateful<Div>
         colors,
         "skin-preview-selector-toggle",
         if expanded {
-            lucide_gpui::icons::icon_chevron_down()
+            lucide_gpui::icon!(chevron_down)
         } else {
-            lucide_gpui::icons::icon_chevron_up()
+            lucide_gpui::icon!(chevron_up)
         },
     )
 }
@@ -419,7 +419,7 @@ fn skin_preview_placeholder(colors: &ThemeColors) -> Div {
         .justify_center()
         .child(
             svg()
-                .path(lucide_gpui::icons::icon_user())
+                .path(lucide_gpui::icon!(user))
                 .w(px(17.0))
                 .h(px(17.0))
                 .text_color(colors.text_secondary),

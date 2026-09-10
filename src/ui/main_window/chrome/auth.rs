@@ -5,7 +5,6 @@ use crate::ui::theme::{ThemeColors, glass_backdrop_blur_style, tokens::motion};
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons;
 use std::time::Instant;
 use std::{cell::Cell, rc::Rc};
 
@@ -141,7 +140,7 @@ fn avatar(profile: Option<&XboxProfile>, color: Hsla, size: f32) -> AnyElement {
             .into_any_element()
     } else {
         frame
-            .child(icon(icons::icon_circle_user_round(), color, size * 0.6))
+            .child(icon(lucide_gpui::icon!(circle_user_round), color, size * 0.6))
             .into_any_element()
     }
 }
@@ -219,7 +218,7 @@ pub(super) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
             .child(status_label(&state.snapshot)),
     )
     .child(
-        icon(icons::icon_chevron_down(), colors.text_secondary, 12.).with_transformation(
+        icon(lucide_gpui::icon!(chevron_down), colors.text_secondary, 12.).with_transformation(
             Transformation::rotate(radians(std::f32::consts::PI * state.progress)),
         ),
     )
@@ -231,6 +230,7 @@ pub(super) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         .absolute()
         .inset_0(),
     )
+    .with_layout_animation_target(state.animating)
     .into_any_element()
 }
 
@@ -294,7 +294,7 @@ fn header(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 state.open,
             )
             .size(px(30.))
-            .child(icon(icons::icon_x(), colors.text_secondary, 15.)),
+            .child(icon(lucide_gpui::icon!(x), colors.text_secondary, 15.)),
         )
         .into_any_element()
 }
@@ -378,5 +378,6 @@ pub(super) fn panel(
             ),
             progress,
         )
+        .with_layout_animation_target(state.animating)
         .into_any_element()
 }

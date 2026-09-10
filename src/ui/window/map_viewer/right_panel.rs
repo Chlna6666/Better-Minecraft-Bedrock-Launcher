@@ -2,7 +2,6 @@ use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
-use lucide_gpui::icons as lucide_icons;
 
 impl MapViewerWindowView {
     pub(super) fn render_right_dock(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
@@ -69,7 +68,7 @@ impl MapViewerWindowView {
             .flex_col()
             .child(
                 div()
-                    .h(px(46.0))
+                    .h(px(40.0))
                     .flex_none()
                     .px(px(12.0))
                     .border_b_1()
@@ -124,7 +123,7 @@ impl MapViewerWindowView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_primary)
                             .child(themed_icon(
-                                lucide_icons::icon_save(),
+                                lucide_gpui::icon!(save),
                                 CHROME_TAB_ICON_SIZE,
                                 colors.text_primary,
                             ))

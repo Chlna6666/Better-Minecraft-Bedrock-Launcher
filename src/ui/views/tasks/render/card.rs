@@ -8,7 +8,6 @@ use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageVie
 use gpui::AnimationExt;
 use gpui::prelude::FluentBuilder as _;
 use gpui::render_fingerprint;
-use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
 
 // 与 tasks.rs 的 TASK_CARD_EXIT_ANIMATION_MS 对齐：过渡卡片会在该时刻被移除，
@@ -139,9 +138,9 @@ pub(crate) fn render_task_card(
     if model.can_pause {
         let button_task_id = task_id.clone();
         let pause_icon = if paused {
-            lucide_icons::icon_play()
+            lucide_gpui::icon!(play)
         } else {
-            lucide_icons::icon_pause()
+            lucide_gpui::icon!(pause)
         };
         actions = actions.child(
             task_icon_button(
@@ -161,7 +160,7 @@ pub(crate) fn render_task_card(
         actions = actions.child(
             task_icon_button(
                 ("task-cancel", stable_task_id(button_task_id.as_ref())),
-                lucide_icons::icon_x(),
+                lucide_gpui::icon!(x),
                 true,
                 true,
                 colors,
@@ -176,7 +175,7 @@ pub(crate) fn render_task_card(
         actions = actions.child(
             task_icon_button(
                 ("task-remove", stable_task_id(button_task_id.as_ref())),
-                lucide_icons::icon_x(),
+                lucide_gpui::icon!(x),
                 true,
                 true,
                 colors,

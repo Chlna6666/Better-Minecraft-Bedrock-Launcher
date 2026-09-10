@@ -2,7 +2,6 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AppContext as _, BorrowAppContext as _, *};
-use lucide_gpui::icons as lucide_icons;
 
 use crate::core::minecraft::uwp_registration::{MinecraftUwpChannel, SystemUwpRegistration};
 use crate::ui::components::scroll::ScrollableElement as _;
@@ -433,9 +432,9 @@ pub fn render_uwp_safety_guide(
                         .child(
                             svg()
                                 .path(if state.checking {
-                                    lucide_icons::icon_search()
+                                    lucide_gpui::icon!(search)
                                 } else {
-                                    lucide_icons::icon_shield_check()
+                                    lucide_gpui::icon!(shield_check)
                                 })
                                 .size(px(21.0))
                                 .text_color(colors.accent),
@@ -569,7 +568,7 @@ fn render_checking_body(colors: &ThemeColors, i18n: &I18n) -> Div {
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_package_search())
+                        .path(lucide_gpui::icon!(package_search))
                         .size(px(22.0))
                         .text_color(colors.accent),
                 ),

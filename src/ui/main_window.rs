@@ -452,7 +452,7 @@ impl MainWindowView {
             }
         };
         let route_key = route_enter_animation_key(route);
-        // 整页含文字、路径和嵌套裁剪，不能只移动支持 scene animation 的部分图元。
+        // 整页含文字、路径和嵌套裁剪，不能经过 offscreen composite 做分数像素平移。
         let animated_page = div().size_full().child(page).with_animation(
             route_key,
             spring_motion(apple_spring(0.36, 0.74)),
@@ -884,7 +884,7 @@ impl MainWindowView {
                                 move |style| style.bg(hover_color)
                             })
                             .child(themed_icon(
-                                lucide_gpui::icons::icon_x(),
+                                lucide_gpui::icon!(x),
                                 15.0,
                                 model.theme_colors.text_secondary,
                             ))

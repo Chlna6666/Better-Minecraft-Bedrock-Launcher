@@ -1054,11 +1054,11 @@ fn text_size(size: TextSizeToken) -> gpui::Pixels {
 
 fn icon_path(name: &str) -> &'static str {
     match name {
-        "settings" => lucide_gpui::icons::icon_settings(),
-        "alert" => lucide_gpui::icons::icon_circle_alert(),
-        "star" => lucide_gpui::icons::icon_star(),
-        "plug" => lucide_gpui::icons::icon_plug(),
-        _ => lucide_gpui::icons::icon_info(),
+        "settings" => lucide_gpui::icon!(settings),
+        "alert" => lucide_gpui::icon!(circle_alert),
+        "star" => lucide_gpui::icon!(star),
+        "plug" => lucide_gpui::icon!(plug),
+        _ => lucide_gpui::icon!(info),
     }
 }
 

@@ -7,7 +7,6 @@ use crate::ui::views::tools::state::{
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 use super::actions;
 use super::widgets::subtle_button;
@@ -46,7 +45,7 @@ fn render_room_members_header(
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .child(themed_icon(lucide_icons::icon_users(), 17.0, colors.accent))
+                .child(themed_icon(lucide_gpui::icon!(users), 17.0, colors.accent))
                 .child(
                     div()
                         .text_size(px(14.))
@@ -78,7 +77,7 @@ fn render_room_members_header(
                 } else {
                     t!("Online.refresh")
                 },
-                lucide_icons::icon_refresh_cw(),
+                lucide_gpui::icon!(refresh_cw),
                 disabled,
             )
             .when(!disabled, |this| {
@@ -120,8 +119,7 @@ fn render_room_members_list(
             this.children(
                 sorted_players
                     .into_iter()
-                    .enumerate()
-                    .map(|(index, player)| render_player_row(colors, i18n, index, &player)),
+                    .map(|player| render_player_row(colors, i18n, &player)),
             )
         })
 }
@@ -176,7 +174,7 @@ fn render_network_nodes_header(
                 .items_center()
                 .gap(px(9.))
                 .child(themed_icon(
-                    lucide_icons::icon_network(),
+                    lucide_gpui::icon!(network),
                     17.0,
                     colors.text_secondary,
                 ))
@@ -217,7 +215,7 @@ fn render_network_nodes_header(
                             } else {
                                 t!("Online.refresh")
                             },
-                            lucide_icons::icon_refresh_cw(),
+                            lucide_gpui::icon!(refresh_cw),
                             disabled,
                         )
                         .on_mouse_down(
@@ -230,9 +228,9 @@ fn render_network_nodes_header(
                 })
                 .child(themed_icon(
                     if expanded {
-                        lucide_icons::icon_chevron_up()
+                        lucide_gpui::icon!(chevron_up)
                     } else {
-                        lucide_icons::icon_chevron_down()
+                        lucide_gpui::icon!(chevron_down)
                     },
                     16.0,
                     colors.text_muted,
@@ -388,12 +386,11 @@ fn render_peer_row(
 fn render_player_row(
     colors: &ThemeColors,
     i18n: &I18n,
-    index: usize,
     player: &OnlinePlayerEntry,
 ) -> Stateful<Div> {
     let is_host = player.is_room_host;
     crate::ui::components::page_shell::inner_well(colors)
-        .id(("online-player", index))
+        .id((ElementId::from("online-player"), player.client_id.clone()))
         .w_full()
         .when(is_host, |this| {
             this.border_color(Hsla {

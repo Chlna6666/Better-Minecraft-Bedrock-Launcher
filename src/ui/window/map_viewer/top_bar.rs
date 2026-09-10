@@ -14,7 +14,6 @@ use gpui::{
     App, Context, CursorStyle, Div, EventEmitter, Hsla, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, SharedString, Styled, Window, div, px, relative,
 };
-use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapTopBarSnapshot {
@@ -58,8 +57,8 @@ impl Render for MapTopBarView {
         div()
             .h(px(IDE_TOP_BAR_HEIGHT))
             .flex_none()
-            .px(px(12.0))
-            .py(px(8.0))
+            .px(px(10.0))
+            .py(px(7.0))
             .border_b_1()
             .border_color(Hsla {
                 a: CHROME_HAIRLINE_ALPHA,
@@ -71,7 +70,7 @@ impl Render for MapTopBarView {
             })
             .flex()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(6.0))
             .overflow_hidden()
             .child(render_title(&snapshot, layout.title_width, &colors, &i18n))
             .when(!layout.show_modes, |this| {
@@ -93,7 +92,7 @@ impl Render for MapTopBarView {
                     toolbar_group(&colors)
                         .child(stepper_name(&colors, "Y"))
                         .child(
-                            top_icon_button(&colors, lucide_icons::icon_minus()).on_mouse_down(
+                            top_icon_button(&colors, lucide_gpui::icon!(minus)).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
                                     cx.emit(MapViewerAction::StepY(-1));
@@ -102,7 +101,7 @@ impl Render for MapTopBarView {
                         )
                         .child(stepper_value(&colors, snapshot.y_layer.to_string()))
                         .child(
-                            top_icon_button(&colors, lucide_icons::icon_plus()).on_mouse_down(
+                            top_icon_button(&colors, lucide_gpui::icon!(plus)).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
                                     cx.emit(MapViewerAction::StepY(1));
@@ -116,7 +115,7 @@ impl Render for MapTopBarView {
                     toolbar_group(&colors)
                         .child(stepper_name(&colors, t!("MapViewer.zoom")))
                         .child(
-                            top_icon_button(&colors, lucide_icons::icon_minus()).on_mouse_down(
+                            top_icon_button(&colors, lucide_gpui::icon!(minus)).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
                                     cx.emit(MapViewerAction::ZoomBy(0.8));
@@ -128,7 +127,7 @@ impl Render for MapTopBarView {
                             format!("{:.0}%", snapshot.zoom_percent),
                         ))
                         .child(
-                            top_icon_button(&colors, lucide_icons::icon_plus()).on_mouse_down(
+                            top_icon_button(&colors, lucide_gpui::icon!(plus)).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
                                     cx.emit(MapViewerAction::ZoomBy(1.25));
@@ -146,7 +145,7 @@ impl Render for MapTopBarView {
                 this.child(status_badge(&colors, snapshot.activity))
             })
             .child(
-                top_command_button(&colors, lucide_icons::icon_upload(), t!("MapViewer.import"))
+                top_command_button(&colors, lucide_gpui::icon!(upload), t!("MapViewer.import"))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|_this, _event, _window, cx| {
@@ -157,7 +156,7 @@ impl Render for MapTopBarView {
             .child(
                 top_command_button(
                     &colors,
-                    lucide_icons::icon_chevron_down(),
+                    lucide_gpui::icon!(chevron_down),
                     t!("MapViewer.more"),
                 )
                 .on_mouse_down(
@@ -185,7 +184,7 @@ fn render_title(
         .gap(px(8.0))
         .overflow_hidden()
         .child(themed_icon(
-            lucide_icons::icon_map(),
+            lucide_gpui::icon!(map),
             CHROME_ICON_SIZE,
             colors.accent,
         ))
@@ -247,12 +246,12 @@ fn mode_buttons(
 
 fn toolbar_group(colors: &ThemeColors) -> Div {
     div()
-        .h(px(38.0))
+        .h(px(36.0))
         .p(px(3.0))
         .flex()
         .items_center()
         .gap(px(3.0))
-        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: CHROME_HAIRLINE_ALPHA,
@@ -311,13 +310,13 @@ fn top_command_button(
     label: impl Into<SharedString>,
 ) -> Div {
     div()
-        .h(px(36.0))
+        .h(px(34.0))
         .px(px(9.0))
         .flex_none()
         .flex()
         .items_center()
         .gap(px(5.0))
-        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: CHROME_HAIRLINE_ALPHA,

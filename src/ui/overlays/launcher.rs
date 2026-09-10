@@ -8,7 +8,6 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 fn launch_icon_path(name: &str) -> &'static str {
     if name.contains("EducationPreview") {
@@ -235,7 +234,7 @@ pub fn render_launcher_overlay(
                                         )
                                         .child(
                                             svg()
-                                                .path(lucide_icons::icon_copy())
+                                                .path(lucide_gpui::icon!(copy))
                                                 .size(px(16.))
                                                 .text_color(colors.text_secondary),
                                         ),
@@ -256,7 +255,7 @@ pub fn render_launcher_overlay(
                                         })
                                         .child(
                                             svg()
-                                                .path(lucide_icons::icon_minus())
+                                                .path(lucide_gpui::icon!(minus))
                                                 .size(px(16.))
                                                 .text_color(colors.text_secondary),
                                         ),
@@ -418,7 +417,7 @@ pub fn render_launcher_overlay(
                                                 ghost_button(
                                                     &colors,
                                                     t!("LaunchPage.copy_error"),
-                                                    lucide_icons::icon_copy(),
+                                                    lucide_gpui::icon!(copy),
                                                 )
                                                     .on_mouse_down(
                                                         MouseButton::Left,
@@ -432,7 +431,7 @@ pub fn render_launcher_overlay(
                                                 primary_button(
                                                     &colors,
                                                     t!("common.retry"),
-                                                    lucide_icons::icon_rotate_ccw(),
+                                                    lucide_gpui::icon!(rotate_ccw),
                                                 )
                                                 .on_mouse_down(
                                                     MouseButton::Left,

@@ -499,7 +499,7 @@ impl Render for SkinPreviewWindowView {
                                     self.render_button(
                                         &colors,
                                         "skin-preview-previous",
-                                        lucide_gpui::icons::icon_chevron_left(),
+                                        lucide_gpui::icon!(chevron_left),
                                         false,
                                     )
                                     .on_mouse_down(
@@ -513,7 +513,7 @@ impl Render for SkinPreviewWindowView {
                                     self.render_button(
                                         &colors,
                                         "skin-preview-next",
-                                        lucide_gpui::icons::icon_chevron_right(),
+                                        lucide_gpui::icon!(chevron_right),
                                         false,
                                     )
                                     .on_mouse_down(
@@ -528,7 +528,7 @@ impl Render for SkinPreviewWindowView {
                                 self.render_button(
                                     &colors,
                                     "skin-preview-toggle-layer-mode",
-                                    lucide_gpui::icons::icon_layers_2(),
+                                    lucide_gpui::icon!(layers_2),
                                     self.layer_mode.is_extruded(),
                                 )
                                 .on_mouse_down(
@@ -543,9 +543,9 @@ impl Render for SkinPreviewWindowView {
                                     &colors,
                                     "skin-preview-toggle-motion",
                                     if self.walking {
-                                        lucide_gpui::icons::icon_pause()
+                                        lucide_gpui::icon!(pause)
                                     } else {
-                                        lucide_gpui::icons::icon_play()
+                                        lucide_gpui::icon!(play)
                                     },
                                     self.walking,
                                 )
@@ -560,7 +560,7 @@ impl Render for SkinPreviewWindowView {
                                 self.render_button(
                                     &colors,
                                     "skin-preview-close",
-                                    lucide_gpui::icons::icon_x(),
+                                    lucide_gpui::icon!(x),
                                     false,
                                 )
                                 .on_click(|_event, window, _cx| {

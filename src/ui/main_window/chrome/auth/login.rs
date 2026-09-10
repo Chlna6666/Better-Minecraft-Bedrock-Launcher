@@ -24,7 +24,7 @@ fn add_account(state: &RenderState, colors: &ThemeColors) -> AnyElement {
     .bg(colors.accent.opacity(0.08))
     .text_color(colors.accent)
     .font_weight(FontWeight::SEMIBOLD)
-    .child(icon(icons::icon_user_plus(), colors.accent, 16.))
+    .child(icon(lucide_gpui::icon!(user_plus), colors.accent, 16.))
     .child(if state.snapshot.accounts.is_empty() {
         t!("Auth.login_with_microsoft")
     } else {
@@ -85,9 +85,9 @@ fn device_code(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                     .size(px(34.))
                     .child(icon(
                         if state.copied == Some("code") {
-                            icons::icon_check()
+                            lucide_gpui::icon!(check)
                         } else {
-                            icons::icon_copy()
+                            lucide_gpui::icon!(copy)
                         },
                         colors.accent,
                         16.,
@@ -104,7 +104,7 @@ fn device_code(state: &RenderState, colors: &ThemeColors) -> AnyElement {
             )
             .h(px(40.))
             .bg(colors.accent.opacity(0.12))
-            .child(icon(icons::icon_external_link(), colors.accent, 16.))
+            .child(icon(lucide_gpui::icon!(external_link), colors.accent, 16.))
             .child(t!("Auth.open_login_page")),
         )
         .child(
@@ -120,9 +120,9 @@ fn device_code(state: &RenderState, colors: &ThemeColors) -> AnyElement {
             .border_color(colors.border)
             .child(icon(
                 if state.copied == Some("link") {
-                    icons::icon_check()
+                    lucide_gpui::icon!(check)
                 } else {
-                    icons::icon_link()
+                    lucide_gpui::icon!(link)
                 },
                 colors.text_primary,
                 15.,
@@ -186,7 +186,7 @@ fn error(state: &RenderState, colors: &ThemeColors) -> AnyElement {
 }
 
 fn busy(state: &RenderState, colors: &ThemeColors) -> AnyElement {
-    let spinner = icon(icons::icon_loader_circle(), colors.accent, 16.);
+    let spinner = icon(lucide_gpui::icon!(loader_circle), colors.accent, 16.);
     let spinner = if state.reduced_motion {
         spinner.into_any_element()
     } else {

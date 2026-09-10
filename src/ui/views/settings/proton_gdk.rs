@@ -3,7 +3,6 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 pub(super) fn render(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
     let runner_root = crate::utils::file_ops::runners_dir();
@@ -76,7 +75,7 @@ pub(super) fn render(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
                             action_button(
                                 colors,
                                 t!("Settings.proton_gdk.register_local"),
-                                lucide_icons::icon_folder_open(),
+                                lucide_gpui::icon!(folder_open),
                                 false,
                             )
                             .on_mouse_down(
@@ -90,7 +89,7 @@ pub(super) fn render(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
                             action_button(
                                 colors,
                                 t!("Settings.proton_gdk.install_latest"),
-                                lucide_icons::icon_download(),
+                                lucide_gpui::icon!(download),
                                 true,
                             )
                             .on_mouse_down(
@@ -266,7 +265,7 @@ fn source_option(
         .when(active, |this| {
             this.child(
                 svg()
-                    .path(lucide_icons::icon_check())
+                    .path(lucide_gpui::icon!(check))
                     .w(px(13.))
                     .h(px(13.))
                     .text_color(colors.accent),
@@ -345,9 +344,9 @@ fn environment_overview(colors: &ThemeColors, i18n: &I18n, is_ready: bool) -> Di
                         .child(
                             svg()
                                 .path(if is_ready {
-                                    lucide_icons::icon_shield_check()
+                                    lucide_gpui::icon!(shield_check)
                                 } else {
-                                    lucide_icons::icon_package_open()
+                                    lucide_gpui::icon!(package_open)
                                 })
                                 .w(px(21.))
                                 .h(px(21.))
@@ -531,7 +530,7 @@ fn installed_runner_card(
                         .justify_center()
                         .child(
                             svg()
-                                .path(lucide_icons::icon_box())
+                                .path(lucide_gpui::icon!(box))
                                 .w(px(19.))
                                 .h(px(19.))
                                 .text_color(colors.accent),
@@ -616,7 +615,7 @@ fn installed_runner_card(
                         .cursor_pointer()
                         .child(
                             svg()
-                                .path(lucide_icons::icon_trash_2())
+                                .path(lucide_gpui::icon!(trash_2))
                                 .w(px(14.))
                                 .h(px(14.))
                                 .text_color(colors.danger),
@@ -691,7 +690,7 @@ fn empty_runner_card(colors: &ThemeColors, i18n: &I18n) -> Div {
                 .justify_center()
                 .child(
                     svg()
-                        .path(lucide_icons::icon_package_open())
+                        .path(lucide_gpui::icon!(package_open))
                         .w(px(20.))
                         .h(px(20.))
                         .text_color(colors.text_muted),
@@ -804,7 +803,7 @@ fn storage_footer(colors: &ThemeColors, i18n: &I18n, runner_root: std::path::Pat
                 .text_color(colors.text_muted)
                 .child(
                     svg()
-                        .path(lucide_icons::icon_folder())
+                        .path(lucide_gpui::icon!(folder))
                         .w(px(14.))
                         .h(px(14.))
                         .text_color(colors.text_muted),
@@ -818,7 +817,7 @@ fn storage_footer(colors: &ThemeColors, i18n: &I18n, runner_root: std::path::Pat
             action_button(
                 colors,
                 t!("Settings.proton_gdk.cleanup"),
-                lucide_icons::icon_trash_2(),
+                lucide_gpui::icon!(trash_2),
                 false,
             )
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {

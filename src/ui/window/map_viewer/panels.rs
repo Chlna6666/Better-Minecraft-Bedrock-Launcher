@@ -2,7 +2,6 @@ use super::helpers::*;
 use super::model::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
-use lucide_gpui::icons as lucide_icons;
 
 impl MapViewerWindowView {
     pub(super) fn top_bar_snapshot(&self, i18n: &I18n) -> MapTopBarSnapshot {
@@ -196,7 +195,7 @@ impl MapViewerWindowView {
                 panel_section_body(colors)
                     .child(panel_section_header(
                         colors,
-                        lucide_icons::icon_map(),
+                        lucide_gpui::icon!(map),
                         t!("MapViewer.dimension"),
                     ))
                     .child(
@@ -228,7 +227,7 @@ impl MapViewerWindowView {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
-                lucide_icons::icon_search(),
+                lucide_gpui::icon!(search),
                 t!("MapViewer.locate_zoom"),
             ))
             .child(
@@ -335,7 +334,7 @@ impl MapViewerWindowView {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
-                lucide_icons::icon_eye(),
+                lucide_gpui::icon!(eye),
                 t!("MapViewer.display"),
             ))
             .child(
@@ -377,7 +376,7 @@ impl MapViewerWindowView {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
-                lucide_icons::icon_layers(),
+                lucide_gpui::icon!(layers),
                 t!("MapViewer.data_overlays"),
             ))
             .child(
@@ -471,7 +470,7 @@ impl MapViewerWindowView {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
-                lucide_icons::icon_search(),
+                lucide_gpui::icon!(search),
                 t!("MapViewer.slime_analysis"),
             ))
             .child(
@@ -527,7 +526,7 @@ impl MapViewerWindowView {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
-                lucide_icons::icon_box(),
+                lucide_gpui::icon!(box),
                 t!("MapViewer.current_selection"),
             ))
             .child(status_badge(colors, selection))
@@ -860,7 +859,7 @@ pub(super) fn dock_close_button(colors: &ThemeColors) -> Div {
             })
         })
         .child(themed_icon(
-            lucide_icons::icon_x(),
+            lucide_gpui::icon!(x),
             CHROME_TAB_ICON_SIZE,
             colors.text_secondary,
         ))

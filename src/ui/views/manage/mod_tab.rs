@@ -129,9 +129,9 @@ pub(super) fn append_mod_asset_actions(
                 colors,
                 SharedString::from(format!("manage-mod-toggle-{}", asset.key)),
                 if asset.enabled.unwrap_or(true) {
-                    lucide_icons::icon_toggle_right()
+                    lucide_gpui::icon!(toggle_right)
                 } else {
-                    lucide_icons::icon_toggle_left()
+                    lucide_gpui::icon!(toggle_left)
                 },
             )
             .on_mouse_down(MouseButton::Left, {
@@ -148,7 +148,7 @@ pub(super) fn append_mod_asset_actions(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-mod-delay-{}", asset.key)),
-                lucide_icons::icon_clock_3(),
+                lucide_gpui::icon!(clock_3),
             )
             .on_mouse_down(MouseButton::Left, {
                 let key = action_key.clone();
@@ -164,7 +164,7 @@ pub(super) fn append_mod_asset_actions(
             compact_icon_button(
                 colors,
                 SharedString::from(format!("manage-mod-settings-{}", asset.key)),
-                lucide_icons::icon_settings_2(),
+                lucide_gpui::icon!(settings_2),
             )
             .on_mouse_down(MouseButton::Left, {
                 let key = action_key.clone();

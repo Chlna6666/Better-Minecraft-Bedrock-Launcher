@@ -3,7 +3,6 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::{ToolsPageState, ToolsTab};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 
 struct ToolNavigationItem {
     id: &'static str,
@@ -25,7 +24,7 @@ pub(super) fn render_sidebar(colors: &ThemeColors, active: ToolsTab) -> Div {
         tab: ToolsTab::Online,
         label: "联机大厅",
         description: "创建或加入 EasyTier 房间",
-        icon: lucide_icons::icon_users(),
+        icon: lucide_gpui::icon!(users),
     }];
 
     crate::ui::components::page_shell::split_sidebar_panel(colors)

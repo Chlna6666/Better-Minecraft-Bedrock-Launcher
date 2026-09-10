@@ -98,7 +98,7 @@ pub(super) fn render_version_header(
                         .child(
                             toolbar_glyph_button(
                                 "manage-rename-version-btn",
-                                lucide_icons::icon_file_pen_line(),
+                                lucide_gpui::icon!(file_pen_line),
                                 colors,
                             )
                             .on_mouse_down(
@@ -175,7 +175,7 @@ pub(super) fn render_tab_bar(
                     }
                 },
             )
-            .icon(lucide_icons::icon_activity()),
+            .icon(lucide_gpui::icon!(activity)),
             TabItem::new(
                 "manage-tab-mod",
                 t!("ManagePage.tabs.mods"),
@@ -189,7 +189,7 @@ pub(super) fn render_tab_bar(
                     }
                 },
             )
-            .icon(lucide_icons::icon_layers()),
+            .icon(lucide_gpui::icon!(layers)),
             TabItem::new(
                 "manage-tab-pack",
                 t!("ManagePage.tabs.resource"),
@@ -203,7 +203,7 @@ pub(super) fn render_tab_bar(
                     }
                 },
             )
-            .icon(lucide_icons::icon_package()),
+            .icon(lucide_gpui::icon!(package)),
             TabItem::new(
                 "manage-tab-skin-pack",
                 t!("ManagePage.tabs.skins"),
@@ -217,7 +217,7 @@ pub(super) fn render_tab_bar(
                     }
                 },
             )
-            .icon(lucide_icons::icon_user()),
+            .icon(lucide_gpui::icon!(user)),
             TabItem::new(
                 "manage-tab-map",
                 t!("ManagePage.tabs.maps"),
@@ -231,7 +231,7 @@ pub(super) fn render_tab_bar(
                     }
                 },
             )
-            .icon(lucide_icons::icon_map()),
+            .icon(lucide_gpui::icon!(map)),
             TabItem::new(
                 "manage-tab-screenshot",
                 t!("ManagePage.tabs.screenshots"),
@@ -245,7 +245,7 @@ pub(super) fn render_tab_bar(
                     }
                 },
             )
-            .icon(lucide_icons::icon_image()),
+            .icon(lucide_gpui::icon!(image)),
             TabItem::new(
                 "manage-tab-server",
                 t!("ManagePage.tabs.servers"),
@@ -256,7 +256,7 @@ pub(super) fn render_tab_bar(
                     });
                 },
             )
-            .icon(lucide_icons::icon_server()),
+            .icon(lucide_gpui::icon!(server)),
         ],
     )
     .gap(px(14.))
@@ -288,7 +288,7 @@ pub(super) fn render_pack_subtype_switch(
                     }
                 },
             )
-            .icon(lucide_icons::icon_package()),
+            .icon(lucide_gpui::icon!(package)),
             TabItem::new(
                 "manage-pack-behavior",
                 t!("AssetManager.pack_behavior_short"),
@@ -299,7 +299,7 @@ pub(super) fn render_pack_subtype_switch(
                     });
                 },
             )
-            .icon(lucide_icons::icon_layers()),
+            .icon(lucide_gpui::icon!(layers)),
         ],
     )
     .height(px(28.))
@@ -343,7 +343,7 @@ pub(super) fn render_toolbar_search_input(
                 .w_full()
                 .prefix(
                     svg()
-                        .path(lucide_icons::icon_search())
+                        .path(lucide_gpui::icon!(search))
                         .w(px(13.))
                         .h(px(13.))
                         .text_color(icon_color),
@@ -430,7 +430,7 @@ pub(super) fn render_gdk_dropdown(
                 )
                 .child(
                     svg()
-                        .path(lucide_icons::icon_chevron_down())
+                        .path(lucide_gpui::icon!(chevron_down))
                         .w(px(14.))
                         .h(px(14.))
                         .opacity(if enabled { 0.75 } else { 0.35 })
@@ -523,19 +523,19 @@ pub(super) fn render_sort_controls(
         .child(render_sort_button(
             "manage-sort-name",
             ManageAssetSortKey::Name,
-            lucide_icons::icon_file_text(),
+            lucide_gpui::icon!(file_text),
             cx,
         ))
         .child(render_sort_button(
             "manage-sort-date",
             ManageAssetSortKey::Date,
-            lucide_icons::icon_calendar(),
+            lucide_gpui::icon!(calendar),
             cx,
         ))
         .child(render_sort_button(
             "manage-sort-size",
             ManageAssetSortKey::Size,
-            lucide_icons::icon_box(),
+            lucide_gpui::icon!(box),
             cx,
         ))
         .into_any_element()
@@ -554,7 +554,7 @@ pub(super) fn render_active_toolbar_actions(
                 if state.selected_asset_keys.is_empty() {
                     toolbar_glyph_button(
                         "manage-import-assets",
-                        lucide_icons::icon_file_up(),
+                        lucide_gpui::icon!(file_up),
                         colors,
                     )
                     .on_mouse_down(
@@ -567,7 +567,7 @@ pub(super) fn render_active_toolbar_actions(
                 } else {
                     toolbar_glyph_button(
                         "manage-delete-assets",
-                        lucide_icons::icon_trash_2(),
+                        lucide_gpui::icon!(trash_2),
                         colors,
                     )
                     .on_mouse_down(
@@ -583,7 +583,7 @@ pub(super) fn render_active_toolbar_actions(
         ManageTab::Screenshot => vec![
             toolbar_glyph_button(
                 "manage-refresh-screenshots",
-                lucide_icons::icon_refresh_cw(),
+                lucide_gpui::icon!(refresh_cw),
                 colors,
             )
             .on_mouse_down(
@@ -597,7 +597,7 @@ pub(super) fn render_active_toolbar_actions(
         ManageTab::Server => vec![
             toolbar_glyph_button(
                 "manage-refresh-servers",
-                lucide_icons::icon_refresh_cw(),
+                lucide_gpui::icon!(refresh_cw),
                 colors,
             )
             .on_mouse_down(
@@ -607,7 +607,7 @@ pub(super) fn render_active_toolbar_actions(
                 }),
             )
             .into_any_element(),
-            toolbar_glyph_button("manage-add-server", lucide_icons::icon_plus(), colors)
+            toolbar_glyph_button("manage-add-server", lucide_gpui::icon!(plus), colors)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {

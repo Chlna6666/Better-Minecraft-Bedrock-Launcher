@@ -9,7 +9,6 @@ use crate::ui::views::download::state::{
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::time::Instant;
 
 const CONTROL_HEIGHT: f32 = 38.0;
@@ -84,7 +83,7 @@ fn render_toolbar_search(
                 Input::new(input_state)
                     .cleanable(true)
                     .prefix(themed_icon(
-                        lucide_icons::icon_search(),
+                        lucide_gpui::icon!(search),
                         16.0,
                         colors.text_secondary,
                     ))
@@ -107,7 +106,7 @@ fn render_toolbar_search(
             .items_center()
             .gap(px(8.))
             .child(themed_icon(
-                lucide_icons::icon_search(),
+                lucide_gpui::icon!(search),
                 16.0,
                 colors.text_secondary,
             ))
@@ -276,21 +275,21 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
         .child(indicator)
         .child(tab(
             "download-tab-game",
-            lucide_icons::icon_box(),
+            lucide_gpui::icon!(box),
             t!("DownloadPage.tab_game"),
             DownloadTab::Game,
             active,
         ))
         .child(tab(
             "download-tab-resource",
-            lucide_icons::icon_package(),
+            lucide_gpui::icon!(package),
             t!("DownloadPage.tab_resource"),
             DownloadTab::ResourcePack,
             active,
         ))
         .child(tab(
             "download-tab-mod",
-            lucide_icons::icon_layers(),
+            lucide_gpui::icon!(layers),
             t!("DownloadPage.tab_mods"),
             DownloadTab::Mod,
             active,
@@ -414,7 +413,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
         div().into_any_element()
     };
 
-    let refresh = IconButton::new("download-refresh", lucide_icons::icon_refresh_cw())
+    let refresh = IconButton::new("download-refresh", lucide_gpui::icon!(refresh_cw))
         .icon_color(colors.text_secondary)
         .w(px(CONTROL_HEIGHT))
         .h(px(CONTROL_HEIGHT))
@@ -481,7 +480,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                         .w(px(CONTROL_HEIGHT))
                         .h(px(CONTROL_HEIGHT))
                         .child(
-                            IconButton::new("download-import", lucide_icons::icon_upload())
+                            IconButton::new("download-import", lucide_gpui::icon!(upload))
                                 .icon_size(16.0)
                                 .icon_color(colors.text_secondary)
                                 .w(px(CONTROL_HEIGHT))

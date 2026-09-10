@@ -4,7 +4,6 @@ use super::players::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
 use gpui::StatefulInteractiveElement as _;
-use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum PlayerWorkspaceCenter {
@@ -332,7 +331,7 @@ impl Render for PlayerItemDrag {
                     })
                     .when(self.texture.is_none(), |this| {
                         this.child(themed_icon(
-                            lucide_icons::icon_package(),
+                            lucide_gpui::icon!(package),
                             24.0,
                             rgb(0x6f675c).into(),
                         ))
@@ -386,7 +385,31 @@ impl MapViewerWindowView {
 
     pub(super) fn player_workspace_active(&self) -> bool {
         self.ui_state.active_left_panel == MapViewerLeftPanel::Players
-            && (self.ui_state.left_panel_open || self.players.selected.is_some())
+            && self.ui_state.left_panel_open
+    }
+
+    pub(super) fn close_player_workspace(&mut self, cx: &mut Context<Self>) {
+        self.clear_player_workspace_context();
+        self.ui_state.close_player_panes();
+        self.update_viewport_after_dock_change(cx);
+        cx.notify();
+    }
+
+    pub(super) fn clear_player_workspace_context(&mut self) {
+        self.players.selected = None;
+        self.players.detail = None;
+        self.players.loading = false;
+        self.players.error = None;
+        self.players.pending_save_confirmation = None;
+        self.players.context_target = None;
+        self.player_workspace.center = PlayerWorkspaceCenter::Map;
+        self.player_workspace.open_first_after_refresh = false;
+        self.player_workspace.selected_item = None;
+        self.player_workspace.multi_selected_items.clear();
+        self.player_workspace.pressed_item = None;
+        self.player_workspace.item_context_menu = None;
+        self.player_workspace.item_context_copy_open = false;
+        self.player_workspace.item_editor_error = None;
     }
 
     pub(super) fn render_player_left_dock(
@@ -1211,14 +1234,14 @@ impl MapViewerWindowView {
             })
             .when(entry.is_some() && texture.is_none(), |this| {
                 this.child(themed_icon(
-                    lucide_icons::icon_package(),
+                    lucide_gpui::icon!(package),
                     icon_size.min(26.0),
                     colors.text_muted,
                 ))
             })
             .when(entry.is_none(), |this| {
                 this.child(themed_icon(
-                    lucide_icons::icon_plus(),
+                    lucide_gpui::icon!(plus),
                     (icon_size * 0.55).max(12.0),
                     Hsla {
                         a: 0.42,
@@ -1607,7 +1630,7 @@ impl MapViewerWindowView {
             .flex_col()
             .child(
                 div()
-                    .h(px(48.0))
+                    .h(px(40.0))
                     .flex_none()
                     .px(px(12.0))
                     .border_b_1()
@@ -1792,7 +1815,7 @@ impl MapViewerWindowView {
                             })
                             .when(texture.is_none(), |this| {
                                 this.child(themed_icon(
-                                    lucide_icons::icon_package(),
+                                    lucide_gpui::icon!(package),
                                     24.0,
                                     colors.text_muted,
                                 ))
@@ -2738,21 +2761,15 @@ pub(super) fn inventory_kind_capacity(kind: PlayerInventoryKind) -> i32 {
 fn workspace_tab_button(colors: &ThemeColors, label: impl Into<SharedString>, active: bool) -> Div {
     let label = label.into();
     div()
+        .relative()
+        .h(px(30.0))
         .px(px(9.0))
-        .py(px(5.0))
-        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .flex()
+        .items_center()
         .cursor_pointer()
-        .bg(if active {
-            Hsla {
-                a: 0.18,
-                ..colors.accent
-            }
-        } else {
-            transparent_black()
-        })
         .hover(|style| {
             style.bg(Hsla {
-                a: 0.55,
+                a: 0.42,
                 ..colors.surface_hover
             })
         })
@@ -2766,6 +2783,17 @@ fn workspace_tab_button(colors: &ThemeColors, label: impl Into<SharedString>, ac
             colors.accent
         } else {
             colors.text_secondary
+        })
+        .when(active, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .left(px(7.0))
+                    .right(px(7.0))
+                    .bottom(px(0.0))
+                    .h(px(2.0))
+                    .bg(colors.accent),
+            )
         })
         .child(label)
 }

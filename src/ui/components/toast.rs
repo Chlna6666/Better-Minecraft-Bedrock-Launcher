@@ -3,7 +3,6 @@ use crate::ui::components::page_shell::card_shadow;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::*;
-use lucide_gpui::icons as lucide_icons;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -923,12 +922,12 @@ mod tests {
 
 fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
     let (accent, icon) = match item.kind {
-        ToastKind::Info => (colors.accent, lucide_icons::icon_info()),
+        ToastKind::Info => (colors.accent, lucide_gpui::icon!(info)),
         ToastKind::Success => (
             hsla(142.0 / 360.0, 0.62, 0.42, 1.0),
-            lucide_icons::icon_check(),
+            lucide_gpui::icon!(check),
         ),
-        ToastKind::Error => (colors.danger, lucide_icons::icon_circle_x()),
+        ToastKind::Error => (colors.danger, lucide_gpui::icon!(circle_x)),
     };
 
     // 取消倒计时边框描边：不再渲染描边 canvas，因此这里不需要为边框预留 padding。

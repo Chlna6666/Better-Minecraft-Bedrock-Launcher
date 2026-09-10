@@ -100,7 +100,7 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
                     ),
             )
             // Keep the indicator slot stable while switching accounts.
-            .child(icon(icons::icon_check(), colors.accent, 16.).opacity(row.selection)),
+            .child(icon(lucide_gpui::icon!(check), colors.accent, 16.).opacity(row.selection)),
         )
         .when(
             !crate::core::bedrock_auth::is_system_local_account(&profile.xuid),
@@ -124,9 +124,9 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
                     })
                     .child(icon(
                         if confirming {
-                            icons::icon_check()
+                            lucide_gpui::icon!(check)
                         } else {
-                            icons::icon_trash_2()
+                            lucide_gpui::icon!(trash_2)
                         },
                         if confirming {
                             rgb(0xdc2626).into()
@@ -147,7 +147,7 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
                         )
                         .size(px(26.))
                         .child(icon(
-                            icons::icon_x(),
+                            lucide_gpui::icon!(x),
                             colors.text_secondary,
                             14.,
                         )),
