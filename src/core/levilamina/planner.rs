@@ -205,13 +205,9 @@ async fn fetch_manifest(package_path: &str, version: &str) -> Result<PackageMani
 
 async fn fetch_text(url: &str) -> Result<String, String> {
     let client = get_client_for_proxy().map_err(|error| error.to_string())?;
-    client
-        .get(url)
-        .send()
+    crate::github::get(&client, url)
         .await
         .map_err(|error| format!("Lip 请求失败 {url}: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Lip 请求返回错误 {url}: {error}"))?
         .text()
         .await
         .map_err(|error| format!("读取 Lip 响应失败 {url}: {error}"))

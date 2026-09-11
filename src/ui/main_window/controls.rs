@@ -1,5 +1,7 @@
 use super::*;
 
+mod settings_github;
+
 impl MainWindowView {
     pub(super) fn ensure_route_controls(
         &mut self,
@@ -285,6 +287,7 @@ impl MainWindowView {
             return;
         }
         self.settings_controls_initialized = true;
+        self.ensure_settings_github_control(window, cx);
 
         let (base_input, http_input, socks_input, theme_input, local_input, network_input) = cx
             .update_global(

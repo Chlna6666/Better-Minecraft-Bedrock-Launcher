@@ -36,13 +36,9 @@ impl LeviLaminaSupportDatabase {
 
 pub async fn fetch_support_database() -> Result<LeviLaminaSupportDatabase, String> {
     let client = get_client_for_proxy().map_err(|error| error.to_string())?;
-    let response = client
-        .get(VERSION_DATABASE_URL)
-        .send()
+    let response = crate::github::get(&client, VERSION_DATABASE_URL)
         .await
-        .map_err(|error| format!("获取 LeviLamina 版本数据库失败: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("LeviLamina 版本数据库返回错误: {error}"))?;
+        .map_err(|error| format!("获取 LeviLamina 版本数据库失败: {error}"))?;
     let mut database = response
         .json::<LeviLaminaSupportDatabase>()
         .await

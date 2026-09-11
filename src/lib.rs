@@ -6,6 +6,7 @@ mod assets;
 mod config;
 mod core;
 mod downloads;
+mod github;
 mod http;
 #[macro_use]
 mod i18n;

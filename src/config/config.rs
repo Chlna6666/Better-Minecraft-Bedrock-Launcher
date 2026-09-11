@@ -233,6 +233,30 @@ pub struct ProxyConfig {
     pub socks_proxy_url: String,
 }
 
+/// Selects how public GitHub files are downloaded.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GithubSource {
+    /// Try the built-in public mirrors, then fall back to GitHub.
+    #[default]
+    Auto,
+    /// Download directly from GitHub without a mirror.
+    Direct,
+    /// Try the user-provided mirror template, then fall back to GitHub.
+    Custom,
+}
+
+/// GitHub file-download acceleration settings.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct GithubConfig {
+    /// Determines which mirror candidates are used for public GitHub files.
+    pub source: GithubSource,
+    /// Custom mirror URL or template. `{url}` receives the full source URL and
+    /// `{route}` receives the path after `github.com/` when applicable.
+    pub custom_mirror: String,
+}
+
 impl Default for UpdateChannel {
     fn default() -> Self {
         UpdateChannel::Stable
@@ -256,6 +280,8 @@ pub struct DownloadConfig {
     pub max_threads: u32,
     pub auto_thread_count: bool,
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub github: GithubConfig,
     #[serde(default)]
     pub curseforge_api_source: String,
     #[serde(default)]

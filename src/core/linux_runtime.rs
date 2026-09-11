@@ -911,13 +911,9 @@ async fn download_proton_gdk_asset(
 
     let manager = DownloaderManager::with_client(client.clone());
     let options = DownloadOptions::default();
+    let urls = crate::github::configured_download_urls(asset_url)?;
     let result = manager
-        .download_with_options(
-            task_id,
-            asset_url.to_string(),
-            archive_path.to_path_buf(),
-            &options,
-        )
+        .download_with_url_candidates(task_id, urls, archive_path.to_path_buf(), &options)
         .await
         .map_err(|error| format!("下载 Proton-GDK 失败：{error:?}"))?;
 

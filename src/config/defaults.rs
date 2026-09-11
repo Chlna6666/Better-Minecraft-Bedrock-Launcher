@@ -1,7 +1,7 @@
 use super::config::{
     AppStateConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle, DEFAULT_APPX_API,
-    DEFAULT_ERROR_REPORT_SENTRY_DSN, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, Launcher,
-    OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
+    DEFAULT_ERROR_REPORT_SENTRY_DSN, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, GithubConfig,
+    Launcher, OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
 };
 
 pub(super) fn default_true() -> bool {
@@ -118,6 +118,7 @@ pub fn get_default_config() -> Config {
                     http_proxy_url: "".to_string(),
                     socks_proxy_url: "".to_string(),
                 },
+                github: GithubConfig::default(),
                 curseforge_api_source: "mirror".to_string(),
                 curseforge_api_base: "https://mod.mcimirror.top/curseforge".to_string(),
             },

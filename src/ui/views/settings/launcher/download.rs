@@ -27,7 +27,71 @@ pub(super) fn render_download_settings(
         .child(launcher_auto_thread_count_row(colors, i18n, state))
         .child(launcher_max_threads_row(colors, i18n, state))
         .child(launcher_proxy_mode_row(colors, i18n, state))
+        .child(launcher_github_source_row(colors, i18n, state))
         .child(launcher_curseforge_source_row(colors, i18n, state))
+}
+
+fn launcher_github_source_row(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &SettingsPageState,
+) -> impl IntoElement {
+    let values = vec![
+        SharedString::from("auto"),
+        SharedString::from("direct"),
+        SharedString::from("custom"),
+    ];
+    let options = vec![
+        DropdownOption::from(t!("LauncherSettings.download.github_source.auto")),
+        DropdownOption::from(t!("LauncherSettings.download.github_source.direct")),
+        DropdownOption::from(t!("LauncherSettings.download.github_source.custom")),
+    ];
+    let selected_index = values
+        .iter()
+        .position(|value| value.as_ref() == state.download_github_source.as_ref())
+        .unwrap_or(0);
+    let label = options
+        .get(selected_index)
+        .map(|option| option.label.clone())
+        .unwrap_or_else(|| t!("LauncherSettings.download.github_source.auto"));
+    let source_dropdown = Dropdown::new(
+        SharedString::from("settings-launcher-download-github-source-dropdown"),
+        colors,
+        px(180.),
+        label,
+        options,
+        selected_index,
+        true,
+        move |index, _window, cx| {
+            let selected = values
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| SharedString::from("auto"));
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+                settings.download_github_source = selected;
+                snapshot_from_state(settings)
+            });
+            spawn_persist_settings(snapshot, cx);
+        },
+    );
+
+    settings_card(colors, "settings-launcher-download-github-source")
+        .child(
+            settings_card_header(
+                colors,
+                t!("LauncherSettings.download.github_source"),
+                t!("LauncherSettings.download.github_source_desc"),
+            )
+            .child(source_dropdown),
+        )
+        .when(state.download_github_source.as_ref() == "custom", |this| {
+            this.child(settings_sub_input_row(
+                colors,
+                t!("LauncherSettings.download.github_custom_mirror"),
+                state.download_github_custom_mirror_input.as_ref(),
+                "https://mirror.example/{url}",
+            ))
+        })
 }
 
 fn download_section_title(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {

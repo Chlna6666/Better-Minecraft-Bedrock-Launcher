@@ -27,6 +27,8 @@ pub(super) struct SettingsSnapshot {
     pub(super) download_auto_thread_count: bool,
     pub(super) download_max_threads: u32,
     pub(super) download_proxy_type: String,
+    pub(super) download_github_source: String,
+    pub(super) download_github_custom_mirror: String,
     pub(super) download_curseforge_api_source: String,
     pub(super) download_curseforge_api_base: String,
     pub(super) download_http_proxy_url: String,
@@ -61,6 +63,8 @@ pub(super) fn snapshot_from_state(state: &SettingsPageState) -> SettingsSnapshot
         download_auto_thread_count: state.download_auto_thread_count,
         download_max_threads: state.download_max_threads.clamp(1, 256),
         download_proxy_type: state.download_proxy_type.to_string(),
+        download_github_source: state.download_github_source.to_string(),
+        download_github_custom_mirror: state.download_github_custom_mirror.to_string(),
         download_curseforge_api_source: state.download_curseforge_api_source.to_string(),
         download_curseforge_api_base: state.download_curseforge_api_base.to_string(),
         download_http_proxy_url: state.download_http_proxy_url.to_string(),
@@ -137,6 +141,13 @@ pub(super) fn spawn_persist_settings_with_success(
                         "socks5" => ProxyType::Socks5,
                         _ => ProxyType::None,
                     };
+                cfg.launcher.download.github.source =
+                    match snapshot.download_github_source.to_lowercase().as_str() {
+                        "direct" => crate::config::config::GithubSource::Direct,
+                        "custom" => crate::config::config::GithubSource::Custom,
+                        _ => crate::config::config::GithubSource::Auto,
+                    };
+                cfg.launcher.download.github.custom_mirror = snapshot.download_github_custom_mirror;
                 cfg.launcher.download.curseforge_api_source = match snapshot
                     .download_curseforge_api_source
                     .to_lowercase()

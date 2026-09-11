@@ -97,6 +97,8 @@ pub struct SettingsPageState {
     pub download_auto_thread_count: bool,
     pub download_max_threads: u32,
     pub download_proxy_type: SharedString,
+    pub download_github_source: SharedString,
+    pub download_github_custom_mirror: SharedString,
     pub download_curseforge_api_source: SharedString,
     pub download_curseforge_api_base: SharedString,
     pub download_http_proxy_url: SharedString,
@@ -104,6 +106,7 @@ pub struct SettingsPageState {
     pub download_curseforge_api_base_input: Option<Entity<InputState>>,
     pub download_http_proxy_url_input: Option<Entity<InputState>>,
     pub download_socks_proxy_url_input: Option<Entity<InputState>>,
+    pub download_github_custom_mirror_input: Option<Entity<InputState>>,
     pub launcher_connectivity_open: bool,
     pub launcher_connectivity_running: bool,
     pub launcher_connectivity_req_id: u64,
@@ -213,6 +216,8 @@ impl Default for SettingsPageState {
             download_auto_thread_count: false,
             download_max_threads: 1,
             download_proxy_type: SharedString::from(""),
+            download_github_source: SharedString::from(""),
+            download_github_custom_mirror: SharedString::from(""),
             download_curseforge_api_source: SharedString::from(""),
             download_curseforge_api_base: SharedString::from(""),
             download_http_proxy_url: SharedString::from(""),
@@ -220,6 +225,7 @@ impl Default for SettingsPageState {
             download_curseforge_api_base_input: None,
             download_http_proxy_url_input: None,
             download_socks_proxy_url_input: None,
+            download_github_custom_mirror_input: None,
             launcher_connectivity_open: false,
             launcher_connectivity_running: false,
             launcher_connectivity_req_id: 0,
@@ -330,6 +336,14 @@ impl SettingsPageState {
                 crate::config::config::ProxyType::Http => "http",
                 crate::config::config::ProxyType::Socks5 => "socks5",
             });
+        self.download_github_source =
+            SharedString::from(match config.launcher.download.github.source {
+                crate::config::config::GithubSource::Auto => "auto",
+                crate::config::config::GithubSource::Direct => "direct",
+                crate::config::config::GithubSource::Custom => "custom",
+            });
+        self.download_github_custom_mirror =
+            SharedString::from(config.launcher.download.github.custom_mirror.clone());
         self.download_curseforge_api_source = SharedString::from(
             match config
                 .launcher
@@ -438,6 +452,7 @@ impl SettingsPageState {
             || self.download_curseforge_api_base_input.is_some()
             || self.download_http_proxy_url_input.is_some()
             || self.download_socks_proxy_url_input.is_some()
+            || self.download_github_custom_mirror_input.is_some()
             || self.launcher_connectivity_open
             || self.launcher_connectivity_running
             || self.launcher_connectivity_cancel_tx.is_some()
@@ -480,6 +495,7 @@ impl SettingsPageState {
         self.download_curseforge_api_base_input = None;
         self.download_http_proxy_url_input = None;
         self.download_socks_proxy_url_input = None;
+        self.download_github_custom_mirror_input = None;
         self.launcher_connectivity_open = false;
         self.launcher_connectivity_running = false;
         self.launcher_connectivity_req_id = self.launcher_connectivity_req_id.saturating_add(1);

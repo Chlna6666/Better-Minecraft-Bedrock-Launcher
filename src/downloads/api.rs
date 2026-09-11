@@ -256,6 +256,7 @@ pub async fn download_resource(
     force_download: Option<bool>,
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
+    let urls = crate::github::configured_download_urls(&url)?;
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
@@ -314,7 +315,7 @@ pub async fn download_resource(
                 options.md5_expected = md5;
             }
             let res = manager
-                .download_with_options(&task_id_clone, url, dest_clone.clone(), &options)
+                .download_with_url_candidates(&task_id_clone, urls, dest_clone.clone(), &options)
                 .await;
 
             match res {
@@ -357,6 +358,7 @@ pub async fn download_resource_to_cache(
     md5: Option<String>,
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
+    let urls = crate::github::configured_download_urls(&url)?;
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
@@ -399,7 +401,7 @@ pub async fn download_resource_to_cache(
                 options.md5_expected = md5;
             }
             let res = manager
-                .download_with_options(&task_id_clone, url, dest_clone.clone(), &options)
+                .download_with_url_candidates(&task_id_clone, urls, dest_clone.clone(), &options)
                 .await;
 
             match res {

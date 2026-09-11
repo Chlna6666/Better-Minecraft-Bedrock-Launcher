@@ -58,6 +58,11 @@ fn missing_glass_effect_enabled_defaults_to_true() {
         super::config::default_error_report_sentry_dsn()
     );
     assert_eq!(config.launcher.log_management.retention_days, 7);
+    assert_eq!(
+        config.launcher.download.github.source,
+        super::config::GithubSource::Auto
+    );
+    assert!(config.launcher.download.github.custom_mirror.is_empty());
     assert_eq!(config.online.player_name.len(), 6);
     assert!(
         config
