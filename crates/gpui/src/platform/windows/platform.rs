@@ -1072,14 +1072,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::Resized(physical_size) => {
                 let scale_factor = window.scale_factor();
                 Self::sync_window_size(&window, physical_size, scale_factor);
-                // During the Win32 modal size/move loop, WM_SIZE only publishes the newest extent
-                // and stretches the last complete frame. The native timer owns rendering so a slow
-                // layout/GPU resize cannot block every pointer message, and buffered winit resize
-                // events cannot render the same extent twice. Outside that loop, preserve the
-                // normal immediate resize behavior.
-                if !window.is_in_native_size_move_loop() {
-                    Self::dispatch_pending_window_update(&window);
-                }
+                // `sync_window_size` queues the newest extent and requests a platform frame.
+                // Maximize/restore may emit this event reentrantly from a GPUI window-control
+                // callback, so invoking the resize/frame callbacks here would borrow Window twice.
             }
             winit::event::WindowEvent::Moved(_) => {
                 self.refresh_display_cache(event_loop);
@@ -1102,9 +1097,6 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let physical_size = window.window().inner_size();
                 Self::sync_window_size(&window, physical_size, scale_factor as f32);
-                if !window.is_in_native_size_move_loop() {
-                    Self::dispatch_pending_window_update(&window);
-                }
                 self.refresh_display_cache(event_loop);
             }
             winit::event::WindowEvent::ThemeChanged(_) => {

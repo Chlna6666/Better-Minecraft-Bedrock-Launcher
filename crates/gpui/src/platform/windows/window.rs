@@ -208,21 +208,23 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 log::warn!("failed to stop GPUI native size/move redraw timer: {error}");
             }
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-            // Flush the final coalesced extent after winit has left its native size/move state.
-            dispatch_size_move_frame(hwnd);
+            // Resume normal frame pacing before flushing the final coalesced extent. Otherwise
+            // the final request is made while the global native-size/move guard still suspends
+            // VSync, leaving the client at its new size with an older frame covering only part of
+            // it until some unrelated event requests another frame.
             leave_size_move_loop(hwnd);
+            dispatch_size_move_frame(hwnd);
             return result;
         }
         SizeMoveLoopAction::SyncExtent => {
             // Let the default/winit chain commit the non-client and client rectangles first, then
-            // query the authoritative client extent. WM_WINDOWPOSCHANGED can generate WM_SIZE
-            // recursively; `sync_size` deduplicates that pair.
+            // publish the authoritative client extent. Do not invoke GPUI callbacks from this
+            // native stack: maximize/restore can deliver WM_SIZE synchronously while the click
+            // handler still owns the high-level Window RefCell. `queue_resize` requests a frame,
+            // and the winit/VSync pump consumes it after the native callback unwinds.
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
-                if !window.is_in_native_size_move_loop() {
-                    window.dispatch_pending_update();
-                }
             }
             return result;
         }
@@ -1278,8 +1280,7 @@ impl WindowsWindow {
         // frame over the new client size right now, before the next frame applies the
         // resize to the swapchain buffers. This mirrors the scaling DXGI performs for
         // HWND flip swapchains and keeps the live-resize gap transparent instead of black.
-        {
-            let mut renderer_state = self.0.renderer.borrow_mut();
+        if let Ok(mut renderer_state) = self.0.renderer.try_borrow_mut() {
             if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
                 renderer.stretch_for_pending_resize(resize.drawable_size);
             }
