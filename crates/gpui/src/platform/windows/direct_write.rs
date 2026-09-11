@@ -667,15 +667,14 @@ impl DirectWriteState {
             )?;
         }
         let use_subpixel_rendering = should_use_subpixel_rendering(components, params);
+        let font_weight = unsafe { font.font_face.GetWeight() };
         // Natural/GDI modes only antialias horizontally. A grayscale atlas needs vertical
-        // coverage as well, especially at the curved tops of small digits. Keep the platform's
-        // grid fitting, but use symmetric coverage for grayscale on every renderer backend.
+        // coverage as well, especially at the curved tops of small digits. Heavier faces also
+        // expose asymmetric horizontal strokes when rasterized with single-axis antialiasing.
+        // Keep the platform's grid fitting, but select symmetric coverage from raster properties
+        // rather than the language of the source text.
         let rendering_mode =
-            if !use_subpixel_rendering || rendering_mode == DWRITE_RENDERING_MODE1_OUTLINE {
-                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
-            } else {
-                rendering_mode
-            };
+            resolved_glyph_rendering_mode(rendering_mode, use_subpixel_rendering, font_weight);
 
         let antialias_mode = if use_subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
@@ -1583,6 +1582,21 @@ fn should_use_subpixel_rendering_for_size(
     system_subpixel_rendering && !is_emoji && font_size * scale_factor >= 10.0
 }
 
+fn resolved_glyph_rendering_mode(
+    recommended: DWRITE_RENDERING_MODE1,
+    use_subpixel_rendering: bool,
+    font_weight: DWRITE_FONT_WEIGHT,
+) -> DWRITE_RENDERING_MODE1 {
+    if !use_subpixel_rendering
+        || font_weight.0 >= DWRITE_FONT_WEIGHT_SEMI_BOLD.0
+        || recommended == DWRITE_RENDERING_MODE1_OUTLINE
+    {
+        DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
+    } else {
+        recommended
+    }
+}
+
 fn get_system_ui_font_name() -> SharedString {
     unsafe {
         let mut info: LOGFONTW = std::mem::zeroed();
@@ -1659,8 +1673,8 @@ const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
 #[cfg(test)]
 mod tests {
     use super::{
-        ClusterAnalyzer, DirectWriteTextSystem, should_use_subpixel_rendering_for_size,
-        utf8_run_end, utf8_run_start,
+        ClusterAnalyzer, DirectWriteTextSystem, resolved_glyph_rendering_mode,
+        should_use_subpixel_rendering_for_size, utf8_run_end, utf8_run_start,
     };
     use crate::{
         FontRun, GlyphRasterization, PlatformTextSystem, RenderGlyphParams, RendererCapabilities,
@@ -1684,6 +1698,28 @@ mod tests {
         assert!(!should_use_subpixel_rendering_for_size(
             false, false, 16.0, 1.0
         ));
+    }
+
+    #[test]
+    fn heavy_subpixel_text_uses_symmetric_rendering_for_every_script() {
+        let recommended = windows::Win32::Graphics::DirectWrite::DWRITE_RENDERING_MODE1_NATURAL;
+
+        assert_eq!(
+            resolved_glyph_rendering_mode(
+                recommended,
+                true,
+                windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            ),
+            windows::Win32::Graphics::DirectWrite::DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
+        );
+        assert_eq!(
+            resolved_glyph_rendering_mode(
+                recommended,
+                true,
+                windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
+            ),
+            recommended
+        );
     }
 
     #[test]
