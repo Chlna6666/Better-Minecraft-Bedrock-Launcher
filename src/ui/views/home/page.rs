@@ -583,17 +583,20 @@ impl HomePageView {
         dropdown_factor: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let chevron = if is_empty {
+        let chevron: AnyElement = if is_empty {
             icon_path(lucide_gpui::icon!(download))
                 .size(px(20.0))
                 .text_color(rgb(0xffffff))
+                .into_any_element()
         } else {
             icon_path(lucide_gpui::icon!(chevron_down))
                 .size(px(16.0))
                 .text_color(rgb(0xffffff))
-                .with_transformation(Transformation::rotate(radians(
-                    dropdown_factor * std::f32::consts::PI,
-                )))
+                .with_sampled_animation(
+                    AnimationProperty::rotation(radians(0.0), radians(std::f32::consts::PI)),
+                    dropdown_factor,
+                )
+                .into_any_element()
         };
 
         div()
@@ -954,7 +957,10 @@ impl Render for HomePageView {
                         cx,
                     ))
                     .child(div().w(px(1.0)).h_full().bg(divider))
-                    .child(self.render_launch_secondary(is_empty, dropdown_factor, cx)),
+                    .child(
+                        self.render_launch_secondary(is_empty, dropdown_factor, cx)
+                            .with_layout_animation_target(self.dropdown_animating),
+                    ),
             );
 
         if !is_empty && dropdown_visible {
