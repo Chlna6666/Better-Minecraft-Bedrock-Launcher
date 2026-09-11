@@ -381,9 +381,10 @@ impl Window {
         }
 
         let mut watchdog = self.frame_watchdog.get();
-        watchdog.platform_generation = watchdog.platform_generation.wrapping_add(1);
-        watchdog.platform_pending = true;
-        watchdog.platform_options = options;
+        if !prepare_platform_frame_watchdog(&mut watchdog, options) {
+            self.frame_watchdog.set(watchdog);
+            return;
+        }
         self.frame_watchdog.set(watchdog);
 
         let generation = watchdog.platform_generation;
@@ -906,6 +907,24 @@ impl Window {
     }
 }
 
+fn prepare_platform_frame_watchdog(
+    watchdog: &mut FrameWatchdog,
+    options: RequestFrameOptions,
+) -> bool {
+    if watchdog.platform_pending {
+        // The platform owns one latest-wins frame slot. Keep the watchdog on the first request's
+        // deadline as well: rearming it for every coalesced animation request both creates
+        // avoidable executor work and can postpone recovery forever under load.
+        watchdog.platform_options = watchdog.platform_options.merge(options);
+        return false;
+    }
+
+    watchdog.platform_generation = watchdog.platform_generation.wrapping_add(1);
+    watchdog.platform_pending = true;
+    watchdog.platform_options = options;
+    true
+}
+
 impl FrameWorkDecision {
     const fn drew_frame(self) -> bool {
         self.draw_frame && !self.degrade_to_present
@@ -917,5 +936,40 @@ impl FrameWorkDecision {
             presented_frame,
             skipped_frame: self.skip_frame,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coalesced_platform_requests_keep_one_watchdog_deadline() {
+        let mut watchdog = FrameWatchdog::default();
+        assert!(prepare_platform_frame_watchdog(
+            &mut watchdog,
+            RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            }
+        ));
+        let first_generation = watchdog.platform_generation;
+
+        assert!(!prepare_platform_frame_watchdog(
+            &mut watchdog,
+            RequestFrameOptions {
+                require_presentation: false,
+                force_render: true,
+            }
+        ));
+        assert_eq!(watchdog.platform_generation, first_generation);
+        assert!(watchdog.platform_pending);
+        assert_eq!(
+            watchdog.platform_options,
+            RequestFrameOptions {
+                require_presentation: true,
+                force_render: true,
+            }
+        );
     }
 }

@@ -15,7 +15,6 @@ mod timing;
 use smallvec::SmallVec;
 use timing::sample_element_animation;
 
-const REPEATING_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(3);
 // A zero-initial-velocity damped spring step stays inside normalized progress [0, 2]. Keep a small
 // numerical guard so retained partial-presentation damage cannot clip an extremal undamped sample.
 const SPRING_TRANSLATION_PROGRESS_MIN: f32 = -0.05;
@@ -741,9 +740,10 @@ fn schedule_next_animation_frame(
 fn next_animation_frame_delay(done: bool, repeats: bool, window_active: bool) -> Option<Duration> {
     if done || (repeats && !window_active) {
         None
-    } else if repeats {
-        Some(REPEATING_ANIMATION_FRAME_INTERVAL)
     } else {
+        // A platform frame is already paced by the compositor. Repeating animations must join
+        // that same latest-wins frame instead of spawning an independent 3 ms timer per target;
+        // those timers can wake faster than the display and create foreground executor pressure.
         Some(Duration::ZERO)
     }
 }
@@ -869,7 +869,7 @@ mod tests {
     fn repeating_animation_uses_gpui_frame_cadence() {
         assert_eq!(
             next_animation_frame_delay(false, true, true),
-            Some(REPEATING_ANIMATION_FRAME_INTERVAL)
+            Some(Duration::ZERO)
         );
     }
 
