@@ -796,11 +796,21 @@ impl DirectWriteState {
         glyph_bounds: Bounds<DevicePixels>,
         glyph_analysis: Option<&IDWriteGlyphRunAnalysis>,
     ) -> Result<Vec<u8>> {
-        if !should_use_subpixel_rendering(components, params) {
-            // Monochrome atlas uploads consume exactly one coverage byte per pixel. Expanding
-            // grayscale coverage to BGRA here makes the uploader interpret B/G/R/A bytes as four
-            // adjacent pixels, producing periodic striped glyphs on transparent windows.
+        if params.grayscale_antialiasing {
+            // Monochrome atlas uploads consume exactly one coverage byte per pixel.
             return self.rasterize_grayscale(components, params, glyph_bounds, glyph_analysis);
+        }
+
+        if !should_use_subpixel_rendering(components, params) {
+            // Windows glyphs that are not explicitly grayscale still use the subpixel atlas.
+            // DirectWrite can independently fall back to grayscale for small fonts or when
+            // system subpixel rendering is disabled, so preserve the atlas' four-byte pixel
+            // contract by expanding that scalar coverage into RGB.
+            return Ok(self
+                .rasterize_grayscale(components, params, glyph_bounds, glyph_analysis)?
+                .into_iter()
+                .flat_map(|coverage| [coverage, coverage, coverage, 255])
+                .collect());
         }
 
         let owned_analysis;
@@ -1712,6 +1722,50 @@ mod tests {
         };
         assert_eq!(bytes.len(), size.width.0 as usize * size.height.0 as usize);
         assert!(bytes.iter().any(|byte| *byte != 0));
+        Ok(())
+    }
+
+    #[test]
+    fn small_opaque_text_preserves_subpixel_atlas_pixel_format() -> anyhow::Result<()> {
+        let text_system = DirectWriteTextSystem::new(RendererCapabilities::default())?;
+        let font_id = text_system.font_id(&font("Segoe UI"))?;
+        let layout = text_system.layout_line(
+            "GDK",
+            px(9.0),
+            &[FontRun {
+                len: "GDK".len(),
+                font_id,
+            }],
+        );
+        let glyph = layout
+            .runs
+            .first()
+            .and_then(|run| run.glyphs.first())
+            .ok_or_else(|| {
+                anyhow::anyhow!("DirectWrite produced no glyphs for small system text")
+            })?;
+        let params = RenderGlyphParams {
+            font_id: layout.runs[0].font_id,
+            glyph_id: glyph.id,
+            font_size: glyph.font_size,
+            subpixel_variant: point(0, 0),
+            scale_factor: 1.0,
+            grayscale_antialiasing: false,
+            is_emoji: glyph.is_emoji,
+            is_cjk: glyph.is_cjk,
+        };
+        let bounds = text_system.glyph_raster_bounds(&params)?;
+        assert!(bounds.size.width.0 > 0);
+        assert!(bounds.size.height.0 > 0);
+        let rasterization = text_system.rasterize_glyph(&params, bounds)?;
+        let GlyphRasterization::Bitmap { size, bytes } = rasterization else {
+            anyhow::bail!("ordinary small text unexpectedly produced color layers");
+        };
+        assert_eq!(
+            bytes.len(),
+            size.width.0 as usize * size.height.0 as usize * 4
+        );
+        assert!(bytes.chunks_exact(4).any(|pixel| pixel[..3] != [0, 0, 0]));
         Ok(())
     }
 
