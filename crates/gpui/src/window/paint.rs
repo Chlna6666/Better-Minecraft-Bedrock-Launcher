@@ -410,8 +410,10 @@ impl Window {
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
-        let visual_scale = self.visual_scale();
-        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, visual_scale) else {
+        let text_raster_scale = self.text_raster_scale();
+        let scene_text_raster_scale = self.scene_text_raster_scale();
+        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, text_raster_scale)
+        else {
             return Ok(());
         };
         let visual_origin = self.visual_point(origin);
@@ -447,13 +449,20 @@ impl Window {
                 );
                 return Ok(());
             };
-            let (origin, _) =
-                glyph_device_origin(visual_origin, raster_bounds.origin, scale_factor);
+            let (baseline_origin, _) =
+                glyph_device_origin(visual_origin, Point::default(), scale_factor);
             // The atlas tile was rasterized at the complete visual scale and its baseline is
-            // already transformed. Applying `visual_device_bounds` here would scale it twice.
+            // already transformed. Renderer-owned scene scaling reserves extra atlas resolution,
+            // but keeps the stable scene bounds so the GPU transform applies exactly once.
             let bounds = Bounds {
-                origin,
-                size: tile.bounds.size.map(Into::into),
+                origin: baseline_origin
+                    + raster_bounds
+                        .origin
+                        .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
+                size: tile
+                    .bounds
+                    .size
+                    .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
             };
             let content_mask = self.visual_content_mask().scale(scale_factor);
             self.next_frame.scene.insert_primitive(MonochromeSprite {
@@ -493,8 +502,10 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let visual_scale = self.visual_scale();
-        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, visual_scale) else {
+        let text_raster_scale = self.text_raster_scale();
+        let scene_text_raster_scale = self.scene_text_raster_scale();
+        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, text_raster_scale)
+        else {
             return Ok(());
         };
         let visual_origin = self.visual_point(origin);
@@ -528,8 +539,13 @@ impl Window {
 
             let bounds = Bounds {
                 origin: glyph_origin.map(|px| px.floor())
-                    + raster_bounds.origin.map(Into::into),
-                size: tile.bounds.size.map(Into::into),
+                    + raster_bounds
+                        .origin
+                        .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
+                size: tile
+                    .bounds
+                    .size
+                    .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
             };
             let content_mask = self.visual_content_mask().scale(scale_factor);
             let opacity = self.element_opacity();
@@ -577,6 +593,10 @@ fn glyph_raster_scale_factor(device_scale_factor: f32, visual_scale: f32) -> Opt
     (visual_scale > 0.0).then_some(device_scale_factor * visual_scale)
 }
 
+fn downsample_raster_pixel(pixel: DevicePixels, scene_text_raster_scale: f32) -> ScaledPixels {
+    ScaledPixels(pixel.0 as f32 / scene_text_raster_scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,5 +622,16 @@ mod tests {
         assert_eq!(glyph_raster_scale_factor(1.0, 1.02), Some(1.02));
         assert_eq!(glyph_raster_scale_factor(1.25, 1.02), Some(1.275));
         assert_eq!(glyph_raster_scale_factor(1.0, 0.0), None);
+    }
+
+    #[test]
+    fn scene_text_oversampling_keeps_stable_primitive_geometry() {
+        let scale = 1.25;
+        let raster_origin = DevicePixels(-2);
+        let raster_size = DevicePixels(10);
+
+        assert_eq!(downsample_raster_pixel(raster_origin, scale).0, -1.6);
+        assert_eq!(downsample_raster_pixel(raster_size, scale).0, 8.0);
+        assert_eq!(downsample_raster_pixel(raster_size, scale).0 * scale, 10.0);
     }
 }

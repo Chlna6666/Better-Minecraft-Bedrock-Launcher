@@ -343,6 +343,7 @@ impl Window {
             visual_content_mask_stack: Vec::new(),
             element_opacity: 1.0,
             scene_animation: None,
+            scene_text_raster_scale: 1.0,
             element_visual_transform: ElementVisualTransform::identity(),
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),

@@ -25,6 +25,27 @@ pub use timeline::{
     SequencedTimelineSample, StaggerTimelineSample, TimelineSample, TransitionSpec,
 };
 pub use transition::{Transition, TransitionProperty, TransitionStyle};
+
+pub(crate) fn scene_text_raster_scale(
+    property: TransitionProperty,
+    from: [f32; 4],
+    to: [f32; 4],
+) -> f32 {
+    if !matches!(
+        property,
+        TransitionProperty::Scale | TransitionProperty::Transform
+    ) {
+        return 1.0;
+    }
+
+    let scale = from[0].max(to[0]);
+    if scale.is_finite() {
+        scale.max(1.0)
+    } else {
+        1.0
+    }
+}
+
 pub use tween::Tween;
 
 pub(crate) use easing::sample_legacy_easing;
@@ -326,6 +347,34 @@ mod tests {
             .properties([TransitionProperty::Opacity, TransitionProperty::Transform])
             .driver(AnimationDriver::Auto);
         assert_eq!(transition.resolved_driver(), AnimationDriver::Gpu);
+    }
+
+    #[test]
+    fn scene_text_reserves_the_largest_declared_scale() {
+        assert_eq!(
+            scene_text_raster_scale(
+                TransitionProperty::Transform,
+                [0.8, 1.0, 0.5, 0.5],
+                [1.25, 1.0, 0.5, 0.5],
+            ),
+            1.25
+        );
+        assert_eq!(
+            scene_text_raster_scale(
+                TransitionProperty::Transform,
+                [0.8, 1.0, 0.5, 0.5],
+                [1.0, 1.0, 0.5, 0.5],
+            ),
+            1.0
+        );
+        assert_eq!(
+            scene_text_raster_scale(
+                TransitionProperty::Translation,
+                [0.0, 0.0, 0.0, 0.0],
+                [20.0, 0.0, 0.0, 0.0],
+            ),
+            1.0
+        );
     }
 
     #[test]

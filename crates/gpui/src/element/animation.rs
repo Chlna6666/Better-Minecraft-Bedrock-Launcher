@@ -150,6 +150,10 @@ impl AnimationProperty {
         }
     }
 
+    fn text_raster_scale(self) -> f32 {
+        crate::animation::scene_text_raster_scale(self.property, self.from, self.to)
+    }
+
     fn dirty_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
         match self.property {
             TransitionProperty::Translation => {
@@ -643,20 +647,25 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                 };
                 (state.animation_id, state)
             });
-        window.with_scene_animation(animation_id, property.property, |window| {
-            element.paint(window, cx);
-            if spring.is_some()
-                && property.property == TransitionProperty::Translation
-                && let Some(bounds) = window.scene_animation_visual_bounds(animation_id)
-                && let Some(dirty_bounds) = property.spring_translation_dirty_bounds(bounds)
-            {
-                let _ = window.set_scene_animation_dirty_bounds(
-                    global_id,
-                    property.property,
-                    dirty_bounds,
-                );
-            }
-        });
+        window.with_scene_animation(
+            animation_id,
+            property.property,
+            property.text_raster_scale(),
+            |window| {
+                element.paint(window, cx);
+                if spring.is_some()
+                    && property.property == TransitionProperty::Translation
+                    && let Some(bounds) = window.scene_animation_visual_bounds(animation_id)
+                    && let Some(dirty_bounds) = property.spring_translation_dirty_bounds(bounds)
+                {
+                    let _ = window.set_scene_animation_dirty_bounds(
+                        global_id,
+                        property.property,
+                        dirty_bounds,
+                    );
+                }
+            },
+        );
     }
 }
 

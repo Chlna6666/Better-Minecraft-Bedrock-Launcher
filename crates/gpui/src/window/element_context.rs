@@ -338,9 +338,18 @@ impl Window {
         &mut self,
         animation_id: crate::SceneAnimationId,
         property: crate::TransitionProperty,
+        text_raster_scale: f32,
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.invalidator.debug_assert_paint();
+
+        let text_raster_scale = if text_raster_scale.is_finite() {
+            text_raster_scale.max(1.0)
+        } else {
+            1.0
+        };
+        let previous_text_raster_scale = self.scene_text_raster_scale;
+        self.scene_text_raster_scale *= text_raster_scale;
 
         // Scene primitives currently carry one animation id. Promote an existing parent visual
         // animation to a retained composite before entering a nested animation so the child cannot
@@ -358,9 +367,11 @@ impl Window {
             )
         }) {
             let capture_bounds = self.content_mask().bounds;
-            return self.paint_composite_layer(capture_bounds, |window| {
-                window.with_scene_animation(animation_id, property, paint)
+            let result = self.paint_composite_layer(capture_bounds, |window| {
+                window.with_scene_animation(animation_id, property, 1.0, paint)
             });
+            self.scene_text_raster_scale = previous_text_raster_scale;
+            return result;
         }
 
         // Rotation is a subtree transform, not a glyph property. Bind it to one zero-filter
@@ -373,12 +384,14 @@ impl Window {
             let capture_bounds = self.content_mask().bounds;
             let result = self.paint_composite_layer(capture_bounds, paint);
             self.scene_animation = previous_animation;
+            self.scene_text_raster_scale = previous_text_raster_scale;
             return result;
         }
 
         let previous_animation = self.scene_animation.replace((animation_id, property));
         let result = paint(self);
         self.scene_animation = previous_animation;
+        self.scene_text_raster_scale = previous_text_raster_scale;
         result
     }
 
@@ -401,7 +414,12 @@ impl Window {
                 from,
                 to,
             });
-        self.with_scene_animation(animation_id, property, paint)
+        self.with_scene_animation(
+            animation_id,
+            property,
+            crate::animation::scene_text_raster_scale(property, from, to),
+            paint,
+        )
     }
 
     pub(crate) fn with_element_scale<R>(
@@ -440,6 +458,14 @@ impl Window {
 
     pub(crate) fn visual_scale(&self) -> f32 {
         self.element_visual_transform.scale
+    }
+
+    pub(crate) fn text_raster_scale(&self) -> f32 {
+        self.element_visual_transform.scale * self.scene_text_raster_scale
+    }
+
+    pub(crate) fn scene_text_raster_scale(&self) -> f32 {
+        self.scene_text_raster_scale
     }
 
     pub(crate) fn visual_device_bounds(

@@ -212,6 +212,11 @@ pub struct Window {
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
     pub(crate) scene_animation: Option<(crate::SceneAnimationId, crate::TransitionProperty)>,
+    /// Additional glyph raster scale reserved for renderer-owned visual transforms.
+    ///
+    /// The scene still paints at its stable layout size; the larger atlas tile is sampled down
+    /// until the GPU animation reaches its largest declared scale.
+    pub(crate) scene_text_raster_scale: f32,
     pub(crate) element_visual_transform: ElementVisualTransform,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) visual_content_mask_stack: Vec<ContentMask<Pixels>>,
