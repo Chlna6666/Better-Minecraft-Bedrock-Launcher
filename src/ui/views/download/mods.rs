@@ -2,7 +2,6 @@ use crate::core::levilamina::{LeviLaminaModEntry, mod_matches_loader_version};
 use crate::ui::components::button::{Button, IconButton};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::scroll::ScrollableElement as _;
-use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
@@ -1056,7 +1055,9 @@ pub(super) fn render_detail_modal_content(
 fn start_mod_install(cx: &mut App, package_id: String, version: String) {
     let i18n = cx.global::<I18n>().clone();
     if version.trim().is_empty() {
-        toast::error(cx, t!("LeviLaminaMods.no_version"));
+        cx.update_global(|state: &mut DownloadPageState, _cx| {
+            state.levilauncher_install_error = Some(t!("LeviLaminaMods.no_version"));
+        });
         return;
     }
     let target = cx.read_global(|state: &DownloadPageState, _cx| {
@@ -1066,7 +1067,9 @@ fn start_mod_install(cx: &mut App, package_id: String, version: String) {
             .map(|path| (path, state.levilauncher_install_target_version.to_string()))
     });
     let Some((game_directory, game_version)) = target else {
-        toast::error(cx, t!("LeviLaminaMods.select_game_version"));
+        cx.update_global(|state: &mut DownloadPageState, _cx| {
+            state.levilauncher_install_error = Some(t!("LeviLaminaMods.select_game_version"));
+        });
         return;
     };
     cx.update_global(|state: &mut DownloadPageState, _cx| {
@@ -1079,46 +1082,21 @@ fn start_mod_install(cx: &mut App, package_id: String, version: String) {
         package_id,
         version,
     };
-    let handle = match crate::core::levilamina::start_install(request) {
-        Ok(handle) => handle,
+    match crate::core::levilamina::start_install(request) {
+        Ok(_handle) => {
+            cx.update_global(|state: &mut DownloadPageState, _cx| {
+                state.levilauncher_install_busy = false;
+                state.levilauncher_modal_open = false;
+                state.levilauncher_selected_mod = None;
+            });
+        }
         Err(error) => {
             cx.update_global(|state: &mut DownloadPageState, _cx| {
                 state.levilauncher_install_busy = false;
                 state.levilauncher_install_error = Some(SharedString::from(error));
             });
-            return;
         }
-    };
-    let mut updates = handle.updates;
-    cx.spawn(async move |cx| {
-        loop {
-            let stage = updates.borrow_and_update().stage.clone();
-            match stage {
-                crate::core::levilamina::LeviLaminaInstallStage::Completed { message } => {
-                    cx.update_global(|state: &mut DownloadPageState, cx| {
-                        state.levilauncher_install_busy = false;
-                        state.levilauncher_modal_open = false;
-                        state.levilauncher_selected_mod = None;
-                        toast::success(cx, SharedString::from(message.to_string()));
-                    })?;
-                    return Ok::<(), anyhow::Error>(());
-                }
-                crate::core::levilamina::LeviLaminaInstallStage::Failed { message } => {
-                    cx.update_global(|state: &mut DownloadPageState, _cx| {
-                        state.levilauncher_install_busy = false;
-                        state.levilauncher_install_error =
-                            Some(SharedString::from(message.to_string()));
-                    })?;
-                    return Ok(());
-                }
-                _ => {}
-            }
-            if updates.changed().await.is_err() {
-                return Ok(());
-            }
-        }
-    })
-    .detach_and_log_err(cx);
+    }
 }
 
 fn render_dependencies_list(

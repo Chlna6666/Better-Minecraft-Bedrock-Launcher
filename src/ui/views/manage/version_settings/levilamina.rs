@@ -275,7 +275,7 @@ impl ManagePageView {
         let game_version = version.version.to_string();
         cx.spawn(async move |handle, cx| {
             let task = gpui_tokio::Tokio::spawn_result(cx, async move {
-                let database = crate::core::levilamina::cached_support_database()
+                let database = crate::core::levilamina::support_database()
                     .await
                     .map_err(anyhow::Error::msg)?;
                 let installation = crate::core::levilamina::inspect_installation(game_directory)
@@ -346,7 +346,21 @@ impl ManagePageView {
             game_version: state.version.version.to_string(),
             loader_version: state.selected_levilamina_version.to_string(),
         };
-        self.start_levilamina_operation(request, cx);
+        match crate::core::levilamina::start_install(request) {
+            Ok(handle) => {
+                let task_id = handle.task_id.to_string();
+                self.version_settings_modal = None;
+                super::super::watch_levilamina_install_task(task_id, cx);
+                cx.notify();
+            }
+            Err(error) => {
+                if let Some(state) = self.version_settings_modal.as_mut() {
+                    state.levilamina_busy = false;
+                    state.levilamina_error = Some(SharedString::from(error));
+                }
+                cx.notify();
+            }
+        }
     }
 
     pub(super) fn uninstall_levilamina(&mut self, cx: &mut Context<Self>) {
@@ -360,15 +374,6 @@ impl ManagePageView {
         state.levilamina_error = None;
         let game_directory = PathBuf::from(state.version.path.as_ref());
         let handle = crate::core::levilamina::start_uninstall(game_directory);
-        self.consume_levilamina_operation(handle, cx);
-    }
-
-    fn start_levilamina_operation(
-        &mut self,
-        request: LeviLaminaInstallRequest,
-        cx: &mut Context<Self>,
-    ) {
-        let handle = crate::core::levilamina::start_install(request);
         self.consume_levilamina_operation(handle, cx);
     }
 

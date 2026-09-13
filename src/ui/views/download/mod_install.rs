@@ -4,7 +4,7 @@ use gpui::{App, AppContext as _, BorrowAppContext as _, SharedString};
 use tracing::warn;
 
 use crate::core::levilamina::{
-    LeviLaminaModEntry, cached_support_database, inspect_installation, mod_release_supports_loader,
+    LeviLaminaModEntry, inspect_installation, mod_release_supports_loader, support_database,
 };
 use crate::ui::state::local_versions::LocalVersionsState;
 
@@ -104,7 +104,7 @@ async fn discover_targets(
     candidates: Vec<InstallCandidate>,
     mod_entry: &LeviLaminaModEntry,
 ) -> Result<Vec<LeviLaminaModInstallTarget>, String> {
-    let support = cached_support_database().await?;
+    let support = support_database().await?;
     let mut targets = Vec::new();
     let mut failures = Vec::new();
     for candidate in candidates {

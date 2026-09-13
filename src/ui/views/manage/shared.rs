@@ -102,6 +102,24 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
     .detach();
 }
 
+pub(super) fn watch_levilamina_install_task(task_id: String, cx: &mut App) {
+    let wait_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+        task_manager::wait_for_task_terminal(&task_id)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
+    cx.spawn(async move |cx| {
+        if wait_task
+            .await
+            .is_ok_and(|snapshot| snapshot.status.as_ref() == "completed")
+        {
+            cx.update(|cx| ensure_local_versions_loaded(true, cx))?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
 pub(super) fn launch_map_version(
     version: &ManagedVersionEntry,
     asset: &ManageAssetEntry,

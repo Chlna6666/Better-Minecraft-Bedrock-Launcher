@@ -751,7 +751,7 @@ pub fn ensure_levilauncher_loaded(cx: &mut App) {
     });
 
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
-        crate::core::levilamina::fetch_levilamina_index()
+        crate::core::levilamina::package_index()
             .await
             .map_err(anyhow::Error::msg)
     });
@@ -795,7 +795,7 @@ pub fn ensure_levilamina_support_loaded(cx: &mut App) {
         state.levilamina_support_error = None;
     });
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
-        crate::core::levilamina::fetch_support_database()
+        crate::core::levilamina::support_database()
             .await
             .map_err(anyhow::Error::msg)
     });
