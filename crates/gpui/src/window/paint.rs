@@ -410,13 +410,19 @@ impl Window {
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
-        let (_, subpixel_variant) = glyph_device_origin(origin, Point::default(), scale_factor);
+        let visual_scale = self.visual_scale();
+        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, visual_scale) else {
+            return Ok(());
+        };
+        let visual_origin = self.visual_point(origin);
+        let (_, subpixel_variant) =
+            glyph_device_origin(visual_origin, Point::default(), scale_factor);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
             font_size,
             subpixel_variant,
-            scale_factor,
+            scale_factor: raster_scale_factor,
             grayscale_antialiasing: glyphs_require_grayscale_antialiasing(
                 self.platform_window.background_appearance(),
                 self.next_frame.scene.is_capturing_blur(),
@@ -441,14 +447,14 @@ impl Window {
                 );
                 return Ok(());
             };
-            let (origin, _) = glyph_device_origin(origin, raster_bounds.origin, scale_factor);
-            let bounds = self.visual_device_bounds(
-                Bounds {
-                    origin,
-                    size: tile.bounds.size.map(Into::into),
-                },
-                scale_factor,
-            );
+            let (origin, _) =
+                glyph_device_origin(visual_origin, raster_bounds.origin, scale_factor);
+            // The atlas tile was rasterized at the complete visual scale and its baseline is
+            // already transformed. Applying `visual_device_bounds` here would scale it twice.
+            let bounds = Bounds {
+                origin,
+                size: tile.bounds.size.map(Into::into),
+            };
             let content_mask = self.visual_content_mask().scale(scale_factor);
             self.next_frame.scene.insert_primitive(MonochromeSprite {
                 order: 0,
@@ -487,14 +493,19 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let glyph_origin = origin.scale(scale_factor);
+        let visual_scale = self.visual_scale();
+        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, visual_scale) else {
+            return Ok(());
+        };
+        let visual_origin = self.visual_point(origin);
+        let glyph_origin = visual_origin.scale(scale_factor);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
             font_size,
             // We don't render emojis with subpixel variants.
             subpixel_variant: Default::default(),
-            scale_factor,
+            scale_factor: raster_scale_factor,
             grayscale_antialiasing: true,
             is_emoji: true,
             is_cjk: false,
@@ -515,14 +526,11 @@ impl Window {
                 return Ok(());
             };
 
-            let bounds = self.visual_device_bounds(
-                Bounds {
-                    origin: glyph_origin.map(|px| px.floor())
-                        + raster_bounds.origin.map(Into::into),
-                    size: tile.bounds.size.map(Into::into),
-                },
-                scale_factor,
-            );
+            let bounds = Bounds {
+                origin: glyph_origin.map(|px| px.floor())
+                    + raster_bounds.origin.map(Into::into),
+                size: tile.bounds.size.map(Into::into),
+            };
             let content_mask = self.visual_content_mask().scale(scale_factor);
             let opacity = self.element_opacity();
 
@@ -565,6 +573,10 @@ fn glyphs_require_grayscale_antialiasing(
     is_capturing_blur || background_appearance != WindowBackgroundAppearance::Opaque
 }
 
+fn glyph_raster_scale_factor(device_scale_factor: f32, visual_scale: f32) -> Option<f32> {
+    (visual_scale > 0.0).then_some(device_scale_factor * visual_scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +595,12 @@ mod tests {
             WindowBackgroundAppearance::Opaque,
             false,
         ));
+    }
+
+    #[test]
+    fn glyph_raster_scale_includes_element_visual_scale() {
+        assert_eq!(glyph_raster_scale_factor(1.0, 1.02), Some(1.02));
+        assert_eq!(glyph_raster_scale_factor(1.25, 1.02), Some(1.275));
+        assert_eq!(glyph_raster_scale_factor(1.0, 0.0), None);
     }
 }

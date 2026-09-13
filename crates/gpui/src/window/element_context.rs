@@ -434,6 +434,10 @@ impl Window {
         self.element_visual_transform.transform_bounds(bounds)
     }
 
+    pub(crate) fn visual_point(&self, point: Point<Pixels>) -> Point<Pixels> {
+        self.element_visual_transform.transform_point(point)
+    }
+
     pub(crate) fn visual_scale(&self) -> f32 {
         self.element_visual_transform.scale
     }
