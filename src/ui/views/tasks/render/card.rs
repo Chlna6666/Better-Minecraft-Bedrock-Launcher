@@ -6,7 +6,6 @@ use crate::ui::theme::tokens::motion;
 use crate::ui::views::tasks::TaskCardMotionKind;
 use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageView};
 use gpui::AnimationExt;
-use gpui::prelude::FluentBuilder as _;
 use gpui::render_fingerprint;
 use std::sync::Arc;
 
@@ -232,12 +231,16 @@ pub(crate) fn render_task_card(
     };
 
     let message_line = model.message.as_ref().map(|message| {
-        let color = if model.status.as_ref() == "error" {
+        let is_error = model.status.as_ref() == "error";
+        let color = if is_error {
             colors.danger
         } else {
             task_text_secondary(colors)
         };
+        let error_title = SharedString::from(model.title.clone());
+        let error_message = SharedString::from(message.clone());
         div()
+            .id(("task-message", stable_task_id(task_id.as_ref())))
             .w_full()
             .overflow_hidden()
             .whitespace_nowrap()
@@ -246,6 +249,12 @@ pub(crate) fn render_task_card(
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(color)
             .child(SharedString::from(message.clone()))
+            .when(is_error, |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.open_error_dialog(error_title.clone(), error_message.clone(), cx);
+                    }))
+            })
             .into_any_element()
     });
 

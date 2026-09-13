@@ -10,8 +10,79 @@ pub fn render_tasks_overlay(
     cx: &App,
 ) -> Option<AnyElement> {
     let i18n = cx.global::<I18n>();
-    let dialog = view.read_with(cx, |this, _| this.confirm_dialog.clone());
-    dialog.map(|dialog| {
+    let (error_dialog, confirm_dialog) = view.read_with(cx, |this, _| {
+        (this.error_dialog.clone(), this.confirm_dialog.clone())
+    });
+    if let Some(dialog) = error_dialog {
+        let entity = view.downgrade();
+        let dismiss_entity = entity.clone();
+        return Some(
+            modal::modal_layer_dismissible(
+                div()
+                    .w(px(560.))
+                    .max_w(relative(0.9))
+                    .max_h(relative(0.8))
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
+                    .border_1()
+                    .border_color(Hsla {
+                        a: 0.18,
+                        ..colors.border
+                    })
+                    .bg(colors.surface)
+                    .p(px(22.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .on_mouse_down(MouseButton::Left, |_ev, _window, app| {
+                        app.stop_propagation()
+                    })
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(colors.danger)
+                            .child(dialog.title),
+                    )
+                    .child(
+                        div()
+                            .max_h(px(360.))
+                            .overflow_y_scrollbar()
+                            .text_size(px(13.))
+                            .line_height(relative(1.5))
+                            .text_color(colors.text_secondary)
+                            .child(dialog.message),
+                    )
+                    .child(
+                        div().flex().justify_end().child(
+                            Button::new("task-error-close")
+                                .h(px(38.))
+                                .px(px(16.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                .bg(colors.accent)
+                                .border_0()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors.btn_primary_text)
+                                .label(t!("common.close"))
+                                .on_click(move |_ev, _window, app| {
+                                    let _ = dismiss_entity.update(app, |this, cx| {
+                                        this.close_error_dialog(cx);
+                                    });
+                                }),
+                        ),
+                    ),
+                hsla(0.0, 0.0, 0.0, 0.30),
+                Rc::new(move |app| {
+                    let _ = entity.update(app, |this, cx| {
+                        this.close_error_dialog(cx);
+                    });
+                }),
+            )
+            .into_any_element(),
+        );
+    }
+
+    confirm_dialog.map(|dialog| {
         let entity = view.downgrade();
         let dismiss_entity = entity.clone();
         let confirm_entity = entity.clone();

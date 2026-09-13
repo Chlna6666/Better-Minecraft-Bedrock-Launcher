@@ -30,6 +30,7 @@ const TASK_FINISHED_HOLD_TERMINAL_DEFAULT_MS: u64 = 800;
 pub struct TasksPageView {
     _subscriptions: Vec<Subscription>,
     confirm_dialog: Option<TaskConfirmDialog>,
+    error_dialog: Option<TaskErrorDialog>,
     task_snapshots: HashMap<Arc<str>, Arc<TaskSnapshot>>,
     render_model: TasksPageRenderModel,
     card_motions: HashMap<Arc<str>, TaskCardMotionState>,
@@ -55,6 +56,12 @@ struct TaskConfirmDialog {
     title: SharedString,
     description: SharedString,
     action: TaskConfirmAction,
+}
+
+#[derive(Clone)]
+pub(super) struct TaskErrorDialog {
+    title: SharedString,
+    message: SharedString,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -500,7 +507,9 @@ fn terminal_hold_duration_ms(status: &str, user_cancelled: bool) -> Option<u64> 
         } else {
             TASK_FINISHED_HOLD_TERMINAL_DEFAULT_MS
         }),
-        "error" => Some(TASK_FINISHED_HOLD_TERMINAL_DEFAULT_MS),
+        // Failures stay visible until the user removes them so the full error
+        // dialog remains discoverable after a background task finishes.
+        "error" => None,
         _ => None,
     }
 }
@@ -960,6 +969,12 @@ mod tests {
     fn terminal_hold_elapsed_uses_snapshot_update_time() {
         assert!(!terminal_hold_elapsed(11, 10, "completed", false));
         assert!(terminal_hold_elapsed(12, 10, "completed", false));
+    }
+
+    #[test]
+    fn error_task_remains_visible_for_error_dialog() {
+        assert_eq!(terminal_hold_duration_ms("error", false), None);
+        assert!(!terminal_hold_elapsed(60, 10, "error", false));
     }
 
     #[test]

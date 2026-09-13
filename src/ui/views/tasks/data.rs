@@ -1,4 +1,4 @@
-use super::{TaskConfirmAction, TaskConfirmDialog, TasksPageView};
+use super::{TaskConfirmAction, TaskConfirmDialog, TaskErrorDialog, TasksPageView};
 use crate::tasks::task_manager;
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
@@ -58,6 +58,7 @@ impl TasksPageView {
         let mut this = Self {
             _subscriptions: Vec::new(),
             confirm_dialog: None,
+            error_dialog: None,
             task_snapshots: task_manager::snapshot_arcs_map(),
             render_model: super::TasksPageRenderModel::loading(),
             card_motions: Default::default(),
@@ -142,6 +143,21 @@ impl TasksPageView {
 
     pub(crate) fn close_confirm(&mut self, cx: &mut Context<Self>) {
         self.confirm_dialog = None;
+        cx.notify();
+    }
+
+    pub(crate) fn open_error_dialog(
+        &mut self,
+        title: SharedString,
+        message: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.error_dialog = Some(TaskErrorDialog { title, message });
+        cx.notify();
+    }
+
+    pub(crate) fn close_error_dialog(&mut self, cx: &mut Context<Self>) {
+        self.error_dialog = None;
         cx.notify();
     }
 
