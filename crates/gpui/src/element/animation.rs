@@ -47,6 +47,15 @@ pub struct AnimationProperty {
     to: [f32; 4],
 }
 
+/// The fixed edge from which a horizontal renderer-owned reveal exposes its child.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HorizontalRevealEdge {
+    /// Reveal toward the right while keeping the child's left edge fixed.
+    Left,
+    /// Reveal toward the left while keeping the child's right edge fixed.
+    Right,
+}
+
 impl AnimationProperty {
     /// Animate visual opacity without changing layout.
     pub fn opacity(from: f32, to: f32) -> Self {
@@ -90,8 +99,30 @@ impl AnimationProperty {
         };
         Self {
             property: TransitionProperty::ClipReveal,
+            // [fraction, fixed-edge, axis, reserved], where axis 0 is vertical.
             from: [from_fraction.clamp(0.0, 1.0), edge, 0.0, 0.0],
             to: [to_fraction.clamp(0.0, 1.0), edge, 0.0, 0.0],
+        }
+    }
+
+    /// Animate a horizontal reveal from one fixed edge without changing child layout.
+    ///
+    /// Fractions are relative to the element's final width. The retained subtree is laid out and
+    /// shaped once; subsequent animation samples only tighten its renderer-owned content mask.
+    pub fn horizontal_reveal(
+        edge: HorizontalRevealEdge,
+        from_fraction: f32,
+        to_fraction: f32,
+    ) -> Self {
+        let edge = match edge {
+            HorizontalRevealEdge::Left => 0.0,
+            HorizontalRevealEdge::Right => 1.0,
+        };
+        Self {
+            property: TransitionProperty::ClipReveal,
+            // [fraction, fixed-edge, axis, reserved], where axis 1 is horizontal.
+            from: [from_fraction.clamp(0.0, 1.0), edge, 1.0, 0.0],
+            to: [to_fraction.clamp(0.0, 1.0), edge, 1.0, 0.0],
         }
     }
 
@@ -133,15 +164,30 @@ impl AnimationProperty {
                 (from, to)
             }
             TransitionProperty::ClipReveal => {
+                let left = bounds.origin.x.0 * scale_factor;
+                let right = bounds.right().0 * scale_factor;
                 let top = bounds.origin.y.0 * scale_factor;
                 let bottom = bounds.bottom().0 * scale_factor;
+                let width = right - left;
                 let height = bottom - top;
                 let resolve = |value: [f32; 4]| {
-                    let visible_height = height * value[0].clamp(0.0, 1.0);
-                    if value[1] < 0.5 {
-                        [top, top + visible_height, 0.0, 0.0]
+                    let fraction = value[0].clamp(0.0, 1.0);
+                    let fixed_end = value[1] >= 0.5;
+                    let horizontal = value[2] >= 0.5;
+                    if horizontal {
+                        let visible_width = width * fraction;
+                        if fixed_end {
+                            [right - visible_width, right, top, bottom]
+                        } else {
+                            [left, left + visible_width, top, bottom]
+                        }
                     } else {
-                        [bottom - visible_height, bottom, 0.0, 0.0]
+                        let visible_height = height * fraction;
+                        if fixed_end {
+                            [left, right, bottom - visible_height, bottom]
+                        } else {
+                            [left, right, top, top + visible_height]
+                        }
                     }
                 };
                 (resolve(self.from), resolve(self.to))
@@ -185,7 +231,7 @@ impl AnimationProperty {
 }
 
 impl Animation {
-    /// Create a new animation with the given duration.
+    /// Create a new animation from the given duration.
     /// By default the animation will only run once and will use a linear easing function.
     pub fn new(duration: Duration) -> Self {
         Self::from_spec(AnimationSpec::new(duration))
@@ -809,14 +855,34 @@ mod tests {
         let top = AnimationProperty::vertical_reveal(crate::VerticalRevealEdge::Top, 0.0, 1.0);
         assert_eq!(
             top.resolved_values(bounds, 2.0),
-            ([40.0, 40.0, 0.0, 0.0], [40.0, 120.0, 0.0, 0.0])
+            ([20.0, 80.0, 40.0, 40.0], [20.0, 80.0, 40.0, 120.0])
         );
 
         let bottom =
             AnimationProperty::vertical_reveal(crate::VerticalRevealEdge::Bottom, 0.25, 1.0);
         assert_eq!(
             bottom.resolved_values(bounds, 2.0),
-            ([100.0, 120.0, 0.0, 0.0], [40.0, 120.0, 0.0, 0.0])
+            ([20.0, 80.0, 100.0, 120.0], [20.0, 80.0, 40.0, 120.0])
+        );
+    }
+
+    #[test]
+    fn resolved_horizontal_reveal_uses_shared_device_pixel_edges() {
+        let bounds = Bounds::new(
+            Point::new(crate::px(10.0), crate::px(20.0)),
+            crate::size(crate::px(30.0), crate::px(40.0)),
+        );
+
+        let left = AnimationProperty::horizontal_reveal(HorizontalRevealEdge::Left, 0.25, 1.0);
+        assert_eq!(
+            left.resolved_values(bounds, 2.0),
+            ([20.0, 35.0, 40.0, 120.0], [20.0, 80.0, 40.0, 120.0])
+        );
+
+        let right = AnimationProperty::horizontal_reveal(HorizontalRevealEdge::Right, 0.0, 0.5);
+        assert_eq!(
+            right.resolved_values(bounds, 2.0),
+            ([80.0, 80.0, 40.0, 120.0], [50.0, 80.0, 40.0, 120.0])
         );
     }
 

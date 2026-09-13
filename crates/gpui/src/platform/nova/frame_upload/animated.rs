@@ -613,7 +613,13 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
             }
         }
         TransitionProperty::Rotation => {}
-        TransitionProperty::ClipReveal => apply_clip_reveal(primitive, sampled[0], sampled[1]),
+        TransitionProperty::ClipReveal => apply_clip_reveal(
+            primitive,
+            sampled[0],
+            sampled[1],
+            sampled[2],
+            sampled[3],
+        ),
         TransitionProperty::Scale => apply_scale(primitive, sampled[0], None),
         TransitionProperty::Transform => {
             apply_opacity(primitive, sampled[1].clamp(0.0, 1.0));
@@ -630,8 +636,8 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
     }
 }
 
-fn apply_clip_reveal(primitive: &mut Primitive, top: f32, bottom: f32) {
-    if !top.is_finite() || !bottom.is_finite() {
+fn apply_clip_reveal(primitive: &mut Primitive, left: f32, right: f32, top: f32, bottom: f32) {
+    if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
         return;
     }
     let mask = match primitive {
@@ -643,11 +649,17 @@ fn apply_clip_reveal(primitive: &mut Primitive, top: f32, bottom: f32) {
         Primitive::Blur(value) => &mut value.content_mask,
         _ => return,
     };
+    let clip_left = crate::ScaledPixels(left.min(right));
+    let clip_right = crate::ScaledPixels(left.max(right));
     let clip_top = crate::ScaledPixels(top.min(bottom));
     let clip_bottom = crate::ScaledPixels(top.max(bottom));
+    let clipped_left = mask.bounds.left().max(clip_left);
+    let clipped_right = mask.bounds.right().min(clip_right);
     let clipped_top = mask.bounds.top().max(clip_top);
     let clipped_bottom = mask.bounds.bottom().min(clip_bottom);
+    mask.bounds.origin.x = clipped_left;
     mask.bounds.origin.y = clipped_top;
+    mask.bounds.size.width = (clipped_right - clipped_left).max(crate::ScaledPixels(0.0));
     mask.bounds.size.height = (clipped_bottom - clipped_top).max(crate::ScaledPixels(0.0));
 }
 
@@ -882,16 +894,49 @@ mod tests {
                 animation_id: crate::SceneAnimationId(1),
                 property: TransitionProperty::ClipReveal,
                 progress: 0.5,
-                from: [20.0, 20.0, 0.0, 0.0],
-                to: [20.0, 100.0, 0.0, 0.0],
+                from: [10.0, 110.0, 20.0, 20.0],
+                to: [10.0, 110.0, 20.0, 100.0],
             },
         );
         let Primitive::Quad(quad) = primitive else {
             panic!("quad");
         };
         assert_eq!(quad.bounds, bounds);
+        assert_eq!(quad.content_mask.bounds.origin.x, crate::ScaledPixels(10.0));
+        assert_eq!(quad.content_mask.bounds.size.width, crate::ScaledPixels(100.0));
         assert_eq!(quad.content_mask.bounds.origin.y, crate::ScaledPixels(20.0));
         assert_eq!(quad.content_mask.bounds.size.height, crate::ScaledPixels(40.0));
+    }
+
+    #[test]
+    fn retained_horizontal_clip_reveal_changes_only_mask_width() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(80.0)),
+        );
+        let mut primitive = Primitive::Quad(Quad {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            ..Default::default()
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(1),
+                property: TransitionProperty::ClipReveal,
+                progress: 0.5,
+                from: [10.0, 10.0, 20.0, 100.0],
+                to: [10.0, 110.0, 20.0, 100.0],
+            },
+        );
+        let Primitive::Quad(quad) = primitive else {
+            panic!("quad");
+        };
+        assert_eq!(quad.bounds, bounds);
+        assert_eq!(quad.content_mask.bounds.origin.x, crate::ScaledPixels(10.0));
+        assert_eq!(quad.content_mask.bounds.size.width, crate::ScaledPixels(50.0));
+        assert_eq!(quad.content_mask.bounds.origin.y, crate::ScaledPixels(20.0));
+        assert_eq!(quad.content_mask.bounds.size.height, crate::ScaledPixels(80.0));
     }
 
     #[test]
