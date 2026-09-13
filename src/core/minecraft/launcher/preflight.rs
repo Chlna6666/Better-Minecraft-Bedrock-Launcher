@@ -50,7 +50,10 @@ pub fn check_launch_prerequisites(kind: &str, package_folder: &str) -> LaunchPre
         LaunchPlatform::Gdk => LaunchPrerequisiteCheck {
             platform,
             developer_mode_required: false,
-            missing_uwp_dependencies: Vec::new(),
+            // GDK packages still load shared Microsoft Store/UWP runtimes such as
+            // VCLibs and Gaming Services. Check the same registered packages before
+            // launch instead of waiting for Minecraft to fail with a missing DLL.
+            missing_uwp_dependencies: compute_missing_uwp_dependencies(),
             game_input_plan: plan_game_input_install(package_folder),
             windows_app_sdk_plan: plan_windows_app_sdk_install(package_folder),
         },
