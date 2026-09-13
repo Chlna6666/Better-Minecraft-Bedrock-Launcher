@@ -8,6 +8,7 @@ not copied into this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-13
 ### Highlights
 
 - Added a Windows system-local Xbox account entry alongside BMCBL-managed
