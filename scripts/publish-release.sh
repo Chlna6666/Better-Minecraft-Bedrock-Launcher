@@ -50,9 +50,10 @@ if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; t
   fi
   gh release edit "${edit_args[@]}"
 else
-  create_args=("$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TITLE" --notes-file "$notes" --target "$RELEASE_REF")
+  create_args=("$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TITLE" --notes-file "$notes")
   if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
-    create_args+=(--prerelease)
+    target_commit="$(git rev-parse "${RELEASE_REF}^{commit}" 2>/dev/null || git rev-parse "$RELEASE_REF" 2>/dev/null || echo "$RELEASE_REF")"
+    create_args+=(--target "$target_commit" --prerelease)
   else
     create_args+=(--verify-tag --latest)
   fi
