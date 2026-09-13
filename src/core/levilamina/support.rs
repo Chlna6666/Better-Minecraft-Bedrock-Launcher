@@ -34,7 +34,7 @@ impl LeviLaminaSupportDatabase {
     }
 }
 
-pub async fn fetch_support_database() -> Result<LeviLaminaSupportDatabase, String> {
+async fn fetch_support_database() -> Result<LeviLaminaSupportDatabase, String> {
     let client = get_client_for_proxy().map_err(|error| error.to_string())?;
     let response = crate::github::get(&client, VERSION_DATABASE_URL)
         .await
@@ -50,7 +50,10 @@ pub async fn fetch_support_database() -> Result<LeviLaminaSupportDatabase, Strin
     Ok(database)
 }
 
-pub async fn cached_support_database() -> Result<LeviLaminaSupportDatabase, String> {
+/// Returns the LeviLamina compatibility database cached for this process.
+///
+/// A failed request is not stored, allowing a later request to retry.
+pub async fn support_database() -> Result<LeviLaminaSupportDatabase, String> {
     let database = SUPPORT_DATABASE_CACHE
         .get_or_try_init(|| async { fetch_support_database().await })
         .await?;

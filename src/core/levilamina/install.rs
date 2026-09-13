@@ -68,6 +68,9 @@ pub struct LeviLaminaInstallSnapshot {
 }
 
 pub struct LeviLaminaInstallHandle {
+    /// Visible task that owns the background installation lifecycle.
+    pub task_id: Arc<str>,
+    /// Stage updates for callers that need to refresh domain state after completion.
     pub updates: watch::Receiver<LeviLaminaInstallSnapshot>,
 }
 
@@ -79,7 +82,20 @@ pub struct LeviLaminaInstallation {
 }
 
 pub fn start_install(request: LeviLaminaInstallRequest) -> Result<LeviLaminaInstallHandle, String> {
-    start_operation(move |updates| async move {
+    let (title, detail) = match &request {
+        LeviLaminaInstallRequest::Loader { loader_version, .. } => {
+            ("安装 LeviLamina".to_string(), Some(loader_version.clone()))
+        }
+        LeviLaminaInstallRequest::Mod {
+            package_id,
+            version,
+            ..
+        } => (
+            "安装 LeviLamina Mod".to_string(),
+            Some(format!("{package_id} · {version}")),
+        ),
+    };
+    start_operation(title, detail, move |updates| async move {
         run_install(request, Some(&updates))
             .await
             .map(|_| LeviLaminaInstallStage::Completed {
@@ -89,12 +105,16 @@ pub fn start_install(request: LeviLaminaInstallRequest) -> Result<LeviLaminaInst
 }
 
 pub fn start_uninstall(game_directory: PathBuf) -> Result<LeviLaminaInstallHandle, String> {
-    start_operation(move |_updates| async move {
-        uninstall_loader(&game_directory).await?;
-        Ok(LeviLaminaInstallStage::Completed {
-            message: Arc::from("LeviLamina 已删除"),
-        })
-    })
+    start_operation(
+        "删除 LeviLamina".to_string(),
+        None,
+        move |_updates| async move {
+            uninstall_loader(&game_directory).await?;
+            Ok(LeviLaminaInstallStage::Completed {
+                message: Arc::from("LeviLamina 已删除"),
+            })
+        },
+    )
 }
 
 pub async fn install_loader(
@@ -120,7 +140,11 @@ pub async fn inspect_installation(
     inspect_installation_state(game_directory).await
 }
 
-fn start_operation<F, Fut>(operation: F) -> Result<LeviLaminaInstallHandle, String>
+fn start_operation<F, Fut>(
+    title: String,
+    detail: Option<String>,
+    operation: F,
+) -> Result<LeviLaminaInstallHandle, String>
 where
     F: FnOnce(watch::Sender<LeviLaminaInstallSnapshot>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<LeviLaminaInstallStage, String>> + Send + 'static,
@@ -129,19 +153,34 @@ where
         "levilamina-install-{}",
         NEXT_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ));
+    task_manager::create_task_with_details(
+        Some(operation_id.to_string()),
+        title,
+        detail,
+        "resolving_levilamina",
+        None,
+        false,
+    );
     let (updates, receiver) = watch::channel(LeviLaminaInstallSnapshot {
         operation_id: Arc::clone(&operation_id),
         stage: LeviLaminaInstallStage::Resolving,
     });
     let monitor_updates = updates.clone();
-    let workflow = crate::tasks::runtime::spawn_io(async move {
+    let workflow = match crate::tasks::runtime::spawn_io(async move {
         let stage = operation(updates.clone()).await.unwrap_or_else(|message| {
             LeviLaminaInstallStage::Failed {
                 message: Arc::from(message),
             }
         });
         publish_stage(&updates, stage);
-    })?;
+    }) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            task_manager::finish_task(&operation_id, "error", Some(error.clone()));
+            return Err(error);
+        }
+    };
+    task_manager::register_task_abort_handle(operation_id.to_string(), workflow.abort_handle());
     crate::tasks::runtime::spawn_io(async move {
         if let Err(error) = workflow.await
             && !error.is_cancelled()
@@ -154,7 +193,10 @@ where
             );
         }
     })?;
-    Ok(LeviLaminaInstallHandle { updates: receiver })
+    Ok(LeviLaminaInstallHandle {
+        task_id: operation_id,
+        updates: receiver,
+    })
 }
 
 async fn run_install(
@@ -400,6 +442,27 @@ fn publish_stage(
     updates: &watch::Sender<LeviLaminaInstallSnapshot>,
     stage: LeviLaminaInstallStage,
 ) {
+    let task_id = updates.borrow().operation_id.clone();
+    match &stage {
+        LeviLaminaInstallStage::Resolving => {
+            task_manager::update_progress(&task_id, 0, None, Some("resolving_levilamina"));
+            task_manager::set_task_message(&task_id, Some("正在解析依赖".to_string()));
+        }
+        LeviLaminaInstallStage::Downloading { package, .. } => {
+            task_manager::update_progress(&task_id, 0, None, Some("downloading_levilamina"));
+            task_manager::set_task_message(&task_id, Some(format!("正在下载 {package}")));
+        }
+        LeviLaminaInstallStage::Installing { package } => {
+            task_manager::update_progress(&task_id, 0, None, Some("installing_levilamina"));
+            task_manager::set_task_message(&task_id, Some(format!("正在安装 {package}")));
+        }
+        LeviLaminaInstallStage::Completed { message } => {
+            task_manager::finish_task(&task_id, "completed", Some(message.to_string()));
+        }
+        LeviLaminaInstallStage::Failed { message } => {
+            task_manager::finish_task(&task_id, "error", Some(message.to_string()));
+        }
+    }
     updates.send_modify(|snapshot| snapshot.stage = stage);
 }
 

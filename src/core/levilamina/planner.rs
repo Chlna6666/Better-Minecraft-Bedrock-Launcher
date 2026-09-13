@@ -38,7 +38,7 @@ pub(super) async fn resolve_packages(
     game_version: &str,
     installed_packages: &[InstalledPackage],
 ) -> Result<Vec<ResolvedPackage>, String> {
-    let support = super::fetch_support_database().await?;
+    let support = super::support_database().await?;
     let mut pending = vec![root];
     let mut resolved = Vec::<ResolvedPackage>::new();
     while let Some(package) = pending.pop() {
