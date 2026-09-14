@@ -310,6 +310,8 @@ impl RenderOnce for AnimatedSegmentTabs {
                 (indicator_slot * segment_width).clamp(0.0, (1.0 - segment_width).max(0.0)),
             );
 
+            // Only the percentage-based indicator changes layout. Keep the retained target on this
+            // leaf so the static track, labels and icons do not reconcile on every animation frame.
             div()
                 .absolute()
                 .top(px(2.))
@@ -331,6 +333,7 @@ impl RenderOnce for AnimatedSegmentTabs {
                         offset: point(px(0.), px(2.)),
                     }])
                 })
+                .with_layout_animation_target(layout_indicator_animating)
                 .into_any_element()
         };
 
@@ -353,8 +356,7 @@ impl RenderOnce for AnimatedSegmentTabs {
                 .px(px(2.));
         }
 
-        let root = root
-            .child(indicator)
+        root.child(indicator)
             .children(self.items.into_iter().map(move |item| {
                 let active = item.active;
                 let label = item.label.clone();
@@ -403,12 +405,7 @@ impl RenderOnce for AnimatedSegmentTabs {
                 tab.on_mouse_down(MouseButton::Left, move |_event, window, cx| {
                     (on_select)(window, cx);
                 })
-            }));
-
-        if layout_indicator_animating {
-            root.with_layout_animation_target(true).into_any_element()
-        } else {
-            root.into_any_element()
-        }
+            }))
+            .into_any_element()
     }
 }
