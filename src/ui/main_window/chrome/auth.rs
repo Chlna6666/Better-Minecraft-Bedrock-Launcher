@@ -28,6 +28,7 @@ pub(in crate::ui::main_window) struct RenderState {
     progress: f32,
     pub(in crate::ui::main_window) animating: bool,
     dialog_animating: bool,
+    rows_animating: bool,
     reduced_motion: bool,
     pending_delete: Option<String>,
     feedback: Option<String>,
@@ -84,6 +85,7 @@ impl RenderState {
             },
             animating: dialog_animating || rows_animating,
             dialog_animating,
+            rows_animating,
             reduced_motion: immediate,
             pending_delete: state.pending_delete_account_id.clone(),
             feedback: state.feedback.clone(),
@@ -102,6 +104,7 @@ impl RenderState {
             self.progress = 0.0;
             self.animating = false;
             self.dialog_animating = false;
+            self.rows_animating = false;
         }
         self
     }
@@ -383,6 +386,6 @@ pub(super) fn panel(
             ),
             progress,
         )
-        .with_layout_animation_target(state.animating)
+        .with_layout_animation_target(state.dialog_animating)
         .into_any_element()
 }

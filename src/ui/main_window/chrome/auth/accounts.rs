@@ -36,6 +36,7 @@ pub(super) fn list(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                     .child(t!("Auth.remove_account_hint")),
             )
         })
+        .with_layout_animation_target(state.rows_animating)
         .into_any_element()
 }
 
