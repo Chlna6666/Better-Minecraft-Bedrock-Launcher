@@ -135,7 +135,21 @@ pub(super) fn render_app_chrome(
         .clamp(0.0, maximum_right_px + overshoot_slack_px);
     let pill_inner_inset_px = 1.5;
     let pill_offset = capsule_padding + px(left_edge_px.min(right_edge_px) + pill_inner_inset_px);
-    let pill_width = px(((right_edge_px - left_edge_px).abs() - pill_inner_inset_px * 2.).max(0.));
+    let pill_width =
+        px(((right_edge_px - left_edge_px).abs() - pill_inner_inset_px * 2.).max(0.));
+
+    // Only this absolute child changes geometry while the pill springs are active. Keep the
+    // retained invalidation boundary here instead of wrapping the whole nav tree, so icons, labels
+    // and hit targets remain replayable across pill frames.
+    let pill = div()
+        .absolute()
+        .left(pill_offset)
+        .top(capsule_padding)
+        .w(pill_width)
+        .h(item_height)
+        .rounded(px(17.))
+        .bg(colors.accent)
+        .with_layout_animation_target(nav_animating);
 
     let nav = div()
         .relative()
@@ -145,16 +159,7 @@ pub(super) fn render_app_chrome(
         .p(capsule_padding)
         .rounded(px(24.))
         .bg(colors.text_primary.opacity(0.045))
-        .child(
-            div()
-                .absolute()
-                .left(pill_offset)
-                .top(capsule_padding)
-                .w(pill_width)
-                .h(item_height)
-                .rounded(px(17.))
-                .bg(colors.accent),
-        )
+        .child(pill)
         .children(nav_items.into_iter().enumerate().map(|(index, item)| {
             let active = index == active_index;
             let foreground = if active {
@@ -216,8 +221,7 @@ pub(super) fn render_app_chrome(
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(item.label.clone())
                 }))
-        }))
-        .with_layout_animation_target(nav_animating);
+        }));
 
     let auth_inline = auth::trigger(&state.auth, &colors);
 
