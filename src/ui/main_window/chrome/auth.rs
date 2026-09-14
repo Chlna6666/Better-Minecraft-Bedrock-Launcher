@@ -27,6 +27,7 @@ pub(in crate::ui::main_window) struct RenderState {
     open: bool,
     progress: f32,
     pub(in crate::ui::main_window) animating: bool,
+    dialog_animating: bool,
     reduced_motion: bool,
     pending_delete: Option<String>,
     feedback: Option<String>,
@@ -66,6 +67,12 @@ impl RenderState {
             })
             .filter(|row| row.present || row.opacity > 0.001)
             .collect();
+        let dialog_animating = !immediate && !sample.done;
+        let rows_animating = !immediate
+            && state.dialog_open
+            && state.rows.iter().any(|row| {
+                row.presence.is_animating(now) || row.selection.is_animating(now)
+            });
         Self {
             snapshot: state.snapshot.clone(),
             rows,
@@ -75,12 +82,8 @@ impl RenderState {
             } else {
                 sample.value
             },
-            animating: !immediate
-                && (!sample.done
-                    || state.dialog_open
-                        && state.rows.iter().any(|row| {
-                            row.presence.is_animating(now) || row.selection.is_animating(now)
-                        })),
+            animating: dialog_animating || rows_animating,
+            dialog_animating,
             reduced_motion: immediate,
             pending_delete: state.pending_delete_account_id.clone(),
             feedback: state.feedback.clone(),
@@ -98,6 +101,7 @@ impl RenderState {
             self.open = false;
             self.progress = 0.0;
             self.animating = false;
+            self.dialog_animating = false;
         }
         self
     }
@@ -177,6 +181,12 @@ fn status_hint(phase: AuthPhase) -> SharedString {
 
 pub(super) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
     let trigger_bounds = state.trigger_bounds.clone();
+    let chevron = icon(lucide_gpui::icon!(chevron_down), colors.text_secondary, 12.)
+        .with_transformation(Transformation::rotate(radians(
+            std::f32::consts::PI * state.progress,
+        )))
+        .with_layout_animation_target(state.dialog_animating);
+
     button(
         "xbox-auth-status",
         Action::Toggle {
@@ -217,11 +227,7 @@ pub(super) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
             .font_weight(FontWeight::SEMIBOLD)
             .child(status_label(&state.snapshot)),
     )
-    .child(
-        icon(lucide_gpui::icon!(chevron_down), colors.text_secondary, 12.).with_transformation(
-            Transformation::rotate(radians(std::f32::consts::PI * state.progress)),
-        ),
-    )
+    .child(chevron)
     .child(
         canvas(
             move |bounds, _, _| trigger_bounds.set(Some(bounds)),
@@ -230,7 +236,6 @@ pub(super) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         .absolute()
         .inset_0(),
     )
-    .with_layout_animation_target(state.animating)
     .into_any_element()
 }
 
