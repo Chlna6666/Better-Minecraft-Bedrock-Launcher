@@ -135,6 +135,18 @@ impl AnimationProperty {
 
     fn resolved_values(self, bounds: Bounds<Pixels>, scale_factor: f32) -> ([f32; 4], [f32; 4]) {
         match self.property {
+            TransitionProperty::Translation => {
+                // Scene primitive bounds are already converted to device-scaled `ScaledPixels`.
+                // Translation is declared in logical `Pixels`, so resolve it into the same device
+                // coordinate space before the GPU adds it to those bounds.
+                let mut from = self.from;
+                let mut to = self.to;
+                from[0] *= scale_factor;
+                from[1] *= scale_factor;
+                to[0] *= scale_factor;
+                to[1] *= scale_factor;
+                (from, to)
+            }
             TransitionProperty::Transform => {
                 let origin = TransformOrigin::new(self.from[2], self.from[3]).resolve(bounds);
                 let mut from = self.from;
@@ -837,6 +849,23 @@ mod tests {
         assert_eq!(property.from, [0.0, 0.0, 0.0, 0.0]);
         assert_eq!(property.to, [1.0, 0.0, 0.0, 0.0]);
         assert_eq!(spec.driver, AnimationDriver::Auto);
+    }
+
+    #[test]
+    fn resolved_translation_uses_device_pixel_distance() {
+        let property = AnimationProperty::translation(
+            Point::new(crate::px(10.0), crate::px(5.0)),
+            Point::new(crate::px(40.0), crate::px(15.0)),
+        );
+        let bounds = Bounds::new(
+            Point::new(crate::px(10.0), crate::px(20.0)),
+            crate::size(crate::px(30.0), crate::px(40.0)),
+        );
+
+        assert_eq!(
+            property.resolved_values(bounds, 2.0),
+            ([20.0, 10.0, 0.0, 0.0], [80.0, 30.0, 0.0, 0.0])
+        );
     }
 
     #[test]
