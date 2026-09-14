@@ -7,6 +7,7 @@ pub mod levilamina;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux_runtime;
 pub mod minecraft;
+pub mod native_mods;
 #[path = "online/online.rs"]
 pub mod online;
 pub mod sponsors;

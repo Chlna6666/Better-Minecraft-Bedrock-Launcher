@@ -17,6 +17,7 @@ mod game;
 mod loading;
 mod mod_install;
 mod mods;
+mod native;
 pub mod state;
 mod toolbar;
 mod version_import;
@@ -108,8 +109,21 @@ type ModPanelObserveSignature = (
     usize,
     bool,
     SharedString,
-    Option<String>,
-    (SharedString, bool, bool, usize, SharedString),
+    (
+        Option<String>,
+        (SharedString, bool, bool, usize, SharedString),
+        (
+            bool,
+            bool,
+            bool,
+            usize,
+            bool,
+            SharedString,
+            SharedString,
+            bool,
+            SharedString,
+        ),
+    ),
 );
 
 fn build_mod_panel_observe_signature(state: &DownloadPageState) -> ModPanelObserveSignature {
@@ -124,22 +138,41 @@ fn build_mod_panel_observe_signature(state: &DownloadPageState) -> ModPanelObser
         state.levilauncher_page_index,
         state.levilauncher_modal_open,
         state.levilauncher_selected_version.clone(),
-        state
-            .levilauncher_selected_mod
-            .as_ref()
-            .map(|m| m.package_id.clone()),
         (
             state
-                .levilauncher_install_target_path
-                .clone()
-                .unwrap_or_else(|| SharedString::from("")),
-            state.levilauncher_install_busy,
-            state.levilauncher_install_targets_loading,
-            state.levilauncher_install_targets.len(),
-            state
-                .levilauncher_install_error
-                .clone()
-                .unwrap_or_else(|| SharedString::from("")),
+                .levilauncher_selected_mod
+                .as_ref()
+                .map(|m| m.package_id.clone()),
+            (
+                state
+                    .levilauncher_install_target_path
+                    .clone()
+                    .unwrap_or_else(|| SharedString::from("")),
+                state.levilauncher_install_busy,
+                state.levilauncher_install_targets_loading,
+                state.levilauncher_install_targets.len(),
+                state
+                    .levilauncher_install_error
+                    .clone()
+                    .unwrap_or_else(|| SharedString::from("")),
+            ),
+            (
+                state.native_mods_loaded,
+                state.native_mods_loading,
+                state.native_mods_error.is_some(),
+                state.native_mods.len(),
+                state.native_mod_modal_open,
+                state.native_mod_selected_file.clone(),
+                state
+                    .native_mod_target_path
+                    .clone()
+                    .unwrap_or_else(|| SharedString::from("")),
+                state.native_mod_install_busy,
+                state
+                    .native_mod_install_error
+                    .clone()
+                    .unwrap_or_else(|| SharedString::from("")),
+            ),
         ),
     )
 }
@@ -586,7 +619,14 @@ pub fn render_download_page(
         }));
 
     if active_tab == DownloadTab::Mod {
-        ensure_levilauncher_loaded(cx);
+        let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
+            state.levilauncher_selected_loader == "native"
+        });
+        if native_source {
+            ensure_native_mods_loaded(cx);
+        } else {
+            ensure_levilauncher_loaded(cx);
+        }
     }
     // ResourcePack 自己维护真实的左侧分类栏、右侧内容壳和结果列表加载态。
     // 外层统一骨架只负责游戏和模组，避免把 ResourcePack 整个页面替换掉。
@@ -646,9 +686,13 @@ pub fn dismiss_game_dialog(cx: &mut App) {
 }
 
 pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElement> {
-    let (has_game_dialog, levilauncher_modal_open) =
+    let (has_game_dialog, levilauncher_modal_open, native_mod_modal_open) =
         cx.read_global(|state: &DownloadPageState, _cx| {
-            (state.game_dialog.is_some(), state.levilauncher_modal_open)
+            (
+                state.game_dialog.is_some(),
+                state.levilauncher_modal_open,
+                state.native_mod_modal_open,
+            )
         });
 
     if has_game_dialog {
@@ -735,6 +779,23 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
         );
     }
 
+    let native_mod_selected = native_mod_modal_open
+        .then(|| cx.read_global(|state: &DownloadPageState, _cx| state.native_mod_selected.clone()))
+        .flatten();
+    if native_mod_modal_open && let Some(mod_entry) = native_mod_selected {
+        let dismiss_fn = Rc::new(|cx: &mut App| {
+            native::dismiss_modal(cx);
+        });
+        return Some(
+            modal::modal_layer_dismissible(
+                native::render_detail_modal_content(colors, cx, &mod_entry),
+                hsla(0.0, 0.0, 0.0, 0.45),
+                dismiss_fn,
+            )
+            .into_any_element(),
+        );
+    }
+
     curseforge::render_curseforge_install_overlay(colors, cx)
 }
 
@@ -772,6 +833,42 @@ pub fn ensure_levilauncher_loaded(cx: &mut App) {
                 Err(err) => {
                     s.levilauncher_loaded = false;
                     s.levilauncher_error = Some(SharedString::from(err.to_string()));
+                }
+            }
+        });
+    })
+    .detach();
+}
+
+pub fn ensure_native_mods_loaded(cx: &mut App) {
+    let (loaded, loading) = cx.read_global(|state: &DownloadPageState, _cx| {
+        (state.native_mods_loaded, state.native_mods_loading)
+    });
+    if loaded || loading {
+        return;
+    }
+
+    cx.update_global(|state: &mut DownloadPageState, _cx| {
+        state.native_mods_loading = true;
+        state.native_mods_error = None;
+    });
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
+        crate::core::native_mods::package_index()
+            .await
+            .map_err(anyhow::Error::msg)
+    });
+    cx.spawn(async move |cx| {
+        let result = load_task.await;
+        let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
+            state.native_mods_loading = false;
+            match result {
+                Ok(entries) => {
+                    state.native_mods_loaded = true;
+                    state.native_mods = entries;
+                }
+                Err(error) => {
+                    state.native_mods_loaded = false;
+                    state.native_mods_error = Some(SharedString::from(error.to_string()));
                 }
             }
         });

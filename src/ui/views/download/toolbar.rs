@@ -451,10 +451,17 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                         .set_offset(point(px(0.), px(0.)));
                 }
                 DownloadTab::Mod => {
-                    s.levilauncher_loaded = false;
-                    s.levilauncher_loading = false;
-                    s.levilauncher_error = None;
-                    s.levilauncher_all_mods.clear();
+                    if s.levilauncher_selected_loader == "native" {
+                        s.native_mods_loaded = false;
+                        s.native_mods_loading = false;
+                        s.native_mods_error = None;
+                        s.native_mods.clear();
+                    } else {
+                        s.levilauncher_loaded = false;
+                        s.levilauncher_loading = false;
+                        s.levilauncher_error = None;
+                        s.levilauncher_all_mods.clear();
+                    }
                     s.levilauncher_page_index = 0;
                     s.levilauncher_scroll.set_offset(point(px(0.), px(0.)));
                 }
@@ -636,16 +643,28 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
             row = row.child(version_select).child(sort_select).child(refresh);
         }
         DownloadTab::Mod => {
-            let enabled = state.levilauncher_loaded;
+            let native_source = state.levilauncher_selected_loader == "native";
+            let catalog_loaded = if native_source {
+                state.native_mods_loaded
+            } else {
+                state.levilauncher_loaded
+            };
+            let source_enabled = state.levilauncher_loaders.len() > 1;
             let all_label = t!("common.all");
 
-            // 1. 加载器选择下拉框 (Loader Type Dropdown: "全部", "LeviLamina")
+            // 1. 来源选择下拉框 (Source Dropdown: "全部", "LeviLamina", "原生")
             let mut loader_type_options = Vec::with_capacity(state.levilauncher_loaders.len());
             for loader_name in &state.levilauncher_loaders {
-                loader_type_options.push(DropdownOption::from(loader_name.clone()));
+                loader_type_options.push(DropdownOption::from(if loader_name == "native" {
+                    t!("DownloadPage.filter_native")
+                } else {
+                    loader_name.clone()
+                }));
             }
 
-            let loader_type_label = if state.levilauncher_selected_loader.trim().is_empty() {
+            let loader_type_label = if native_source {
+                t!("DownloadPage.filter_native")
+            } else if state.levilauncher_selected_loader.trim().is_empty() {
                 t!("common.all")
             } else {
                 state.levilauncher_selected_loader.clone()
@@ -658,13 +677,13 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                 .unwrap_or(0);
 
             let loader_type_select = Dropdown::new(
-                "download-levilauncher-loader-type",
+                "download-mod-source",
                 colors,
                 px(120.),
                 loader_type_label,
                 loader_type_options,
                 selected_loader_type_index,
-                enabled,
+                source_enabled,
                 move |ix, _window, cx| {
                     let chosen_loader = cx.read_global(|s: &DownloadPageState, _cx| {
                         s.levilauncher_loaders
@@ -693,7 +712,9 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                 ver_options.push(DropdownOption::from(v.clone()));
             }
 
-            let ver_label = if !enabled && state.levilauncher_loading {
+            let ver_label = if native_source {
+                t!("common.all_versions")
+            } else if !catalog_loaded && state.levilauncher_loading {
                 t!("common.loading")
             } else if state.levilauncher_selected_loader_version.trim().is_empty() {
                 t!("common.all_versions")
@@ -722,7 +743,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                 ver_label,
                 ver_options,
                 selected_ver_index,
-                enabled,
+                catalog_loaded && !native_source,
                 move |ix, _window, cx| {
                     let version = if ix == 0 {
                         all_versions_label.clone()

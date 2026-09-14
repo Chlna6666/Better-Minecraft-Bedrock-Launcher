@@ -5,7 +5,6 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 type ModPanelRenderSignature = (
@@ -115,6 +114,12 @@ fn rebuild_mod_panel_render_cache(
 
 pub(super) fn render_mod_panel(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
     let i18n = cx.global::<I18n>().clone();
+    let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
+        state.levilauncher_selected_loader == "native"
+    });
+    if native_source {
+        return super::native::render_panel(cx, colors);
+    }
     {
         let state = cx.global::<DownloadPageState>();
         if state.levilauncher_loading && !state.levilauncher_loaded {
