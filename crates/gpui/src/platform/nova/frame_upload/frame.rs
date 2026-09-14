@@ -8,7 +8,7 @@ pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
     pub(in crate::platform::nova) is_solid: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::platform::nova) struct RetainedResidentSpan {
     pub(in crate::platform::nova) id: RetainedChunkId,
     pub(in crate::platform::nova) range: Range<usize>,

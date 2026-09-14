@@ -38,10 +38,8 @@ impl QuadResidentLayout {
         let Some(previous) = previous else {
             return QuadUploadPlan::Full;
         };
-        let clean = self
-            .0
-            .iter()
-            .filter(|span| previous.0.iter().any(|resident| resident == *span));
+        let previous_spans: FxHashSet<_> = previous.0.iter().collect();
+        let clean = self.0.iter().filter(|span| previous_spans.contains(span));
         dirty_complement(clean, byte_len).unwrap_or(QuadUploadPlan::Full)
     }
 }
