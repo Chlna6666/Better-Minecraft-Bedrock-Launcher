@@ -1,23 +1,23 @@
-use crate::ui::animation::{ease_out_cubic, raw_progress};
+use crate::ui::animation::ease_out_cubic_motion;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::*;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const TRACK_WIDTH: f32 = 44.0;
 const TRACK_HEIGHT: f32 = 26.0;
 const KNOB_SIZE: f32 = 22.0;
 const KNOB_INSET_X: f32 = 2.0;
-const KNOB_INSET_Y: f32 = 1.5;
+const KNOB_INSET_Y: f32 = (TRACK_HEIGHT - KNOB_SIZE) * 0.5;
 const KNOB_TRAVEL: f32 = TRACK_WIDTH - KNOB_SIZE - 2.0 * KNOB_INSET_X;
 const ANIMATION_DURATION: Duration = Duration::from_millis(160);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TogglePhase {
     Stable,
-    Opening { at: Instant },
-    Closing { at: Instant },
+    Opening,
+    Closing,
 }
 
 struct ToggleSwitchView {
@@ -37,13 +37,7 @@ impl ToggleSwitchView {
         }
     }
 
-    fn sync(
-        &mut self,
-        colors: ThemeColors,
-        enabled: bool,
-        on_toggle: Rc<dyn Fn(&mut App)>,
-        now: Instant,
-    ) {
+    fn sync(&mut self, colors: ThemeColors, enabled: bool, on_toggle: Rc<dyn Fn(&mut App)>) {
         self.colors = colors;
         self.on_toggle = on_toggle;
         if self.enabled == enabled {
@@ -52,61 +46,98 @@ impl ToggleSwitchView {
 
         self.enabled = enabled;
         self.phase = if enabled {
-            TogglePhase::Opening { at: now }
+            TogglePhase::Opening
         } else {
-            TogglePhase::Closing { at: now }
+            TogglePhase::Closing
         };
     }
 
-    fn animation_progress(&mut self, now: Instant) -> (f32, bool) {
-        let (started_at, opening) = match self.phase {
-            TogglePhase::Stable => return (f32::from(self.enabled), false),
-            TogglePhase::Opening { at } => (at, true),
-            TogglePhase::Closing { at } => (at, false),
+    fn render_track(&self) -> Div {
+        let off_color = Hsla {
+            a: 1.0,
+            ..self.colors.border
         };
-        let raw = raw_progress(now, started_at, ANIMATION_DURATION);
-        if raw >= 1.0 {
-            self.phase = TogglePhase::Stable;
-            return (f32::from(self.enabled), false);
-        }
-
-        let eased = ease_out_cubic(raw);
-        (if opening { eased } else { 1.0 - eased }, true)
-    }
-
-    fn render_track(&self, progress: f32) -> Div {
-        let track_color = lerp_hsla(
-            Hsla {
-                a: 1.0,
-                ..self.colors.border
-            },
-            Hsla {
+        let accent = div()
+            .absolute()
+            .inset_0()
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+            .bg(Hsla {
                 a: 1.0,
                 ..self.colors.accent
-            },
-            progress,
-        );
-        let on_toggle = self.on_toggle.clone();
+            });
+        let accent = match self.phase {
+            TogglePhase::Opening => accent
+                .with_animation(
+                    "toggle-switch-accent",
+                    ease_out_cubic_motion(ANIMATION_DURATION)
+                        .with_property(AnimationProperty::opacity(0.0, 1.0)),
+                    |this, _progress| this,
+                )
+                .into_any_element(),
+            TogglePhase::Closing => accent
+                .with_animation(
+                    "toggle-switch-accent",
+                    ease_out_cubic_motion(ANIMATION_DURATION)
+                        .with_property(AnimationProperty::opacity(1.0, 0.0)),
+                    |this, _progress| this,
+                )
+                .into_any_element(),
+            TogglePhase::Stable => accent
+                .opacity(if self.enabled { 1.0 } else { 0.0 })
+                .into_any_element(),
+        };
 
+        // Layout is already at the destination position. The renderer owns only the temporary
+        // visual offset, so toggling no longer puts the settings tree on a 60/120 Hz layout path.
+        let target_left = KNOB_INSET_X + if self.enabled { KNOB_TRAVEL } else { 0.0 };
+        let knob = div()
+            .absolute()
+            .top(px(KNOB_INSET_Y))
+            .left(px(target_left))
+            .w(px(KNOB_SIZE))
+            .h(px(KNOB_SIZE))
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+            .bg(self.colors.btn_primary_text)
+            .shadow(knob_shadow());
+        let knob = match self.phase {
+            TogglePhase::Opening => knob
+                .with_animation(
+                    "toggle-switch-knob",
+                    ease_out_cubic_motion(ANIMATION_DURATION).with_property(
+                        AnimationProperty::translation(
+                            point(px(-KNOB_TRAVEL), px(0.0)),
+                            Point::default(),
+                        ),
+                    ),
+                    |this, _progress| this,
+                )
+                .into_any_element(),
+            TogglePhase::Closing => knob
+                .with_animation(
+                    "toggle-switch-knob",
+                    ease_out_cubic_motion(ANIMATION_DURATION).with_property(
+                        AnimationProperty::translation(
+                            point(px(KNOB_TRAVEL), px(0.0)),
+                            Point::default(),
+                        ),
+                    ),
+                    |this, _progress| this,
+                )
+                .into_any_element(),
+            TogglePhase::Stable => knob.into_any_element(),
+        };
+
+        let on_toggle = self.on_toggle.clone();
         div()
+            .relative()
             .w(px(TRACK_WIDTH))
             .h(px(TRACK_HEIGHT))
             .rounded(px(crate::ui::theme::tokens::radius::FULL))
-            .bg(track_color)
-            .px(px(KNOB_INSET_X))
-            .flex()
-            .items_center()
+            .bg(off_color)
             .cursor_pointer()
             .shadow(track_shadow())
-            .child(
-                div()
-                    .w(px(KNOB_SIZE))
-                    .h(px(KNOB_SIZE))
-                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                    .bg(self.colors.btn_primary_text)
-                    .shadow(knob_shadow())
-                    .ml(px(KNOB_TRAVEL * progress)),
-            )
+            .child(accent)
+            .child(knob)
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                 (on_toggle)(cx);
             })
@@ -114,10 +145,8 @@ impl ToggleSwitchView {
 }
 
 impl Render for ToggleSwitchView {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let (progress, animating) = self.animation_progress(window.animation_time());
-        self.render_track(progress)
-            .with_layout_animation_target(animating)
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_track()
     }
 }
 
@@ -151,24 +180,10 @@ impl RenderOnce for ToggleSwitch {
         let view = window.use_keyed_state(self.id, cx, |_, _| {
             ToggleSwitchView::new(self.colors, self.enabled, initial_on_toggle)
         });
-        let now = window.animation_time();
         view.update(cx, |view, _cx| {
-            view.sync(self.colors, self.enabled, self.on_toggle, now);
+            view.sync(self.colors, self.enabled, self.on_toggle);
         });
         AnyView::from(view)
-    }
-}
-
-fn lerp(start: f32, end: f32, progress: f32) -> f32 {
-    start + (end - start) * progress
-}
-
-fn lerp_hsla(start: Hsla, end: Hsla, progress: f32) -> Hsla {
-    Hsla {
-        h: lerp(start.h, end.h, progress),
-        s: lerp(start.s, end.s, progress),
-        l: lerp(start.l, end.l, progress),
-        a: lerp(start.a, end.a, progress),
     }
 }
 
@@ -198,37 +213,30 @@ fn knob_shadow() -> Vec<BoxShadow> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ANIMATION_DURATION, TogglePhase, ToggleSwitchView};
+    use super::{TogglePhase, ToggleSwitchView};
     use crate::ui::theme::colors::LightColors;
     use std::rc::Rc;
-    use std::time::{Duration, Instant};
 
     fn test_view(enabled: bool) -> ToggleSwitchView {
         ToggleSwitchView::new(LightColors::colors(), enabled, Rc::new(|_| {}))
     }
 
     #[test]
-    fn sync_starts_animation_only_when_value_changes() {
-        let now = Instant::now();
-        let mut view = test_view(false);
-        view.sync(LightColors::colors(), false, Rc::new(|_| {}), now);
+    fn initial_state_does_not_animate() {
+        let view = test_view(false);
         assert_eq!(view.phase, TogglePhase::Stable);
-
-        view.sync(LightColors::colors(), true, Rc::new(|_| {}), now);
-        assert!(matches!(view.phase, TogglePhase::Opening { .. }));
     }
 
     #[test]
-    fn completed_animation_settles_at_target() {
-        let mut view = test_view(true);
-        let started_at = Instant::now();
-        view.phase = TogglePhase::Opening { at: started_at };
-
-        let (progress, animating) =
-            view.animation_progress(started_at + ANIMATION_DURATION + Duration::from_millis(1));
-
-        assert_eq!(progress, 1.0);
-        assert!(!animating);
+    fn sync_records_only_real_state_transitions() {
+        let mut view = test_view(false);
+        view.sync(LightColors::colors(), false, Rc::new(|_| {}));
         assert_eq!(view.phase, TogglePhase::Stable);
+
+        view.sync(LightColors::colors(), true, Rc::new(|_| {}));
+        assert_eq!(view.phase, TogglePhase::Opening);
+
+        view.sync(LightColors::colors(), false, Rc::new(|_| {}));
+        assert_eq!(view.phase, TogglePhase::Closing);
     }
 }
