@@ -192,6 +192,11 @@ where
                     binding_type: ResourceBindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
+                ResourceSetLayoutEntry {
+                    binding: 17,
+                    binding_type: ResourceBindingType::StorageBuffer,
+                    stages: ShaderStages::VERTEX,
+                },
             ],
         })?;
     let backdrop_blur_pass_resource_set_layout =

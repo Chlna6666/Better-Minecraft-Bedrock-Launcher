@@ -152,6 +152,7 @@ where
                     stride: Some(PACKED_UNDERLINE_BYTES as u32),
                 }),
             },
+            animation_value_binding(),
         ],
     })?;
     let custom_mesh_3d_resource_set = create_custom_mesh_3d_resource_set(

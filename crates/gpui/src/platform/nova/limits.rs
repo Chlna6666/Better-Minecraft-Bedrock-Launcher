@@ -6,8 +6,12 @@ pub(super) const MAX_MONO_SPRITES: usize = 8192;
 pub(super) const MAX_POLY_SPRITES: usize = 4096;
 pub(super) const MAX_UNDERLINES: usize = 4096;
 pub(super) const MAX_BACKDROP_BLURS: usize = 1024;
-pub(super) const MAX_ANIMATION_BINDINGS: usize =
-    MAX_QUADS + MAX_SHADOWS + MAX_MONO_SPRITES + MAX_POLY_SPRITES + MAX_BACKDROP_BLURS;
+pub(super) const MAX_ANIMATION_BINDINGS: usize = MAX_QUADS
+    + MAX_SHADOWS
+    + MAX_MONO_SPRITES
+    + MAX_POLY_SPRITES
+    + MAX_UNDERLINES
+    + MAX_BACKDROP_BLURS;
 pub(super) const MAX_ANIMATION_VALUES: usize = MAX_ANIMATION_BINDINGS;
 // CPU-visible frame upload buffers are rewritten every frame. Keep one
 // buffer/resource-set slot per deferred submission so the CPU can upload the

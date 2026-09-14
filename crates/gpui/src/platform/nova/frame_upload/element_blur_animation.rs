@@ -9,6 +9,10 @@ impl FrameUpload {
         scene: &crate::Scene,
         summary: &mut FrameUploadSummary,
     ) {
+        // The full static encode is complete here, so flattened underline indices are final. Capture
+        // their scene animation ownership before indexed promotion repurposes the packed pad lane.
+        self.prepare_gpu_indexed_special_primitives(scene);
+
         let mut blurs = Vec::new();
         collect_element_blurs(scene, &mut blurs);
         if blurs.is_empty() {

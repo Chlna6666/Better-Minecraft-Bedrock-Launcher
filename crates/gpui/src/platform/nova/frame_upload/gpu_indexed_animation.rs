@@ -2,6 +2,7 @@ use super::*;
 
 const INDEXED_ANIMATION_ENABLED_OFFSET: usize = 12;
 const ANIMATION_VALUE_ACTIVE_OFFSET: usize = 12;
+const UNDERLINE_ANIMATION_SLOT_OFFSET: usize = 4;
 
 #[inline]
 fn is_gpu_indexed_kind(kind: AnimatedPrimitiveKind) -> bool {
@@ -24,13 +25,93 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
 }
 
+fn ensure_gpu_indexed_slot(
+    slots: &mut FxHashMap<crate::SceneAnimationId, u32>,
+    animation_id: crate::SceneAnimationId,
+) -> Option<u32> {
+    if let Some(&slot) = slots.get(&animation_id) {
+        return Some(slot);
+    }
+    let slot = u32::try_from(slots.len()).ok()?;
+    if slot as usize >= MAX_ANIMATION_VALUES {
+        return None;
+    }
+    slots.insert(animation_id, slot);
+    Some(slot)
+}
+
+fn underline_is_visible(underline: &crate::Underline) -> bool {
+    underline.content_mask.bounds.size.width > crate::ScaledPixels(0.0)
+        && underline.content_mask.bounds.size.height > crate::ScaledPixels(0.0)
+}
+
+fn collect_gpu_indexed_underline_owners(
+    scene: &crate::Scene,
+    output: &mut Vec<Option<crate::SceneAnimationId>>,
+    packed_limit: usize,
+) {
+    if output.len() >= packed_limit {
+        return;
+    }
+    for batch in scene.prepared_batches() {
+        match batch {
+            PreparedSceneBatch::Underlines(range) => {
+                for underline in &scene.underlines[range.clone()] {
+                    if output.len() >= packed_limit {
+                        return;
+                    }
+                    if underline_is_visible(underline) {
+                        output.push(underline.animation_id);
+                    }
+                }
+            }
+            PreparedSceneBatch::Blurs(range) => {
+                for blur in &scene.blurs[range.clone()] {
+                    collect_gpu_indexed_underline_owners(&blur.content, output, packed_limit);
+                    if output.len() >= packed_limit {
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl FrameUpload {
+    /// Captures animation ownership for packed primitive streams whose record ABI already has a
+    /// spare lane but whose scene type is not represented by `AnimatedUpload`.
+    ///
+    /// This traversal deliberately mirrors recursive `encode_scene` order. Underline ownership can
+    /// therefore be retained beside the static 96-byte records without adding a binding stream or
+    /// touching the encode hot path.
+    pub(in crate::platform::nova) fn prepare_gpu_indexed_special_primitives(
+        &mut self,
+        scene: &crate::Scene,
+    ) {
+        let packed_underline_count = self.underlines.len() / PACKED_UNDERLINE_BYTES;
+        self.gpu_indexed_underline_animation_ids.clear();
+        self.gpu_indexed_underline_animation_ids
+            .reserve(packed_underline_count);
+        collect_gpu_indexed_underline_owners(
+            scene,
+            &mut self.gpu_indexed_underline_animation_ids,
+            packed_underline_count,
+        );
+        self.gpu_indexed_underline_animation_ids
+            .resize(packed_underline_count, None);
+        debug_assert_eq!(
+            self.gpu_indexed_underline_animation_ids.len(),
+            packed_underline_count
+        );
+    }
+
     /// Promotes ordinary 2D primitives to the renderer-owned indexed animation ABI.
     ///
-    /// Quad, shadow, glyph and image packers emit a zero animation-slot sentinel directly because
-    /// Scene batching has already consumed draw order. Animation ownership lives on AnimatedUpload,
-    /// so promotion patches only animated records and never serializes/parses a parallel binding
-    /// stream.
+    /// Quad, shadow, glyph and image records use their otherwise-unused first u32. Underlines keep
+    /// draw order in the first lane and repurpose their existing second `pad` lane. Animation
+    /// ownership therefore costs no additional primitive bytes and promoted records leave
+    /// `animated_primitives`, eliminating per-frame CPU serialization for those streams.
     pub(in crate::platform::nova) fn promote_gpu_indexed_animations(&mut self) {
         self.gpu_indexed_animation_slots.clear();
         self.gpu_indexed_animation_values.clear();
@@ -40,25 +121,54 @@ impl FrameUpload {
         }
         write_u32(&mut self.globals, INDEXED_ANIMATION_ENABLED_OFFSET, 0);
 
-        for primitive in &self.animated_primitives {
-            if !is_gpu_indexed_kind(primitive.kind) {
-                continue;
-            }
-            let animation_id = primitive.animation_id;
-            if !self.gpu_indexed_animation_slots.contains_key(&animation_id) {
-                let slot = u32::try_from(self.gpu_indexed_animation_slots.len())
-                    .expect("nova animation slot count fits u32");
-                if slot as usize >= MAX_ANIMATION_VALUES {
-                    debug_assert!(false, "nova indexed animation table exceeded capacity");
-                    self.gpu_indexed_animation_slots.clear();
-                    return;
-                }
-                self.gpu_indexed_animation_slots.insert(animation_id, slot);
+        for animation_id in self
+            .gpu_indexed_underline_animation_ids
+            .iter()
+            .flatten()
+            .copied()
+            .chain(
+                self.animated_primitives
+                    .iter()
+                    .filter(|primitive| is_gpu_indexed_kind(primitive.kind))
+                    .map(|primitive| primitive.animation_id),
+            )
+        {
+            if ensure_gpu_indexed_slot(&mut self.gpu_indexed_animation_slots, animation_id).is_none()
+            {
+                debug_assert!(false, "nova indexed animation table exceeded capacity");
+                self.gpu_indexed_animation_slots.clear();
+                return;
             }
         }
 
         if self.gpu_indexed_animation_slots.is_empty() {
             return;
+        }
+
+        // The second underline u32 is ABI padding. Clear every record when the global indexed
+        // animation feature gate is enabled so static underlines remain an explicit zero sentinel.
+        for index in 0..self.underlines.len() / PACKED_UNDERLINE_BYTES {
+            write_u32(
+                &mut self.underlines,
+                index * PACKED_UNDERLINE_BYTES + UNDERLINE_ANIMATION_SLOT_OFFSET,
+                0,
+            );
+        }
+        for (index, animation_id) in self
+            .gpu_indexed_underline_animation_ids
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let Some(animation_id) = animation_id else {
+                continue;
+            };
+            let slot_plus_one = self.gpu_indexed_animation_slots[&animation_id] + 1;
+            write_u32(
+                &mut self.underlines,
+                index * PACKED_UNDERLINE_BYTES + UNDERLINE_ANIMATION_SLOT_OFFSET,
+                slot_plus_one,
+            );
         }
 
         for primitive in &self.animated_primitives {
@@ -196,6 +306,30 @@ mod tests {
         assert_eq!(upload.gpu_indexed_animation_slots.len(), 1);
         assert_eq!(read_u32(&upload.shadows, 0), 1);
         assert!(upload.animated_primitives.is_empty());
+    }
+
+    #[test]
+    fn underline_animation_reuses_existing_padding_lane() {
+        let id = crate::SceneAnimationId(9);
+        let mut upload = FrameUpload {
+            globals: vec![0; GLOBAL_UPLOAD_BYTES],
+            underlines: vec![0; 2 * PACKED_UNDERLINE_BYTES],
+            gpu_indexed_underline_animation_ids: vec![None, Some(id)],
+            ..Default::default()
+        };
+
+        upload.promote_gpu_indexed_animations();
+
+        assert_eq!(upload.gpu_indexed_animation_slots.len(), 1);
+        assert_eq!(read_u32(&upload.underlines, UNDERLINE_ANIMATION_SLOT_OFFSET), 0);
+        assert_eq!(
+            read_u32(
+                &upload.underlines,
+                PACKED_UNDERLINE_BYTES + UNDERLINE_ANIMATION_SLOT_OFFSET
+            ),
+            1
+        );
+        assert_eq!(read_u32(&upload.globals, INDEXED_ANIMATION_ENABLED_OFFSET), 1);
     }
 
     #[test]
