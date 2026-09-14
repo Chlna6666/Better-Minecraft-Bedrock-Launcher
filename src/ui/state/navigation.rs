@@ -1,4 +1,4 @@
-use crate::ui::animation::{SpringValue, apple_spring, spring_smooth};
+use crate::ui::animation::{SpringValue, apple_spring};
 use gpui::Global;
 use std::time::Instant;
 
@@ -6,23 +6,16 @@ const PILL_EDGE_SETTLE_DISTANCE: f32 = 0.006;
 
 /// 顶栏导航状态。
 ///
-/// 新版 UI 的所有导航动画均由可中断弹簧驱动（Apple 风格）：
-/// - 激活胶囊的左右边缘各是一条弹簧，快弹簧领先、慢弹簧拖尾，
-///   移动时自然拉伸、到位时回弹收拢；
-/// - 快速连续切换 tab 时弹簧从当前位置和速度继续，不会跳变或重播。
+/// 胶囊左右边缘由两条可中断弹簧驱动；响应式 label 可见性则是离散布局状态，
+/// 跨越窗口宽度断点时一次性切换，避免为文字宽度/间距持续触发布局动画。
 pub struct NavState {
     pub active_index: usize,
     pub pending_route_index: Option<usize>,
     pub pill_from_index: usize,
     pub pill_to_index: usize,
-    /// 领先边缘（Q 弹、响应快）。
     pill_fast: SpringValue,
-    /// 拖尾边缘（更平滑、略慢）。
     pill_slow: SpringValue,
     pill_last_direction: f32,
-
-    labels_layout: SpringValue,
-    labels_opacity: SpringValue,
     pub labels_target_visible: bool,
 }
 
@@ -38,9 +31,6 @@ impl Default for NavState {
             pill_fast: SpringValue::new(0.0).with_spring(apple_spring(0.34, 0.60)),
             pill_slow: SpringValue::new(0.0).with_spring(apple_spring(0.42, 0.80)),
             pill_last_direction: 1.0,
-
-            labels_layout: SpringValue::new(1.0).with_spring(spring_smooth()),
-            labels_opacity: SpringValue::new(1.0).with_spring(apple_spring(0.24, 1.0)),
             labels_target_visible: true,
         }
     }
@@ -89,9 +79,7 @@ impl NavState {
     }
 
     pub fn is_animating(&self, now: Instant) -> bool {
-        self.pill_fast.is_animating(now)
-            || self.pill_slow.is_animating(now)
-            || self.labels_animating(now)
+        self.pill_fast.is_animating(now) || self.pill_slow.is_animating(now)
     }
 
     /// 胶囊左右边缘位置（以 tab 序号为单位，允许轻微过冲产生 Q 弹）。
@@ -112,33 +100,20 @@ impl NavState {
         self.pill_last_direction
     }
 
-    pub fn set_labels_target(&mut self, visible: bool, now: Instant) {
-        if self.labels_target_visible == visible {
-            return;
-        }
+    pub fn set_labels_target(&mut self, visible: bool, _now: Instant) {
         self.labels_target_visible = visible;
-        let target = if visible { 1.0 } else { 0.0 };
-        self.labels_layout.retarget(target, now);
-        self.labels_opacity.retarget(target, now);
     }
 
     pub fn set_labels_target_immediate(&mut self, visible: bool) {
-        let target = if visible { 1.0 } else { 0.0 };
         self.labels_target_visible = visible;
-        self.labels_layout.snap_to(target);
-        self.labels_opacity.snap_to(target);
     }
 
-    pub fn labels_animating(&self, now: Instant) -> bool {
-        self.labels_layout.is_animating(now) || self.labels_opacity.is_animating(now)
+    pub fn labels_layout_factor(&self, _now: Instant) -> f32 {
+        if self.labels_target_visible { 1.0 } else { 0.0 }
     }
 
-    pub fn labels_layout_factor(&self, now: Instant) -> f32 {
-        self.labels_layout.value(now).clamp(0.0, 1.0)
-    }
-
-    pub fn labels_opacity_factor(&self, now: Instant) -> f32 {
-        self.labels_opacity.value(now).clamp(0.0, 1.0)
+    pub fn labels_opacity_factor(&self, _now: Instant) -> f32 {
+        if self.labels_target_visible { 1.0 } else { 0.0 }
     }
 }
 
@@ -171,13 +146,11 @@ mod tests {
         nav.start_pill_animation(4, now);
         assert!(nav.pill_direction() > 0.0);
 
-        // 动画早期：快弹簧领先于慢弹簧，胶囊被拉伸。
         let early = now + Duration::from_millis(90);
         let (left, right) = nav.pill_edges(early);
         assert!(right > left, "移动中胶囊应被拉伸");
         assert!(right < 4.6, "边缘不应飞出合理范围");
 
-        // 完全稳定后：两条边缘收拢到目标 tab。
         let settled = now + Duration::from_secs(5);
         let (left, right) = nav.pill_edges(settled);
         assert!((left - 4.0).abs() < 0.01);
@@ -216,7 +189,6 @@ mod tests {
         let mid = now + Duration::from_millis(100);
         let (before_left, before_right) = nav.pill_edges(mid);
 
-        // 中途改变目标：边缘位置不应跳变。
         nav.confirm_route(5);
         nav.start_pill_animation(1, mid);
         let (after_left, after_right) = nav.pill_edges(mid);
@@ -226,17 +198,14 @@ mod tests {
     }
 
     #[test]
-    fn immediate_label_target_does_not_leave_animation_running() {
+    fn label_breakpoint_switch_is_immediate_and_does_not_drive_animation() {
         let now = Instant::now();
         let mut nav = NavState::default();
 
         nav.set_labels_target(false, now);
-        assert!(nav.labels_animating(now));
 
-        nav.set_labels_target_immediate(false);
-
-        assert!(!nav.labels_animating(now));
         assert_eq!(nav.labels_layout_factor(now), 0.0);
         assert_eq!(nav.labels_opacity_factor(now), 0.0);
+        assert!(!nav.is_animating(now));
     }
 }
