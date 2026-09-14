@@ -1690,6 +1690,7 @@ fn same_hsla(left: Hsla, right: Hsla) -> bool {
 impl Render for MainWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_started = Instant::now();
+        let frame_now = window.animation_time();
         self.ensure_global_reactor_subscriptions(cx);
         if !self.runtime_font_logged {
             self.runtime_font_logged = true;
@@ -1698,14 +1699,14 @@ impl Render for MainWindowView {
                 window.text_style().font_family
             );
         }
-        let update_state_changed = self.sync_update_state(render_started, cx);
-        let model = self.build_render_model(render_started, window, cx);
+        let update_state_changed = self.sync_update_state(frame_now, cx);
+        let model = self.build_render_model(frame_now, window, cx);
         let _ = self.sync_background_animation_policy_for_route(
             &model.route,
             &model.update_render_state,
             cx,
         );
-        crate::ui::hooks::use_launcher::sync_launcher_state(render_started, cx);
+        crate::ui::hooks::use_launcher::sync_launcher_state(frame_now, cx);
         self.ensure_chrome_view_loaded(window, cx);
         if self.startup_deferred_ready {
             self.ensure_startup_route_bootstrapped(cx);

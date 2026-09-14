@@ -23,14 +23,14 @@ use crate::utils::mc_dependency::{
 
 pub fn render_launch_prereq_overlay(
     state: &LaunchPrereqState,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &App,
 ) -> AnyElement {
     if !state.visible {
         return div().into_any_element();
     }
 
-    let now = Instant::now();
+    let now = window.animation_time();
     let theme_state = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
