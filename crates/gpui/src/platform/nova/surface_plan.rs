@@ -2,21 +2,20 @@ use super::*;
 
 /// Resolve the render plan used by the Nova swapchain path.
 ///
-/// Backdrop-filter scenes still use a full swapchain presentation until Nova can prove native
-/// dirty-rect composition is correct for every transparent/titlebar/atlas combination. That is a
-/// presentation constraint only: the renderer already owns retained backdrop targets and precise
-/// source-order damage, so a full present must not imply that every Gaussian target is invalid.
+/// Backdrop-filter presence by itself is not a reason to widen presentation to the full surface.
+/// Window scene construction already folds each backdrop's filtered-output damage into the final
+/// dirty region, while blur topology changes force one conservative full redraw. Nova separately
+/// decides whether a backdrop source/filter target must be refreshed, so keeping a cached blur does
+/// not require presenting unrelated pixels around it.
 ///
-/// Keeping those two decisions independent is important for full-window background glass. A later
-/// page/list animation may require a full swapchain present while leaving all pixels *before* the
-/// background blur barrier unchanged. In that case the cached blur target remains valid and should
-/// be sampled directly instead of recapturing and filtering the whole window.
+/// The surface/backend capability remains the hard safety gate. Transparent Windows composition
+/// surfaces, unsupported backends, or other presentation modes that cannot preserve unchanged
+/// pixels pass `surface_requires_full_redraw = true` and keep the conservative full-present path.
 pub(super) fn resolve_surface_render_plan(
     render_plan: FrameRenderPlan<'_>,
     surface_requires_full_redraw: bool,
 ) -> FrameRenderPlan<'_> {
-    let has_backdrop_blurs = render_plan.scene.has_backdrop_blurs();
-    if surface_requires_full_redraw || has_backdrop_blurs {
+    if surface_requires_full_redraw {
         FrameRenderPlan {
             partial_present_mode: PartialPresentMode::FullRedraw,
             ..render_plan
