@@ -54,23 +54,42 @@ fn game_shimmer_block(
     };
     let start = -0.42f32;
     let end = 1.10f32;
-    let band = div()
+    let travel = width * (end - start);
+    let band_width = width * 0.32;
+    let phase_offset = travel * phase.rem_euclid(1.0);
+    let first_left = width * start + phase_offset;
+    let band_color = Hsla {
+        a: if accent { 0.14 } else { 0.19 },
+        ..colors.text_primary
+    };
+    let band = |left: Pixels| {
+        div()
+            .absolute()
+            .top(px(0.0))
+            .bottom(px(0.0))
+            .left(left)
+            .w(band_width)
+            .rounded(radius)
+            .bg(band_color)
+    };
+
+    // Two identical bands one period apart make the phase offset periodic. At the repeat boundary
+    // the visible band is exchanged with its twin, so the renderer can own one linear translation
+    // without a layout-side `(t + phase).fract()` callback on every frame.
+    let bands = div()
         .absolute()
-        .top(px(0.0))
-        .bottom(px(0.0))
-        .left(relative(start))
-        .w(relative(0.32))
-        .rounded(radius)
-        .bg(Hsla {
-            a: if accent { 0.14 } else { 0.19 },
-            ..colors.text_primary
-        })
+        .inset_0()
+        .child(band(first_left))
+        .child(band(first_left - travel))
         .with_animation(
             id,
             Animation::new(GAME_SHIMMER_DURATION)
                 .repeat()
-                .with_easing(move |t| (t + phase).fract()),
-            move |this, t| this.left(relative(start + (end - start) * t)),
+                .with_property(AnimationProperty::translation(
+                    Point::default(),
+                    point(travel, px(0.0)),
+                )),
+            |this, _progress| this,
         );
 
     div()
@@ -83,19 +102,20 @@ fn game_shimmer_block(
         })
         .relative()
         .overflow_hidden()
-        .child(band)
+        .child(bands)
         .into_any_element()
 }
 
-fn resource_sweep(id: SharedString, colors: &ThemeColors) -> AnyElement {
+fn resource_sweep(id: SharedString, colors: &ThemeColors, row_width: Pixels) -> AnyElement {
     let start = -0.24f32;
     let end = 1.08f32;
+    let travel = row_width * (end - start);
     div()
         .absolute()
         .top(px(0.0))
         .bottom(px(0.0))
-        .left(relative(start))
-        .w(relative(0.20))
+        .left(row_width * start)
+        .w(row_width * 0.20)
         .bg(Hsla {
             a: 0.085,
             ..colors.text_primary
@@ -104,8 +124,11 @@ fn resource_sweep(id: SharedString, colors: &ThemeColors) -> AnyElement {
             id,
             Animation::new(RESOURCE_SWEEP_DURATION)
                 .repeat()
-                .with_easing(|t| t),
-            move |this, t| this.left(relative(start + (end - start) * t)),
+                .with_property(AnimationProperty::translation(
+                    Point::default(),
+                    point(travel, px(0.0)),
+                )),
+            |this, _progress| this,
         )
         .into_any_element()
 }
@@ -334,11 +357,17 @@ fn render_resource_sidebar_loading(colors: &ThemeColors) -> Div {
         .child(div().flex().flex_col().gap(px(2.0)).children(rows))
 }
 
-fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
+fn render_resource_loading(
+    colors: &ThemeColors,
+    viewport_height: Pixels,
+    viewport_width: Pixels,
+) -> Div {
     // ResourcePack 的真实布局由左侧 220px 分类栏和右侧 CurseForge 内容壳组成。
     // 加载态必须保留这层结构，只替换右侧结果列表，不能把骨架铺满整个页面。
     let list_height = (viewport_height - px(170.0)).max(px(RESOURCE_ROW_HEIGHT));
     let row_count = visible_count(list_height, RESOURCE_ROW_HEIGHT, 3, 8);
+    // outer padding 24 + gap 20 + sidebar 220 + result-list horizontal padding 24
+    let resource_row_width = (viewport_width - px(288.0)).max(px(320.0));
     let rows = (0..row_count)
         .map(|row| {
             div()
@@ -427,6 +456,7 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
                 .child(resource_sweep(
                     SharedString::from(format!("resource-loading-card-sweep-{row}")),
                     colors,
+                    resource_row_width,
                 ))
                 .into_any_element()
         })
@@ -755,12 +785,14 @@ struct DownloadLoadingPlaceholder {
 }
 
 impl RenderOnce for DownloadLoadingPlaceholder {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match cx.global::<DownloadPageState>().tab {
             DownloadTab::Game => render_game_loading(&self.colors, self.viewport_height),
-            DownloadTab::ResourcePack => {
-                render_resource_loading(&self.colors, self.viewport_height)
-            }
+            DownloadTab::ResourcePack => render_resource_loading(
+                &self.colors,
+                self.viewport_height,
+                window.bounds().size.width,
+            ),
             DownloadTab::Mod => render_mod_loading(&self.colors, self.viewport_height),
         }
     }
