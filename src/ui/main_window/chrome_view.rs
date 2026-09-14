@@ -1,7 +1,6 @@
 use super::*;
 use crate::ui::state::bedrock_auth::BedrockAuthState;
 use crate::ui::state::navigation::NavState;
-use gpui::AnimationExt as _;
 
 // Bubble-only fallback: inputs and editors keep their own Tab actions.
 pub(super) fn navigate_focus(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
@@ -157,10 +156,12 @@ impl Render for AppChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let state = self.prepare_render_state(now, window, cx);
-        let animating = state.theme_animating;
         let route = crate::ui::navigation::current_route_target(cx);
         let update_modal_open = cx.global::<UpdateState>().show_modal;
+
+        // ThemeState owns its 16 ms tick and notifies this view directly. Color interpolation does
+        // not mutate chrome geometry, so do not arm a layout-animation retained target here; doing
+        // so schedules redundant layout frames for the entire top bar throughout the theme fade.
         chrome::render_app_chrome(state, route, update_modal_open)
-            .with_layout_animation_target(animating)
     }
 }
