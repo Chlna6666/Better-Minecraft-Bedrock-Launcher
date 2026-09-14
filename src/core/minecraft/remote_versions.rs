@@ -49,7 +49,7 @@ struct CacheFile {
 }
 
 fn cache_path() -> PathBuf {
-    file_ops::cache_subdir("api").join(CACHE_FILE_NAME)
+    file_ops::versions_api_cache_dir().join(CACHE_FILE_NAME)
 }
 
 fn legacy_cache_path() -> PathBuf {
@@ -57,7 +57,7 @@ fn legacy_cache_path() -> PathBuf {
 }
 
 fn cache_backup_path(index: usize) -> PathBuf {
-    file_ops::cache_subdir("api").join(format!("appx_api_cache.{}.json", index))
+    file_ops::versions_api_cache_dir().join(format!("appx_api_cache.{}.json", index))
 }
 
 fn legacy_cache_backup_path(index: usize) -> PathBuf {
@@ -428,11 +428,11 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
         .error_for_status()
         .context("remote versions api returned error status")?;
 
-    let tmp_path = file_ops::cache_subdir("data").join("appx_versions.json.tmp");
+    let tmp_path = file_ops::versions_api_cache_dir().join("appx_versions.json.tmp");
     if let Some(parent) = tmp_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .context("create cache data dir failed")?;
+            .context("create cache versions dir failed")?;
     }
 
     {

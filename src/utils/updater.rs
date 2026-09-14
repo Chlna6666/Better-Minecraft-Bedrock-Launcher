@@ -432,7 +432,7 @@ pub async fn download_and_apply_update(
 
     info!("开始下载并应用：url={} task_id={}", url, task_id);
 
-    let downloads_dir = file_ops::downloads_dir();
+    let downloads_dir = file_ops::update_downloads_dir();
     if let Err(e) = fs::create_dir_all(&downloads_dir) {
         error!("创建下载目录失败：{}", e);
         return Err(format!("创建下载目录失败：{}", e));

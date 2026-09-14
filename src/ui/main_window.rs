@@ -1289,7 +1289,7 @@ impl MainWindowView {
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
         cx.spawn(async move |handle, cx| {
-            let dir = crate::utils::file_ops::downloads_dir();
+            let dir = crate::utils::file_ops::game_downloads_dir();
             let result = crate::tasks::runtime::run_io_blocking(move || {
                 let mut out = std::collections::HashSet::new();
                 let rd = std::fs::read_dir(dir).map_err(|error| error.to_string())?;

@@ -493,7 +493,7 @@ async fn install_latest_proton_gdk(
         preserve_incomplete_proton_gdk_install(&install_path).await?;
     }
 
-    let download_dir = file_ops::downloads_dir()
+    let download_dir = file_ops::runtime_downloads_dir()
         .join("proton-gdk")
         .join(source.config_value());
     tokio::fs::create_dir_all(&download_dir)
@@ -614,7 +614,7 @@ async fn install_roundmcdev_bundle(
         preserve_incomplete_proton_gdk_install(&install_path).await?;
     }
 
-    let download_dir = file_ops::downloads_dir()
+    let download_dir = file_ops::runtime_downloads_dir()
         .join("proton-gdk")
         .join(source.config_value())
         .join(ROUNDMCDEV_RELEASE_TAG);

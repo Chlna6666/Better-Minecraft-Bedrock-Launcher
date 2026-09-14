@@ -272,7 +272,7 @@ async fn prune_disk_cache(root: &Path) {
 
 fn cache_path(key: &str) -> PathBuf {
     let hash = hex::encode(Sha256::digest(key.as_bytes()));
-    crate::utils::file_ops::cache_subdir("curseforge_api").join(format!("{hash}.cache"))
+    crate::utils::file_ops::curseforge_api_cache_dir().join(format!("{hash}.cache"))
 }
 
 fn unix_timestamp() -> u64 {

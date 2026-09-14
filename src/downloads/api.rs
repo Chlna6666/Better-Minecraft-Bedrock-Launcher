@@ -50,8 +50,12 @@ fn remove_download_temp(dest: &Path) {
     }
 }
 
-fn downloads_dir() -> PathBuf {
-    file_ops::downloads_dir()
+fn game_downloads_dir() -> PathBuf {
+    file_ops::game_downloads_dir()
+}
+
+fn mod_downloads_dir() -> PathBuf {
+    file_ops::mod_downloads_dir()
 }
 
 async fn local_file_ok(dest: &Path, md5: &Option<String>) -> bool {
@@ -77,7 +81,7 @@ pub async fn local_download_path(
     file_name: String,
     md5: Option<String>,
 ) -> Result<Option<String>, String> {
-    let downloads_dir = downloads_dir();
+    let downloads_dir = game_downloads_dir();
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
     let safe_name = safe_file_name(&file_name);
     let dest = downloads_dir.join(&safe_name);
@@ -89,7 +93,7 @@ pub async fn local_download_path(
 }
 
 pub async fn delete_local_download(file_name: String) -> Result<(), String> {
-    let downloads_dir = downloads_dir();
+    let downloads_dir = game_downloads_dir();
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
     let safe_name = safe_file_name(&file_name);
     let dest = downloads_dir.join(&safe_name);
@@ -103,6 +107,30 @@ pub async fn delete_local_download(file_name: String) -> Result<(), String> {
         }
     }
     remove_download_temp(&dest);
+    Ok(())
+}
+
+/// Delete a completed file from the BMCBL cache using its task-reported path.
+///
+/// # Errors
+///
+/// Returns an error when the path is outside the BMCBL cache or cannot be
+/// removed.
+pub async fn delete_download_path(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if !path.starts_with(file_ops::cache_dir()) {
+        return Err("只能删除 BMCBL 缓存目录中的下载文件".into());
+    }
+
+    if path.exists() {
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+            debug!("Deleted cached download: {}", path.display());
+        } else {
+            return Err("目标不是文件，无法删除".into());
+        }
+    }
+    remove_download_temp(&path);
     Ok(())
 }
 
@@ -122,7 +150,7 @@ pub async fn download_appx(
     }
     let (update_id, revision) = (parts[0], parts[1]);
 
-    let downloads_dir = downloads_dir();
+    let downloads_dir = game_downloads_dir();
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
     let safe_name = safe_file_name(&file_name);
     let dest = downloads_dir.join(&safe_name);
@@ -256,11 +284,53 @@ pub async fn download_resource(
     force_download: Option<bool>,
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
+    download_resource_to_dir(
+        mod_downloads_dir(),
+        url,
+        file_name,
+        md5,
+        force_download,
+        download_options,
+    )
+    .await
+}
+
+/// Download a game resource into the categorized game download cache.
+///
+/// # Errors
+///
+/// Returns an error when the URL cannot be converted into download candidates,
+/// the HTTP client or destination cannot be prepared, or the task cannot start.
+pub async fn download_game_resource(
+    url: String,
+    file_name: String,
+    md5: Option<String>,
+    force_download: Option<bool>,
+    download_options: Option<DownloadOptions>,
+) -> Result<String, String> {
+    download_resource_to_dir(
+        game_downloads_dir(),
+        url,
+        file_name,
+        md5,
+        force_download,
+        download_options,
+    )
+    .await
+}
+
+async fn download_resource_to_dir(
+    downloads_dir: PathBuf,
+    url: String,
+    file_name: String,
+    md5: Option<String>,
+    force_download: Option<bool>,
+    download_options: Option<DownloadOptions>,
+) -> Result<String, String> {
     let urls = crate::github::configured_download_urls(&url)?;
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
-    let downloads_dir = downloads_dir();
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
     let safe_name = safe_file_name(&file_name);
     let dest = downloads_dir.join(&safe_name);
@@ -348,7 +418,7 @@ pub async fn download_resource(
     Ok(task_id)
 }
 
-/// Download a remote file into a temp cache directory.
+/// Download a remote file into the categorized CurseForge download cache.
 ///
 /// This mirrors the upstream tauri command `download_resource_to_cache` and integrates with the
 /// global task manager so GPUI can display progress.
@@ -362,10 +432,7 @@ pub async fn download_resource_to_cache(
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
-    #[cfg(target_os = "linux")]
-    let cache_dir = file_ops::cache_subdir("resource-downloads");
-    #[cfg(not(target_os = "linux"))]
-    let cache_dir = std::env::temp_dir().join("BMCBL").join("cache_downloads");
+    let cache_dir = file_ops::curseforge_downloads_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
     let safe_name = sanitize_filename(&file_name);
     let dest = cache_dir.join(&safe_name);

@@ -54,6 +54,21 @@ pub fn cache_subdir<P: AsRef<Path>>(rel: P) -> PathBuf {
     cache_dir().join(rel)
 }
 
+/// Returns the root for API response caches.
+pub fn api_cache_dir() -> PathBuf {
+    cache_subdir("api")
+}
+
+/// Returns the disk cache directory for CurseForge API responses.
+pub fn curseforge_api_cache_dir() -> PathBuf {
+    api_cache_dir().join("curseforge")
+}
+
+/// Returns the disk cache directory for the Minecraft version API.
+pub fn versions_api_cache_dir() -> PathBuf {
+    api_cache_dir().join("versions")
+}
+
 #[cfg(target_os = "linux")]
 pub fn state_dir() -> PathBuf {
     linux_xdg_app_dir("XDG_STATE_HOME", &[".local", "state"], Path::new("state"))
@@ -72,14 +87,34 @@ pub fn logs_dir() -> PathBuf {
     state_subdir("logs")
 }
 
-#[cfg(target_os = "linux")]
+/// Returns the root for persistent downloaded files.
 pub fn downloads_dir() -> PathBuf {
     cache_subdir("downloads")
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn downloads_dir() -> PathBuf {
-    bmcbl_subdir("downloads")
+/// Returns the persistent cache directory for Mod packages.
+pub fn mod_downloads_dir() -> PathBuf {
+    downloads_dir().join("mod")
+}
+
+/// Returns the persistent cache directory for CurseForge packages.
+pub fn curseforge_downloads_dir() -> PathBuf {
+    downloads_dir().join("curseforge")
+}
+
+/// Returns the persistent cache directory for Minecraft game packages.
+pub fn game_downloads_dir() -> PathBuf {
+    downloads_dir().join("game")
+}
+
+/// Returns the persistent cache directory for self-update packages.
+pub fn update_downloads_dir() -> PathBuf {
+    downloads_dir().join("update")
+}
+
+/// Returns the persistent cache directory for runtime packages.
+pub fn runtime_downloads_dir() -> PathBuf {
+    downloads_dir().join("runtime")
 }
 
 pub fn runners_dir() -> PathBuf {
@@ -98,10 +133,16 @@ pub fn create_initial_directories() {
         cache_dir(),
         logs_dir(),
         downloads_dir(),
+        mod_downloads_dir(),
+        curseforge_downloads_dir(),
+        game_downloads_dir(),
+        update_downloads_dir(),
+        runtime_downloads_dir(),
         bmcbl_subdir("plugins"),
         bmcbl_subdir("versions"),
-        cache_subdir("data"),
-        cache_subdir("api"),
+        api_cache_dir(),
+        curseforge_api_cache_dir(),
+        versions_api_cache_dir(),
     ];
     #[cfg(target_os = "linux")]
     let dirs = {

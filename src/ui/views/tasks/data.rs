@@ -3,7 +3,6 @@ use crate::tasks::task_manager;
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use gpui::*;
-use std::path::Path;
 use std::sync::Arc;
 
 impl TasksPageView {
@@ -199,16 +198,10 @@ impl TasksPageView {
                 let Some(path) = path else {
                     return;
                 };
-                let Some(file_name) = Path::new(path.as_ref())
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .map(ToOwned::to_owned)
-                else {
-                    return;
-                };
+                let path = path.to_string();
 
                 cx.spawn(async move |_handle, cx| {
-                    match crate::downloads::api::delete_local_download(file_name).await {
+                    match crate::downloads::api::delete_download_path(path).await {
                         Ok(()) => {
                             let message = cx
                                 .read_global(|i18n: &I18n, _cx| {

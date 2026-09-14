@@ -173,7 +173,7 @@ async fn download_package(
             .await?
         }
         GamePackageSource::Gdk { url } => {
-            crate::downloads::api::download_resource(
+            crate::downloads::api::download_game_resource(
                 url.clone(),
                 request.file_name.clone(),
                 request.md5.clone(),
