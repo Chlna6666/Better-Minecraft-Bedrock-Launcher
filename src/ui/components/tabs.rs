@@ -1,4 +1,4 @@
-use crate::ui::animation::{ease_out_cubic, raw_progress};
+use crate::ui::animation::{ease_out_cubic, ease_out_cubic_motion, raw_progress};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
@@ -221,8 +221,25 @@ impl RenderOnce for AnimatedSegmentTabs {
             });
         }
 
-        let snapshot = *state.read(cx);
-        let (indicator_slot, indicator_animating) = if let Some(started_at) = snapshot.started_at {
+        let mut snapshot = *state.read(cx);
+        // Fixed-width segment tabs can lay the indicator out directly at its destination and hand
+        // only the visual offset to Nova. The transition then owns its own renderer frame cadence;
+        // the labels, icons, track and parent flex tree do not become a 60/120 Hz layout target.
+        // Keep the caller-sampled path only for the percentage-width fallback, whose absolute pixel
+        // travel is not known until layout has resolved the parent width.
+        let (indicator_slot, layout_indicator_animating) = if item_width.is_some() {
+            if snapshot
+                .started_at
+                .is_some_and(|started_at| raw_progress(now, started_at, ANIMATED_TAB_DURATION) >= 1.0)
+            {
+                state.update(cx, |tab_state, _| {
+                    tab_state.previous_index = tab_state.active_index;
+                    tab_state.started_at = None;
+                });
+                snapshot = *state.read(cx);
+            }
+            (snapshot.active_index as f32, false)
+        } else if let Some(started_at) = snapshot.started_at {
             let progress = raw_progress(now, started_at, ANIMATED_TAB_DURATION);
             let eased = ease_out_cubic(progress);
             let animating = progress < 1.0;
@@ -245,7 +262,7 @@ impl RenderOnce for AnimatedSegmentTabs {
 
         let indicator = if let Some(item_width) = item_width {
             let item_width_px: f32 = item_width.into();
-            div()
+            let indicator = div()
                 .absolute()
                 .top(px(2.))
                 .bottom(px(2.))
@@ -265,8 +282,29 @@ impl RenderOnce for AnimatedSegmentTabs {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                })
-                .into_any_element()
+                });
+
+            if snapshot.previous_index != snapshot.active_index && snapshot.started_at.is_some() {
+                let from_x = item_width_px
+                    * (snapshot.previous_index as f32 - snapshot.active_index as f32);
+                indicator
+                    .with_animation(
+                        SharedString::from(format!(
+                            "{}-indicator-{}-{}",
+                            self.id, snapshot.previous_index, snapshot.active_index
+                        )),
+                        ease_out_cubic_motion(ANIMATED_TAB_DURATION).with_property(
+                            AnimationProperty::translation(
+                                point(px(from_x), px(0.0)),
+                                Point::default(),
+                            ),
+                        ),
+                        |this, _progress| this,
+                    )
+                    .into_any_element()
+            } else {
+                indicator.into_any_element()
+            }
         } else {
             let indicator_left = relative(
                 (indicator_slot * segment_width).clamp(0.0, (1.0 - segment_width).max(0.0)),
@@ -315,7 +353,8 @@ impl RenderOnce for AnimatedSegmentTabs {
                 .px(px(2.));
         }
 
-        root.child(indicator)
+        let root = root
+            .child(indicator)
             .children(self.items.into_iter().map(move |item| {
                 let active = item.active;
                 let label = item.label.clone();
@@ -364,8 +403,12 @@ impl RenderOnce for AnimatedSegmentTabs {
                 tab.on_mouse_down(MouseButton::Left, move |_event, window, cx| {
                     (on_select)(window, cx);
                 })
-            }))
-            .with_layout_animation_target(indicator_animating)
-            .into_any_element()
+            }));
+
+        if layout_indicator_animating {
+            root.with_layout_animation_target(true).into_any_element()
+        } else {
+            root.into_any_element()
+        }
     }
 }
