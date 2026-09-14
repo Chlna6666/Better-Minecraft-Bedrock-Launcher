@@ -163,12 +163,14 @@ impl Primitive {
         match self {
             Primitive::Shadow(shadow) => shadow.animation_id,
             Primitive::Quad(quad) => quad.animation_id,
+            Primitive::Path(path) => path.animation_id,
+            Primitive::Underline(underline) => underline.animation_id,
             Primitive::MonochromeSprite(sprite) => sprite.animation_id,
             Primitive::PolychromeSprite(sprite) => sprite.animation_id,
             Primitive::BackdropBlur(blur) => blur.animation_id,
             Primitive::Blur(blur) => blur.animation_id,
             Primitive::GpuMesh3d(mesh) => mesh.animation_id,
-            Primitive::Path(_) | Primitive::Underline(_) | Primitive::Surface(_) => None,
+            Primitive::Surface(_) => None,
         }
     }
 
@@ -176,12 +178,14 @@ impl Primitive {
         match self {
             Primitive::Shadow(shadow) => shadow.animation_id = Some(animation_id),
             Primitive::Quad(quad) => quad.animation_id = Some(animation_id),
+            Primitive::Path(path) => path.animation_id = Some(animation_id),
+            Primitive::Underline(underline) => underline.animation_id = Some(animation_id),
             Primitive::MonochromeSprite(sprite) => sprite.animation_id = Some(animation_id),
             Primitive::PolychromeSprite(sprite) => sprite.animation_id = Some(animation_id),
             Primitive::BackdropBlur(blur) => blur.animation_id = Some(animation_id),
             Primitive::Blur(blur) => blur.animation_id = Some(animation_id),
             Primitive::GpuMesh3d(mesh) => mesh.set_animation_id(animation_id),
-            Primitive::Path(_) | Primitive::Underline(_) | Primitive::Surface(_) => {}
+            Primitive::Surface(_) => {}
         }
     }
 }
@@ -325,6 +329,7 @@ impl From<Quad> for Primitive {
 pub(crate) struct Underline {
     pub order: DrawOrder,
     pub pad: u32,
+    pub animation_id: Option<SceneAnimationId>,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Rgba,

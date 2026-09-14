@@ -304,6 +304,12 @@ impl Window {
         let content_mask = self.visual_content_mask();
         let opacity = self.element_opacity();
         path.content_mask = self.content_mask();
+        path.animation_id = self.scene_animation_id_for(&[
+            crate::TransitionProperty::Opacity,
+            crate::TransitionProperty::Scale,
+            crate::TransitionProperty::Transform,
+            crate::TransitionProperty::Translation,
+        ]);
         let color: Background = color.into();
         path.color = color.opacity(opacity);
         let transform = self.element_visual_transform;
@@ -345,6 +351,12 @@ impl Window {
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
+            animation_id: self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]),
             bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
             color: style
@@ -381,6 +393,12 @@ impl Window {
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
+            animation_id: self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]),
             bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
             thickness: style.thickness.scale(scale_factor * visual_scale),
