@@ -18,6 +18,8 @@ struct VisualAnimation {
     scale: f32,
     opacity: f32,
     scales_geometry: u32,
+    clip_left: f32,
+    clip_right: f32,
     clip_top: f32,
     clip_bottom: f32,
     clips_geometry: u32,
@@ -30,6 +32,8 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
     animation.scale = 1.0;
     animation.opacity = 1.0;
     animation.scales_geometry = 0u;
+    animation.clip_left = 0.0;
+    animation.clip_right = 0.0;
     animation.clip_top = 0.0;
     animation.clip_bottom = 0.0;
     animation.clips_geometry = 0u;
@@ -69,11 +73,13 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
             animation.scale = max(sampled.x, 0.0);
             animation.scales_geometry = 1u;
         }
-        // Paint-only vertical reveal. Values are absolute device-pixel edges shared by the
-        // retained subtree composite, so individual glyph and image bounds do not move.
+        // Paint-only reveal. Values are the absolute device-pixel rectangle
+        // [left, right, top, bottom] shared by the retained subtree composite.
         case 8u: {
-            animation.clip_top = min(sampled.x, sampled.y);
-            animation.clip_bottom = max(sampled.x, sampled.y);
+            animation.clip_left = min(sampled.x, sampled.y);
+            animation.clip_right = max(sampled.x, sampled.y);
+            animation.clip_top = min(sampled.z, sampled.w);
+            animation.clip_bottom = max(sampled.z, sampled.w);
             animation.clips_geometry = 1u;
         }
         // Rotation is promoted to a retained subtree composite; raw 2D primitives must not rotate
@@ -108,10 +114,15 @@ fn animation_content_mask(mask: ContentMask, animation: VisualAnimation) -> Cont
         result.corner_radii.bottom_left *= animation.scale;
     }
     if (animation.clips_geometry != 0u) {
+        let mask_right = result.bounds.origin.x + result.bounds.size.x;
         let mask_bottom = result.bounds.origin.y + result.bounds.size.y;
+        let clipped_left = max(result.bounds.origin.x, animation.clip_left);
+        let clipped_right = min(mask_right, animation.clip_right);
         let clipped_top = max(result.bounds.origin.y, animation.clip_top);
         let clipped_bottom = min(mask_bottom, animation.clip_bottom);
+        result.bounds.origin.x = clipped_left;
         result.bounds.origin.y = clipped_top;
+        result.bounds.size.x = max(clipped_right - clipped_left, 0.0);
         result.bounds.size.y = max(clipped_bottom - clipped_top, 0.0);
     }
     return result;
