@@ -257,7 +257,6 @@ impl Window {
         self.request_animation_engine_frame(driver);
         group_id
     }
-
     /// Start an engine-owned stagger timeline and schedule its first frame.
     pub fn start_animation_stagger(&self, stagger: AnimationStagger) -> AnimationGroupId {
         let (group_id, driver) = {
@@ -298,21 +297,17 @@ impl Window {
             .set_group_bounds(group_id, bounds)
     }
 
+    /// Start a renderer-owned scene animation. Translation endpoints are already resolved to
+    /// device pixels by `AnimationProperty::resolved_values`; do not scale them a second time here.
     pub(crate) fn start_scene_animation(
         &self,
         element_id: &GlobalElementId,
         property: TransitionProperty,
         spec: AnimationSpec,
         bounds: Bounds<Pixels>,
-        mut from: [f32; 4],
-        mut to: [f32; 4],
+        from: [f32; 4],
+        to: [f32; 4],
     ) -> SceneAnimationId {
-        if property == TransitionProperty::Translation {
-            for index in 0..2 {
-                from[index] *= self.scale_factor();
-                to[index] *= self.scale_factor();
-            }
-        }
         let animation_id = SceneAnimationId(self.next_scene_animation_id.get());
         self.next_scene_animation_id
             .set(self.next_scene_animation_id.get().wrapping_add(1));
@@ -466,7 +461,6 @@ impl Window {
             f(&mut async_window_cx).await
         })
     }
-
     /// Spawn the future returned by the given closure on the application thread
     /// pool, with the given priority.
     #[track_caller]
