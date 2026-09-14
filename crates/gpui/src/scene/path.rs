@@ -1,4 +1,6 @@
-use crate::{Background, Bounds, ContentMask, Pixels, Point, ScaledPixels, point};
+use crate::{
+    Background, Bounds, ContentMask, Pixels, Point, ScaledPixels, SceneAnimationId, point,
+};
 use fearless_simd::{Level, Simd, dispatch, f32x4, prelude::*};
 use std::{
     fmt::Debug,
@@ -149,6 +151,7 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub(crate) cache_id: PathCacheId,
     pub(crate) geometry_generation: PathGeometryGeneration,
     pub(crate) order: DrawOrder,
+    pub(crate) animation_id: Option<SceneAnimationId>,
     pub(crate) bounds: Bounds<P>,
     pub(crate) content_mask: ContentMask<P>,
     pub(crate) vertices: Vec<PathVertex<P>>,
@@ -168,6 +171,7 @@ impl Path<Pixels> {
             cache_id: PathCacheId(NEXT_ID.fetch_add(1, SeqCst)),
             geometry_generation: PathGeometryGeneration::default(),
             order: DrawOrder::default(),
+            animation_id: None,
             vertices: Vec::new(),
             start,
             current: start,
@@ -188,6 +192,7 @@ impl Path<Pixels> {
             cache_id: self.cache_id,
             geometry_generation: self.geometry_generation,
             order: self.order,
+            animation_id: self.animation_id,
             bounds: self.bounds.scale(factor),
             content_mask: self.content_mask.scale(factor),
             // Rasterizers consume the path-level mask. The per-vertex field is only a tiny legacy
@@ -291,6 +296,7 @@ impl Path<Pixels> {
             cache_id: self.cache_id,
             geometry_generation: self.geometry_generation,
             order: self.order,
+            animation_id: self.animation_id,
             bounds,
             content_mask,
             vertices: transform_vertices(&self.vertices, device_scale, visual_scale, translation),
