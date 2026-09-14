@@ -48,7 +48,6 @@ pub(crate) fn scene_text_raster_scale(
 
 pub use tween::Tween;
 
-pub(crate) use easing::sample_legacy_easing;
 pub(crate) use scheduler::merge_requested_drivers;
 
 #[cfg(test)]
@@ -581,9 +580,6 @@ mod tests {
             LegacyAnimationTimeline::new(now).sample(&[spec], now + Duration::from_millis(800));
         assert!(sample.progress > 1.0);
         assert!(!sample.done);
-        assert!(sample_legacy_easing(&|t| Easing::OutBack.sample(t), 0.8) > 1.0);
-        assert_eq!(sample_legacy_easing(&|_| -0.2, 0.5), -0.2);
-        assert_eq!(sample_legacy_easing(&|_| f32::NAN, 0.5), 0.5);
     }
 
     #[test]
@@ -615,6 +611,104 @@ mod tests {
         assert_eq!(engine.scene_values(now).len(), 1);
         engine.retain_scene_animations(&Default::default());
         assert!(engine.scene_values(now).is_empty());
+    }
+
+    #[test]
+    fn completed_visual_timeline_does_not_report_layout_work_as_visual() {
+        let now = Instant::now();
+        let mut engine = AnimationEngine::new();
+        let layout_element = test_global_element_id("layout-active");
+        let paint_element = test_global_element_id("paint-finished");
+        engine.start_transition(
+            &layout_element,
+            TransitionProperty::Width,
+            AnimationSpec::new(Duration::from_millis(100))
+                .repeat(RepeatMode::Forever)
+                .driver(AnimationDriver::Layout),
+            now,
+        );
+        engine.start_transition(
+            &paint_element,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
+            now,
+        );
+
+        let tick = engine.tick_driver(AnimationDriver::Paint, now);
+        assert_eq!(tick.active_count, 1);
+        assert_eq!(tick.active_visual_count, 0);
+        assert!(tick.has_gpu_or_paint);
+        assert!(!tick.has_layout);
+    }
+
+    #[test]
+    fn scene_animation_fill_mode_controls_underlying_value() {
+        let now = Instant::now();
+        for (fill_mode, before_delay, after_completion) in [
+            (FillMode::None, false, false),
+            (FillMode::Backwards, true, false),
+            (FillMode::Forwards, false, true),
+            (FillMode::Both, true, true),
+        ] {
+            let element = test_global_element_id("fill-mode");
+            let mut engine = AnimationEngine::new();
+            engine.start_transition(
+                &element,
+                TransitionProperty::Opacity,
+                AnimationSpec::new(Duration::from_millis(100))
+                    .delay(Duration::from_millis(50))
+                    .fill_mode(fill_mode)
+                    .driver(AnimationDriver::Paint),
+                now,
+            );
+            engine.bind_scene_animation(
+                &element,
+                TransitionProperty::Opacity,
+                crate::SceneAnimationId(8),
+                [0.0; 4],
+                [1.0; 4],
+            );
+
+            assert_eq!(
+                !engine
+                    .scene_values(now + Duration::from_millis(25))
+                    .is_empty(),
+                before_delay,
+                "unexpected value before delay for {fill_mode:?}"
+            );
+            assert_eq!(
+                !engine
+                    .tick(now + Duration::from_millis(200))
+                    .scene_values
+                    .is_empty(),
+                after_completion,
+                "unexpected value after completion for {fill_mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_duration_without_forwards_fill_keeps_underlying_value() {
+        let now = Instant::now();
+        let element = test_global_element_id("zero-duration-no-fill");
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::ZERO)
+                .fill_mode(FillMode::None)
+                .driver(AnimationDriver::Paint),
+            now,
+        );
+        engine.bind_scene_animation(
+            &element,
+            TransitionProperty::Opacity,
+            crate::SceneAnimationId(9),
+            [0.0; 4],
+            [1.0; 4],
+        );
+
+        assert!(engine.tick(now).scene_values.is_empty());
     }
 
     #[test]

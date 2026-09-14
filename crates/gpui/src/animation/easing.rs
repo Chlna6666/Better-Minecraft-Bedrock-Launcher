@@ -279,11 +279,6 @@ fn finite_sample_or_progress(sampled: f32, progress: f32) -> f32 {
     }
 }
 
-pub(crate) fn sample_legacy_easing(easing: &dyn Fn(f32) -> f32, progress: f32) -> f32 {
-    let progress = normalize_progress(progress);
-    finite_sample_or_progress(easing(progress), progress)
-}
-
 /// Serializable easing metadata stored in styles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum TransitionEasing {

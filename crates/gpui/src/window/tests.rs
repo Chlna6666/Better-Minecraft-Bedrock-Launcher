@@ -2108,7 +2108,7 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
         assert!(window.refreshing);
         assert!(window.dirty_frame_scheduled);
         assert!(window.frame_watchdog.get().platform_pending);
-        assert!(window.platform_frame_watchdog_task.is_some());
+        assert!(window.platform_frame_watchdog_task.borrow().is_some());
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         let stalled_generation = window.frame_watchdog.get().platform_generation;
 
@@ -2117,7 +2117,7 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
         assert!(!window.refreshing);
         assert!(!window.dirty_frame_scheduled);
         assert!(!window.frame_watchdog.get().platform_pending);
-        assert!(window.platform_frame_watchdog_task.is_none());
+        assert!(window.platform_frame_watchdog_task.borrow().is_none());
         assert_eq!(
             window.frame_watchdog.get().platform_generation,
             stalled_generation
@@ -2127,6 +2127,42 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
             test_window.last_requested_frame(),
             Some(RequestFrameOptions::from_refresh())
         );
+    });
+}
+
+#[gpui::test]
+fn stalled_animation_engine_frame_recovers_without_dirty_view(cx: &mut TestAppContext) {
+    let visual = cx.add_empty_window();
+    visual.update(|window, cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let baseline = test_window.requested_frame_count();
+        let element_id = test_global_element_id("stalled-animation-engine-frame");
+        window.active.set(true);
+        window.invalidator.set_dirty(false);
+        window.refreshing = false;
+        window.dirty_frame_scheduled = false;
+        window.frame_watchdog.set(FrameWatchdog::default());
+
+        window.animation_engine.borrow_mut().start_transition(
+            &element_id,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
+            window.animation_time(),
+        );
+        window.request_animation_engine_frame(AnimationDriver::Paint);
+
+        assert!(!window.invalidator.is_dirty());
+        assert!(window.frame_watchdog.get().platform_pending);
+        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+        let stalled_generation = window.frame_watchdog.get().platform_generation;
+
+        window.recover_stalled_platform_frame(stalled_generation, cx);
+
+        assert!(window.animation_engine_frame_driver.get().is_none());
+        assert_eq!(window.animation_engine.borrow().active_count(), 0);
+        assert!(!window.frame_watchdog.get().platform_pending);
+        assert!(window.platform_frame_watchdog_task.borrow().is_none());
+        assert_eq!(test_window.requested_frame_count(), baseline + 1);
     });
 }
 
@@ -2155,14 +2191,14 @@ fn stalled_inactive_platform_frame_waits_until_window_activation(cx: &mut TestAp
         assert!(window.dirty_frame_scheduled);
         assert!(window.invalidator.is_dirty());
         assert!(!window.frame_watchdog.get().platform_pending);
-        assert!(window.platform_frame_watchdog_task.is_none());
+        assert!(window.platform_frame_watchdog_task.borrow().is_none());
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
 
         window.active.set(true);
         window.rearm_platform_frame_watchdog_on_activation();
 
         assert!(window.frame_watchdog.get().platform_pending);
-        assert!(window.platform_frame_watchdog_task.is_some());
+        assert!(window.platform_frame_watchdog_task.borrow().is_some());
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
     });
 }

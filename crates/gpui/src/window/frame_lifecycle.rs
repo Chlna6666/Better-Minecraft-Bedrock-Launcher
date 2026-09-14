@@ -370,12 +370,12 @@ impl Window {
         self.frame_watchdog.set(retry);
     }
 
-    fn request_platform_frame(&mut self, options: RequestFrameOptions) {
+    pub(super) fn request_platform_frame(&self, options: RequestFrameOptions) {
         self.platform_window.request_frame(options);
         self.arm_platform_frame_watchdog(options);
     }
 
-    fn arm_platform_frame_watchdog(&mut self, options: RequestFrameOptions) {
+    fn arm_platform_frame_watchdog(&self, options: RequestFrameOptions) {
         if !options.force_render && !options.require_presentation {
             return;
         }
@@ -391,7 +391,7 @@ impl Window {
         let handle = self.handle;
         let mut cx = self.async_app.clone();
         let executor = cx.foreground_executor().clone();
-        self.platform_frame_watchdog_task = Some(executor.spawn(async move {
+        *self.platform_frame_watchdog_task.borrow_mut() = Some(executor.spawn(async move {
             cx.background_executor().timer(FRAME_WATCHDOG_TIMEOUT).await;
             let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
                 window.recover_stalled_platform_frame(generation, cx);
@@ -406,7 +406,7 @@ impl Window {
         }
 
         self.clear_platform_frame_watchdog();
-        if !self.dirty_frame_scheduled && !self.refreshing {
+        if !self.has_pending_platform_frame_work() {
             return;
         }
 
@@ -452,8 +452,7 @@ impl Window {
     pub(super) fn rearm_platform_frame_watchdog_on_activation(&mut self) {
         let watchdog = self.frame_watchdog.get();
         if self.active.get()
-            && self.dirty_frame_scheduled
-            && self.refreshing
+            && self.has_pending_platform_frame_work()
             && !watchdog.platform_pending
             && watchdog.platform_options.requires_frame()
         {
@@ -465,7 +464,15 @@ impl Window {
         let mut watchdog = self.frame_watchdog.get();
         watchdog.platform_pending = false;
         self.frame_watchdog.set(watchdog);
-        self.platform_frame_watchdog_task.take();
+        self.platform_frame_watchdog_task.borrow_mut().take();
+    }
+
+    fn has_pending_platform_frame_work(&self) -> bool {
+        self.dirty_frame_scheduled
+            || self.refreshing
+            || self.needs_present.get()
+            || self.animation_engine_frame_driver.get().is_some()
+            || !self.next_frame_callbacks.borrow().is_empty()
     }
 
     pub(super) fn run_platform_frame(&mut self, frame_options: RequestFrameOptions, cx: &mut App) {
@@ -542,7 +549,7 @@ impl Window {
             viewport.scale(self.scale_factor),
             DIRTY_REGION_FULL_REDRAW_RATIO,
         );
-        if tick.active_count > 0 && tick.has_gpu_or_paint {
+        if tick.active_visual_count > 0 && tick.has_gpu_or_paint {
             if self.active.get() && !self.platform_window.is_minimized() {
                 self.request_animation_engine_frame(driver);
             }

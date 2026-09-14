@@ -36,6 +36,7 @@ impl AnimationTimeline {
                 raw_progress: sample.progress,
                 eased_progress: if sample.done { 1.0 } else { sample.progress },
                 done: sample.done,
+                applies: true,
             };
         }
         self.spec.sample_elapsed(elapsed)
@@ -118,6 +119,8 @@ impl AnimationGroupSample {
 pub struct AnimationTick {
     /// Remaining active timeline count.
     pub active_count: usize,
+    /// Remaining active GPU/paint timeline count.
+    pub active_visual_count: usize,
     /// Whether this tick involved GPU/paint timelines.
     pub has_gpu_or_paint: bool,
     /// Whether this tick involved layout timelines.
@@ -412,7 +415,7 @@ impl AnimationEngine {
             .filter_map(|(key, timeline)| {
                 let animation = timeline.scene_animation?;
                 let sample = timeline.sample(now);
-                Some(SceneAnimationValue {
+                sample.applies.then_some(SceneAnimationValue {
                     animation_id: animation.id,
                     property: key.property,
                     progress: sample.eased_progress,
@@ -490,7 +493,9 @@ impl AnimationEngine {
             let repeats = timeline.spring.is_some()
                 && matches!(timeline.spec.repeat, super::RepeatMode::Forever);
 
-            if let Some(animation) = timeline.scene_animation {
+            if let Some(animation) = timeline.scene_animation
+                && sample.applies
+            {
                 let value = SceneAnimationValue {
                     animation_id: animation.id,
                     property: key.property,
@@ -502,6 +507,8 @@ impl AnimationEngine {
                 if sample.done && !repeats {
                     self.completed_scene_values.insert(key.clone(), value);
                 }
+            } else if !sample.applies {
+                self.completed_scene_values.remove(&key);
             }
 
             match timeline.driver {
@@ -552,6 +559,7 @@ impl AnimationEngine {
 
         AnimationTick {
             active_count: self.active_count(),
+            active_visual_count: self.visual_timeline_keys.len() + self.visual_group_ids.len(),
             has_gpu_or_paint,
             has_layout,
             dirty_bounds,

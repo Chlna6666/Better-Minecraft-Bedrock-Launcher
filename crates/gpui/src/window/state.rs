@@ -261,7 +261,7 @@ pub struct Window {
     pub(super) dirty_frame_deferred_pending: bool,
     pub(super) async_app: AsyncApp,
     pub(super) frame_watchdog: Rc<Cell<FrameWatchdog>>,
-    pub(super) platform_frame_watchdog_task: Option<Task<()>>,
+    pub(super) platform_frame_watchdog_task: RefCell<Option<Task<()>>>,
     /// Pending delayed memory trim scheduled when the window loses focus; dropped (and thereby
     /// cancelled) when the window becomes active again before the delay elapses.
     pub(super) deactivation_trim_task: Option<Task<()>>,

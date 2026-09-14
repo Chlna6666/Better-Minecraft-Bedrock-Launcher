@@ -374,11 +374,14 @@ impl Window {
             return result;
         }
 
-        // Rotation is a subtree transform, not a glyph property. Bind it to one zero-filter
-        // retained composite so backgrounds, images, SVGs and text share one pivot and one sample.
+        // Subtree transforms and reveals must bind to one zero-filter retained composite so
+        // backgrounds, paths, images, SVGs and text share one sample. Path, underline and surface
+        // primitives do not carry direct scene animation ids.
         if matches!(
             property,
-            crate::TransitionProperty::Rotation | crate::TransitionProperty::ClipReveal
+            crate::TransitionProperty::Transform
+                | crate::TransitionProperty::Rotation
+                | crate::TransitionProperty::ClipReveal
         ) {
             let previous_animation = self.scene_animation.replace((animation_id, property));
             let capture_bounds = self.content_mask().bounds;

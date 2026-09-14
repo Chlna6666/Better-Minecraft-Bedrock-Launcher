@@ -1,45 +1,69 @@
 use super::*;
 
+pub(super) struct ElementAnimationTimeline {
+    animation_index: usize,
+    started_at: Instant,
+}
+
+impl ElementAnimationTimeline {
+    pub(super) fn new(started_at: Instant) -> Self {
+        Self {
+            animation_index: 0,
+            started_at,
+        }
+    }
+}
+
 pub(super) fn sample_element_animation(
-    timeline: &mut LegacyAnimationTimeline,
+    timeline: &mut ElementAnimationTimeline,
     animations: &[Animation],
     now: Instant,
-) -> (usize, f32, bool) {
-    if let Some(animation) = animations.get(timeline.animation_index)
-        && let Some(spring) = animation.spring
-    {
-        let sample = spring.sample_with_velocity(
-            now.saturating_duration_since(timeline.started_at)
-                .as_secs_f32(),
-            0.0,
-        );
-        let index = timeline.animation_index;
-        if sample.done && (!animation.oneshot || index + 1 < animations.len()) {
-            timeline.started_at = now;
-            if animation.oneshot {
+) -> (usize, Option<f32>, bool) {
+    loop {
+        let Some(animation) = animations.get(timeline.animation_index) else {
+            return (timeline.animation_index.saturating_sub(1), None, true);
+        };
+        let elapsed = now.saturating_duration_since(timeline.started_at);
+        if let Some(spring) = animation.spring {
+            let sample = spring.sample_with_velocity(elapsed.as_secs_f32(), 0.0);
+            let index = timeline.animation_index;
+            let repeats = matches!(animation.spec.repeat, RepeatMode::Forever);
+            if sample.done && !repeats && index + 1 < animations.len() {
                 timeline.animation_index += 1;
+                timeline.started_at = now;
+                continue;
             }
-            return (index, 1.0, false);
+            if sample.done && repeats {
+                timeline.started_at = now;
+                return (index, Some(1.0), false);
+            }
+            return (
+                index,
+                Some(if sample.done { 1.0 } else { sample.progress }),
+                sample.done,
+            );
+        }
+
+        let sample = animation.spec.sample_elapsed(elapsed);
+        if sample.done && timeline.animation_index + 1 < animations.len() {
+            let Some(segment_duration) = animation.spec.finite_total_duration() else {
+                return (
+                    timeline.animation_index,
+                    sample.applies.then_some(sample.eased_progress),
+                    sample.done,
+                );
+            };
+            let remainder = elapsed.saturating_sub(segment_duration);
+            timeline.animation_index += 1;
+            timeline.started_at = now.checked_sub(remainder).unwrap_or(now);
+            continue;
         }
         return (
-            index,
-            if sample.done { 1.0 } else { sample.progress },
+            timeline.animation_index,
+            sample.applies.then_some(sample.eased_progress),
             sample.done,
         );
     }
-    let sample = timeline.sample_raw_with(animations.len(), now, |index| {
-        let animation = &animations[index];
-        LegacyAnimationTiming {
-            duration: animation.duration,
-            oneshot: animation.oneshot,
-        }
-    });
-    let progress = animations
-        .get(sample.animation_index)
-        .map_or(1.0, |animation| {
-            sample_legacy_easing(animation.easing.as_ref(), sample.raw_progress)
-        });
-    (sample.animation_index, progress, sample.done)
 }
 
 #[cfg(test)]
@@ -51,7 +75,7 @@ mod tests {
         let start = Instant::now();
         let spring = crate::Spring::default();
         let animations = [Animation::spring(spring)];
-        let mut timeline = LegacyAnimationTimeline::new(start);
+        let mut timeline = ElementAnimationTimeline::new(start);
         for milliseconds in [0, 100, 200, 520, 800, 2000, 3500] {
             let elapsed = Duration::from_millis(milliseconds);
             let expected = spring.sample_with_velocity(elapsed.as_secs_f32(), 0.0);
@@ -60,11 +84,11 @@ mod tests {
             assert_eq!(done, expected.done);
             assert_eq!(
                 progress,
-                if expected.done {
+                Some(if expected.done {
                     1.0
                 } else {
                     expected.progress
-                }
+                })
             );
         }
         assert!(
@@ -73,7 +97,8 @@ mod tests {
                 &animations,
                 start + Duration::from_millis(3500)
             )
-            .1 > 1.0
+            .1
+            .is_some_and(|progress| progress > 1.0)
         );
         assert!(
             sample_element_animation(&mut timeline, &animations, start + Duration::from_secs(30)).2
@@ -88,14 +113,14 @@ mod tests {
             Animation::spring(crate::Spring::default()),
             Animation::new(Duration::from_millis(100)),
         ];
-        let mut timeline = LegacyAnimationTimeline::new(start);
+        let mut timeline = ElementAnimationTimeline::new(start);
         assert_eq!(
             sample_element_animation(
                 &mut timeline,
                 &animations,
                 start + Duration::from_millis(100)
             ),
-            (0, 1.0, false)
+            (1, Some(0.0), false)
         );
         let (index, _, done) = sample_element_animation(
             &mut timeline,
@@ -106,14 +131,66 @@ mod tests {
         assert!(!done);
         let (index, progress, done) =
             sample_element_animation(&mut timeline, &animations, start + Duration::from_secs(30));
-        assert_eq!((index, progress, done), (1, 1.0, false));
+        assert_eq!((index, progress, done), (2, Some(0.0), false));
         assert_eq!(
             sample_element_animation(
                 &mut timeline,
                 &animations,
                 start + Duration::from_millis(30200)
             ),
-            (2, 1.0, true)
+            (2, Some(1.0), true)
+        );
+    }
+
+    #[test]
+    fn element_animation_preserves_spec_timing() {
+        let start = Instant::now();
+
+        let delayed = [Animation::from_spec(
+            AnimationSpec::new(Duration::from_millis(100)).delay(Duration::from_millis(50)),
+        )];
+        let mut timeline = ElementAnimationTimeline::new(start);
+        assert_eq!(
+            sample_element_animation(&mut timeline, &delayed, start + Duration::from_millis(25)),
+            (0, None, false)
+        );
+
+        let reversed = [Animation::from_spec(
+            AnimationSpec::new(Duration::from_millis(100))
+                .direction(crate::AnimationDirection::Reverse),
+        )];
+        let mut timeline = ElementAnimationTimeline::new(start);
+        assert_eq!(
+            sample_element_animation(&mut timeline, &reversed, start + Duration::from_millis(25)),
+            (0, Some(0.75), false)
+        );
+
+        let repeated = [Animation::from_spec(
+            AnimationSpec::new(Duration::from_millis(100)).repeat(RepeatMode::Count(2)),
+        )];
+        let mut timeline = ElementAnimationTimeline::new(start);
+        assert_eq!(
+            sample_element_animation(&mut timeline, &repeated, start + Duration::from_millis(250)),
+            (0, Some(0.5), false)
+        );
+    }
+
+    #[test]
+    fn element_animation_chain_preserves_long_frame_remainder() {
+        let start = Instant::now();
+        let animations = [
+            Animation::new(Duration::from_millis(100)),
+            Animation::new(Duration::from_millis(100)),
+        ];
+        let mut timeline = ElementAnimationTimeline::new(start);
+
+        assert_eq!(
+            sample_element_animation(
+                &mut timeline,
+                &animations,
+                start + Duration::from_millis(150)
+            ),
+            (1, Some(0.5), false)
         );
     }
 }

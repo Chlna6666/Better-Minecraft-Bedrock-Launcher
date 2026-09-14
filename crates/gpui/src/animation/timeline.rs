@@ -153,6 +153,7 @@ impl AnimationSpec {
     /// Sample this spec relative to the supplied elapsed time.
     pub fn sample_elapsed(&self, elapsed: Duration) -> TimelineSample {
         if elapsed < self.delay {
+            let applies = self.fill_mode.fills_backwards();
             let progress = if self.fill_mode.fills_backwards() {
                 self.direction_progress(0, 0.0)
             } else {
@@ -162,6 +163,7 @@ impl AnimationSpec {
                 raw_progress: progress,
                 eased_progress: self.easing.sample(progress),
                 done: false,
+                applies,
             };
         }
 
@@ -171,6 +173,7 @@ impl AnimationSpec {
                 raw_progress: progress,
                 eased_progress: self.easing.sample(progress),
                 done: true,
+                applies: self.fill_mode.fills_forwards(),
             };
         }
 
@@ -201,6 +204,7 @@ impl AnimationSpec {
             raw_progress,
             eased_progress: self.easing.sample(raw_progress),
             done,
+            applies: !done || self.fill_mode.fills_forwards(),
         }
     }
 
@@ -377,6 +381,8 @@ pub struct TimelineSample {
     pub eased_progress: f32,
     /// True after a finite animation has completed.
     pub done: bool,
+    /// Whether the sampled animation value should override the underlying value.
+    pub applies: bool,
 }
 
 /// A sequence of animation specs sampled one after another.
@@ -580,6 +586,7 @@ fn completed_sample() -> TimelineSample {
         raw_progress: 1.0,
         eased_progress: 1.0,
         done: true,
+        applies: false,
     }
 }
 

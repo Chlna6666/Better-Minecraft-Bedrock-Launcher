@@ -5,15 +5,14 @@ use std::{
 
 use crate::{
     AnimationDriver, AnimationSpec, AnyElement, App, Bounds, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LegacyAnimationTimeline, LegacyAnimationTiming, Pixels, Point,
-    Radians, RepeatMode, SceneAnimationId, TransformOrigin, TransitionProperty, Window,
-    sample_legacy_easing,
+    InspectorElementId, IntoElement, Pixels, Point, Radians, RepeatMode, SceneAnimationId,
+    TransformOrigin, TransitionProperty, Window,
 };
 
 pub use easing::*;
 mod timing;
 use smallvec::SmallVec;
-use timing::sample_element_animation;
+use timing::{ElementAnimationTimeline, sample_element_animation};
 
 // A zero-initial-velocity damped spring step stays inside normalized progress [0, 2]. Keep a small
 // numerical guard so retained partial-presentation damage cannot clip an extremal undamped sample.
@@ -23,13 +22,6 @@ const SPRING_TRANSLATION_PROGRESS_MAX: f32 = 2.05;
 /// An animation that can be applied to an element.
 #[derive(Clone)]
 pub struct Animation {
-    /// The amount of time for which this animation should run
-    pub duration: Duration,
-    /// Whether to repeat this animation when it finishes
-    pub oneshot: bool,
-    /// A function that takes a delta between 0 and 1 and returns finite eased
-    /// progress, which may overshoot. Clamp bounded properties at application.
-    pub easing: Rc<dyn Fn(f32) -> f32>,
     spec: AnimationSpec,
     property: Option<AnimationProperty>,
     spring: Option<crate::Spring>,
@@ -248,11 +240,7 @@ impl Animation {
 
     /// Create an element animation from an engine timing specification.
     pub fn from_spec(spec: AnimationSpec) -> Self {
-        let easing = spec.easing.clone();
         Self {
-            duration: spec.duration,
-            oneshot: !matches!(spec.repeat, RepeatMode::Forever),
-            easing: Rc::new(move |progress| easing.sample(progress)),
             spec,
             property: None,
             spring: None,
@@ -261,7 +249,6 @@ impl Animation {
 
     /// Set the animation to loop when it finishes.
     pub fn repeat(mut self) -> Self {
-        self.oneshot = false;
         self.spec.repeat = RepeatMode::Forever;
         self
     }
@@ -271,16 +258,19 @@ impl Animation {
     /// that may overshoot the 0 to 1 range.
     pub fn with_easing(mut self, easing: impl Fn(f32) -> f32 + 'static) -> Self {
         self.spring = None;
-        let easing = Rc::new(easing);
-        self.easing = easing.clone();
-        self.spec.easing = crate::Easing::Custom(easing);
+        self.spec.easing = crate::Easing::Custom(Rc::new(easing));
         self
     }
 
     /// Declare a visual property that GPUI can animate without relayout.
     /// The animator callback is evaluated only for the initial scene, so it must
     /// not animate additional properties. Leave such combined animations on the
-    /// layout path, or declare only the property owned by the renderer.
+    /// layout path, or declare only the property owned by the renderer. Custom
+    /// easing closures also stay on the layout path because they have no stable
+    /// identity across renders. Opacity, scale and translation bind directly to
+    /// supported primitives; wrap a mixed subtree in
+    /// [`crate::CompositeLayerExt::composite_layer`] when it can contain paths,
+    /// underlines or platform surfaces.
     pub fn with_property(mut self, property: AnimationProperty) -> Self {
         self.property = Some(property);
         self
@@ -288,7 +278,9 @@ impl Animation {
 
     fn scene_animation(&self) -> Option<(AnimationProperty, &AnimationSpec)> {
         let property = self.property?;
-        (!matches!(self.spec.driver, AnimationDriver::Layout)).then_some((property, &self.spec))
+        (!matches!(self.spec.driver, AnimationDriver::Layout)
+            && !matches!(&self.spec.easing, crate::Easing::Custom(_)))
+        .then_some((property, &self.spec))
     }
 }
 
@@ -331,6 +323,10 @@ pub trait AnimationExt {
     }
 
     /// Paint this element into a retained scene animation using a caller-sampled progress value.
+    ///
+    /// Opacity, scale and translation bind directly to supported primitives. Wrap a mixed subtree
+    /// in [`crate::CompositeLayerExt::composite_layer`] when it can contain paths, underlines or
+    /// platform surfaces. Transform, rotation and clip reveal promote the subtree automatically.
     fn with_sampled_animation(
         self,
         property: AnimationProperty,
@@ -546,7 +542,7 @@ impl<E: IntoElement + 'static> IntoElement for AnimationElement<E> {
     }
 }
 
-struct AnimationState(LegacyAnimationTimeline);
+struct AnimationState(ElementAnimationTimeline);
 
 #[derive(Clone, Debug, PartialEq)]
 struct SceneAnimationState {
@@ -585,8 +581,12 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
         if let Some((animation_index, progress)) = self.initial_scene_animation_sample() {
             let element = self.element.take().expect("should only be called once");
-            let mut element =
-                (self.animator)(element, animation_index, progress).into_any_element();
+            let mut element = match progress {
+                Some(progress) => {
+                    (self.animator)(element, animation_index, progress).into_any_element()
+                }
+                None => element.into_any_element(),
+            };
             return (element.request_layout(window, cx), element);
         }
 
@@ -598,19 +598,25 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         window.with_element_state(global_id, |state, window| {
             let now = window.animation_time();
             let mut state =
-                state.unwrap_or_else(|| AnimationState(LegacyAnimationTimeline::new(now)));
+                state.unwrap_or_else(|| AnimationState(ElementAnimationTimeline::new(now)));
             let (animation_ix, delta, done) =
                 sample_element_animation(&mut state.0, &self.animations, now);
 
-            debug_assert!(delta.is_finite(), "eased progress must be finite");
+            debug_assert!(
+                delta.is_none_or(f32::is_finite),
+                "eased progress must be finite"
+            );
 
             let element = self.element.take().expect("should only be called once");
-            let mut element = (self.animator)(element, animation_ix, delta).into_any_element();
+            let mut element = match delta {
+                Some(delta) => (self.animator)(element, animation_ix, delta).into_any_element(),
+                None => element.into_any_element(),
+            };
 
             let repeats = self
                 .animations
                 .get(animation_ix)
-                .is_some_and(|animation| !animation.oneshot);
+                .is_some_and(|animation| matches!(animation.spec.repeat, RepeatMode::Forever));
             schedule_next_animation_frame(window, cx, now, done, repeats, &retained_id);
 
             ((element.request_layout(window, cx), element), state)
@@ -722,14 +728,15 @@ impl<E> AnimationElement<E> {
             .flatten()
     }
 
-    fn initial_scene_animation_sample(&self) -> Option<(usize, f32)> {
+    fn initial_scene_animation_sample(&self) -> Option<(usize, Option<f32>)> {
         let (_, spec) = self.scene_animation()?;
+        let sample = spec.sample_elapsed(Duration::ZERO);
         Some((
             0,
             if self.animations[0].spring.is_some() {
-                0.0
+                Some(0.0)
             } else {
-                spec.sample_elapsed(Duration::ZERO).eased_progress
+                sample.applies.then_some(sample.eased_progress)
             },
         ))
     }
@@ -936,6 +943,15 @@ mod tests {
             crate::radians(0.0),
             crate::radians(1.0),
         ));
+
+        assert!(animation.scene_animation().is_none());
+    }
+
+    #[test]
+    fn custom_easing_keeps_legacy_animation_path() {
+        let animation = Animation::new(Duration::from_millis(100))
+            .with_easing(|progress| progress * progress)
+            .with_property(AnimationProperty::opacity(0.0, 1.0));
 
         assert!(animation.scene_animation().is_none());
     }

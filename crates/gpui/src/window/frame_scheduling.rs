@@ -1,6 +1,6 @@
+use super::lifecycle::RetainedInvalidationScope;
 use super::*;
 use crate::{AnimationSpec, SceneAnimationId, TransitionProperty};
-use super::lifecycle::RetainedInvalidationScope;
 
 impl Window {
     /// Schedules the given function to be run at the end of the current effect cycle, allowing entities
@@ -27,7 +27,7 @@ impl Window {
             should_request_frame
         };
         if should_request_frame {
-            self.platform_window.request_frame(RequestFrameOptions {
+            self.request_platform_frame(RequestFrameOptions {
                 require_presentation: true,
                 force_render: false,
             });
@@ -73,7 +73,7 @@ impl Window {
                 cx.notify(entity);
             }));
 
-            self.platform_window.request_frame(RequestFrameOptions {
+            self.request_platform_frame(RequestFrameOptions {
                 require_presentation: true,
                 force_render: true,
             });
@@ -83,7 +83,7 @@ impl Window {
                 pending_entities.borrow_mut().remove(&entity);
                 cx.notify(entity);
             }));
-            self.platform_window.request_frame(RequestFrameOptions {
+            self.request_platform_frame(RequestFrameOptions {
                 require_presentation: true,
                 force_render: false,
             });
@@ -160,9 +160,9 @@ impl Window {
         let Some(entity) = self.current_view_or_root() else {
             return;
         };
-        let Some(generation) = self
-            .invalidator
-            .arm_layout_animation_deadline(entity, &retained_id, deadline)
+        let Some(generation) =
+            self.invalidator
+                .arm_layout_animation_deadline(entity, &retained_id, deadline)
         else {
             record_coalesced_refresh();
             return;
@@ -224,7 +224,7 @@ impl Window {
         if !self.active.get() || self.platform_window.is_minimized() {
             return;
         }
-        self.platform_window.request_frame(RequestFrameOptions {
+        self.request_platform_frame(RequestFrameOptions {
             require_presentation: true,
             force_render: false,
         });
