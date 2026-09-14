@@ -85,6 +85,29 @@ fn default_online_player_name_is_six_alphanumeric_characters() {
     );
 }
 
+#[test]
+fn login_and_bedrock_auth_are_independent_config_sections() {
+    let mut config = super::config::get_default_config();
+    config.login.provider = super::config::LoginProvider::BedrockAuth;
+    config.bedrock_auth.device_id = "{123e4567-e89b-12d3-a456-426614174000}".to_string();
+
+    let content = toml::to_string(&config).expect("config should serialize");
+    assert!(content.contains("[login]"));
+    assert!(content.contains("provider = \"bedrock-auth\""));
+    assert!(content.contains("[bedrock_auth]"));
+    assert!(content.contains("device_id = \"{123e4567-e89b-12d3-a456-426614174000}\""));
+
+    let restored: super::config::Config = toml::from_str(&content).expect("config should parse");
+    assert_eq!(
+        restored.login.provider,
+        super::config::LoginProvider::BedrockAuth
+    );
+    assert_eq!(
+        restored.bedrock_auth.device_id,
+        config.bedrock_auth.device_id
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn default_proton_gdk_source_supports_game_login() {
@@ -302,7 +325,7 @@ fn legacy_check_on_start_migrates_to_auto_check_updates() {
 #[test]
 fn legacy_default_appx_api_migrates_to_accelerated_mirror() {
     let mut config = super::config::get_default_config();
-    config.launcher.custom_appx_api = super::config::LEGACY_DEFAULT_APPX_API.to_string();
+    config.launcher.custom_appx_api = super::config::RETIRED_DEFAULT_APPX_API.to_string();
 
     assert!(super::storage::normalize_appx_api(&mut config));
     assert_eq!(

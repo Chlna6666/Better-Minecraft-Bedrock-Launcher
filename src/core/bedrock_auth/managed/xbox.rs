@@ -272,6 +272,7 @@ async fn load_or_create_device_identity() -> Result<DeviceIdentity, AuthError> {
             .lock()
             .map_err(|_| "Xbox 设备身份锁已损坏".to_string())?;
         let stored_key = super::secret_store::load_device_private_key()?;
+        let has_stored_key = stored_key.is_some();
         let signing_key = match stored_key {
             Some(bytes) => SigningKey::from_slice(bytes.expose_secret())
                 .map_err(|_| "系统凭证存储中的 Xbox 设备密钥无效".to_string())?,
@@ -283,44 +284,61 @@ async fn load_or_create_device_identity() -> Result<DeviceIdentity, AuthError> {
             }
         };
 
-        let auth_dir = crate::utils::file_ops::state_subdir("bedrock-auth");
-        std::fs::create_dir_all(&auth_dir)
-            .map_err(|error| format!("创建 Xbox 设备状态目录失败：{error}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&auth_dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|error| format!("限制 Xbox 设备状态目录权限失败：{error}"))?;
-        }
-        let device_id_path = auth_dir.join("device-id");
-        let id = match std::fs::read_to_string(&device_id_path) {
-            Ok(value) if valid_device_id(value.trim()) => value.trim().to_string(),
-            Ok(_) | Err(_) => {
-                let value = format!("{{{}}}", uuid::Uuid::new_v4());
-                let temporary = auth_dir.join(".device-id.tmp");
-                std::fs::write(&temporary, format!("{value}\n"))
-                    .map_err(|error| format!("写入 Xbox 设备 ID 失败：{error}"))?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt as _;
-                    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
-                        .map_err(|error| format!("限制 Xbox 设备 ID 权限失败：{error}"))?;
-                }
-                #[cfg(windows)]
-                if device_id_path.exists() {
-                    std::fs::remove_file(&device_id_path)
-                        .map_err(|error| format!("替换无效 Xbox 设备 ID 失败：{error}"))?;
-                }
-                std::fs::rename(&temporary, &device_id_path)
-                    .map_err(|error| format!("保存 Xbox 设备 ID 失败：{error}"))?;
-                value
-            }
-        };
+        let id = load_or_create_device_id(has_stored_key)?;
         Ok(DeviceIdentity { id, signing_key })
     })
     .await
     .map_err(AuthError::Runtime)?
     .map_err(AuthError::Storage)
+}
+
+fn load_or_create_device_id(has_stored_key: bool) -> Result<String, String> {
+    let configured = crate::config::config::read_config()
+        .map_err(|error| format!("读取 BMCBL 配置失败：{error}"))?
+        .bedrock_auth
+        .device_id;
+    let legacy_path = crate::utils::file_ops::state_subdir("bedrock-auth").join("device-id");
+    let legacy = std::fs::read_to_string(&legacy_path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| valid_device_id(value));
+    let keyring = super::secret_store::load_device_id()?;
+    let device_id = if has_stored_key {
+        keyring
+            .as_deref()
+            .filter(|value| valid_device_id(value.trim()))
+            .or_else(|| valid_device_id(configured.trim()).then_some(configured.trim()))
+            .or(legacy.as_deref())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("{{{}}}", uuid::Uuid::new_v4()))
+    } else {
+        format!("{{{}}}", uuid::Uuid::new_v4())
+    };
+
+    if keyring.as_deref().map(str::trim) != Some(device_id.as_str()) {
+        super::secret_store::store_device_id(&device_id)?;
+    }
+    if configured.trim() != device_id {
+        crate::config::config::update_config(|config| {
+            config.bedrock_auth.device_id = device_id.clone();
+        })
+        .map_err(|error| format!("保存 Bedrock Auth 配置失败：{error}"))?;
+        crate::config::config::flush_config_now();
+    }
+
+    if legacy_path.is_file() {
+        if let Err(error) = std::fs::remove_file(&legacy_path) {
+            tracing::debug!(%error, path = %legacy_path.display(), "无法清理旧 Bedrock Auth 设备 ID");
+        } else if let Some(parent) = legacy_path.parent()
+            && let Err(error) = std::fs::remove_dir(parent)
+            && error.kind() != std::io::ErrorKind::NotFound
+            && error.kind() != std::io::ErrorKind::DirectoryNotEmpty
+        {
+            tracing::debug!(%error, path = %parent.display(), "无法清理旧 Bedrock Auth 状态目录");
+        }
+    }
+
+    Ok(device_id)
 }
 
 fn valid_device_id(value: &str) -> bool {

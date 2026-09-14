@@ -19,8 +19,6 @@ use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::WatchStream;
 
 pub(crate) const SYSTEM_LOCAL_ACCOUNT_ID: &str = "local-system-xbox-user";
-const ACCOUNT_MODE_FILE: &str = "xbox-account-mode";
-const ACCOUNT_MODE_SYSTEM: &str = "system";
 const SELECTION_AUTO: u8 = 0;
 const SELECTION_MANAGED: u8 = 1;
 const SELECTION_SYSTEM: u8 = 2;
@@ -301,7 +299,7 @@ fn publish_with_local_account(mut snapshot: AuthSnapshot) {
 
 fn system_account_is_selected(snapshot: &AuthSnapshot) -> bool {
     match SELECTION.load(Ordering::Acquire) {
-        SELECTION_SYSTEM => true,
+        SELECTION_SYSTEM => system_account_is_available(),
         SELECTION_MANAGED => false,
         _ => {
             snapshot.profile.is_none()
@@ -313,41 +311,82 @@ fn system_account_is_selected(snapshot: &AuthSnapshot) -> bool {
     }
 }
 
+fn system_account_is_available() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        local_account_snapshot().signed_in
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 fn select_managed_account() {
     SELECTION.store(SELECTION_MANAGED, Ordering::Release);
     persist_selection_mode(false);
 }
 
-fn account_mode_path() -> PathBuf {
-    crate::utils::file_ops::config_dir().join(ACCOUNT_MODE_FILE)
+fn legacy_account_mode_path() -> PathBuf {
+    crate::utils::file_ops::config_dir().join("xbox-account-mode")
 }
 
 fn load_selection_mode() {
+    let provider = crate::config::config::read_config()
+        .map(|config| config.login.provider)
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "无法读取登录配置，使用自动账号选择");
+            crate::config::config::LoginProvider::Auto
+        });
+
+    let selection = match provider {
+        crate::config::config::LoginProvider::BedrockAuth => SELECTION_MANAGED,
+        crate::config::config::LoginProvider::System if cfg!(target_os = "windows") => {
+            SELECTION_SYSTEM
+        }
+        crate::config::config::LoginProvider::Auto
+        | crate::config::config::LoginProvider::System => SELECTION_AUTO,
+    };
+    SELECTION.store(selection, Ordering::Release);
+
     #[cfg(target_os = "windows")]
+    if matches!(provider, crate::config::config::LoginProvider::Auto)
+        && std::fs::read_to_string(legacy_account_mode_path())
+            .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("system"))
     {
-        let mode = std::fs::read_to_string(account_mode_path()).unwrap_or_default();
-        if mode.trim().eq_ignore_ascii_case(ACCOUNT_MODE_SYSTEM) {
+        if let Err(error) = crate::config::config::update_config(|config| {
+            config.login.provider = crate::config::config::LoginProvider::System;
+        }) {
+            tracing::warn!(%error, "无法迁移旧 Xbox 账号选择配置");
+        } else {
+            crate::config::config::flush_config_now();
             SELECTION.store(SELECTION_SYSTEM, Ordering::Release);
+            remove_legacy_account_mode();
         }
     }
 }
 
 fn persist_selection_mode(system: bool) {
-    #[cfg(target_os = "windows")]
+    let provider = if system {
+        crate::config::config::LoginProvider::System
+    } else {
+        crate::config::config::LoginProvider::BedrockAuth
+    };
+    if let Err(error) = crate::config::config::update_config(|config| {
+        config.login.provider = provider;
+    }) {
+        tracing::warn!(%error, "无法保存登录来源配置");
+    } else {
+        crate::config::config::flush_config_now();
+        remove_legacy_account_mode();
+    }
+}
+
+fn remove_legacy_account_mode() {
+    if let Err(error) = std::fs::remove_file(legacy_account_mode_path())
+        && error.kind() != std::io::ErrorKind::NotFound
     {
-        let path = account_mode_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if system {
-            if let Err(error) = std::fs::write(&path, format!("{ACCOUNT_MODE_SYSTEM}\n")) {
-                tracing::debug!(%error, "无法保存系统 Xbox 账号选择状态");
-            }
-        } else if let Err(error) = std::fs::remove_file(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::debug!(%error, "无法清除系统 Xbox 账号选择状态");
-        }
+        tracing::debug!(%error, "无法清理旧 Xbox 账号选择配置");
     }
 }
 

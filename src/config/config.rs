@@ -14,8 +14,9 @@ pub use super::defaults::{
     default_theme_mode, get_default_config,
 };
 
-pub(super) const CURRENT_CONFIG_VERSION: u32 = 5;
-pub(super) const LEGACY_DEFAULT_APPX_API: &str = "https://data.mcappx.com/v2/bedrock.json";
+pub(super) const CURRENT_CONFIG_VERSION: u32 = 6;
+pub(super) const LEGACY_DEFAULT_APPX_API: &str = "https://api.chlna6666.com/api/v1/bedrock/mcappx";
+pub(super) const RETIRED_DEFAULT_APPX_API: &str = "https://data.mcappx.com/v2/bedrock.json";
 pub(super) const INCORRECT_MIRROR_APPX_API: &str =
     "https://api.chlna6666.com/api/v1/bedrock/versions";
 pub const DEFAULT_APPX_API: &str = "https://api.chlna6666.com/api/v1/bedrock/mcappx";
@@ -308,6 +309,38 @@ impl Default for OnlineConfig {
     }
 }
 
+/// Selects which Xbox login source is used when launching Bedrock.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LoginProvider {
+    /// Select the system account when available, otherwise Bedrock Auth.
+    #[default]
+    Auto,
+    /// Use the Windows system Xbox account.
+    System,
+    /// Use an account managed by BMCBL Bedrock Auth.
+    BedrockAuth,
+}
+
+/// Preferred login source. The system account and credential-store state remain
+/// authoritative when this preference is absent or cannot be used.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct LoginConfig {
+    /// Preferred provider; actual account availability is checked at runtime.
+    pub provider: LoginProvider,
+}
+
+/// Portable Bedrock Auth configuration mirrored in the main settings.
+/// The credential-store device identity takes precedence when available;
+/// refresh tokens and device keys remain in the operating system credential store.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct BedrockAuthConfig {
+    /// Portable mirror of the Bedrock Auth device identity.
+    pub device_id: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppStateConfig {
@@ -378,6 +411,10 @@ pub struct Config {
     pub game: GameConfig,
     #[serde(default)]
     pub online: OnlineConfig,
+    #[serde(default)]
+    pub login: LoginConfig,
+    #[serde(default)]
+    pub bedrock_auth: BedrockAuthConfig,
     #[serde(default)]
     pub app_state: AppStateConfig,
     /// v3 及更早版本的协议布尔状态。只读取用于迁移，不再写回 settings.toml。

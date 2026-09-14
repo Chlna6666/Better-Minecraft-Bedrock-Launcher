@@ -1,10 +1,10 @@
 use super::config::{
     CURRENT_CONFIG_VERSION, Config, DEFAULT_APPX_API, FONT_SOURCE_DEFAULT, FONT_SOURCE_LOCAL,
-    FONT_SOURCE_SYSTEM, INCORRECT_MIRROR_APPX_API, LEGACY_DEFAULT_APPX_API, clamp_background_blur,
-    default_error_report_sentry_dsn, default_glass_effect_enabled, default_gpu_adapter_name,
-    default_online_player_name, get_default_config, normalize_font_source,
-    normalize_gpu_adapter_name, normalize_language_code, normalize_renderer_backend,
-    normalize_theme_mode,
+    FONT_SOURCE_SYSTEM, INCORRECT_MIRROR_APPX_API, LEGACY_DEFAULT_APPX_API,
+    RETIRED_DEFAULT_APPX_API, clamp_background_blur, default_error_report_sentry_dsn,
+    default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
+    get_default_config, normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
+    normalize_renderer_backend, normalize_theme_mode,
 };
 use crate::{http::proxy, utils::file_ops};
 use once_cell::sync::Lazy;
@@ -240,6 +240,8 @@ fn load_config_from_disk() -> io::Result<Config> {
     let has_obsolete_music_section = has_obsolete_music_section(&content);
     let has_online_section = content.contains("[online]");
     let has_online_player_name = content.contains("player_name");
+    let has_login_section = content.lines().any(|line| line.trim() == "[login]");
+    let has_bedrock_auth_section = content.lines().any(|line| line.trim() == "[bedrock_auth]");
     let has_log_management = content.contains("[launcher.log_management]");
 
     let config: Config = match toml::from_str(&content) {
@@ -366,6 +368,9 @@ fn load_config_from_disk() -> io::Result<Config> {
     if !has_online_section {
         migrated = true;
     }
+    if !has_login_section || !has_bedrock_auth_section {
+        migrated = true;
+    }
     if !has_online_player_name
         || config.online.player_name.trim().is_empty()
         || config.online.player_name.trim() == "BMCBL_USER"
@@ -468,7 +473,10 @@ pub(super) fn normalize_update_check_settings(
 
 pub(super) fn normalize_appx_api(config: &mut Config) -> bool {
     let configured = config.launcher.custom_appx_api.trim();
-    let uses_retired_default = [LEGACY_DEFAULT_APPX_API, INCORRECT_MIRROR_APPX_API]
+    if configured.eq_ignore_ascii_case(LEGACY_DEFAULT_APPX_API) {
+        return false;
+    }
+    let uses_retired_default = [RETIRED_DEFAULT_APPX_API, INCORRECT_MIRROR_APPX_API]
         .iter()
         .any(|retired| configured.eq_ignore_ascii_case(retired));
     if !configured.is_empty() && !uses_retired_default {

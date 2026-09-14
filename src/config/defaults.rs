@@ -1,7 +1,8 @@
 use super::config::{
-    AppStateConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle, DEFAULT_APPX_API,
-    DEFAULT_ERROR_REPORT_SENTRY_DSN, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, GithubConfig,
-    Launcher, OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
+    AppStateConfig, BedrockAuthConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle,
+    DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DownloadConfig, FONT_SOURCE_DEFAULT,
+    GameConfig, GithubConfig, Launcher, LoginConfig, OnlineConfig, ProxyConfig, ProxyType,
+    UpdateChannel,
 };
 
 pub(super) fn default_true() -> bool {
@@ -139,6 +140,8 @@ pub fn get_default_config() -> Config {
             uwp_minimize_fix: true,
         },
         online: OnlineConfig::default(),
+        login: LoginConfig::default(),
+        bedrock_auth: BedrockAuthConfig::default(),
         app_state: AppStateConfig::default(),
         agreement_accepted: false,
     }

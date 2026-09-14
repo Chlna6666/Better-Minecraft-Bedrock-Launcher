@@ -8,6 +8,7 @@ const LEGACY_REFRESH_TOKEN_KEY: &str = "microsoft-refresh-token";
 const ACCOUNT_INDEX_KEY: &str = "microsoft-account-index";
 const ACCOUNT_REFRESH_TOKEN_PREFIX: &str = "microsoft-refresh-token:";
 const DEVICE_PRIVATE_KEY: &str = "xbox-device-p256-key";
+const DEVICE_ID: &str = "xbox-device-id";
 const ACCOUNT_INDEX_VERSION: u8 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -222,6 +223,24 @@ pub(super) fn store_device_private_key(key: &SecretSlice<u8>) -> Result<(), Stri
     entry(DEVICE_PRIVATE_KEY)?
         .set_secret(key.expose_secret())
         .map_err(|error| format!("无法加密保存 Xbox 设备密钥：{error}"))
+}
+
+pub(super) fn load_device_id() -> Result<Option<String>, String> {
+    match entry(DEVICE_ID)?.get_password() {
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(error) => Err(format!("无法读取 Xbox 设备 ID：{error}")),
+    }
+}
+
+pub(super) fn store_device_id(device_id: &str) -> Result<(), String> {
+    if device_id.trim().is_empty() {
+        return Err("拒绝保存空的 Xbox 设备 ID".to_string());
+    }
+    entry(DEVICE_ID)?
+        .set_password(device_id)
+        .map_err(|error| format!("无法保存 Xbox 设备 ID：{error}"))
 }
 
 #[cfg(test)]
