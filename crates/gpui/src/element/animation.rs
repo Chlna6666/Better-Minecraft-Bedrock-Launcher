@@ -1,5 +1,7 @@
 use std::{
+    cell::Cell,
     rc::Rc,
+    sync::atomic::{AtomicU32, Ordering},
     time::{Duration, Instant},
 };
 
@@ -18,6 +20,22 @@ use timing::{ElementAnimationTimeline, sample_element_animation};
 // numerical guard so retained partial-presentation damage cannot clip an extremal undamped sample.
 const SPRING_TRANSLATION_PROGRESS_MIN: f32 = -0.05;
 const SPRING_TRANSLATION_PROGRESS_MAX: f32 = 2.05;
+// Scene-local sampled ids occupy the low range and engine-owned timelines occupy the high bit.
+// Reserve the middle quarter for caller-sampled animations whose primitives must keep one identity
+// across retained replay frames.
+const STABLE_SAMPLED_ANIMATION_ID_START: u32 = 1 << 30;
+const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
+static NEXT_STABLE_SAMPLED_ANIMATION_ID: AtomicU32 =
+    AtomicU32::new(STABLE_SAMPLED_ANIMATION_ID_START);
+
+fn allocate_stable_sampled_animation_id() -> SceneAnimationId {
+    let id = NEXT_STABLE_SAMPLED_ANIMATION_ID.fetch_add(1, Ordering::Relaxed);
+    assert!(
+        id < ENGINE_ANIMATION_ID_START,
+        "stable sampled animation id space exhausted"
+    );
+    SceneAnimationId(id)
+}
 
 /// An animation that can be applied to an element.
 #[derive(Clone)]
@@ -336,9 +354,9 @@ pub trait AnimationExt {
 
     /// Paint this element into a retained scene animation using a caller-sampled progress value.
     ///
-    /// Opacity, scale and translation bind directly to supported primitives. Wrap a mixed subtree
-    /// in [`crate::CompositeLayerExt::composite_layer`] when it can contain paths, underlines or
-    /// platform surfaces. Transform, rotation and clip reveal promote the subtree automatically.
+    /// This legacy form allocates a frame-local animation id and therefore requires descendants to
+    /// repaint whenever the sample changes. Use [`AnimationExt::with_stable_sampled_animation`] for
+    /// recurring caller-sampled motion whose static descendants should remain replayable.
     fn with_sampled_animation(
         self,
         property: AnimationProperty,
@@ -351,6 +369,31 @@ pub trait AnimationExt {
             element: Some(self),
             property,
             progress,
+        }
+    }
+
+    /// Paint caller-sampled motion with one persistent scene-animation identity.
+    ///
+    /// `id` is retained with the element state. When `animating` is true this wrapper schedules the
+    /// next compositor-paced sample by invalidating only its own paint context; descendants keep
+    /// their previous primitive ranges and continue referring to the same animation id. Use this
+    /// only when layout is already at final geometry and the sampled property is visual-only.
+    fn with_stable_sampled_animation(
+        self,
+        id: impl Into<ElementId>,
+        property: AnimationProperty,
+        progress: f32,
+        animating: bool,
+    ) -> StableSampledAnimationElement<Self>
+    where
+        Self: Sized,
+    {
+        StableSampledAnimationElement {
+            id: id.into(),
+            element: Some(self),
+            property,
+            progress,
+            animating,
         }
     }
 
@@ -526,6 +569,126 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
             to,
             |window| element.paint(window, cx),
         );
+    }
+}
+
+#[derive(Clone)]
+struct StableSampledAnimationState {
+    animation_id: SceneAnimationId,
+    frame_pending: Rc<Cell<bool>>,
+}
+
+/// A caller-sampled scene animation whose primitive ownership survives retained replay.
+pub struct StableSampledAnimationElement<E> {
+    id: ElementId,
+    element: Option<E>,
+    property: AnimationProperty,
+    progress: f32,
+    animating: bool,
+}
+
+impl<E: IntoElement + 'static> IntoElement for StableSampledAnimationElement<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (crate::LayoutId, Self::RequestLayoutState) {
+        let mut element = self
+            .element
+            .take()
+            .expect("stable sampled animation element should only be laid out once")
+            .into_any_element();
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let global_id = global_id
+            .expect("StableSampledAnimationElement always supplies an element id for state tracking");
+        let (animation_id, frame_pending) = window.with_element_state(
+            global_id,
+            |state: Option<StableSampledAnimationState>, _window| {
+                let state = state.unwrap_or_else(|| StableSampledAnimationState {
+                    animation_id: allocate_stable_sampled_animation_id(),
+                    frame_pending: Rc::new(Cell::new(false)),
+                });
+                ((state.animation_id, state.frame_pending.clone()), state)
+            },
+        );
+        let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
+        window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
+            animation_id,
+            property: self.property.property,
+            progress: self.progress,
+            from,
+            to,
+        });
+        window.with_scene_animation(
+            animation_id,
+            self.property.property,
+            self.property.text_raster_scale(),
+            |window| element.paint(window, cx),
+        );
+
+        if self.animating && !frame_pending.replace(true) {
+            let view_id = window.current_view();
+            let retained_id = window
+                .current_retained_element_id()
+                .expect("stable sampled animation must have a retained identity");
+            let dirty_bounds = self.property.dirty_bounds(bounds);
+            window.on_next_frame(move |window, cx| {
+                frame_pending.set(false);
+                window.notify_interactive_region_scoped(
+                    view_id,
+                    Some(&retained_id),
+                    dirty_bounds,
+                    false,
+                    cx,
+                );
+                window.schedule_interactive_animation_frame();
+            });
+        }
     }
 }
 
@@ -961,6 +1124,16 @@ mod tests {
         assert!(dirty.size.width < crate::px(240.0));
         assert_eq!(dirty.origin.y, bounds.origin.y);
         assert_eq!(dirty.size.height, bounds.size.height);
+    }
+
+    #[test]
+    fn stable_sampled_animation_ids_use_reserved_non_engine_range() {
+        let first = allocate_stable_sampled_animation_id();
+        let second = allocate_stable_sampled_animation_id();
+        assert!(first.0 >= STABLE_SAMPLED_ANIMATION_ID_START);
+        assert!(first.0 < ENGINE_ANIMATION_ID_START);
+        assert!(second.0 > first.0);
+        assert!(second.0 < ENGINE_ANIMATION_ID_START);
     }
 
     #[test]
