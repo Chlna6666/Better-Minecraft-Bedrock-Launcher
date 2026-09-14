@@ -1,4 +1,4 @@
-use crate::ui::animation::{repeating_linear_motion, spring_motion, spring_smooth};
+use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
@@ -858,14 +858,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         .with_animation(
                             "launcher-connectivity-loading-dot-1",
                             loading_dot_motion(Duration::from_millis(720)),
-                            |dot, progress| {
-                                let pulse = if progress < 0.5 {
-                                    progress * 2.0
-                                } else {
-                                    (1.0 - progress) * 2.0
-                                };
-                                dot.opacity(0.28 + pulse * 0.72)
-                            },
+                            |dot, _progress| dot,
                         ),
                 )
                 .child(
@@ -880,14 +873,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         .with_animation(
                             "launcher-connectivity-loading-dot-2",
                             loading_dot_motion(Duration::from_millis(900)),
-                            |dot, progress| {
-                                let pulse = if progress < 0.5 {
-                                    progress * 2.0
-                                } else {
-                                    (1.0 - progress) * 2.0
-                                };
-                                dot.opacity(0.28 + pulse * 0.72)
-                            },
+                            |dot, _progress| dot,
                         ),
                 )
                 .child(
@@ -902,14 +888,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         .with_animation(
                             "launcher-connectivity-loading-dot-3",
                             loading_dot_motion(Duration::from_millis(1080)),
-                            |dot, progress| {
-                                let pulse = if progress < 0.5 {
-                                    progress * 2.0
-                                } else {
-                                    (1.0 - progress) * 2.0
-                                };
-                                dot.opacity(0.28 + pulse * 0.72)
-                            },
+                            |dot, _progress| dot,
                         ),
                 ),
         )
@@ -917,7 +896,12 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
 }
 
 fn loading_dot_motion(duration: Duration) -> Animation {
-    repeating_linear_motion(duration)
+    Animation::from_spec(
+        AnimationSpec::new(duration / 2)
+            .repeat(RepeatMode::Forever)
+            .direction(AnimationDirection::Alternate),
+    )
+    .with_property(AnimationProperty::opacity(0.28, 1.0))
 }
 
 fn icon_button(

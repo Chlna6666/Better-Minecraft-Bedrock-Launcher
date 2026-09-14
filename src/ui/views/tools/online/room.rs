@@ -487,12 +487,12 @@ fn render_connecting_state(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageS
                 .text_color(colors.accent)
                 .with_animation(
                     "online-room-connecting-spinner",
-                    crate::ui::animation::repeating_linear_motion(Duration::from_millis(900)),
-                    |icon, progress| {
-                        icon.with_transformation(Transformation::rotate(radians(
-                            progress * std::f32::consts::TAU,
-                        )))
-                    },
+                    crate::ui::animation::repeating_linear_motion(Duration::from_millis(900))
+                        .with_property(AnimationProperty::rotation(
+                            radians(0.0),
+                            radians(std::f32::consts::TAU),
+                        )),
+                    |icon, _progress| icon,
                 ),
         )
         .child(

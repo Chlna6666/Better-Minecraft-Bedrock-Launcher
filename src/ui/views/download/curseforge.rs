@@ -1458,6 +1458,7 @@ fn render_curseforge_content(
             .absolute()
             .top(px(0.))
             .bottom(px(0.))
+            .left(px(-180.0))
             .w(px(140.))
             .bg(Hsla {
                 a: 0.24,
@@ -1465,8 +1466,10 @@ fn render_curseforge_content(
             })
             .with_animation(
                 "curseforge-skeleton-shimmer",
-                repeating_linear_motion(Duration::from_millis(1400)),
-                |this, t| this.left(px(-180.0 + t * 440.0)),
+                repeating_linear_motion(Duration::from_millis(1400)).with_property(
+                    AnimationProperty::translation(Point::default(), point(px(440.0), px(0.0))),
+                ),
+                |this, _progress| this,
             )
             .into_any_element()
     };
@@ -2390,6 +2393,7 @@ fn render_curseforge_result_card(
                         .child(t!("common.install")),
                 ),
         )
+        .composite_layer()
         .with_sampled_animation(
             AnimationProperty::translation(point(px(0.0), px(10.0)), Point::default()),
             reveal_progress,

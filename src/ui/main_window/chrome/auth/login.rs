@@ -193,12 +193,12 @@ fn busy(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         spinner
             .with_animation(
                 "xbox-auth-busy-spinner",
-                crate::ui::animation::repeating_linear_motion(Duration::from_millis(900)),
-                |icon, progress| {
-                    icon.with_transformation(Transformation::rotate(radians(
-                        progress * std::f32::consts::TAU,
-                    )))
-                },
+                crate::ui::animation::repeating_linear_motion(Duration::from_millis(900))
+                    .with_property(AnimationProperty::rotation(
+                        radians(0.0),
+                        radians(std::f32::consts::TAU),
+                    )),
+                |icon, _progress| icon,
             )
             .into_any_element()
     };

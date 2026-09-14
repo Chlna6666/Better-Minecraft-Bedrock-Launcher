@@ -183,8 +183,15 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
         )
         .with_animation(
             "modal-layer-content-zoom",
-            crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240)),
-            |inner, progress| inner.scale(modal_content_scale(progress)).opacity(progress),
+            crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240))
+                .with_property(AnimationProperty::scale_opacity(
+                    MODAL_MIN_SCALE,
+                    1.0,
+                    0.0,
+                    1.0,
+                    TransformOrigin::new(0.5, 0.5),
+                )),
+            |inner, _progress| inner,
         );
 
     // The backdrop remains structurally stable while only the modal content animates. This keeps

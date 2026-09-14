@@ -305,6 +305,7 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
             .absolute()
             .top(px(0.))
             .bottom(px(0.))
+            .left(px(-160.0))
             .w(px(120.))
             .bg(Hsla {
                 a: 0.24,
@@ -312,8 +313,10 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
             })
             .with_animation(
                 "game-skeleton-shimmer",
-                repeating_linear_motion(Duration::from_millis(1400)),
-                |this, t| this.left(px(-160.0 + t * 420.0)),
+                repeating_linear_motion(Duration::from_millis(1400)).with_property(
+                    AnimationProperty::translation(Point::default(), point(px(420.0), px(0.0))),
+                ),
+                |this, _progress| this,
             )
             .into_any_element()
     };
@@ -408,6 +411,7 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
             .absolute()
             .top(px(0.))
             .bottom(px(0.))
+            .left(px(-160.0))
             .w(px(120.))
             .bg(Hsla {
                 a: 0.24,
@@ -415,8 +419,10 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
             })
             .with_animation(
                 "game-skeleton-shimmer-aligned",
-                repeating_linear_motion(Duration::from_millis(1400)),
-                |this, t| this.left(px(-160.0 + t * 420.0)),
+                repeating_linear_motion(Duration::from_millis(1400)).with_property(
+                    AnimationProperty::translation(Point::default(), point(px(420.0), px(0.0))),
+                ),
+                |this, _progress| this,
             )
             .into_any_element()
     };

@@ -44,10 +44,12 @@ pub fn render_onboarding_tour(
         .absolute()
         .inset_0()
         .child(overlay)
+        .composite_layer()
         .with_animation(
             scene_animation_id(scene),
-            crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(190)),
-            |this, progress| this.opacity(0.55 + 0.45 * progress),
+            crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(190))
+                .with_property(AnimationProperty::opacity(0.55, 1.0)),
+            |this, _progress| this,
         )
         .into_any_element();
 
@@ -194,10 +196,12 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
         .justify_center()
         .p(px(18.0))
         .child(card)
+        .composite_layer()
         .with_animation(
             "onboarding-welcome-backdrop-enter",
-            crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(220)),
-            |this, progress| this.opacity(progress),
+            crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(220))
+                .with_property(AnimationProperty::opacity(0.0, 1.0)),
+            |this, _progress| this,
         )
         .into_any_element()
 }
