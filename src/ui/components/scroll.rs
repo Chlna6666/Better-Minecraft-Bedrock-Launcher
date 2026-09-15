@@ -92,7 +92,7 @@ impl Scrollbar {
             return;
         }
         self.handle.set_offset(point(previous.x, offset));
-        window.refresh();
+        window.request_animation_frame();
         if let Some(on_scroll) = &self.on_scroll {
             on_scroll(window, cx);
         }
