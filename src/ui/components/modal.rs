@@ -442,18 +442,19 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
             current_control.set(control);
             state.control = current_control.clone();
 
-            let mut element =
-                dismissible_modal_layer(content, self.background, sample.progress, current_control)
-                    .into_any_element();
+            // Keep the caller-sampled modal on CPU layout because scale/opacity currently span a
+            // mixed subtree. The targeted wrapper narrows continuous invalidation to this modal
+            // instead of notifying the entire owning view every platform frame.
+            let mut element = dismissible_modal_layer(
+                content,
+                self.background,
+                sample.progress,
+                current_control,
+            )
+            .with_layout_animation_target(sample.animating)
+            .into_any_element();
             let layout_id = element.request_layout(window, cx);
 
-            if sample.animating || sample.close_completed {
-                // This modal timeline is caller-sampled, but every visual value for the current
-                // platform frame uses the immutable Window frame clock. Keep a regular animation
-                // frame here because the fullscreen backdrop and inherited opacity span more than
-                // one narrow retained layout target.
-                window.request_animation_frame();
-            }
             if state.take_close_completion(sample.close_completed) {
                 (self.on_cleanup)(cx);
                 (self.on_dismiss)(cx);
