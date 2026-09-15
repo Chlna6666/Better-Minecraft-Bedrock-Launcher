@@ -149,20 +149,12 @@ impl<'a> Iterator for BatchIterator<'a> {
             }
             PrimitiveKind::Path => {
                 let paths_start = self.paths_start;
-                let first_path_is_animated = self
-                    .paths_iter
-                    .peek()
-                    .is_some_and(|path| path.animation_id.is_some());
                 let mut paths_end = paths_start + 1;
                 self.paths_iter.next();
-                while !first_path_is_animated
-                    && self
-                        .paths_iter
-                        .next_if(|path| {
-                            path.animation_id.is_none()
-                                && (path.order, batch_kind) < max_order_and_kind
-                        })
-                        .is_some()
+                while self
+                    .paths_iter
+                    .next_if(|path| (path.order, batch_kind) < max_order_and_kind)
+                    .is_some()
                 {
                     paths_end += 1;
                 }
