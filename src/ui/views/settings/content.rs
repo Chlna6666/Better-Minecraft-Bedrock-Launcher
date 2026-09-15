@@ -149,14 +149,20 @@ fn animated_settings_panel(
         SettingsTab::About => "settings-content-about",
     };
 
-    // 整页位移必须包含文字、路径和嵌套裁剪；局部图元的 retained 动画尚不覆盖这些语义。
+    // 布局直接保持在目标位置，只让 Nova 对最终 scene 做 10px presentation translation。
+    // 设置页普通图标走 SVG atlas sprite，不需要为这段过渡重跑整个内容树的 layout。
     div()
         .w_full()
         .min_w(px(0.))
         .when(fill_height, |this| this.h_full().min_h(px(0.)))
         .child(panel)
-        .with_animation(key, spring_motion(spring_smooth()), |panel, progress| {
-            panel.relative().left(px(10.0 * (1.0 - progress)))
-        })
+        .with_animation(
+            key,
+            spring_motion(spring_smooth()).with_property(AnimationProperty::translation(
+                point(px(10.0), px(0.0)),
+                Point::default(),
+            )),
+            |panel, _progress| panel,
+        )
         .into_any_element()
 }
