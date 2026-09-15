@@ -1,12 +1,31 @@
 use super::*;
 
 impl Window {
-    /// Force the map image layer through a real paint pass without discarding any resident image.
+    /// Force the current retained map-image subtree through a real paint pass without discarding
+    /// any resident image.
     ///
-    /// Large map snapshots use a per-frame upload budget. A normal refresh may replay a cached
-    /// absolute subtree and therefore never revisit deferred images. This method invalidates the
-    /// retained view cache while keeping the atlas, image tile cache and frame bitmaps intact.
+    /// Large map snapshots use a per-frame upload budget. A normal animation frame may replay a
+    /// cached absolute subtree and therefore never revisit deferred images. When this is called
+    /// from an element paint, capture that exact retained path and invalidate only its subtree on
+    /// the following frame. Callers without retained provenance keep the conservative full-window
+    /// fallback.
     pub fn refresh_map_image_uploads(&mut self) {
+        if let (Some(retained_id), Some(view_id)) = (
+            self.current_retained_element_id(),
+            self.current_view_or_root(),
+        ) {
+            self.on_next_frame(move |window, _cx| {
+                if window.invalidator.invalidate_retained_path_with_scope(
+                    view_id,
+                    Some(&retained_id),
+                    RetainedInvalidationScope::InvalidateSubtree,
+                ) {
+                    window.schedule_interactive_animation_frame();
+                }
+            });
+            return;
+        }
+
         self.force_full_redraw.set(true);
         self.force_view_cache_refresh = true;
         self.refresh();
