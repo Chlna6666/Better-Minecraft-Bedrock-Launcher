@@ -143,12 +143,18 @@ fn mod_pulse_block(
     max_alpha: f32,
     phase: f32,
 ) -> AnyElement {
+    let base_opacity = if max_alpha > f32::EPSILON {
+        (min_alpha / max_alpha).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
     div()
         .w(width)
         .h(height)
         .rounded(radius)
         .bg(Hsla {
-            a: min_alpha,
+            a: max_alpha,
             ..color
         })
         .with_animation(
@@ -158,13 +164,9 @@ fn mod_pulse_block(
                 .with_easing(move |t| {
                     let p = (t + phase).fract();
                     (0.5 - 0.5 * (TAU * p).cos()).clamp(0.0, 1.0)
-                }),
-            move |this, t| {
-                this.bg(Hsla {
-                    a: min_alpha + (max_alpha - min_alpha) * t,
-                    ..color
                 })
-            },
+                .with_property(AnimationProperty::opacity(base_opacity, 1.0)),
+            |this, _progress| this,
         )
         .into_any_element()
 }
