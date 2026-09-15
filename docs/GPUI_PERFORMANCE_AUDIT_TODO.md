@@ -118,7 +118,7 @@ first_notify_entity=AppChromeView
 - [ ] 拆成稳定子 View：`BrandChromeView`、`NavChromeView`、`AuthChromeView`、`WindowControlsView`，让每个 state 只 notify 真正依赖它的子树。
 - [ ] `NavState` 动画只通知 Nav scope，不触发 auth/brand/window controls build。
 - [ ] `ThemeState` 区分 geometry-neutral color update 与真实 layout update；纯颜色变化优先 paint/presentation invalidation。
-- [ ] plugin navigation model 改为 versioned/memoized snapshot，仅 `PluginRegistry` revision 或 I18n revision 变化时重建。
+- [x] plugin navigation model 改为 versioned/memoized snapshot，仅 `PluginRegistry` revision 或 I18n revision 变化时重建。
 - [ ] 固定 built-in nav metadata 使用静态 slice/`LazyLock`/稳定 model，不在每个动画帧创建 Vec。
 - [ ] app version 字符串预计算并缓存，不在顶栏高频 render 中 `format!`。
 - [ ] 对 render 热路径增加 per-frame allocation telemetry：alloc count / allocated bytes / `Vec` growth / `Arc` create / String clone。
@@ -286,7 +286,7 @@ CompositorIndependent
 当前 `responsive_retarget_velocity()` 在 `current_velocity * delta <= 0` 时直接把 velocity 设 0。快速展开→收起→展开会产生明显“刹停再起步”，这不是连续 retarget。
 
 - [ ] `SpringValue` retarget 至少保证 C0：position 连续。
-- [ ] 对需要自然连续的交互 spring，保留/投影当前 physical velocity，使方向变化由新弹簧力完成，而不是人为瞬间归零。
+- [x] 对需要自然连续的交互 spring，保留/投影当前 physical velocity，使方向变化由新弹簧力完成，而不是人为瞬间归零。
 - [ ] 对非常短的剩余距离限制 normalized velocity，避免 velocity / delta 爆炸。
 - [ ] 区分 geometry spring 与 icon rotation progress。列表允许 overshoot 不代表 chevron 必须转过 180°。
 - [ ] 增加快速 `open -> close -> open`、`next -> previous -> next` 连续 retarget 单元测试。
@@ -421,7 +421,7 @@ Qt Quick 默认 renderer 重点就是 draw-call batching 与 GPU geometry retent
 - [ ] 修正 titlebar 真正数学居中：不要依赖 `justify_between` 在不等宽左右区域之间得到“视觉中点”。使用独立 absolute center layer 或三列布局（左右等宽 reservation + center）。
 - [ ] pill 的 `left + width` 是真实 geometry，当前先保留 CPU placement/layout；不要用错误的 uniform scale 模拟。
 - [ ] 但 pill 作为 absolute child 时，只应 invalidate pill placement，自身变化不应让全部 nav item 重新 measure。
-- [ ] `pill_edges()` 已经在接近目标时返回 exact target，但 `is_animating()` 仍可能为 true；统一 visual settle 与 cadence stop 条件。
+- [x] `pill_edges()` 已经在接近目标时返回 exact target，但 `is_animating()` 仍可能为 true；统一 visual settle 与 cadence stop 条件。
 - [ ] Nav spring tick 不再重建 plugin pages / auth / logo / controls。
 
 ### 首页启动按钮 Dropdown
