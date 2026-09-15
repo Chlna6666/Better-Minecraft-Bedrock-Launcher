@@ -129,7 +129,7 @@ impl RenderOnce for MinecraftFormattedText {
 
         if parsed.has_glyphs {
             return render_glyph_text(self, &parsed)
-                .with_layout_animation_target(animate_obfuscated)
+                .with_layout_animation_target_interval(animate_obfuscated, OBFUSCATED_FRAME)
                 .into_any_element();
         }
 
@@ -147,7 +147,7 @@ impl RenderOnce for MinecraftFormattedText {
 
         container
             .child(StyledText::new(parsed.text.clone()).with_runs(runs))
-            .with_layout_animation_target(animate_obfuscated)
+            .with_layout_animation_target_interval(animate_obfuscated, OBFUSCATED_FRAME)
             .into_any_element()
     }
 }
