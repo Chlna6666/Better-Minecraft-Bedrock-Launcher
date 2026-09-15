@@ -81,8 +81,6 @@ struct DropdownOverlaySnapshot {
     open_up: bool,
     phase: DropdownPhase,
     menu_h: Pixels,
-    animated_h: Pixels,
-    panel_opacity: f32,
 }
 
 #[derive(Clone)]
@@ -403,26 +401,17 @@ pub fn render_overlay(
         return div().into_any_element();
     }
 
-    let overlay_animating = matches!(
-        active.phase,
-        DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
-    );
-
-    if active.animated_h <= px(1.0) || active.width <= px(1.0) {
-        return div()
-            .absolute()
-            .inset_0()
-            .with_layout_animation_target(overlay_animating)
-            .into_any_element();
+    if active.menu_h <= px(1.0) || active.width <= px(1.0) {
+        return div().absolute().inset_0().into_any_element();
     }
 
-    let panel_opacity = active.panel_opacity;
+    let panel_opacity = 0.78 + 0.22 * open_k;
     let reveal_edge = if active.open_up {
         VerticalRevealEdge::Bottom
     } else {
         VerticalRevealEdge::Top
     };
-    let reveal_fraction = (f32::from(active.animated_h) / f32::from(active.menu_h)).clamp(0.0, 1.0);
+    let reveal_fraction = open_k;
     let option_context = DropdownOptionContext {
         colors,
         options: options.clone(),
@@ -549,7 +538,6 @@ pub fn render_overlay(
             }
         })
         .child(popup)
-        .with_layout_animation_target(overlay_animating)
         .into_any_element()
 }
 
@@ -856,7 +844,6 @@ impl RenderOnce for Dropdown {
             .map(|(above, below)| if open_up { above } else { below })
             .unwrap_or(max_h);
         let menu_h = effective_dropdown_height(available_h, capped_h);
-        let animated_h = menu_h * open_k;
         let safe_left = px(MENU_WINDOW_EDGE_PADDING);
         let safe_right = window_size.width - px(MENU_WINDOW_EDGE_PADDING);
         let max_left = (safe_right - menu_width).max(safe_left);
@@ -873,7 +860,6 @@ impl RenderOnce for Dropdown {
             })
             .unwrap_or(point(px(0.), px(0.)));
 
-        let panel_opacity = 0.78 + 0.22 * open_k;
         let overlay_snapshot = DropdownOverlaySnapshot {
             id: id.clone(),
             parent_view_id,
@@ -890,8 +876,6 @@ impl RenderOnce for Dropdown {
             open_up,
             phase: phase_after_cleanup,
             menu_h,
-            animated_h,
-            panel_opacity,
         };
 
         let should_update_overlay = cx.read_global(|overlay: &DropdownOverlayState, _cx| {
@@ -904,8 +888,6 @@ impl RenderOnce for Dropdown {
                         || active.top_left != overlay_snapshot.top_left
                         || active.open_up != overlay_snapshot.open_up
                         || active.menu_h != overlay_snapshot.menu_h
-                        || active.animated_h != overlay_snapshot.animated_h
-                        || active.panel_opacity != overlay_snapshot.panel_opacity
                         || active.width != overlay_snapshot.width
                         || active.selected_index != overlay_snapshot.selected_index
                 }
