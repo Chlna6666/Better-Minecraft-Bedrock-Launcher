@@ -708,13 +708,8 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
                     false,
                     cx,
                 );
+                window.schedule_interactive_animation_frame();
             });
-            // `on_next_frame` is passive: registering a callback does not by itself create a frame.
-            // Bootstrap the caller-sampled animation immediately, otherwise a quiet window can
-            // leave the first callback pending until unrelated input (for example mouse movement)
-            // dirties the window. Subsequent renders re-arm one latest-wins callback through
-            // `frame_pending`, so this remains compositor-paced and does not create a timer loop.
-            window.schedule_interactive_animation_frame();
         }
     }
 }
