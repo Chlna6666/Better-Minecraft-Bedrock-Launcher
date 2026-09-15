@@ -1,33 +1,114 @@
 use super::*;
 
+#[derive(Default)]
+struct AssetViewSubscriptions {
+    next_generation: u64,
+    pending: collections::FxHashMap<(TypeId, u64), PendingAssetViewSubscription>,
+}
+
+struct PendingAssetViewSubscription {
+    generation: u64,
+    views: collections::FxHashSet<EntityId>,
+}
+
+fn asset_view_subscriptions(cx: &mut App) -> &mut AssetViewSubscriptions {
+    cx.globals_by_type
+        .entry(TypeId::of::<AssetViewSubscriptions>())
+        .or_insert_with(|| Box::new(AssetViewSubscriptions::default()))
+        .downcast_mut::<AssetViewSubscriptions>()
+        .expect("asset view subscription state type mismatch")
+}
+
+fn subscribe_asset_view(
+    cx: &mut App,
+    asset_id: (TypeId, u64),
+    view: EntityId,
+    new_load: bool,
+) -> Option<u64> {
+    let state = asset_view_subscriptions(cx);
+
+    if !new_load
+        && let Some(pending) = state.pending.get_mut(&asset_id)
+    {
+        pending.views.insert(view);
+        return None;
+    }
+
+    let generation = state.next_generation;
+    state.next_generation = state
+        .next_generation
+        .checked_add(1)
+        .expect("asset view subscription generation overflow");
+    let mut views = collections::FxHashSet::default();
+    views.insert(view);
+    state.pending.insert(
+        asset_id,
+        PendingAssetViewSubscription {
+            generation,
+            views,
+        },
+    );
+    Some(generation)
+}
+
+fn finish_asset_view_subscription(
+    cx: &mut App,
+    asset_id: (TypeId, u64),
+    generation: u64,
+) -> collections::FxHashSet<EntityId> {
+    let state = asset_view_subscriptions(cx);
+    if state
+        .pending
+        .get(&asset_id)
+        .is_none_or(|pending| pending.generation != generation)
+    {
+        return collections::FxHashSet::default();
+    }
+
+    state
+        .pending
+        .remove(&asset_id)
+        .map_or_else(collections::FxHashSet::default, |pending| pending.views)
+}
+
 impl Window {
     /// Asynchronously load an asset, if the asset hasn't finished loading this will return None.
     /// Your view will be re-drawn once the asset has finished loading.
     ///
     /// Note that the multiple calls to this method will only result in one `Asset::load` call at a
-    /// time.
+    /// time. While a shared load is pending, wakeups are also coalesced per asset and observing
+    /// view so animation or scroll frames cannot accumulate duplicate completion tasks.
     pub fn use_asset<A: Asset>(&mut self, source: &A::Source, cx: &mut App) -> Option<A::Output> {
-        let (task, _is_first) = cx.fetch_asset::<A>(source);
-        task.clone().now_or_never().or_else(|| {
-            let entity_id = self.current_view();
-            self.spawn(cx, {
-                let task = task.clone();
-                async move |cx| {
-                    task.await;
+        let (task, is_first) = cx.fetch_asset::<A>(source);
+        if let Some(output) = task.clone().now_or_never() {
+            return Some(output);
+        }
 
-                    // Asset completion must itself wake the owning view. Deferring this through
-                    // `on_next_frame` can deadlock an otherwise idle window: there is no next frame
-                    // until unrelated input (often a mouse move) happens to request one.
-                    cx.update(move |_, cx| {
+        let entity_id = self.current_view();
+        let asset_id = (TypeId::of::<A>(), crate::hash(source));
+        let Some(generation) = subscribe_asset_view(cx, asset_id, entity_id, is_first) else {
+            return None;
+        };
+
+        self.spawn(cx, {
+            let task = task.clone();
+            async move |cx| {
+                task.await;
+
+                // Asset completion must itself wake the owning views. Deferring this through
+                // `on_next_frame` can deadlock an otherwise idle window: there is no next frame
+                // until unrelated input (often a mouse move) happens to request one.
+                cx.update(move |_, cx| {
+                    for entity_id in finish_asset_view_subscription(cx, asset_id, generation) {
                         cx.notify(entity_id);
-                    })
-                    .ok();
-                }
-            })
-            .detach();
-
-            None
+                    }
+                })
+                .ok();
+            }
         })
+        .detach();
+
+        None
     }
 
     /// Asynchronously load an asset, if the asset hasn't finished loading or doesn't exist this will return None.
