@@ -1995,6 +1995,7 @@ Tools.termination.confirm=アプリを終了する
 Tools.termination.description=BMCBL は UDP 7551 を使用しているアプリを検索し、強制終了します。通常は Minecraft Bedrock です。ゲーム実行中は未保存のワールドデータや進行状況が失われる可能性があります。先にゲームへ戻って保存し、通常終了してください。正常に閉じられない場合のみ続行してください。{{error}}
 Tools.termination.title=UDP 7551 を使用しているアプリを終了しますか？
 Tools.title=ツール
+Topbar.update_available=新バージョン
 UpdateModal.browser_download=ブラウザDL
 UpdateModal.cancel_download=取消
 UpdateModal.changelog=更新ログ

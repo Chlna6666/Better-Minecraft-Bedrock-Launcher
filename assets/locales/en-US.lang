@@ -1995,6 +1995,7 @@ Tools.termination.confirm=Terminate application
 Tools.termination.description=BMCBL will find and force-close the application using UDP port 7551. It is usually Minecraft Bedrock. If the game is running, unsaved worlds and progress may be lost. Save and exit normally first; continue only when it cannot be closed normally.{{error}}
 Tools.termination.title=Terminate the application using UDP 7551?
 Tools.title=Tools
+Topbar.update_available=Update
 UpdateModal.browser_download=Browser download
 UpdateModal.cancel_download=Cancel
 UpdateModal.changelog=Changelog

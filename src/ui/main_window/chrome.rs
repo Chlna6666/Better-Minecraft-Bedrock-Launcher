@@ -333,20 +333,35 @@ pub(super) fn render_app_chrome(
         })
         .child(
             div()
-                .w(px(162.))
+                .flex_none()
                 .flex()
                 .items_center()
                 .gap(px(9.))
                 .child(
                     img("icons/logo.png")
                         .size(px(34.))
+                        .flex_shrink_0()
                         .rounded(px(0.))
                         .object_fit(ObjectFit::Contain),
                 )
-                .child(
+                .child({
+                    let update_active = state.update_available && !update_modal_open;
                     div()
+                        .flex_shrink_0()
                         .flex()
                         .flex_col()
+                        .when(update_active, |element| {
+                            element
+                                .cursor_pointer()
+                                .occlude()
+                                .window_control_area(WindowControlArea::Client)
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.update_global(|update: &mut UpdateState, _cx| {
+                                        update.request_open_modal(Instant::now());
+                                    });
+                                })
+                        })
                         .child(
                             div()
                                 .text_size(px(14.))
@@ -359,23 +374,48 @@ pub(super) fn render_app_chrome(
                                 .text_size(px(9.5))
                                 .text_color(colors.text_secondary)
                                 .child(format!("v{}", crate::utils::app_info::get_version())),
-                        ),
-                )
+                        )
+                })
                 .when(state.update_available && !update_modal_open, |element| {
                     element.child(
                         div()
-                            .size(px(8.))
-                            .rounded_full()
-                            .bg(colors.accent)
+                            .id("topbar-update-badge")
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .px(px(8.))
+                            .py(px(3.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+                            .bg(colors.accent.opacity(0.14))
+                            .border_1()
+                            .border_color(colors.accent.opacity(0.30))
                             .cursor_pointer()
                             .occlude()
                             .window_control_area(WindowControlArea::Client)
+                            .hover(|style| style.bg(colors.accent.opacity(0.22)))
+                            .active(|style| {
+                                style.scale(crate::ui::theme::tokens::motion::PRESS_SCALE)
+                            })
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
                                 cx.update_global(|update: &mut UpdateState, _cx| {
                                     update.request_open_modal(Instant::now());
                                 });
-                            }),
+                            })
+                            .child(
+                                div()
+                                    .size(px(6.))
+                                    .rounded_full()
+                                    .bg(colors.accent),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(colors.accent)
+                                    .child(t!("Topbar.update_available")),
+                            ),
                     )
                 }),
         )

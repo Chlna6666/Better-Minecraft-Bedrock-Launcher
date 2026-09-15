@@ -1995,6 +1995,7 @@ Tools.termination.confirm=仍要結束應用程式
 Tools.termination.description=BMCBL 將尋找並強制結束實際佔用 UDP 7551 的應用程式。該應用程式通常是 Minecraft 基岩版；如果遊戲正在執行，未儲存的世界資料和目前進度可能遺失。建議先返回遊戲儲存世界並正常離開，只有無法正常關閉時才繼續。{{error}}
 Tools.termination.title=確定要結束佔用 UDP 7551 的應用程式嗎？
 Tools.title=工具
+Topbar.update_available=新版本
 UpdateModal.browser_download=瀏覽器下載
 UpdateModal.cancel_download=取消下載
 UpdateModal.changelog=更新日誌
