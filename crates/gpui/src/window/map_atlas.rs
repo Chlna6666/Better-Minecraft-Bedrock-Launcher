@@ -1,3 +1,4 @@
+use super::lifecycle::RetainedInvalidationScope;
 use super::*;
 
 impl Window {
