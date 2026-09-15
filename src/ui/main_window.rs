@@ -452,18 +452,23 @@ impl MainWindowView {
             }
         };
         let route_key = route_enter_animation_key(route);
-        // 保持原有 18px + apple spring 的页面切换手感，但最终布局始终停在目标位置。
-        // 每帧只更新 Nova scene translation，不再通过 `.left()` 触发整页 layout。
-        let animated_page = div().size_full().child(page).with_animation(
-            route_key,
-            spring_motion(apple_spring(0.36, 0.74)).with_property(
-                AnimationProperty::translation(
-                    point(px(18.0 * transition_direction), px(0.0)),
-                    Point::default(),
+        // 页面级切换必须由一个 presentation owner 驱动。先把完整 page subtree 捕获为 retained
+        // zero-filter composite，再只移动最终 composite record，确保文字、图片、SVG/path、underline
+        // 使用同一 spring sample；Nova 在 retained static 复用时会跳过 source/filter 重做。
+        let animated_page = div()
+            .size_full()
+            .child(page)
+            .composite_layer()
+            .with_animation(
+                route_key,
+                spring_motion(apple_spring(0.36, 0.74)).with_property(
+                    AnimationProperty::translation(
+                        point(px(18.0 * transition_direction), px(0.0)),
+                        Point::default(),
+                    ),
                 ),
-            ),
-            |page, _progress| page,
-        );
+                |page, _progress| page,
+            );
         div()
             .absolute()
             .inset_0()
