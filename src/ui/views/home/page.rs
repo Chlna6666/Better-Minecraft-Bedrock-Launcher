@@ -2,9 +2,7 @@ use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_vers
 use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
-use crate::ui::animation::{
-    SpringValue, apple_spring, ease_out_back, spring_bouncy, spring_snappy,
-};
+use crate::ui::animation::{SpringValue, ease_out_back, spring_bouncy, spring_snappy};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::hooks::use_launcher::{LaunchVersionDescriptor, start_launcher};
 use crate::ui::hooks::use_local_versions::{
@@ -20,7 +18,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_hooks::{hook_element, hook_render};
 use std::cell::{Cell, RefCell};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const TITLEBAR_TOP_OFFSET_PX: f32 = 0.0;
 const TITLEBAR_HEIGHT_PX: f32 = 60.0;
@@ -59,7 +57,6 @@ fn kind_label(i18n: &I18n, kind: &str) -> SharedString {
 
 #[hook_element]
 pub(crate) struct HomePageView {
-    created_at: Instant,
     versions_started: bool,
     versions_loading: bool,
     versions_error: Option<SharedString>,
@@ -73,9 +70,6 @@ pub(crate) struct HomePageView {
     dropdown_spring: SpringValue,
     dropdown_animating: bool,
     active: bool,
-    active_at: Option<Instant>,
-    /// 启动区入场弹簧。
-    entrance: SpringValue,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -141,7 +135,6 @@ impl HomePageView {
         ];
 
         let mut this = Self {
-            created_at: Instant::now(),
             versions_started,
             versions_loading,
             versions_error,
@@ -154,8 +147,6 @@ impl HomePageView {
             dropdown_spring: SpringValue::new(0.0).with_spring(spring_bouncy()),
             dropdown_animating: false,
             active: false,
-            active_at: None,
-            entrance: SpringValue::new(1.0).with_spring(apple_spring(0.55, 0.72)),
             _subscriptions: subscriptions,
             __gpui_hooks: RefCell::new(Vec::new()),
             __gpui_hook_index: Cell::new(0),
@@ -181,14 +172,9 @@ impl HomePageView {
             self.dropdown_open = false;
             self.dropdown_spring.snap_to(0.0);
             self.dropdown_animating = false;
-            self.active_at = None;
             return;
         }
 
-        let now = Instant::now();
-        self.active_at = Some(now);
-        self.entrance.snap_to(0.0);
-        self.entrance.retarget(1.0, now);
         self.ensure_versions_loaded(false, cx);
         cx.notify();
     }
@@ -489,7 +475,6 @@ impl HomePageView {
         launch_sub: SharedString,
         selected_version: Option<LaunchVersionDescriptor>,
         loading: bool,
-        now: Instant,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
@@ -528,19 +513,26 @@ impl HomePageView {
                     ),
             )
             .child({
-                let icon = if loading {
-                    let angle = now.saturating_duration_since(self.created_at).as_secs_f32()
-                        * 2.0
-                        * std::f32::consts::PI
-                        * 1.0;
+                let icon: AnyElement = if loading {
                     icon_path(lucide_gpui::icon!(loader_circle))
                         .size(px(40.0))
                         .text_color(rgb(0xffffff))
-                        .with_transformation(Transformation::rotate(radians(angle)))
+                        .with_animation(
+                            "home-launch-loading-spinner",
+                            Animation::new(Duration::from_secs(1))
+                                .repeat()
+                                .with_property(AnimationProperty::rotation(
+                                    radians(0.0),
+                                    radians(std::f32::consts::TAU),
+                                )),
+                            |icon, _progress| icon,
+                        )
+                        .into_any_element()
                 } else {
                     icon_path(lucide_gpui::icon!(play))
                         .size(px(48.0))
                         .text_color(rgb(0xffffff))
+                        .into_any_element()
                 };
                 let opacity = if loading { 0.20 } else { 0.10 };
                 div()
@@ -635,7 +627,6 @@ impl HomePageView {
         layout: InjectionLayout,
         theme_colors: &crate::ui::theme::colors::ThemeColors,
         theme_dark: bool,
-        entrance_eased: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -679,9 +670,6 @@ impl HomePageView {
             side_margin_px
         };
 
-        let left_offset_px = -40.0 * (1.0 - entrance_eased);
-        let panel_left = left_px + left_offset_px;
-
         let mut panel_bg = theme_colors.settings_panel_bg;
         panel_bg.a = if theme_dark { 0.70 } else { 0.76 };
         let mut panel_border = theme_colors.border;
@@ -690,11 +678,10 @@ impl HomePageView {
         let mut panel = div()
             .id("home-plugin-sidebar")
             .absolute()
-            .left(px(panel_left))
+            .left(px(left_px))
             .top(px(top_px))
             .w(px(width_px))
             .max_h(px(max_height_px))
-            .opacity(entrance_eased.clamp(0.0, 1.0))
             .flex()
             .flex_col()
             .gap(px(8.0))
@@ -784,10 +771,6 @@ impl Render for HomePageView {
         let dropdown_visible = self.dropdown_open || self.dropdown_animating;
         let i18n = cx.global::<I18n>();
 
-        let entrance_sample = self.entrance.sample(now);
-        let entrance_animating = !entrance_sample.done;
-        let entrance_eased = entrance_sample.value;
-
         let initial_versions_loading = self.versions_loading && self.versions.is_empty();
         let is_empty = self.versions.is_empty() && !initial_versions_loading;
         let selected_version = self.selected_folder.as_ref().and_then(|folder| {
@@ -859,8 +842,7 @@ impl Render for HomePageView {
         let mut launcher_root = div()
             .absolute()
             .right(px(40.0))
-            .bottom(px(40.0 - 20.0 * (1.0 - entrance_eased)))
-            .opacity(entrance_eased.clamp(0.0, 1.0))
+            .bottom(px(40.0))
             .w(px(launcher_width_px))
             .flex()
             .flex_col()
@@ -899,18 +881,6 @@ impl Render for HomePageView {
             );
         }
 
-        let loading_pulse = if initial_versions_loading {
-            let pulse_progress = (now
-                .duration_since(self.active_at.unwrap_or(now))
-                .as_secs_f32()
-                * std::f32::consts::PI
-                * 1.5)
-                .sin();
-            0.6 + 0.4 * (pulse_progress * 0.5 + 0.5)
-        } else {
-            1.0
-        };
-
         let launch_bar = div()
             .w_full()
             .h(px(72.0))
@@ -921,7 +891,6 @@ impl Render for HomePageView {
                 linear_color_stop(launch_bg, 0.0),
                 linear_color_stop(theme_colors.accent_hover, 1.0),
             ))
-            .opacity(loading_pulse)
             .child(div().absolute().inset_0())
             .shadow(vec![
                 BoxShadow {
@@ -953,7 +922,6 @@ impl Render for HomePageView {
                         launch_sub.clone(),
                         selected_launch_version,
                         initial_versions_loading,
-                        now,
                         cx,
                     ))
                     .child(div().w(px(1.0)).h_full().bg(divider))
@@ -962,6 +930,22 @@ impl Render for HomePageView {
                             .with_layout_animation_target(self.dropdown_animating),
                     ),
             );
+        let launch_bar: AnyElement = if initial_versions_loading {
+            launch_bar
+                .with_animation(
+                    "home-launch-loading-pulse",
+                    Animation::new(Duration::from_secs_f32(4.0 / 3.0))
+                        .repeat()
+                        .with_easing(|t| {
+                            (0.5 + 0.5 * (std::f32::consts::TAU * t).sin()).clamp(0.0, 1.0)
+                        })
+                        .with_property(AnimationProperty::opacity(0.6, 1.0)),
+                    |bar, _progress| bar,
+                )
+                .into_any_element()
+        } else {
+            launch_bar.into_any_element()
+        };
 
         if !is_empty && dropdown_visible {
             launcher_root = launcher_root.child(
@@ -980,29 +964,21 @@ impl Render for HomePageView {
         }
 
         launcher_root = launcher_root.child(launch_bar);
-        let launcher_animating = entrance_animating || initial_versions_loading;
 
-        let mut overlay = div()
-            .absolute()
-            .inset_0()
-            .child(launcher_root.with_layout_animation_target(launcher_animating));
+        let mut overlay = div().absolute().inset_0().child(launcher_root);
         let sidebar_registrations = crate::plugins::runtime::injection_registrations(
             cx,
             InjectionSlot::HomeSidebar,
             Some("/"),
         );
         if !sidebar_registrations.is_empty() {
-            overlay = overlay.child(
-                self.render_home_sidebar(
-                    merged_home_sidebar_layout(&sidebar_registrations),
-                    &theme_colors,
-                    theme_dark,
-                    entrance_eased,
-                    window,
-                    cx,
-                )
-                .with_layout_animation_target(entrance_animating),
-            );
+            overlay = overlay.child(self.render_home_sidebar(
+                merged_home_sidebar_layout(&sidebar_registrations),
+                &theme_colors,
+                theme_dark,
+                window,
+                cx,
+            ));
         }
 
         overlay.into_any_element()
