@@ -165,9 +165,6 @@ fn responsive_retarget_velocity(current_velocity: f32, delta: f32) -> f32 {
     if !current_velocity.is_finite() || !delta.is_finite() || delta.abs() <= f32::EPSILON {
         return 0.0;
     }
-    if current_velocity * delta <= 0.0 {
-        return 0.0;
-    }
 
     let max_velocity = delta.abs() * MAX_RETARGET_NORMALIZED_VELOCITY;
     current_velocity.clamp(-max_velocity, max_velocity)
@@ -372,9 +369,9 @@ mod tests {
     }
 
     #[test]
-    fn retarget_velocity_drops_old_direction_and_caps_short_distance_momentum() {
-        assert_eq!(responsive_retarget_velocity(4.0, -0.5), 0.0);
-        assert_eq!(responsive_retarget_velocity(-4.0, 0.5), 0.0);
+    fn retarget_velocity_preserves_physical_velocity_and_caps_short_distance_momentum() {
+        assert_eq!(responsive_retarget_velocity(4.0, -0.5), 4.0);
+        assert_eq!(responsive_retarget_velocity(-4.0, 0.5), -4.0);
 
         let capped = responsive_retarget_velocity(100.0, 0.25);
         assert!((capped - 3.0).abs() < f32::EPSILON);
