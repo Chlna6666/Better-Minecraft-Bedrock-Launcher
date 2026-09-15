@@ -2,6 +2,18 @@ use super::*;
 
 pub(super) fn list(state: &RenderState, colors: &ThemeColors) -> AnyElement {
     let count = state.snapshot.accounts.len().to_string();
+    let rows = div()
+        .max_h(px(184.))
+        .overflow_y_scrollbar()
+        .p(px(4.))
+        .rounded(px(12.))
+        .bg(colors.text_primary.opacity(0.035))
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .children(state.rows.iter().map(|row| account(row, state, colors)))
+        .with_layout_animation_target(state.rows_animating);
+
     div()
         .mt(px(16.))
         .flex()
@@ -16,18 +28,7 @@ pub(super) fn list(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 .child(t!("Auth.saved_accounts"))
                 .child(t!("Auth.account_count", count = &count)),
         )
-        .child(
-            div()
-                .max_h(px(184.))
-                .overflow_y_scrollbar()
-                .p(px(4.))
-                .rounded(px(12.))
-                .bg(colors.text_primary.opacity(0.035))
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .children(state.rows.iter().map(|row| account(row, state, colors))),
-        )
+        .child(rows)
         .when(state.pending_delete.is_some(), |list| {
             list.child(
                 div()
@@ -36,7 +37,6 @@ pub(super) fn list(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                     .child(t!("Auth.remove_account_hint")),
             )
         })
-        .with_layout_animation_target(state.rows_animating)
         .into_any_element()
 }
 
