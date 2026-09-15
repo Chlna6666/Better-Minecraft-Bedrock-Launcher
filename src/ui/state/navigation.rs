@@ -79,7 +79,16 @@ impl NavState {
     }
 
     pub fn is_animating(&self, now: Instant) -> bool {
-        self.pill_fast.is_animating(now) || self.pill_slow.is_animating(now)
+        let fast = self.pill_fast.sample(now);
+        let slow = self.pill_slow.sample(now);
+        let target = self.pill_to_index as f32;
+        if (fast.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
+            && (slow.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
+        {
+            return false;
+        }
+
+        !fast.done || !slow.done
     }
 
     /// 胶囊左右边缘位置（以 tab 序号为单位，允许轻微过冲产生 Q 弹）。
@@ -159,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn pill_edges_snap_subpixel_tail_motion_to_target() {
+    fn pill_edges_snap_subpixel_tail_motion_and_stop_cadence() {
         let now = Instant::now();
         let mut nav = NavState::default();
         nav.start_pill_animation(4, now);
@@ -177,7 +186,7 @@ mod tests {
             .expect("弹簧应在完成前进入亚像素收敛区间");
 
         assert_eq!(nav.pill_edges(settling_time), (4.0, 4.0));
-        assert!(nav.is_animating(settling_time));
+        assert!(!nav.is_animating(settling_time));
     }
 
     #[test]
