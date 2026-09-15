@@ -406,11 +406,13 @@ impl HomePageView {
                     .flex_col()
                     .gap(px(2.0))
                     .child(
-                        div()
-                            .text_size(px(15.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme_colors.text_primary)
-                            .child(SharedString::from(version.folder.clone())),
+                        div().flex().items_center().child(
+                            div()
+                                .text_size(px(15.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme_colors.text_primary)
+                                .child(SharedString::from(version.folder.clone())),
+                        ),
                     )
                     .child(
                         div()
@@ -925,10 +927,7 @@ impl Render for HomePageView {
                         cx,
                     ))
                     .child(div().w(px(1.0)).h_full().bg(divider))
-                    .child(
-                        self.render_launch_secondary(is_empty, dropdown_factor, cx)
-                            .with_layout_animation_target(self.dropdown_animating),
-                    ),
+                    .child(self.render_launch_secondary(is_empty, dropdown_factor, cx)),
             );
         let launch_bar: AnyElement = if initial_versions_loading {
             launch_bar
