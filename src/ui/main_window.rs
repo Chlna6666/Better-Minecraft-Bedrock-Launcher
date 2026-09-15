@@ -452,14 +452,17 @@ impl MainWindowView {
             }
         };
         let route_key = route_enter_animation_key(route);
-        // 整页含文字、路径和嵌套裁剪，不能经过 offscreen composite 做分数像素平移。
+        // 保持原有 18px + apple spring 的页面切换手感，但最终布局始终停在目标位置。
+        // 每帧只更新 Nova scene translation，不再通过 `.left()` 触发整页 layout。
         let animated_page = div().size_full().child(page).with_animation(
             route_key,
-            spring_motion(apple_spring(0.36, 0.74)),
-            move |page, progress| {
-                page.relative()
-                    .left(px(18.0 * transition_direction * (1.0 - progress)))
-            },
+            spring_motion(apple_spring(0.36, 0.74)).with_property(
+                AnimationProperty::translation(
+                    point(px(18.0 * transition_direction), px(0.0)),
+                    Point::default(),
+                ),
+            ),
+            |page, _progress| page,
         );
         div()
             .absolute()
