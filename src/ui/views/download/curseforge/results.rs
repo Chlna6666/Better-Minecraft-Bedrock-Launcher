@@ -68,6 +68,7 @@ impl CurseForgeResultsListView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let previous_signature = self.last_image_prefetch_signature;
         let (signature, urls) = cx.read_global(|state: &DownloadPageState, _cx| {
             let mod_count = state.curseforge_mods.len();
             let plan = crate::ui::components::virtual_list::compute_virtual_list_plan(
@@ -100,7 +101,7 @@ impl CurseForgeResultsListView {
                 && !state.curseforge_disable_result_logos
                 && should_render_curseforge_result_images()
                 && should_mount_curseforge_result_images();
-            let urls = if enabled {
+            let urls = if enabled && signature != previous_signature {
                 state
                     .curseforge_mods
                     .iter()
@@ -114,7 +115,7 @@ impl CurseForgeResultsListView {
             (signature, urls)
         });
 
-        if self.last_image_prefetch_signature == signature {
+        if previous_signature == signature {
             return;
         }
         self.last_image_prefetch_signature = signature;
@@ -124,7 +125,7 @@ impl CurseForgeResultsListView {
 
         self.result_logo_cache.update(cx, |cache, cx| {
             for url in urls {
-                let source = AssetLocation::Uri(url.to_string().into());
+                let source = AssetLocation::Uri(url.into());
                 let _ = cache.load(&source, window, cx);
             }
         });
@@ -166,6 +167,10 @@ impl CurseForgeResultsListView {
                 if current_tab != this.last_observed_tab {
                     this.last_observed_tab = current_tab;
                     if current_tab == DownloadTab::ResourcePack {
+                        // A render while another tab is active may record the same viewport
+                        // signature with prefetch disabled. Force one fresh pass when returning.
+                        this.last_image_prefetch_signature =
+                            (u64::MAX, usize::MAX, usize::MAX, 0, true, true, true, 0);
                         this.sync_result_images(cx);
                         cx.notify();
                     }
