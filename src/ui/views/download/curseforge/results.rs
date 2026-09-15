@@ -1,18 +1,14 @@
 use super::*;
 use crate::ui::animation::repeating_linear_motion;
-use gpui::{BoundedImageCache, BoundedImageCacheConfig, Task};
-use std::collections::HashSet;
+use gpui::{AssetLocation, BoundedImageCache, BoundedImageCacheConfig};
 
 pub(super) const RESULT_LOGO_BYTES_PER_ITEM: usize = 384 * 1024;
+const RESULT_LOGO_PREFETCH_LOOKAHEAD: usize = 2;
 
 pub(crate) struct CurseForgeResultsListView {
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) cached_page_card_props: Vec<CurseForgeResultCardProps>,
     pub(crate) result_logo_cache: Entity<BoundedImageCache>,
-    pub(crate) result_image_prefetch_task: Option<Task<anyhow::Result<()>>>,
-    pub(crate) result_image_notify_task: Option<Task<anyhow::Result<()>>>,
-    pub(crate) result_logo_reveal_task: Option<Task<anyhow::Result<()>>>,
-    pub(crate) visible_revealed_logo_urls: HashSet<SharedString>,
     pub(crate) last_observed_tab: DownloadTab,
     pub(crate) last_observed_view_epoch: u64,
     pub(crate) last_observed_page_index: usize,
@@ -20,7 +16,6 @@ pub(crate) struct CurseForgeResultsListView {
     pub(crate) last_observed_results_loading: bool,
     pub(crate) last_observed_visible_slice_start: usize,
     pub(crate) last_observed_visible_slice_len: usize,
-    pub(crate) last_observed_result_image_change_seq: u64,
     pub(crate) last_prepared_results_signature: (u64, usize, usize, usize, usize),
     pub(crate) last_image_work_signature: (u64, usize, usize, usize, bool, bool, bool, usize),
     pub(crate) last_image_prefetch_signature: (u64, usize, usize, usize, bool, bool, bool, usize),
@@ -29,10 +24,6 @@ pub(crate) struct CurseForgeResultsListView {
 impl CurseForgeResultsListView {
     fn release_cached_result_cards(&mut self) {
         self.cached_page_card_props.clear();
-        self.result_image_prefetch_task.take();
-        self.result_image_notify_task.take();
-        self.result_logo_reveal_task.take();
-        self.visible_revealed_logo_urls.clear();
         self.last_observed_page_index = usize::MAX;
         self.last_observed_mod_count = 0;
         self.last_observed_results_loading = false;
@@ -44,14 +35,7 @@ impl CurseForgeResultsListView {
             (u64::MAX, usize::MAX, usize::MAX, 0, true, true, true, 0);
     }
 
-    pub(crate) fn sync_visible_result_logo_reveal(&mut self, cx: &mut Context<Self>) {
-        let had_visible_reveals = !self.visible_revealed_logo_urls.is_empty();
-        self.result_logo_reveal_task.take();
-        self.visible_revealed_logo_urls.clear();
-        if had_visible_reveals {
-            cx.notify();
-        }
-    }
+    pub(crate) fn sync_visible_result_logo_reveal(&mut self, _cx: &mut Context<Self>) {}
 
     pub(crate) fn sync_result_images(&mut self, cx: &mut Context<Self>) {
         let image_work_signature = cx.read_global(|state: &DownloadPageState, _cx| {
@@ -72,13 +56,78 @@ impl CurseForgeResultsListView {
         }
 
         self.last_image_work_signature = image_work_signature;
-        self.result_image_prefetch_task.take();
-        self.last_image_prefetch_signature = image_work_signature;
+        // A new result generation/page/loading state invalidates the old viewport prefetch window.
+        // BoundedImageCache owns the actual loading tasks, so there is no second task graph to
+        // cancel here; the next render computes the new heavy slice and reuses matching entries.
+        self.last_image_prefetch_signature =
+            (u64::MAX, usize::MAX, usize::MAX, 0, true, true, true, 0);
     }
 
-    fn schedule_image_refresh_notify(&mut self, cx: &mut Context<Self>) {
-        self.result_image_notify_task.take();
-        cx.notify();
+    fn prefetch_visible_result_logos(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (signature, urls) = cx.read_global(|state: &DownloadPageState, _cx| {
+            let mod_count = state.curseforge_mods.len();
+            let plan = crate::ui::components::virtual_list::compute_virtual_list_plan(
+                mod_count,
+                CURSEFORGE_RESULT_CARD_PITCH_PX,
+                state.curseforge_results_scroll.offset().y,
+                state.curseforge_results_scroll.bounds().size.height,
+                CURSEFORGE_RESULT_CARD_OVERSCAN,
+                CURSEFORGE_RESULT_LOGO_RENDER_BUDGET,
+            );
+            let start = plan.heavy_slice.start_index.min(mod_count);
+            let len = plan
+                .heavy_slice
+                .len()
+                .saturating_add(RESULT_LOGO_PREFETCH_LOOKAHEAD)
+                .min(mod_count.saturating_sub(start));
+            let signature = (
+                state.curseforge_results_epoch,
+                state.curseforge_page_index,
+                start,
+                len,
+                state.curseforge_results_loading,
+                state.curseforge_pending_page_index.is_some(),
+                state.curseforge_disable_result_logos,
+                mod_count,
+            );
+            let enabled = state.tab == DownloadTab::ResourcePack
+                && !state.curseforge_results_loading
+                && state.curseforge_pending_page_index.is_none()
+                && !state.curseforge_disable_result_logos
+                && should_render_curseforge_result_images()
+                && should_mount_curseforge_result_images();
+            let urls = if enabled {
+                state
+                    .curseforge_mods
+                    .iter()
+                    .skip(start)
+                    .take(len)
+                    .filter_map(|entry| entry.logo_url.clone())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            (signature, urls)
+        });
+
+        if self.last_image_prefetch_signature == signature {
+            return;
+        }
+        self.last_image_prefetch_signature = signature;
+        if urls.is_empty() {
+            return;
+        }
+
+        self.result_logo_cache.update(cx, |cache, cx| {
+            for url in urls {
+                let source = AssetLocation::Uri(url.to_string().into());
+                let _ = cache.load(&source, window, cx);
+            }
+        });
     }
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
@@ -101,7 +150,6 @@ impl CurseForgeResultsListView {
                 state.curseforge_mods.len(),
             )
         });
-        let last_observed_result_image_change_seq = 0;
 
         let subscriptions = vec![
             cx.observe_global::<DownloadPageState>(|this, cx| {
@@ -192,10 +240,6 @@ impl CurseForgeResultsListView {
             _subscriptions: subscriptions,
             cached_page_card_props: Vec::new(),
             result_logo_cache: BoundedImageCache::new(BoundedImageCacheConfig::default(), cx),
-            result_image_prefetch_task: None,
-            result_image_notify_task: None,
-            result_logo_reveal_task: None,
-            visible_revealed_logo_urls: HashSet::new(),
             last_observed_tab,
             last_observed_view_epoch,
             last_observed_page_index,
@@ -203,7 +247,6 @@ impl CurseForgeResultsListView {
             last_observed_results_loading,
             last_observed_visible_slice_start,
             last_observed_visible_slice_len,
-            last_observed_result_image_change_seq,
             last_prepared_results_signature: (u64::MAX, usize::MAX, 0, usize::MAX, 0),
             last_image_work_signature: (u64::MAX, usize::MAX, usize::MAX, 0, true, true, true, 0),
             last_image_prefetch_signature: (
@@ -233,6 +276,7 @@ impl Render for CurseForgeResultsListView {
             theme.factor(now),
             theme.accent,
         );
+        self.prefetch_visible_result_logos(window, cx);
         render_curseforge_results_list(self, &colors, window, cx)
     }
 }
