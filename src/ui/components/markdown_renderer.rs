@@ -31,6 +31,81 @@ pub enum MarkdownBlock {
     Rule,
 }
 
+#[derive(Debug, Clone)]
+pub enum MarkdownItem {
+    Heading {
+        level: u8,
+        spans: Vec<InlineSpan>,
+    },
+    Paragraph {
+        spans: Vec<InlineSpan>,
+    },
+    ListItem {
+        marker: String,
+        spans: Vec<InlineSpan>,
+    },
+    CodeBlock {
+        language: Option<String>,
+        code: String,
+    },
+    Quote {
+        spans: Vec<InlineSpan>,
+    },
+    Rule,
+}
+
+impl MarkdownDocument {
+    pub fn linearize(&self) -> Vec<MarkdownItem> {
+        let mut items = Vec::with_capacity(self.blocks.len() * 2);
+        for block in &self.blocks {
+            match block {
+                MarkdownBlock::Heading { level, spans } => {
+                    items.push(MarkdownItem::Heading {
+                        level: *level,
+                        spans: spans.clone(),
+                    });
+                }
+                MarkdownBlock::Paragraph { spans } => {
+                    items.push(MarkdownItem::Paragraph {
+                        spans: spans.clone(),
+                    });
+                }
+                MarkdownBlock::List {
+                    ordered,
+                    items: list_items,
+                } => {
+                    for (index, item_spans) in list_items.iter().enumerate() {
+                        let marker = if *ordered {
+                            format!("{}.", index + 1)
+                        } else {
+                            "•".to_string()
+                        };
+                        items.push(MarkdownItem::ListItem {
+                            marker,
+                            spans: item_spans.clone(),
+                        });
+                    }
+                }
+                MarkdownBlock::CodeBlock { language, code } => {
+                    items.push(MarkdownItem::CodeBlock {
+                        language: language.clone(),
+                        code: code.clone(),
+                    });
+                }
+                MarkdownBlock::Quote { spans } => {
+                    items.push(MarkdownItem::Quote {
+                        spans: spans.clone(),
+                    });
+                }
+                MarkdownBlock::Rule => {
+                    items.push(MarkdownItem::Rule);
+                }
+            }
+        }
+        items
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineSpan {
     pub text: String,
@@ -343,6 +418,111 @@ fn flush_unclosed_state(state: &mut ParseState, blocks: &mut Vec<MarkdownBlock>)
         let language = state.code_block_language.take();
         let code = std::mem::take(&mut state.code_block_content);
         blocks.push(MarkdownBlock::CodeBlock { language, code });
+    }
+}
+
+pub fn render_markdown_item(
+    item: &MarkdownItem,
+    colors: &ThemeColors,
+    is_dark: bool,
+) -> AnyElement {
+    match item {
+        MarkdownItem::Heading { level, spans } => {
+            let (font_size, line_height, padding_bottom, with_divider) = match *level {
+                1 => (px(20.), px(28.), px(8.), true),
+                2 => (px(17.), px(25.), px(6.), true),
+                _ => (px(15.), px(22.), px(0.), false),
+            };
+
+            div()
+                .w_full()
+                .pt(px(4.))
+                .pb(padding_bottom)
+                .when(with_divider, |this| {
+                    this.border_b_1().border_color(colors.border)
+                })
+                .child(render_inline_styled_text(
+                    spans,
+                    colors,
+                    font_size,
+                    line_height,
+                    true,
+                    is_dark,
+                    true,
+                ))
+                .into_any_element()
+        }
+        MarkdownItem::Paragraph { spans } => div()
+            .w_full()
+            .py(px(2.))
+            .child(render_inline_styled_text(
+                spans,
+                colors,
+                px(13.5),
+                px(21.),
+                false,
+                is_dark,
+                true,
+            ))
+            .into_any_element(),
+        MarkdownItem::ListItem { marker, spans } => div()
+            .w_full()
+            .py(px(2.))
+            .flex()
+            .items_start()
+            .gap(px(8.))
+            .child(
+                div()
+                    .w(px(16.))
+                    .flex_shrink_0()
+                    .text_size(px(13.5))
+                    .line_height(px(21.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(colors.accent)
+                    .child(marker.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(render_inline_styled_text(
+                        spans,
+                        colors,
+                        px(13.5),
+                        px(21.),
+                        false,
+                        is_dark,
+                        true,
+                    )),
+            )
+            .into_any_element(),
+        MarkdownItem::CodeBlock { language, code } => div()
+            .w_full()
+            .py(px(4.))
+            .child(render_code_block(language.as_deref(), code, colors, is_dark))
+            .into_any_element(),
+        MarkdownItem::Quote { spans } => div()
+            .w_full()
+            .py(px(2.))
+            .pl(px(10.))
+            .border_l_2()
+            .border_color(colors.accent.opacity(0.5))
+            .child(render_inline_styled_text(
+                spans,
+                colors,
+                px(13.5),
+                px(21.),
+                false,
+                is_dark,
+                true,
+            ))
+            .into_any_element(),
+        MarkdownItem::Rule => div()
+            .h(px(1.))
+            .my(px(4.))
+            .w_full()
+            .bg(colors.border)
+            .into_any_element(),
     }
 }
 
