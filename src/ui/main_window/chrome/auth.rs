@@ -376,7 +376,8 @@ pub(super) fn panel(
                     .child(message.clone()),
             )
         })
-        .with_sampled_animation(
+        .with_stable_sampled_animation(
+            "xbox-auth-panel-motion",
             AnimationProperty::scale_opacity(
                 motion::POPOVER_SCALE,
                 1.0,
@@ -385,7 +386,7 @@ pub(super) fn panel(
                 TransformOrigin::new(origin, 0.0),
             ),
             progress,
+            state.dialog_animating,
         )
-        .with_layout_animation_target(state.dialog_animating)
         .into_any_element()
 }
