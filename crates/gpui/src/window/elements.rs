@@ -15,9 +15,13 @@ impl Window {
                 async move |cx| {
                     task.await;
 
-                    cx.on_next_frame(move |_, cx| {
+                    // Asset completion must itself wake the owning view. Deferring this through
+                    // `on_next_frame` can deadlock an otherwise idle window: there is no next frame
+                    // until unrelated input (often a mouse move) happens to request one.
+                    cx.update(move |_, cx| {
                         cx.notify(entity_id);
-                    });
+                    })
+                    .ok();
                 }
             })
             .detach();
