@@ -1,15 +1,12 @@
-use gpui::Timer;
+use futures::channel::oneshot;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub(super) const MAP_QUERY_CONCURRENCY: usize = 2;
-pub(super) const MAP_QUERY_RETRY_INTERVAL: Duration = Duration::from_millis(8);
 const MAP_QUERY_MEMORY_CACHE_CAPACITY: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -92,9 +89,15 @@ impl MemoryCache {
     }
 }
 
+#[derive(Default)]
+struct MapQueryGate {
+    active: usize,
+    waiters: VecDeque<oneshot::Sender<()>>,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct MapQueryCoordinator {
-    active: Arc<AtomicUsize>,
+    gate: Arc<Mutex<MapQueryGate>>,
     generations: Arc<Mutex<FxHashMap<MapQueryKind, u64>>>,
     cache: Arc<Mutex<MemoryCache>>,
 }
@@ -102,21 +105,40 @@ pub(super) struct MapQueryCoordinator {
 impl MapQueryCoordinator {
     pub(super) async fn acquire(&self) -> MapQueryPermit {
         loop {
-            if let Some(permit) = self.try_acquire() {
-                return permit;
-            }
-            Timer::after(MAP_QUERY_RETRY_INTERVAL).await;
+            let receiver = {
+                let mut gate = self
+                    .gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if gate.active < MAP_QUERY_CONCURRENCY.max(1) {
+                    gate.active = gate.active.saturating_add(1);
+                    return MapQueryPermit {
+                        gate: Arc::clone(&self.gate),
+                    };
+                }
+
+                let (sender, receiver) = oneshot::channel();
+                gate.waiters.push_back(sender);
+                receiver
+            };
+
+            // Releases wake the current waiter set. A cancelled waiter simply drops its receiver;
+            // the remaining waiters are woken by the same release and re-contend for the slot.
+            let _ = receiver.await;
         }
     }
 
     pub(super) fn try_acquire(&self) -> Option<MapQueryPermit> {
-        self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < MAP_QUERY_CONCURRENCY.max(1)).then_some(active.saturating_add(1))
-            })
-            .ok()?;
+        let mut gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if gate.active >= MAP_QUERY_CONCURRENCY.max(1) {
+            return None;
+        }
+        gate.active = gate.active.saturating_add(1);
         Some(MapQueryPermit {
-            active: Arc::clone(&self.active),
+            gate: Arc::clone(&self.gate),
         })
     }
 
@@ -154,19 +176,36 @@ impl MapQueryCoordinator {
     }
 
     pub(super) fn active(&self) -> usize {
-        self.active.load(Ordering::Acquire)
+        self.gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
     }
 }
 
 pub(super) type MapQueryBudget = MapQueryCoordinator;
 
 pub(super) struct MapQueryPermit {
-    active: Arc<AtomicUsize>,
+    gate: Arc<Mutex<MapQueryGate>>,
 }
 
 impl Drop for MapQueryPermit {
     fn drop(&mut self) {
-        self.active.fetch_sub(1, Ordering::AcqRel);
+        let waiters = {
+            let mut gate = self
+                .gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            gate.active = gate.active.saturating_sub(1);
+            std::mem::take(&mut gate.waiters)
+        };
+
+        // Wake the complete current waiter set so cancellation cannot consume the only wakeup and
+        // strand a free permit. Only the first contenders up to the concurrency limit can acquire;
+        // the rest atomically re-register themselves without polling.
+        for waiter in waiters {
+            let _ = waiter.send(());
+        }
     }
 }
 
@@ -174,4 +213,28 @@ fn world_identity(path: &Path) -> u64 {
     let mut hasher = FxHasher::default();
     path.to_string_lossy().hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_budget_enforces_concurrency_and_releases_slots() {
+        let budget = MapQueryCoordinator::default();
+        let first = budget.try_acquire().expect("first permit");
+        let second = budget.try_acquire().expect("second permit");
+
+        assert_eq!(budget.active(), MAP_QUERY_CONCURRENCY);
+        assert!(budget.try_acquire().is_none());
+
+        drop(first);
+        assert_eq!(budget.active(), MAP_QUERY_CONCURRENCY - 1);
+        let replacement = budget.try_acquire().expect("replacement permit");
+        assert_eq!(budget.active(), MAP_QUERY_CONCURRENCY);
+
+        drop(replacement);
+        drop(second);
+        assert_eq!(budget.active(), 0);
+    }
 }
