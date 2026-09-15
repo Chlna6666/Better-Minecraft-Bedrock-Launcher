@@ -323,6 +323,17 @@ impl Element for AnyView {
                     let cache_fingerprint = self.cache_fingerprint();
                     let view_dirty = window.dirty_views.contains(&self.entity_id());
                     let force_refresh = window.force_view_cache_refresh();
+                    let targeted_replay = window.retained_replay_is_targeted();
+                    // Progressive reuse is appropriate for ordinary/background dirty work, but an
+                    // exact retained target is an interactive sample that must reach the current
+                    // frame. Replaying the previous dirty view here creates a visible plateau while
+                    // animation time keeps advancing, followed by a large position/opacity jump on
+                    // the next frame that is allowed to rebuild.
+                    let can_defer_dirty_view = view_dirty
+                        && self.progressive
+                        && !self.critical
+                        && !targeted_replay
+                        && window.draw_budget_exhausted();
                     // Critical surfaces must honor a forced refresh. Those refreshes are also used
                     // as resource/composition recovery barriers, so replaying a critical subtree can
                     // otherwise carry stale atlas or offscreen-target references into the new frame.
@@ -330,10 +341,6 @@ impl Element for AnyView {
                         && !self.critical
                         && force_refresh
                         && !view_dirty;
-                    let can_defer_dirty_view = view_dirty
-                        && self.progressive
-                        && !self.critical
-                        && window.draw_budget_exhausted();
                     let can_reuse_prepaint = element_state
                         .as_ref()
                         .is_some_and(|state| window.can_reuse_prepaint(&state.prepaint_range));
