@@ -296,9 +296,11 @@ impl Animation {
     /// The animator callback is evaluated only for the initial scene, so it must
     /// not animate additional properties. Leave such combined animations on the
     /// layout path, or declare only the property owned by the renderer. Custom
-    /// easing closures also stay on the layout path because they have no stable
-    /// identity across renders. Opacity, scale and translation bind directly to
-    /// supported primitives; wrap a mixed subtree in
+    /// easing closures are sampled by the CPU animation engine with the paint
+    /// driver while the retained scene still owns the visual property; only an
+    /// explicit layout driver forces a declared visual property back through
+    /// layout. Opacity, scale and translation bind directly to supported
+    /// primitives; wrap a mixed subtree in
     /// [`crate::CompositeLayerExt::composite_layer`] when it can contain paths,
     /// underlines or platform surfaces.
     pub fn with_property(mut self, property: AnimationProperty) -> Self {
@@ -308,9 +310,7 @@ impl Animation {
 
     fn scene_animation(&self) -> Option<(AnimationProperty, &AnimationSpec)> {
         let property = self.property?;
-        (!matches!(self.spec.driver, AnimationDriver::Layout)
-            && !matches!(&self.spec.easing, crate::Easing::Custom(_)))
-        .then_some((property, &self.spec))
+        (!matches!(self.spec.driver, AnimationDriver::Layout)).then_some((property, &self.spec))
     }
 }
 
@@ -1150,12 +1150,14 @@ mod tests {
     }
 
     #[test]
-    fn custom_easing_keeps_legacy_animation_path() {
+    fn custom_easing_with_visual_property_uses_scene_animation_path() {
         let animation = Animation::new(Duration::from_millis(100))
             .with_easing(|progress| progress * progress)
             .with_property(AnimationProperty::opacity(0.0, 1.0));
 
-        assert!(animation.scene_animation().is_none());
+        let (property, spec) = animation.scene_animation().expect("scene animation");
+        assert_eq!(property.property, TransitionProperty::Opacity);
+        assert!(matches!(spec.easing, crate::Easing::Custom(_)));
     }
 
     #[test]
