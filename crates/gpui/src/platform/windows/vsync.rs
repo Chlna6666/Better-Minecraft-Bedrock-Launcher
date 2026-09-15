@@ -167,17 +167,24 @@ fn process_owns_foreground_window() -> bool {
 fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) {
     let started_at = Instant::now();
     // SAFETY: DwmFlush has no pointer parameters and only waits for the compositor.
-    let waited = unsafe { DwmFlush() }.is_ok();
-    if !waited || started_at.elapsed() < EARLY_VSYNC_RETURN_THRESHOLD {
-        std::thread::sleep(interval);
-    }
-    if let Some(last_tick) = *last_tick {
-        let earliest_tick = last_tick + interval;
+    let dwm_wait_succeeded = unsafe { DwmFlush() }.is_ok();
+    let dwm_wait = started_at.elapsed();
+
+    // A normally blocking DwmFlush is the pacing authority. Do not apply the startup-time
+    // refresh interval again after DWM has already released us on the compositor cadence: that
+    // cached interval can become stale after a monitor/refresh-rate transition and can otherwise
+    // cap a high-refresh window to the old rate. The cached interval is only a fallback for a
+    // failed or suspiciously early DwmFlush.
+    if !dwm_wait_succeeded || dwm_wait < EARLY_VSYNC_RETURN_THRESHOLD {
+        let fallback_deadline = last_tick
+            .map(|last_tick| last_tick + interval)
+            .unwrap_or(started_at + interval);
         let now = Instant::now();
-        if now < earliest_tick {
-            std::thread::sleep(earliest_tick - now);
+        if now < fallback_deadline {
+            std::thread::sleep(fallback_deadline - now);
         }
     }
+
     *last_tick = Some(Instant::now());
 }
 
