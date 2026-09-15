@@ -57,6 +57,25 @@ fn toast_width_for_message(message: &str) -> Pixels {
     px(estimated_width.clamp(TOAST_MIN_WIDTH_PX, TOAST_MAX_WIDTH_PX))
 }
 
+fn toast_slide_translation(direction: ToastSlideDirection, distance: f32) -> Point<Pixels> {
+    match direction {
+        ToastSlideDirection::FromTop => point(px(0.0), px(-distance)),
+        ToastSlideDirection::FromBottom => point(px(0.0), px(distance)),
+        ToastSlideDirection::FromLeft => point(px(-distance), px(0.0)),
+        ToastSlideDirection::FromRight => point(px(distance), px(0.0)),
+    }
+}
+
+fn toast_visual_animating(
+    now: Instant,
+    visible_from: Instant,
+    appear_t: f32,
+    fade_from: Instant,
+    disappear_t: f32,
+) -> bool {
+    now < visible_from || appear_t < 1.0 || (now >= fade_from && disappear_t < 1.0)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToastKind {
     Info,
@@ -640,28 +659,23 @@ pub fn render_overlay_with_options(
     let mut layout_items = Vec::with_capacity(visible_items.len());
     for item in visible_items.iter().copied() {
         let visible_from = item.created_at + item.anim_delay;
-        if now < visible_from {
-            any_animating = true;
-        }
-
         let dt = now.saturating_duration_since(visible_from);
         let appear_t = if now < visible_from {
             0.0
         } else {
             (dt.as_secs_f32() / FADE_IN.as_secs_f32()).clamp(0.0, 1.0)
         };
-        if appear_t < 1.0 {
-            any_animating = true;
-        }
 
         let fade_from = ToastState::fade_from(item);
         let disappear_t = if now >= fade_from {
-            any_animating = true;
             (now.saturating_duration_since(fade_from).as_secs_f32() / FADE_OUT.as_secs_f32())
                 .clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let item_animating =
+            toast_visual_animating(now, visible_from, appear_t, fade_from, disappear_t);
+        any_animating |= item_animating;
         let disappear_k = ease_out_cubic(disappear_t);
 
         let opacity = (appear_t * (1.0 - disappear_k)).clamp(0.0, 1.0);
@@ -679,13 +693,16 @@ pub fn render_overlay_with_options(
             opacity,
             enter_slide,
             exit_slide,
+            item_animating,
             1.0,
         ));
     }
 
-    let mut occupied_sizes: Vec<f32> = layout_items
+    let occupied_sizes: Vec<f32> = layout_items
         .iter()
-        .map(|(_, _, _, _, _, _, slot_factor)| (TOAST_SLOT_H_PX + TOAST_SPACING_PX) * *slot_factor)
+        .map(|(_, _, _, _, _, _, _, slot_factor)| {
+            (TOAST_SLOT_H_PX + TOAST_SPACING_PX) * *slot_factor
+        })
         .collect();
 
     let mut offsets = Vec::with_capacity(layout_items.len());
@@ -709,14 +726,22 @@ pub fn render_overlay_with_options(
 
     let mut lane = div().relative().w(px(TOAST_MAX_WIDTH_PX)).h_full();
     for (index, layout_item) in layout_items.into_iter().enumerate() {
-        let (toast_id, toast_width, shell, opacity, enter_slide, exit_slide, _) = layout_item;
+        let (
+            toast_id,
+            toast_width,
+            shell,
+            opacity,
+            enter_slide,
+            exit_slide,
+            item_animating,
+            _,
+        ) = layout_item;
         let offset = offsets[index];
         let mut toast = div()
             .id(SharedString::from(format!("toast-wrap-{}", toast_id.0)))
             .absolute()
             .w(toast_width)
             .cursor_pointer()
-            .opacity(opacity)
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                 cx.update_global(|state: &mut ToastState, cx| {
                     let now = Instant::now();
@@ -725,27 +750,40 @@ pub fn render_overlay_with_options(
                 });
             });
 
-        let slide = -(enter_slide + exit_slide);
         toast = match options.placement {
-            ToastPlacement::BottomRight => toast.right(px(slide)).bottom(px(offset)),
-            ToastPlacement::BottomLeft => toast.left(px(slide)).bottom(px(offset)),
-            ToastPlacement::TopRight => toast.right(px(slide)).top(px(offset)),
-            ToastPlacement::TopLeft => toast.left(px(slide)).top(px(offset)),
+            ToastPlacement::BottomRight => toast.right(px(0.0)).bottom(px(offset)),
+            ToastPlacement::BottomLeft => toast.left(px(0.0)).bottom(px(offset)),
+            ToastPlacement::TopRight => toast.right(px(0.0)).top(px(offset)),
+            ToastPlacement::TopLeft => toast.left(px(0.0)).top(px(offset)),
             ToastPlacement::TopCenter => match options.slide_direction {
-                ToastSlideDirection::FromLeft => toast.left(px(slide)).top(px(offset)),
+                ToastSlideDirection::FromLeft => toast.left(px(0.0)).top(px(offset)),
                 ToastSlideDirection::FromRight
                 | ToastSlideDirection::FromTop
-                | ToastSlideDirection::FromBottom => toast.right(px(slide)).top(px(offset)),
+                | ToastSlideDirection::FromBottom => toast.right(px(0.0)).top(px(offset)),
             },
             ToastPlacement::BottomCenter => match options.slide_direction {
-                ToastSlideDirection::FromLeft => toast.left(px(slide)).bottom(px(offset)),
+                ToastSlideDirection::FromLeft => toast.left(px(0.0)).bottom(px(offset)),
                 ToastSlideDirection::FromRight
                 | ToastSlideDirection::FromTop
-                | ToastSlideDirection::FromBottom => toast.right(px(slide)).bottom(px(offset)),
+                | ToastSlideDirection::FromBottom => toast.right(px(0.0)).bottom(px(offset)),
             },
         };
 
-        toast = toast.child(shell);
+        let translation = toast_slide_translation(options.slide_direction, enter_slide + exit_slide);
+        let toast = toast
+            .child(shell)
+            .composite_layer()
+            .with_stable_sampled_animation(
+                SharedString::from(format!("toast-motion-{}", toast_id.0)),
+                AnimationProperty::translation_opacity(
+                    Point::default(),
+                    translation,
+                    1.0,
+                    opacity,
+                ),
+                1.0,
+                item_animating,
+            );
 
         lane = lane.child(toast);
     }
@@ -753,10 +791,7 @@ pub fn render_overlay_with_options(
     if !any_animating && let Some(deadline) = state.next_static_deadline(window_id, now) {
         window.request_invalidation_at(deadline + TOAST_WAKE_EPSILON, cx);
     }
-    outer
-        .child(lane)
-        .with_layout_animation_target(any_animating)
-        .into_any_element()
+    outer.child(lane).into_any_element()
 }
 
 impl ToastState {
@@ -803,11 +838,6 @@ pub fn render_breadcrumb_overlay(
     } else {
         (dt.as_secs_f32() / FADE_IN.as_secs_f32()).clamp(0.0, 1.0)
     };
-    let appear_k = if appear_t < 1.0 {
-        ease_out_cubic(appear_t)
-    } else {
-        1.0
-    };
 
     let fade_from = ToastState::fade_from(item);
     let disappear_t = if now >= fade_from {
@@ -818,13 +848,13 @@ pub fn render_breadcrumb_overlay(
     };
     let disappear_k = ease_out_cubic(disappear_t);
     let opacity = (appear_t * (1.0 - disappear_k)).clamp(0.0, 1.0);
-    let slide = -((1.0 - ease_out_back(appear_t, 2.35)) * 16.0 + ease_in_cubic(disappear_t) * 10.0);
-    let animating = appear_t < 1.0 || disappear_t < 1.0;
+    let slide_distance =
+        (1.0 - ease_out_back(appear_t, 2.35)) * 16.0 + ease_in_cubic(disappear_t) * 10.0;
+    let animating = toast_visual_animating(now, visible_from, appear_t, fade_from, disappear_t);
 
     let toast = div()
         .absolute()
         .w(toast_width_for_message(item.message.as_ref()))
-        .opacity(opacity)
         .top(px(10.0))
         .child(
             div()
@@ -834,20 +864,32 @@ pub fn render_breadcrumb_overlay(
         );
 
     let toast = match state.slide_direction {
-        ToastSlideDirection::FromLeft => toast.left(px(slide)),
+        ToastSlideDirection::FromLeft => toast.left(px(0.0)),
         ToastSlideDirection::FromRight
         | ToastSlideDirection::FromTop
-        | ToastSlideDirection::FromBottom => toast.right(px(slide)),
+        | ToastSlideDirection::FromBottom => toast.right(px(0.0)),
     };
+    let translation = toast_slide_translation(state.slide_direction, slide_distance);
 
-    if appear_t >= 1.0
+    if !animating
         && disappear_t <= 0.0
         && let Some(deadline) = state.next_static_deadline(window_id, now)
     {
         window.request_invalidation_at(deadline + TOAST_WAKE_EPSILON, cx);
     }
     toast
-        .with_layout_animation_target(animating)
+        .composite_layer()
+        .with_stable_sampled_animation(
+            SharedString::from(format!("toast-breadcrumb-motion-{}", item.id.0)),
+            AnimationProperty::translation_opacity(
+                Point::default(),
+                translation,
+                1.0,
+                opacity,
+            ),
+            1.0,
+            animating,
+        )
         .into_any_element()
 }
 
@@ -859,7 +901,10 @@ pub fn has_visible_breadcrumb(window_id: WindowId, now: Instant, state: &ToastSt
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_DURATION, FADE_IN, FADE_OUT, ToastKind, ToastState, has_visible_toasts};
+    use super::{
+        DEFAULT_DURATION, FADE_IN, FADE_OUT, ToastKind, ToastState, has_visible_toasts,
+        toast_visual_animating,
+    };
     use gpui::{SharedString, WindowId};
     use std::time::{Duration, Instant};
 
@@ -882,6 +927,21 @@ mod tests {
             state.next_static_deadline(window_id, steady),
             Some(now + DEFAULT_DURATION)
         );
+    }
+
+    #[test]
+    fn steady_toast_does_not_request_animation_frames() {
+        let now = Instant::now();
+        let visible_from = now - FADE_IN - Duration::from_millis(1);
+        let fade_from = now + Duration::from_secs(2);
+
+        assert!(!toast_visual_animating(
+            now,
+            visible_from,
+            1.0,
+            fade_from,
+            0.0
+        ));
     }
 
     #[test]
