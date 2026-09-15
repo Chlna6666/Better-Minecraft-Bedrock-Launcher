@@ -611,6 +611,9 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
                 }
                 _ => {}
             }
+            if sampled[3] > 0.5 {
+                apply_opacity(primitive, sampled[2].clamp(0.0, 1.0));
+            }
         }
         TransitionProperty::Rotation => {}
         TransitionProperty::ClipReveal => apply_clip_reveal(
@@ -875,6 +878,34 @@ mod tests {
             panic!("quad");
         };
         assert_eq!(quad.border_color.a, 1.0);
+    }
+
+    #[test]
+    fn translation_opacity_fallback_applies_both_lanes() {
+        let mut primitive = Primitive::Quad(Quad {
+            bounds: crate::bounds(
+                crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+                crate::size(crate::ScaledPixels(30.0), crate::ScaledPixels(40.0)),
+            ),
+            border_color: crate::rgba(0xffffffff).into(),
+            ..Default::default()
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(2),
+                property: TransitionProperty::Translation,
+                progress: 0.5,
+                from: [20.0, 4.0, 0.5, 1.0],
+                to: [0.0, 0.0, 1.0, 1.0],
+            },
+        );
+        let Primitive::Quad(quad) = primitive else {
+            panic!("quad");
+        };
+        assert_eq!(quad.bounds.origin.x, crate::ScaledPixels(20.0));
+        assert_eq!(quad.bounds.origin.y, crate::ScaledPixels(22.0));
+        assert_eq!(quad.border_color.a, 0.75);
     }
 
     #[test]

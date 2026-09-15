@@ -64,9 +64,13 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
             animation.scales_geometry = 1u;
         }
         // Translation moves primitive bounds only. The clip mask intentionally stays fixed, which
-        // matches the existing CPU animation semantics.
+        // matches the existing CPU animation semantics. The optional fourth-lane marker lets one
+        // translation slot also carry opacity in sampled.z without changing the animation ABI.
         case 2u: {
             animation.translation = sampled.xy;
+            if (sampled.w > 0.5) {
+                animation.opacity = clamp(sampled.z, 0.0, 1.0);
+            }
         }
         // Scale around the primitive's static center.
         case 3u: {

@@ -57,6 +57,9 @@ fn mesh_animation_opacity(animation: MeshAnimation) -> f32 {
     if (property == 1u) {
         return animation.sampled.x;
     }
+    if (property == 3u && animation.sampled.w > 0.5) {
+        return clamp(animation.sampled.z, 0.0, 1.0);
+    }
     if (property == 4u) {
         return animation.sampled.y;
     }

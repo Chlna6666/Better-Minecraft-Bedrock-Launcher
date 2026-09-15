@@ -94,6 +94,28 @@ impl AnimationProperty {
         }
     }
 
+    /// Animate translation and opacity through one renderer-owned slot.
+    ///
+    /// The fourth lane is a stable marker understood by Nova's Translation resolver; ordinary
+    /// Translation values keep that lane at zero and retain their existing ABI and behavior.
+    pub fn translation_opacity(
+        from: Point<Pixels>,
+        to: Point<Pixels>,
+        from_opacity: f32,
+        to_opacity: f32,
+    ) -> Self {
+        Self {
+            property: TransitionProperty::Translation,
+            from: [
+                from.x.0,
+                from.y.0,
+                from_opacity.clamp(0.0, 1.0),
+                1.0,
+            ],
+            to: [to.x.0, to.y.0, to_opacity.clamp(0.0, 1.0), 1.0],
+        }
+    }
+
     /// Animate a vertical reveal from one fixed edge without changing child layout.
     ///
     /// Fractions are relative to the element's final height. The renderer applies one shared clip
@@ -1028,6 +1050,25 @@ mod tests {
         assert_eq!(
             property.resolved_values(bounds, 2.0),
             ([20.0, 10.0, 0.0, 0.0], [80.0, 30.0, 0.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn resolved_translation_opacity_preserves_alpha_lanes() {
+        let property = AnimationProperty::translation_opacity(
+            Point::new(crate::px(10.0), crate::px(5.0)),
+            Point::new(crate::px(0.0), crate::px(0.0)),
+            0.88,
+            1.0,
+        );
+        let bounds = Bounds::new(
+            Point::new(crate::px(10.0), crate::px(20.0)),
+            crate::size(crate::px(30.0), crate::px(40.0)),
+        );
+
+        assert_eq!(
+            property.resolved_values(bounds, 2.0),
+            ([20.0, 10.0, 0.88, 1.0], [0.0, 0.0, 1.0, 1.0])
         );
     }
 

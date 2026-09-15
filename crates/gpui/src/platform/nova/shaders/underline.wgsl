@@ -48,9 +48,13 @@ fn resolve_underline_visual_animation(slot_plus_one: u32, bounds: Bounds) -> Und
             animation.origin = sampled.zw;
             animation.scales_geometry = 1u;
         }
-        // Translation keeps the clip mask fixed in screen space.
+        // Translation keeps the clip mask fixed in screen space. A marked translation may carry
+        // opacity in sampled.z so text decoration stays synchronized with the owning subtree.
         case 2u: {
             animation.translation = sampled.xy;
+            if (sampled.w > 0.5) {
+                animation.opacity = clamp(sampled.z, 0.0, 1.0);
+            }
         }
         // Scale around the primitive's static center.
         case 3u: {
