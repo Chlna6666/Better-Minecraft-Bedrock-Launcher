@@ -401,6 +401,11 @@ pub fn render_overlay(
         return div().into_any_element();
     }
 
+    let overlay_animating = matches!(
+        active.phase,
+        DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
+    );
+
     if active.menu_h <= px(1.0) || active.width <= px(1.0) {
         return div().absolute().inset_0().into_any_element();
     }
@@ -482,11 +487,13 @@ pub fn render_overlay(
                 .child(option_list),
         )
         .composite_layer()
-        .with_sampled_animation(
+        .with_sampled_animation(AnimationProperty::opacity(0.0, 1.0), panel_opacity)
+        .with_stable_sampled_animation(
+            active.id.clone(),
             AnimationProperty::vertical_reveal(reveal_edge, 0.0, 1.0),
             reveal_fraction,
-        )
-        .with_sampled_animation(AnimationProperty::opacity(0.0, 1.0), panel_opacity);
+            overlay_animating,
+        );
 
     div()
         .absolute()
