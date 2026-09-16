@@ -667,11 +667,8 @@ impl DirectWriteState {
             )?;
         }
         let use_subpixel_rendering = should_use_subpixel_rendering(components, params);
-        let rendering_mode = glyph_rendering_mode(
-            rendering_mode,
-            use_subpixel_rendering,
-            params.is_cjk,
-        );
+        let rendering_mode =
+            glyph_rendering_mode(rendering_mode, use_subpixel_rendering, params.font_size);
 
         let antialias_mode = if use_subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
@@ -1629,10 +1626,12 @@ fn should_use_system_subpixel_rendering(
     system_subpixel_rendering && !is_emoji
 }
 
+const PIXEL_STABLE_UI_TEXT_MAX_DIP: f32 = 16.0;
+
 fn glyph_rendering_mode(
     recommended: DWRITE_RENDERING_MODE1,
     use_subpixel_rendering: bool,
-    is_cjk: bool,
+    font_size: Pixels,
 ) -> DWRITE_RENDERING_MODE1 {
     // Grayscale coverage must be symmetric so curved glyph edges are antialiased vertically as
     // well. OUTLINE cannot produce the bitmap coverage atlas this path expects, so keep the
@@ -1641,12 +1640,16 @@ fn glyph_rendering_mode(
         return DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
     }
 
-    // Dense CJK UI glyphs frequently contain one-device-pixel horizontal stems. DirectWrite may
-    // recommend a symmetric (or downsampled symmetric) mode once DPI scaling raises the physical
-    // ppem. That adds vertical filtering to otherwise grid-fitted ClearType coverage, which makes
-    // those horizontal stems look soft or inconsistently thin. Keep the platform-selected
-    // grid-fit mode, but use natural horizontal ClearType coverage for RGB CJK text only.
-    if is_cjk
+    // Small UI text needs stable device-pixel stems regardless of script or fallback font. Once
+    // DPI scaling raises physical ppem, DirectWrite can recommend a symmetric/downsampled mode
+    // even for the same logical 9-16 DIP label. That adds vertical filtering and makes thin
+    // horizontal strokes look softer or lighter. Keep DirectWrite's selected grid-fit mode and
+    // ClearType coverage, but use NATURAL horizontal antialiasing for small RGB UI glyphs. Larger
+    // display text keeps the platform recommendation because vertical symmetric AA benefits curves
+    // and diagonals there.
+    if font_size.0.is_finite()
+        && font_size.0 > 0.0
+        && font_size.0 <= PIXEL_STABLE_UI_TEXT_MAX_DIP
         && (recommended == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
             || recommended == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED)
     {
@@ -1753,30 +1756,30 @@ mod tests {
     }
 
     #[test]
-    fn cjk_subpixel_mode_avoids_vertical_downsampling() {
+    fn small_ui_subpixel_mode_avoids_vertical_softening_for_all_scripts() {
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, true).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, px(9.0)).0,
             DWRITE_RENDERING_MODE1_NATURAL.0
         );
         assert_eq!(
             glyph_rendering_mode(
                 DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED,
                 true,
-                true,
+                px(16.0),
             )
             .0,
             DWRITE_RENDERING_MODE1_NATURAL.0
         );
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, false).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, px(17.0)).0,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
         );
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, false, true).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, false, px(9.0)).0,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
         );
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_OUTLINE, true, true).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_OUTLINE, true, px(9.0)).0,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
         );
     }
