@@ -124,7 +124,7 @@ use frame::{
 pub(crate) use frame::{DeferredDraw, Frame, PaintIndex, PrepaintStateIndex, RetainedSceneSegment};
 #[cfg(test)]
 use frame_lifecycle::FrameCompletion;
-use frame_lifecycle::{DIRTY_FRAME_BACKPRESSURE_BUDGET, FrameWatchdog, WindowFrameThrottle};
+use frame_lifecycle::{FrameWatchdog, WindowFrameThrottle};
 pub use handle::{AnyWindowHandle, WindowHandle};
 pub(crate) use hitbox::{
     CursorStyleRequest, HitTest, MouseListener, TooltipBounds, TooltipRequest,

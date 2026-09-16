@@ -71,7 +71,7 @@ impl Window {
     }
 
     fn begin_draw_cycle(&mut self, cx: &mut App) -> (Option<usize>, SmallVec<[EntityId; 8]>) {
-        let frame_budget = DIRTY_FRAME_BACKPRESSURE_BUDGET;
+        let frame_budget = self.frame_throttle.frame_budget();
         self.dirty_frame_scheduled = false;
         self.draw_deadline = Some(Instant::now() + frame_budget);
         self.draw_was_degraded = false;

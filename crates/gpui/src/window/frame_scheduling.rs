@@ -1,4 +1,5 @@
 use super::lifecycle::RetainedInvalidationScope;
+use super::state::FrameRequestReason;
 use super::*;
 use crate::{AnimationSpec, SceneAnimationId, TransitionProperty};
 
@@ -27,6 +28,7 @@ impl Window {
             should_request_frame
         };
         if should_request_frame {
+            self.record_frame_request_reason(FrameRequestReason::ExplicitRedraw);
             self.request_platform_frame(RequestFrameOptions {
                 require_presentation: true,
                 force_render: false,
@@ -73,6 +75,7 @@ impl Window {
                 cx.notify(entity);
             }));
 
+            self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
             self.request_platform_frame(RequestFrameOptions {
                 require_presentation: true,
                 force_render: true,
@@ -83,6 +86,7 @@ impl Window {
                 pending_entities.borrow_mut().remove(&entity);
                 cx.notify(entity);
             }));
+            self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
             self.request_platform_frame(RequestFrameOptions {
                 require_presentation: true,
                 force_render: false,
@@ -129,6 +133,7 @@ impl Window {
 
         // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a fixed
         // parent cannot hide a moving child, but reusable leaves/subtrees may still prove equality.
+        self.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
         self.on_next_frame(move |window, _cx| {
             if !window
                 .invalidator
@@ -141,6 +146,7 @@ impl Window {
                 Some(&retained_id),
                 RetainedInvalidationScope::ReconcileSubtree,
             ) {
+                window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
                 window.schedule_interactive_animation_frame();
             }
         });
@@ -186,6 +192,7 @@ impl Window {
                     Some(&retained_id),
                     RetainedInvalidationScope::ReconcileSubtree,
                 ) {
+                    window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
                     window.schedule_interactive_animation_frame();
                 }
             }));
@@ -224,6 +231,7 @@ impl Window {
         if !self.active.get() || self.platform_window.is_minimized() {
             return;
         }
+        self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
         self.request_platform_frame(RequestFrameOptions {
             require_presentation: true,
             force_render: false,
@@ -376,7 +384,8 @@ impl Window {
             }
 
             pending.borrow_mut().remove(&entity);
-            let _ = ignore_window_not_found(handle.update(cx, |_, _window, cx| {
+            let _ = ignore_window_not_found(handle.update(cx, |_, window, cx| {
+                window.record_frame_request_reason(FrameRequestReason::Timer);
                 cx.notify(entity);
             }));
         })
@@ -416,6 +425,7 @@ impl Window {
 
         if remaining.is_zero() {
             self.last_inactive_animation_frame.set(Some(now));
+            self.record_frame_request_reason(FrameRequestReason::ImageReady);
             self.request_animation_frame();
             return;
         }
@@ -439,7 +449,8 @@ impl Window {
             }
             pending.borrow_mut().remove(&entity);
             last_frame.set(Some(Instant::now()));
-            let _ = ignore_window_not_found(handle.update(cx, |_, _window, cx| {
+            let _ = ignore_window_not_found(handle.update(cx, |_, window, cx| {
+                window.record_frame_request_reason(FrameRequestReason::ImageReady);
                 cx.notify(entity);
             }));
         })

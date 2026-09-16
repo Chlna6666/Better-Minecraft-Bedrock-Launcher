@@ -1,3 +1,4 @@
+use super::state::FrameRequestReason;
 use super::*;
 
 mod window_control;
@@ -226,6 +227,7 @@ impl Window {
         let event_name = platform_input_name(&event);
         if event.unconditionally_extends_recent_input_present() {
             self.last_input_timestamp.set(Instant::now());
+            self.record_frame_request_reason(FrameRequestReason::Input);
         }
         // Handlers may set this to false by calling `stop_propagation`.
         cx.propagate_event = true;

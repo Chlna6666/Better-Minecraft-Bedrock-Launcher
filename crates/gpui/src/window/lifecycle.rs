@@ -1,3 +1,4 @@
+use super::state::FrameRequestReason;
 use super::*;
 
 pub(crate) fn ignore_window_not_found<T>(result: Result<T>) -> Option<T> {
@@ -268,12 +269,18 @@ impl WindowInvalidator {
         true
     }
 
+    #[track_caller]
     pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
         let mut inner = self.inner.borrow_mut();
-        inner
-            .dirty_frame_diagnostics
-            .borrow_mut()
-            .record_notify_invalidation(entity);
+        let location = std::panic::Location::caller();
+        let mut diagnostics = inner.dirty_frame_diagnostics.borrow_mut();
+        diagnostics.record_frame_request_reason_at(
+            FrameRequestReason::StateNotify,
+            location.file(),
+            location.line(),
+        );
+        diagnostics.record_notify_invalidation(entity);
+        drop(diagnostics);
         inner.dirty_views.insert(entity);
         if inner.draw_phase == DrawPhase::None {
             if !inner.dirty {

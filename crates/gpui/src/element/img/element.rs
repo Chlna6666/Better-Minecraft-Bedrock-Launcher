@@ -332,8 +332,9 @@ impl Element for Img {
                                     let current_view = window.current_view();
                                     let task = window.spawn(cx, async move |cx| {
                                         cx.background_executor().timer(LOADING_DELAY).await;
-                                        cx.update(move |_, cx| {
+                                        cx.update(move |window, cx| {
                                             cx.notify(current_view);
+                                            window.schedule_image_ready_frame();
                                         })
                                         .ok();
                                     });

@@ -95,12 +95,18 @@ impl Window {
             async move |cx| {
                 task.await;
 
-                // Asset completion must itself wake the owning views. Deferring this through
-                // `on_next_frame` can deadlock an otherwise idle window: there is no next frame
-                // until unrelated input (often a mouse move) happens to request one.
-                cx.update(move |_, cx| {
+                // Asset completion must itself wake the owning views and schedule an immediate
+                // presentation frame. Deferring this without presentation can deadlock an otherwise
+                // idle window: there is no presentation until unrelated input (often a mouse move)
+                // happens to request one.
+                cx.update(move |window, cx| {
+                    let mut notified = false;
                     for entity_id in finish_asset_view_subscription(cx, asset_id, generation) {
                         cx.notify(entity_id);
+                        notified = true;
+                    }
+                    if notified {
+                        window.schedule_image_ready_frame();
                     }
                 })
                 .ok();

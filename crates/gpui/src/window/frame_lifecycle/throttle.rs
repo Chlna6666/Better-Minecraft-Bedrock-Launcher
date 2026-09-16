@@ -92,13 +92,12 @@ impl WindowFrameThrottle {
         self.last_frame_started_at = Some(now);
     }
 
-    pub(super) fn frame_budget(self) -> Duration {
-        let budget = self
+    pub(in crate::window) fn frame_budget(self) -> Duration {
+        let interval = self
             .estimated_frame_interval
-            .filter(|interval| *interval < HIGH_REFRESH_FRAME_INTERVAL)
-            .map(|interval| interval.mul_f32(HIGH_REFRESH_FRAME_BUDGET_HEADROOM))
-            .unwrap_or(TARGET_FRAME_GENERATION_BUDGET);
-        budget.clamp(MIN_DYNAMIC_FRAME_BUDGET, TARGET_FRAME_GENERATION_BUDGET)
+            .unwrap_or(DEFAULT_DISPLAY_FRAME_INTERVAL);
+        let budget = interval.mul_f32(HIGH_REFRESH_FRAME_BUDGET_HEADROOM);
+        budget.clamp(MIN_DYNAMIC_FRAME_BUDGET, DEFAULT_DISPLAY_FRAME_INTERVAL)
     }
 
     pub(super) fn retry_delay(self) -> Duration {

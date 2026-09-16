@@ -1,3 +1,4 @@
+use super::state::FrameRequestReason;
 use super::*;
 
 mod throttle;
@@ -52,10 +53,25 @@ impl DirtyFrameSchedulingClass {
 }
 
 impl Window {
+    pub(crate) fn record_rendered_view(&self, entity_id: EntityId) {
+        self.dirty_frame_diagnostics
+            .borrow_mut()
+            .record_rendered_view(entity_id);
+    }
+
+    #[track_caller]
+    pub(super) fn record_frame_request_reason(&self, reason: FrameRequestReason) {
+        self.dirty_frame_diagnostics
+            .borrow_mut()
+            .record_frame_request_reason(reason);
+    }
+
     pub(crate) fn request_initial_frame(&mut self) {
         if self.has_completed_rendered_frame || self.dirty_frame_scheduled || self.refreshing {
             return;
         }
+
+        self.record_frame_request_reason(FrameRequestReason::ExplicitRedraw);
 
         self.invalidator.set_dirty(true);
         self.refreshing = true;
@@ -94,6 +110,7 @@ impl Window {
 
     /// Mark the window as dirty, scheduling it to be redrawn on the next frame.
     pub fn refresh(&mut self) {
+        self.record_frame_request_reason(FrameRequestReason::ExplicitRedraw);
         self.dirty_frame_diagnostics.borrow_mut().record_refresh();
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
@@ -113,6 +130,23 @@ impl Window {
         self.schedule_dirty_frame_with_class(DirtyFrameSchedulingClass::InteractiveAnimation);
     }
 
+    /// Schedule a frame when an asynchronous asset or image has finished loading.
+    ///
+    /// An asset becoming ready represents newly available visual content that must be presented
+    /// to the display even if the window is otherwise idle and receives no mouse or keyboard input.
+    pub(crate) fn schedule_image_ready_frame(&mut self) {
+        self.dirty_frame_deferred_pending = false;
+        self.dirty_frame_throttle_pending = false;
+        self.frame_throttle.clear_delay();
+        self.refreshing = true;
+        self.dirty_frame_scheduled = true;
+        self.record_frame_request_reason(FrameRequestReason::ImageReady);
+        self.request_platform_frame(RequestFrameOptions {
+            require_presentation: true,
+            force_render: true,
+        });
+    }
+
     fn schedule_dirty_frame_with_class(&mut self, class: DirtyFrameSchedulingClass) {
         let now = Instant::now();
         let bypass_progressive_throttle = class.bypasses_progressive_throttle();
@@ -120,7 +154,8 @@ impl Window {
         // Only the first dirty frame after that input may cancel an inherited progressive throttle;
         // run_platform_frame refreshes animation_time immediately, so subsequent animation frames
         // return to the normal backpressure path instead of holding an input grace window open.
-        let fresh_input_edge = self.last_input_timestamp.get() > self.animation_time();
+        let fresh_input_edge = self.last_input_timestamp.get() > self.animation_time()
+            || self.recently_received_input(now);
         if fresh_input_edge
             && (self.dirty_frame_throttle_pending || self.frame_throttle.should_delay(now))
         {
@@ -189,6 +224,9 @@ impl Window {
             }
         }
         if should_request_frame {
+            if class.bypasses_progressive_throttle() {
+                self.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
+            }
             log::trace!(
                 "gpui dirty frame requested: window={} dirty={} refreshing={} class={:?}",
                 self.handle.window_id().as_u64(),
@@ -272,6 +310,7 @@ impl Window {
                     window.dirty_frame_deferred_pending = false;
                     if window.invalidator.is_dirty() && !window.refreshing {
                         window.dirty_frame_scheduled = true;
+                        window.record_frame_request_reason(FrameRequestReason::ProgressiveWork);
                         window.request_platform_frame(RequestFrameOptions {
                             require_presentation: true,
                             force_render: true,
@@ -335,6 +374,7 @@ impl Window {
                 self.dirty_frame_deferred_pending = false;
                 self.refreshing = true;
                 self.dirty_frame_scheduled = true;
+                self.record_frame_request_reason(FrameRequestReason::ProgressiveWork);
                 self.request_platform_frame(RequestFrameOptions {
                     require_presentation: true,
                     force_render: true,
@@ -423,6 +463,7 @@ impl Window {
             return;
         }
 
+        self.record_frame_request_reason(FrameRequestReason::Recovery);
         self.platform_window.frame_request_timed_out(frame_options);
         log::warn!(
             "gpui stalled platform frame recovery: window={} generation={} dirty={} refreshing={} scheduled={} force_render={} require_presentation={}",
@@ -602,9 +643,10 @@ impl Window {
         if log::log_enabled!(log::Level::Trace) {
             let dirty_frame_diagnostics = *self.dirty_frame_diagnostics.borrow();
             let first_view_dirty_entity = dirty_frame_diagnostics.first_view_dirty_entity;
+            let first_rendered_entity = dirty_frame_diagnostics.first_rendered_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::trace!(
-                "gpui frame request: window={} request_id={} dirty={} force_render={} require_presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} dirty_refreshes={} dirty_view_marks={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame request: window={} request_id={} dirty={} force_render={} require_presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 0,
                 decision.activity.dirty,
@@ -619,9 +661,14 @@ impl Window {
                 decision.defer_inactive_dirty_draw,
                 dirty_frame_diagnostics.refreshes,
                 dirty_frame_diagnostics.view_dirty,
+                dirty_frame_diagnostics.direct_dirty_views,
+                dirty_frame_diagnostics.traversal_ancestor_views,
+                dirty_frame_diagnostics.rendered_views,
                 dirty_frame_diagnostics.notify_invalidations,
                 first_view_dirty_entity.map(EntityId::as_u64),
                 first_view_dirty_entity.map(|entity_id| cx.entity_type_name(entity_id)),
+                first_rendered_entity.map(EntityId::as_u64),
+                first_rendered_entity.map(|entity_id| cx.entity_type_name(entity_id)),
                 first_notify_entity.map(EntityId::as_u64),
                 first_notify_entity.map(|entity_id| cx.entity_type_name(entity_id))
             );
@@ -707,10 +754,12 @@ impl Window {
         {
             let stats = self.last_generation_stats;
             let dirty_frame_diagnostics = *self.dirty_frame_diagnostics.borrow();
+            let first_frame_request = dirty_frame_diagnostics.first_frame_request;
             let first_view_dirty_entity = dirty_frame_diagnostics.first_view_dirty_entity;
+            let first_rendered_entity = dirty_frame_diagnostics.first_rendered_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::warn!(
-                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 generation_elapsed,
                 warning_budget,
@@ -736,9 +785,16 @@ impl Window {
                 stats.frame_retained_capacity,
                 dirty_frame_diagnostics.refreshes,
                 dirty_frame_diagnostics.view_dirty,
+                dirty_frame_diagnostics.direct_dirty_views,
+                dirty_frame_diagnostics.traversal_ancestor_views,
+                dirty_frame_diagnostics.rendered_views,
                 dirty_frame_diagnostics.notify_invalidations,
+                dirty_frame_diagnostics.frame_request_reasons,
+                first_frame_request,
                 first_view_dirty_entity.map(EntityId::as_u64),
                 first_view_dirty_entity.map(|entity_id| cx.entity_type_name(entity_id)),
+                first_rendered_entity.map(EntityId::as_u64),
+                first_rendered_entity.map(|entity_id| cx.entity_type_name(entity_id)),
                 first_notify_entity.map(EntityId::as_u64),
                 first_notify_entity.map(|entity_id| cx.entity_type_name(entity_id)),
             );
@@ -775,6 +831,9 @@ impl Window {
             && self.transparent_caption_height.is_none()
             && self.dirty_views.is_empty()
             && self.animation_dirty_region.is_empty()
+            && !self.recently_received_input(now)
+            && self.animation_engine_frame_driver.get().is_none()
+            && !self.dirty_frame_diagnostics.borrow().is_interactive_or_animating()
             && self.frame_throttle.should_delay(now)
             && self.rendered_frame.scene.len() != 0
     }
@@ -802,6 +861,10 @@ impl Window {
             // repeatedly discarding dirty work.
             && !self.recovering_degraded_draw
             && self.transparent_caption_height.is_none()
+            && !self.recently_received_input(Instant::now())
+            && self.animation_engine_frame_driver.get().is_none()
+            && self.animation_dirty_region.is_empty()
+            && !self.dirty_frame_diagnostics.borrow().is_interactive_or_animating()
     }
 
     pub(crate) fn with_critical_draw<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
@@ -893,7 +956,7 @@ impl Window {
         let dirty_frame_diagnostics =
             std::mem::take(&mut *self.dirty_frame_diagnostics.borrow_mut());
         log::trace!(
-            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_notify_entity={:?}",
+            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_rendered_entity={:?} first_notify_entity={:?}",
             self.handle.window_id().as_u64(),
             was_dirty,
             self.refreshing,
@@ -903,9 +966,17 @@ impl Window {
             completion,
             dirty_frame_diagnostics.refreshes,
             dirty_frame_diagnostics.view_dirty,
+            dirty_frame_diagnostics.direct_dirty_views,
+            dirty_frame_diagnostics.traversal_ancestor_views,
+            dirty_frame_diagnostics.rendered_views,
             dirty_frame_diagnostics.notify_invalidations,
+            dirty_frame_diagnostics.frame_request_reasons,
+            dirty_frame_diagnostics.first_frame_request,
             dirty_frame_diagnostics
                 .first_view_dirty_entity
+                .map(EntityId::as_u64),
+            dirty_frame_diagnostics
+                .first_rendered_entity
                 .map(EntityId::as_u64),
             dirty_frame_diagnostics
                 .first_notify_entity

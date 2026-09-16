@@ -156,7 +156,7 @@ impl BoundedImageCache {
                     }
                     cx.update(move |window, cx| {
                         cx.notify(entity);
-                        window.schedule_dirty_frame();
+                        window.schedule_image_ready_frame();
                     })
                     .ok();
                 }

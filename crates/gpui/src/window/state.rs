@@ -20,9 +20,41 @@ pub(super) struct FrameGenerationStats {
 pub(super) struct DirtyFrameDiagnostics {
     pub(super) refreshes: usize,
     pub(super) view_dirty: usize,
+    pub(super) direct_dirty_views: usize,
+    pub(super) traversal_ancestor_views: usize,
+    pub(super) rendered_views: usize,
     pub(super) notify_invalidations: usize,
+    pub(super) frame_request_reasons: u16,
+    pub(super) first_frame_request: Option<FrameRequestProvenance>,
     pub(super) first_view_dirty_entity: Option<EntityId>,
+    pub(super) first_rendered_entity: Option<EntityId>,
     pub(super) first_notify_entity: Option<EntityId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FrameRequestReason {
+    Input,
+    StateNotify,
+    LayoutAnimation,
+    PresentationAnimation,
+    ProgressiveWork,
+    ImageReady,
+    Timer,
+    Recovery,
+    ExplicitRedraw,
+}
+
+impl FrameRequestReason {
+    pub(super) const fn bit(self) -> u16 {
+        1 << (self as u8)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FrameRequestProvenance {
+    pub(super) reason: FrameRequestReason,
+    pub(super) source_file: &'static str,
+    pub(super) source_line: u32,
 }
 
 impl DirtyFrameDiagnostics {
@@ -32,12 +64,50 @@ impl DirtyFrameDiagnostics {
 
     pub(super) fn record_view_dirty(&mut self, entity_id: EntityId) {
         self.view_dirty = self.view_dirty.saturating_add(1);
+        self.direct_dirty_views = self.direct_dirty_views.saturating_add(1);
         self.first_view_dirty_entity.get_or_insert(entity_id);
+    }
+
+    pub(super) fn record_traversal_ancestor(&mut self) {
+        self.traversal_ancestor_views = self.traversal_ancestor_views.saturating_add(1);
+    }
+
+    pub(super) fn record_rendered_view(&mut self, entity_id: EntityId) {
+        self.rendered_views = self.rendered_views.saturating_add(1);
+        self.first_rendered_entity.get_or_insert(entity_id);
     }
 
     pub(super) fn record_notify_invalidation(&mut self, entity_id: EntityId) {
         self.notify_invalidations = self.notify_invalidations.saturating_add(1);
         self.first_notify_entity.get_or_insert(entity_id);
+    }
+
+    #[track_caller]
+    pub(super) fn record_frame_request_reason(&mut self, reason: FrameRequestReason) {
+        let location = std::panic::Location::caller();
+        self.record_frame_request_reason_at(reason, location.file(), location.line());
+    }
+
+    pub(super) fn record_frame_request_reason_at(
+        &mut self,
+        reason: FrameRequestReason,
+        source_file: &'static str,
+        source_line: u32,
+    ) {
+        self.frame_request_reasons |= reason.bit();
+        self.first_frame_request
+            .get_or_insert(FrameRequestProvenance {
+                reason,
+                source_file,
+                source_line,
+            });
+    }
+
+    pub(super) fn is_interactive_or_animating(&self) -> bool {
+        let mask = FrameRequestReason::Input.bit()
+            | FrameRequestReason::LayoutAnimation.bit()
+            | FrameRequestReason::PresentationAnimation.bit();
+        (self.frame_request_reasons & mask) != 0
     }
 }
 
@@ -150,6 +220,26 @@ mod visual_transform_tests {
         assert_eq!(
             transform.transform_bounds(bounds(point(px(0.0), px(0.0)), size(px(200.0), px(100.0)))),
             bounds(point(px(54.0), px(27.0)), size(px(80.0), px(40.0)))
+        );
+    }
+
+    #[test]
+    fn frame_request_reasons_coalesce_and_keep_first_provenance() {
+        let mut diagnostics = DirtyFrameDiagnostics::default();
+        diagnostics.record_frame_request_reason_at(FrameRequestReason::Input, "input.rs", 7);
+        diagnostics.record_frame_request_reason_at(FrameRequestReason::Timer, "timer.rs", 9);
+
+        assert_eq!(
+            diagnostics.frame_request_reasons,
+            FrameRequestReason::Input.bit() | FrameRequestReason::Timer.bit()
+        );
+        assert_eq!(
+            diagnostics.first_frame_request,
+            Some(FrameRequestProvenance {
+                reason: FrameRequestReason::Input,
+                source_file: "input.rs",
+                source_line: 7,
+            })
         );
     }
 }

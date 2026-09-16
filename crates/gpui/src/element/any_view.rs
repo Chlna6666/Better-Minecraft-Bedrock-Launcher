@@ -421,6 +421,7 @@ impl Element for AnyView {
                     }
                     let refreshing = mem::replace(&mut window.refreshing, true);
                     let prepaint_start = window.prepaint_index();
+                    window.record_rendered_view(self.entity_id());
                     let (mut element, accessed_entities) = cx.detect_accessed_entities(|cx| {
                         with_optional_critical_draw(critical, window, |window| {
                             let mut element = div()
