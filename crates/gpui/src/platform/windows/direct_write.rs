@@ -5,6 +5,7 @@
 
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     ffi::{c_uint, c_void},
     mem::ManuallyDrop,
     path::PathBuf,
@@ -26,6 +27,8 @@ use windows::{
     core::*,
 };
 
+const PENDING_GLYPH_ANALYSIS_CAPACITY: usize = 64;
+
 #[derive(Debug)]
 struct FontInfo {
     font_family_h: HSTRING,
@@ -38,12 +41,71 @@ struct FontInfo {
 pub(crate) struct DirectWriteTextSystem {
     components: DirectWriteComponents,
     state: RwLock<DirectWriteState>,
-    pending_glyph_analysis: Mutex<Option<PendingGlyphAnalysis>>,
+    pending_glyph_analysis: Mutex<PendingGlyphAnalysisBridge>,
+}
+
+struct PendingGlyphAnalysisBridge {
+    entries: HashMap<RenderGlyphParams, PendingGlyphAnalysis>,
+    insertion_order: VecDeque<(u64, RenderGlyphParams)>,
+    next_generation: u64,
 }
 
 struct PendingGlyphAnalysis {
-    params: RenderGlyphParams,
+    generation: u64,
     analysis: IDWriteGlyphRunAnalysis,
+}
+
+impl PendingGlyphAnalysisBridge {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::default(),
+            insertion_order: VecDeque::with_capacity(PENDING_GLYPH_ANALYSIS_CAPACITY),
+            next_generation: 0,
+        }
+    }
+
+    fn insert(&mut self, params: &RenderGlyphParams, analysis: IDWriteGlyphRunAnalysis) {
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.wrapping_add(1);
+        let params = params.clone();
+        self.entries.insert(
+            params.clone(),
+            PendingGlyphAnalysis {
+                generation,
+                analysis,
+            },
+        );
+        self.insertion_order.push_back((generation, params));
+
+        while self.insertion_order.len() > PENDING_GLYPH_ANALYSIS_CAPACITY {
+            let Some((old_generation, old_params)) = self.insertion_order.pop_front() else {
+                break;
+            };
+            let should_remove = self
+                .entries
+                .get(&old_params)
+                .is_some_and(|pending| pending.generation == old_generation);
+            if should_remove {
+                self.entries.remove(&old_params);
+            }
+        }
+    }
+
+    fn get(&self, params: &RenderGlyphParams) -> Option<(u64, IDWriteGlyphRunAnalysis)> {
+        self.entries
+            .get(params)
+            .map(|pending| (pending.generation, pending.analysis.clone()))
+    }
+
+    fn remove_if_generation(&mut self, params: &RenderGlyphParams, generation: u64) {
+        let should_remove = self
+            .entries
+            .get(params)
+            .is_some_and(|pending| pending.generation == generation);
+        if should_remove {
+            self.entries.remove(params);
+        }
+    }
 }
 
 struct DirectWriteComponents {
@@ -127,7 +189,7 @@ impl DirectWriteTextSystem {
                 font_info_cache: HashMap::default(),
                 layout_line_scratch: Vec::new(),
             }),
-            pending_glyph_analysis: Mutex::new(None),
+            pending_glyph_analysis: Mutex::new(PendingGlyphAnalysisBridge::new()),
         })
     }
 }
@@ -191,10 +253,7 @@ impl PlatformTextSystem for DirectWriteTextSystem {
             .state
             .read()
             .glyph_analysis_and_bounds(&self.components, params)?;
-        *self.pending_glyph_analysis.lock() = Some(PendingGlyphAnalysis {
-            params: params.clone(),
-            analysis,
-        });
+        self.pending_glyph_analysis.lock().insert(params, analysis);
         Ok(bounds)
     }
 
@@ -203,18 +262,21 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         params: &RenderGlyphParams,
         raster_bounds: Bounds<DevicePixels>,
     ) -> anyhow::Result<GlyphRasterization> {
-        let analysis = self
-            .pending_glyph_analysis
-            .lock()
-            .take()
-            .filter(|pending| pending.params == *params)
-            .map(|pending| pending.analysis);
-        self.state.read().rasterize_glyph(
+        let pending = self.pending_glyph_analysis.lock().get(params);
+        let result = self.state.read().rasterize_glyph(
             &self.components,
             params,
             raster_bounds,
-            analysis.as_ref(),
-        )
+            pending.as_ref().map(|(_, analysis)| analysis),
+        );
+        if result.is_ok()
+            && let Some((generation, _)) = pending
+        {
+            self.pending_glyph_analysis
+                .lock()
+                .remove_if_generation(params, generation);
+        }
+        result
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
