@@ -3,6 +3,7 @@
     reason = "system text rendering parameters are read through platform FFI"
 )]
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct RenderingParameters {
     pub(super) gamma_ratios: [f32; 4],
     pub(super) grayscale_enhanced_contrast: f32,
@@ -16,12 +17,11 @@ impl RenderingParameters {
     }
 
     #[cfg(target_os = "windows")]
-    pub(super) fn from_env_for_window(hwnd: isize) -> (Self, Option<isize>) {
-        let monitor = monitor_for_window(hwnd);
-        let system = monitor
-            .and_then(system_rendering_parameters_for_monitor)
-            .unwrap_or_else(system_rendering_parameters);
-        (Self::from_system(system), monitor)
+    pub(super) fn from_env_for_monitor(monitor: isize) -> Self {
+        Self::from_system(
+            system_rendering_parameters_for_monitor(monitor)
+                .unwrap_or_else(system_rendering_parameters),
+        )
     }
 
     fn from_system(system: SystemRenderingParameters) -> Self {
@@ -66,21 +66,6 @@ impl Default for SystemRenderingParameters {
             is_bgr: false,
         }
     }
-}
-
-#[cfg(target_os = "windows")]
-fn monitor_for_window(hwnd: isize) -> Option<isize> {
-    use windows::Win32::{
-        Foundation::HWND,
-        Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
-    };
-
-    let hwnd = HWND(hwnd as *mut _);
-    if hwnd.is_invalid() {
-        return None;
-    }
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    (!monitor.is_invalid()).then_some(monitor.0 as isize)
 }
 
 #[cfg(target_os = "windows")]
