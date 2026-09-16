@@ -16,11 +16,11 @@ fn corrected_subpixel_coverage(input: MonoSpriteVarying) -> vec3<f32> {
     // subpixel coverage. The CPU stores its exact positive f32 bit pattern in bits 0..30;
     // bit 31 is reserved for pixel geometry (RGB/BGR).
     let clear_type_level = saturate(bitcast<f32>(packed & 2147483647u));
-    let neutral_sample = (sample.r + sample.g + sample.b) * (1.0 / 3.0);
 
     // Keep both endpoints cheap and semantically distinct. ClearTypeLevel=0 uses the grayscale
     // contrast/gamma path; the common ClearTypeLevel=1 case executes only the RGB correction.
     if (clear_type_level <= 0.0) {
+        let neutral_sample = (sample.r + sample.g + sample.b) * (1.0 / 3.0);
         let grayscale = apply_contrast_and_gamma_correction(
             neutral_sample,
             input.color.rgb,
@@ -40,6 +40,7 @@ fn corrected_subpixel_coverage(input: MonoSpriteVarying) -> vec3<f32> {
         return subpixel;
     }
 
+    let neutral_sample = (sample.r + sample.g + sample.b) * (1.0 / 3.0);
     let grayscale = apply_contrast_and_gamma_correction(
         neutral_sample,
         input.color.rgb,
