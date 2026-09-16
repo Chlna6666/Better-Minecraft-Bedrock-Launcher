@@ -12,7 +12,19 @@ pub(super) struct RenderingParameters {
 
 impl RenderingParameters {
     pub(super) fn from_env() -> Self {
-        let system = system_rendering_parameters();
+        Self::from_system(system_rendering_parameters())
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(super) fn from_env_for_window(hwnd: isize) -> (Self, Option<isize>) {
+        let monitor = monitor_for_window(hwnd);
+        let system = monitor
+            .and_then(system_rendering_parameters_for_monitor)
+            .unwrap_or_else(system_rendering_parameters);
+        (Self::from_system(system), monitor)
+    }
+
+    fn from_system(system: SystemRenderingParameters) -> Self {
         let gamma = std::env::var("ZED_FONTS_GAMMA")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -57,31 +69,60 @@ impl Default for SystemRenderingParameters {
 }
 
 #[cfg(target_os = "windows")]
+fn monitor_for_window(hwnd: isize) -> Option<isize> {
+    use windows::Win32::{
+        Foundation::HWND,
+        Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
+    };
+
+    let hwnd = HWND(hwnd as *mut _);
+    if hwnd.is_invalid() {
+        return None;
+    }
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    (!monitor.is_invalid()).then_some(monitor.0 as isize)
+}
+
+#[cfg(target_os = "windows")]
 fn system_rendering_parameters() -> SystemRenderingParameters {
+    create_system_rendering_parameters(None).unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+fn system_rendering_parameters_for_monitor(monitor: isize) -> Option<SystemRenderingParameters> {
+    create_system_rendering_parameters(Some(monitor))
+}
+
+#[cfg(target_os = "windows")]
+fn create_system_rendering_parameters(monitor: Option<isize>) -> Option<SystemRenderingParameters> {
     use windows::{
-        Win32::Graphics::DirectWrite::{
-            DWRITE_FACTORY_TYPE_SHARED, DWRITE_PIXEL_GEOMETRY_BGR, DWriteCreateFactory,
-            IDWriteFactory5, IDWriteRenderingParams1,
+        Win32::Graphics::{
+            DirectWrite::{
+                DWRITE_FACTORY_TYPE_SHARED, DWRITE_PIXEL_GEOMETRY_BGR, DWriteCreateFactory,
+                IDWriteFactory5, IDWriteRenderingParams1,
+            },
+            Gdi::HMONITOR,
         },
         core::Interface,
     };
 
-    let parameters = (|| -> Option<SystemRenderingParameters> {
-        let factory: IDWriteFactory5 =
-            unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()? };
-        let render_params: IDWriteRenderingParams1 =
-            unsafe { factory.CreateRenderingParams().ok()? }
-                .cast()
-                .ok()?;
-        Some(SystemRenderingParameters {
-            gamma: unsafe { render_params.GetGamma() },
-            grayscale_enhanced_contrast: unsafe { render_params.GetGrayscaleEnhancedContrast() },
-            subpixel_enhanced_contrast: unsafe { render_params.GetEnhancedContrast() },
-            is_bgr: unsafe { render_params.GetPixelGeometry() } == DWRITE_PIXEL_GEOMETRY_BGR,
-        })
-    })();
-
-    parameters.unwrap_or_default()
+    let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()? };
+    let render_params: IDWriteRenderingParams1 = match monitor {
+        Some(monitor) => unsafe {
+            factory
+                .CreateMonitorRenderingParams(HMONITOR(monitor as *mut _))
+                .ok()?
+        },
+        None => unsafe { factory.CreateRenderingParams().ok()? },
+    }
+    .cast()
+    .ok()?;
+    Some(SystemRenderingParameters {
+        gamma: unsafe { render_params.GetGamma() },
+        grayscale_enhanced_contrast: unsafe { render_params.GetGrayscaleEnhancedContrast() },
+        subpixel_enhanced_contrast: unsafe { render_params.GetEnhancedContrast() },
+        is_bgr: unsafe { render_params.GetPixelGeometry() } == DWRITE_PIXEL_GEOMETRY_BGR,
+    })
 }
 
 #[cfg(not(target_os = "windows"))]
