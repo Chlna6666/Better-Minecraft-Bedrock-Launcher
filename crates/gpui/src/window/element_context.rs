@@ -295,7 +295,7 @@ impl Window {
 
         if offset.is_zero() {
             return f(self);
-        };
+        }
 
         let abs_offset = self.element_offset() + offset;
         self.with_absolute_element_offset(abs_offset, f)
@@ -331,6 +331,47 @@ impl Window {
         self.element_opacity = previous_opacity * opacity;
         let result = f(self);
         self.element_opacity = previous_opacity;
+        result
+    }
+
+    /// Return the visual animation binding inherited by the current retained subtree.
+    ///
+    /// The binding is intentionally available during both prepaint and paint so cache boundaries can
+    /// reject a stale range when a parent starts, replaces, or removes a renderer-owned animation.
+    pub(crate) fn scene_animation_binding(
+        &self,
+    ) -> Option<(crate::SceneAnimationId, crate::TransitionProperty)> {
+        self.invalidator.debug_assert_paint_or_prepaint();
+        self.scene_animation
+    }
+
+    /// Propagate renderer-owned animation identity through prepaint without producing pixels.
+    ///
+    /// Retained caches make their reuse decision during prepaint. If the scene owner is only pushed
+    /// during paint, a cached child can replay primitives that were recorded without the parent
+    /// animation id and appears visually pinned while its parent moves. This context carries the same
+    /// owner and glyph raster scale into cache reconciliation, while paint still owns composite
+    /// promotion for nested scene animations.
+    pub(crate) fn with_scene_animation_context<R>(
+        &mut self,
+        animation_id: crate::SceneAnimationId,
+        property: crate::TransitionProperty,
+        text_raster_scale: f32,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint_or_prepaint();
+
+        let text_raster_scale = if text_raster_scale.is_finite() {
+            text_raster_scale.max(1.0)
+        } else {
+            1.0
+        };
+        let previous_animation = self.scene_animation.replace((animation_id, property));
+        let previous_text_raster_scale = self.scene_text_raster_scale;
+        self.scene_text_raster_scale *= text_raster_scale;
+        let result = f(self);
+        self.scene_animation = previous_animation;
+        self.scene_text_raster_scale = previous_text_raster_scale;
         result
     }
 
