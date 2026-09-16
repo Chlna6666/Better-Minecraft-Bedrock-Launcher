@@ -271,10 +271,94 @@ impl DirectWriteState {
                 self.system_font_collection = collection;
             }
             font_id = select_font(self, font);
-        };
+        }
         let font_id = font_id?;
         self.font_to_font_id.insert(font.clone(), font_id);
         Some(font_id)
+    }
+
+    fn cache_layout_font_face(
+        &mut self,
+        components: &DirectWriteComponents,
+        font_face: &IDWriteFontFace3,
+        locale: &HSTRING,
+    ) -> Option<FontId> {
+        let font_face_key = font_face.cast::<IUnknown>().log_err()?.as_raw().addr();
+        if let Some(font_id) = self.font_info_cache.get(&font_face_key) {
+            return Some(*font_id);
+        }
+
+        // DirectWrite may shape a fallback or variable face that was never selected through
+        // `font_id()`. The face returned by DrawGlyphRun is authoritative: converting it back to
+        // family/weight/style and selecting again can choose a nearby but different face, changing
+        // glyph outlines, hinting, and visual weight. Keep the exact COM face and only reconstruct
+        // the metadata needed by FontInfo.
+        let font = font_face_to_font(font_face, locale)?;
+        let font_collection = self
+            .font_collection_for_face(font_face)
+            .or_else(|| Self::single_face_collection(components, font_face))
+            // The exact face remains authoritative for metrics/rasterization. This final fallback
+            // only keeps FontInfo structurally usable if DirectWrite cannot expose a face reference.
+            .unwrap_or_else(|| self.system_font_collection.clone());
+        let features = unsafe {
+            Self::generate_font_features(&components.factory, &font.features).log_err()?
+        };
+
+        let font_id = FontId(self.fonts.len());
+        self.fonts.push(FontInfo {
+            font_family_h: HSTRING::from(font.family.as_str()),
+            font_face: font_face.clone(),
+            features,
+            fallbacks: None,
+            font_collection,
+        });
+        self.font_info_cache.insert(font_face_key, font_id);
+
+        // Do not insert `font` into font_to_font_id. A reconstructed Font does not carry variable
+        // axes or the original fallback decision and must not become an explicit-font selection key.
+        Some(font_id)
+    }
+
+    fn font_collection_for_face(
+        &self,
+        font_face: &IDWriteFontFace3,
+    ) -> Option<IDWriteFontCollection1> {
+        let base_face = font_face.cast::<IDWriteFontFace>().log_err()?;
+        for collection in [&self.custom_font_collection, &self.system_font_collection] {
+            let Some(font_set) = (unsafe { collection.GetFontSet() }).log_err() else {
+                continue;
+            };
+            let mut list_index = 0u32;
+            let mut exists = BOOL(0);
+            if unsafe { font_set.FindFontFace(&base_face, &mut list_index, &mut exists) }
+                .log_err()
+                .is_some()
+                && exists.as_bool()
+            {
+                return Some(collection.clone());
+            }
+        }
+        None
+    }
+
+    fn single_face_collection(
+        components: &DirectWriteComponents,
+        font_face: &IDWriteFontFace3,
+    ) -> Option<IDWriteFontCollection1> {
+        let font_face_reference = unsafe { font_face.GetFontFaceReference().log_err()? };
+        let builder = unsafe { components.factory.CreateFontSetBuilder().log_err()? };
+        unsafe {
+            builder
+                .AddFontFaceReference2(&font_face_reference)
+                .log_err()?;
+        }
+        let font_set = unsafe { builder.CreateFontSet().log_err()? };
+        unsafe {
+            components
+                .factory
+                .CreateFontCollectionFromFontSet(&font_set)
+                .log_err()
+        }
     }
 
     fn add_fonts(
@@ -1165,24 +1249,14 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
             .font_info_cache
             .get(&font_face_key)
             .copied()
-            // in some circumstances, we might be getting served a FontFace that we did not create ourselves
-            // so create a new font from it and cache it accordingly. The usual culprit here seems to be Segoe UI Symbol
             .map_or_else(
                 || {
-                    let font = font_face_to_font(font_face, &self.locale)
-                        .ok_or_else(|| Error::new(DWRITE_E_NOFONT, "Failed to create font"))?;
-                    let font_id = match context.text_system.font_to_font_id.get(&font) {
-                        Some(&font_id) => font_id,
-                        None => context
-                            .text_system
-                            .select_and_cache_font(context.components, &font)
-                            .ok_or_else(|| Error::new(DWRITE_E_NOFONT, "Failed to create font"))?,
-                    };
                     context
                         .text_system
-                        .font_info_cache
-                        .insert(font_face_key, font_id);
-                    windows::core::Result::Ok(font_id)
+                        .cache_layout_font_face(context.components, font_face, &self.locale)
+                        .ok_or_else(|| {
+                            Error::new(DWRITE_E_NOFONT, "Failed to cache exact layout font face")
+                        })
                 },
                 Ok,
             )?;
