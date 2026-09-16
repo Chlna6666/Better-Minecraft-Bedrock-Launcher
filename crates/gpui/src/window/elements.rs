@@ -81,6 +81,30 @@ fn finish_asset_view_subscription(
 }
 
 impl Window {
+    /// Invalidates the exact views waiting for newly available asset pixels and immediately asks
+    /// the platform for a presentation-capable frame.
+    ///
+    /// This bypasses the App-level entity -> window lookup deliberately: an asset may finish during
+    /// a window's first frame before that lookup has been published. The invalidation remains
+    /// view-scoped, so unrelated cached views can still retain and replay their previous ranges.
+    pub(crate) fn schedule_asset_ready_views(
+        &mut self,
+        views: impl IntoIterator<Item = EntityId>,
+    ) {
+        let mut any = false;
+        for entity_id in views {
+            any = true;
+            let _ = self.invalidator.invalidate_retained_path_with_scope(
+                entity_id,
+                None,
+                RetainedInvalidationScope::InvalidateSubtree,
+            );
+        }
+        if any {
+            self.schedule_image_ready_frame();
+        }
+    }
+
     /// Asynchronously load an asset, if the asset hasn't finished loading this will return None.
     /// Your view will be re-drawn once the asset has finished loading.
     ///
@@ -119,18 +143,7 @@ impl Window {
                 cx.update(move |window, cx| {
                     let views =
                         finish_asset_view_subscription(cx, subscription_id, generation);
-                    if views.is_empty() {
-                        return;
-                    }
-
-                    for entity_id in views {
-                        let _ = window.invalidator.invalidate_retained_path_with_scope(
-                            entity_id,
-                            None,
-                            RetainedInvalidationScope::InvalidateSubtree,
-                        );
-                    }
-                    window.schedule_image_ready_frame();
+                    window.schedule_asset_ready_views(views);
                 })
                 .ok();
             }
