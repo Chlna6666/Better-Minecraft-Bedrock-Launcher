@@ -40,6 +40,7 @@ pub(super) struct RenderingParameters {
     pub(super) is_bgr: PackedSubpixelParameters,
     windows_hwnd: Option<isize>,
     windows_monitor: Option<isize>,
+    windows_text_rasterization_generation: u64,
 }
 
 impl RenderingParameters {
@@ -56,11 +57,18 @@ impl RenderingParameters {
         let mut parameters = Self::from_system(system);
         parameters.windows_hwnd = Some(hwnd);
         parameters.windows_monitor = monitor;
+        parameters.windows_text_rasterization_generation =
+            crate::platform::text_rasterization_generation();
         parameters
     }
 
     #[cfg(target_os = "windows")]
     pub(super) fn refresh_for_current_monitor(&mut self) -> bool {
+        let rasterization_generation = crate::platform::text_rasterization_generation();
+        if self.windows_text_rasterization_generation == rasterization_generation {
+            return false;
+        }
+
         let Some(hwnd) = self.windows_hwnd else {
             return false;
         };
@@ -68,6 +76,7 @@ impl RenderingParameters {
             return false;
         };
         if self.windows_monitor == Some(monitor) {
+            self.windows_text_rasterization_generation = rasterization_generation;
             return false;
         }
 
@@ -76,6 +85,7 @@ impl RenderingParameters {
         let mut next = Self::from_system(system);
         next.windows_hwnd = Some(hwnd);
         next.windows_monitor = Some(monitor);
+        next.windows_text_rasterization_generation = rasterization_generation;
         let changed = !self.same_visual_parameters(&next);
         *self = next;
         changed
@@ -117,6 +127,7 @@ impl RenderingParameters {
             is_bgr: PackedSubpixelParameters::new(system.is_bgr, clear_type_level),
             windows_hwnd: None,
             windows_monitor: None,
+            windows_text_rasterization_generation: 0,
         }
     }
 }

@@ -14,6 +14,22 @@ mod keyboard;
 mod traits;
 mod winit;
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+#[cfg(target_os = "windows")]
+static TEXT_RASTERIZATION_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "windows")]
+pub(crate) fn text_rasterization_generation() -> u64 {
+    TEXT_RASTERIZATION_GENERATION.load(AtomicOrdering::Acquire)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn advance_text_rasterization_generation() {
+    TEXT_RASTERIZATION_GENERATION.fetch_add(1, AtomicOrdering::Release);
+}
+
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",

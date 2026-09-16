@@ -9,6 +9,8 @@ impl Window {
         // fingerprint still includes scale factor and will re-run measurement where required.
         self.text_system.clear_raster_cache();
         self.sprite_atlas.clear_glyphs();
+        #[cfg(target_os = "windows")]
+        crate::platform::advance_text_rasterization_generation();
     }
 
     pub(super) fn window_origin_changed(&mut self, cx: &mut App) {
