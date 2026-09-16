@@ -75,11 +75,11 @@ impl RenderingParameters {
         let Some(monitor) = monitor_for_window(hwnd) else {
             return false;
         };
-        if self.windows_monitor == Some(monitor) {
-            self.windows_text_rasterization_generation = rasterization_generation;
-            return false;
-        }
 
+        // A generation change means the high-level window invalidated text rasterization, not
+        // necessarily that HMONITOR changed. DPI changes and runtime ClearType/font-smoothing
+        // settings may affect the same monitor, so re-sample its DirectWrite parameters once per
+        // generation instead of treating an unchanged monitor handle as proof that they are stale.
         let system = system_rendering_parameters_for_monitor(monitor)
             .unwrap_or_else(system_rendering_parameters);
         let mut next = Self::from_system(system);
