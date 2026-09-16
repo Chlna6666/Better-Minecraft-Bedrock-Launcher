@@ -176,7 +176,7 @@ pub struct TextBackgroundPadding {
 #[repr(C)]
 pub struct GlyphId(pub(crate) u32);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct RenderGlyphParams {
     pub(crate) font_id: FontId,
     pub(crate) glyph_id: GlyphId,
@@ -189,6 +189,21 @@ pub(crate) struct RenderGlyphParams {
     pub(crate) is_cjk: bool,
 }
 
+impl PartialEq for RenderGlyphParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.font_id == other.font_id
+            && self.glyph_id == other.glyph_id
+            && self.font_size.0.to_bits() == other.font_size.0.to_bits()
+            && self.subpixel_variant == other.subpixel_variant
+            && self.scale_factor.to_bits() == other.scale_factor.to_bits()
+            && (!cfg!(target_os = "windows")
+                || self.grayscale_antialiasing == other.grayscale_antialiasing)
+            && self.is_emoji == other.is_emoji
+            && (!cfg!(any(target_os = "linux", target_os = "freebsd"))
+                || self.is_cjk == other.is_cjk)
+    }
+}
+
 impl Eq for RenderGlyphParams {}
 
 impl Hash for RenderGlyphParams {
@@ -198,9 +213,13 @@ impl Hash for RenderGlyphParams {
         self.font_size.0.to_bits().hash(state);
         self.subpixel_variant.hash(state);
         self.scale_factor.to_bits().hash(state);
-        self.grayscale_antialiasing.hash(state);
+        if cfg!(target_os = "windows") {
+            self.grayscale_antialiasing.hash(state);
+        }
         self.is_emoji.hash(state);
-        self.is_cjk.hash(state);
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+            self.is_cjk.hash(state);
+        }
     }
 }
 
