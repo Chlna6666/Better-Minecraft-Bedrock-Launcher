@@ -30,16 +30,19 @@ fn apply_contrast_and_gamma_correction(sample: f32, color: vec3<f32>, enhanced_c
 
 fn apply_contrast_and_gamma_correction3(sample: vec3<f32>, color: vec3<f32>, enhanced_contrast_factor: f32, gamma_ratios: vec4<f32>) -> vec3<f32> {
     let enhanced_contrast = light_on_dark_contrast(enhanced_contrast_factor, color);
-    let brightness = color_brightness(color);
     let contrasted = vec3<f32>(
         enhance_contrast(sample.r, enhanced_contrast),
         enhance_contrast(sample.g, enhanced_contrast),
         enhance_contrast(sample.b, enhanced_contrast),
     );
+    // DirectWrite's ClearType gamma correction is channel-sensitive: the red, green, and blue
+    // glyph coverages are corrected against the corresponding foreground-color channel rather
+    // than one shared luminance scalar. Keep the grayscale path luminance-based above, but match
+    // the DirectWrite/Microsoft Terminal model for subpixel coverage here.
     return vec3<f32>(
-        apply_alpha_correction(contrasted.r, brightness, gamma_ratios),
-        apply_alpha_correction(contrasted.g, brightness, gamma_ratios),
-        apply_alpha_correction(contrasted.b, brightness, gamma_ratios),
+        apply_alpha_correction(contrasted.r, color.r, gamma_ratios),
+        apply_alpha_correction(contrasted.g, color.g, gamma_ratios),
+        apply_alpha_correction(contrasted.b, color.b, gamma_ratios),
     );
 }
 
