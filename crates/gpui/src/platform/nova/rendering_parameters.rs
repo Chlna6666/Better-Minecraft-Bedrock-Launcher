@@ -232,3 +232,47 @@ fn gamma_ratios(gamma: f32) -> [f32; 4] {
         ratios[3] * NORM24,
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PackedSubpixelParameters;
+
+    fn unpack(value: PackedSubpixelParameters) -> (bool, f32) {
+        let packed = u32::from(value);
+        let is_bgr = packed & PackedSubpixelParameters::BGR_BIT != 0;
+        let clear_type_level =
+            f32::from_bits(packed & PackedSubpixelParameters::VALUE_BITS);
+        (is_bgr, clear_type_level)
+    }
+
+    #[test]
+    fn packed_subpixel_parameters_preserve_geometry_and_level_exactly() {
+        for (is_bgr, clear_type_level) in [
+            (false, 0.0_f32),
+            (false, 0.375_f32),
+            (false, 1.0_f32),
+            (true, 0.0_f32),
+            (true, 0.625_f32),
+            (true, 1.0_f32),
+        ] {
+            let (decoded_bgr, decoded_level) =
+                unpack(PackedSubpixelParameters::new(is_bgr, clear_type_level));
+            assert_eq!(decoded_bgr, is_bgr);
+            assert_eq!(decoded_level.to_bits(), clear_type_level.to_bits());
+        }
+    }
+
+    #[test]
+    fn packed_subpixel_parameters_normalize_invalid_levels() {
+        assert_eq!(unpack(PackedSubpixelParameters::new(false, -1.0)).1, 0.0);
+        assert_eq!(unpack(PackedSubpixelParameters::new(false, 2.0)).1, 1.0);
+        assert_eq!(
+            unpack(PackedSubpixelParameters::new(false, f32::NAN)).1,
+            1.0
+        );
+        assert_eq!(
+            unpack(PackedSubpixelParameters::new(true, f32::INFINITY)),
+            (true, 1.0)
+        );
+    }
+}
