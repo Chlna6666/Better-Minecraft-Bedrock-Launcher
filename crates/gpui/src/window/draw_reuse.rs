@@ -428,6 +428,8 @@ impl Window {
             visual_content_mask: self.visual_content_mask(),
             text_style: self.text_style(),
             rem_size: self.rem_size(),
+            scene_animation: self.scene_animation_binding(),
+            scene_text_raster_scale: self.scene_text_raster_scale(),
         }
     }
 
