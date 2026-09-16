@@ -1,14 +1,22 @@
 use crate::{
     AnyElement, App, Bounds, Element, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, TextStyleRefinement, Window,
+    Pixels, SceneAnimationId, TextStyleRefinement, TransitionProperty, Window,
 };
 use std::{cell::RefCell, rc::Rc};
+
+#[derive(Clone, Copy)]
+struct DeferredSceneAnimationContext {
+    animation_id: SceneAnimationId,
+    property: TransitionProperty,
+    text_raster_scale: f32,
+}
 
 #[derive(Clone)]
 struct DeferredInheritedContext {
     text_style_stack: Vec<TextStyleRefinement>,
     rem_size: Pixels,
     element_opacity: f32,
+    scene_animation: Option<DeferredSceneAnimationContext>,
 }
 
 struct DeferredContextElement {
@@ -27,12 +35,24 @@ fn with_deferred_inherited_context<R>(
 
     // Deferred children leave their original ancestor stack before prepaint/paint. Restore the
     // inherited values that are not part of Window::defer_draw's frame descriptor so text paint,
-    // rem-dependent styling, and cumulative opacity remain identical to inline traversal.
+    // rem-dependent styling, cumulative opacity, and direct renderer-owned animation bindings
+    // remain identical to inline traversal.
     let previous_text_style_stack =
         std::mem::replace(&mut window.text_style_stack, context.text_style_stack);
     let previous_element_opacity =
         std::mem::replace(&mut window.element_opacity, context.element_opacity);
-    let result = window.with_rem_size(Some(context.rem_size), f);
+    let result = window.with_rem_size(Some(context.rem_size), |window| {
+        if let Some(scene_animation) = context.scene_animation {
+            window.with_scene_animation(
+                scene_animation.animation_id,
+                scene_animation.property,
+                scene_animation.text_raster_scale,
+                f,
+            )
+        } else {
+            f(window)
+        }
+    });
     window.element_opacity = previous_element_opacity;
     window.text_style_stack = previous_text_style_stack;
     result
@@ -173,6 +193,10 @@ impl Element for Deferred {
             text_style_stack: window.text_style_stack.clone(),
             rem_size: window.rem_size(),
             element_opacity: window.element_opacity(),
+            // Renderer-owned animation ownership is established during paint, after the deferred
+            // child has already been registered. `Deferred::paint` fills this slot while it is
+            // still traversed under the original ancestor animation context.
+            scene_animation: None,
         });
 
         let child = self.child.take().unwrap();
@@ -187,9 +211,19 @@ impl Element for Deferred {
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut App,
     ) {
+        let scene_animation = window.scene_animation.map(|(animation_id, property)| {
+            DeferredSceneAnimationContext {
+                animation_id,
+                property,
+                text_raster_scale: window.scene_text_raster_scale(),
+            }
+        });
+        if let Some(context) = self.context.borrow_mut().as_mut() {
+            context.scene_animation = scene_animation;
+        }
     }
 }
 
