@@ -430,15 +430,17 @@ impl TextSystem {
 
     /// Get the rasterized size and location of a specific, rendered glyph.
     pub(crate) fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        let raster_bounds = self.raster_bounds.upgradable_read();
-        if let Some(bounds) = raster_bounds.get(params) {
-            Ok(*bounds)
-        } else {
-            let mut raster_bounds = RwLockUpgradableReadGuard::upgrade(raster_bounds);
-            let bounds = self.platform_text_system.glyph_raster_bounds(params)?;
-            raster_bounds.insert(params.clone(), bounds);
-            Ok(bounds)
+        if let Some(bounds) = self.raster_bounds.read().get(params).copied() {
+            return Ok(bounds);
         }
+
+        // Platform glyph analysis can enter DirectWrite/FreeType and is much more expensive than
+        // the cache operation itself. Do it without the global raster-bounds write lock so misses
+        // for unrelated glyphs can proceed concurrently across windows. A same-key race is benign:
+        // the first completed result is retained and all callers observe the same cached bounds.
+        let computed = self.platform_text_system.glyph_raster_bounds(params)?;
+        let mut raster_bounds = self.raster_bounds.write();
+        Ok(*raster_bounds.entry(params.clone()).or_insert(computed))
     }
 
     pub(crate) fn rasterize_glyph(&self, params: &RenderGlyphParams) -> Result<GlyphRasterization> {
@@ -553,7 +555,7 @@ impl WindowTextSystem {
         self.text_system.trim_retained_capacity_for_level(level);
     }
 
-    /// Shape the given line, at the given font_size, for painting to the screen.
+    /// Shape the given line of text, at the given font_size, for painting to the screen.
     /// Subsets of the line can be styled independently with the `runs` parameter.
     ///
     /// Note that this method can only shape a single line of text. It will panic
@@ -634,7 +636,7 @@ impl WindowTextSystem {
 
         let mut lines = SmallVec::new();
         let mut line_start = 0;
-        let mut max_wrap_lines = line_clamp.unwrap_or(usize::MAX);
+        let max_wrap_lines = line_clamp.unwrap_or(usize::MAX);
         let mut wrapped_lines = 0;
 
         let mut queue_line_layout = |line_text: SharedString| {
