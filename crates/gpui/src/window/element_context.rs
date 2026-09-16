@@ -364,10 +364,39 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint();
 
-        let text_raster_scale = if text_raster_scale.is_finite() {
-            text_raster_scale.max(1.0)
-        } else {
-            1.0
+        let completed_text_raster_scale = self
+            .animation_engine
+            .borrow()
+            .completed_scene_text_raster_scale(animation_id);
+        if completed_text_raster_scale.is_none()
+            && self
+                .animation_engine
+                .borrow()
+                .scene_animation_needs_completion_invalidation(animation_id)
+            && let (Some(view_id), Some(retained_id)) = (
+                self.current_view_or_root(),
+                self.current_retained_element_id(),
+            )
+        {
+            let invalidator = self.invalidator.clone();
+            self.animation_engine
+                .borrow_mut()
+                .set_scene_animation_completion_invalidation(
+                    animation_id,
+                    Rc::new(move || {
+                        let _ = invalidator.invalidate_retained_path(
+                            view_id,
+                            Some(&retained_id),
+                            true,
+                        );
+                    }),
+                );
+        }
+
+        let text_raster_scale = match completed_text_raster_scale {
+            Some(scale) if scale.is_finite() && scale > 0.0 => scale,
+            _ if text_raster_scale.is_finite() => text_raster_scale.max(1.0),
+            _ => 1.0,
         };
         let previous_text_raster_scale = self.scene_text_raster_scale;
         self.scene_text_raster_scale *= text_raster_scale;

@@ -11,13 +11,16 @@ use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use std::{fmt, rc::Rc, time::Instant};
 
+const MIN_COMPLETED_SCENE_TEXT_RASTER_SCALE: f32 = 1.0 / 4096.0;
+const SCENE_TEXT_RASTER_SCALE_EPSILON: f32 = 0.0001;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct AnimationTimelineKey {
     element_id: Rc<GlobalElementId>,
     property: TransitionProperty,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct AnimationTimeline {
     spec: AnimationSpec,
     spring: Option<super::Spring>,
@@ -25,6 +28,9 @@ struct AnimationTimeline {
     driver: AnimationDriver,
     bounds: Option<Bounds<Pixels>>,
     scene_animation: Option<SceneAnimation>,
+    endpoint_text_raster_scale: Option<f32>,
+    needs_endpoint_reraster: bool,
+    completion_invalidation: Option<Rc<dyn Fn()>>,
 }
 
 impl AnimationTimeline {
@@ -48,6 +54,12 @@ struct SceneAnimation {
     id: SceneAnimationId,
     from: [f32; 4],
     to: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CompletedSceneAnimation {
+    value: SceneAnimationValue,
+    endpoint_text_raster_scale: Option<f32>,
 }
 
 /// Identifier for an animation group owned by an [`AnimationEngine`].
@@ -134,7 +146,7 @@ pub struct AnimationTick {
 #[derive(Default)]
 pub struct AnimationEngine {
     timelines: FxHashMap<AnimationTimelineKey, AnimationTimeline>,
-    completed_scene_values: FxHashMap<AnimationTimelineKey, SceneAnimationValue>,
+    completed_scene_values: FxHashMap<AnimationTimelineKey, CompletedSceneAnimation>,
     timelines_by_element: FxHashMap<Rc<GlobalElementId>, SmallVec<[TransitionProperty; 4]>>,
     visual_timeline_keys: FxHashSet<AnimationTimelineKey>,
     layout_timeline_keys: FxHashSet<AnimationTimelineKey>,
@@ -209,6 +221,9 @@ impl AnimationEngine {
                 driver,
                 bounds,
                 scene_animation: None,
+                endpoint_text_raster_scale: None,
+                needs_endpoint_reraster: false,
+                completion_invalidation: None,
             },
         );
         self.insert_driver_index(key, driver);
@@ -357,7 +372,62 @@ impl AnimationEngine {
             return false;
         };
         timeline.scene_animation = Some(SceneAnimation { id, from, to });
+
+        let endpoint_text_raster_scale = if matches!(
+            property,
+            TransitionProperty::Scale | TransitionProperty::Transform
+        ) {
+            let scale = to[0];
+            (scale.is_finite() && scale > 0.0)
+                .then_some(scale.max(MIN_COMPLETED_SCENE_TEXT_RASTER_SCALE))
+        } else {
+            None
+        };
+        let active_text_raster_scale = super::scene_text_raster_scale(property, from, to);
+        timeline.needs_endpoint_reraster = endpoint_text_raster_scale.is_some_and(|endpoint| {
+            (active_text_raster_scale - endpoint).abs() > SCENE_TEXT_RASTER_SCALE_EPSILON
+        });
+        timeline.endpoint_text_raster_scale = endpoint_text_raster_scale;
+        timeline.completion_invalidation = None;
         true
+    }
+
+    pub(crate) fn scene_animation_needs_completion_invalidation(
+        &self,
+        animation_id: SceneAnimationId,
+    ) -> bool {
+        self.timelines.values().any(|timeline| {
+            timeline.scene_animation.is_some_and(|animation| animation.id == animation_id)
+                && timeline.needs_endpoint_reraster
+                && timeline.completion_invalidation.is_none()
+        })
+    }
+
+    pub(crate) fn set_scene_animation_completion_invalidation(
+        &mut self,
+        animation_id: SceneAnimationId,
+        completion_invalidation: Rc<dyn Fn()>,
+    ) -> bool {
+        let Some(timeline) = self.timelines.values_mut().find(|timeline| {
+            timeline.scene_animation.is_some_and(|animation| animation.id == animation_id)
+        }) else {
+            return false;
+        };
+        if !timeline.needs_endpoint_reraster || timeline.completion_invalidation.is_some() {
+            return false;
+        }
+        timeline.completion_invalidation = Some(completion_invalidation);
+        true
+    }
+
+    pub(crate) fn completed_scene_text_raster_scale(
+        &self,
+        animation_id: SceneAnimationId,
+    ) -> Option<f32> {
+        self.completed_scene_values
+            .values()
+            .find(|completed| completed.value.animation_id == animation_id)
+            .and_then(|completed| completed.endpoint_text_raster_scale)
     }
 
     pub(crate) fn set_transition_spring(
@@ -393,7 +463,7 @@ impl AnimationEngine {
 
     pub(crate) fn retain_scene_animations(&mut self, live_ids: &FxHashSet<SceneAnimationId>) {
         self.completed_scene_values
-            .retain(|_, value| live_ids.contains(&value.animation_id));
+            .retain(|_, completed| live_ids.contains(&completed.value.animation_id));
         let stale_keys = self
             .timelines
             .iter()
@@ -423,7 +493,11 @@ impl AnimationEngine {
                     to: animation.to,
                 })
             })
-            .chain(self.completed_scene_values.values().copied())
+            .chain(
+                self.completed_scene_values
+                    .values()
+                    .map(|completed| completed.value),
+            )
             .collect()
     }
 
@@ -482,8 +556,11 @@ impl AnimationEngine {
         let mut has_gpu_or_paint = false;
         let mut has_layout = false;
         let mut dirty_bounds = SmallVec::new();
-        let mut scene_values: SmallVec<[SceneAnimationValue; 4]> =
-            self.completed_scene_values.values().copied().collect();
+        let mut scene_values: SmallVec<[SceneAnimationValue; 4]> = self
+            .completed_scene_values
+            .values()
+            .map(|completed| completed.value)
+            .collect();
         for key in keys {
             let Some(timeline) = self.timelines.get(&key) else {
                 self.remove_driver_index(&key);
@@ -505,7 +582,16 @@ impl AnimationEngine {
                 };
                 scene_values.push(value);
                 if sample.done && !repeats {
-                    self.completed_scene_values.insert(key.clone(), value);
+                    self.completed_scene_values.insert(
+                        key.clone(),
+                        CompletedSceneAnimation {
+                            value,
+                            endpoint_text_raster_scale: timeline.endpoint_text_raster_scale,
+                        },
+                    );
+                    if let Some(completion_invalidation) = &timeline.completion_invalidation {
+                        completion_invalidation();
+                    }
                 }
             } else if !sample.applies {
                 self.completed_scene_values.remove(&key);
