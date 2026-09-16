@@ -30,6 +30,9 @@ pub(super) const FONT_RUNS_MIN_RETAINED_CAPACITY: usize = 32;
 const FONT_RUNS_TRIM_WATERMARK_MULTIPLIER: usize = 4;
 const TEXT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
 const TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER: usize = 4;
+const MAX_RASTER_BOUNDS_CACHE_ENTRIES: usize = 16 * 1024;
+const LIGHT_RASTER_BOUNDS_CACHE_ENTRIES: usize = MAX_RASTER_BOUNDS_CACHE_ENTRIES * 3 / 4;
+const MODERATE_RASTER_BOUNDS_CACHE_ENTRIES: usize = MAX_RASTER_BOUNDS_CACHE_ENTRIES / 4;
 
 /// The GPUI text rendering sub system.
 pub struct TextSystem {
@@ -38,7 +41,7 @@ pub struct TextSystem {
     pub(super) font_decision_logged: RwLock<bool>,
     font_id_cache: RwLock<FontIdCache>,
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
-    raster_bounds: RwLock<FxHashMap<RenderGlyphParams, Bounds<DevicePixels>>>,
+    raster_bounds: RwLock<RasterBoundsCache>,
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, VecDeque<LineWrapper>>>,
     font_runs_pool: Mutex<VecDeque<Vec<FontRun>>>,
     font_catalog: FontCatalog,
@@ -48,6 +51,71 @@ pub struct TextSystem {
 struct FontIdCache {
     ids_by_font: FxHashMap<Font, Result<FontId>>,
     fonts_by_id: FxHashMap<FontId, Font>,
+}
+
+#[derive(Default)]
+struct RasterBoundsCache {
+    entries: FxHashMap<RenderGlyphParams, Bounds<DevicePixels>>,
+    insertion_order: VecDeque<RenderGlyphParams>,
+}
+
+impl RasterBoundsCache {
+    fn get(&self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
+        self.entries.get(params).copied()
+    }
+
+    fn insert_if_absent(
+        &mut self,
+        params: RenderGlyphParams,
+        bounds: Bounds<DevicePixels>,
+    ) -> Bounds<DevicePixels> {
+        if let Some(existing) = self.entries.get(&params).copied() {
+            return existing;
+        }
+
+        self.entries.insert(params.clone(), bounds);
+        self.insertion_order.push_back(params);
+        self.evict_to(MAX_RASTER_BOUNDS_CACHE_ENTRIES);
+        bounds
+    }
+
+    fn evict_to(&mut self, target_len: usize) {
+        while self.entries.len() > target_len {
+            let Some(oldest) = self.insertion_order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        debug_assert_eq!(self.entries.len(), self.insertion_order.len());
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.insertion_order.clear();
+    }
+
+    fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
+        match level {
+            GpuiMemoryTrimLevel::Light => {
+                self.trim_to(LIGHT_RASTER_BOUNDS_CACHE_ENTRIES);
+            }
+            GpuiMemoryTrimLevel::Moderate => {
+                self.trim_to(MODERATE_RASTER_BOUNDS_CACHE_ENTRIES);
+            }
+            GpuiMemoryTrimLevel::Aggressive => {
+                self.clear();
+                self.entries.shrink_to(0);
+                self.insertion_order.shrink_to(0);
+            }
+        }
+    }
+
+    fn trim_to(&mut self, target_len: usize) {
+        self.evict_to(target_len);
+        let retained_capacity = TEXT_CACHE_MIN_RETAINED_CAPACITY.max(self.entries.len());
+        self.entries.shrink_to(retained_capacity);
+        self.insertion_order.shrink_to(retained_capacity);
+    }
 }
 
 impl TextSystem {
@@ -430,7 +498,7 @@ impl TextSystem {
 
     /// Get the rasterized size and location of a specific, rendered glyph.
     pub(crate) fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        if let Some(bounds) = self.raster_bounds.read().get(params).copied() {
+        if let Some(bounds) = self.raster_bounds.read().get(params) {
             return Ok(bounds);
         }
 
@@ -440,7 +508,7 @@ impl TextSystem {
         // the first completed result is retained and all callers observe the same cached bounds.
         let computed = self.platform_text_system.glyph_raster_bounds(params)?;
         let mut raster_bounds = self.raster_bounds.write();
-        Ok(*raster_bounds.entry(params.clone()).or_insert(computed))
+        Ok(raster_bounds.insert_if_absent(params.clone(), computed))
     }
 
     pub(crate) fn rasterize_glyph(&self, params: &RenderGlyphParams) -> Result<GlyphRasterization> {
@@ -473,19 +541,9 @@ impl TextSystem {
     pub(crate) fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
         trim_wrapper_pool(&mut self.wrapper_pool.lock(), level);
         trim_font_runs_pool(&mut self.font_runs_pool.lock(), level);
-
-        let mut raster_bounds = self.raster_bounds.write();
-        match level {
-            GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => trim_map_capacity(
-                &mut raster_bounds,
-                TEXT_CACHE_MIN_RETAINED_CAPACITY,
-                TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER,
-            ),
-            GpuiMemoryTrimLevel::Aggressive => {
-                raster_bounds.clear();
-                raster_bounds.shrink_to(0);
-            }
-        }
+        self.raster_bounds
+            .write()
+            .trim_retained_capacity_for_level(level);
     }
 
     #[cfg(test)]
