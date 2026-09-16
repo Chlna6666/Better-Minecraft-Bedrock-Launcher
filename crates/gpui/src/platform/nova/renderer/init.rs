@@ -6,21 +6,30 @@
 use super::*;
 
 #[cfg(target_os = "windows")]
-fn native_windows_drawable_size<W>(window: &W) -> Option<Size<DevicePixels>>
+fn native_windows_hwnd<W>(window: &W) -> Option<isize>
 where
     W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
 {
     use ::winit::raw_window_handle::RawWindowHandle;
-    use windows::Win32::{
-        Foundation::{HWND, RECT},
-        UI::WindowsAndMessaging::GetClientRect,
-    };
 
     let raw_window_handle = window.window_handle().ok()?.as_raw();
     let RawWindowHandle::Win32(handle) = raw_window_handle else {
         return None;
     };
-    let hwnd = HWND(handle.hwnd.get() as *mut _);
+    Some(handle.hwnd.get())
+}
+
+#[cfg(target_os = "windows")]
+fn native_windows_drawable_size<W>(window: &W) -> Option<Size<DevicePixels>>
+where
+    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
+{
+    use windows::Win32::{
+        Foundation::{HWND, RECT},
+        UI::WindowsAndMessaging::GetClientRect,
+    };
+
+    let hwnd = HWND(native_windows_hwnd(window)? as *mut _);
     let mut client_rect = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client_rect).ok()? };
     let width = client_rect.right.saturating_sub(client_rect.left);
@@ -119,6 +128,13 @@ impl NovaRenderer {
             0,
         );
         let current_size = DrawableSize { width, height };
+        #[cfg(target_os = "windows")]
+        let rendering_parameters = native_windows_hwnd(window)
+            .map(RenderingParameters::from_env_for_window)
+            .unwrap_or_else(RenderingParameters::from_env);
+        #[cfg(not(target_os = "windows"))]
+        let rendering_parameters = RenderingParameters::from_env();
+
         match backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             RendererBackend::NovaDx12 => {
@@ -228,7 +244,7 @@ impl NovaRenderer {
                     current_size,
                     pending_drawable_size: None,
                     atlas: atlas.0,
-                    rendering_parameters: RenderingParameters::from_env(),
+                    rendering_parameters,
                     diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
                     pending_submissions: Vec::new(),
@@ -352,7 +368,7 @@ impl NovaRenderer {
                     current_size,
                     pending_drawable_size: None,
                     atlas: atlas.0,
-                    rendering_parameters: RenderingParameters::from_env(),
+                    rendering_parameters,
                     diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
                     pending_submissions: Vec::new(),
@@ -500,7 +516,7 @@ impl NovaRenderer {
                     current_size,
                     pending_drawable_size: None,
                     atlas: atlas.0,
-                    rendering_parameters: RenderingParameters::from_env(),
+                    rendering_parameters,
                     diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
                     pending_submissions: Vec::new(),
