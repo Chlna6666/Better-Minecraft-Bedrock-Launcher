@@ -1,6 +1,5 @@
 use uuid::Uuid;
 use winit::monitor::MonitorHandle;
-use winit::platform::windows::MonitorHandleExtWindows;
 
 use crate::{Bounds, DevicePixels, DisplayId, Pixels, PlatformDisplay, logical_point, size};
 
@@ -45,7 +44,6 @@ pub(crate) struct WindowsDisplay {
     bounds: Bounds<Pixels>,
     uuid: Uuid,
     key: DisplaySnapshotKey,
-    text_rendering_target: isize,
 }
 
 impl WindowsDisplay {
@@ -67,7 +65,6 @@ impl WindowsDisplay {
             },
             uuid: key.uuid(),
             key,
-            text_rendering_target: monitor.hmonitor(),
         }
     }
 
@@ -99,9 +96,5 @@ impl PlatformDisplay for WindowsDisplay {
 
     fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
-    }
-
-    fn text_rendering_target(&self) -> Option<isize> {
-        Some(self.text_rendering_target)
     }
 }

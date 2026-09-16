@@ -17,15 +17,6 @@ pub trait PlatformDisplay: Send + Sync + Debug {
     /// Get the bounds for this display
     fn bounds(&self) -> Bounds<Pixels>;
 
-    /// Opaque platform target used to select display-specific text raster parameters.
-    ///
-    /// This is renderer metadata rather than a stable display identity. Application code should
-    /// use [`Self::id`] or [`Self::uuid`] instead.
-    #[doc(hidden)]
-    fn text_rendering_target(&self) -> Option<isize> {
-        None
-    }
-
     /// Get the default bounds for this display to place a window
     fn default_bounds(&self) -> Bounds<Pixels> {
         let bounds = self.bounds();
