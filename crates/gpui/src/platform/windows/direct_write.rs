@@ -751,7 +751,8 @@ impl DirectWriteState {
             )?;
         }
         let use_subpixel_rendering = should_use_subpixel_rendering(components, params);
-        let rendering_mode = glyph_rendering_mode(rendering_mode, params.font_size);
+        let rendering_mode =
+            glyph_rendering_mode(rendering_mode, params.font_size, params.scale_factor);
 
         let antialias_mode = if use_subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
@@ -1553,7 +1554,6 @@ fn get_font_names_from_collection(
             };
             result.push(family_name);
         }
-
         result
     }
 }
@@ -1582,8 +1582,6 @@ fn apply_font_features(
         return Ok(());
     }
 
-    // All of these features are enabled by default by DirectWrite.
-    // If you want to (and can) peek into the source of DirectWrite
     let mut feature_liga = make_direct_write_feature("liga", 1);
     let mut feature_clig = make_direct_write_feature("clig", 1);
     let mut feature_calt = make_direct_write_feature("calt", 1);
@@ -1699,11 +1697,12 @@ fn should_use_system_subpixel_rendering(
     system_subpixel_rendering && !is_emoji
 }
 
-const PIXEL_STABLE_UI_TEXT_MAX_DIP: f32 = 16.0;
+const PIXEL_STABLE_UI_TEXT_MAX_PPEM: f32 = 16.0;
 
 fn glyph_rendering_mode(
     recommended: DWRITE_RENDERING_MODE1,
     font_size: Pixels,
+    raster_scale_factor: f32,
 ) -> DWRITE_RENDERING_MODE1 {
     // OUTLINE cannot produce the bitmap coverage atlas this path expects. Keep a symmetric
     // bitmap fallback there; all other modes remain eligible for the small-UI sharpness policy
@@ -1712,16 +1711,15 @@ fn glyph_rendering_mode(
         return DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
     }
 
-    // Small UI text needs stable device-pixel stems regardless of script, fallback font, weight,
-    // or antialiasing target. Once DPI scaling raises physical ppem, DirectWrite can recommend a
-    // symmetric/downsampled mode even for the same logical 9-16 DIP label. That adds vertical
-    // filtering and can make thin strokes look softer or visually lighter. Keep DirectWrite's
-    // selected grid-fit mode, but use NATURAL horizontal antialiasing for small bitmap glyphs.
-    // Larger display text keeps the platform recommendation because symmetric AA benefits curves
-    // and diagonals there.
-    if font_size.0.is_finite()
-        && font_size.0 > 0.0
-        && font_size.0 <= PIXEL_STABLE_UI_TEXT_MAX_DIP
+    // DirectWrite's documented transition between horizontally antialiased NATURAL text and
+    // vertically antialiased NATURAL_SYMMETRIC text is expressed in physical pixels per em, not
+    // logical DIPs. Respect that same unit here: a 12-DIP label at 150% DPI is already 18 ppem and
+    // should keep DirectWrite's symmetric recommendation instead of being forced through the
+    // small-text policy merely because its logical font size is below 16.
+    let physical_ppem = font_size.0 * raster_scale_factor;
+    if physical_ppem.is_finite()
+        && physical_ppem > 0.0
+        && physical_ppem <= PIXEL_STABLE_UI_TEXT_MAX_PPEM
         && (recommended == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
             || recommended == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED)
     {
@@ -1743,8 +1741,6 @@ fn get_system_ui_font_name() -> SharedString {
         .log_err()
         .is_none()
         {
-            // https://learn.microsoft.com/en-us/windows/win32/uxguide/vis-fonts
-            // Segoe UI is the Windows font intended for user interface text strings.
             "Segoe UI".into()
         } else {
             let font_name = String::from_utf16_lossy(&info.lfFaceName);
@@ -1755,8 +1751,6 @@ fn get_system_ui_font_name() -> SharedString {
     }
 }
 
-// One would think that with newer DirectWrite method: IDWriteFontFace4::GetGlyphImageFormats
-// but that doesn't seem to work for some glyphs, say ❤
 fn is_color_glyph(
     font_face: &IDWriteFontFace3,
     glyph_id: GlyphId,
@@ -1828,25 +1822,38 @@ mod tests {
     }
 
     #[test]
-    fn small_ui_mode_avoids_vertical_softening_for_all_antialiasing_paths() {
+    fn small_ui_mode_uses_physical_ppem_across_dpi_scales() {
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(9.0)).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(9.0), 1.0).0,
             DWRITE_RENDERING_MODE1_NATURAL.0
         );
         assert_eq!(
             glyph_rendering_mode(
                 DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED,
                 px(16.0),
+                1.0,
             )
             .0,
             DWRITE_RENDERING_MODE1_NATURAL.0
         );
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(17.0)).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(12.0), 1.5).0,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
         );
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_OUTLINE, px(9.0)).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(9.0), 1.5).0,
+            DWRITE_RENDERING_MODE1_NATURAL.0
+        );
+        assert_eq!(
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(9.0), 2.0).0,
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
+        );
+        assert_eq!(
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(17.0), 1.0).0,
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
+        );
+        assert_eq!(
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_OUTLINE, px(9.0), 1.0).0,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
         );
     }
@@ -2048,7 +2055,6 @@ mod tests {
         assert_eq!(next, Some((1, 1)));
         let next = analyzer.next();
         assert_eq!(next, None);
-        // 👨‍👩‍👧‍👦👩‍💻
         let cluster_map = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 4, 4, 4];
         let mut analyzer = ClusterAnalyzer::new(&cluster_map, 5);
         let next = analyzer.next();
@@ -2057,7 +2063,6 @@ mod tests {
         assert_eq!(next, Some((5, 1)));
         let next = analyzer.next();
         assert_eq!(next, None);
-        // 👩‍💻
         let cluster_map = [0, 0, 0, 0, 0];
         let mut analyzer = ClusterAnalyzer::new(&cluster_map, 1);
         let next = analyzer.next();
