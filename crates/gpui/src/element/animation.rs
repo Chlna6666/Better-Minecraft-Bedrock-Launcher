@@ -526,6 +526,12 @@ pub struct SampledAnimationElement<E> {
     progress: f32,
 }
 
+/// Opaque prepaint state for [`SampledAnimationElement`].
+#[doc(hidden)]
+pub struct SampledAnimationPrepaintState {
+    animation_id: SceneAnimationId,
+}
+
 impl<E: IntoElement + 'static> IntoElement for SampledAnimationElement<E> {
     type Element = Self;
 
@@ -536,7 +542,7 @@ impl<E: IntoElement + 'static> IntoElement for SampledAnimationElement<E> {
 
 impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = SceneAnimationId;
+    type PrepaintState = SampledAnimationPrepaintState;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -572,7 +578,7 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
     ) -> Self::PrepaintState {
         let animation_id = window.next_frame.scene.allocate_animation_id();
         window.with_retained_replay_barrier(true, |window| element.prepaint(window, cx));
-        animation_id
+        SampledAnimationPrepaintState { animation_id }
     }
 
     fn paint(
@@ -581,13 +587,13 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
-        animation_id: &mut Self::PrepaintState,
+        state: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
         window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
-            animation_id: *animation_id,
+            animation_id: state.animation_id,
             property: self.property.property,
             progress: if self.progress.is_finite() {
                 self.progress
@@ -598,7 +604,7 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
             to,
         });
         window.with_scene_animation(
-            *animation_id,
+            state.animation_id,
             self.property.property,
             self.property.text_raster_scale(),
             |window| element.paint(window, cx),
@@ -607,7 +613,8 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
 }
 
 #[derive(Clone)]
-struct StableSampledAnimationState {
+#[doc(hidden)]
+pub struct StableSampledAnimationState {
     animation_id: SceneAnimationId,
     property: AnimationProperty,
     frame_pending: Rc<Cell<bool>>,
@@ -774,7 +781,8 @@ impl<E: IntoElement + 'static> IntoElement for AnimationElement<E> {
 struct AnimationState(ElementAnimationTimeline);
 
 #[derive(Clone, Debug, PartialEq)]
-struct SceneAnimationState {
+#[doc(hidden)]
+pub struct SceneAnimationState {
     animation_id: SceneAnimationId,
     property: AnimationProperty,
     spec: AnimationSpec,
