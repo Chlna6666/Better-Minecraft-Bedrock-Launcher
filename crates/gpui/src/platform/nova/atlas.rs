@@ -221,6 +221,13 @@ impl PlatformAtlas for NovaAtlas {
         };
 
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        // `build` intentionally runs without the atlas mutex so expensive glyph rasterization or
+        // image decoding cannot serialize unrelated cache misses. Another thread may have filled
+        // this exact key while we were building, so re-check before allocating/uploading to avoid
+        // duplicate tiles and orphaned GPU atlas space under concurrent misses.
+        if let Some(tile) = state.tiles.get(key) {
+            return Ok(Some(*tile));
+        }
         let Some(tile) = state.allocate_and_upload(key, size, &bytes) else {
             let texture_kind = key.texture_kind();
             if state.full_kinds_logged.insert(texture_kind) {
