@@ -417,6 +417,10 @@ pub(super) struct RetainedUpload {
 }
 
 impl RetainedUpload {
+    pub(super) fn invalidate_encode_key(&mut self) {
+        self.key = None;
+    }
+
     pub(super) fn static_upload_mask(&self, slot: usize) -> StaticUploadMask {
         let Some(current) = self.static_signature else {
             return StaticUploadMask::all();
@@ -486,10 +490,9 @@ impl NovaRenderer {
             premultiplied_alpha: self.surface_alpha.outputs_premultiplied_alpha(),
             blur_quality,
         };
-        // RenderingParameters are immutable for this renderer. Element-blur child scenes are
-        // flattened into the same static upload, and retained-animation refresh now recursively
-        // rebuilds their animation-value stream. Their presence therefore no longer invalidates
-        // otherwise identical static primitive/batch data.
+        // Display-specific text raster parameters invalidate only this CPU encode key when their
+        // visual values change. Element-blur child scenes are flattened into the same static upload,
+        // and retained-animation refresh recursively rebuilds only the animation-value stream.
         let reusable = scene.revision != 0 && self.retained_upload.key == Some(key);
         let mut summary = self.retained_upload.summary;
         let mut encode_time = Duration::ZERO;
