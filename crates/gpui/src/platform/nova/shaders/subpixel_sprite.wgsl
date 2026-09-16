@@ -14,7 +14,17 @@ fn fs_subpixel_sprite(input: MonoSpriteVarying) -> SubpixelSpriteFragmentOutput 
         discard;
     }
 
-    let corrected = corrected_subpixel_coverage(input);
+    var corrected = corrected_subpixel_coverage(input);
+    if (input.subpixel_scale_safe == 0u) {
+        // RGB ClearType coverage is tied to the physical LCD stripe grid. While a renderer-owned
+        // scale samples the glyph at any density other than its DirectWrite raster density, using
+        // the three channels independently changes subpixel phase and apparent stroke weight.
+        // Preserve the already gamma/contrast-corrected outline, but neutralize it to scalar
+        // coverage until geometry returns to a native 1:1 raster mapping.
+        let neutral = (corrected.r + corrected.g + corrected.b) * (1.0 / 3.0);
+        corrected = vec3<f32>(neutral);
+    }
+
     var out = SubpixelSpriteFragmentOutput();
     out.foreground = vec4<f32>(input.color.rgb, 1.0);
     out.coverage = vec4<f32>(input.color.a * corrected * clip_coverage, 1.0);

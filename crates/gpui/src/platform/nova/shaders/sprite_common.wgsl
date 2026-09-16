@@ -15,6 +15,7 @@ struct MonoSpriteVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) tile_position: vec2<f32>,
     @location(1) @interpolate(flat) color: vec4<f32>,
+    @location(2) @interpolate(flat) subpixel_scale_safe: u32,
     @location(3) clip_distances: vec4<f32>,
     @location(4) @interpolate(flat) content_mask_bounds: vec4<f32>,
     @location(5) @interpolate(flat) content_mask_radii: vec4<f32>,
@@ -27,11 +28,31 @@ fn sprite_varying(vertex_id: u32, instance_id: u32) -> MonoSpriteVarying {
     let bounds = animation_bounds(sprite.bounds, animation);
     let content_mask = animation_content_mask(sprite.content_mask, animation);
 
+    // A DirectWrite RGB glyph encodes coverage for one physical LCD pixel grid. The glyph atlas
+    // can be intentionally rasterized above/below the scene's stable bounds so a renderer-owned
+    // scale lands on a native 1:1 raster at its target. Reconstruct that raster density directly
+    // from the atlas tile and the unanimated primitive bounds; no extra per-glyph GPU ABI is needed.
+    var raster_scale = 1.0;
+    let static_width = abs(sprite.bounds.size.x);
+    let static_height = abs(sprite.bounds.size.y);
+    if (static_width > 0.0001 && sprite.tile.bounds.size.x > 0) {
+        raster_scale = f32(sprite.tile.bounds.size.x) / static_width;
+    } else if (static_height > 0.0001 && sprite.tile.bounds.size.y > 0) {
+        raster_scale = f32(sprite.tile.bounds.size.y) / static_height;
+    }
+    let geometry_scale = select(1.0, animation.scale, animation.scales_geometry != 0u);
+    let scale_epsilon = max(0.001, abs(raster_scale) * 0.001);
+
     var out = MonoSpriteVarying();
     out.position = to_device_position_transformed(unit_vertex, bounds, sprite.transformation);
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
     out.color = rgba_to_vec4(sprite.color);
     out.color.a *= animation.opacity;
+    out.subpixel_scale_safe = select(
+        0u,
+        1u,
+        abs(geometry_scale - raster_scale) <= scale_epsilon,
+    );
     out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, bounds, content_mask.bounds, sprite.transformation);
     out.content_mask_bounds = vec4<f32>(content_mask.corner_bounds.origin, content_mask.corner_bounds.size);
     out.content_mask_radii = vec4<f32>(content_mask.corner_radii.top_left, content_mask.corner_radii.top_right, content_mask.corner_radii.bottom_right, content_mask.corner_radii.bottom_left);
