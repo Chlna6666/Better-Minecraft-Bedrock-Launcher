@@ -22,12 +22,14 @@ static TEXT_RASTERIZATION_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "windows")]
 pub(crate) fn text_rasterization_generation() -> u64 {
-    TEXT_RASTERIZATION_GENERATION.load(AtomicOrdering::Acquire)
+    // This counter is only a change token. It does not publish or guard any associated data, so
+    // stronger ordering would add synchronization semantics without improving correctness.
+    TEXT_RASTERIZATION_GENERATION.load(AtomicOrdering::Relaxed)
 }
 
 #[cfg(target_os = "windows")]
 pub(crate) fn advance_text_rasterization_generation() {
-    TEXT_RASTERIZATION_GENERATION.fetch_add(1, AtomicOrdering::Release);
+    TEXT_RASTERIZATION_GENERATION.fetch_add(1, AtomicOrdering::Relaxed);
 }
 
 #[cfg(any(
