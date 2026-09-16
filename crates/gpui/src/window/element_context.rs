@@ -334,6 +334,27 @@ impl Window {
         result
     }
 
+    /// Temporarily prevents retained/view-cache replay while prepainting a subtree whose
+    /// renderer-owned primitive binding has changed. The barrier is scoped to the subtree so
+    /// unrelated siblings keep their retained ranges, and the previous window-wide recovery flag
+    /// is restored exactly after traversal.
+    pub(crate) fn with_retained_replay_barrier<R>(
+        &mut self,
+        enabled: bool,
+        prepaint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_prepaint();
+        if !enabled {
+            return prepaint(self);
+        }
+
+        let previous = self.force_view_cache_refresh;
+        self.force_view_cache_refresh = true;
+        let result = prepaint(self);
+        self.force_view_cache_refresh = previous;
+        result
+    }
+
     pub(crate) fn with_scene_animation<R>(
         &mut self,
         animation_id: crate::SceneAnimationId,
@@ -607,10 +628,7 @@ impl Window {
         self.next_frame.dispatch_tree.set_key_context(context);
     }
 
-    /// Sets the focus handle for the current element. This handle will be used to manage focus state
-    /// and keyboard event dispatch for the element.
-    ///
-    /// This method should only be called as part of the prepaint phase of element drawing.
+    /// Sets the focus handle for the current element. This method should only be called as part of the prepaint phase.
     pub fn set_focus_handle(&mut self, focus_handle: &FocusHandle, _: &App) {
         self.invalidator.debug_assert_prepaint();
         if focus_handle.is_focused(self) {

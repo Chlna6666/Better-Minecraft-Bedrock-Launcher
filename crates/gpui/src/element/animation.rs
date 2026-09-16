@@ -536,7 +536,7 @@ impl<E: IntoElement + 'static> IntoElement for SampledAnimationElement<E> {
 
 impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type PrepaintState = SceneAnimationId;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -569,8 +569,10 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
         element: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        element.prepaint(window, cx);
+    ) -> Self::PrepaintState {
+        let animation_id = window.next_frame.scene.allocate_animation_id();
+        window.with_retained_replay_barrier(true, |window| element.prepaint(window, cx));
+        animation_id
     }
 
     fn paint(
@@ -579,16 +581,26 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        animation_id: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
-        window.with_sampled_scene_animation(
-            self.property.property,
-            self.progress,
+        window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
+            animation_id: *animation_id,
+            property: self.property.property,
+            progress: if self.progress.is_finite() {
+                self.progress
+            } else {
+                0.0
+            },
             from,
             to,
+        });
+        window.with_scene_animation(
+            *animation_id,
+            self.property.property,
+            self.property.text_raster_scale(),
             |window| element.paint(window, cx),
         );
     }
@@ -597,6 +609,7 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
 #[derive(Clone)]
 struct StableSampledAnimationState {
     animation_id: SceneAnimationId,
+    property: AnimationProperty,
     frame_pending: Rc<Cell<bool>>,
 }
 
@@ -619,7 +632,7 @@ impl<E: IntoElement + 'static> IntoElement for StableSampledAnimationElement<E> 
 
 impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type PrepaintState = StableSampledAnimationState;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -646,54 +659,73 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        element.prepaint(window, cx);
+    ) -> Self::PrepaintState {
+        let global_id = global_id
+            .expect("StableSampledAnimationElement always supplies an element id for state tracking");
+        let (state, binding_changed) = window.with_element_state(
+            global_id,
+            |state: Option<StableSampledAnimationState>, _window| {
+                let (state, binding_changed) = match state {
+                    Some(state) if state.property == self.property => (state, false),
+                    Some(state) => (
+                        StableSampledAnimationState {
+                            animation_id: allocate_stable_sampled_animation_id(),
+                            property: self.property,
+                            frame_pending: state.frame_pending,
+                        },
+                        true,
+                    ),
+                    None => (
+                        StableSampledAnimationState {
+                            animation_id: allocate_stable_sampled_animation_id(),
+                            property: self.property,
+                            frame_pending: Rc::new(Cell::new(false)),
+                        },
+                        true,
+                    ),
+                };
+                ((state.clone(), binding_changed), state)
+            },
+        );
+        window.with_retained_replay_barrier(binding_changed, |window| {
+            element.prepaint(window, cx)
+        });
+        state
     }
 
     fn paint(
         &mut self,
-        global_id: Option<&GlobalElementId>,
+        _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        state: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let global_id = global_id
-            .expect("StableSampledAnimationElement always supplies an element id for state tracking");
-        let (animation_id, frame_pending) = window.with_element_state(
-            global_id,
-            |state: Option<StableSampledAnimationState>, _window| {
-                let state = state.unwrap_or_else(|| StableSampledAnimationState {
-                    animation_id: allocate_stable_sampled_animation_id(),
-                    frame_pending: Rc::new(Cell::new(false)),
-                });
-                ((state.animation_id, state.frame_pending.clone()), state)
-            },
-        );
         let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
         window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
-            animation_id,
+            animation_id: state.animation_id,
             property: self.property.property,
             progress: self.progress,
             from,
             to,
         });
         window.with_scene_animation(
-            animation_id,
+            state.animation_id,
             self.property.property,
             self.property.text_raster_scale(),
             |window| element.paint(window, cx),
         );
 
-        if self.animating && !frame_pending.replace(true) {
+        if self.animating && !state.frame_pending.replace(true) {
+            let frame_pending = state.frame_pending.clone();
             let view_id = window.current_view();
             let retained_id = window
                 .current_retained_element_id()
@@ -753,7 +785,7 @@ struct SceneAnimationState {
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type PrepaintState = Option<SceneAnimationState>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -822,32 +854,19 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: crate::Bounds<crate::Pixels>,
-        element: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        element.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
         global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: crate::Bounds<crate::Pixels>,
         element: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Self::PrepaintState {
         let Some((property, spec)) = self
             .scene_animation()
             .map(|(property, spec)| (property, spec.clone()))
         else {
-            element.paint(window, cx);
-            return;
+            element.prepaint(window, cx);
+            return None;
         };
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
@@ -860,9 +879,10 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         } else {
             property.dirty_bounds(bounds)
         };
-        let animation_id =
-            window.with_element_state(global_id, |state: Option<SceneAnimationState>, window| {
-                let state = match state {
+        let (state, binding_changed) = window.with_element_state(
+            global_id,
+            |state: Option<SceneAnimationState>, window| {
+                let (state, binding_changed) = match state {
                     Some(state)
                         if state.property == property
                             && state.spec == spec
@@ -870,7 +890,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                             && state.from == from
                             && state.to == to =>
                     {
-                        state
+                        (state, false)
                     }
                     _ => {
                         let animation_id = window.start_scene_animation(
@@ -884,32 +904,59 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                         if let Some(spring) = spring {
                             window.set_scene_animation_spring(global_id, property.property, spring);
                         }
-                        SceneAnimationState {
-                            animation_id,
-                            property,
-                            spec,
-                            spring,
-                            from,
-                            to,
-                        }
+                        (
+                            SceneAnimationState {
+                                animation_id,
+                                property,
+                                spec,
+                                spring,
+                                from,
+                                to,
+                            },
+                            true,
+                        )
                     }
                 };
-                (state.animation_id, state)
-            });
+                ((state.clone(), binding_changed), state)
+            },
+        );
+        window.with_retained_replay_barrier(binding_changed, |window| {
+            element.prepaint(window, cx)
+        });
+        Some(state)
+    }
+
+    fn paint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: crate::Bounds<crate::Pixels>,
+        element: &mut Self::RequestLayoutState,
+        state: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(state) = state.as_ref() else {
+            element.paint(window, cx);
+            return;
+        };
+        let global_id =
+            global_id.expect("AnimationElement always supplies an element id for state tracking");
         window.with_scene_animation(
-            animation_id,
-            property.property,
-            property.text_raster_scale(),
+            state.animation_id,
+            state.property.property,
+            state.property.text_raster_scale(),
             |window| {
                 element.paint(window, cx);
-                if spring.is_some()
-                    && property.property == TransitionProperty::Translation
-                    && let Some(bounds) = window.scene_animation_visual_bounds(animation_id)
-                    && let Some(dirty_bounds) = property.spring_translation_dirty_bounds(bounds)
+                if state.spring.is_some()
+                    && state.property.property == TransitionProperty::Translation
+                    && let Some(bounds) = window.scene_animation_visual_bounds(state.animation_id)
+                    && let Some(dirty_bounds) =
+                        state.property.spring_translation_dirty_bounds(bounds)
                 {
                     let _ = window.set_scene_animation_dirty_bounds(
                         global_id,
-                        property.property,
+                        state.property.property,
                         dirty_bounds,
                     );
                 }
