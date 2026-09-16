@@ -1,12 +1,120 @@
 use crate::{
     AnyElement, App, Bounds, Element, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Window,
+    Pixels, TextStyleRefinement, Window,
 };
+use std::{cell::RefCell, rc::Rc};
+
+#[derive(Clone)]
+struct DeferredInheritedContext {
+    text_style_stack: Vec<TextStyleRefinement>,
+    rem_size: Pixels,
+    element_opacity: f32,
+}
+
+struct DeferredContextElement {
+    child: Option<AnyElement>,
+    context: Rc<RefCell<Option<DeferredInheritedContext>>>,
+}
+
+fn with_deferred_inherited_context<R>(
+    context: &Rc<RefCell<Option<DeferredInheritedContext>>>,
+    window: &mut Window,
+    f: impl FnOnce(&mut Window) -> R,
+) -> R {
+    let Some(context) = context.borrow().clone() else {
+        return f(window);
+    };
+
+    // Deferred children leave their original ancestor stack before prepaint/paint. Restore the
+    // inherited values that are not part of Window::defer_draw's frame descriptor so text paint,
+    // rem-dependent styling, and cumulative opacity remain identical to inline traversal.
+    let previous_text_style_stack =
+        std::mem::replace(&mut window.text_style_stack, context.text_style_stack);
+    let previous_element_opacity =
+        std::mem::replace(&mut window.element_opacity, context.element_opacity);
+    let result = window.with_rem_size(Some(context.rem_size), f);
+    window.element_opacity = previous_element_opacity;
+    window.text_style_stack = previous_text_style_stack;
+    result
+}
+
+impl IntoElement for DeferredContextElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for DeferredContextElement {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<crate::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut child = self
+            .child
+            .take()
+            .expect("deferred context child should only be laid out once");
+        let layout_id = child.request_layout(window, cx);
+        (layout_id, child)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        with_deferred_inherited_context(&self.context, window, |window| {
+            child.prepaint(window, cx)
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        with_deferred_inherited_context(&self.context, window, |window| {
+            child.paint(window, cx)
+        });
+    }
+}
 
 /// Builds a `Deferred` element, which delays the layout and paint of its child.
 pub fn deferred(child: impl IntoElement) -> Deferred {
-    Deferred {
+    let context = Rc::new(RefCell::new(None));
+    let child = DeferredContextElement {
         child: Some(child.into_any_element()),
+        context: context.clone(),
+    }
+    .into_any_element();
+
+    Deferred {
+        child: Some(child),
+        context,
         priority: 0,
     }
 }
@@ -15,6 +123,7 @@ pub fn deferred(child: impl IntoElement) -> Deferred {
 /// its ancestors, while keeping its layout as part of the current element tree.
 pub struct Deferred {
     child: Option<AnyElement>,
+    context: Rc<RefCell<Option<DeferredInheritedContext>>>,
     priority: usize,
 }
 
@@ -60,6 +169,12 @@ impl Element for Deferred {
         window: &mut Window,
         _cx: &mut App,
     ) {
+        *self.context.borrow_mut() = Some(DeferredInheritedContext {
+            text_style_stack: window.text_style_stack.clone(),
+            rem_size: window.rem_size(),
+            element_opacity: window.element_opacity(),
+        });
+
         let child = self.child.take().unwrap();
         let element_offset = window.element_offset();
         window.defer_draw(child, element_offset, self.priority)
