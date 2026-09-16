@@ -79,30 +79,28 @@ impl NavState {
     }
 
     pub fn is_animating(&self, now: Instant) -> bool {
+        self.pill_render_state(now).1
+    }
+
+    pub(crate) fn pill_render_state(&self, now: Instant) -> ((f32, f32), bool) {
         let fast = self.pill_fast.sample(now);
         let slow = self.pill_slow.sample(now);
         let target = self.pill_to_index as f32;
-        if (fast.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
-            && (slow.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
-        {
-            return false;
+        let settled = (fast.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
+            && (slow.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE;
+        if settled {
+            return ((target, target), false);
         }
 
-        !fast.done || !slow.done
+        (
+            (fast.value.min(slow.value), fast.value.max(slow.value)),
+            !fast.done || !slow.done,
+        )
     }
 
     /// 胶囊左右边缘位置（以 tab 序号为单位，允许轻微过冲产生 Q 弹）。
     pub fn pill_edges(&self, now: Instant) -> (f32, f32) {
-        let fast = self.pill_fast.sample(now);
-        let slow = self.pill_slow.sample(now);
-        let target = self.pill_to_index as f32;
-        if (fast.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
-            && (slow.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
-        {
-            return (target, target);
-        }
-
-        (fast.value.min(slow.value), fast.value.max(slow.value))
+        self.pill_render_state(now).0
     }
 
     pub fn pill_direction(&self) -> f32 {

@@ -169,6 +169,7 @@ struct MainWindowRenderModel {
     theme_k: f32,
     theme_accent: Option<Hsla>,
     theme_colors: crate::ui::theme::colors::ThemeColors,
+    theme_animating: bool,
     debug_enabled: bool,
     window_width: Pixels,
     window_width_px: f32,
@@ -304,7 +305,7 @@ impl MainWindowView {
         &mut self,
         now: Instant,
         cx: &App,
-    ) -> (f32, Option<Hsla>, crate::ui::theme::colors::ThemeColors) {
+    ) -> (f32, Option<Hsla>, crate::ui::theme::colors::ThemeColors, bool) {
         let (theme_k, theme_accent, theme_animating) = {
             let theme = cx.global::<ThemeState>();
             (theme.factor(now), theme.accent, theme.is_animating(now))
@@ -315,7 +316,7 @@ impl MainWindowView {
             && same_theme_factor(cache.factor, theme_k)
             && same_optional_hsla(cache.accent, theme_accent)
         {
-            return (theme_k, theme_accent, cache.colors);
+            return (theme_k, theme_accent, cache.colors, false);
         }
 
         let theme_colors = lerp_theme_colors(
@@ -332,7 +333,7 @@ impl MainWindowView {
             });
         }
 
-        (theme_k, theme_accent, theme_colors)
+        (theme_k, theme_accent, theme_colors, theme_animating)
     }
 
     fn build_render_model(
@@ -348,7 +349,7 @@ impl MainWindowView {
         };
         let debug_enabled = cx.global::<DebugState>().enabled;
         let update_render_state = self.read_update_render_state(now, debug_enabled, cx);
-        let (theme_k, theme_accent, theme_colors) = self.theme_colors_for_render(now, cx);
+        let (theme_k, theme_accent, theme_colors, theme_animating) = self.theme_colors_for_render(now, cx);
         let window_bounds = window.bounds();
         let window_width = window_bounds.size.width;
         let window_height = window_bounds.size.height;
@@ -400,6 +401,7 @@ impl MainWindowView {
             theme_k,
             theme_accent,
             theme_colors,
+            theme_animating,
             debug_enabled,
             window_width,
             window_width_px: window_width / px(1.0),
@@ -451,24 +453,35 @@ impl MainWindowView {
                 optional_page_view_element(route_key.as_ref(), self.plugin_page_view.clone())
             }
         };
+
+        if crate::core::ui_prefs::reduced_motion() || transition_direction == 0.0 {
+            return div()
+                .absolute()
+                .inset_0()
+                .size_full()
+                .child(page)
+                .into_any_element();
+        }
+
         let route_key = route_enter_animation_key(route);
-        // 页面级切换必须由一个 presentation owner 驱动。先把完整 page subtree 捕获为 retained
-        // zero-filter composite，再只移动最终 composite record，确保文字、图片、SVG/path、underline
-        // 使用同一 spring sample；Nova 在 retained static 复用时会跳过 source/filter 重做。
+        // Direct layout placement and opacity spring animation without root scene_animation.
+        // Avoids establishing a root scene animation binding that triggers recursive composite_layer
+        // offscreen promotion for nested animated children (buttons, tabs, switches, loaders),
+        // eliminates full-window FBO allocations, and preserves crisp subpixel text antialiasing.
         let animated_page = div()
+            .relative()
             .size_full()
             .child(page)
-            .composite_layer()
             .with_animation(
                 route_key,
-                spring_motion(apple_spring(0.36, 0.74)).with_property(
-                    AnimationProperty::translation(
-                        point(px(18.0 * transition_direction), px(0.0)),
-                        Point::default(),
-                    ),
-                ),
-                |page, _progress| page,
+                spring_motion(apple_spring(0.36, 0.74)),
+                move |page, progress| {
+                    let p = progress.clamp(0.0, 1.0);
+                    let offset_x = (1.0 - p) * 18.0 * transition_direction;
+                    page.opacity(p).left(px(offset_x))
+                },
             );
+
         div()
             .absolute()
             .inset_0()
@@ -1786,6 +1799,10 @@ impl Render for MainWindowView {
             crate::ui::window::debug::state::record_main_window_render_finished(
                 render_started.elapsed(),
             );
+        }
+
+        if model.theme_animating {
+            window.request_animation_frame();
         }
 
         root

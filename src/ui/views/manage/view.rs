@@ -687,16 +687,12 @@ impl ManagePageView {
             let p = 1.0 - tc;
             (1.0 - p.powi(3)).clamp(0.0, 1.0)
         };
-        let version_opacity = if version_animating {
-            version_t_eased
-        } else {
-            1.0
-        };
-        let version_slide_offset = if version_animating {
-            10.0 * (1.0 - version_t_eased)
-        } else {
-            0.0
-        };
+        let version_transition = AnimationProperty::translation_opacity(
+            point(px(0.0), px(10.0)),
+            Point::default(),
+            0.0,
+            1.0,
+        );
 
         let (tab_t, tab_animating) = self.tab_anim_factor(now);
         let tab_t_eased = {
@@ -722,9 +718,7 @@ impl ManagePageView {
             1.0,
         );
         let main_panel = crate::ui::components::page_shell::split_content_panel(colors)
-            .opacity(version_opacity)
             .relative()
-            .top(px(version_slide_offset))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.import_dropped_assets(paths.paths(), window, cx);
             }))
@@ -983,7 +977,12 @@ impl ManagePageView {
             );
 
         main_panel
-            .with_layout_animation_target(version_animating)
+            .with_stable_sampled_animation(
+                "manage-version-content-transition",
+                version_transition,
+                version_t_eased,
+                version_animating,
+            )
             .into_any_element()
     }
 }

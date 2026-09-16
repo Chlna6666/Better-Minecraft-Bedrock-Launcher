@@ -17,7 +17,9 @@ use actions::{Action, button};
 pub(in crate::ui::main_window) struct Row {
     profile: XboxProfile,
     opacity: f32,
+    opacity_animating: bool,
     selection: f32,
+    selection_animating: bool,
     present: bool,
 }
 
@@ -59,11 +61,13 @@ impl RenderState {
                 } else {
                     row.presence.value(now).clamp(0.0, 1.0)
                 },
+                opacity_animating: !immediate && row.presence.is_animating(now),
                 selection: if immediate {
                     row.selection.target()
                 } else {
                     row.selection.value(now).clamp(0.0, 1.0)
                 },
+                selection_animating: !immediate && row.selection.is_animating(now),
                 present: row.presence.target() > 0.0,
             })
             .filter(|row| row.present || row.opacity > 0.001)
@@ -71,9 +75,10 @@ impl RenderState {
         let dialog_animating = !immediate && !sample.done;
         let rows_animating = !immediate
             && state.dialog_open
-            && state.rows.iter().any(|row| {
-                row.presence.is_animating(now) || row.selection.is_animating(now)
-            });
+            && state
+                .rows
+                .iter()
+                .any(|row| row.presence.is_animating(now) || row.selection.is_animating(now));
         Self {
             snapshot: state.snapshot.clone(),
             rows,
@@ -147,7 +152,11 @@ fn avatar(profile: Option<&XboxProfile>, color: Hsla, size: f32) -> AnyElement {
             .into_any_element()
     } else {
         frame
-            .child(icon(lucide_gpui::icon!(circle_user_round), color, size * 0.6))
+            .child(icon(
+                lucide_gpui::icon!(circle_user_round),
+                color,
+                size * 0.6,
+            ))
             .into_any_element()
     }
 }
@@ -185,10 +194,12 @@ fn status_hint(phase: AuthPhase) -> SharedString {
 pub(super) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
     let trigger_bounds = state.trigger_bounds.clone();
     let chevron = icon(lucide_gpui::icon!(chevron_down), colors.text_secondary, 12.)
-        .with_transformation(Transformation::rotate(radians(
-            std::f32::consts::PI * state.progress,
-        )))
-        .with_layout_animation_target(state.dialog_animating);
+        .with_stable_sampled_animation(
+            "xbox-auth-chevron-motion",
+            AnimationProperty::rotation(radians(0.0), radians(std::f32::consts::PI)),
+            state.progress,
+            state.dialog_animating,
+        );
 
     button(
         "xbox-auth-status",

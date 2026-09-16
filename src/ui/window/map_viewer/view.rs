@@ -213,15 +213,11 @@ impl Render for MapViewerWindowView {
             window,
             preview_3d_motion_active || paste_preview_auto_pan_active,
         );
-        let colors = {
-            let theme = cx.global::<ThemeState>();
-            lerp_theme_colors(
-                &LightColors::colors(),
-                &DarkColors::colors(),
-                theme.factor(now),
-                theme.accent,
-            )
-        };
+        let theme = cx.global::<ThemeState>();
+        if theme.is_animating(now) {
+            window.request_animation_frame();
+        }
+        let colors = self.theme_colors_at(now, cx);
         let top_bar_snapshot = self.top_bar_snapshot(&i18n);
         let tool_stripe_snapshot = self.tool_stripe_snapshot();
         let menu_overlay_snapshot = self.menu_overlay_snapshot();

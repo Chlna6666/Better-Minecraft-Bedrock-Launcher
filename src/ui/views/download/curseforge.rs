@@ -2393,7 +2393,6 @@ fn render_curseforge_result_card(
                         .child(t!("common.install")),
                 ),
         )
-        .composite_layer()
         .with_sampled_animation(
             AnimationProperty::translation(point(px(0.0), px(10.0)), Point::default()),
             reveal_progress,

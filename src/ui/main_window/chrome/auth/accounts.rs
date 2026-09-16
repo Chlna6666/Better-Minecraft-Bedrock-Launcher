@@ -11,8 +11,7 @@ pub(super) fn list(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(2.))
-        .children(state.rows.iter().map(|row| account(row, state, colors)))
-        .with_layout_animation_target(state.rows_animating);
+        .children(state.rows.iter().map(|row| account(row, state, colors)));
 
     div()
         .mt(px(16.))
@@ -46,6 +45,9 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
     let enabled = state.interactive() && row.present;
     let can_switch = enabled && (!active || state.snapshot.phase == AuthPhase::Error);
     let confirming = state.pending_delete.as_deref() == Some(profile.xuid.as_str());
+    let row_motion_id = SharedString::from(format!("xbox-account-row-motion-{}", profile.xuid));
+    let selection_motion_id =
+        SharedString::from(format!("xbox-account-selection-{}", profile.xuid));
     div()
         .id(SharedString::from(format!(
             "xbox-account-row-{}",
@@ -53,11 +55,23 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
         )))
         .h(px(54.))
         .rounded(px(8.))
-        .bg(colors.accent.opacity(0.10 * row.selection))
-        .opacity(row.opacity)
+        .relative()
         .flex()
         .items_center()
         .gap(px(4.))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(8.))
+                .bg(colors.accent.opacity(0.10))
+                .with_stable_sampled_animation(
+                    selection_motion_id,
+                    AnimationProperty::opacity(0.0, 1.0),
+                    row.selection,
+                    row.selection_animating,
+                ),
+        )
         .pr(px(6.))
         .child(
             button(
@@ -155,6 +169,12 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
                     )
                 })
             },
+        )
+        .with_stable_sampled_animation(
+            row_motion_id,
+            AnimationProperty::opacity(0.0, 1.0),
+            row.opacity,
+            row.opacity_animating,
         )
         .into_any_element()
 }

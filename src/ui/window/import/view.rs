@@ -634,14 +634,9 @@ impl Render for ImportWindowView {
                                                         .min_w(px(0.))
                                                         .min_h(px(0.))
                                                         .overflow_y_scrollbar()
-                                                        .child(
-                                                            render_preview_card(
-                                                                self, &colors, frame_now, cx,
-                                                            )
-                                                            .with_layout_animation_target(
-                                                                self.is_inspecting,
-                                                            ),
-                                                        ),
+                                                        .child(render_preview_card(
+                                                            self, &colors, frame_now, cx,
+                                                        )),
                                                 )
                                                 .child(
                                                     div()
@@ -679,14 +674,9 @@ impl Render for ImportWindowView {
                                                 .flex()
                                                 .flex_col()
                                                 .gap(px(14.))
-                                                .child(
-                                                    render_preview_card(
-                                                        self, &colors, frame_now, cx,
-                                                    )
-                                                    .with_layout_animation_target(
-                                                        self.is_inspecting,
-                                                    ),
-                                                )
+                                                .child(render_preview_card(
+                                                    self, &colors, frame_now, cx,
+                                                ))
                                                 .child(render_versions_card(
                                                     self,
                                                     &colors,
@@ -1160,13 +1150,16 @@ fn render_preview_card(
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(spinning_icon(
-                now,
-                this.inspect_started_at,
-                lucide_gpui::icon!(loader_circle),
-                18.0,
-                colors.accent,
-            ))
+            .child(
+                spinning_icon(
+                    now,
+                    this.inspect_started_at,
+                    lucide_gpui::icon!(loader_circle),
+                    18.0,
+                    colors.accent,
+                )
+                .with_layout_animation_target(true),
+            )
             .child(
                 div()
                     .text_size(px(13.))

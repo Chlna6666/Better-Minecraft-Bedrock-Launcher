@@ -49,7 +49,14 @@ pub fn compute_virtual_list_plan(
         return VirtualListPlan::default();
     }
 
-    let viewport_height_px = (viewport_height / px(1.0)).max(item_pitch_px);
+    let viewport_height_px = if viewport_height <= px(0.0) {
+        // Initial layout pass before scroll container has been measured:
+        // default to a full visible page (at least 8 items or 600px) so the initial
+        // frame renders a complete viewport without waiting for user input.
+        (item_pitch_px * 8.0).max(600.0)
+    } else {
+        (viewport_height / px(1.0)).max(item_pitch_px)
+    };
     let content_height_px = total_items as f32 * item_pitch_px;
     let max_scroll_top = (content_height_px - viewport_height_px).max(0.0);
     let scroll_top = (-(scroll_offset_y / px(1.0))).clamp(0.0, max_scroll_top);
@@ -131,5 +138,14 @@ mod tests {
         assert_eq!(plan.heavy_slice.start_index, 10);
         assert_eq!(plan.heavy_slice.end_index, 13);
         assert_eq!(plan.heavy_slice.len(), 3);
+    }
+
+    #[::core::prelude::v1::test]
+    fn virtual_list_unmeasured_viewport_renders_initial_batch() {
+        let plan = compute_virtual_list_plan(20, 96.0, px(0.0), px(0.0), 1, 10);
+
+        // Even with 0 viewport height, initial batch renders at least 8 items
+        assert_eq!(plan.visible_slice.start_index, 0);
+        assert!(plan.render_slice.end_index >= 8);
     }
 }

@@ -504,14 +504,18 @@ impl MapViewerWindowView {
         this
     }
 
-    pub(super) fn theme_colors(&self, cx: &App) -> ThemeColors {
+    pub(super) fn theme_colors_at(&self, now: Instant, cx: &App) -> ThemeColors {
         let theme = cx.global::<ThemeState>();
         lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
-            theme.factor(Instant::now()),
+            theme.factor(now),
             theme.accent,
         )
+    }
+
+    pub(super) fn theme_colors(&self, cx: &App) -> ThemeColors {
+        self.theme_colors_at(Instant::now(), cx)
     }
 
     pub(super) fn update_viewport_size(&mut self, window: &Window) -> bool {

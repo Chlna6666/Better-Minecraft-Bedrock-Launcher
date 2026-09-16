@@ -31,13 +31,10 @@ pub(super) struct AppChromeView {
     auth_trigger_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     auth_was_open: bool,
     auth_blocked: bool,
-    plugin_navigation_pages: std::sync::Arc<Vec<crate::plugins::runtime::PluginPage>>,
 }
 
 impl AppChromeView {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let plugin_navigation_pages =
-            std::sync::Arc::new(crate::plugins::runtime::navigation_pages(cx));
         let mut subscriptions = vec![
             cx.observe_global_in::<BedrockAuthState>(window, |this, window, cx| {
                 let open = cx.global::<BedrockAuthState>().dialog_open;
@@ -61,11 +58,7 @@ impl AppChromeView {
             cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
                 cx.notify()
             }),
-            cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|this, cx| {
-                this.plugin_navigation_pages =
-                    std::sync::Arc::new(crate::plugins::runtime::navigation_pages(cx));
-                cx.notify();
-            }),
+            cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|_, cx| cx.notify()),
         ];
         subscriptions.push(cx.observe_window_bounds(window, |_, window, cx| {
             let show_labels = window.bounds().size.width >= px(1180.);
@@ -95,7 +88,6 @@ impl AppChromeView {
             auth_trigger_bounds: Rc::new(std::cell::Cell::new(None)),
             auth_was_open,
             auth_blocked: false,
-            plugin_navigation_pages,
         }
     }
 
@@ -153,7 +145,9 @@ impl AppChromeView {
             glass_effect_enabled: cx
                 .global::<crate::ui::views::settings::state::SettingsPageState>()
                 .glass_effect_enabled,
-            plugin_navigation_pages: self.plugin_navigation_pages.clone(),
+            plugin_navigation_pages: std::sync::Arc::new(
+                crate::plugins::runtime::navigation_pages(cx),
+            ),
         }
     }
 }
@@ -165,9 +159,9 @@ impl Render for AppChromeView {
         let route = crate::ui::navigation::current_route_target(cx);
         let update_modal_open = cx.global::<UpdateState>().show_modal;
 
-        // ThemeState owns its 16 ms tick and notifies this view directly. Color interpolation does
-        // not mutate chrome geometry, so do not arm a layout-animation retained target here; doing
-        // so schedules redundant layout frames for the entire top bar throughout the theme fade.
+        if state.theme_animating || state.nav_animating {
+            window.request_animation_frame();
+        }
         chrome::render_app_chrome(state, route, update_modal_open)
     }
 }

@@ -1,8 +1,6 @@
 use crate::ui::animation::{is_running, raw_progress};
-use gpui::{App, BorrowAppContext, Global, Hsla, SharedString, Timer};
+use gpui::{App, BorrowAppContext, Global, Hsla, SharedString};
 use std::time::{Duration, Instant};
-
-const THEME_TICK_INTERVAL: Duration = Duration::from_millis(16);
 
 pub struct ThemeState {
     pub target_dark: bool,
@@ -13,7 +11,6 @@ pub struct ThemeState {
     // Accent overrides derived from config `custom_style.theme_color` (hex).
     pub accent_hex: SharedString,
     pub accent: Option<Hsla>,
-    tick_running: bool,
 }
 
 impl Global for ThemeState {}
@@ -28,7 +25,6 @@ impl Default for ThemeState {
             duration: Duration::from_millis(260),
             accent_hex: SharedString::from(""),
             accent: None,
-            tick_running: false,
         }
     }
 }
@@ -47,7 +43,6 @@ impl ThemeState {
             theme.started_at = None;
             theme.accent_hex = SharedString::from(theme_color_hex.to_string());
             theme.accent = accent;
-            theme.tick_running = false;
             Self::sync_component_theme(target_dark, cx);
         });
     }
@@ -67,7 +62,6 @@ impl ThemeState {
             Self::sync_component_theme(target_dark, cx);
             target_dark
         });
-        Self::spawn_animation_tick(cx);
         Self::persist_theme_mode(target_dark, cx);
     }
 
@@ -98,45 +92,6 @@ impl ThemeState {
         self.to = if self.target_dark { 1.0 } else { 0.0 };
         self.started_at = Some(now);
         self.target_dark
-    }
-
-    fn spawn_animation_tick(cx: &mut App) {
-        let should_spawn = cx.update_global(|theme: &mut ThemeState, _cx| {
-            let should_spawn = !theme.tick_running && theme.is_animating(Instant::now());
-            if should_spawn {
-                theme.tick_running = true;
-            }
-            should_spawn
-        });
-        if !should_spawn {
-            return;
-        }
-
-        cx.spawn(async move |cx| {
-            loop {
-                Timer::after(THEME_TICK_INTERVAL).await;
-                let still_animating = match cx.update_global(|theme: &mut ThemeState, _cx| {
-                    let still_animating = theme.is_animating(Instant::now());
-                    if !still_animating {
-                        theme.from = theme.to;
-                        theme.started_at = None;
-                        theme.tick_running = false;
-                    }
-                    still_animating
-                }) {
-                    Ok(still_animating) => still_animating,
-                    Err(error) => {
-                        tracing::warn!("theme animation tick failed: {error:?}");
-                        return;
-                    }
-                };
-
-                if !still_animating {
-                    return;
-                }
-            }
-        })
-        .detach();
     }
 
     fn persist_theme_mode(target_dark: bool, cx: &mut App) {
