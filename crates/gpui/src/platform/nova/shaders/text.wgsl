@@ -3,6 +3,12 @@ fn color_brightness(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(0.30, 0.59, 0.11));
 }
 
+fn color_intensity(color: vec3<f32>) -> f32 {
+    // DirectWrite uses this channel weighting for grayscale gamma correction. It is distinct from
+    // perceived brightness above, which is used only to scale light-on-dark enhanced contrast.
+    return dot(color, vec3<f32>(0.25, 0.50, 0.25));
+}
+
 fn light_on_dark_contrast(enhancedContrast: f32, color: vec3<f32>) -> f32 {
     let brightness = color_brightness(color);
     let multiplier = saturate(4.0 * (0.75 - brightness));
@@ -23,9 +29,9 @@ fn apply_alpha_correction(a: f32, b: f32, g: vec4<f32>) -> f32 {
 
 fn apply_contrast_and_gamma_correction(sample: f32, color: vec3<f32>, enhanced_contrast_factor: f32, gamma_ratios: vec4<f32>) -> f32 {
     let enhanced_contrast = light_on_dark_contrast(enhanced_contrast_factor, color);
-    let brightness = color_brightness(color);
+    let intensity = color_intensity(color);
     let contrasted = enhance_contrast(sample, enhanced_contrast);
-    return apply_alpha_correction(contrasted, brightness, gamma_ratios);
+    return apply_alpha_correction(contrasted, intensity, gamma_ratios);
 }
 
 fn apply_contrast_and_gamma_correction3(sample: vec3<f32>, color: vec3<f32>, enhanced_contrast_factor: f32, gamma_ratios: vec4<f32>) -> vec3<f32> {
@@ -37,8 +43,7 @@ fn apply_contrast_and_gamma_correction3(sample: vec3<f32>, color: vec3<f32>, enh
     );
     // DirectWrite's ClearType gamma correction is channel-sensitive: the red, green, and blue
     // glyph coverages are corrected against the corresponding foreground-color channel rather
-    // than one shared luminance scalar. Keep the grayscale path luminance-based above, but match
-    // the DirectWrite/Microsoft Terminal model for subpixel coverage here.
+    // than one shared scalar intensity. Match the DirectWrite/Microsoft Terminal model here.
     return vec3<f32>(
         apply_alpha_correction(contrasted.r, color.r, gamma_ratios),
         apply_alpha_correction(contrasted.g, color.g, gamma_ratios),
