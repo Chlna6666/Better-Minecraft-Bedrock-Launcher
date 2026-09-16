@@ -667,15 +667,11 @@ impl DirectWriteState {
             )?;
         }
         let use_subpixel_rendering = should_use_subpixel_rendering(components, params);
-        // Natural/GDI modes only antialias horizontally. A grayscale atlas needs vertical
-        // coverage as well, especially at the curved tops of small digits. Keep the platform's
-        // grid fitting, but use symmetric coverage for grayscale on every renderer backend.
-        let rendering_mode =
-            if !use_subpixel_rendering || rendering_mode == DWRITE_RENDERING_MODE1_OUTLINE {
-                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
-            } else {
-                rendering_mode
-            };
+        let rendering_mode = glyph_rendering_mode(
+            rendering_mode,
+            use_subpixel_rendering,
+            params.is_cjk,
+        );
 
         let antialias_mode = if use_subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
@@ -1232,6 +1228,11 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         let mut glyphs = Vec::with_capacity(glyph_count);
         for (cluster_utf16_len, cluster_glyph_count) in cluster_analyzer {
             context.index_converter.advance_to_utf16_ix(utf16_idx);
+            let is_cjk = utf16_cluster_contains_cjk(
+                context.index_converter.text,
+                context.index_converter.utf8_ix,
+                cluster_utf16_len,
+            );
             utf16_idx += cluster_utf16_len;
             for (cluster_glyph_idx, glyph_id) in glyph_ids
                 [glyph_idx..(glyph_idx + cluster_glyph_count)]
@@ -1252,8 +1253,7 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
                     font_size: px(glyphrun.fontEmSize),
                     index: context.index_converter.utf8_ix,
                     is_emoji,
-
-                    is_cjk: false,
+                    is_cjk,
                 });
                 context.width += glyph_advances[this_glyph_idx];
             }
@@ -1356,6 +1356,54 @@ fn utf8_run_end(text: &str, start: usize, requested_len: usize) -> usize {
         end -= 1;
     }
     end
+}
+
+fn utf16_cluster_contains_cjk(text: &str, utf8_start: usize, utf16_len: usize) -> bool {
+    let Some(rest) = text.get(utf8_start..) else {
+        return false;
+    };
+    let mut consumed = 0usize;
+    for character in rest.chars() {
+        if consumed >= utf16_len {
+            break;
+        }
+        let character_utf16_len = character.len_utf16();
+        let next = consumed.saturating_add(character_utf16_len);
+        if next > utf16_len {
+            break;
+        }
+        if is_cjk_char(character) {
+            return true;
+        }
+        consumed = next;
+    }
+    false
+}
+
+fn is_cjk_char(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x2E80..=0x2EFF
+            | 0x2F00..=0x2FDF
+            | 0x3000..=0x303F
+            | 0x3040..=0x30FF
+            | 0x3100..=0x312F
+            | 0x3130..=0x318F
+            | 0x31A0..=0x31BF
+            | 0x31C0..=0x31EF
+            | 0x31F0..=0x31FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xA960..=0xA97F
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x2A6DF
+            | 0x2A700..=0x2B73F
+            | 0x2B740..=0x2B81F
+            | 0x2B820..=0x2CEAF
+            | 0x2CEB0..=0x2EBEF
+            | 0x30000..=0x3134F
+    )
 }
 
 impl<'a> StringIndexConverter<'a> {
@@ -1581,6 +1629,33 @@ fn should_use_system_subpixel_rendering(
     system_subpixel_rendering && !is_emoji
 }
 
+fn glyph_rendering_mode(
+    recommended: DWRITE_RENDERING_MODE1,
+    use_subpixel_rendering: bool,
+    is_cjk: bool,
+) -> DWRITE_RENDERING_MODE1 {
+    // Grayscale coverage must be symmetric so curved glyph edges are antialiased vertically as
+    // well. OUTLINE cannot produce the bitmap coverage atlas this path expects, so keep the
+    // existing symmetric fallback there too.
+    if !use_subpixel_rendering || recommended == DWRITE_RENDERING_MODE1_OUTLINE {
+        return DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
+    }
+
+    // Dense CJK UI glyphs frequently contain one-device-pixel horizontal stems. DirectWrite may
+    // recommend a symmetric (or downsampled symmetric) mode once DPI scaling raises the physical
+    // ppem. That adds vertical filtering to otherwise grid-fitted ClearType coverage, which makes
+    // those horizontal stems look soft or inconsistently thin. Keep the platform-selected
+    // grid-fit mode, but use natural horizontal ClearType coverage for RGB CJK text only.
+    if is_cjk
+        && (recommended == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
+            || recommended == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED)
+    {
+        return DWRITE_RENDERING_MODE1_NATURAL;
+    }
+
+    recommended
+}
+
 fn get_system_ui_font_name() -> SharedString {
     unsafe {
         let mut info: LOGFONTW = std::mem::zeroed();
@@ -1657,12 +1732,17 @@ const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
 #[cfg(test)]
 mod tests {
     use super::{
-        ClusterAnalyzer, DirectWriteTextSystem, should_use_system_subpixel_rendering,
-        utf8_run_end, utf8_run_start,
+        ClusterAnalyzer, DirectWriteTextSystem, glyph_rendering_mode,
+        should_use_system_subpixel_rendering, utf16_cluster_contains_cjk, utf8_run_end,
+        utf8_run_start,
     };
     use crate::{
         FontRun, GlyphRasterization, PlatformTextSystem, RenderGlyphParams, RendererCapabilities,
         font, point, px,
+    };
+    use windows::Win32::Graphics::DirectWrite::{
+        DWRITE_RENDERING_MODE1_NATURAL, DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+        DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED, DWRITE_RENDERING_MODE1_OUTLINE,
     };
 
     #[test]
@@ -1670,6 +1750,50 @@ mod tests {
         assert!(should_use_system_subpixel_rendering(true, false));
         assert!(!should_use_system_subpixel_rendering(true, true));
         assert!(!should_use_system_subpixel_rendering(false, false));
+    }
+
+    #[test]
+    fn cjk_subpixel_mode_avoids_vertical_downsampling() {
+        assert_eq!(
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, true).0,
+            DWRITE_RENDERING_MODE1_NATURAL.0
+        );
+        assert_eq!(
+            glyph_rendering_mode(
+                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED,
+                true,
+                true,
+            )
+            .0,
+            DWRITE_RENDERING_MODE1_NATURAL.0
+        );
+        assert_eq!(
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, false).0,
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
+        );
+        assert_eq!(
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, false, true).0,
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
+        );
+        assert_eq!(
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_OUTLINE, true, true).0,
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
+        );
+    }
+
+    #[test]
+    fn cjk_detection_tracks_directwrite_utf16_clusters() {
+        let text = "A地图😀";
+        let di = text.find('地').unwrap();
+        let tu = text.find('图').unwrap();
+        let emoji = text.find('😀').unwrap();
+        assert!(!utf16_cluster_contains_cjk(text, 0, 1));
+        assert!(utf16_cluster_contains_cjk(text, di, 1));
+        assert!(utf16_cluster_contains_cjk(text, tu, 1));
+        assert!(!utf16_cluster_contains_cjk(text, emoji, 2));
+        assert!(utf16_cluster_contains_cjk("カ", 0, 1));
+        assert!(utf16_cluster_contains_cjk("한", 0, 1));
+        assert!(utf16_cluster_contains_cjk("𠀀", 0, 2));
     }
 
     #[test]
