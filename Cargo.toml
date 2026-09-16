@@ -197,5 +197,5 @@ debug = 0
 
 
 [profile.dev]
-opt-level = 1
+opt-level = 3
 panic = "unwind"        # 开发模式保留回溯，便于定位崩溃
