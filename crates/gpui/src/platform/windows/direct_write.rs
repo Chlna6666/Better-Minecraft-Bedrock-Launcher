@@ -802,10 +802,9 @@ impl DirectWriteState {
         }
 
         if !should_use_subpixel_rendering(components, params) {
-            // Windows glyphs that are not explicitly grayscale still use the subpixel atlas.
-            // DirectWrite can independently fall back to grayscale for small fonts or when
-            // system subpixel rendering is disabled, so preserve the atlas' four-byte pixel
-            // contract by expanding that scalar coverage into RGB.
+            // A non-grayscale Windows glyph still targets the subpixel atlas. If RGB subpixel
+            // smoothing is disabled by the renderer or system, preserve that atlas' four-byte
+            // pixel contract while using neutral grayscale coverage.
             return Ok(self
                 .rasterize_grayscale(components, params, glyph_bounds, glyph_analysis)?
                 .into_iter()
@@ -1566,21 +1565,20 @@ fn should_use_subpixel_rendering(
     params: &RenderGlyphParams,
 ) -> bool {
     !params.grayscale_antialiasing
-        && should_use_subpixel_rendering_for_size(
+        && should_use_system_subpixel_rendering(
             components.subpixel_rendering_enabled,
             params.is_emoji,
-            params.font_size.0,
-            params.scale_factor,
         )
 }
 
-fn should_use_subpixel_rendering_for_size(
+fn should_use_system_subpixel_rendering(
     system_subpixel_rendering: bool,
     is_emoji: bool,
-    font_size: f32,
-    scale_factor: f32,
 ) -> bool {
-    system_subpixel_rendering && !is_emoji && font_size * scale_factor >= 10.0
+    // DirectWrite owns the small-size rendering mode and grid fitting. A framework-level
+    // physical-pixel cutoff makes identical UI text change AA strategy across DPI values and
+    // unnecessarily removes ClearType resolution exactly where small text benefits from it most.
+    system_subpixel_rendering && !is_emoji
 }
 
 fn get_system_ui_font_name() -> SharedString {
@@ -1659,7 +1657,7 @@ const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
 #[cfg(test)]
 mod tests {
     use super::{
-        ClusterAnalyzer, DirectWriteTextSystem, should_use_subpixel_rendering_for_size,
+        ClusterAnalyzer, DirectWriteTextSystem, should_use_system_subpixel_rendering,
         utf8_run_end, utf8_run_start,
     };
     use crate::{
@@ -1668,22 +1666,10 @@ mod tests {
     };
 
     #[test]
-    fn ui_text_uses_system_subpixel_rendering() {
-        assert!(!should_use_subpixel_rendering_for_size(
-            true, false, 9.5, 1.0
-        ));
-        assert!(!should_use_subpixel_rendering_for_size(
-            true, true, 24.0, 1.0
-        ));
-        assert!(should_use_subpixel_rendering_for_size(
-            true, false, 11.0, 1.0
-        ));
-        assert!(should_use_subpixel_rendering_for_size(
-            true, false, 8.0, 1.25
-        ));
-        assert!(!should_use_subpixel_rendering_for_size(
-            false, false, 16.0, 1.0
-        ));
+    fn ui_text_subpixel_policy_has_no_size_cutoff() {
+        assert!(should_use_system_subpixel_rendering(true, false));
+        assert!(!should_use_system_subpixel_rendering(true, true));
+        assert!(!should_use_system_subpixel_rendering(false, false));
     }
 
     #[test]
