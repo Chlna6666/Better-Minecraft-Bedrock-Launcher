@@ -154,9 +154,12 @@ impl BoundedImageCache {
                         Err(error) => log::debug!("bounded image cache load failed: {error}"),
                         Ok(_) => {}
                     }
-                    cx.update(move |window, cx| {
-                        cx.notify(entity);
-                        window.schedule_image_ready_frame();
+                    cx.update(move |window, _cx| {
+                        // Match Window::use_asset: asset readiness must directly dirty the exact
+                        // observing window/view before requesting presentation. Relying on
+                        // App::notify here has the same first-frame registration race that can leave
+                        // a ready bitmap hidden behind retained replay until unrelated input.
+                        window.schedule_asset_ready_views([entity]);
                     })
                     .ok();
                 }
