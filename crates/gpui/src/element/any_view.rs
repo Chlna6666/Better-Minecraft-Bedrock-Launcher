@@ -334,11 +334,13 @@ impl Element for AnyView {
                         && !self.critical
                         && !targeted_replay
                         && window.draw_budget_exhausted();
-                    // Critical surfaces must honor a forced refresh. Those refreshes are also used
-                    // as resource/composition recovery barriers, so replaying a critical subtree can
-                    // otherwise carry stale atlas or offscreen-target references into the new frame.
+                    // `reuse_on_window_refresh` is only safe for ordinary refreshes. A degraded draw
+                    // moves frame-local cache state through `next_frame` before discarding that frame;
+                    // its numeric ranges can remain in-bounds while referring to different primitives
+                    // in the last committed frame. The recovery frame is therefore a hard cache barrier.
                     let can_reuse_refresh = self.reuse_on_window_refresh
                         && !self.critical
+                        && !window.recovering_degraded_draw()
                         && force_refresh
                         && !view_dirty;
                     let can_reuse_prepaint = element_state
