@@ -398,6 +398,10 @@ impl Window {
         self.pending_list_measured_items = self.pending_list_measured_items.saturating_add(count);
     }
 
+    pub(crate) fn recovering_degraded_draw(&self) -> bool {
+        self.recovering_degraded_draw
+    }
+
     /// Returns true if the window is in inspector mode.
     pub fn is_inspector_picking(&self, _cx: &App) -> bool {
         #[cfg(any(feature = "inspector", debug_assertions))]
