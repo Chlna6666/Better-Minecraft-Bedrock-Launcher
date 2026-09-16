@@ -484,6 +484,18 @@ impl NovaRenderer {
     ) -> FrameUploadSummary {
         crate::diagnostics::performance_metrics::reset_frame_upload_metrics();
         let started_at = Instant::now();
+        #[cfg(target_os = "windows")]
+        if self
+            .draw_step_scratch
+            .backdrop_blur_damage_region
+            .is_full()
+            && self.rendering_parameters.refresh_for_current_monitor()
+        {
+            // A monitor transition already forces a full high-level redraw and glyph-atlas refresh.
+            // Drop only the CPU encode key here: per-slot static signatures remain resident, so the
+            // subsequent stream diff uploads text-raster parameters without poisoning unrelated data.
+            self.retained_upload.invalidate_encode_key();
+        }
         let key = UploadKey {
             scene_revision: scene.revision,
             size: self.current_size,
