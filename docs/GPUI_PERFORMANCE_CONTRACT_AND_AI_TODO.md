@@ -287,8 +287,8 @@ TODO：
 
 TODO：
 
-- [ ] 每帧 request reason bitset。
-- [ ] 每类 reason 第一个 caller。
+- [?] 每帧 request reason bitset；`DirtyFrameDiagnostics` 已记录低成本 `u16` bitset，等待运行时日志确认。
+- [?] 每类 reason 第一个 caller；当前记录首个 reason 的静态 source file/line，等待运行时日志确认各类来源。
 - [ ] requested frame → actually presented frame 的链路 ID。
 - [ ] animation active count。
 - [ ] animation settled-but-still-requesting count，必须长期为 0。
@@ -547,10 +547,10 @@ TODO：
 
 TODO：
 
-- [ ] plugin navigation pages versioned snapshot。
-- [ ] built-in nav metadata 静态化。
-- [ ] app version string 预计算。
-- [ ] 不在 animation render tick 重复 `format!` immutable string。
+- [?] plugin navigation pages versioned snapshot；当前由 `AppChromeView` 缓存，等待运行时指标确认。
+- [?] built-in nav metadata 静态化；已在 `build_app_state` 完成初次 `t!` 读取（包含更新徽章静态文案），后续仅在 `I18n::revision()` 变化时重建，等待运行时指标确认。
+- [?] app version string 预计算；已在 `build_app_state` 初始化 `AppChromeState` 时缓存。
+- [?] 不在 animation render tick 重复 `format!` immutable string；等待运行时指标确认。
 - [ ] theme derived constants 可按 theme revision memoize。
 - [ ] menu option metadata 与动画 progress 分离。
 
@@ -640,6 +640,8 @@ struct LayoutInstanceId(...);
 - draw call/batch break 高；
 - GPU busy 高；
 - overdraw/offscreen 明显。
+
+- [?] GPUI animation-engine 的 framebuffer-only 帧仍会重复准备主 draw steps 与 path-mask steps；已增加按 frame-resource slot 的 retained descriptor cache。主 draw-step 缓存键只包含它实际依赖的静态 scene revision、drawable size、atlas generation 与 alpha 模式；blur quality 不参与主 descriptor 键，3D mesh/pipeline 变化通过显式失效事件处理，不进入动画采样键；等待 Windows runtime 对比确认收益。
 
 ### 7.2 Batch
 
@@ -971,6 +973,7 @@ TODO：
 
 同 Tabs indicator。
 
+- [?] 顶栏导航胶囊按窗口全宽居中；已从 brand/controls 之间的 `justify_between` 子项改为独立全宽居中层，等待 Windows 截图确认。
 - [ ] parent/sibling measure稳定时减少到 placement/local geometry。
 - [ ] 不改变视觉曲线。
 - [ ] 不因 nav spring tick 重建 Brand/Auth/WindowControls。
@@ -981,17 +984,18 @@ TODO：
 
 TODO：
 
+- [?] trigger chevron 旋转与账户行淡入/选中状态已改为最小 retained scene animation；等待运行时视觉与命中测试确认。
 - [ ] 验证 mixed primitive 是否同步。
 - [ ] 验证 scene replay 与 layout count。
 - [ ] 不额外 composite promotion，除非 profile 有收益。
 
 ### Xbox account rows
 
-当前 layout target 已收窄到 rows container。
+当前账户行的 presence opacity 与 selection background 使用按行 stable sampled animation；账户列表不再因纯视觉变化请求 layout target。
 
 TODO：
 
-- [ ] 进一步确认 row removal/selection 是否需要 measure。
+- [ ] 进一步确认 row removal 的单次结构变更是否需要独立 relayout boundary。
 - [ ] 静态 header/count/hint 保持 retained。
 
 ### Dismissible modal
@@ -1028,10 +1032,10 @@ TODO：
 
 已知高优先级局部优化：
 
-- [ ] `src/ui/window/import/view.rs` 中 `self.render_preview_card(...).with_layout_animation_target(self.is_inspecting)` 范围过大。
-- [ ] 将 target 下沉到 spinner/icon 本身或最小 icon container。
-- [ ] 不需要 GPU layer。
-- [ ] preview card 其它静态文本/按钮不得每帧 layout。
+- [?] `src/ui/window/import/view.rs` 中 `self.render_preview_card(...).with_layout_animation_target(self.is_inspecting)` 范围过大；已移除两个 broad target。
+- [?] 将 target 下沉到 spinner/icon 本身或最小 icon container；当前仅包裹旋转 loader SVG。
+- [?] 不需要 GPU layer；本次未引入 compositor/offscreen promotion。
+- [?] preview card 其它静态文本/按钮不得每帧 layout；代码路径已收窄，等待运行时指标确认。
 
 ### Skin preview / Map viewer
 
@@ -1323,9 +1327,9 @@ CPU generation 不能占满整个 interval，因为还需要：
 
 ### Phase 0 — 建立 baseline 与 telemetry
 
-- [ ] frame request reason
+- [?] frame request reason，已接入 GPUI 低成本 telemetry，等待运行时日志确认
 - [ ] dirty provenance
-- [ ] render count by View
+- [?] render count by View；当前先记录每帧实际执行 `AnyView::Render` 的总数和首个实体，等待实机按窗口/场景采样。
 - [ ] layout miss divergence
 - [ ] allocation telemetry
 - [ ] batch break reason
@@ -1333,17 +1337,17 @@ CPU generation 不能占满整个 interval，因为还需要：
 
 ### Phase 1 — Invalidation scope
 
-- [ ] DirectDirty / TraversalAncestor
-- [ ] reason bitset
+- [?] DirectDirty / TraversalAncestor；当前先做集合计数与实际 `Render` 次数对照，尚未改变 ancestor 渲染语义。
+- [?] reason bitset，已接入 `DirtyFrameDiagnostics`
 - [ ] ancestor traversal 可跳过 render
 - [ ] root notify storm 清理
 
 ### Phase 2 — View scope
 
 - [ ] AppChromeView 按 dependency/frequency 拆分
-- [ ] Import spinner target 收窄
+- [?] Import spinner target 收窄，等待运行时指标确认
 - [ ] 继续审计 modal/dropdown/list spinner
-- [ ] 静态 metadata snapshot
+- [?] 静态 metadata snapshot，等待运行时指标确认
 
 ### Phase 3 — Layout dirty class
 
@@ -1378,7 +1382,8 @@ CPU generation 不能占满整个 interval，因为还需要：
 
 只有前面 CPU pipeline 已明显改善后：
 
-- [ ] upload reuse/dirty range
+- [?] upload reuse/dirty range；已有 retained upload 与 animated range 复用，仍需 Windows benchmark
+- [?] animation-engine framebuffer-only 帧的 draw-step/path-mask descriptor reuse；已实现，等待 runtime 指标
 - [ ] batch fragmentation
 - [ ] pipeline state churn
 - [ ] offscreen cost
@@ -1619,26 +1624,73 @@ BMCBL fork 的改动必须证明：
 
 ### Task 1 — Import spinner invalidation 收窄
 
-- [ ] 审计 `src/ui/window/import/view.rs` 两处 broad `with_layout_animation_target(self.is_inspecting)`。
-- [ ] 下沉到 spinner/icon minimum subtree。
-- [ ] 保持 card geometry 与其它控件静态。
-- [ ] 不增加 GPU/composite layer。
+- [?] 审计 `src/ui/window/import/view.rs` 两处 broad `with_layout_animation_target(self.is_inspecting)`；已移除。
+- [?] 下沉到 spinner/icon minimum subtree；已完成。
+- [?] 保持 card geometry 与其它控件静态；等待运行时验证。
+- [?] 不增加 GPU/composite layer；已确认代码未新增 layer。
 - [ ] 本地验证 inspecting 状态进出无闪烁。
+
+#### 实施记录
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: `[?]` 已实现，等待本地运行验证
+- 变化：将 Import preview card 的布局动画 target 收窄到 loader SVG，避免 spinner cadence 使卡片静态内容进入动画边界。
+- 理论收益：减少 preview card 静态文字、按钮和预览内容的 retained layout-animation 传播。
+- 新增成本：loader SVG 增加一个最小 retained target；未新增 GPU layer 或依赖。
+- 未验证项：cargo test、实际 inspecting 进出 UI、layout/render 计数与帧指标。
+
+#### 实施记录：Chrome 静态 metadata
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: `[?]` 已实现，等待本地运行验证
+- 变化：`build_app_state` 在初始 locale 设置完成后读取一次内置导航的 route/icon/翻译标签、更新徽章静态文案和应用版本，并写入应用级 Global；所有窗口共享这份快照，后续仅在 `I18n::revision()` 变化时重建，Nav animation tick 只消费已有快照。
+- 理论收益：移除每次顶栏 render 的内置导航 `Vec`、翻译查找和版本 `format!`。
+- 新增成本：`AppChromeState` 持有一个小型 `Arc` 快照；语言切换时重建一次。
+- 未验证项：静态窗口与 Nav 连续切换的 alloc/frame、render/layout 计数及 UI 视觉回归。
+
+#### 实施记录：顶栏导航胶囊居中
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: `[?]` 已实现，等待 Windows 截图验证
+- 变化：将导航胶囊放入顶栏 `left=0/right=0` 的全宽绝对定位 flex 层，通过 `justify_center` 以窗口几何中心定位；品牌区和窗口控制区仍由原有两侧 flex 布局负责。
+- 理论收益：窗口宽度、用户名、更新徽章或右侧按钮变化时，导航胶囊不再被两侧内容宽度推离窗口中心。
+- 新增成本：增加一个无状态布局包装层；不增加动画 owner、compositor layer 或 GPU 纹理。
+- 未验证项：Windows 实机的初始、最大化、恢复、缩放及窗口宽度变化截图；导航按钮 hit-test 与 pill 动画视觉回归。
 
 ### Task 2 — FrameRequestReason telemetry
 
-- [ ] 为 frame invalidator 建 reason bitset。
-- [ ] 对 `request_animation_frame` / retained deadline / dirty notify / async wakeup 标记来源。
-- [ ] debug 日志输出 first reason/caller。
-- [ ] release 路径低开销。
+- [?] 为 frame invalidator 建 reason bitset；使用 `u16`，不改变调度逻辑。
+- [?] 对 `request_animation_frame` / retained deadline / dirty notify / timer / image frame / recovery 标记来源；async completion 尚未单独区分。
+- [?] debug 日志输出 first reason/caller；已写入 complete-frame trace 与 budget-warning 字段。
+- [?] release 路径低开销；仅做饱和计数/bitset 和静态 caller 信息记录，等待运行时验证。
+
+#### 实施记录：FrameRequestReason telemetry
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: `[?]` 已实现，等待本地运行验证
+- 变化：在 `crates/gpui/src/window/state.rs` 增加 reason bitset 与首个 reason/source；在窗口调度、notify invalidation、输入、定时器、图片帧、渐进重试和 watchdog recovery 入口记录来源。
+- 理论收益：能区分“为什么请求帧”和“帧内哪些 view 变脏”，为后续 dirty scope/ancestor 优化提供证据。
+- 新增成本：每帧最多一次 `u16` OR、一次 `Option` 写入和日志字段；不改变 request/coalescing 行为。
+- 已验证：GPUI no-default-features `cargo check` 通过；新增 reason 单测通过（1 passed）；state/frame scheduling/frame lifecycle/input 的 rustfmt 通过。
+- 未验证项：Windows 实机日志、各 reason 占比、requested-to-present 链路以及 async completion 单独来源。
 
 ### Task 3 — DirectDirty / TraversalAncestor 原型
 
-- [ ] 不立即大重构。
-- [ ] 先并行记录两套集合。
-- [ ] 验证现有 pipeline 哪些地方真的依赖 ancestor in `dirty_views`。
-- [ ] 加 render-count telemetry。
+- [?] 不立即大重构；当前只增加诊断计数。
+- [?] 先并行记录两套集合；`dirty_views` 的 direct mark 与 ancestor traversal 已分别计数。
+- [?] 验证现有 pipeline 哪些地方真的依赖 ancestor in `dirty_views`；代码审计已完成，等待运行时计数。
+- [?] 加 render-count telemetry；`AnyView` 只在真正执行 View `Render` 时计数，并在 frame request/budget/complete 日志输出总数和首个实体。
 - [ ] 证明 MainWindow ancestor 是否被重新 Render。
+
+#### 实施记录：DirectDirty / TraversalAncestor 计数
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: `[?]` 已实现，等待本地运行验证
+- 变化：复用现有 `mark_view_dirty` ancestor walk，增加 direct dirty view、traversal ancestor view 与实际 `AnyView::Render` 次数，并在 frame-request/complete-frame/budget-warning 日志输出。
+- 理论收益：可以判断一个 notify 是否只污染一个 direct view，还是实际扩散到多个 ancestor；为后续跳过 ancestor render 提供实测依据。
+- 新增成本：每个 dirty path 插入最多一次饱和计数；不改变集合、遍历或 retained replay。
+- 已验证：GPUI no-default-features `cargo check` 通过；新增 reason 单测通过（1 passed）。
+- 未验证项：Windows 实机 render-count、ancestor 是否真正执行 Render，以及 direct/ancestor 比例；当前日志已增加实际 `AnyView::Render` 次数和首个实体。
 
 ### Task 4 — layout root miss divergence
 
@@ -1648,16 +1700,50 @@ BMCBL fork 的改动必须证明：
 
 ### Task 5 — AppChrome scope 拆分设计
 
-- [ ] 先列 state dependency graph。
-- [ ] 再逐个抽 child View。
+- [?] 已列出首个拆分的 dependency graph：`AppChromeView` 负责路由、主题、认证、更新、语言和插件导航；`NavPillView` 只依赖导航弹簧、主题颜色、窗口宽度和导航项数量。
+- [?] 已抽出 `NavPillView`；导航项、标签、认证和窗口控件不再随导航胶囊的每个弹簧 tick 重建。
 - [ ] 一次 commit 不要同时拆全部。
-- [ ] 首先拆更新最频繁的 Nav scope。
+- [?] 首先拆更新最频繁的 Nav scope；当前仍需 Windows runtime 对比确认收益。
+
+#### 实施记录：NavPillView 独立动画 owner
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: [?] 已实现，等待本地运行验证
+- 变化：`NavState` 的弹簧 tick 只通知 `NavPillView`；`AppChromeView` 保留路由/主题等结构性订阅，导航胶囊仍使用原有双边缘拉伸与回弹。
+- 理论收益：导航切换期间不再重建顶栏内的图标、文字、认证按钮和窗口控件；layout animation target 缩小到单个胶囊实体。
+- 新增成本：一个长期存在的 child entity、两个全局订阅，以及插件导航数量变化时的一次同步。
+- 未验证项：Windows runtime 的 layout/prepaint 次数、scene replay、FPS、动画视觉位置和 hit-test；应用 cargo check 已通过。
 
 ### Task 6 — Windows frame pacing telemetry
 
 - [ ] 记录 requested timestamp / wake timestamp / CPU begin/end / submit / predicted present / actual feedback。
 - [ ] 在 60/120/144/165/240 Hz 收集 interval histogram。
 - [ ] 先证实是否存在 double pacing / 2× interval，再改 scheduler。
+
+### Task 7 — 视觉动画移出 layout driver
+
+- [?] Manage 版本切换面板；已将整块内容的 top/opacity layout target 改为单一 translation+opacity scene animation。
+- [?] Xbox auth chevron；已将旋转从 icon layout target 改为 renderer-owned rotation。
+- [?] Xbox account rows；已将 presence/selection 拆成按行 retained opacity animation，列表容器不再承担连续 layout cadence。
+- [ ] Windows 实机验证动画期间的 layout/prepaint 次数、scene replay、FPS、视觉位置和 hit-test。
+
+#### 实施记录：视觉动画 ownership 收窄
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: [?] 已实现，等待本地运行验证
+- 变化：ManagePageView 版本内容、Xbox auth chevron、Xbox account row 的纯视觉变化改用稳定 scene animation；移除对应的连续 with_layout_animation_target。
+- 理论收益：动画帧不再为纯 translation/opacity/rotation 变化重复走大范围 layout；Manage 版本内容不再以约 700 节点作为 layout animation target。
+- 新增成本：每个账户行增加两个稳定 animation identity；不创建 offscreen/composite layer。
+- 未验证项：Windows runtime 的 frame generation、layout/prepaint、scene replay、GPU blur、动画视觉与 hit-test；应用 cargo check、GPUI element::animation（19 passed）与 scene retained animation（1 passed）已通过。
+
+#### 实施记录：Animation Engine/Nova descriptor reuse
+
+- Commit: 未提交（按当前任务权限不自动提交）
+- 状态: [?] 已实现，等待本地 Windows benchmark
+- 变化：Nova 的 framebuffer-only animation frame 不再在静态 scene revision 未变时重复从 `FrameUpload.batches` 构造主 draw-step descriptor 与 path-mask descriptor；每个 frame-resource slot 独立缓存，atlas、backdrop/alpha 通过缓存键处理，custom mesh/pipeline 资源变化通过显式失效事件处理，不把 3D 资源 revision 混入动画缓存键。
+- 保持：不改变 animation easing、scene animation value、dirty bounds、blur damage 或透明 Windows partial-present 安全策略；缓存只复用 descriptor，不复用可能已失效的 GPU resource id。
+- 观测：`nova-gfx frame diagnostics` 增加 `draw_step_cache_hit` 与 `path_mask_cache_hit`，可直接比较 engine animation frame 是否仍重复 descriptor 构造。
+- 未验证项：Windows DX12 实机的 frame generation、present interval、FPS、GPU wait、blur pass 与视觉/命中测试；GPUI framework check 已通过。
 
 ---
 

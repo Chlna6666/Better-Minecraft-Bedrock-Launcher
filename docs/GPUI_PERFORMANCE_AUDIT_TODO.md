@@ -1,5 +1,7 @@
 # GPUI 全链路性能审计与优化 TODO
 
+> 执行状态以 [`GPUI_PERFORMANCE_CONTRACT_AND_AI_TODO.md`](GPUI_PERFORMANCE_CONTRACT_AND_AI_TODO.md) 为准；本文保留早期审计证据与问题背景，不再作为新一轮修复任务的唯一清单。
+
 > 目标：记录 BMCBL 当前 GPUI/Nova 路径中已经能从代码与运行日志确认的卡顿、阻塞、异常 CPU/GPU 占用风险，以及建议的本地修复顺序。本文是工程 TODO，不代表相关问题已经修复。
 >
 > 原则：不靠删除动画、降低动画帧率、缩短动画时长或强制所有东西“GPU 化”掩盖问题。真正的目标是让每类变化只经过它必须经过的 pipeline 阶段。
@@ -295,6 +297,23 @@ CompositorIndependent
 
 - [ ] 快速连续点击箭头角速度不突变、不停顿、不超出设计角度。
 - [ ] 动画结束后 active ticket/slot/frame request 都归零。
+
+### 本轮 UI 动画 ownership 修复
+
+- [?] ManagePageView 版本切换内容不再把整块页面套入 layout animation target，改为稳定 translation+opacity scene animation。
+- [?] Xbox auth chevron 不再为旋转请求 layout frame；账户行 presence/selection 改为按行 retained scene animation。
+- [?] 顶部导航胶囊拆为独立 `NavPillView`，导航弹簧 tick 不再重建整个 AppChrome 顶栏。
+- [ ] Windows 实机复测动画期间的 layout/prepaint、scene replay、FPS、视觉与 hit-test。
+
+### 本轮 GPUI Animation Engine/Nova 热路径修复
+
+- [?] `present_framebuffer_only` 的静态 scene animation 帧增加主 draw-step descriptor cache；按 frame-resource slot 保存，scene revision/size/blur/alpha/atlas 资源变化时失效，3D mesh/pipeline 更新通过显式事件失效，不进入动画采样键。
+- [?] path-mask descriptor 同样按静态 scene revision 与 path resource set 复用，避免 engine 帧重复扫描相同 batch topology。
+- [?] custom mesh/pipeline 更新显式失效主 draw-step descriptor，避免同一 scene revision 下 mesh buffer 重新分配或 pipeline 首次创建后误命中旧 descriptor；不把 3D 资源 revision 当作动画状态。
+- [?] Nova 诊断日志增加 `draw_step_cache_hit`、`path_mask_cache_hit`，用于 Windows A/B。
+- [ ] Windows DX12 实机对比 engine animation 与 targeted layout animation：frame generation、layout/prepaint、scene replay、descriptor cache hit、FPS、present interval、GPU wait、blur 与视觉/hit-test。
+
+本轮没有放宽透明 Windows surface 的 partial-present 禁止条件；透明合成 backbuffer 的保留语义仍需独立证明后才能改变。
 
 ---
 
