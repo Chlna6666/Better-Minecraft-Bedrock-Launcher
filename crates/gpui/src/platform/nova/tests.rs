@@ -832,6 +832,7 @@ fn underline_packer_matches_shader_storage_stride() {
         &Underline {
             order: 0,
             pad: 0,
+            animation_id: None,
             bounds: Bounds::default(),
             content_mask: Default::default(),
             color: Default::default(),

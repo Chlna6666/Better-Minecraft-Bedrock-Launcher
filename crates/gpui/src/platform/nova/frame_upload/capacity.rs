@@ -129,6 +129,11 @@ impl FrameUpload {
             .shrink_to(hash_floor);
         self.backdrop_blur_current_animation_ids_scratch
             .shrink_to(hash_floor);
+        self.gpu_indexed_source_animation_ids.shrink_to(hash_floor);
+        self.gpu_indexed_composite_animation_ids
+            .shrink_to(hash_floor);
+        self.gpu_indexed_composite_element_blur_animation_ids
+            .shrink_to(hash_floor);
 
         trim_upload_vec(
             &mut self.custom_mesh_3d_parameters,

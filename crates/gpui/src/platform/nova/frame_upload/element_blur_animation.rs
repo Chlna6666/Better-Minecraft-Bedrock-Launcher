@@ -72,19 +72,26 @@ impl FrameUpload {
             .iter()
             .map(|value| value.animation_id)
             .collect();
-        self.animated_primitives
+        let mut indices: FxHashSet<u32> = self
+            .gpu_indexed_composite_element_blur_animation_ids
             .iter()
-            .filter_map(|primitive| {
-                let blur = primitive.base_paint_blur()?;
-                let animation_id = blur.animation_id?;
-                if !active_animation_ids.contains(&animation_id)
-                    || !blur.content.animation_ids().is_empty()
-                {
-                    return None;
-                }
-                Some(primitive.index)
+            .filter_map(|(index, animation_id)| {
+                active_animation_ids
+                    .contains(animation_id)
+                    .then_some(*index)
             })
-            .collect()
+            .collect();
+        indices.extend(self.animated_primitives.iter().filter_map(|primitive| {
+            let blur = primitive.base_paint_blur()?;
+            let animation_id = blur.animation_id?;
+            if !active_animation_ids.contains(&animation_id)
+                || !blur.content.animation_ids().is_empty()
+            {
+                return None;
+            }
+            Some(primitive.index)
+        }));
+        indices
     }
 }
 

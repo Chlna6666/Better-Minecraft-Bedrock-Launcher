@@ -650,8 +650,8 @@ impl NovaRenderer {
             crate::diagnostics::performance_metrics::record_full_redraw_fallback();
         }
 
-        self.prepare_draw_steps();
-        self.prepare_path_mask_draw_steps();
+        self.prepare_draw_steps(render_plan.scene.revision);
+        self.prepare_path_mask_draw_steps(render_plan.scene.revision);
         self.prepare_backdrop_blur_passes(has_backdrop_blurs);
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
@@ -671,7 +671,9 @@ impl NovaRenderer {
         let blur_target_pixels = blur_level_pixels.iter().copied().sum::<usize>();
         let blur_full_target_pixels = self.backdrop_blur_full_target_pixels();
         let draw_step_count = self.draw_step_scratch.draw_steps.len();
+        let draw_step_cache_hit = self.draw_step_scratch.draw_step_cache_hit;
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
+        let path_mask_cache_hit = self.draw_step_scratch.path_mask_cache_hit;
         let mask_pass_count = usize::from(path_mask_step_count != 0);
         let main_pass_count = 1;
         let backdrop_blur_refreshed: bool;
@@ -751,7 +753,7 @@ impl NovaRenderer {
                     "nova-gfx frame diagnostics: backend={} alpha_swapchain={:?} ",
                     "alpha_output={:?} premultiplied={} quads={} shadows={} paths={} ",
                     "path_vertices={} mono_sprites={} poly_sprites={} underlines={} ",
-                    "draw_steps={} path_mask_steps={} gpu_passes={} upload_bytes={} ",
+                    "draw_steps={} draw_step_cache_hit={} path_mask_steps={} path_mask_cache_hit={} gpu_passes={} upload_bytes={} ",
                     "async_submission={} async_wait={} async_presentation={} ",
                     "async_partial_presentation={} native_partial_presentation={} ",
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
@@ -774,7 +776,9 @@ impl NovaRenderer {
                 upload.poly_sprite_count,
                 upload.underline_count,
                 draw_step_count,
+                draw_step_cache_hit,
                 path_mask_step_count,
+                path_mask_cache_hit,
                 mask_pass_count
                     .saturating_add(main_pass_count)
                     .saturating_add(composite_pass_count),

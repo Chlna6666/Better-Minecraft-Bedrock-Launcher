@@ -161,11 +161,43 @@ struct PendingSubmission {
 #[derive(Default)]
 struct DrawStepScratch {
     draw_steps: Vec<RenderStepDescriptor>,
+    draw_step_cache: Vec<DrawStepCacheEntry>,
+    draw_step_cache_hit: bool,
     path_mask_steps: Vec<DrawStepDescriptor>,
+    path_mask_cache: Option<PathMaskCacheEntry>,
+    path_mask_cache_hit: bool,
     backdrop_blur_passes: Vec<BackdropBlurRenderPass>,
     backdrop_blur_damage_region: DirtyRegion,
     backdrop_blur_damage_plan: crate::BackdropBlurDamagePlan,
     force_full_backdrop_blur_refresh: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct DrawStepCacheKey {
+    scene_revision: u64,
+    size: DrawableSize,
+    frame_resource_index: usize,
+    atlas_texture_generation: Option<u64>,
+    atlas_texture_count: usize,
+    premultiplied_alpha: bool,
+}
+
+#[derive(Default)]
+struct DrawStepCacheEntry {
+    key: Option<DrawStepCacheKey>,
+    steps: Vec<RenderStepDescriptor>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PathMaskCacheKey {
+    scene_revision: u64,
+    path_rasterization_resource_set: ResourceSetId,
+}
+
+#[derive(Default)]
+struct PathMaskCacheEntry {
+    key: Option<PathMaskCacheKey>,
+    steps: Vec<DrawStepDescriptor>,
 }
 
 impl NovaRenderer {
@@ -587,6 +619,18 @@ impl DrawStepScratch {
         trim_vec_capacity(&mut self.draw_steps, 64, multiplier);
         trim_vec_capacity(&mut self.path_mask_steps, 32, multiplier);
         trim_vec_capacity(&mut self.backdrop_blur_passes, 16, multiplier);
+        if self
+            .path_mask_cache
+            .as_ref()
+            .is_some_and(|cache| cache.steps.capacity() > 32usize.saturating_mul(multiplier.max(1)))
+        {
+            self.path_mask_cache = None;
+        }
+        for cache in &mut self.draw_step_cache {
+            if cache.steps.capacity() > 64usize.saturating_mul(multiplier.max(1)) {
+                *cache = DrawStepCacheEntry::default();
+            }
+        }
     }
 }
 

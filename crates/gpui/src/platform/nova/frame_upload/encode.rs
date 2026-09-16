@@ -70,6 +70,10 @@ impl FrameUpload {
             self.animation_values.clear();
             self.animated_primitives.clear();
             self.sampled_animation_values.clear();
+            self.gpu_indexed_source_animation_ids.clear();
+            self.gpu_indexed_composite_animation_ids.clear();
+            self.gpu_indexed_composite_element_blur_animation_ids
+                .clear();
             self.custom_mesh_3d_parameters.clear();
             self.custom_mesh_3d_animation_ids.clear();
             self.custom_mesh_3d_animations.clear();

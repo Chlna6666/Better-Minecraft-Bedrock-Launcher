@@ -244,6 +244,11 @@ where
                     binding_type: ResourceBindingType::StorageBuffer,
                     stages: ShaderStages::VERTEX,
                 },
+                ResourceSetLayoutEntry {
+                    binding: 17,
+                    binding_type: ResourceBindingType::StorageBuffer,
+                    stages: ShaderStages::VERTEX,
+                },
             ],
         })?;
     let custom_mesh_3d_resource_set_layout =

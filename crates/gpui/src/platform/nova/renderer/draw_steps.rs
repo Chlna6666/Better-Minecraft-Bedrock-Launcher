@@ -23,9 +23,36 @@ pub(super) struct PreparedElementBlurLayer {
 }
 
 impl NovaRenderer {
-    pub(super) fn prepare_draw_steps(&mut self) {
+    pub(super) fn prepare_draw_steps(&mut self, scene_revision: u64) {
+        self.draw_step_scratch.draw_step_cache_hit = false;
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
+        let cache_key = DrawStepCacheKey {
+            scene_revision,
+            size: self.current_size,
+            frame_resource_index,
+            atlas_texture_generation: self.synced_atlas_texture_generation,
+            atlas_texture_count: self.gpu_atlas_textures.len(),
+            premultiplied_alpha: self.surface_alpha.outputs_premultiplied_alpha(),
+        };
+        let cacheable = scene_revision != 0;
+        if self.draw_step_scratch.draw_step_cache.len() != self.frame_resources.len() {
+            self.draw_step_scratch
+                .draw_step_cache
+                .resize_with(self.frame_resources.len(), Default::default);
+        }
+        if cacheable
+            && let Some(cached) = self
+                .draw_step_scratch
+                .draw_step_cache
+                .get(frame_resource_index)
+                .filter(|cached| cached.key == Some(cache_key))
+        {
+            self.draw_step_scratch.draw_step_cache_hit = true;
+            self.draw_step_scratch.draw_steps.clone_from(&cached.steps);
+            return;
+        }
+
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
@@ -50,6 +77,15 @@ impl NovaRenderer {
             DrawStepMode::Present,
             steps,
         );
+        if cacheable
+            && let Some(cached) = self
+                .draw_step_scratch
+                .draw_step_cache
+                .get_mut(frame_resource_index)
+        {
+            cached.key = Some(cache_key);
+            cached.steps.clone_from(steps);
+        }
     }
 
     /// Builds the root backdrop compositor plan while preserving clean filtered targets.
@@ -510,13 +546,55 @@ impl NovaRenderer {
         }
     }
 
-    pub(super) fn prepare_path_mask_draw_steps(&mut self) {
+    pub(super) fn prepare_path_mask_draw_steps(&mut self, scene_revision: u64) {
+        self.draw_step_scratch.path_mask_cache_hit = false;
+        let cache_key = PathMaskCacheKey {
+            scene_revision,
+            path_rasterization_resource_set: self.path_rasterization_resource_set,
+        };
+        let cacheable = scene_revision != 0;
+        if cacheable
+            && self
+                .draw_step_scratch
+                .path_mask_cache
+                .as_ref()
+                .is_some_and(|cached| cached.key == Some(cache_key))
+        {
+            let cached = self
+                .draw_step_scratch
+                .path_mask_cache
+                .as_ref()
+                .expect("path mask cache key was checked above");
+            self.draw_step_scratch.path_mask_cache_hit = true;
+            self.draw_step_scratch
+                .path_mask_steps
+                .clone_from(&cached.steps);
+            return;
+        }
+
         path_mask_draw_steps_for_upload_into(
             &self.frame_upload,
             &self.pipelines,
             self.path_rasterization_resource_set,
             &mut self.draw_step_scratch.path_mask_steps,
         );
+        if cacheable {
+            let cache = self
+                .draw_step_scratch
+                .path_mask_cache
+                .get_or_insert_with(Default::default);
+            cache.key = Some(cache_key);
+            cache
+                .steps
+                .clone_from(&self.draw_step_scratch.path_mask_steps);
+        }
+    }
+
+    pub(super) fn invalidate_draw_step_cache(&mut self) {
+        for cache in &mut self.draw_step_scratch.draw_step_cache {
+            cache.key = None;
+        }
+        self.draw_step_scratch.draw_step_cache_hit = false;
     }
 }
 

@@ -412,7 +412,7 @@ impl NovaRenderer {
             if self.pending_submissions.is_empty() {
                 allocator.reclaim_retired();
                 for id in allocator.evict_unused(current_ids, false) {
-                    self.custom_mesh_3d_mesh_cache.remove(&id);
+                    self.remove_custom_mesh_3d_cache_entry(id);
                 }
             }
             for mesh in current_meshes {
@@ -497,7 +497,7 @@ impl NovaRenderer {
                 .expect("nova 3D mesh allocator lock poisoned");
             let allocator = allocators.entry(surface_key).or_default();
             if allocator.remove(mesh.id, defer_old_release).is_some() {
-                self.custom_mesh_3d_mesh_cache.remove(&mesh.id);
+                self.remove_custom_mesh_3d_cache_entry(mesh.id);
             }
         }
 
@@ -519,7 +519,7 @@ impl NovaRenderer {
             let allocator = allocators.entry(surface_key).or_default();
             allocator.reclaim_retired();
             for id in allocator.evict_unused(current_ids, true) {
-                self.custom_mesh_3d_mesh_cache.remove(&id);
+                self.remove_custom_mesh_3d_cache_entry(id);
             }
             reservation = allocator.reserve(vertex_count, index_byte_count);
         }
@@ -536,7 +536,7 @@ impl NovaRenderer {
                     .expect("nova 3D mesh allocator lock poisoned");
                 allocators.entry(surface_key).or_default().reset();
             }
-            self.custom_mesh_3d_mesh_cache.clear();
+            self.clear_custom_mesh_3d_cache();
             for current in current_meshes {
                 if current.id == mesh.id {
                     continue;
@@ -750,6 +750,7 @@ impl NovaRenderer {
             index_count,
         };
         self.custom_mesh_3d_mesh_cache.insert(mesh.id, entry);
+        self.invalidate_draw_step_cache();
         let surface_key = surface_mesh_allocator_key(self);
         surface_mesh_allocators()
             .lock()
@@ -770,8 +771,15 @@ impl NovaRenderer {
 
     fn clear_custom_mesh_3d_cache(&mut self) {
         self.custom_mesh_3d_mesh_cache.clear();
+        self.invalidate_draw_step_cache();
         self.custom_mesh_3d_vertex_cursor = 0;
         self.custom_mesh_3d_index_cursor = 0;
+    }
+
+    fn remove_custom_mesh_3d_cache_entry(&mut self, id: GpuMesh3dId) {
+        if self.custom_mesh_3d_mesh_cache.remove(&id).is_some() {
+            self.invalidate_draw_step_cache();
+        }
     }
 
     /// Replaces the startup placeholder mesh buffers with full-capacity ones

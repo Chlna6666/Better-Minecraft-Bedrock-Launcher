@@ -145,13 +145,26 @@ fn vs_backdrop_blur(
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let blur = b_backdrop_blurs[instance_id];
     let source_position = blur.bounds.origin + unit_vertex * blur.bounds.size;
-    let is_element_composite = blur.composite_kind != 0u;
-    let is_rotated_composite = blur.composite_kind == 2u;
+    let composite_kind = blur.composite_kind & 3u;
+    let animation_slot = blur.composite_kind >> 2u;
+    let is_element_composite = composite_kind != 0u;
+    let is_rotated_composite = composite_kind == 2u;
     var display_origin = blur.bounds.origin;
     var display_size = blur.bounds.size;
     if (is_element_composite) {
         display_origin = vec2<f32>(blur.tint.h, blur.tint.s);
         display_size = vec2<f32>(blur.tint.l, blur.tint.a);
+    }
+    var display_bounds = Bounds(display_origin, display_size);
+    var content_mask = blur.content_mask;
+    var animation_opacity = 1.0;
+    if (is_element_composite && !is_rotated_composite) {
+        let animation = resolve_visual_animation(animation_slot, display_bounds);
+        display_bounds = animation_bounds(display_bounds, animation);
+        content_mask = animation_content_mask(content_mask, animation);
+        animation_opacity = animation.opacity;
+        display_origin = display_bounds.origin;
+        display_size = display_bounds.size;
     }
     let local_display_position = display_origin + unit_vertex * display_size;
     var display_position = local_display_position;
@@ -171,16 +184,16 @@ fn vs_backdrop_blur(
     out.position = to_device_position_impl(display_position);
     out.local_position = local_display_position;
     out.texture_coords = source_position / max(blur.blurred_size, vec2<f32>(1.0));
-    out.clip_distances = distance_from_clip_rect_impl(local_display_position, blur.content_mask.bounds);
+    out.clip_distances = distance_from_clip_rect_impl(local_display_position, content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(
-        blur.content_mask.corner_bounds.origin,
-        blur.content_mask.corner_bounds.size,
+        content_mask.corner_bounds.origin,
+        content_mask.corner_bounds.size,
     );
     out.content_mask_radii = vec4<f32>(
-        blur.content_mask.corner_radii.top_left,
-        blur.content_mask.corner_radii.top_right,
-        blur.content_mask.corner_radii.bottom_right,
-        blur.content_mask.corner_radii.bottom_left,
+        content_mask.corner_radii.top_left,
+        content_mask.corner_radii.top_right,
+        content_mask.corner_radii.bottom_right,
+        content_mask.corner_radii.bottom_left,
     );
     out.bounds = vec4<f32>(display_origin, display_size);
     let packed_corner_radii = vec4<f32>(
@@ -191,7 +204,7 @@ fn vs_backdrop_blur(
     );
     out.corner_radii = select(packed_corner_radii, vec4<f32>(0.0), is_rotated_composite);
     out.saturation = blur.saturation;
-    out.opacity = blur.opacity;
+    out.opacity = blur.opacity * animation_opacity;
     out.tint = select(hsla_to_rgba(blur.tint), vec4<f32>(0.0), is_element_composite);
     return out;
 }

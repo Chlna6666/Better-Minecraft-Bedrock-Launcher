@@ -27,10 +27,24 @@ pub(super) fn write_animation_value(
     from: [f32; 4],
     to: [f32; 4],
 ) {
-    let progress = if progress.is_finite() { progress } else { 0.0 };
     let mut record = [0_u8; PACKED_ANIMATION_VALUE_BYTES];
+    write_animation_value_at(&mut record, animation_id, property, progress, from, to);
+    bytes.extend_from_slice(&record);
+}
+
+pub(super) fn write_animation_value_at(
+    record: &mut [u8],
+    animation_id: crate::SceneAnimationId,
+    property: AnimationProperty,
+    progress: f32,
+    from: [f32; 4],
+    to: [f32; 4],
+) {
+    debug_assert_eq!(record.len(), PACKED_ANIMATION_VALUE_BYTES);
+    record.fill(0);
     record[0..4].copy_from_slice(&animation_id.0.to_ne_bytes());
     record[4..8].copy_from_slice(&(property as u32).to_ne_bytes());
+    let progress = if progress.is_finite() { progress } else { 0.0 };
     record[8..12].copy_from_slice(&progress.to_ne_bytes());
 
     let mut offset = 16;
@@ -39,7 +53,6 @@ pub(super) fn write_animation_value(
         offset += 4;
     }
     // The final 16 bytes are ABI padding and remain zeroed.
-    bytes.extend_from_slice(&record);
 }
 
 pub(super) fn write_custom_mesh_3d_parameters(

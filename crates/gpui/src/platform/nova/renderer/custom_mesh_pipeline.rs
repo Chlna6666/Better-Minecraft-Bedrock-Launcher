@@ -12,6 +12,7 @@ impl NovaRenderer {
             match self.create_custom_mesh_3d_pipeline_for_current_backend(&shader) {
                 Ok(pipeline) => {
                     self.custom_mesh_3d_pipelines.insert(shader.id, pipeline);
+                    self.invalidate_draw_step_cache();
                 }
                 Err(error) => {
                     self.custom_mesh_3d_pipeline_failures.insert(shader.id);

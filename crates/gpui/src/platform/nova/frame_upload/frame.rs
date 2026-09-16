@@ -130,6 +130,12 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) sampled_animation_values: Vec<crate::SceneAnimationValue>,
     pub(in crate::platform::nova) gpu_indexed_animation_slots:
         FxHashMap<crate::SceneAnimationId, u32>,
+    pub(in crate::platform::nova) gpu_indexed_source_animation_ids:
+        FxHashSet<crate::SceneAnimationId>,
+    pub(in crate::platform::nova) gpu_indexed_composite_animation_ids:
+        FxHashSet<crate::SceneAnimationId>,
+    pub(in crate::platform::nova) gpu_indexed_composite_element_blur_animation_ids:
+        FxHashMap<u32, crate::SceneAnimationId>,
     /// Flattened underline ownership in packed-buffer order. The second u32 of the existing
     /// 96-byte underline record is repurposed as an animation slot, so no primitive ABI expansion
     /// or per-frame underline rewrite is required.

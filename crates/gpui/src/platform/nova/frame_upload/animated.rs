@@ -341,6 +341,29 @@ impl FrameUpload {
         self.backdrop_blur_ignore_animation_damage_indices.clear();
         self.backdrop_blur_passes_dirty_this_frame = false;
 
+        // Ordinary quads, shadows and sprites are promoted to the indexed GPU animation table
+        // during encode. If no CPU-sampled primitive remains, there is no primitive buffer to
+        // rewrite or resolve; only rotate the small animation-id scratch set used by blur history.
+        // Keep the fallback path when a previous filtered primitive still needs its dirty state
+        // retired.
+        if self.animated_primitives.is_empty() && self.backdrop_blur_filter_dirty_indices.is_empty()
+        {
+            let mut current_animation_ids =
+                std::mem::take(&mut self.backdrop_blur_current_animation_ids_scratch);
+            current_animation_ids.clear();
+            current_animation_ids.extend(
+                self.sampled_animation_values
+                    .iter()
+                    .map(|value| value.animation_id),
+            );
+            std::mem::swap(
+                &mut self.backdrop_blur_previous_animation_ids,
+                &mut current_animation_ids,
+            );
+            self.backdrop_blur_current_animation_ids_scratch = current_animation_ids;
+            return;
+        }
+
         let resolved_animation_values = resolve_animation_values(&self.sampled_animation_values);
 
         let mut current_animation_ids =
@@ -616,13 +639,9 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
             }
         }
         TransitionProperty::Rotation => {}
-        TransitionProperty::ClipReveal => apply_clip_reveal(
-            primitive,
-            sampled[0],
-            sampled[1],
-            sampled[2],
-            sampled[3],
-        ),
+        TransitionProperty::ClipReveal => {
+            apply_clip_reveal(primitive, sampled[0], sampled[1], sampled[2], sampled[3])
+        }
         TransitionProperty::Scale => apply_scale(primitive, sampled[0], None),
         TransitionProperty::Transform => {
             apply_opacity(primitive, sampled[1].clamp(0.0, 1.0));
@@ -934,9 +953,15 @@ mod tests {
         };
         assert_eq!(quad.bounds, bounds);
         assert_eq!(quad.content_mask.bounds.origin.x, crate::ScaledPixels(10.0));
-        assert_eq!(quad.content_mask.bounds.size.width, crate::ScaledPixels(100.0));
+        assert_eq!(
+            quad.content_mask.bounds.size.width,
+            crate::ScaledPixels(100.0)
+        );
         assert_eq!(quad.content_mask.bounds.origin.y, crate::ScaledPixels(20.0));
-        assert_eq!(quad.content_mask.bounds.size.height, crate::ScaledPixels(40.0));
+        assert_eq!(
+            quad.content_mask.bounds.size.height,
+            crate::ScaledPixels(40.0)
+        );
     }
 
     #[test]
@@ -965,9 +990,15 @@ mod tests {
         };
         assert_eq!(quad.bounds, bounds);
         assert_eq!(quad.content_mask.bounds.origin.x, crate::ScaledPixels(10.0));
-        assert_eq!(quad.content_mask.bounds.size.width, crate::ScaledPixels(50.0));
+        assert_eq!(
+            quad.content_mask.bounds.size.width,
+            crate::ScaledPixels(50.0)
+        );
         assert_eq!(quad.content_mask.bounds.origin.y, crate::ScaledPixels(20.0));
-        assert_eq!(quad.content_mask.bounds.size.height, crate::ScaledPixels(80.0));
+        assert_eq!(
+            quad.content_mask.bounds.size.height,
+            crate::ScaledPixels(80.0)
+        );
     }
 
     #[test]

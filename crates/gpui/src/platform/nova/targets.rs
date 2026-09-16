@@ -341,6 +341,7 @@ where
                     source_texture_view,
                     descriptor.sampler,
                     buffers.backdrop_blur_buffer,
+                    buffers.animation_value_buffer,
                 ),
             })?);
         }

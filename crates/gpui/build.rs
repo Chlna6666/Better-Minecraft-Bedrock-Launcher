@@ -130,7 +130,12 @@ fn check_nova_wgsl_shaders() {
         (
             "nova backdrop blur shader",
             "",
-            &[CORE, SHAPE, "./src/platform/nova/shaders/blur.wgsl"][..],
+            &[
+                CORE,
+                SHAPE,
+                ANIMATION,
+                "./src/platform/nova/shaders/blur.wgsl",
+            ][..],
         ),
     ];
 
