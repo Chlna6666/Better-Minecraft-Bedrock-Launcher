@@ -1,3 +1,4 @@
+use super::lifecycle::RetainedInvalidationScope;
 use super::state::ElementVisualTransform;
 use super::*;
 use crate::SceneAnimationId;
@@ -265,11 +266,12 @@ impl Window {
         Ok(())
     }
 
-    /// Paint images while limiting newly resident static image tiles per frame.
+    /// Paint images while limiting new or refreshed image tiles per frame.
     ///
-    /// Already resident images are always emitted. Requests that need a new atlas tile after the
-    /// budget has been reached are skipped and reported to the caller, which can schedule a
-    /// follow-up frame without blocking input on a large burst of texture uploads.
+    /// Already resident images are always emitted. Requests that need atlas work after the budget
+    /// has been reached are skipped and reported to the caller. GPUI also schedules a targeted
+    /// retained-subtree retry so callers cannot accidentally strand deferred images behind a
+    /// cached absolute view until unrelated pointer input dirties it.
     pub fn paint_images_budgeted<'a>(
         &mut self,
         requests: impl IntoIterator<Item = ImagePaintRequest<'a>>,
@@ -295,8 +297,19 @@ impl Window {
                 frame_sequence,
                 pixel_format: frame.pixel_format(),
             };
-            let requires_new_image_tile = request.image.is_animated()
-                || !self.image_paint_tile_cache.contains_key(&cache_key);
+            let is_animated = request.image.is_animated();
+            let animated_slot_key = AnimatedImageSlotKey {
+                image_id: request.image.id,
+                frame_slot,
+            };
+            let animated_slot_needs_refresh = is_animated
+                && self.animated_image_slots.get(&animated_slot_key).copied()
+                    != Some(frame_sequence);
+            let requires_new_image_tile = if is_animated {
+                animated_slot_needs_refresh
+            } else {
+                !self.image_paint_tile_cache.contains_key(&cache_key)
+            };
             if requires_new_image_tile && new_image_tiles >= max_new_image_tiles {
                 progress.deferred_requests = progress.deferred_requests.saturating_add(1);
                 continue;
@@ -317,7 +330,35 @@ impl Window {
             }
         }
 
+        if progress.deferred_requests > 0 {
+            self.schedule_deferred_image_upload_retry();
+        }
+
         Ok(progress)
+    }
+
+    fn schedule_deferred_image_upload_retry(&mut self) {
+        let retained_id = self.current_retained_element_id();
+        let view_id = self.current_view_or_root();
+        self.on_next_frame(move |window, _cx| {
+            if let (Some(retained_id), Some(view_id)) = (retained_id, view_id) {
+                if window.invalidator.invalidate_retained_path_with_scope(
+                    view_id,
+                    Some(&retained_id),
+                    RetainedInvalidationScope::InvalidateSubtree,
+                ) {
+                    window.schedule_interactive_animation_frame();
+                }
+                return;
+            }
+
+            // A paint outside a stable retained path still needs a real CPU rebuild. Install the
+            // one-shot refresh after the current draw has completed so finish_completed_draw
+            // cannot clear it before the retry frame observes it.
+            window.force_full_redraw.set(true);
+            window.force_view_cache_refresh = true;
+            window.refresh();
+        });
     }
 
     pub(crate) fn paint_image_frame(
