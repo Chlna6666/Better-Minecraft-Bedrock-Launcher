@@ -47,7 +47,7 @@ struct TextRasterParams {
     gamma_ratios: vec4<f32>,
     grayscale_enhanced_contrast: f32,
     subpixel_enhanced_contrast: f32,
-    is_bgr: u32,
+    subpixel_config: u32,
     pad0: u32,
 }
 

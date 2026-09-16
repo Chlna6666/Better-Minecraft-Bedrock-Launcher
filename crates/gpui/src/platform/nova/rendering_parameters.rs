@@ -3,12 +3,41 @@
     reason = "system text rendering parameters are read through platform FFI"
 )]
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PackedSubpixelParameters(u32);
+
+impl PackedSubpixelParameters {
+    const BGR_BIT: u32 = 1 << 31;
+    const VALUE_BITS: u32 = !Self::BGR_BIT;
+
+    fn new(is_bgr: bool, clear_type_level: f32) -> Self {
+        let clear_type_level = if clear_type_level.is_finite() {
+            clear_type_level.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let mut bits = clear_type_level.to_bits() & Self::VALUE_BITS;
+        if is_bgr {
+            bits |= Self::BGR_BIT;
+        }
+        Self(bits)
+    }
+}
+
+impl From<PackedSubpixelParameters> for u32 {
+    fn from(value: PackedSubpixelParameters) -> Self {
+        value.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct RenderingParameters {
     pub(super) gamma_ratios: [f32; 4],
     pub(super) grayscale_enhanced_contrast: f32,
     pub(super) subpixel_enhanced_contrast: f32,
-    pub(super) is_bgr: bool,
+    /// Packed shader word kept in the existing `is_bgr` ABI slot: bit 31 is the BGR flag and
+    /// bits 0..30 are the exact non-negative f32 bit pattern of DirectWrite ClearTypeLevel.
+    pub(super) is_bgr: PackedSubpixelParameters,
     windows_hwnd: Option<isize>,
     windows_monitor: Option<isize>,
 }
@@ -75,11 +104,17 @@ impl RenderingParameters {
             .and_then(|value| value.parse().ok())
             .unwrap_or(system.subpixel_enhanced_contrast)
             .max(0.0);
+        let clear_type_level = std::env::var("ZED_FONTS_CLEARTYPE_LEVEL")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(system.clear_type_level)
+            .clamp(0.0, 1.0);
         Self {
             gamma_ratios: gamma_ratios(gamma),
             grayscale_enhanced_contrast,
             subpixel_enhanced_contrast,
-            is_bgr: system.is_bgr,
+            is_bgr: PackedSubpixelParameters::new(system.is_bgr, clear_type_level),
             windows_hwnd: None,
             windows_monitor: None,
         }
@@ -91,6 +126,7 @@ struct SystemRenderingParameters {
     gamma: f32,
     grayscale_enhanced_contrast: f32,
     subpixel_enhanced_contrast: f32,
+    clear_type_level: f32,
     is_bgr: bool,
 }
 
@@ -100,6 +136,7 @@ impl Default for SystemRenderingParameters {
             gamma: 1.45,
             grayscale_enhanced_contrast: 0.35,
             subpixel_enhanced_contrast: 0.5,
+            clear_type_level: 1.0,
             is_bgr: false,
         }
     }
@@ -158,6 +195,7 @@ fn create_system_rendering_parameters(monitor: Option<isize>) -> Option<SystemRe
         gamma: unsafe { render_params.GetGamma() },
         grayscale_enhanced_contrast: unsafe { render_params.GetGrayscaleEnhancedContrast() },
         subpixel_enhanced_contrast: unsafe { render_params.GetEnhancedContrast() },
+        clear_type_level: unsafe { render_params.GetClearTypeLevel() },
         is_bgr: unsafe { render_params.GetPixelGeometry() } == DWRITE_PIXEL_GEOMETRY_BGR,
     })
 }
