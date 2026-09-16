@@ -1,9 +1,18 @@
+use super::lifecycle::RetainedInvalidationScope;
 use super::*;
+
+/// Pending asset wakeups are coalesced per asset *and* per window.
+///
+/// Window identity is part of the key because an asset can become ready before a window has
+/// finished publishing its entity -> invalidator registrations. Keeping one completion task per
+/// observing window lets the callback invalidate that exact window directly instead of relying on
+/// a global entity notification having already discovered the window.
+type AssetViewSubscriptionId = (TypeId, u64, u64);
 
 #[derive(Default)]
 struct AssetViewSubscriptions {
     next_generation: u64,
-    pending: collections::FxHashMap<(TypeId, u64), PendingAssetViewSubscription>,
+    pending: collections::FxHashMap<AssetViewSubscriptionId, PendingAssetViewSubscription>,
 }
 
 struct PendingAssetViewSubscription {
@@ -21,14 +30,14 @@ fn asset_view_subscriptions(cx: &mut App) -> &mut AssetViewSubscriptions {
 
 fn subscribe_asset_view(
     cx: &mut App,
-    asset_id: (TypeId, u64),
+    subscription_id: AssetViewSubscriptionId,
     view: EntityId,
     new_load: bool,
 ) -> Option<u64> {
     let state = asset_view_subscriptions(cx);
 
     if !new_load
-        && let Some(pending) = state.pending.get_mut(&asset_id)
+        && let Some(pending) = state.pending.get_mut(&subscription_id)
     {
         pending.views.insert(view);
         return None;
@@ -42,7 +51,7 @@ fn subscribe_asset_view(
     let mut views = collections::FxHashSet::default();
     views.insert(view);
     state.pending.insert(
-        asset_id,
+        subscription_id,
         PendingAssetViewSubscription {
             generation,
             views,
@@ -53,13 +62,13 @@ fn subscribe_asset_view(
 
 fn finish_asset_view_subscription(
     cx: &mut App,
-    asset_id: (TypeId, u64),
+    subscription_id: AssetViewSubscriptionId,
     generation: u64,
 ) -> collections::FxHashSet<EntityId> {
     let state = asset_view_subscriptions(cx);
     if state
         .pending
-        .get(&asset_id)
+        .get(&subscription_id)
         .is_none_or(|pending| pending.generation != generation)
     {
         return collections::FxHashSet::default();
@@ -67,7 +76,7 @@ fn finish_asset_view_subscription(
 
     state
         .pending
-        .remove(&asset_id)
+        .remove(&subscription_id)
         .map_or_else(collections::FxHashSet::default, |pending| pending.views)
 }
 
@@ -76,7 +85,7 @@ impl Window {
     /// Your view will be re-drawn once the asset has finished loading.
     ///
     /// Note that the multiple calls to this method will only result in one `Asset::load` call at a
-    /// time. While a shared load is pending, wakeups are also coalesced per asset and observing
+    /// time. While a shared load is pending, wakeups are coalesced per asset, observing window and
     /// view so animation or scroll frames cannot accumulate duplicate completion tasks.
     pub fn use_asset<A: Asset>(&mut self, source: &A::Source, cx: &mut App) -> Option<A::Output> {
         let (task, is_first) = cx.fetch_asset::<A>(source);
@@ -85,8 +94,14 @@ impl Window {
         }
 
         let entity_id = self.current_view();
-        let asset_id = (TypeId::of::<A>(), crate::hash(source));
-        let Some(generation) = subscribe_asset_view(cx, asset_id, entity_id, is_first) else {
+        let subscription_id = (
+            TypeId::of::<A>(),
+            crate::hash(source),
+            self.handle.window_id().as_u64(),
+        );
+        let Some(generation) =
+            subscribe_asset_view(cx, subscription_id, entity_id, is_first)
+        else {
             return None;
         };
 
@@ -95,19 +110,27 @@ impl Window {
             async move |cx| {
                 task.await;
 
-                // Asset completion must itself wake the owning views and schedule an immediate
-                // presentation frame. Deferring this without presentation can deadlock an otherwise
-                // idle window: there is no presentation until unrelated input (often a mouse move)
-                // happens to request one.
+                // Invalidate the exact observing window directly. During a window's first frame the
+                // global App entity -> WindowInvalidator map may not have been published yet, so a
+                // plain `cx.notify(view)` can queue an effect without making the image-ready frame's
+                // view dirty. That frame then legally replays the old retained image range until an
+                // unrelated input event dirties the view. Per-window subscriptions close that race
+                // while retaining one completion task per asset/window rather than per element.
                 cx.update(move |window, cx| {
-                    let mut notified = false;
-                    for entity_id in finish_asset_view_subscription(cx, asset_id, generation) {
-                        cx.notify(entity_id);
-                        notified = true;
+                    let views =
+                        finish_asset_view_subscription(cx, subscription_id, generation);
+                    if views.is_empty() {
+                        return;
                     }
-                    if notified {
-                        window.schedule_image_ready_frame();
+
+                    for entity_id in views {
+                        let _ = window.invalidator.invalidate_retained_path_with_scope(
+                            entity_id,
+                            None,
+                            RetainedInvalidationScope::InvalidateSubtree,
+                        );
                     }
+                    window.schedule_image_ready_frame();
                 })
                 .ok();
             }
