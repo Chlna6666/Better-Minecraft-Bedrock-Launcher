@@ -667,8 +667,7 @@ impl DirectWriteState {
             )?;
         }
         let use_subpixel_rendering = should_use_subpixel_rendering(components, params);
-        let rendering_mode =
-            glyph_rendering_mode(rendering_mode, use_subpixel_rendering, params.font_size);
+        let rendering_mode = glyph_rendering_mode(rendering_mode, params.font_size);
 
         let antialias_mode = if use_subpixel_rendering {
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
@@ -1630,22 +1629,21 @@ const PIXEL_STABLE_UI_TEXT_MAX_DIP: f32 = 16.0;
 
 fn glyph_rendering_mode(
     recommended: DWRITE_RENDERING_MODE1,
-    use_subpixel_rendering: bool,
     font_size: Pixels,
 ) -> DWRITE_RENDERING_MODE1 {
-    // Grayscale coverage must be symmetric so curved glyph edges are antialiased vertically as
-    // well. OUTLINE cannot produce the bitmap coverage atlas this path expects, so keep the
-    // existing symmetric fallback there too.
-    if !use_subpixel_rendering || recommended == DWRITE_RENDERING_MODE1_OUTLINE {
+    // OUTLINE cannot produce the bitmap coverage atlas this path expects. Keep a symmetric
+    // bitmap fallback there; all other modes remain eligible for the small-UI sharpness policy
+    // regardless of whether the coverage is RGB ClearType or single-channel grayscale.
+    if recommended == DWRITE_RENDERING_MODE1_OUTLINE {
         return DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
     }
 
-    // Small UI text needs stable device-pixel stems regardless of script or fallback font. Once
-    // DPI scaling raises physical ppem, DirectWrite can recommend a symmetric/downsampled mode
-    // even for the same logical 9-16 DIP label. That adds vertical filtering and makes thin
-    // horizontal strokes look softer or lighter. Keep DirectWrite's selected grid-fit mode and
-    // ClearType coverage, but use NATURAL horizontal antialiasing for small RGB UI glyphs. Larger
-    // display text keeps the platform recommendation because vertical symmetric AA benefits curves
+    // Small UI text needs stable device-pixel stems regardless of script, fallback font, weight,
+    // or antialiasing target. Once DPI scaling raises physical ppem, DirectWrite can recommend a
+    // symmetric/downsampled mode even for the same logical 9-16 DIP label. That adds vertical
+    // filtering and can make thin strokes look softer or visually lighter. Keep DirectWrite's
+    // selected grid-fit mode, but use NATURAL horizontal antialiasing for small bitmap glyphs.
+    // Larger display text keeps the platform recommendation because symmetric AA benefits curves
     // and diagonals there.
     if font_size.0.is_finite()
         && font_size.0 > 0.0
@@ -1756,30 +1754,25 @@ mod tests {
     }
 
     #[test]
-    fn small_ui_subpixel_mode_avoids_vertical_softening_for_all_scripts() {
+    fn small_ui_mode_avoids_vertical_softening_for_all_antialiasing_paths() {
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, px(9.0)).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(9.0)).0,
             DWRITE_RENDERING_MODE1_NATURAL.0
         );
         assert_eq!(
             glyph_rendering_mode(
                 DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED,
-                true,
                 px(16.0),
             )
             .0,
             DWRITE_RENDERING_MODE1_NATURAL.0
         );
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, true, px(17.0)).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, px(17.0)).0,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
         );
         assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, false, px(9.0)).0,
-            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
-        );
-        assert_eq!(
-            glyph_rendering_mode(DWRITE_RENDERING_MODE1_OUTLINE, true, px(9.0)).0,
+            glyph_rendering_mode(DWRITE_RENDERING_MODE1_OUTLINE, px(9.0)).0,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC.0
         );
     }
