@@ -83,6 +83,12 @@ pub(crate) struct RetainedPaintContext {
     pub(crate) visual_content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,
     pub(crate) rem_size: Pixels,
+    /// Renderer-owned animation inherited from an ancestor. The id is stable for the lifetime of
+    /// one timeline, so this invalidates retained descendants only when ownership changes rather
+    /// than on every compositor-paced sample.
+    pub(crate) scene_animation: Option<(SceneAnimationId, TransitionProperty)>,
+    /// Scene-specific glyph oversampling is part of the pixels produced by a retained text range.
+    pub(crate) scene_text_raster_scale: f32,
 }
 
 /// Parent-local semantic identity for one proven child subtree.
