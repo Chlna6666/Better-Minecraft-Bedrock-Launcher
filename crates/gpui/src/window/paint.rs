@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Rgba, SceneAnimationId};
+use crate::{Rgba, SceneAnimationId, TextRenderingMode};
 
 /// A rectangle to be rendered in the window at the given position and size.
 /// Passed as an argument [`Window::paint_quad`].
@@ -446,6 +446,7 @@ impl Window {
             grayscale_antialiasing: glyphs_require_grayscale_antialiasing(
                 self.platform_window.background_appearance(),
                 self.next_frame.scene.is_capturing_blur(),
+                self.text_rendering_mode.get(),
             ),
             is_emoji: false,
             is_cjk,
@@ -463,7 +464,7 @@ impl Window {
                     glyph_id,
                     font_size,
                     is_cjk,
-                    false
+                    !params.grayscale_antialiasing
                 );
                 return Ok(());
             };
@@ -601,10 +602,16 @@ impl Window {
 fn glyphs_require_grayscale_antialiasing(
     background_appearance: WindowBackgroundAppearance,
     is_capturing_blur: bool,
+    requested_mode: TextRenderingMode,
 ) -> bool {
-    // Element blur captures into a transparent texture. ClearType dual-source blending assumes an
-    // opaque destination and otherwise writes opaque alpha across the whole glyph sprite quad.
-    is_capturing_blur || background_appearance != WindowBackgroundAppearance::Opaque
+    // Element blur captures and translucent windows do not have the opaque RGB destination that
+    // ClearType-style coverage requires. They remain a hard grayscale veto regardless of the
+    // application preference.
+    if is_capturing_blur || background_appearance != WindowBackgroundAppearance::Opaque {
+        return true;
+    }
+
+    matches!(requested_mode, TextRenderingMode::Grayscale)
 }
 
 fn glyph_raster_scale_factor(device_scale_factor: f32, visual_scale: f32) -> Option<f32> {
@@ -624,14 +631,34 @@ mod tests {
         assert!(glyphs_require_grayscale_antialiasing(
             WindowBackgroundAppearance::Opaque,
             true,
+            TextRenderingMode::Subpixel,
         ));
     }
 
     #[test]
-    fn opaque_main_target_keeps_subpixel_glyphs() {
+    fn transparent_target_overrides_subpixel_request() {
+        assert!(glyphs_require_grayscale_antialiasing(
+            WindowBackgroundAppearance::Transparent,
+            false,
+            TextRenderingMode::Subpixel,
+        ));
+    }
+
+    #[test]
+    fn opaque_main_target_keeps_platform_default_glyph_policy() {
         assert!(!glyphs_require_grayscale_antialiasing(
             WindowBackgroundAppearance::Opaque,
             false,
+            TextRenderingMode::PlatformDefault,
+        ));
+    }
+
+    #[test]
+    fn opaque_main_target_can_force_grayscale_glyphs() {
+        assert!(glyphs_require_grayscale_antialiasing(
+            WindowBackgroundAppearance::Opaque,
+            false,
+            TextRenderingMode::Grayscale,
         ));
     }
 

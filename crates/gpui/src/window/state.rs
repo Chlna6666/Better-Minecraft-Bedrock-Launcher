@@ -269,6 +269,7 @@ pub struct Window {
     pub(super) display_id: Option<DisplayId>,
     pub(super) sprite_atlas: Arc<dyn PlatformAtlas>,
     pub(super) text_system: Arc<WindowTextSystem>,
+    pub(super) text_rendering_mode: std::rc::Rc<std::cell::Cell<crate::TextRenderingMode>>,
     pub(super) default_text_style: TextStyle,
     pub(super) image_pipeline_config: ImagePipelineConfig,
     pub(super) trim_memory_on_hidden: bool,

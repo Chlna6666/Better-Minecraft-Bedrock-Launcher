@@ -265,6 +265,18 @@ pub trait PlatformDispatcher: Send + Sync {
     }
 }
 
+/// Controls how GPUI rasterizes and composites text glyph coverage.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TextRenderingMode {
+    /// Use the platform and renderer default behavior.
+    #[default]
+    PlatformDefault,
+    /// Request RGB subpixel (ClearType-style) rendering where the platform can provide it.
+    Subpixel,
+    /// Force single-channel grayscale antialiasing.
+    Grayscale,
+}
+
 pub(crate) trait PlatformTextSystem: Send + Sync {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
     fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()>;

@@ -323,6 +323,7 @@ impl Window {
             display_id,
             sprite_atlas,
             text_system,
+            text_rendering_mode: cx.text_rendering_mode_cell(),
             default_text_style: cx.default_text_style.clone(),
             image_pipeline_config,
             trim_memory_on_hidden: cx.image_pipeline_config().trim_memory_on_hidden,

@@ -33,6 +33,7 @@ mod stream_tests;
 mod test_context;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+mod text_rendering;
 mod urls;
 mod window_tab_registry;
 
