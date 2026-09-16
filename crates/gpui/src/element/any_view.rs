@@ -29,6 +29,8 @@ struct ViewPaintContext {
     scale: f32,
     translation: Point<Pixels>,
     visual_content_mask: ContentMask<Pixels>,
+    scene_animation: Option<(crate::SceneAnimationId, crate::TransitionProperty)>,
+    scene_text_raster_scale: f32,
 }
 
 #[derive(Default)]
@@ -318,6 +320,8 @@ impl Element for AnyView {
                         scale: window.element_visual_transform.scale,
                         translation: window.element_visual_transform.translation,
                         visual_content_mask: window.visual_content_mask(),
+                        scene_animation: window.scene_animation_binding(),
+                        scene_text_raster_scale: window.scene_text_raster_scale(),
                     };
 
                     let cache_fingerprint = self.cache_fingerprint();
