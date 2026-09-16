@@ -240,8 +240,25 @@ impl AnimationProperty {
         }
     }
 
-    fn text_raster_scale(self) -> f32 {
-        crate::animation::scene_text_raster_scale(self.property, self.from, self.to)
+    fn text_raster_scale(self, device_scale_factor: f32) -> f32 {
+        let base = crate::animation::scene_text_raster_scale(self.property, self.from, self.to);
+        let translates = self.property == TransitionProperty::Translation
+            && ((self.from[0] - self.to[0]).abs() > f32::EPSILON
+                || (self.from[1] - self.to[1]).abs() > f32::EPSILON);
+        if !translates {
+            return base;
+        }
+
+        // Fractional GPU translation linearly samples the glyph atlas. Keep geometry fixed but
+        // rasterize moving text a little denser on low-DPI displays. The 1.5x ceiling avoids the
+        // 4x atlas-area cost of unconditional 2x oversampling, while HiDPI displays naturally fall
+        // back to native density.
+        let device_scale_factor = if device_scale_factor.is_finite() {
+            device_scale_factor.max(1.0)
+        } else {
+            1.0
+        };
+        base.max((2.0 / device_scale_factor).clamp(1.0, 1.5))
     }
 
     fn dirty_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -290,7 +307,7 @@ impl Animation {
         animation
     }
 
-    /// Create an element animation from an engine timing specification.
+    /// Create an element animation from the given timing specification.
     pub fn from_spec(spec: AnimationSpec) -> Self {
         Self {
             spec,
@@ -689,7 +706,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         window.with_scene_animation(
             animation_id,
             self.property.property,
-            self.property.text_raster_scale(),
+            self.property.text_raster_scale(window.scale_factor()),
             |window| element.paint(window, cx),
         );
 
@@ -753,7 +770,7 @@ struct SceneAnimationState {
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type PrepaintState = Option<SceneAnimationId>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -822,39 +839,27 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: crate::Bounds<crate::Pixels>,
-        element: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        element.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
         global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: crate::Bounds<crate::Pixels>,
         element: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Self::PrepaintState {
         let Some((property, spec)) = self
             .scene_animation()
             .map(|(property, spec)| (property, spec.clone()))
         else {
-            element.paint(window, cx);
-            return;
+            element.prepaint(window, cx);
+            return None;
         };
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
         let spring = self.animations[0].spring;
         let (from, to) = property.resolved_values(bounds, window.scale_factor());
-        // Custom curves may overshoot by an arbitrary amount. Translation starts conservatively at
-        // viewport scope; a physical spring can be tightened after paint reveals actual scene bounds.
+        // Translation with an arbitrary custom curve can overshoot outside the endpoint union. Start
+        // conservatively at viewport scope; physical springs tighten the damage envelope after paint
+        // once the actual scene bounds are known.
         let dirty_bounds = if property.property == TransitionProperty::Translation {
             Bounds::new(Point::default(), window.viewport_size())
         } else {
@@ -896,10 +901,40 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                 };
                 (state.animation_id, state)
             });
+        let text_raster_scale = property.text_raster_scale(window.scale_factor());
+        window.with_scene_animation_context(
+            animation_id,
+            property.property,
+            text_raster_scale,
+            |window| element.prepaint(window, cx),
+        );
+        Some(animation_id)
+    }
+
+    fn paint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: crate::Bounds<crate::Pixels>,
+        element: &mut Self::RequestLayoutState,
+        animation_id: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some((property, _spec)) = self.scene_animation() else {
+            element.paint(window, cx);
+            return;
+        };
+        let global_id =
+            global_id.expect("AnimationElement always supplies an element id for state tracking");
+        let spring = self.animations[0].spring;
+        let animation_id = animation_id.expect(
+            "scene animation id must be prepared during prepaint before retained child reuse",
+        );
         window.with_scene_animation(
             animation_id,
             property.property,
-            property.text_raster_scale(),
+            property.text_raster_scale(window.scale_factor()),
             |window| {
                 element.paint(window, cx);
                 if spring.is_some()
@@ -1070,6 +1105,25 @@ mod tests {
             property.resolved_values(bounds, 2.0),
             ([20.0, 10.0, 0.88, 1.0], [0.0, 0.0, 1.0, 1.0])
         );
+    }
+
+    #[test]
+    fn translation_text_raster_scale_is_density_aware_and_bounded() {
+        let property = AnimationProperty::translation(
+            Point::new(crate::px(18.0), crate::px(0.0)),
+            Point::default(),
+        );
+        assert_eq!(property.text_raster_scale(1.0), 1.5);
+        assert!((property.text_raster_scale(1.5) - (4.0 / 3.0)).abs() < 0.0001);
+        assert_eq!(property.text_raster_scale(2.0), 1.0);
+
+        let opacity_only = AnimationProperty::translation_opacity(
+            Point::default(),
+            Point::default(),
+            0.0,
+            1.0,
+        );
+        assert_eq!(opacity_only.text_raster_scale(1.0), 1.0);
     }
 
     #[test]
