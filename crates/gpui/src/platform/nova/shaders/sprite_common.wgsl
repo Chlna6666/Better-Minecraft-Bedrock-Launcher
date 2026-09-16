@@ -15,7 +15,7 @@ struct MonoSpriteVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) tile_position: vec2<f32>,
     @location(1) @interpolate(flat) color: vec4<f32>,
-    @location(2) @interpolate(flat) subpixel_scale_safe: u32,
+    @location(2) @interpolate(flat) subpixel_raster_safe: u32,
     @location(3) clip_distances: vec4<f32>,
     @location(4) @interpolate(flat) content_mask_bounds: vec4<f32>,
     @location(5) @interpolate(flat) content_mask_radii: vec4<f32>,
@@ -43,15 +43,37 @@ fn sprite_varying(vertex_id: u32, instance_id: u32) -> MonoSpriteVarying {
     let geometry_scale = select(1.0, animation.scale, animation.scales_geometry != 0u);
     let scale_epsilon = max(0.001, abs(raster_scale) * 0.001);
 
+    // Matching raster density alone is not enough for RGB ClearType. The three coverage channels
+    // are tied to one physical LCD phase, so a fractional GPU translation or an additional sprite
+    // rotation/scale makes the cached DirectWrite phase invalid even when the glyph still occupies
+    // one texture texel per device pixel. Preserve RGB only for an axis-aligned 1:1 sprite transform
+    // whose final raster origin remains on the integer device-pixel grid. Integer translations are
+    // safe; fractional translation/transform frames fall back to neutral grayscale coverage.
+    let transform_epsilon = 0.0001;
+    let axis_aligned_identity =
+        abs(sprite.transformation.rotation_scale[0][0] - 1.0) <= transform_epsilon &&
+        abs(sprite.transformation.rotation_scale[0][1]) <= transform_epsilon &&
+        abs(sprite.transformation.rotation_scale[1][0]) <= transform_epsilon &&
+        abs(sprite.transformation.rotation_scale[1][1] - 1.0) <= transform_epsilon;
+    let transformed_origin =
+        transpose(sprite.transformation.rotation_scale) * bounds.origin +
+        sprite.transformation.translation;
+    let phase_epsilon = 0.001;
+    let phase_aligned = all(
+        abs(transformed_origin - round(transformed_origin)) <= vec2<f32>(phase_epsilon)
+    );
+
     var out = MonoSpriteVarying();
     out.position = to_device_position_transformed(unit_vertex, bounds, sprite.transformation);
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
     out.color = rgba_to_vec4(sprite.color);
     out.color.a *= animation.opacity;
-    out.subpixel_scale_safe = select(
+    out.subpixel_raster_safe = select(
         0u,
         1u,
-        abs(geometry_scale - raster_scale) <= scale_epsilon,
+        abs(geometry_scale - raster_scale) <= scale_epsilon &&
+            axis_aligned_identity &&
+            phase_aligned,
     );
     out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, bounds, content_mask.bounds, sprite.transformation);
     out.content_mask_bounds = vec4<f32>(content_mask.corner_bounds.origin, content_mask.corner_bounds.size);
