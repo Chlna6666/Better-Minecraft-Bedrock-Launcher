@@ -215,13 +215,12 @@ impl LineLayoutCache {
         let mut curr_frame = self.current_frame.write();
         std::mem::swap(&mut *prev_frame, &mut *curr_frame);
 
-        // `curr_frame` now contains the frame that has just aged out of `previous_frame`. Track the
-        // amount of shaped data that was actually live in that frame and size the retained tier from
-        // that working set. The decaying high-water mark prevents a one-frame dip from immediately
-        // destroying a large editor working set, while still converging downward on simpler pages.
-        let aged_frame_bytes = curr_frame.estimated_bytes();
+        // After the swap, `prev_frame` is the frame that just finished rendering and therefore the
+        // best direct observation of the active shaping working set. `curr_frame` is the older frame
+        // whose entries were not reused and are now candidates for the retained LRU tier.
+        let active_frame_bytes = prev_frame.estimated_bytes();
         let mut retained = self.retained.lock();
-        retained.observe_working_set(aged_frame_bytes);
+        retained.observe_working_set(active_frame_bytes);
 
         for (key, layout) in curr_frame.lines.drain() {
             retained.insert_line(key, layout);
