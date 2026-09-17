@@ -54,6 +54,24 @@ impl TextClusterProperties {
         self.script.uses_joined_forms()
     }
 
+    /// Whether this cluster is script-neutral content such as ASCII, whitespace or controls.
+    pub fn is_neutral_content(self) -> bool {
+        !self.script.is_real()
+            && self.direction == TextDirection::Neutral
+            && !self.requires_bidi_resolution
+            && !self.contains_emoji
+            && !self.contains_extended_pictographic
+    }
+
+    /// Whether shaping/raster should probe font coverage for this cluster instead of assuming that
+    /// the primary face can draw it. This is a Unicode-wide policy, not a CJK-only trigger.
+    pub fn needs_font_coverage_probe(self) -> bool {
+        self.script.is_real()
+            || self.requires_bidi_resolution
+            || self.contains_emoji
+            || self.contains_extended_pictographic
+    }
+
     /// Raster policy for dense square-script families. This is intentionally separate from script
     /// identity so the glyph/raster cache does not equate "international text" with one region.
     pub(crate) fn uses_stable_vertical_raster_frame(self) -> bool {
@@ -169,6 +187,32 @@ pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
     properties
 }
 
+/// Returns whether a text span should be checked against the active font face for coverage.
+///
+/// ASCII remains on the fast path so ordinary UI labels do not force system font loading. Every
+/// non-ASCII script, bidi control, emoji and pictographic cluster can trigger a targeted coverage
+/// probe if the selected face does not contain the required glyphs.
+pub(crate) fn text_needs_font_coverage_probe(text: &str) -> bool {
+    text.chars().any(|character| {
+        !character.is_ascii() && text_cluster_properties(character.encode_utf8(&mut [0; 4])).needs_font_coverage_probe()
+    })
+}
+
+/// Returns whether a text span contains a non-ASCII cluster that the current face cannot cover.
+///
+/// The callback should query the candidate face's character map. Keeping this logic in the Unicode
+/// metadata module prevents platform backends from hard-coding CJK blocks as the only fallback path.
+pub(crate) fn text_contains_missing_font_coverage(
+    text: &str,
+    mut covers: impl FnMut(char) -> bool,
+) -> bool {
+    text.chars().any(|character| {
+        !character.is_ascii()
+            && text_cluster_properties(character.encode_utf8(&mut [0; 4])).needs_font_coverage_probe()
+            && !covers(character)
+    })
+}
+
 fn strong_direction(bidi: BidiClass) -> TextDirection {
     match bidi {
         BidiClass::L | BidiClass::LRE | BidiClass::LRI | BidiClass::LRO => {
@@ -231,7 +275,8 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
 mod tests {
     use super::{
         TextDirection, TextScript, text_cluster_properties,
-        text_cluster_properties_for_utf16_cluster, text_script, text_script_for_utf16_cluster,
+        text_cluster_properties_for_utf16_cluster, text_contains_missing_font_coverage,
+        text_needs_font_coverage_probe, text_script, text_script_for_utf16_cluster,
     };
 
     #[test]
@@ -302,6 +347,27 @@ mod tests {
         let first_strong_isolate = text_cluster_properties("\u{2068}");
         assert_eq!(first_strong_isolate.direction, TextDirection::Neutral);
         assert!(first_strong_isolate.requires_bidi_resolution);
+    }
+
+    #[test]
+    fn coverage_probe_is_unicode_wide_not_cjk_only() {
+        assert!(!text_needs_font_coverage_probe("ASCII only"));
+        assert!(text_needs_font_coverage_probe("中文"));
+        assert!(text_needs_font_coverage_probe("العربية"));
+        assert!(text_needs_font_coverage_probe("עברית"));
+        assert!(text_needs_font_coverage_probe("ไทย"));
+        assert!(text_needs_font_coverage_probe("हिन्दी"));
+        assert!(text_needs_font_coverage_probe("😀"));
+    }
+
+    #[test]
+    fn missing_coverage_detection_is_unicode_wide() {
+        assert!(!text_contains_missing_font_coverage("ASCII only", |_| false));
+        assert!(!text_contains_missing_font_coverage("中文", |_| true));
+        assert!(text_contains_missing_font_coverage("中文", |_| false));
+        assert!(text_contains_missing_font_coverage("العربية", |_| false));
+        assert!(text_contains_missing_font_coverage("हिन्दी", |_| false));
+        assert!(text_contains_missing_font_coverage("😀", |_| false));
     }
 
     #[test]
