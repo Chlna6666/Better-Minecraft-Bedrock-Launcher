@@ -194,15 +194,28 @@ pub(crate) fn text_cluster_properties_for_char(character: char) -> TextClusterPr
     text_cluster_properties(character.encode_utf8(&mut buffer))
 }
 
+/// Returns whether a single scalar value should be checked against the active font face for
+/// coverage before shaping/raster fallback chooses a substitute face.
+pub(crate) fn character_needs_font_coverage_probe(character: char) -> bool {
+    !character.is_ascii() && text_cluster_properties_for_char(character).needs_font_coverage_probe()
+}
+
+/// Returns the first scalar value that should drive a font coverage probe for this shaping cluster.
+///
+/// This deliberately skips combining marks, joiners and other script-neutral glue when they do not
+/// themselves require coverage. Fallback selection should be driven by the base scalar or emoji in
+/// a cluster, not by a Unicode control that does not map to a visible glyph by itself.
+pub(crate) fn text_font_coverage_probe_character(text: &str) -> Option<char> {
+    text.chars().find(|character| character_needs_font_coverage_probe(*character))
+}
+
 /// Returns whether a text span should be checked against the active font face for coverage.
 ///
 /// ASCII remains on the fast path so ordinary UI labels do not force system font loading. Every
 /// non-ASCII script, bidi control, emoji and pictographic cluster can trigger a targeted coverage
 /// probe if the selected face does not contain the required glyphs.
 pub(crate) fn text_needs_font_coverage_probe(text: &str) -> bool {
-    text.chars().any(|character| {
-        !character.is_ascii() && text_cluster_properties_for_char(character).needs_font_coverage_probe()
-    })
+    text_font_coverage_probe_character(text).is_some()
 }
 
 /// Returns whether a text span contains a non-ASCII cluster that the current face cannot cover.
@@ -213,11 +226,17 @@ pub(crate) fn text_contains_missing_font_coverage(
     text: &str,
     mut covers: impl FnMut(char) -> bool,
 ) -> bool {
-    text.chars().any(|character| {
-        !character.is_ascii()
-            && text_cluster_properties_for_char(character).needs_font_coverage_probe()
-            && !covers(character)
-    })
+    text.chars()
+        .filter(|character| character_needs_font_coverage_probe(*character))
+        .any(|character| !covers(character))
+}
+
+/// Returns whether a text span should use a stable vertical raster frame.
+///
+/// This is a raster policy for dense square-script families and must not be used as a generic
+/// international-text or fallback predicate.
+pub(crate) fn text_uses_stable_vertical_raster_frame(text: &str) -> bool {
+    text_cluster_properties(text).uses_stable_vertical_raster_frame()
 }
 
 fn strong_direction(bidi: BidiClass) -> TextDirection {
@@ -281,9 +300,10 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
 #[cfg(test)]
 mod tests {
     use super::{
-        TextDirection, TextScript, text_cluster_properties,
+        TextDirection, TextScript, character_needs_font_coverage_probe, text_cluster_properties,
         text_cluster_properties_for_utf16_cluster, text_contains_missing_font_coverage,
-        text_needs_font_coverage_probe, text_script, text_script_for_utf16_cluster,
+        text_font_coverage_probe_character, text_needs_font_coverage_probe, text_script,
+        text_script_for_utf16_cluster, text_uses_stable_vertical_raster_frame,
     };
 
     #[test]
@@ -375,6 +395,23 @@ mod tests {
         assert!(text_contains_missing_font_coverage("العربية", |_| false));
         assert!(text_contains_missing_font_coverage("हिन्दी", |_| false));
         assert!(text_contains_missing_font_coverage("😀", |_| false));
+    }
+
+    #[test]
+    fn coverage_probe_uses_visible_cluster_scalars() {
+        assert!(!character_needs_font_coverage_probe('\u{0301}'));
+        assert_eq!(text_font_coverage_probe_character("\u{0301}"), None);
+        assert_eq!(text_font_coverage_probe_character("e\u{0301}"), None);
+        assert_eq!(text_font_coverage_probe_character("中\u{0301}"), Some('中'));
+        assert_eq!(text_font_coverage_probe_character("👩\u{200d}💻"), Some('👩'));
+    }
+
+    #[test]
+    fn stable_vertical_frame_predicate_is_named_by_raster_policy() {
+        assert!(text_uses_stable_vertical_raster_frame("中文"));
+        assert!(text_uses_stable_vertical_raster_frame("한글"));
+        assert!(!text_uses_stable_vertical_raster_frame("العربية"));
+        assert!(!text_uses_stable_vertical_raster_frame("हिन्दी"));
     }
 
     #[test]
