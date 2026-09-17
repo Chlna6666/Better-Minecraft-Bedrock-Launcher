@@ -68,7 +68,7 @@ impl FontWeight {
     pub const LIGHT: FontWeight = FontWeight(300.0);
     /// Normal (400).
     pub const NORMAL: FontWeight = FontWeight(400.0);
-    /// Medium weight (500, higher than normal).
+    /// Medium (500, higher than normal).
     pub const MEDIUM: FontWeight = FontWeight(500.0);
     /// Semibold weight (600).
     pub const SEMIBOLD: FontWeight = FontWeight(600.0);
@@ -186,6 +186,10 @@ pub(crate) struct RenderGlyphParams {
     /// Force single-channel coverage when the glyph is composed into a transparent surface.
     pub(crate) grayscale_antialiasing: bool,
     pub(crate) is_emoji: bool,
+    /// Compatibility storage for the stable vertical raster-frame policy.
+    ///
+    /// Cache identity must use `uses_stable_vertical_raster_frame()` rather than treating this bit
+    /// as Unicode script identity. The field remains temporarily while platform producers migrate.
     pub(crate) is_cjk: bool,
 }
 
@@ -200,7 +204,8 @@ impl PartialEq for RenderGlyphParams {
                 || self.grayscale_antialiasing == other.grayscale_antialiasing)
             && self.is_emoji == other.is_emoji
             && (!cfg!(any(target_os = "linux", target_os = "freebsd"))
-                || self.is_cjk == other.is_cjk)
+                || self.uses_stable_vertical_raster_frame()
+                    == other.uses_stable_vertical_raster_frame())
     }
 }
 
@@ -218,7 +223,7 @@ impl Hash for RenderGlyphParams {
         }
         self.is_emoji.hash(state);
         if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            self.is_cjk.hash(state);
+            self.uses_stable_vertical_raster_frame().hash(state);
         }
     }
 }
