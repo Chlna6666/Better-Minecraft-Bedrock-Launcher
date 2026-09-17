@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Context as _, anyhow};
 use collections::FxHashMap;
 use derive_more::Deref;
-use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
+use parking_lot::{Mutex, RwLock};
 use smallvec::{SmallVec, smallvec};
 use std::{
     borrow::Cow,
@@ -375,11 +375,13 @@ impl TextSystem {
 
     pub(crate) fn clear_caches(&self) {
         let mut font_id_cache = self.font_id_cache.write();
+        let mut font_metrics = self.font_metrics.write();
         font_id_cache.ids_by_font.clear();
         font_id_cache.fonts_by_id.clear();
+        font_metrics.clear();
         self.font_cache_generation.fetch_add(1, Ordering::Release);
+        drop(font_metrics);
         drop(font_id_cache);
-        self.font_metrics.write().clear();
         self.raster_bounds.write().clear();
         self.wrapper_pool.lock().clear();
         self.font_runs_pool.lock().clear();
@@ -613,17 +615,31 @@ impl TextSystem {
     }
 
     fn read_metrics<T>(&self, font_id: FontId, read: impl FnOnce(&FontMetrics) -> T) -> T {
-        let lock = self.font_metrics.upgradable_read();
+        let metrics = loop {
+            let generation = {
+                let cache = self.font_metrics.read();
+                if let Some(metrics) = cache.get(&font_id) {
+                    break *metrics;
+                }
+                self.font_cache_generation.load(Ordering::Acquire)
+            };
 
-        if let Some(metrics) = lock.get(&font_id) {
-            read(metrics)
-        } else {
-            let mut lock = RwLockUpgradableReadGuard::upgrade(lock);
-            let metrics = lock
-                .entry(font_id)
-                .or_insert_with(|| self.platform_text_system.font_metrics(font_id));
-            read(metrics)
-        }
+            // Platform metric extraction may enter DirectWrite/CoreText/fontdb. Keep that work
+            // outside the shared metrics lock so unrelated font misses can proceed concurrently.
+            let computed = self.platform_text_system.font_metrics(font_id);
+            let mut cache = self.font_metrics.write();
+            if let Some(metrics) = cache.get(&font_id) {
+                break *metrics;
+            }
+            if self.font_cache_generation.load(Ordering::Acquire) != generation {
+                drop(cache);
+                continue;
+            }
+            cache.insert(font_id, computed);
+            break computed;
+        };
+
+        read(&metrics)
     }
 
     /// Returns a handle to a line wrapper, for the given font and font size.
