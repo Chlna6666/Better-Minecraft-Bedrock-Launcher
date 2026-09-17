@@ -103,6 +103,7 @@ impl CurseForgeResultsListView {
                 && should_render_curseforge_result_images()
                 && should_mount_curseforge_result_images();
             let plan = VirtualListConfig::new(CURSEFORGE_RESULT_CARD_PITCH_PX)
+                .with_symmetric_overscan(CURSEFORGE_RESULT_CARD_OVERSCAN)
                 .with_heavy_budget(if enabled {
                     CURSEFORGE_RESULT_LOGO_RENDER_BUDGET
                 } else {
@@ -427,11 +428,12 @@ fn render_virtualized_curseforge_results_list(
         return render_curseforge_results_list_placeholder_aligned(colors, state);
     }
 
-    // Element overscan is deliberately zero: offscreen rows are not materialized at all. A small
-    // projection-only retention window in `ensure_projection_window` provides scroll hysteresis
-    // without paying GPUI layout/prepaint/paint or event-handler memory for invisible cards.
+    // Keep one lightweight guard row on each side of the visible viewport. The planner still marks
+    // heavy work only for truly visible rows, so this avoids boundary holes without widening image
+    // decode or metadata work.
     let virtual_list_plan = cx.read_global(|state: &DownloadPageState, _cx| {
         VirtualListConfig::new(CURSEFORGE_RESULT_CARD_PITCH_PX)
+            .with_symmetric_overscan(CURSEFORGE_RESULT_CARD_OVERSCAN)
             .with_heavy_budget(if disable_result_logos {
                 0
             } else {
@@ -471,7 +473,7 @@ fn render_virtualized_curseforge_results_list(
     });
 
     let render_started_at = std::time::Instant::now();
-    let mut visible_card_items = div().w_full().flex().flex_col().gap(px(6.));
+    let mut visible_card_items = div().w_full().flex().flex_col().flex_none();
     let default_install_target = default_install_target_for_results(cx);
 
     for virtual_index in virtual_list_plan.render_range() {
@@ -488,7 +490,7 @@ fn render_virtualized_curseforge_results_list(
         let is_heavy_card = !disable_result_logos
             && virtual_list_plan.heavy_slice.contains(virtual_index);
 
-        visible_card_items = visible_card_items.child(render_curseforge_result_card(
+        let card = render_curseforge_result_card(
             colors,
             &i18n,
             cached_card_props,
@@ -498,7 +500,17 @@ fn render_virtualized_curseforge_results_list(
             transition_started_at,
             frame_now,
             visible_order,
-        ));
+        );
+        visible_card_items = visible_card_items.child(
+            div()
+                .w_full()
+                .h(px(CURSEFORGE_RESULT_CARD_PITCH_PX))
+                .min_h(px(CURSEFORGE_RESULT_CARD_PITCH_PX))
+                .flex_none()
+                .flex()
+                .items_start()
+                .child(card),
+        );
     }
 
     // Only rows that can actually be seen extend the layout-animation lifetime. Offscreen indices
@@ -518,6 +530,12 @@ fn render_virtualized_curseforge_results_list(
         });
     crate::ui::animation::request_layout_animation_frame_if(window, transition_animating);
 
+    // These three pieces form the scroll extent. They must not participate in flex shrinking: if
+    // Taffy shrinks either spacer to the viewport, `clamp_scroll_position` observes a transiently
+    // shorter content size during prepaint and rebases ScrollHandle::offset after the render window
+    // has already been selected. That mismatch is the one-frame blank/flicker seen while scrolling.
+    let top_spacer = virtual_list_plan.render_slice.top_spacer;
+    let bottom_spacer = virtual_list_plan.render_slice.bottom_spacer;
     let content = div()
         .size_full()
         .relative()
@@ -527,9 +545,10 @@ fn render_virtualized_curseforge_results_list(
                 .w_full()
                 .flex()
                 .flex_col()
-                .child(div().h(virtual_list_plan.render_slice.top_spacer))
+                .flex_none()
+                .child(div().h(top_spacer).min_h(top_spacer).flex_none())
                 .child(visible_card_items)
-                .child(div().h(virtual_list_plan.render_slice.bottom_spacer)),
+                .child(div().h(bottom_spacer).min_h(bottom_spacer).flex_none()),
         ));
 
     let render_elapsed_ms = render_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -598,6 +617,7 @@ fn curseforge_results_skeleton_row(colors: &ThemeColors) -> Div {
         .w_full()
         .h(px(CURSEFORGE_RESULT_CARD_PITCH_PX))
         .min_h(px(CURSEFORGE_RESULT_CARD_PITCH_PX))
+        .flex_none()
         .flex()
         .items_start()
         .child(
