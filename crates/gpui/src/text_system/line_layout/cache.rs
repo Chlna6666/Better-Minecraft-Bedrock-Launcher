@@ -35,10 +35,15 @@ const LINE_LAYOUT_CACHE_WORKING_SET_DECAY_NUMERATOR: usize = 7;
 const LINE_LAYOUT_CACHE_WORKING_SET_DECAY_DENOMINATOR: usize = 8;
 const LINE_LAYOUT_CACHE_RECENCY_COMPACTION_MULTIPLIER: usize = 2;
 
+struct FrameLayoutEntry<V> {
+    value: V,
+    estimated_bytes: usize,
+}
+
 #[derive(Default)]
 struct FrameCache {
-    lines: FxHashMap<Arc<CacheKey>, Arc<LineLayout>>,
-    wrapped_lines: FxHashMap<Arc<CacheKey>, Arc<WrappedLineLayout>>,
+    lines: FxHashMap<Arc<CacheKey>, FrameLayoutEntry<Arc<LineLayout>>>,
+    wrapped_lines: FxHashMap<Arc<CacheKey>, FrameLayoutEntry<Arc<WrappedLineLayout>>>,
     used_lines: Vec<Arc<CacheKey>>,
     used_wrapped_lines: Vec<Arc<CacheKey>>,
     estimated_bytes: usize,
@@ -225,11 +230,15 @@ impl LineLayoutCache {
         let mut retained = self.retained.lock();
         retained.observe_working_set(active_frame_bytes);
 
-        for (key, layout) in curr_frame.lines.drain() {
-            retained.insert_line(key, layout);
+        for (key, entry) in curr_frame.lines.drain() {
+            retained.insert_line_with_estimated_bytes(key, entry.value, entry.estimated_bytes);
         }
-        for (key, layout) in curr_frame.wrapped_lines.drain() {
-            retained.insert_wrapped_line(key, layout);
+        for (key, entry) in curr_frame.wrapped_lines.drain() {
+            retained.insert_wrapped_line_with_estimated_bytes(
+                key,
+                entry.value,
+                entry.estimated_bytes,
+            );
         }
         curr_frame.estimated_bytes = 0;
         curr_frame.used_lines.clear();
@@ -259,9 +268,9 @@ impl LineLayoutCache {
         } as &dyn AsCacheKeyRef;
 
         let current_frame = self.current_frame.upgradable_read();
-        if let Some(layout) = current_frame.wrapped_lines.get(key) {
+        if let Some(entry) = current_frame.wrapped_lines.get(key) {
             self.frame_metrics.hit();
-            return layout.clone();
+            return entry.value.clone();
         }
 
         let previous_frame_entry = self.previous_frame.lock().take_wrapped_line(key);
@@ -331,9 +340,9 @@ impl LineLayoutCache {
         } as &dyn AsCacheKeyRef;
 
         let current_frame = self.current_frame.upgradable_read();
-        if let Some(layout) = current_frame.lines.get(key) {
+        if let Some(entry) = current_frame.lines.get(key) {
             self.frame_metrics.hit();
-            return layout.clone();
+            return entry.value.clone();
         }
 
         if let Some((key, layout)) = self.previous_frame.lock().take_line(key) {
@@ -413,46 +422,52 @@ fn line_layout_range_is_valid(start: usize, end: usize, len: usize) -> bool {
 
 impl FrameCache {
     fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
-        if let Some((stored_key, previous_layout)) = self.lines.get_key_value(&key) {
-            let previous_bytes = estimate_line_entry_bytes(stored_key, previous_layout);
-            let next_bytes = estimate_line_entry_bytes(stored_key, &layout);
+        let estimated_bytes = self
+            .lines
+            .get_key_value(&key)
+            .map(|(stored_key, _)| estimate_line_entry_bytes(stored_key, &layout))
+            .unwrap_or_else(|| estimate_line_entry_bytes(&key, &layout));
+        if let Some(previous) = self.lines.insert(
+            key,
+            FrameLayoutEntry {
+                value: layout,
+                estimated_bytes,
+            },
+        ) {
             self.estimated_bytes = self
                 .estimated_bytes
-                .saturating_sub(previous_bytes)
-                .saturating_add(next_bytes);
-        } else {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_add(estimate_line_entry_bytes(&key, &layout));
+                .saturating_sub(previous.estimated_bytes);
         }
-        self.lines.insert(key, layout);
+        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
     }
 
     fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
-        if let Some((stored_key, previous_layout)) = self.wrapped_lines.get_key_value(&key) {
-            let previous_bytes = estimate_wrapped_line_entry_bytes(stored_key, previous_layout);
-            let next_bytes = estimate_wrapped_line_entry_bytes(stored_key, &layout);
+        let estimated_bytes = self
+            .wrapped_lines
+            .get_key_value(&key)
+            .map(|(stored_key, _)| estimate_wrapped_line_entry_bytes(stored_key, &layout))
+            .unwrap_or_else(|| estimate_wrapped_line_entry_bytes(&key, &layout));
+        if let Some(previous) = self.wrapped_lines.insert(
+            key,
+            FrameLayoutEntry {
+                value: layout,
+                estimated_bytes,
+            },
+        ) {
             self.estimated_bytes = self
                 .estimated_bytes
-                .saturating_sub(previous_bytes)
-                .saturating_add(next_bytes);
-        } else {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_add(estimate_wrapped_line_entry_bytes(&key, &layout));
+                .saturating_sub(previous.estimated_bytes);
         }
-        self.wrapped_lines.insert(key, layout);
+        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
     }
 
     fn take_line(
         &mut self,
         key: &dyn AsCacheKeyRef,
     ) -> Option<(Arc<CacheKey>, Arc<LineLayout>)> {
-        self.lines.remove_entry(key).map(|(key, layout)| {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(estimate_line_entry_bytes(&key, &layout));
-            (key, layout)
+        self.lines.remove_entry(key).map(|(key, entry)| {
+            self.estimated_bytes = self.estimated_bytes.saturating_sub(entry.estimated_bytes);
+            (key, entry.value)
         })
     }
 
@@ -460,11 +475,9 @@ impl FrameCache {
         &mut self,
         key: &dyn AsCacheKeyRef,
     ) -> Option<(Arc<CacheKey>, Arc<WrappedLineLayout>)> {
-        self.wrapped_lines.remove_entry(key).map(|(key, layout)| {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(estimate_wrapped_line_entry_bytes(&key, &layout));
-            (key, layout)
+        self.wrapped_lines.remove_entry(key).map(|(key, entry)| {
+            self.estimated_bytes = self.estimated_bytes.saturating_sub(entry.estimated_bytes);
+            (key, entry.value)
         })
     }
 
@@ -483,13 +496,13 @@ impl FrameCache {
 
     #[cfg(test)]
     fn recompute_estimated_bytes(&self) -> usize {
-        let line_bytes = self.lines.iter().fold(0usize, |total, (key, layout)| {
-            total.saturating_add(estimate_line_entry_bytes(key, layout))
+        let line_bytes = self.lines.iter().fold(0usize, |total, (key, entry)| {
+            total.saturating_add(estimate_line_entry_bytes(key, &entry.value))
         });
         self.wrapped_lines
             .iter()
-            .fold(line_bytes, |total, (key, layout)| {
-                total.saturating_add(estimate_wrapped_line_entry_bytes(key, layout))
+            .fold(line_bytes, |total, (key, entry)| {
+                total.saturating_add(estimate_wrapped_line_entry_bytes(key, &entry.value))
             })
     }
 
@@ -557,8 +570,17 @@ impl RetainedLayoutCache {
     }
 
     fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
-        let stamp = self.next_stamp();
         let estimated_bytes = estimate_line_entry_bytes(&key, &layout);
+        self.insert_line_with_estimated_bytes(key, layout, estimated_bytes);
+    }
+
+    fn insert_line_with_estimated_bytes(
+        &mut self,
+        key: Arc<CacheKey>,
+        layout: Arc<LineLayout>,
+        estimated_bytes: usize,
+    ) {
+        let stamp = self.next_stamp();
         if let Some(previous) = self.lines.insert(
             key.clone(),
             RetainedLayoutEntry {
@@ -577,8 +599,17 @@ impl RetainedLayoutCache {
     }
 
     fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
-        let stamp = self.next_stamp();
         let estimated_bytes = estimate_wrapped_line_entry_bytes(&key, &layout);
+        self.insert_wrapped_line_with_estimated_bytes(key, layout, estimated_bytes);
+    }
+
+    fn insert_wrapped_line_with_estimated_bytes(
+        &mut self,
+        key: Arc<CacheKey>,
+        layout: Arc<WrappedLineLayout>,
+        estimated_bytes: usize,
+    ) {
+        let stamp = self.next_stamp();
         if let Some(previous) = self.wrapped_lines.insert(
             key.clone(),
             RetainedLayoutEntry {
@@ -989,6 +1020,30 @@ mod tests {
 
         assert_eq!(cache.retained.lock().working_set_bytes, expected);
         assert_eq!(cache.current_frame.read().estimated_bytes(), 0);
+    }
+
+    #[test]
+    fn finish_frame_reuses_precomputed_entry_bytes_for_retention() {
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let runs = [FontRun {
+            len: 5,
+            font_id: FontId(1),
+        }];
+
+        cache.layout_line("hello", px(14.), &runs, None);
+        let expected = cache.current_frame.read().estimated_bytes();
+        assert!(expected > 0);
+
+        cache.finish_frame();
+        cache.finish_frame();
+
+        let retained = cache.retained.lock();
+        assert_eq!(retained.lines.len(), 1);
+        assert_eq!(retained.estimated_bytes, expected);
+        assert_eq!(
+            retained.lines.values().next().unwrap().estimated_bytes,
+            expected
+        );
     }
 
     #[test]
