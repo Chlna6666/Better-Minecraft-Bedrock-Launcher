@@ -167,7 +167,7 @@ pub struct TextBackgroundPadding {
     pub right: Pixels,
     /// Padding below the text background.
     pub bottom: Pixels,
-    /// Padding below the text background.
+    /// Padding to the left of the text background.
     pub left: Pixels,
 }
 
