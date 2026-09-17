@@ -85,20 +85,32 @@ fn default_fallback_families() -> Vec<SharedString> {
 }
 
 fn normalize_available_names(names: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::with_capacity(names.len());
+    // Generate the case-insensitive sort/dedup key exactly once per platform font name. The old
+    // HashSet + sort_by_cached_key path lowercased every surviving name twice, which becomes a
+    // measurable burst of short-lived allocations on machines with large system font catalogs.
     let mut names = names
         .into_iter()
         .filter_map(|name| {
-            let name = name.trim();
-            if name.is_empty() || !seen.insert(name.to_lowercase()) {
-                None
-            } else {
-                Some(name.to_owned())
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return None;
             }
+
+            let folded = trimmed.to_lowercase();
+            let display_name = if trimmed.len() == name.len() {
+                name
+            } else {
+                trimmed.to_owned()
+            };
+            Some((folded, display_name))
         })
         .collect::<Vec<_>>();
-    names.sort_by_cached_key(|name| name.to_lowercase());
-    names
+
+    // Stable sorting preserves the first platform-provided spelling when names differ only by
+    // case. Dedup can then discard the duplicate folded key without another lowercase allocation.
+    names.sort_by(|left, right| left.0.cmp(&right.0));
+    names.dedup_by(|left, right| left.0 == right.0);
+    names.into_iter().map(|(_, name)| name).collect()
 }
 
 fn normalize_fallback_names(names: Vec<SharedString>) -> Vec<SharedString> {
@@ -120,7 +132,7 @@ fn normalize_fallback_names(names: Vec<SharedString>) -> Vec<SharedString> {
 
 #[cfg(test)]
 mod tests {
-    use super::FontCatalog;
+    use super::{FontCatalog, normalize_available_names};
     use crate::SharedString;
     use std::{
         sync::{
@@ -143,6 +155,20 @@ mod tests {
         let families = catalog.fallback_families();
         assert_eq!(families[0], SharedString::from("Custom Sans"));
         assert_eq!(families[1], SharedString::from("Noto Sans"));
+    }
+
+    #[test]
+    fn available_names_normalization_reuses_folded_keys() {
+        let names = normalize_available_names(vec![
+            " zeta ".to_owned(),
+            "Alpha".to_owned(),
+            "alpha".to_owned(),
+            "BETA".to_owned(),
+            "beta".to_owned(),
+            "   ".to_owned(),
+        ]);
+
+        assert_eq!(names, ["Alpha", "BETA", "zeta"]);
     }
 
     #[test]
