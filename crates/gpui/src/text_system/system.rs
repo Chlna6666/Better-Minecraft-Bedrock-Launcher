@@ -45,6 +45,7 @@ pub struct TextSystem {
     system_font_family: RwLock<Option<SharedString>>,
     pub(super) font_decision_logged: RwLock<bool>,
     font_id_cache: RwLock<FontIdCache>,
+    font_cache_generation: AtomicU64,
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
     raster_bounds: RwLock<RasterBoundsCache>,
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, VecDeque<LineWrapper>>>,
@@ -257,6 +258,7 @@ impl TextSystem {
             font_metrics: RwLock::default(),
             raster_bounds: RwLock::default(),
             font_id_cache: RwLock::default(),
+            font_cache_generation: AtomicU64::new(0),
             wrapper_pool: Mutex::default(),
             font_runs_pool: Mutex::default(),
             font_catalog: FontCatalog::default(),
@@ -375,6 +377,7 @@ impl TextSystem {
         let mut font_id_cache = self.font_id_cache.write();
         font_id_cache.ids_by_font.clear();
         font_id_cache.fonts_by_id.clear();
+        self.font_cache_generation.fetch_add(1, Ordering::Release);
         drop(font_id_cache);
         self.font_metrics.write().clear();
         self.raster_bounds.write().clear();
@@ -406,13 +409,28 @@ impl TextSystem {
             }
         }
 
-        let font_id_cache = self.font_id_cache.upgradable_read();
-        let font_id = font_id_cache.ids_by_font.get(font).map(clone_font_id);
-        if let Some(font_id) = font_id {
-            font_id
-        } else {
+        loop {
+            let generation = {
+                let font_id_cache = self.font_id_cache.read();
+                if let Some(font_id) = font_id_cache.ids_by_font.get(font).map(clone_font_id) {
+                    return font_id;
+                }
+                self.font_cache_generation.load(Ordering::Acquire)
+            };
+
+            // Platform font discovery can enter DirectWrite/CoreText/fontdb and should not hold the
+            // shared cache lock. Different font misses may resolve concurrently; a same-key race is
+            // reconciled under the short write section below.
             let font_id = self.platform_text_system.font_id(font);
-            let mut font_id_cache = RwLockUpgradableReadGuard::upgrade(font_id_cache);
+            let mut font_id_cache = self.font_id_cache.write();
+            if let Some(cached) = font_id_cache.ids_by_font.get(font).map(clone_font_id) {
+                return cached;
+            }
+            if self.font_cache_generation.load(Ordering::Acquire) != generation {
+                drop(font_id_cache);
+                continue;
+            }
+
             font_id_cache
                 .ids_by_font
                 .insert(font.clone(), clone_font_id(&font_id));
@@ -422,7 +440,7 @@ impl TextSystem {
                     .entry(*font_id)
                     .or_insert_with(|| font.clone());
             }
-            font_id
+            return font_id;
         }
     }
 
@@ -610,15 +628,13 @@ impl TextSystem {
 
     /// Returns a handle to a line wrapper, for the given font and font size.
     pub fn line_wrapper(self: &Arc<Self>, font: Font, font_size: Pixels) -> LineWrapperHandle {
-        let lock = &mut self.wrapper_pool.lock();
         let font_id = self.resolve_font(&font);
         let key = FontIdWithSize { font_id, font_size };
-        let wrapper = lock
-            .get_mut(&key)
-            .and_then(VecDeque::pop_back)
-            .unwrap_or_else(|| {
-                LineWrapper::new(font_id, font_size, self.platform_text_system.clone())
-            });
+        let wrapper = {
+            let mut pool = self.wrapper_pool.lock();
+            pool.get_mut(&key).and_then(VecDeque::pop_back)
+        }
+        .unwrap_or_else(|| LineWrapper::new(font_id, font_size, self.platform_text_system.clone()));
 
         LineWrapperHandle {
             wrapper: Some(wrapper),
