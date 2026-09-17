@@ -5,6 +5,7 @@ mod line;
 mod line_layout;
 mod line_wrapper;
 mod primitives;
+mod script;
 mod system;
 #[cfg(test)]
 mod font_run_tests;
@@ -17,4 +18,5 @@ pub use line::*;
 pub use line_layout::*;
 pub use line_wrapper::*;
 pub use primitives::*;
+pub use script::*;
 pub use system::{LineWrapperHandle, TextSystem, WindowTextSystem};
