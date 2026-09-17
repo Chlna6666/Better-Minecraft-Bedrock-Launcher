@@ -683,7 +683,7 @@ impl WindowTextSystem {
         self.text_system.trim_retained_capacity_for_level(level);
     }
 
-    /// Shape the given line of text, at the given font_size, for painting to the screen.
+    /// Shape the given line, at the given font_size, for painting to the screen.
     /// Subsets of the line can be styled independently with the `runs` parameter.
     ///
     /// Note that this method can only shape a single line of text. It will panic
