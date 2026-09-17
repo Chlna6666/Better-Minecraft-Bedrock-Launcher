@@ -25,11 +25,19 @@ impl FontCatalog {
             return Arc::clone(names);
         }
 
+        // Loading the platform font catalog can be expensive. Re-check after taking the write
+        // lock so concurrent first callers collapse into one platform scan instead of all doing
+        // the same work and racing to populate the cache.
+        let mut names = self.available_names.write();
+        if let Some(names) = names.as_ref() {
+            return Arc::clone(names);
+        }
+
         let mut loaded_names = load_names();
         loaded_names.push(".SystemUIFont".to_owned());
         let loaded_names: Arc<[String]> = normalize_available_names(loaded_names).into();
-        let mut names = self.available_names.write();
-        Arc::clone(names.get_or_insert(loaded_names))
+        *names = Some(Arc::clone(&loaded_names));
+        loaded_names
     }
 
     pub(super) fn invalidate_available_names(&self) {
@@ -114,6 +122,14 @@ fn normalize_fallback_names(names: Vec<SharedString>) -> Vec<SharedString> {
 mod tests {
     use super::FontCatalog;
     use crate::SharedString;
+    use std::{
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
 
     #[test]
     fn fallback_names_preserve_user_order_before_defaults() {
@@ -144,7 +160,7 @@ mod tests {
         });
 
         assert_eq!(loads, 1);
-        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first, &second));
 
         catalog.invalidate_available_names();
         let third = catalog.available_font_names(|| {
@@ -152,6 +168,37 @@ mod tests {
             vec!["Other Sans".to_owned()]
         });
         assert_eq!(loads, 2);
-        assert!(!std::sync::Arc::ptr_eq(&first, &third));
+        assert!(!Arc::ptr_eq(&first, &third));
+    }
+
+    #[test]
+    fn concurrent_available_names_share_one_platform_load() {
+        const THREADS: usize = 8;
+
+        let catalog = Arc::new(FontCatalog::default());
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::with_capacity(THREADS);
+
+        for _ in 0..THREADS {
+            let catalog = Arc::clone(&catalog);
+            let barrier = Arc::clone(&barrier);
+            let loads = Arc::clone(&loads);
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                let names = catalog.available_font_names(|| {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(10));
+                    vec!["Concurrent Sans".to_owned()]
+                });
+                assert!(names.iter().any(|name| name == "Concurrent Sans"));
+            }));
+        }
+
+        for worker in workers {
+            worker.join().expect("font catalog worker should finish");
+        }
+
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 }
