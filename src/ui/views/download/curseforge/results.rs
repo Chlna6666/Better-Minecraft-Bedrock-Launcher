@@ -414,7 +414,7 @@ fn render_virtualized_curseforge_results_list(
     let reveal_warmup_pending = if !animate_cards {
         false
     } else if let Some(started_at) = results_transition_at {
-        frame_now.saturating_duration_since(started_at).as_millis() as u64
+        (frame_now.saturating_duration_since(started_at).as_millis() as u64)
             < CURSEFORGE_RESULTS_REVEAL_WARMUP_MS
     } else {
         false
