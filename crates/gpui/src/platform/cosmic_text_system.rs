@@ -4,6 +4,10 @@ use crate::{
     Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun,
     SharedString, Size, point, size,
 };
+use crate::text_system::script::{
+    text_cluster_properties, text_cluster_properties_for_char, text_font_coverage_probe_character,
+    text_uses_stable_vertical_raster_frame,
+};
 use anyhow::{Context as _, Ok, Result};
 use collections::HashMap;
 use cosmic_text::{
@@ -88,7 +92,7 @@ struct SystemFallbackFace {
 struct CosmicTextSystemState {
     font_system: FontSystem,
     swash_cache: SwashCache,
-    cjk_frame_bounds_cache: HashMap<CjkFrameKey, Bounds<DevicePixels>>,
+    stable_vertical_frame_bounds_cache: HashMap<StableVerticalFrameKey, Bounds<DevicePixels>>,
     platform_font_family: SharedString,
     system_fonts_loaded: bool,
     system_coverage_fallback_face: Option<SystemFallbackFace>,
@@ -116,14 +120,14 @@ struct LoadedFont {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct CjkFrameKey {
+struct StableVerticalFrameKey {
     font_id: FontId,
     font_size_bits: u32,
     scale_factor_bits: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CjkRasterFrame {
+struct StableVerticalRasterFrame {
     origin_y: DevicePixels,
     height: DevicePixels,
 }
@@ -140,7 +144,7 @@ impl CosmicTextSystem {
             font_system,
             platform_font_family,
             swash_cache: SwashCache::new(),
-            cjk_frame_bounds_cache: HashMap::default(),
+            stable_vertical_frame_bounds_cache: HashMap::default(),
             system_fonts_loaded,
             system_coverage_fallback_face: None,
             system_coverage_fallback_computed: false,
@@ -317,16 +321,16 @@ impl CosmicTextSystemState {
         self.coverage_best_fallback_logged = false;
     }
 
-    fn load_platform_cjk_fallback_fonts(&mut self) {
+    fn load_platform_targeted_fallback_fonts(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            let paths = windows_cjk_fallback_font_paths()
+            let paths = windows_targeted_fallback_font_paths()
                 .iter()
                 .map(PathBuf::from)
                 .filter(|path| path.is_file())
                 .collect::<Vec<_>>();
             if let Err(error) = self.add_font_paths(paths) {
-                log::warn!("gpui_system_font_fallback: failed to load Windows CJK fonts: {error}");
+                log::warn!("gpui_system_font_fallback: failed to load Windows targeted fallback fonts: {error}");
             }
         }
     }
@@ -350,7 +354,7 @@ impl CosmicTextSystemState {
             .set_sans_serif_family(resolved_family.to_string());
         self.font_ids_by_family_cache.clear();
         self.swash_cache = SwashCache::new();
-        self.cjk_frame_bounds_cache.clear();
+        self.stable_vertical_frame_bounds_cache.clear();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -365,25 +369,26 @@ impl CosmicTextSystemState {
         &mut self,
         features: &FontFeatures,
         primary_family: &str,
+        probe_character: Option<char>,
     ) -> Arc<[(FontId, SharedString)]> {
         let platform_family = self.platform_font_family.clone();
         if !platform_family.eq_ignore_ascii_case(primary_family)
             && let Some(fallback) =
                 self.load_system_fallback_family(platform_family.as_ref(), features)
-            && self
-                .loaded_font(fallback.0)
-                .font
-                .as_swash()
-                .charmap()
-                .map('图')
-                != 0
+            && charmap_covers_probe_or_system_text_sample(
+                self.loaded_font(fallback.0).font.as_swash().charmap(),
+                probe_character,
+            )
         {
             return Arc::from(vec![fallback]);
         }
 
-        if let Some(best_face) = self.system_coverage_fallback_face()
+        let best_face = probe_character
+            .and_then(|character| best_system_text_fallback_face_for_character(&self.font_system, character))
+            .or_else(|| self.system_coverage_fallback_face());
+        if let Some(best_face) = best_face
             && !best_face.family.eq_ignore_ascii_case(primary_family)
-            && let Some(fallback) = self.load_system_fallback_face(&best_face, features)
+            && let Some(fallback) = self.load_system_fallback_face(&best_face, features, probe_character)
         {
             return Arc::from(vec![fallback]);
         }
@@ -392,25 +397,24 @@ impl CosmicTextSystemState {
     }
 
     fn ensure_automatic_system_fallback_for_text(&mut self, font_id: FontId, text: &str) {
-        let Some((features, primary_family)) = self.loaded_fonts.get(font_id.0).and_then(|font| {
-            if !font.automatic_system_fallback_pending
-                || !text.chars().any(|character| {
-                    is_cjk_char(character) && font.font.as_swash().charmap().map(character) == 0
-                })
-            {
+        let Some((features, primary_family, probe_character)) = self.loaded_fonts.get(font_id.0).and_then(|font| {
+            if !font.automatic_system_fallback_pending {
                 return None;
             }
 
+            let probe_character = first_missing_font_coverage_probe(text, |character| {
+                font.font.as_swash().charmap().map(character) != 0
+            })?;
             let face = self.font_system.db().face(font.font.id())?;
             let family = face.families.first()?.0.clone();
-            Some((font.source_features.clone(), family))
+            Some((font.source_features.clone(), family, probe_character))
         }) else {
             return;
         };
 
-        self.load_platform_cjk_fallback_fonts();
+        self.load_platform_targeted_fallback_fonts();
         let fallback_chain =
-            self.automatic_system_fallback_chain(&features, primary_family.as_str());
+            self.automatic_system_fallback_chain(&features, primary_family.as_str(), Some(probe_character));
         if let Some(font) = self.loaded_fonts.get_mut(font_id.0) {
             font.user_fallback_chain = fallback_chain;
             font.automatic_system_fallback_pending = false;
@@ -467,19 +471,22 @@ impl CosmicTextSystemState {
         &mut self,
         fallback_face: &SystemFallbackFace,
         features: &FontFeatures,
+        probe_character: Option<char>,
     ) -> Option<(FontId, SharedString)> {
         let font_id = self
             .font_id_for_database_id(fallback_face.database_id, features)
             .ok()?;
         let face = self.font_system.db().face(fallback_face.database_id)?;
         if !FontSourceSelection::SystemOnly.matches(&face.source)
-            || check_is_known_emoji_font(&face.post_script_name)
-            || is_icon_font_name(&face.post_script_name)
+            || !face_allowed_for_text_fallback(&face.post_script_name, probe_character)
         {
             return None;
         }
 
-        if !charmap_covers_system_text_sample(self.loaded_font(font_id).font.as_swash().charmap()) {
+        if !charmap_covers_probe_or_system_text_sample(
+            self.loaded_font(font_id).font.as_swash().charmap(),
+            probe_character,
+        ) {
             log::warn!(
                 "gpui_system_font_fallback: coverage fallback face did not retain text coverage after load family=\"{}\" postscript=\"{}\" face_id={:?}",
                 fallback_face.family,
@@ -533,7 +540,7 @@ impl CosmicTextSystemState {
         }
         self.font_ids_by_family_cache.clear();
         self.swash_cache = SwashCache::new();
-        self.cjk_frame_bounds_cache.clear();
+        self.stable_vertical_frame_bounds_cache.clear();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -554,7 +561,7 @@ impl CosmicTextSystemState {
         }
         self.font_ids_by_family_cache.clear();
         self.swash_cache = SwashCache::new();
-        self.cjk_frame_bounds_cache.clear();
+        self.stable_vertical_frame_bounds_cache.clear();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -611,7 +618,7 @@ impl CosmicTextSystemState {
                 }
                 Arc::from(chain)
             }
-            _ if automatic_fallbacks => self.automatic_system_fallback_chain(features, name),
+            _ if automatic_fallbacks => self.automatic_system_fallback_chain(features, name, None),
             _ => Arc::from(Vec::new()),
         };
         let automatic_system_fallback_pending = automatic_system_fallback
@@ -834,14 +841,14 @@ impl CosmicTextSystemState {
         Some(swash_image_bounds(&image))
     }
 
-    fn stable_cjk_raster_frame(&mut self, params: &RenderGlyphParams) -> CjkRasterFrame {
-        let key = CjkFrameKey {
+    fn stable_vertical_raster_frame(&mut self, params: &RenderGlyphParams) -> StableVerticalRasterFrame {
+        let key = StableVerticalFrameKey {
             font_id: params.font_id,
             font_size_bits: params.font_size.0.to_bits(),
             scale_factor_bits: params.scale_factor.to_bits(),
         };
-        if let Some(bounds) = self.cjk_frame_bounds_cache.get(&key).copied() {
-            return CjkRasterFrame {
+        if let Some(bounds) = self.stable_vertical_frame_bounds_cache.get(&key).copied() {
+            return StableVerticalRasterFrame {
                 origin_y: bounds.origin.y,
                 height: bounds.size.height,
             };
@@ -861,29 +868,29 @@ impl CosmicTextSystemState {
             size: size(DevicePixels(0), DevicePixels(height)),
         };
 
-        for sample in CJK_FRAME_SAMPLE_CHARS {
+        for sample in STABLE_VERTICAL_FRAME_SAMPLE_CHARS {
             if let Some(glyph_id) = self.glyph_for_char(params.font_id, *sample) {
                 let mut sample_params = params.clone();
                 sample_params.glyph_id = glyph_id;
                 sample_params.is_cjk = false;
                 sample_params.is_emoji = false;
                 if let Some(sample_bounds) = self.glyph_image_bounds(&sample_params) {
-                    bounds = union_cjk_frame_bounds(sample_bounds, bounds);
+                    bounds = union_stable_vertical_frame_bounds(sample_bounds, bounds);
                 }
             }
         }
 
-        match self.cjk_frame_bounds_cache.entry(key) {
+        match self.stable_vertical_frame_bounds_cache.entry(key) {
             Entry::Occupied(entry) => {
                 let bounds = *entry.get();
-                CjkRasterFrame {
+                StableVerticalRasterFrame {
                     origin_y: bounds.origin.y,
                     height: bounds.size.height,
                 }
             }
             Entry::Vacant(entry) => {
                 let bounds = *entry.insert(bounds);
-                CjkRasterFrame {
+                StableVerticalRasterFrame {
                     origin_y: bounds.origin.y,
                     height: bounds.size.height,
                 }
@@ -896,8 +903,8 @@ impl CosmicTextSystemState {
             return Ok(Bounds::default());
         };
         if params.is_cjk && !params.is_emoji {
-            let frame = self.stable_cjk_raster_frame(params);
-            Ok(apply_cjk_vertical_frame(glyph_bounds, frame))
+            let frame = self.stable_vertical_raster_frame(params);
+            Ok(apply_stable_vertical_frame(glyph_bounds, frame))
         } else {
             Ok(glyph_bounds)
         }
@@ -920,7 +927,7 @@ impl CosmicTextSystemState {
             let bytes = if params.is_emoji {
                 swash_image_to_polychrome_bitmap(image, bitmap_size)?
             } else if params.is_cjk {
-                swash_image_to_cjk_monochrome_mask(image, glyph_bounds)?
+                swash_image_to_stable_vertical_frame_mask(image, glyph_bounds)?
             } else {
                 swash_image_to_monochrome_mask(image, bitmap_size)?
             };
@@ -1009,7 +1016,7 @@ impl CosmicTextSystemState {
             let primary_cache_key_flags = loaded_font.cache_key_flags;
             let primary_features = loaded_font.features.clone();
             let fallback_chain = Arc::clone(&loaded_font.user_fallback_chain);
-            let fallback_trace_families = if std::env::var_os("GPUI_CJK_TEXT_TRACE").is_some()
+            let fallback_trace_families = if script_text_trace_enabled()
                 && !fallback_chain.is_empty()
             {
                 Some(
@@ -1064,18 +1071,22 @@ impl CosmicTextSystemState {
                     None => &primary_attrs,
                     Some(index) => &fallback_attrs[index],
                 };
+                let span_text = text.get(span.start..span.end).unwrap_or_default();
                 if let Some(fallback_trace_families) = fallback_trace_families.as_ref()
                     && span.slot.is_some()
-                    && text.get(span.start..span.end).is_some_and(is_cjk_text)
+                    && text_font_coverage_probe_character(span_text).is_some()
                 {
+                    let properties = text_cluster_properties(span_text);
                     let fallback_family = span
                         .slot
                         .and_then(|slot| fallback_trace_families.get(slot))
                         .map(String::as_str)
                         .unwrap_or("<unknown>");
                     log::info!(
-                        "gpui_cjk_text_trace: fallback_span text={:?} primary_family=\"{}\" fallback_family=\"{}\" fallback_font_id={:?}",
-                        text.get(span.start..span.end).unwrap_or_default(),
+                        "gpui_script_text_trace: fallback_span text={:?} script=\"{}\" direction={:?} primary_family=\"{}\" fallback_family=\"{}\" fallback_font_id={:?}",
+                        span_text,
+                        properties.script.name(),
+                        properties.direction,
                         primary_family_name,
                         fallback_family,
                         span.font_id,
@@ -1109,7 +1120,7 @@ impl CosmicTextSystemState {
 
         let mut runs: Vec<ShapedRun> =
             Vec::with_capacity(layout.glyphs.len().min(font_runs.len().max(1)));
-        let trace_cjk_text = std::env::var_os("GPUI_CJK_TEXT_TRACE").is_some();
+        let trace_script_text = script_text_trace_enabled();
         for glyph in &layout.glyphs {
             let mut font_id = FontId(glyph.metadata);
             let mut loaded_font = self.loaded_font(font_id);
@@ -1133,19 +1144,23 @@ impl CosmicTextSystemState {
             if glyph.glyph_id == 3 && is_emoji {
                 continue;
             }
-            let is_cjk = is_cjk_text(text.get(glyph.start..glyph.end).unwrap_or_default());
-            if trace_cjk_text
-                && is_cjk
+            let cluster_text = text.get(glyph.start..glyph.end).unwrap_or_default();
+            let uses_stable_vertical_raster_frame = text_uses_stable_vertical_raster_frame(cluster_text);
+            if trace_script_text
+                && text_font_coverage_probe_character(cluster_text).is_some()
                 && let Some(face) = self.font_system.db().face(loaded_font.font.id())
             {
+                let properties = text_cluster_properties(cluster_text);
                 let family = face
                     .families
                     .first()
                     .map(|family| family.0.as_str())
                     .unwrap_or("<unknown>");
                 log::info!(
-                    "gpui_cjk_text_trace: text={:?} glyph_id={} font_id={:?} family=\"{}\" postscript=\"{}\" weight={:?} face_id={:?} layout_x={} layout_y={} glyph_font_size={}",
-                    text.get(glyph.start..glyph.end).unwrap_or_default(),
+                    "gpui_script_text_trace: text={:?} script=\"{}\" direction={:?} glyph_id={} font_id={:?} family=\"{}\" postscript=\"{}\" weight={:?} face_id={:?} layout_x={} layout_y={} glyph_font_size={}",
+                    cluster_text,
+                    properties.script.name(),
+                    properties.direction,
                     glyph.glyph_id,
                     font_id,
                     family,
@@ -1165,7 +1180,7 @@ impl CosmicTextSystemState {
                 font_size: glyph.font_size.into(),
                 index: glyph.start,
                 is_emoji,
-                is_cjk,
+                is_cjk: uses_stable_vertical_raster_frame,
             };
 
             if let Some(last_run) = runs
@@ -1241,13 +1256,18 @@ fn default_cache_key_flags() -> CacheKeyFlags {
     CacheKeyFlags::empty()
 }
 
+fn script_text_trace_enabled() -> bool {
+    std::env::var_os("GPUI_SCRIPT_TEXT_TRACE").is_some()
+        || std::env::var_os("GPUI_CJK_TEXT_TRACE").is_some()
+}
+
 fn font_bytes_hash(bytes: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
     hasher.finish()
 }
 
-const CJK_FRAME_SAMPLE_CHARS: &[char] = &[
+const STABLE_VERTICAL_FRAME_SAMPLE_CHARS: &[char] = &[
     '\u{56fe}', '\u{8d44}', '\u{6e90}', '\u{5305}', '\u{6982}', '\u{89c8}', '\u{5bfc}', '\u{822a}',
     '\u{590d}', '\u{5236}', '\u{8def}', '\u{5f84}', '\u{65e5}', '\u{672c}', '\u{97e9}', '\u{9ad8}',
     '\u{4e2d}', '\u{6587}', '\u{56fd}', '\u{95e8}',
@@ -1260,7 +1280,7 @@ fn swash_image_bounds(image: &SwashImage) -> Bounds<DevicePixels> {
     }
 }
 
-fn union_cjk_frame_bounds(
+fn union_stable_vertical_frame_bounds(
     glyph_bounds: Bounds<DevicePixels>,
     frame_bounds: Bounds<DevicePixels>,
 ) -> Bounds<DevicePixels> {
@@ -1281,9 +1301,9 @@ fn union_cjk_frame_bounds(
     }
 }
 
-fn apply_cjk_vertical_frame(
+fn apply_stable_vertical_frame(
     glyph_bounds: Bounds<DevicePixels>,
-    frame: CjkRasterFrame,
+    frame: StableVerticalRasterFrame,
 ) -> Bounds<DevicePixels> {
     let top = glyph_bounds.origin.y.min(frame.origin_y);
     let bottom = (glyph_bounds.origin.y.0 + glyph_bounds.size.height.0)
@@ -1297,34 +1317,13 @@ fn apply_cjk_vertical_frame(
     }
 }
 
-fn is_cjk_text(text: &str) -> bool {
-    text.chars().any(is_cjk_char)
-}
-
-fn is_cjk_char(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x2E80..=0x2EFF
-            | 0x2F00..=0x2FDF
-            | 0x3000..=0x303F
-            | 0x3040..=0x30FF
-            | 0x3100..=0x312F
-            | 0x3130..=0x318F
-            | 0x31A0..=0x31BF
-            | 0x31C0..=0x31EF
-            | 0x31F0..=0x31FF
-            | 0x3400..=0x4DBF
-            | 0x4E00..=0x9FFF
-            | 0xA960..=0xA97F
-            | 0xAC00..=0xD7AF
-            | 0xF900..=0xFAFF
-            | 0x20000..=0x2A6DF
-            | 0x2A700..=0x2B73F
-            | 0x2B740..=0x2B81F
-            | 0x2B820..=0x2CEAF
-            | 0x2CEB0..=0x2EBEF
-            | 0x30000..=0x3134F
-    )
+fn first_missing_font_coverage_probe(
+    text: &str,
+    mut covers: impl FnMut(char) -> bool,
+) -> Option<char> {
+    text.graphemes(true)
+        .filter_map(text_font_coverage_probe_character)
+        .find(|character| !covers(*character))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1365,8 +1364,13 @@ fn compute_run_spans(
 
     for (grapheme_index, grapheme) in run_text.grapheme_indices(true) {
         let absolute_index = run_offset + grapheme_index;
-        let character = grapheme.chars().next().unwrap_or('\0');
-        let next_slot = pick_covering_slot(character, span_slot, primary, fallback_chain, covers);
+        let next_slot = if let Some(character) = text_font_coverage_probe_character(grapheme) {
+            pick_covering_slot(character, span_slot, primary, fallback_chain, covers)
+        } else if grapheme.chars().all(|character| character.is_ascii()) {
+            None
+        } else {
+            span_slot
+        };
         if next_slot == span_slot {
             continue;
         }
@@ -1434,6 +1438,16 @@ fn charmap_covers(loaded_fonts: &[LoadedFont], id: FontId, character: char) -> b
         .is_some_and(|loaded_font| loaded_font.font.as_swash().charmap().map(character) != 0)
 }
 
+fn charmap_covers_probe_or_system_text_sample(
+    charmap: swash::Charmap<'_>,
+    probe_character: Option<char>,
+) -> bool {
+    match probe_character {
+        Some(character) => charmap.map(character) != 0,
+        None => charmap_covers_system_text_sample(charmap),
+    }
+}
+
 fn charmap_covers_system_text_sample(charmap: swash::Charmap<'_>) -> bool {
     SYSTEM_FALLBACK_COVERAGE_SAMPLE
         .iter()
@@ -1445,10 +1459,36 @@ fn best_system_text_fallback_face(font_system: &FontSystem) -> Option<SystemFall
         .db()
         .faces()
         .filter(|face| FontSourceSelection::SystemOnly.matches(&face.source))
-        .filter(|face| !check_is_known_emoji_font(&face.post_script_name))
-        .filter(|face| !is_icon_font_name(&face.post_script_name))
+        .filter(|face| face_allowed_for_text_fallback(&face.post_script_name, None))
         .filter_map(|face| {
-            let score = system_text_coverage_score(font_system, face);
+            let score = system_text_coverage_score(font_system, face, None);
+            let family = face.families.first()?.0.clone();
+            (score > 0).then_some((score, normal_weight_distance(face.weight), family, face.id))
+        })
+        .max_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| right.2.cmp(&left.2))
+        })
+        .map(|(score, _, family, database_id)| SystemFallbackFace {
+            database_id,
+            family: SharedString::from(family),
+            score,
+        })
+}
+
+fn best_system_text_fallback_face_for_character(
+    font_system: &FontSystem,
+    probe_character: char,
+) -> Option<SystemFallbackFace> {
+    font_system
+        .db()
+        .faces()
+        .filter(|face| FontSourceSelection::SystemOnly.matches(&face.source))
+        .filter(|face| face_allowed_for_text_fallback(&face.post_script_name, Some(probe_character)))
+        .filter_map(|face| {
+            let score = system_text_coverage_score(font_system, face, Some(probe_character));
             let family = face.families.first()?.0.clone();
             (score > 0).then_some((score, normal_weight_distance(face.weight), family, face.id))
         })
@@ -1468,10 +1508,10 @@ fn best_system_text_fallback_face(font_system: &FontSystem) -> Option<SystemFall
 fn system_text_coverage_score(
     font_system: &FontSystem,
     face: &cosmic_text::fontdb::FaceInfo,
+    probe_character: Option<char>,
 ) -> u32 {
     if !FontSourceSelection::SystemOnly.matches(&face.source)
-        || check_is_known_emoji_font(&face.post_script_name)
-        || is_icon_font_name(&face.post_script_name)
+        || !face_allowed_for_text_fallback(&face.post_script_name, probe_character)
     {
         return 0;
     }
@@ -1483,6 +1523,16 @@ fn system_text_coverage_score(
                 return 0;
             };
             let charmap = font.charmap();
+            if let Some(character) = probe_character {
+                return if charmap.map(character) != 0 {
+                    1_000 + SYSTEM_FALLBACK_COVERAGE_SAMPLE
+                        .iter()
+                        .filter_map(|(sample, weight)| (charmap.map(*sample) != 0).then_some(*weight))
+                        .sum::<u32>()
+                } else {
+                    0
+                };
+            }
             let mut score = 0;
             let mut covers_non_ascii = false;
             for (character, weight) in SYSTEM_FALLBACK_COVERAGE_SAMPLE {
@@ -1498,6 +1548,16 @@ fn system_text_coverage_score(
 
 fn normal_weight_distance(weight: Weight) -> u16 {
     weight.0.abs_diff(Weight::NORMAL.0)
+}
+
+fn face_allowed_for_text_fallback(postscript_name: &str, probe_character: Option<char>) -> bool {
+    let probe_is_emoji = probe_character
+        .map(|character| text_cluster_properties_for_char(character).contains_emoji)
+        .unwrap_or(false);
+    if check_is_known_emoji_font(postscript_name) {
+        return probe_is_emoji;
+    }
+    !is_icon_font_name(postscript_name)
 }
 
 fn is_icon_font_name(postscript_name: &str) -> bool {
@@ -1535,6 +1595,16 @@ const SYSTEM_FALLBACK_COVERAGE_SAMPLE: &[(char, u32)] = &[
     ('글', 8),
     ('あ', 8),
     ('ア', 8),
+    ('ا', 12),
+    ('ع', 12),
+    ('ב', 10),
+    ('ש', 10),
+    ('ह', 12),
+    ('न', 12),
+    ('ก', 10),
+    ('ไ', 10),
+    ('မ', 10),
+    ('က', 10),
 ];
 
 fn swash_image_to_monochrome_mask(
@@ -1557,7 +1627,7 @@ fn swash_image_to_monochrome_mask(
     }
 }
 
-fn swash_image_to_cjk_monochrome_mask(
+fn swash_image_to_stable_vertical_frame_mask(
     image: SwashImage,
     frame_bounds: Bounds<DevicePixels>,
 ) -> Result<Vec<u8>> {
@@ -1576,9 +1646,9 @@ fn copy_mask_to_frame(
     let source_height = usize::try_from(source_bounds.size.height.0)
         .context("invalid source glyph bitmap height")?;
     let frame_width =
-        usize::try_from(frame_bounds.size.width.0).context("invalid CJK frame bitmap width")?;
-    let frame_height =
-        usize::try_from(frame_bounds.size.height.0).context("invalid CJK frame bitmap height")?;
+        usize::try_from(frame_bounds.size.width.0).context("invalid stable vertical frame bitmap width")?;
+    let frame_height = usize::try_from(frame_bounds.size.height.0)
+        .context("invalid stable vertical frame bitmap height")?;
     let expected_source_len = source_width
         .checked_mul(source_height)
         .context("source glyph bitmap is too large")?;
@@ -1593,7 +1663,7 @@ fn copy_mask_to_frame(
         0;
         frame_width
             .checked_mul(frame_height)
-            .context("CJK frame bitmap is too large")?
+            .context("stable vertical frame bitmap is too large")?
     ];
     let offset_x = source_bounds.origin.x.0 - frame_bounds.origin.x.0;
     let offset_y = source_bounds.origin.y.0 - frame_bounds.origin.y.0;
@@ -1602,7 +1672,7 @@ fn copy_mask_to_frame(
             && offset_y >= 0
             && offset_x + source_width as i32 <= frame_width as i32
             && offset_y + source_height as i32 <= frame_height as i32,
-        "CJK frame {:?} does not contain source glyph bounds {:?}",
+        "stable vertical frame {:?} does not contain source glyph bounds {:?}",
         frame_bounds,
         source_bounds
     );
@@ -1938,8 +2008,15 @@ fn windows_startup_font_paths() -> &'static [&'static str] {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_cjk_fallback_font_paths() -> &'static [&'static str] {
+fn windows_targeted_fallback_font_paths() -> &'static [&'static str] {
     &[
+        "C:\\Windows\\Fonts\\seguiemj.ttf",
+        "C:\\Windows\\Fonts\\seguisym.ttf",
+        "C:\\Windows\\Fonts\\tahoma.ttf",
+        "C:\\Windows\\Fonts\\tahomabd.ttf",
+        "C:\\Windows\\Fonts\\nirmala.ttf",
+        "C:\\Windows\\Fonts\\nirmalab.ttf",
+        "C:\\Windows\\Fonts\\nirmalas.ttf",
         "C:\\Windows\\Fonts\\msyh.ttc",
         "C:\\Windows\\Fonts\\simsun.ttc",
         "C:\\Windows\\Fonts\\msjh.ttc",
@@ -2181,7 +2258,7 @@ mod tests {
 
                 for run in &layout.runs {
                     for glyph in &run.glyphs {
-                        assert!(glyph.is_cjk, "test glyph should be marked as CJK");
+                        assert!(glyph.is_cjk, "test glyph should use stable vertical raster frame");
                         glyph_count += 1;
                         let params = RenderGlyphParams {
                             font_id: run.font_id,
@@ -2207,12 +2284,12 @@ mod tests {
 
                         assert_eq!(
                             bounds.origin.y, origin_y,
-                            "CJK glyph {:?} used an unstable raster origin at size {:?} and weight {:?}",
+                            "glyph {:?} used an unstable raster origin at size {:?} and weight {:?}",
                             glyph.id, font_size, weight
                         );
                         assert_eq!(
                             bounds.size.height, height,
-                            "CJK glyph {:?} used an unstable raster height at size {:?} and weight {:?}",
+                            "glyph {:?} used an unstable raster height at size {:?} and weight {:?}",
                             glyph.id, font_size, weight
                         );
                     }
@@ -2260,23 +2337,23 @@ mod tests {
                     .expect("exact glyph raster bounds");
                 let frame_bounds = text_system
                     .glyph_raster_bounds(&cjk_params)
-                    .expect("CJK frame raster bounds");
+                    .expect("stable frame raster bounds");
 
                 assert!(
                     frame_bounds.origin.y.0 <= exact_bounds.origin.y.0
                         && frame_bounds.origin.y.0 + frame_bounds.size.height.0
                             >= exact_bounds.origin.y.0 + exact_bounds.size.height.0,
-                    "CJK frame {:?} clipped exact glyph bounds {:?}",
+                    "stable frame {:?} clipped exact glyph bounds {:?}",
                     frame_bounds,
                     exact_bounds
                 );
                 assert_eq!(
                     frame_bounds.origin.x, exact_bounds.origin.x,
-                    "CJK frame should keep the exact glyph x origin to avoid widening the sample region"
+                    "stable frame should keep the exact glyph x origin to avoid widening the sample region"
                 );
                 assert_eq!(
                     frame_bounds.size.width, exact_bounds.size.width,
-                    "CJK frame should keep the exact glyph width to avoid horizontal halo"
+                    "stable frame should keep the exact glyph width to avoid horizontal halo"
                 );
             }
         }
@@ -2549,7 +2626,7 @@ mod tests {
         let state = text_system.0.read();
         assert!(
             !state.system_fonts_loaded,
-            "targeted CJK fallback should not scan the complete system font catalog"
+            "targeted fallback should not scan the complete system font catalog"
         );
         if !system_font_covers_character(&state, '图') {
             return;
@@ -2578,7 +2655,7 @@ mod tests {
                 .charmap()
                 .map('图')
                 != 0),
-            "installed CJK fonts did not produce a CJK-capable fallback chain; chain={:?}",
+            "installed fallback fonts did not produce a capable fallback chain; chain={:?}",
             chain_debug
         );
     }
