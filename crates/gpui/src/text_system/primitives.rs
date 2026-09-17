@@ -167,7 +167,7 @@ pub struct TextBackgroundPadding {
     pub right: Pixels,
     /// Padding below the text background.
     pub bottom: Pixels,
-    /// Padding to the left of the text background.
+    /// Padding below the text background.
     pub left: Pixels,
 }
 
@@ -188,8 +188,8 @@ pub(crate) struct RenderGlyphParams {
     pub(crate) is_emoji: bool,
     /// Compatibility storage for the stable vertical raster-frame policy.
     ///
-    /// Cache identity must use `uses_stable_vertical_raster_frame()` rather than treating this bit
-    /// as Unicode script identity. The field remains temporarily while platform producers migrate.
+    /// Cache identity must use `raster_policy()` rather than treating this bit as Unicode script
+    /// identity. The field remains temporarily while platform producers migrate.
     pub(crate) is_cjk: bool,
 }
 
@@ -204,8 +204,7 @@ impl PartialEq for RenderGlyphParams {
                 || self.grayscale_antialiasing == other.grayscale_antialiasing)
             && self.is_emoji == other.is_emoji
             && (!cfg!(any(target_os = "linux", target_os = "freebsd"))
-                || self.uses_stable_vertical_raster_frame()
-                    == other.uses_stable_vertical_raster_frame())
+                || self.raster_policy() == other.raster_policy())
     }
 }
 
@@ -223,7 +222,7 @@ impl Hash for RenderGlyphParams {
         }
         self.is_emoji.hash(state);
         if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            self.uses_stable_vertical_raster_frame().hash(state);
+            self.raster_policy().hash(state);
         }
     }
 }
