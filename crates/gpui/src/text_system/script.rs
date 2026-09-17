@@ -94,7 +94,10 @@ impl TextScript {
 
     /// Returns whether this is a concrete Unicode script rather than Common/Inherited/Unknown.
     pub fn is_real(self) -> bool {
-        self.0.is_real()
+        !matches!(
+            self.0,
+            Script::Common | Script::Inherited | Script::Unknown
+        )
     }
 
     /// Returns whether the script requires complex shaping.
