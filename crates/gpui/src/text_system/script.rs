@@ -187,6 +187,13 @@ pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
     properties
 }
 
+/// Resolve script, bidi and shaping-relevant Unicode properties for a single scalar value without
+/// making each platform backend hand-roll a temporary UTF-8 buffer.
+pub(crate) fn text_cluster_properties_for_char(character: char) -> TextClusterProperties {
+    let mut buffer = [0; 4];
+    text_cluster_properties(character.encode_utf8(&mut buffer))
+}
+
 /// Returns whether a text span should be checked against the active font face for coverage.
 ///
 /// ASCII remains on the fast path so ordinary UI labels do not force system font loading. Every
@@ -194,7 +201,7 @@ pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
 /// probe if the selected face does not contain the required glyphs.
 pub(crate) fn text_needs_font_coverage_probe(text: &str) -> bool {
     text.chars().any(|character| {
-        !character.is_ascii() && text_cluster_properties(character.encode_utf8(&mut [0; 4])).needs_font_coverage_probe()
+        !character.is_ascii() && text_cluster_properties_for_char(character).needs_font_coverage_probe()
     })
 }
 
@@ -208,7 +215,7 @@ pub(crate) fn text_contains_missing_font_coverage(
 ) -> bool {
     text.chars().any(|character| {
         !character.is_ascii()
-            && text_cluster_properties(character.encode_utf8(&mut [0; 4])).needs_font_coverage_probe()
+            && text_cluster_properties_for_char(character).needs_font_coverage_probe()
             && !covers(character)
     })
 }
