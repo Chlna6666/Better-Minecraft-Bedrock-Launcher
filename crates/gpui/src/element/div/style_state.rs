@@ -134,7 +134,7 @@ impl Interactivity {
     pub(crate) fn paint_hover_group_handler(
         &self,
         _global_id: Option<&GlobalElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -146,20 +146,11 @@ impl Interactivity {
         if let Some(group_hitbox) = group_hitbox {
             let was_hovered = group_hitbox.is_hovered(window);
             let current_view = window.current_view();
-            let retained_path = window.current_retained_element_id();
-            let descendants_dirty = self.interaction_affects_descendants();
 
             if was_hovered {
-                let exit_retained_path = retained_path.clone();
-                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, _window, cx| {
                     if phase == DispatchPhase::Capture {
-                        window.notify_interactive_region_scoped(
-                            current_view,
-                            exit_retained_path.as_ref(),
-                            bounds,
-                            descendants_dirty,
-                            cx,
-                        );
+                        cx.notify(current_view);
                     }
                 });
             }
@@ -168,13 +159,7 @@ impl Interactivity {
                 move |_: &MouseMoveEvent, phase, window, cx| {
                     let hovered = group_hitbox.is_hovered(window);
                     if phase == DispatchPhase::Capture && hovered != was_hovered {
-                        window.notify_interactive_region_scoped(
-                            current_view,
-                            retained_path.as_ref(),
-                            bounds,
-                            descendants_dirty,
-                            cx,
-                        );
+                        cx.notify(current_view);
                     }
                 },
             );
