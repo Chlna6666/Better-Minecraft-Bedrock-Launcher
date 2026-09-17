@@ -310,7 +310,6 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
     };
     let mut fallback_script = TextScript::UNKNOWN;
     let mut consumed_utf16 = 0usize;
-    let mut consumed_any = false;
 
     for character in rest.chars() {
         if consumed_utf16 >= utf16_len {
@@ -321,11 +320,17 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
             break;
         }
         consumed_utf16 = next_utf16;
-        consumed_any = true;
         accumulate_character_properties(&mut properties, &mut fallback_script, character);
     }
 
-    finalize_cluster_properties(properties, fallback_script, !consumed_any)
+    if consumed_utf16 != utf16_len {
+        return TextClusterProperties {
+            script: TextScript::UNKNOWN,
+            ..Default::default()
+        };
+    }
+
+    finalize_cluster_properties(properties, fallback_script, false)
 }
 
 #[cfg(test)]
@@ -483,13 +488,25 @@ mod tests {
 
     #[test]
     fn utf16_cluster_rejects_partial_surrogate_pair() {
-        let text = "😀";
+        let text = "😀😀";
         assert_eq!(
             text_cluster_properties_for_utf16_cluster(text, 0, 1).script,
             TextScript::UNKNOWN
         );
         assert_eq!(
+            text_cluster_properties_for_utf16_cluster(text, 0, 3).script,
+            TextScript::UNKNOWN
+        );
+        assert_eq!(
+            text_cluster_properties_for_utf16_cluster(text, 0, 5).script,
+            TextScript::UNKNOWN
+        );
+        assert_eq!(
             text_cluster_properties_for_utf16_cluster(text, 0, 2),
+            text_cluster_properties("😀")
+        );
+        assert_eq!(
+            text_cluster_properties_for_utf16_cluster(text, 0, 4),
             text_cluster_properties(text)
         );
     }
