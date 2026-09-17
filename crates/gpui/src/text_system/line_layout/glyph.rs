@@ -15,6 +15,10 @@ pub struct ShapedGlyph {
     pub index: usize,
     /// Whether the glyph is an emoji.
     pub is_emoji: bool,
-    /// Whether the glyph belongs to a CJK script.
+    /// Compatibility storage for the stable vertical raster-frame policy.
+    ///
+    /// New text code must use `uses_stable_vertical_raster_frame()` instead of interpreting this
+    /// bit as a regional/script classification. The field remains temporarily to keep the shaping
+    /// backends source-compatible while they migrate to script-aware metadata.
     pub is_cjk: bool,
 }

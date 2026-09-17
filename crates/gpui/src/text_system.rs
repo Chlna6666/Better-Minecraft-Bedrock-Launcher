@@ -5,6 +5,7 @@ mod line;
 mod line_layout;
 mod line_wrapper;
 mod primitives;
+mod raster_policy;
 mod script;
 mod system;
 #[cfg(test)]
