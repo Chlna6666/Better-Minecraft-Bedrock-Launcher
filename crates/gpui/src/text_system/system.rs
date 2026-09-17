@@ -12,9 +12,13 @@ use std::{
     cmp,
     collections::VecDeque,
     hash::Hash,
+    mem::size_of,
     ops::{Deref, DerefMut, Range},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use super::{
@@ -30,9 +34,11 @@ pub(super) const FONT_RUNS_MIN_RETAINED_CAPACITY: usize = 32;
 const FONT_RUNS_TRIM_WATERMARK_MULTIPLIER: usize = 4;
 const TEXT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
 const TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER: usize = 4;
-const MAX_RASTER_BOUNDS_CACHE_ENTRIES: usize = 16 * 1024;
-const LIGHT_RASTER_BOUNDS_CACHE_ENTRIES: usize = MAX_RASTER_BOUNDS_CACHE_ENTRIES * 3 / 4;
-const MODERATE_RASTER_BOUNDS_CACHE_ENTRIES: usize = MAX_RASTER_BOUNDS_CACHE_ENTRIES / 4;
+// Raster bounds are cheap compared with glyph analysis and are shared across all windows. Keep a
+// large working set for IDE/editor workloads and trim only when an estimated byte budget is crossed.
+// The gap between target and high-water avoids eviction churn around the boundary.
+const RASTER_BOUNDS_CACHE_TARGET_BYTES: usize = 32 * 1024 * 1024;
+const RASTER_BOUNDS_CACHE_HIGH_WATER_BYTES: usize = 48 * 1024 * 1024;
 
 /// The GPUI text rendering sub system.
 pub struct TextSystem {
@@ -53,15 +59,41 @@ struct FontIdCache {
     fonts_by_id: FxHashMap<FontId, Font>,
 }
 
+struct RasterBoundsEntry {
+    bounds: Bounds<DevicePixels>,
+    referenced: AtomicBool,
+}
+
+impl RasterBoundsEntry {
+    fn new(bounds: Bounds<DevicePixels>) -> Self {
+        Self {
+            bounds,
+            referenced: AtomicBool::new(true),
+        }
+    }
+
+    #[inline]
+    fn touch(&self) -> Bounds<DevicePixels> {
+        self.referenced.store(true, Ordering::Relaxed);
+        self.bounds
+    }
+}
+
+// The key exists once in the hash table and once in the CLOCK queue. Add a conservative allowance
+// for hash-table control/pointer overhead so the soft limit tracks memory rather than glyph count.
+const RASTER_BOUNDS_CACHE_ESTIMATED_ENTRY_BYTES: usize = size_of::<RenderGlyphParams>() * 2
+    + size_of::<RasterBoundsEntry>()
+    + size_of::<usize>() * 2;
+
 #[derive(Default)]
 struct RasterBoundsCache {
-    entries: FxHashMap<RenderGlyphParams, Bounds<DevicePixels>>,
-    insertion_order: VecDeque<RenderGlyphParams>,
+    entries: FxHashMap<RenderGlyphParams, RasterBoundsEntry>,
+    clock: VecDeque<RenderGlyphParams>,
 }
 
 impl RasterBoundsCache {
     fn get(&self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
-        self.entries.get(params).copied()
+        self.entries.get(params).map(RasterBoundsEntry::touch)
     }
 
     fn insert_if_absent(
@@ -69,52 +101,90 @@ impl RasterBoundsCache {
         params: RenderGlyphParams,
         bounds: Bounds<DevicePixels>,
     ) -> Bounds<DevicePixels> {
-        if let Some(existing) = self.entries.get(&params).copied() {
-            return existing;
+        if let Some(existing) = self.entries.get(&params) {
+            return existing.touch();
         }
 
-        self.entries.insert(params.clone(), bounds);
-        self.insertion_order.push_back(params);
-        self.evict_to(MAX_RASTER_BOUNDS_CACHE_ENTRIES);
+        self.entries
+            .insert(params.clone(), RasterBoundsEntry::new(bounds));
+        self.clock.push_back(params);
+        self.trim_soft_budget_if_needed();
         bounds
     }
 
-    fn evict_to(&mut self, target_len: usize) {
+    fn estimated_live_bytes(&self) -> usize {
+        self.entries
+            .len()
+            .saturating_mul(RASTER_BOUNDS_CACHE_ESTIMATED_ENTRY_BYTES)
+    }
+
+    fn trim_soft_budget_if_needed(&mut self) {
+        if self.estimated_live_bytes() <= RASTER_BOUNDS_CACHE_HIGH_WATER_BYTES {
+            return;
+        }
+
+        let target_len = RASTER_BOUNDS_CACHE_TARGET_BYTES
+            / RASTER_BOUNDS_CACHE_ESTIMATED_ENTRY_BYTES.max(1);
+        self.evict_cold_to(target_len);
+    }
+
+    fn evict_cold_to(&mut self, target_len: usize) {
+        // CLOCK/second-chance approximates LRU without turning every glyph-cache hit into a global
+        // write-lock operation. Hits only set a relaxed atomic reference bit; eviction is paid on
+        // insertion over the soft budget or explicit memory pressure.
         while self.entries.len() > target_len {
-            let Some(oldest) = self.insertion_order.pop_front() else {
+            let Some(candidate) = self.clock.pop_front() else {
                 break;
             };
-            self.entries.remove(&oldest);
+
+            let recently_used = self
+                .entries
+                .get(&candidate)
+                .is_some_and(|entry| entry.referenced.swap(false, Ordering::Relaxed));
+            if recently_used {
+                self.clock.push_back(candidate);
+            } else {
+                self.entries.remove(&candidate);
+            }
         }
-        debug_assert_eq!(self.entries.len(), self.insertion_order.len());
+        debug_assert_eq!(self.entries.len(), self.clock.len());
     }
 
     fn clear(&mut self) {
         self.entries.clear();
-        self.insertion_order.clear();
+        self.clock.clear();
     }
 
     fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
         match level {
-            GpuiMemoryTrimLevel::Light => {
-                self.trim_to(LIGHT_RASTER_BOUNDS_CACHE_ENTRIES);
-            }
-            GpuiMemoryTrimLevel::Moderate => {
-                self.trim_to(MODERATE_RASTER_BOUNDS_CACHE_ENTRIES);
+            GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
+                let current_len = self.entries.len();
+                let requested_len = match level {
+                    GpuiMemoryTrimLevel::Light => current_len.saturating_mul(3) / 4,
+                    GpuiMemoryTrimLevel::Moderate => current_len / 2,
+                    GpuiMemoryTrimLevel::Aggressive => unreachable!(),
+                };
+                let target_len = requested_len.max(current_len.min(TEXT_CACHE_MIN_RETAINED_CAPACITY));
+                self.evict_cold_to(target_len);
+
+                let retained_capacity = TEXT_CACHE_MIN_RETAINED_CAPACITY.max(self.entries.len());
+                trim_map_capacity(
+                    &mut self.entries,
+                    retained_capacity,
+                    TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER,
+                );
+                trim_vec_deque_capacity(
+                    &mut self.clock,
+                    retained_capacity,
+                    TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER,
+                );
             }
             GpuiMemoryTrimLevel::Aggressive => {
                 self.clear();
                 self.entries.shrink_to(0);
-                self.insertion_order.shrink_to(0);
+                self.clock.shrink_to(0);
             }
         }
-    }
-
-    fn trim_to(&mut self, target_len: usize) {
-        self.evict_to(target_len);
-        let retained_capacity = TEXT_CACHE_MIN_RETAINED_CAPACITY.max(self.entries.len());
-        self.entries.shrink_to(retained_capacity);
-        self.insertion_order.shrink_to(retained_capacity);
     }
 }
 
@@ -613,7 +683,7 @@ impl WindowTextSystem {
         self.text_system.trim_retained_capacity_for_level(level);
     }
 
-    /// Shape the given line, at the given font_size, for painting to the screen.
+    /// Shape the given line of text, at the given font_size, for painting to the screen.
     /// Subsets of the line can be styled independently with the `runs` parameter.
     ///
     /// Note that this method can only shape a single line of text. It will panic
