@@ -285,7 +285,7 @@ pub(crate) fn text_script_for_utf16_cluster(
 }
 
 /// Resolve Unicode properties for a DirectWrite-style UTF-16 cluster without allocating a UTF-16
-/// copy or splitting a surrogate pair.
+/// copy, splitting a surrogate pair, or scanning the cluster twice.
 pub(crate) fn text_cluster_properties_for_utf16_cluster(
     text: &str,
     utf8_start: usize,
@@ -304,9 +304,15 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
         };
     }
 
+    let mut properties = TextClusterProperties {
+        script: TextScript::UNKNOWN,
+        ..Default::default()
+    };
+    let mut fallback_script = TextScript::UNKNOWN;
     let mut consumed_utf16 = 0usize;
-    let mut end_utf8 = 0usize;
-    for (byte_index, character) in rest.char_indices() {
+    let mut consumed_any = false;
+
+    for character in rest.chars() {
         if consumed_utf16 >= utf16_len {
             break;
         }
@@ -315,10 +321,11 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
             break;
         }
         consumed_utf16 = next_utf16;
-        end_utf8 = byte_index + character.len_utf8();
+        consumed_any = true;
+        accumulate_character_properties(&mut properties, &mut fallback_script, character);
     }
 
-    text_cluster_properties(rest.get(..end_utf8).unwrap_or_default())
+    finalize_cluster_properties(properties, fallback_script, !consumed_any)
 }
 
 #[cfg(test)]
@@ -472,6 +479,19 @@ mod tests {
         let arabic_properties = text_cluster_properties_for_utf16_cluster(text, arabic, 1);
         assert_eq!(arabic_properties.direction, TextDirection::RightToLeft);
         assert!(arabic_properties.requires_bidi_resolution);
+    }
+
+    #[test]
+    fn utf16_cluster_rejects_partial_surrogate_pair() {
+        let text = "😀";
+        assert_eq!(
+            text_cluster_properties_for_utf16_cluster(text, 0, 1).script,
+            TextScript::UNKNOWN
+        );
+        assert_eq!(
+            text_cluster_properties_for_utf16_cluster(text, 0, 2),
+            text_cluster_properties(text)
+        );
     }
 
     #[test]
