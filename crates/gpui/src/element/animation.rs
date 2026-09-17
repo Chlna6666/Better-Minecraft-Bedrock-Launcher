@@ -543,6 +543,12 @@ impl<E: IntoElement + 'static> IntoElement for SampledAnimationElement<E> {
 impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = SampledAnimationPrepaintState;
+    // The animation id above is scene-local and is allocated during prepaint. If an ancestor
+    // replays this wrapper, the current frame never records a matching SceneAnimationValue and
+    // retained primitives keep a stale frame-local binding. Always execute this boundary so its
+    // descendants are rebound to the current scene id before paint.
+    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
+        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -1230,6 +1236,14 @@ mod tests {
         assert!(first.0 < ENGINE_ANIMATION_ID_START);
         assert!(second.0 > first.0);
         assert!(second.0 < ENGINE_ANIMATION_ID_START);
+    }
+
+    #[test]
+    fn sampled_animation_owns_frame_local_retained_boundary() {
+        assert_eq!(
+            <SampledAnimationElement<crate::Div> as Element>::RETAINED_REPLAY_CAPABILITY,
+            crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary
+        );
     }
 
     #[test]
