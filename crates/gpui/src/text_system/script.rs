@@ -1,4 +1,4 @@
-use swash::text::{Codepoint, Script};
+use swash::text::{BidiClass, Codepoint, Script};
 
 /// Unicode script metadata attached to shaped text.
 ///
@@ -7,6 +7,59 @@ use swash::text::{Codepoint, Script};
 /// glyph/cluster and raster backends can make narrowly-scoped policy decisions from that metadata.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TextScript(Script);
+
+/// Strong visual direction discovered while inspecting a text cluster.
+///
+/// `Neutral` does not mean that bidi processing can be skipped. Explicit bidi controls, Arabic
+/// numbers and isolates can still require the Unicode bidi algorithm without contributing a strong
+/// left-to-right or right-to-left character themselves.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum TextDirection {
+    /// The cluster contains a strong left-to-right code point or explicit LTR control.
+    LeftToRight,
+    /// The cluster contains a strong right-to-left code point or explicit RTL control.
+    RightToLeft,
+    /// No strong direction was found in the cluster.
+    #[default]
+    Neutral,
+}
+
+/// Unicode properties resolved for one shaping cluster or short text span.
+///
+/// This is deliberately script-neutral: Arabic, Hebrew, Indic, Southeast Asian, CJK, Latin and
+/// every other Unicode script flow through the same metadata path. Platform backends may use only
+/// the properties that affect their shaping/raster implementation.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct TextClusterProperties {
+    /// Concrete Unicode script when one is present, otherwise Common/Inherited/Unknown.
+    pub script: TextScript,
+    /// First strong directional class observed in the cluster.
+    pub direction: TextDirection,
+    /// Whether any code point in the cluster requires Unicode bidi resolution.
+    pub requires_bidi_resolution: bool,
+    /// Whether the cluster contains a Unicode emoji code point.
+    pub contains_emoji: bool,
+    /// Whether the cluster contains an extended-pictographic code point.
+    pub contains_extended_pictographic: bool,
+}
+
+impl TextClusterProperties {
+    /// Whether the resolved script uses the complex shaping machinery.
+    pub fn requires_complex_shaping(self) -> bool {
+        self.script.requires_complex_shaping()
+    }
+
+    /// Whether the resolved script normally uses cursive joining behavior.
+    pub fn uses_joined_forms(self) -> bool {
+        self.script.uses_joined_forms()
+    }
+
+    /// Raster policy for dense square-script families. This is intentionally separate from script
+    /// identity so the glyph/raster cache does not equate "international text" with one region.
+    pub(crate) fn uses_stable_vertical_raster_frame(self) -> bool {
+        self.script.uses_stable_vertical_raster_frame()
+    }
+}
 
 impl TextScript {
     /// Script used when a cluster contains only Common characters such as punctuation or emoji.
@@ -73,21 +126,58 @@ impl From<char> for TextScript {
 /// span. If the span contains no concrete script, preserve Inherited/Common rather than pretending
 /// that it belongs to Latin or another arbitrary fallback script.
 pub(crate) fn text_script(text: &str) -> TextScript {
-    let mut fallback = TextScript::UNKNOWN;
+    text_cluster_properties(text).script
+}
+
+/// Resolve script, bidi and shaping-relevant Unicode properties for one cluster or short span.
+pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
+    let mut properties = TextClusterProperties {
+        script: TextScript::UNKNOWN,
+        ..Default::default()
+    };
+    let mut fallback_script = TextScript::UNKNOWN;
+
     for character in text.chars() {
-        let script = TextScript::from(character);
-        if script.is_real() {
-            return script;
+        let unicode = character.properties();
+        let script = TextScript(unicode.script());
+        if !properties.script.is_real() && script.is_real() {
+            properties.script = script;
+        } else if !properties.script.is_real()
+            && (fallback_script == TextScript::UNKNOWN || script == TextScript::INHERITED)
+        {
+            fallback_script = script;
         }
-        if fallback == TextScript::UNKNOWN || script == TextScript::INHERITED {
-            fallback = script;
+
+        let bidi = unicode.bidi_class();
+        properties.requires_bidi_resolution |= bidi.needs_resolution();
+        if properties.direction == TextDirection::Neutral {
+            properties.direction = strong_direction(bidi);
         }
+        properties.contains_emoji |= unicode.is_emoji();
+        properties.contains_extended_pictographic |= unicode.is_extended_pictographic();
     }
 
-    if fallback == TextScript::UNKNOWN && !text.is_empty() {
-        TextScript::COMMON
-    } else {
-        fallback
+    if !properties.script.is_real() {
+        properties.script = if fallback_script != TextScript::UNKNOWN {
+            fallback_script
+        } else if text.is_empty() {
+            TextScript::UNKNOWN
+        } else {
+            TextScript::COMMON
+        };
+    }
+    properties
+}
+
+fn strong_direction(bidi: BidiClass) -> TextDirection {
+    match bidi {
+        BidiClass::L | BidiClass::LRE | BidiClass::LRI | BidiClass::LRO => {
+            TextDirection::LeftToRight
+        }
+        BidiClass::AL | BidiClass::R | BidiClass::RLE | BidiClass::RLI | BidiClass::RLO => {
+            TextDirection::RightToLeft
+        }
+        _ => TextDirection::Neutral,
     }
 }
 
@@ -97,11 +187,27 @@ pub(crate) fn text_script_for_utf16_cluster(
     utf8_start: usize,
     utf16_len: usize,
 ) -> TextScript {
+    text_cluster_properties_for_utf16_cluster(text, utf8_start, utf16_len).script
+}
+
+/// Resolve Unicode properties for a DirectWrite-style UTF-16 cluster without allocating a UTF-16
+/// copy or splitting a surrogate pair.
+pub(crate) fn text_cluster_properties_for_utf16_cluster(
+    text: &str,
+    utf8_start: usize,
+    utf16_len: usize,
+) -> TextClusterProperties {
     let Some(rest) = text.get(utf8_start..) else {
-        return TextScript::UNKNOWN;
+        return TextClusterProperties {
+            script: TextScript::UNKNOWN,
+            ..Default::default()
+        };
     };
     if utf16_len == 0 {
-        return TextScript::UNKNOWN;
+        return TextClusterProperties {
+            script: TextScript::UNKNOWN,
+            ..Default::default()
+        };
     }
 
     let mut consumed_utf16 = 0usize;
@@ -118,12 +224,15 @@ pub(crate) fn text_script_for_utf16_cluster(
         end_utf8 = byte_index + character.len_utf8();
     }
 
-    text_script(rest.get(..end_utf8).unwrap_or_default())
+    text_cluster_properties(rest.get(..end_utf8).unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TextScript, text_script, text_script_for_utf16_cluster};
+    use super::{
+        TextDirection, TextScript, text_cluster_properties,
+        text_cluster_properties_for_utf16_cluster, text_script, text_script_for_utf16_cluster,
+    };
 
     #[test]
     fn classifies_unicode_scripts_without_regional_special_cases() {
@@ -152,6 +261,50 @@ mod tests {
     }
 
     #[test]
+    fn classifies_direction_bidi_and_shaping_independently_of_script_region() {
+        let latin = text_cluster_properties("hello");
+        assert_eq!(latin.direction, TextDirection::LeftToRight);
+        assert!(!latin.requires_bidi_resolution);
+        assert!(!latin.requires_complex_shaping());
+
+        let arabic = text_cluster_properties("العربية");
+        assert_eq!(arabic.direction, TextDirection::RightToLeft);
+        assert!(arabic.requires_bidi_resolution);
+        assert!(arabic.requires_complex_shaping());
+        assert!(arabic.uses_joined_forms());
+
+        let hebrew = text_cluster_properties("עברית");
+        assert_eq!(hebrew.direction, TextDirection::RightToLeft);
+        assert!(hebrew.requires_bidi_resolution);
+
+        let devanagari = text_cluster_properties("हिन्दी");
+        assert_eq!(devanagari.direction, TextDirection::LeftToRight);
+        assert!(devanagari.requires_complex_shaping());
+        assert!(!devanagari.uses_joined_forms());
+    }
+
+    #[test]
+    fn common_text_preserves_emoji_and_pictographic_metadata() {
+        let emoji = text_cluster_properties("😀");
+        assert_eq!(emoji.script, TextScript::COMMON);
+        assert_eq!(emoji.direction, TextDirection::Neutral);
+        assert!(emoji.contains_emoji);
+        assert!(emoji.contains_extended_pictographic);
+    }
+
+    #[test]
+    fn bidi_controls_do_not_get_mistaken_for_script_identity() {
+        let rtl_isolate = text_cluster_properties("\u{2067}");
+        assert_eq!(rtl_isolate.script, TextScript::COMMON);
+        assert_eq!(rtl_isolate.direction, TextDirection::RightToLeft);
+        assert!(rtl_isolate.requires_bidi_resolution);
+
+        let first_strong_isolate = text_cluster_properties("\u{2068}");
+        assert_eq!(first_strong_isolate.direction, TextDirection::Neutral);
+        assert!(first_strong_isolate.requires_bidi_resolution);
+    }
+
+    #[test]
     fn resolves_utf16_clusters_without_splitting_surrogate_pairs() {
         let text = "A😀العربية";
         let emoji = text.find('😀').unwrap();
@@ -165,16 +318,20 @@ mod tests {
             text_script_for_utf16_cluster(text, arabic, 1).name(),
             "Arabic"
         );
+
+        let emoji_properties = text_cluster_properties_for_utf16_cluster(text, emoji, 2);
+        assert!(emoji_properties.contains_emoji);
+        assert_eq!(emoji_properties.direction, TextDirection::Neutral);
+        let arabic_properties = text_cluster_properties_for_utf16_cluster(text, arabic, 1);
+        assert_eq!(arabic_properties.direction, TextDirection::RightToLeft);
+        assert!(arabic_properties.requires_bidi_resolution);
     }
 
     #[test]
-    fn exposes_shaping_properties_for_all_scripts() {
-        let arabic = text_script("العربية");
-        let devanagari = text_script("हिन्दी");
-        let latin = text_script("Latin");
-        assert!(arabic.requires_complex_shaping());
-        assert!(arabic.uses_joined_forms());
-        assert!(devanagari.requires_complex_shaping());
-        assert!(!latin.uses_joined_forms());
+    fn stable_raster_frame_is_a_narrow_policy_not_script_classification() {
+        assert!(text_cluster_properties("中文").uses_stable_vertical_raster_frame());
+        assert!(text_cluster_properties("한글").uses_stable_vertical_raster_frame());
+        assert!(!text_cluster_properties("العربية").uses_stable_vertical_raster_frame());
+        assert!(!text_cluster_properties("हिन्दी").uses_stable_vertical_raster_frame());
     }
 }
