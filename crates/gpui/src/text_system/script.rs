@@ -156,29 +156,47 @@ pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
     let mut fallback_script = TextScript::UNKNOWN;
 
     for character in text.chars() {
-        let unicode = character.properties();
-        let script = TextScript(unicode.script());
-        if !properties.script.is_real() && script.is_real() {
-            properties.script = script;
-        } else if !properties.script.is_real()
-            && (fallback_script == TextScript::UNKNOWN || script == TextScript::INHERITED)
-        {
-            fallback_script = script;
-        }
-
-        let bidi = unicode.bidi_class();
-        properties.requires_bidi_resolution |= bidi.needs_resolution();
-        if properties.direction == TextDirection::Neutral {
-            properties.direction = strong_direction(bidi);
-        }
-        properties.contains_emoji |= unicode.is_emoji();
-        properties.contains_extended_pictographic |= unicode.is_extended_pictographic();
+        accumulate_character_properties(&mut properties, &mut fallback_script, character);
     }
 
+    finalize_cluster_properties(properties, fallback_script, text.is_empty())
+}
+
+#[inline]
+fn accumulate_character_properties(
+    properties: &mut TextClusterProperties,
+    fallback_script: &mut TextScript,
+    character: char,
+) {
+    let unicode = character.properties();
+    let script = TextScript(unicode.script());
+    if !properties.script.is_real() && script.is_real() {
+        properties.script = script;
+    } else if !properties.script.is_real()
+        && (*fallback_script == TextScript::UNKNOWN || script == TextScript::INHERITED)
+    {
+        *fallback_script = script;
+    }
+
+    let bidi = unicode.bidi_class();
+    properties.requires_bidi_resolution |= bidi.needs_resolution();
+    if properties.direction == TextDirection::Neutral {
+        properties.direction = strong_direction(bidi);
+    }
+    properties.contains_emoji |= unicode.is_emoji();
+    properties.contains_extended_pictographic |= unicode.is_extended_pictographic();
+}
+
+#[inline]
+fn finalize_cluster_properties(
+    mut properties: TextClusterProperties,
+    fallback_script: TextScript,
+    is_empty: bool,
+) -> TextClusterProperties {
     if !properties.script.is_real() {
         properties.script = if fallback_script != TextScript::UNKNOWN {
             fallback_script
-        } else if text.is_empty() {
+        } else if is_empty {
             TextScript::UNKNOWN
         } else {
             TextScript::COMMON
@@ -188,10 +206,15 @@ pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
 }
 
 /// Resolve script, bidi and shaping-relevant Unicode properties for a single scalar value without
-/// making each platform backend hand-roll a temporary UTF-8 buffer.
+/// encoding it into a temporary UTF-8 span first.
 pub(crate) fn text_cluster_properties_for_char(character: char) -> TextClusterProperties {
-    let mut buffer = [0; 4];
-    text_cluster_properties(character.encode_utf8(&mut buffer))
+    let mut properties = TextClusterProperties {
+        script: TextScript::UNKNOWN,
+        ..Default::default()
+    };
+    let mut fallback_script = TextScript::UNKNOWN;
+    accumulate_character_properties(&mut properties, &mut fallback_script, character);
+    finalize_cluster_properties(properties, fallback_script, false)
 }
 
 /// Returns whether a single scalar value should be checked against the active font face for
@@ -206,7 +229,8 @@ pub(crate) fn character_needs_font_coverage_probe(character: char) -> bool {
 /// themselves require coverage. Fallback selection should be driven by the base scalar or emoji in
 /// a cluster, not by a Unicode control that does not map to a visible glyph by itself.
 pub(crate) fn text_font_coverage_probe_character(text: &str) -> Option<char> {
-    text.chars().find(|character| character_needs_font_coverage_probe(*character))
+    text.chars()
+        .find(|character| character_needs_font_coverage_probe(*character))
 }
 
 /// Returns whether a text span should be checked against the active font face for coverage.
@@ -301,9 +325,10 @@ pub(crate) fn text_cluster_properties_for_utf16_cluster(
 mod tests {
     use super::{
         TextDirection, TextScript, character_needs_font_coverage_probe, text_cluster_properties,
-        text_cluster_properties_for_utf16_cluster, text_contains_missing_font_coverage,
-        text_font_coverage_probe_character, text_needs_font_coverage_probe, text_script,
-        text_script_for_utf16_cluster, text_uses_stable_vertical_raster_frame,
+        text_cluster_properties_for_char, text_cluster_properties_for_utf16_cluster,
+        text_contains_missing_font_coverage, text_font_coverage_probe_character,
+        text_needs_font_coverage_probe, text_script, text_script_for_utf16_cluster,
+        text_uses_stable_vertical_raster_frame,
     };
 
     #[test]
@@ -330,6 +355,18 @@ mod tests {
         assert_eq!(text_script("😀"), TextScript::COMMON);
         assert_eq!(text_script("\u{0301}"), TextScript::INHERITED);
         assert_eq!(text_script(""), TextScript::UNKNOWN);
+    }
+
+    #[test]
+    fn single_char_properties_match_span_parser() {
+        for character in ['A', '中', 'ا', 'ह', '😀', '\u{0301}', '\u{2067}'] {
+            let mut buffer = [0; 4];
+            assert_eq!(
+                text_cluster_properties_for_char(character),
+                text_cluster_properties(character.encode_utf8(&mut buffer)),
+                "character={character:?}",
+            );
+        }
     }
 
     #[test]
