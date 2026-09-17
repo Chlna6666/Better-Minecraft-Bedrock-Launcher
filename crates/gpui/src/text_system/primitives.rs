@@ -68,7 +68,7 @@ impl FontWeight {
     pub const LIGHT: FontWeight = FontWeight(300.0);
     /// Normal (400).
     pub const NORMAL: FontWeight = FontWeight(400.0);
-    /// Medium (500, higher than normal).
+    /// Medium weight (500, higher than normal).
     pub const MEDIUM: FontWeight = FontWeight(500.0);
     /// Semibold weight (600).
     pub const SEMIBOLD: FontWeight = FontWeight(600.0);
