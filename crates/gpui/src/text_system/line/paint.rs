@@ -219,7 +219,7 @@ pub(super) fn paint_line(
                         glyph.id,
                         glyph.font_size,
                         color,
-                        glyph.is_cjk,
+                        glyph.uses_stable_vertical_raster_frame(),
                     )?;
                 }
             }
