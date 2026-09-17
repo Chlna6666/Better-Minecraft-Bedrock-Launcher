@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn line_layout_records_same_frame_hits() {
+    fn layout_line_records_same_frame_hits() {
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
         let runs = [FontRun {
             len: 5,
@@ -889,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn line_layout_records_previous_frame_reuse() {
+    fn layout_line_records_previous_frame_reuse() {
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
         let runs = [FontRun {
             len: 5,
@@ -909,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn line_layout_reuses_retained_entry_after_idle_frame() {
+    fn layout_line_reuses_retained_entry_after_idle_frame() {
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
         let runs = [FontRun {
             len: 5,
