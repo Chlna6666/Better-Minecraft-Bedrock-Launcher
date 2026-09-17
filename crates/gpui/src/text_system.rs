@@ -6,7 +6,7 @@ mod line_layout;
 mod line_wrapper;
 mod primitives;
 mod raster_policy;
-mod script;
+pub(crate) mod script;
 mod system;
 #[cfg(test)]
 mod font_run_tests;
