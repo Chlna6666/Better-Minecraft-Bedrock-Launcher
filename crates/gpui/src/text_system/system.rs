@@ -226,15 +226,14 @@ impl RasterBoundsCache {
         match level {
             GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
                 let current_len = self.entries.len();
-                let requested_len = match level {
+                let target_len = match level {
                     GpuiMemoryTrimLevel::Light => current_len.saturating_mul(3) / 4,
                     GpuiMemoryTrimLevel::Moderate => current_len / 2,
                     GpuiMemoryTrimLevel::Aggressive => unreachable!(),
                 };
-                let target_len = requested_len.max(current_len.min(TEXT_CACHE_MIN_RETAINED_CAPACITY));
                 self.evict_lru_to_len(target_len);
 
-                let retained_capacity = TEXT_CACHE_MIN_RETAINED_CAPACITY.max(self.entries.len());
+                let retained_capacity = self.entries.len();
                 trim_map_capacity(
                     &mut self.entries,
                     retained_capacity,
@@ -1150,7 +1149,7 @@ impl DerefMut for LineWrapperHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DevicePixels, FontId, GlyphId, GpuiMemoryTrimLevel, point, size};
+    use crate::{DevicePixels, FontId, GlyphId, GpuiMemoryTrimLevel, point, px, size};
 
     fn test_raster_bounds() -> Bounds<DevicePixels> {
         Bounds {
