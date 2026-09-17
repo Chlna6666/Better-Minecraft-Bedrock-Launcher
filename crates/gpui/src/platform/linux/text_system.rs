@@ -3,6 +3,7 @@ use crate::{
     GlyphId, LineLayout, Pixels, PlatformTextSystem, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
     SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, SharedString, Size, point, size,
 };
+use crate::text_system::script::text_uses_stable_vertical_raster_frame;
 use anyhow::{Context as _, Ok, Result};
 use collections::HashMap;
 use cosmic_text::{
@@ -455,7 +456,9 @@ impl CosmicTextSystemState {
                 font_size: glyph.font_size.into(),
                 index: glyph.start,
                 is_emoji,
-                is_cjk: is_cjk_text(text.get(glyph.start..glyph.end).unwrap_or_default()),
+                is_cjk: text_uses_stable_vertical_raster_frame(
+                    text.get(glyph.start..glyph.end).unwrap_or_default(),
+                ),
             };
 
             if let Some(last_run) = runs
@@ -603,34 +606,4 @@ fn face_info_into_properties(
 fn check_is_known_emoji_font(postscript_name: &str) -> bool {
     // TODO: Include other common emoji fonts
     postscript_name == "NotoColorEmoji"
-}
-
-fn is_cjk_text(text: &str) -> bool {
-    text.chars().any(is_cjk_char)
-}
-
-fn is_cjk_char(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x2E80..=0x2EFF
-            | 0x2F00..=0x2FDF
-            | 0x3000..=0x303F
-            | 0x3040..=0x30FF
-            | 0x3100..=0x312F
-            | 0x3130..=0x318F
-            | 0x31A0..=0x31BF
-            | 0x31C0..=0x31EF
-            | 0x31F0..=0x31FF
-            | 0x3400..=0x4DBF
-            | 0x4E00..=0x9FFF
-            | 0xA960..=0xA97F
-            | 0xAC00..=0xD7AF
-            | 0xF900..=0xFAFF
-            | 0x20000..=0x2A6DF
-            | 0x2A700..=0x2B73F
-            | 0x2B740..=0x2B81F
-            | 0x2B820..=0x2CEAF
-            | 0x2CEB0..=0x2EBEF
-            | 0x30000..=0x3134F
-    )
 }
