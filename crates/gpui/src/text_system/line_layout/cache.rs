@@ -3,7 +3,7 @@ use crate::{
     record_text_layout_cache_metrics,
 };
 use collections::FxHashMap;
-use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
+use parking_lot::{Condvar, Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::SmallVec;
 use std::{
     cell::Cell,
@@ -11,7 +11,8 @@ use std::{
     hash::Hash,
     mem::size_of,
     ops::Range,
-    sync::Arc,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    sync::{Arc, LazyLock},
 };
 
 use super::key::{AsCacheKeyRef, CacheKey, CacheKeyRef};
@@ -34,6 +35,155 @@ const LINE_LAYOUT_CACHE_WORKING_SET_MULTIPLIER: usize = 3;
 const LINE_LAYOUT_CACHE_WORKING_SET_DECAY_NUMERATOR: usize = 7;
 const LINE_LAYOUT_CACHE_WORKING_SET_DECAY_DENOMINATOR: usize = 8;
 const LINE_LAYOUT_CACHE_RECENCY_COMPACTION_MULTIPLIER: usize = 2;
+
+static LINE_LAYOUT_SINGLEFLIGHT: LazyLock<LineLayoutSingleflight> =
+    LazyLock::new(LineLayoutSingleflight::default);
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct LineLayoutFlightKey {
+    platform_identity: usize,
+    cache_key: Arc<CacheKey>,
+}
+
+#[derive(Default)]
+struct LineLayoutSingleflight {
+    flights: Mutex<FxHashMap<LineLayoutFlightKey, Arc<LineLayoutFlight>>>,
+}
+
+struct LineLayoutFlight {
+    state: Mutex<LineLayoutFlightState>,
+    ready: Condvar,
+    #[cfg(test)]
+    followers: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for LineLayoutFlight {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(LineLayoutFlightState::Pending),
+            ready: Condvar::new(),
+            #[cfg(test)]
+            followers: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+enum LineLayoutFlightState {
+    Pending,
+    Ready(Arc<LineLayout>),
+    Cancelled,
+}
+
+impl LineLayoutSingleflight {
+    fn shape<F>(
+        &self,
+        platform_identity: usize,
+        cache_key: Arc<CacheKey>,
+        shape: F,
+    ) -> Arc<LineLayout>
+    where
+        F: FnOnce() -> LineLayout,
+    {
+        let flight_key = LineLayoutFlightKey {
+            platform_identity,
+            cache_key,
+        };
+        let mut shape = Some(shape);
+
+        loop {
+            let (flight, is_leader) = {
+                let mut flights = self.flights.lock();
+                if let Some(flight) = flights.get(&flight_key) {
+                    (flight.clone(), false)
+                } else {
+                    let flight = Arc::new(LineLayoutFlight::default());
+                    flights.insert(flight_key.clone(), flight.clone());
+                    (flight, true)
+                }
+            };
+
+            if is_leader {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    (shape
+                        .take()
+                        .expect("line layout singleflight leader missing shaper"))()
+                }));
+
+                match result {
+                    Ok(layout) => {
+                        let layout = Arc::new(layout);
+                        {
+                            let mut state = flight.state.lock();
+                            *state = LineLayoutFlightState::Ready(layout.clone());
+                            flight.ready.notify_all();
+                        }
+                        self.remove_if_current(&flight_key, &flight);
+                        return layout;
+                    }
+                    Err(payload) => {
+                        {
+                            let mut state = flight.state.lock();
+                            *state = LineLayoutFlightState::Cancelled;
+                            flight.ready.notify_all();
+                        }
+                        self.remove_if_current(&flight_key, &flight);
+                        resume_unwind(payload);
+                    }
+                }
+            }
+
+            #[cfg(test)]
+            flight
+                .followers
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+            let mut state = flight.state.lock();
+            loop {
+                if let LineLayoutFlightState::Ready(layout) = &*state {
+                    return layout.clone();
+                }
+                if matches!(&*state, LineLayoutFlightState::Cancelled) {
+                    break;
+                }
+                flight.ready.wait(&mut state);
+            }
+            drop(state);
+            // The leader panicked. Its flight has been removed and this caller still owns its
+            // unused shaping closure, so retry registration and allow one follower to take over.
+        }
+    }
+
+    fn remove_if_current(&self, key: &LineLayoutFlightKey, flight: &Arc<LineLayoutFlight>) {
+        let mut flights = self.flights.lock();
+        if flights
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, flight))
+        {
+            flights.remove(key);
+        }
+    }
+
+    #[cfg(test)]
+    fn follower_count(&self, platform_identity: usize, cache_key: &Arc<CacheKey>) -> usize {
+        let key = LineLayoutFlightKey {
+            platform_identity,
+            cache_key: cache_key.clone(),
+        };
+        self.flights
+            .lock()
+            .get(&key)
+            .map(|flight| {
+                flight
+                    .followers
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn platform_text_system_identity(platform: &Arc<dyn PlatformTextSystem>) -> usize {
+    Arc::as_ptr(platform) as *const () as usize
+}
 
 struct FrameLayoutEntry<V> {
     value: V,
@@ -363,22 +513,25 @@ impl LineLayoutCache {
         self.frame_metrics.miss();
         drop(current_frame);
         let text = SharedString::from(text);
-        let mut layout = self
-            .platform_text_system
-            .layout_line(&text, font_size, runs);
-
-        if let Some(force_width) = force_width {
-            apply_force_width_to_layout(&mut layout, force_width);
-        }
-
         let key = Arc::new(CacheKey {
-            text,
+            text: text.clone(),
             font_size,
             runs: SmallVec::from(runs),
             wrap_width: None,
             force_width,
         });
-        let layout = Arc::new(layout);
+        let platform_identity = platform_text_system_identity(&self.platform_text_system);
+        let layout = LINE_LAYOUT_SINGLEFLIGHT.shape(platform_identity, key.clone(), || {
+            let mut layout = self
+                .platform_text_system
+                .layout_line(&text, font_size, runs);
+
+            if let Some(force_width) = force_width {
+                apply_force_width_to_layout(&mut layout, force_width);
+            }
+            layout
+        });
+
         let mut current_frame = self.current_frame.write();
         current_frame.insert_line(key.clone(), layout.clone());
         current_frame.used_lines.push(key);
@@ -939,6 +1092,80 @@ mod tests {
         FontId, GlyphId, GpuiMemoryTrimLevel, NoopTextSystem, Point, performance_metrics_snapshot,
         point, px,
     };
+
+    #[test]
+    fn line_layout_singleflight_deduplicates_concurrent_shape() {
+        let singleflight = Arc::new(LineLayoutSingleflight::default());
+        let key = Arc::new(CacheKey {
+            text: "shared".into(),
+            font_size: px(14.),
+            runs: SmallVec::from([FontRun {
+                len: 6,
+                font_id: FontId(1),
+            }]),
+            wrap_width: None,
+            force_width: None,
+        });
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+
+        let leader_singleflight = singleflight.clone();
+        let leader_key = key.clone();
+        let leader = std::thread::spawn(move || {
+            leader_singleflight.shape(7, leader_key, || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                let mut layout = LineLayout::default();
+                layout.width = px(42.);
+                layout
+            })
+        });
+
+        started_rx.recv().unwrap();
+        let follower_singleflight = singleflight.clone();
+        let follower_key = key.clone();
+        let follower = std::thread::spawn(move || {
+            follower_singleflight.shape(7, follower_key, || {
+                panic!("follower must reuse the in-flight shaped layout")
+            })
+        });
+
+        while singleflight.follower_count(7, &key) == 0 {
+            std::thread::yield_now();
+        }
+        release_tx.send(()).unwrap();
+
+        let first = leader.join().unwrap();
+        let second = follower.join().unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.width, px(42.));
+        assert!(singleflight.flights.lock().is_empty());
+    }
+
+    #[test]
+    fn line_layout_singleflight_cleans_up_after_panicking_leader() {
+        let singleflight = LineLayoutSingleflight::default();
+        let key = Arc::new(CacheKey {
+            text: "panic".into(),
+            font_size: px(14.),
+            runs: SmallVec::from([FontRun {
+                len: 5,
+                font_id: FontId(1),
+            }]),
+            wrap_width: None,
+            force_width: None,
+        });
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            singleflight.shape(9, key.clone(), || panic!("shape failed"))
+        }));
+        assert!(result.is_err());
+        assert!(singleflight.flights.lock().is_empty());
+
+        let layout = singleflight.shape(9, key, LineLayout::default);
+        assert_eq!(layout.width, px(0.));
+        assert!(singleflight.flights.lock().is_empty());
+    }
 
     #[test]
     fn line_layout_index_rebases_relative_offsets() {
