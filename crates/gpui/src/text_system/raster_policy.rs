@@ -1,4 +1,6 @@
-use super::{line_layout::ShapedGlyph, primitives::RenderGlyphParams};
+use super::{
+    line_layout::ShapedGlyph, primitives::RenderGlyphParams, script::TextClusterProperties,
+};
 
 /// Raster-bounds policy selected after shaping and before glyph atlas lookup.
 ///
@@ -15,6 +17,19 @@ pub(crate) enum GlyphRasterPolicy {
 }
 
 impl GlyphRasterPolicy {
+    /// Derive the raster policy directly from Unicode cluster metadata produced during shaping.
+    ///
+    /// Emoji keep their exact bitmap/color-glyph bounds even when they are adjacent to a dense
+    /// square script. This keeps script classification and atlas normalization as separate concerns.
+    #[inline]
+    pub(crate) fn for_cluster(properties: TextClusterProperties, is_emoji: bool) -> Self {
+        if !is_emoji && properties.uses_stable_vertical_raster_frame() {
+            Self::StableVerticalFrame
+        } else {
+            Self::ExactBounds
+        }
+    }
+
     #[inline]
     pub(crate) fn uses_stable_vertical_frame(self) -> bool {
         matches!(self, Self::StableVerticalFrame)
@@ -64,6 +79,7 @@ impl RenderGlyphParams {
 mod tests {
     use super::*;
     use crate::{FontId, GlyphId, Point, ShapedGlyph, point, px};
+    use crate::text_system::script::text_cluster_properties;
 
     fn test_render_params() -> RenderGlyphParams {
         RenderGlyphParams {
@@ -76,6 +92,32 @@ mod tests {
             is_emoji: false,
             is_cjk: false,
         }
+    }
+
+    #[test]
+    fn cluster_metadata_maps_to_narrow_raster_policy() {
+        for (text, is_emoji, expected) in [
+            ("中文", false, GlyphRasterPolicy::StableVerticalFrame),
+            ("한글", false, GlyphRasterPolicy::StableVerticalFrame),
+            ("العربية", false, GlyphRasterPolicy::ExactBounds),
+            ("हिन्दी", false, GlyphRasterPolicy::ExactBounds),
+            ("😀", true, GlyphRasterPolicy::ExactBounds),
+        ] {
+            assert_eq!(
+                GlyphRasterPolicy::for_cluster(text_cluster_properties(text), is_emoji),
+                expected,
+                "text={text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn emoji_flag_overrides_stable_vertical_script_policy() {
+        let han = text_cluster_properties("中");
+        assert_eq!(
+            GlyphRasterPolicy::for_cluster(han, true),
+            GlyphRasterPolicy::ExactBounds
+        );
     }
 
     #[test]
