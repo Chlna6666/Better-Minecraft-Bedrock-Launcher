@@ -77,24 +77,15 @@ impl Interactivity {
             let hitbox = hitbox.clone();
             let was_hovered = hitbox.is_hovered(window);
             let current_view = window.current_view();
-            let interaction_path = interaction_path.clone();
 
-            // The platform reports window leave separately from pointer motion. The old global
-            // Window::refresh path hid this gap by repainting every view. Instead, clear the
-            // window hit-test before MouseExited dispatch and invalidate only the retained hover
-            // boundary that was actually active.
+            // Follow the same correctness boundary as upstream GPUI: a hover transition changes
+            // view state, so rebuild that view and let retained reconciliation decide what can be
+            // replayed. Retained-path-only invalidation is too narrow here because hit testing is
+            // frame-global and MouseExited clears the whole pointer hit-test set at once.
             if was_hovered {
-                let exit_hitbox = hitbox.clone();
-                let exit_interaction_path = interaction_path.clone();
-                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, _window, cx| {
                     if phase == DispatchPhase::Capture {
-                        window.notify_interactive_region_scoped(
-                            current_view,
-                            exit_interaction_path.as_ref(),
-                            exit_hitbox.bounds,
-                            descendants_dirty,
-                            cx,
-                        );
+                        cx.notify(current_view);
                     }
                 });
             }
@@ -103,13 +94,7 @@ impl Interactivity {
                 move |_: &MouseMoveEvent, phase, window, cx| {
                     let hovered = hitbox.is_hovered(window);
                     if phase == DispatchPhase::Capture && hovered != was_hovered {
-                        window.notify_interactive_region_scoped(
-                            current_view,
-                            interaction_path.as_ref(),
-                            hitbox.bounds,
-                            descendants_dirty,
-                            cx,
-                        );
+                        cx.notify(current_view);
                     }
                 },
             );
