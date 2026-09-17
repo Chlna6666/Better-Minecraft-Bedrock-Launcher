@@ -362,15 +362,7 @@ impl LineLayoutCache {
             .layout_line(&text, font_size, runs);
 
         if let Some(force_width) = force_width {
-            let mut glyph_pos = 0;
-            for run in layout.runs.iter_mut() {
-                for glyph in run.glyphs.iter_mut() {
-                    if (glyph.position.x - glyph_pos * force_width).abs() > px(1.) {
-                        glyph.position.x = glyph_pos * force_width;
-                    }
-                    glyph_pos += 1;
-                }
-            }
+            apply_force_width_to_layout(&mut layout, force_width);
         }
 
         let key = Arc::new(CacheKey {
@@ -385,6 +377,35 @@ impl LineLayoutCache {
         current_frame.lines.insert(key.clone(), layout.clone());
         current_frame.used_lines.push(key);
         layout
+    }
+}
+
+// Combining marks such as Thai vowel signs and Arabic diacritics are commonly shaped at the same
+// x position as their base glyph. Fixed-width positioning must not advance the cell counter for
+// those zero/near-zero-advance glyphs, or the mark is displaced into the next cell. Keep the
+// original within-cell offset while only advancing when shaping has moved far enough to indicate a
+// new base glyph.
+fn apply_force_width_to_layout(layout: &mut LineLayout, force_width: Pixels) {
+    let mut glyph_pos = 0usize;
+    let mut last_base_shaped_x = px(f32::NEG_INFINITY);
+    let mut last_base_actual_x = px(0.);
+
+    for run in layout.runs.iter_mut() {
+        for glyph in run.glyphs.iter_mut() {
+            let shaped_x = glyph.position.x;
+
+            if shaped_x > last_base_shaped_x + force_width * 0.5 {
+                let forced_x = glyph_pos * force_width;
+                if (shaped_x - forced_x).abs() > px(1.) {
+                    glyph.position.x = forced_x;
+                }
+                last_base_shaped_x = shaped_x;
+                last_base_actual_x = glyph.position.x;
+                glyph_pos += 1;
+            } else {
+                glyph.position.x = last_base_actual_x + (shaped_x - last_base_shaped_x);
+            }
+        }
     }
 }
 
@@ -779,7 +800,10 @@ fn trim_deque_capacity<T>(deque: &mut VecDeque<T>, floor: usize, multiplier: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FontId, GpuiMemoryTrimLevel, NoopTextSystem, performance_metrics_snapshot, px};
+    use crate::{
+        FontId, GlyphId, GpuiMemoryTrimLevel, NoopTextSystem, Point, performance_metrics_snapshot,
+        point, px,
+    };
 
     #[test]
     fn line_layout_index_rebases_relative_offsets() {
@@ -801,7 +825,52 @@ mod tests {
     }
 
     #[test]
-    fn layout_line_records_same_frame_hits() {
+    fn force_width_preserves_combining_mark_offset_across_runs() {
+        fn glyph(id: u32, x: f32, index: usize) -> ShapedGlyph {
+            ShapedGlyph {
+                id: GlyphId(id),
+                position: point(px(x), px(0.)),
+                render_offset: Point::default(),
+                font_size: px(14.),
+                index,
+                is_emoji: false,
+                is_cjk: false,
+            }
+        }
+
+        let mut layout = LineLayout {
+            font_size: px(14.),
+            width: px(18.),
+            ascent: px(11.),
+            descent: px(3.),
+            runs: vec![
+                ShapedRun {
+                    font_id: FontId(1),
+                    glyphs: vec![glyph(1, 0., 0)],
+                },
+                // Simulate a combining mark shaped by a fallback face. Its one-pixel relative
+                // offset belongs to the first base glyph and must not consume another cell.
+                ShapedRun {
+                    font_id: FontId(2),
+                    glyphs: vec![glyph(2, 1., 1)],
+                },
+                ShapedRun {
+                    font_id: FontId(1),
+                    glyphs: vec![glyph(3, 8., 2)],
+                },
+            ],
+            len: 3,
+        };
+
+        apply_force_width_to_layout(&mut layout, px(10.));
+
+        assert_eq!(layout.runs[0].glyphs[0].position.x, px(0.));
+        assert_eq!(layout.runs[1].glyphs[0].position.x, px(1.));
+        assert_eq!(layout.runs[2].glyphs[0].position.x, px(10.));
+    }
+
+    #[test]
+    fn line_layout_records_same_frame_hits() {
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
         let runs = [FontRun {
             len: 5,
@@ -820,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_line_records_previous_frame_reuse() {
+    fn line_layout_records_previous_frame_reuse() {
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
         let runs = [FontRun {
             len: 5,
@@ -840,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_line_reuses_retained_entry_after_idle_frame() {
+    fn line_layout_reuses_retained_entry_after_idle_frame() {
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
         let runs = [FontRun {
             len: 5,
