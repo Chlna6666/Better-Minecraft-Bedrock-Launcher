@@ -166,22 +166,22 @@ impl LineLayoutCache {
         let previous_frame = &mut *self.previous_frame.lock();
         let current_frame = &mut *self.current_frame.write();
 
-        for key in &previous_frame.used_lines[range.start.lines_index..range.end.lines_index] {
-            if let Some((key, line)) = previous_frame.take_line(key.as_ref()) {
+        for index in range.start.lines_index..range.end.lines_index {
+            let used_key = previous_frame.used_lines[index].clone();
+            if let Some((key, line)) = previous_frame.take_line(used_key.as_ref()) {
                 current_frame.insert_line(key, line);
                 self.frame_metrics.reuse();
             }
-            current_frame.used_lines.push(key.clone());
+            current_frame.used_lines.push(used_key);
         }
 
-        for key in &previous_frame.used_wrapped_lines
-            [range.start.wrapped_lines_index..range.end.wrapped_lines_index]
-        {
-            if let Some((key, line)) = previous_frame.take_wrapped_line(key.as_ref()) {
+        for index in range.start.wrapped_lines_index..range.end.wrapped_lines_index {
+            let used_key = previous_frame.used_wrapped_lines[index].clone();
+            if let Some((key, line)) = previous_frame.take_wrapped_line(used_key.as_ref()) {
                 current_frame.insert_wrapped_line(key, line);
                 self.frame_metrics.reuse();
             }
-            current_frame.used_wrapped_lines.push(key.clone());
+            current_frame.used_wrapped_lines.push(used_key);
         }
     }
 
