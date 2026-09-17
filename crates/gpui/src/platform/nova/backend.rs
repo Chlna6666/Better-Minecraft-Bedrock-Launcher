@@ -48,16 +48,7 @@ impl NovaBackend {
     pub(super) fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(_device) => {
-                let _ = swapchain;
-                // DX12 exposes Present1 dirty rectangles and the backend tracks rotating-buffer
-                // damage, but real interactive hover invalidations still reproduce stale/blank
-                // regions on the opaque flip-sequential path. Keep retained CPU scene reuse and
-                // incremental buffer uploads enabled, while forcing the final swapchain raster and
-                // presentation to cover the complete surface until the native dirty-rect path has
-                // a proven per-buffer correctness contract on the supported Windows drivers.
-                false
-            }
+            Self::Dx12(device) => device.supports_partial_presentation(swapchain),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             Self::Metal(device) => device.supports_partial_presentation(swapchain),
             #[cfg(all(
