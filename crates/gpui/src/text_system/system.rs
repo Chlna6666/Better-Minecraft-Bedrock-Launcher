@@ -12,12 +12,11 @@ use std::{
     cmp,
     collections::VecDeque,
     hash::Hash,
-    mem::size_of,
     ops::{Deref, DerefMut, Range},
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -34,11 +33,11 @@ pub(super) const FONT_RUNS_MIN_RETAINED_CAPACITY: usize = 32;
 const FONT_RUNS_TRIM_WATERMARK_MULTIPLIER: usize = 4;
 const TEXT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
 const TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER: usize = 4;
-// Raster bounds are cheap compared with glyph analysis and are shared across all windows. Keep a
-// large working set for IDE/editor workloads and trim only when an estimated byte budget is crossed.
-// The gap between target and high-water avoids eviction churn around the boundary.
-const RASTER_BOUNDS_CACHE_TARGET_BYTES: usize = 32 * 1024 * 1024;
-const RASTER_BOUNDS_CACHE_HIGH_WATER_BYTES: usize = 48 * 1024 * 1024;
+// Raster-bounds entries are cheap, but a fixed byte or glyph-count cap is a poor fit for IDE/editor
+// workloads. Use epoch-LRU aging instead: cache hits update a relaxed last-used epoch under the
+// read lock, while insertion/pressure paths evict entries that are genuinely cold.
+const RASTER_BOUNDS_LRU_SWEEP_DIVISOR: usize = 4;
+const RASTER_BOUNDS_LRU_MIN_SWEEP_INSERTS: usize = 256;
 
 /// The GPUI text rendering sub system.
 pub struct TextSystem {
@@ -61,39 +60,56 @@ struct FontIdCache {
 
 struct RasterBoundsEntry {
     bounds: Bounds<DevicePixels>,
-    referenced: AtomicBool,
+    last_used_epoch: AtomicU64,
 }
 
 impl RasterBoundsEntry {
-    fn new(bounds: Bounds<DevicePixels>) -> Self {
+    fn new(bounds: Bounds<DevicePixels>, epoch: u64) -> Self {
         Self {
             bounds,
-            referenced: AtomicBool::new(true),
+            last_used_epoch: AtomicU64::new(epoch),
         }
     }
 
     #[inline]
-    fn touch(&self) -> Bounds<DevicePixels> {
-        self.referenced.store(true, Ordering::Relaxed);
+    fn touch(&self, epoch: u64) -> Bounds<DevicePixels> {
+        self.last_used_epoch.store(epoch, Ordering::Relaxed);
         self.bounds
+    }
+
+    #[inline]
+    fn last_used_epoch(&self) -> u64 {
+        self.last_used_epoch.load(Ordering::Relaxed)
     }
 }
 
-// The key exists once in the hash table and once in the CLOCK queue. Add a conservative allowance
-// for hash-table control/pointer overhead so the soft limit tracks memory rather than glyph count.
-const RASTER_BOUNDS_CACHE_ESTIMATED_ENTRY_BYTES: usize = size_of::<RenderGlyphParams>() * 2
-    + size_of::<RasterBoundsEntry>()
-    + size_of::<usize>() * 2;
-
-#[derive(Default)]
 struct RasterBoundsCache {
     entries: FxHashMap<RenderGlyphParams, RasterBoundsEntry>,
-    clock: VecDeque<RenderGlyphParams>,
+    next_epoch: AtomicU64,
+    lookups_since_sweep: AtomicUsize,
+    hits_since_sweep: AtomicUsize,
+    inserts_since_sweep: usize,
+}
+
+impl Default for RasterBoundsCache {
+    fn default() -> Self {
+        Self {
+            entries: FxHashMap::default(),
+            next_epoch: AtomicU64::new(0),
+            lookups_since_sweep: AtomicUsize::new(0),
+            hits_since_sweep: AtomicUsize::new(0),
+            inserts_since_sweep: 0,
+        }
+    }
 }
 
 impl RasterBoundsCache {
     fn get(&self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
-        self.entries.get(params).map(RasterBoundsEntry::touch)
+        self.lookups_since_sweep.fetch_add(1, Ordering::Relaxed);
+        let epoch = self.next_access_epoch();
+        let entry = self.entries.get(params)?;
+        self.hits_since_sweep.fetch_add(1, Ordering::Relaxed);
+        Some(entry.touch(epoch))
     }
 
     fn insert_if_absent(
@@ -101,58 +117,109 @@ impl RasterBoundsCache {
         params: RenderGlyphParams,
         bounds: Bounds<DevicePixels>,
     ) -> Bounds<DevicePixels> {
+        let epoch = self.next_access_epoch();
         if let Some(existing) = self.entries.get(&params) {
-            return existing.touch();
+            self.lookups_since_sweep.fetch_add(1, Ordering::Relaxed);
+            self.hits_since_sweep.fetch_add(1, Ordering::Relaxed);
+            return existing.touch(epoch);
         }
 
+        self.lookups_since_sweep.fetch_add(1, Ordering::Relaxed);
         self.entries
-            .insert(params.clone(), RasterBoundsEntry::new(bounds));
-        self.clock.push_back(params);
-        self.trim_soft_budget_if_needed();
+            .insert(params, RasterBoundsEntry::new(bounds, epoch));
+        self.inserts_since_sweep = self.inserts_since_sweep.saturating_add(1);
+        self.sweep_if_needed();
         bounds
     }
 
-    fn estimated_live_bytes(&self) -> usize {
-        self.entries
-            .len()
-            .saturating_mul(RASTER_BOUNDS_CACHE_ESTIMATED_ENTRY_BYTES)
+    #[inline]
+    fn next_access_epoch(&self) -> u64 {
+        self.next_epoch
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
     }
 
-    fn trim_soft_budget_if_needed(&mut self) {
-        if self.estimated_live_bytes() <= RASTER_BOUNDS_CACHE_HIGH_WATER_BYTES {
+    #[inline]
+    fn current_epoch(&self) -> u64 {
+        self.next_epoch.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn sweep_if_needed(&mut self) {
+        let threshold = self
+            .entries
+            .len()
+            .saturating_div(RASTER_BOUNDS_LRU_SWEEP_DIVISOR)
+            .max(RASTER_BOUNDS_LRU_MIN_SWEEP_INSERTS);
+        if self.inserts_since_sweep < threshold {
             return;
         }
 
-        let target_len = RASTER_BOUNDS_CACHE_TARGET_BYTES
-            / RASTER_BOUNDS_CACHE_ESTIMATED_ENTRY_BYTES.max(1);
-        self.evict_cold_to(target_len);
+        self.inserts_since_sweep = 0;
+        self.evict_idle_entries();
     }
 
-    fn evict_cold_to(&mut self, target_len: usize) {
-        // CLOCK/second-chance approximates LRU without turning every glyph-cache hit into a global
-        // write-lock operation. Hits only set a relaxed atomic reference bit; eviction is paid on
-        // insertion over the soft budget or explicit memory pressure.
-        while self.entries.len() > target_len {
-            let Some(candidate) = self.clock.pop_front() else {
-                break;
-            };
-
-            let recently_used = self
-                .entries
-                .get(&candidate)
-                .is_some_and(|entry| entry.referenced.swap(false, Ordering::Relaxed));
-            if recently_used {
-                self.clock.push_back(candidate);
-            } else {
-                self.entries.remove(&candidate);
-            }
+    fn evict_idle_entries(&mut self) {
+        let live_len = self.entries.len();
+        if live_len <= TEXT_CACHE_MIN_RETAINED_CAPACITY {
+            self.take_hit_ratio_percent();
+            return;
         }
-        debug_assert_eq!(self.entries.len(), self.clock.len());
+
+        let hit_ratio = self.take_hit_ratio_percent();
+        let divisor = match hit_ratio {
+            90..=usize::MAX => 1,
+            70..=89 => 2,
+            40..=69 => 4,
+            _ => 8,
+        };
+        let recent_access_window = live_len
+            .saturating_div(divisor)
+            .max(TEXT_CACHE_MIN_RETAINED_CAPACITY) as u64;
+        let current_epoch = self.current_epoch();
+        self.entries.retain(|_, entry| {
+            current_epoch.saturating_sub(entry.last_used_epoch()) <= recent_access_window
+        });
+    }
+
+    fn take_hit_ratio_percent(&self) -> usize {
+        let lookups = self.lookups_since_sweep.swap(0, Ordering::Relaxed);
+        let hits = self.hits_since_sweep.swap(0, Ordering::Relaxed).min(lookups);
+        if lookups == 0 {
+            100
+        } else {
+            hits.saturating_mul(100) / lookups
+        }
+    }
+
+    fn evict_lru_to_len(&mut self, target_len: usize) {
+        let live_len = self.entries.len();
+        if live_len <= target_len {
+            return;
+        }
+
+        let mut candidates = self
+            .entries
+            .iter()
+            .map(|(params, entry)| (params.clone(), entry.last_used_epoch()))
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(_, last_used_epoch)| *last_used_epoch);
+
+        for (params, _) in candidates.into_iter().take(live_len - target_len) {
+            self.entries.remove(&params);
+        }
     }
 
     fn clear(&mut self) {
         self.entries.clear();
-        self.clock.clear();
+        self.next_epoch.store(0, Ordering::Relaxed);
+        self.lookups_since_sweep.store(0, Ordering::Relaxed);
+        self.hits_since_sweep.store(0, Ordering::Relaxed);
+        self.inserts_since_sweep = 0;
     }
 
     fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
@@ -165,7 +232,7 @@ impl RasterBoundsCache {
                     GpuiMemoryTrimLevel::Aggressive => unreachable!(),
                 };
                 let target_len = requested_len.max(current_len.min(TEXT_CACHE_MIN_RETAINED_CAPACITY));
-                self.evict_cold_to(target_len);
+                self.evict_lru_to_len(target_len);
 
                 let retained_capacity = TEXT_CACHE_MIN_RETAINED_CAPACITY.max(self.entries.len());
                 trim_map_capacity(
@@ -173,16 +240,10 @@ impl RasterBoundsCache {
                     retained_capacity,
                     TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER,
                 );
-                trim_vec_deque_capacity(
-                    &mut self.clock,
-                    retained_capacity,
-                    TEXT_CACHE_TRIM_WATERMARK_MULTIPLIER,
-                );
             }
             GpuiMemoryTrimLevel::Aggressive => {
                 self.clear();
                 self.entries.shrink_to(0);
-                self.clock.shrink_to(0);
             }
         }
     }
@@ -764,7 +825,7 @@ impl WindowTextSystem {
 
         let mut lines = SmallVec::new();
         let mut line_start = 0;
-        let mut max_wrap_lines = line_clamp.unwrap_or(usize::MAX);
+        let max_wrap_lines = line_clamp.unwrap_or(usize::MAX);
         let mut wrapped_lines = 0;
 
         let mut queue_line_layout = |line_text: SharedString| {
@@ -1083,5 +1144,95 @@ impl Deref for LineWrapperHandle {
 impl DerefMut for LineWrapperHandle {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.wrapper.as_mut().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DevicePixels, FontId, GlyphId, GpuiMemoryTrimLevel, point, size};
+
+    fn test_raster_bounds() -> Bounds<DevicePixels> {
+        Bounds {
+            origin: point(DevicePixels(0), DevicePixels(0)),
+            size: size(DevicePixels(8), DevicePixels(12)),
+        }
+    }
+
+    fn test_glyph_params(glyph_id: u32) -> RenderGlyphParams {
+        RenderGlyphParams {
+            font_id: FontId(1),
+            glyph_id: GlyphId(glyph_id),
+            font_size: px(14.),
+            subpixel_variant: point(0_u8, 0_u8),
+            scale_factor: 1.0,
+            grayscale_antialiasing: false,
+            is_emoji: false,
+            is_cjk: false,
+        }
+    }
+
+    #[test]
+    fn raster_bounds_lru_records_hits_without_write_path() {
+        let mut cache = RasterBoundsCache::default();
+        let params = test_glyph_params(42);
+        let bounds = test_raster_bounds();
+
+        assert!(cache.get(&params).is_none());
+        assert_eq!(cache.insert_if_absent(params.clone(), bounds), bounds);
+        assert_eq!(cache.get(&params), Some(bounds));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.take_hit_ratio_percent() > 0);
+    }
+
+    #[test]
+    fn raster_bounds_lru_keeps_interleaved_hot_entries() {
+        let mut cache = RasterBoundsCache::default();
+        let bounds = test_raster_bounds();
+        let hot_params = (0..32).map(test_glyph_params).collect::<Vec<_>>();
+
+        for params in &hot_params {
+            cache.insert_if_absent(params.clone(), bounds);
+        }
+
+        for glyph_id in 32..12_000 {
+            cache.insert_if_absent(test_glyph_params(glyph_id), bounds);
+            if glyph_id % 64 == 0 {
+                for params in &hot_params {
+                    assert_eq!(cache.get(params), Some(bounds));
+                }
+            }
+        }
+        cache.evict_idle_entries();
+
+        for params in &hot_params {
+            assert_eq!(cache.get(params), Some(bounds));
+        }
+        assert!(
+            cache.len() < 12_000,
+            "one-shot scan entries should not remain fully resident"
+        );
+    }
+
+    #[test]
+    fn raster_bounds_memory_pressure_keeps_most_recent_entries() {
+        let mut cache = RasterBoundsCache::default();
+        let bounds = test_raster_bounds();
+
+        for glyph_id in 0..256 {
+            cache.insert_if_absent(test_glyph_params(glyph_id), bounds);
+        }
+        for glyph_id in 224..256 {
+            for _ in 0..4 {
+                assert_eq!(cache.get(&test_glyph_params(glyph_id)), Some(bounds));
+            }
+        }
+
+        let before = cache.len();
+        cache.trim_retained_capacity_for_level(GpuiMemoryTrimLevel::Moderate);
+        assert!(cache.len() < before);
+        for glyph_id in 224..256 {
+            assert_eq!(cache.get(&test_glyph_params(glyph_id)), Some(bounds));
+        }
     }
 }
