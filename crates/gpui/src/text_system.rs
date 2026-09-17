@@ -19,5 +19,6 @@ pub use line::*;
 pub use line_layout::*;
 pub use line_wrapper::*;
 pub use primitives::*;
+pub(crate) use raster_policy::GlyphRasterPolicy;
 pub use script::*;
 pub use system::{LineWrapperHandle, TextSystem, WindowTextSystem};
