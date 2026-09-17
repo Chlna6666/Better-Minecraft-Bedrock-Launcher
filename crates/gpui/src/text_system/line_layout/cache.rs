@@ -41,6 +41,7 @@ struct FrameCache {
     wrapped_lines: FxHashMap<Arc<CacheKey>, Arc<WrappedLineLayout>>,
     used_lines: Vec<Arc<CacheKey>>,
     used_wrapped_lines: Vec<Arc<CacheKey>>,
+    estimated_bytes: usize,
 }
 
 struct RetainedLayoutEntry<V> {
@@ -166,8 +167,8 @@ impl LineLayoutCache {
         let current_frame = &mut *self.current_frame.write();
 
         for key in &previous_frame.used_lines[range.start.lines_index..range.end.lines_index] {
-            if let Some((key, line)) = previous_frame.lines.remove_entry(key) {
-                current_frame.lines.insert(key, line);
+            if let Some((key, line)) = previous_frame.take_line(key) {
+                current_frame.insert_line(key, line);
                 self.frame_metrics.reuse();
             }
             current_frame.used_lines.push(key.clone());
@@ -176,8 +177,8 @@ impl LineLayoutCache {
         for key in &previous_frame.used_wrapped_lines
             [range.start.wrapped_lines_index..range.end.wrapped_lines_index]
         {
-            if let Some((key, line)) = previous_frame.wrapped_lines.remove_entry(key) {
-                current_frame.wrapped_lines.insert(key, line);
+            if let Some((key, line)) = previous_frame.take_wrapped_line(key) {
+                current_frame.insert_wrapped_line(key, line);
                 self.frame_metrics.reuse();
             }
             current_frame.used_wrapped_lines.push(key.clone());
@@ -217,7 +218,9 @@ impl LineLayoutCache {
 
         // After the swap, `prev_frame` is the frame that just finished rendering and therefore the
         // best direct observation of the active shaping working set. `curr_frame` is the older frame
-        // whose entries were not reused and are now candidates for the retained LRU tier.
+        // whose entries were not reused and are now candidates for the retained LRU tier. The
+        // byte estimate is maintained incrementally as entries move between frame caches, so this
+        // hot frame-finalization path stays O(1) in the number of shaped glyphs.
         let active_frame_bytes = prev_frame.estimated_bytes();
         let mut retained = self.retained.lock();
         retained.observe_working_set(active_frame_bytes);
@@ -228,6 +231,7 @@ impl LineLayoutCache {
         for (key, layout) in curr_frame.wrapped_lines.drain() {
             retained.insert_wrapped_line(key, layout);
         }
+        curr_frame.estimated_bytes = 0;
         curr_frame.used_lines.clear();
         curr_frame.used_wrapped_lines.clear();
         retained.evict_to_working_set_budget();
@@ -260,12 +264,10 @@ impl LineLayoutCache {
             return layout.clone();
         }
 
-        let previous_frame_entry = self.previous_frame.lock().wrapped_lines.remove_entry(key);
+        let previous_frame_entry = self.previous_frame.lock().take_wrapped_line(key);
         if let Some((key, layout)) = previous_frame_entry {
             let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
-            current_frame
-                .wrapped_lines
-                .insert(key.clone(), layout.clone());
+            current_frame.insert_wrapped_line(key.clone(), layout.clone());
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
             return layout;
@@ -274,9 +276,7 @@ impl LineLayoutCache {
         let retained_entry = self.retained.lock().take_wrapped_line(key);
         if let Some((key, layout)) = retained_entry {
             let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
-            current_frame
-                .wrapped_lines
-                .insert(key.clone(), layout.clone());
+            current_frame.insert_wrapped_line(key.clone(), layout.clone());
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
             return layout;
@@ -305,9 +305,7 @@ impl LineLayoutCache {
         });
 
         let mut current_frame = self.current_frame.write();
-        current_frame
-            .wrapped_lines
-            .insert(key.clone(), layout.clone());
+        current_frame.insert_wrapped_line(key.clone(), layout.clone());
         current_frame.used_wrapped_lines.push(key);
 
         layout
@@ -338,9 +336,9 @@ impl LineLayoutCache {
             return layout.clone();
         }
 
-        if let Some((key, layout)) = self.previous_frame.lock().lines.remove_entry(key) {
+        if let Some((key, layout)) = self.previous_frame.lock().take_line(key) {
             let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
-            current_frame.lines.insert(key.clone(), layout.clone());
+            current_frame.insert_line(key.clone(), layout.clone());
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
             return layout;
@@ -348,7 +346,7 @@ impl LineLayoutCache {
 
         if let Some((key, layout)) = self.retained.lock().take_line(key) {
             let mut current_frame = RwLockUpgradableReadGuard::upgrade(current_frame);
-            current_frame.lines.insert(key.clone(), layout.clone());
+            current_frame.insert_line(key.clone(), layout.clone());
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
             return layout;
@@ -374,7 +372,7 @@ impl LineLayoutCache {
         });
         let layout = Arc::new(layout);
         let mut current_frame = self.current_frame.write();
-        current_frame.lines.insert(key.clone(), layout.clone());
+        current_frame.insert_line(key.clone(), layout.clone());
         current_frame.used_lines.push(key);
         layout
     }
@@ -414,14 +412,77 @@ fn line_layout_range_is_valid(start: usize, end: usize, len: usize) -> bool {
 }
 
 impl FrameCache {
+    fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
+        if let Some((stored_key, previous_layout)) = self.lines.get_key_value(&key) {
+            let previous_bytes = estimate_line_entry_bytes(stored_key, previous_layout);
+            let next_bytes = estimate_line_entry_bytes(stored_key, &layout);
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_sub(previous_bytes)
+                .saturating_add(next_bytes);
+        } else {
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_add(estimate_line_entry_bytes(&key, &layout));
+        }
+        self.lines.insert(key, layout);
+    }
+
+    fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
+        if let Some((stored_key, previous_layout)) = self.wrapped_lines.get_key_value(&key) {
+            let previous_bytes = estimate_wrapped_line_entry_bytes(stored_key, previous_layout);
+            let next_bytes = estimate_wrapped_line_entry_bytes(stored_key, &layout);
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_sub(previous_bytes)
+                .saturating_add(next_bytes);
+        } else {
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_add(estimate_wrapped_line_entry_bytes(&key, &layout));
+        }
+        self.wrapped_lines.insert(key, layout);
+    }
+
+    fn take_line(
+        &mut self,
+        key: &dyn AsCacheKeyRef,
+    ) -> Option<(Arc<CacheKey>, Arc<LineLayout>)> {
+        self.lines.remove_entry(key).map(|(key, layout)| {
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_sub(estimate_line_entry_bytes(&key, &layout));
+            (key, layout)
+        })
+    }
+
+    fn take_wrapped_line(
+        &mut self,
+        key: &dyn AsCacheKeyRef,
+    ) -> Option<(Arc<CacheKey>, Arc<WrappedLineLayout>)> {
+        self.wrapped_lines.remove_entry(key).map(|(key, layout)| {
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_sub(estimate_wrapped_line_entry_bytes(&key, &layout));
+            (key, layout)
+        })
+    }
+
     fn clear(&mut self) {
         self.lines.clear();
         self.wrapped_lines.clear();
         self.used_lines.clear();
         self.used_wrapped_lines.clear();
+        self.estimated_bytes = 0;
     }
 
+    #[inline]
     fn estimated_bytes(&self) -> usize {
+        self.estimated_bytes
+    }
+
+    #[cfg(test)]
+    fn recompute_estimated_bytes(&self) -> usize {
         let line_bytes = self.lines.iter().fold(0usize, |total, (key, layout)| {
             total.saturating_add(estimate_line_entry_bytes(key, layout))
         });
@@ -867,6 +928,67 @@ mod tests {
         assert_eq!(layout.runs[0].glyphs[0].position.x, px(0.));
         assert_eq!(layout.runs[1].glyphs[0].position.x, px(1.));
         assert_eq!(layout.runs[2].glyphs[0].position.x, px(10.));
+    }
+
+    #[test]
+    fn frame_cache_estimated_bytes_stay_incremental() {
+        let line_key = Arc::new(CacheKey {
+            text: "line".into(),
+            font_size: px(14.),
+            runs: SmallVec::from([FontRun {
+                len: 4,
+                font_id: FontId(1),
+            }]),
+            wrap_width: None,
+            force_width: None,
+        });
+        let wrapped_key = Arc::new(CacheKey {
+            text: "wrapped".into(),
+            font_size: px(14.),
+            runs: SmallVec::from([FontRun {
+                len: 7,
+                font_id: FontId(1),
+            }]),
+            wrap_width: Some(px(80.)),
+            force_width: None,
+        });
+        let line = Arc::new(LineLayout::default());
+        let wrapped = Arc::new(WrappedLineLayout {
+            unwrapped_layout: line.clone(),
+            wrap_boundaries: SmallVec::new(),
+            wrap_width: Some(px(80.)),
+        });
+
+        let mut frame = FrameCache::default();
+        frame.insert_line(line_key.clone(), line.clone());
+        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
+
+        frame.insert_wrapped_line(wrapped_key.clone(), wrapped);
+        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
+
+        let _ = frame.take_line(line_key.as_ref()).unwrap();
+        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
+
+        let _ = frame.take_wrapped_line(wrapped_key.as_ref()).unwrap();
+        assert_eq!(frame.estimated_bytes(), 0);
+        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
+    }
+
+    #[test]
+    fn finish_frame_observes_incremental_working_set_bytes() {
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let runs = [FontRun {
+            len: 5,
+            font_id: FontId(1),
+        }];
+
+        cache.layout_line("hello", px(14.), &runs, None);
+        let expected = cache.current_frame.read().estimated_bytes();
+        assert!(expected > 0);
+        cache.finish_frame();
+
+        assert_eq!(cache.retained.lock().working_set_bytes, expected);
+        assert_eq!(cache.current_frame.read().estimated_bytes(), 0);
     }
 
     #[test]
