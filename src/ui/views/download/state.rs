@@ -280,7 +280,7 @@ pub struct DownloadPageState {
     pub native_mod_target_version: SharedString,
     pub native_mod_install_busy: bool,
     pub native_mod_install_error: Option<SharedString>,
-    pub tab_anim_at: Option<Instant>,
+    pub tab_anim_seq: u64,
     pub tab_anim_from: DownloadTab,
 }
 
@@ -420,7 +420,7 @@ impl Default for DownloadPageState {
             native_mod_target_version: SharedString::from(""),
             native_mod_install_busy: false,
             native_mod_install_error: None,
-            tab_anim_at: None,
+            tab_anim_seq: 0,
             tab_anim_from: DownloadTab::Game,
         }
     }
@@ -431,7 +431,6 @@ impl Global for DownloadPageState {}
 impl DownloadPageState {
     pub fn has_releasable_route_state(&self) -> bool {
         self.tab != DownloadTab::Game
-            || self.tab_anim_at.is_some()
             || self.force_refresh_next
             || self.search_input.is_some()
             || self.page_jump_input.is_some()
@@ -480,16 +479,6 @@ impl DownloadPageState {
         self.release_game_tab_state();
         self.release_curseforge_tab_state(cx);
         *self = Self::default();
-    }
-
-    pub fn tab_anim_factor(&self, now: Instant) -> (f32, bool) {
-        const DURATION_MS: u64 = 180;
-        let Some(started_at) = self.tab_anim_at else {
-            return (1.0, false);
-        };
-        let elapsed_ms = now.saturating_duration_since(started_at).as_millis() as u64;
-        let factor = (elapsed_ms as f32 / DURATION_MS as f32).clamp(0.0, 1.0);
-        (factor, factor < 1.0)
     }
 
     pub fn set_curseforge_mod_page_description(&mut self, description: SharedString) {

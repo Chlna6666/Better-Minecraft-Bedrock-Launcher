@@ -1,3 +1,4 @@
+use crate::ui::animation::{apple_spring, spring_motion};
 use crate::ui::components::button::IconButton;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
@@ -10,7 +11,6 @@ use crate::ui::views::download::state::{
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use std::time::Instant;
 
 const CONTROL_HEIGHT: f32 = 38.0;
 const TAB_INSET: f32 = 3.0;
@@ -20,7 +20,6 @@ pub(super) fn render_toolbar(
     colors: &ThemeColors,
     state: &DownloadPageState,
     i18n: &I18n,
-    now: Instant,
 ) -> Div {
     let search = render_toolbar_search(colors, state, i18n);
 
@@ -39,7 +38,7 @@ pub(super) fn render_toolbar(
         .flex_wrap()
         .items_center()
         .gap(px(12.))
-        .child(render_tabs(colors, state, i18n, now))
+        .child(render_tabs(colors, state, i18n))
         .child(
             div()
                 .flex_1()
@@ -121,16 +120,10 @@ fn render_toolbar_search(
     }
 }
 
-fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now: Instant) -> Div {
+fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {
     let active = state.tab;
-    let (t, animating) = state.tab_anim_factor(now);
     let from = state.tab_anim_from;
-    // ease-out-back for a subtle elastic overshoot on the sliding pill
-    let t_eased = {
-        let tc = t.clamp(0.0, 1.0);
-        let p = tc - 1.0;
-        (1.0 + 1.35 * p.powi(3) + 0.35 * p.powi(2)).clamp(0.0, 1.05)
-    };
+    let transition_seq = state.tab_anim_seq;
 
     let idx = |tab: DownloadTab| match tab {
         DownloadTab::Game => 0f32,
@@ -141,19 +134,6 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
     let item_w = 104.0f32;
     let from_x = idx(from) * item_w;
     let to_x = idx(active) * item_w;
-    let x = from_x + (to_x - from_x) * t_eased;
-
-    // Pill width stretches during transition for a dynamic feel
-    let stretch = {
-        let mid = (t * 2.0 - 1.0).abs();
-        let stretch_factor = 1.0 - mid * 0.5;
-        let distance = (idx(active) - idx(from)).abs();
-        if animating && distance > 0.0 {
-            item_w * stretch_factor.max(0.7)
-        } else {
-            item_w
-        }
-    };
 
     let tab = |id: &'static str,
                icon_path: &'static str,
@@ -213,7 +193,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
                 cx.update_global(|s: &mut DownloadPageState, cx| {
                     if s.tab != tab {
                         s.tab_anim_from = s.tab;
-                        s.tab_anim_at = Some(Instant::now());
+                        s.tab_anim_seq = s.tab_anim_seq.wrapping_add(1);
                     }
                     s.tab = tab;
 
@@ -246,16 +226,32 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
             })
     };
 
-    // Pill indicator with no shadow for flat depth
+    // The indicator is laid out at its destination. Nova owns the temporary translation,
+    // so switching tabs no longer turns DownloadPageView into a per-frame layout/render target.
     let indicator = div()
         .absolute()
-        .left(px(x + (item_w - stretch) * 0.5 + TAB_INSET))
+        .left(px(to_x + TAB_INSET))
         .top(px(TAB_INSET))
-        .w(px(stretch))
+        .w(px(item_w))
         .h(px(TAB_HEIGHT))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(colors.surface)
-        .with_layout_animation_target(animating);
+        .bg(colors.surface);
+    let indicator = if transition_seq != 0 && from != active {
+        indicator
+            .with_animation(
+                SharedString::from(format!("download-tab-indicator-{transition_seq}")),
+                spring_motion(apple_spring(0.30, 0.82)).with_property(
+                    AnimationProperty::translation(
+                        point(px(from_x - to_x), px(0.0)),
+                        Point::default(),
+                    ),
+                ),
+                |indicator, _progress| indicator,
+            )
+            .into_any_element()
+    } else {
+        indicator.into_any_element()
+    };
 
     div()
         .relative()
@@ -296,7 +292,6 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
             DownloadTab::Mod,
             active,
         ))
-        .when(animating, |this| this)
 }
 
 fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {

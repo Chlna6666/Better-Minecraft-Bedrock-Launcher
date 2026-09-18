@@ -561,7 +561,6 @@ impl Render for DownloadPageView {
                 colors,
                 window_size.width,
                 window_size.height,
-                now,
                 &self.curseforge_resource_panel,
                 game_panel_view.as_ref(),
             ))
@@ -574,7 +573,6 @@ pub fn render_download_page(
     colors: ThemeColors,
     _window_width: Pixels,
     window_height: Pixels,
-    now: Instant,
     curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
 ) -> impl IntoElement {
@@ -590,7 +588,6 @@ pub fn render_download_page(
                 &colors,
                 cx.global::<DownloadPageState>(),
                 cx.global::<I18n>(),
-                now,
             )
             .rounded(px(0.))
             .border_0(),

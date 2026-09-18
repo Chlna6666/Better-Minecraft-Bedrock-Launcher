@@ -287,7 +287,8 @@ impl MainWindowView {
                 state.search_query = SharedString::from("");
                 state.page_index = 0;
                 state.tab = crate::ui::views::download::state::DownloadTab::Game;
-                state.tab_anim_at = None;
+                state.tab_anim_seq = 0;
+                state.tab_anim_from = crate::ui::views::download::state::DownloadTab::Game;
                 trace!(
                     "release download page game_versions={} mods={} categories={} versions={}",
                     game_versions_before, mods_before, categories_before, versions_before

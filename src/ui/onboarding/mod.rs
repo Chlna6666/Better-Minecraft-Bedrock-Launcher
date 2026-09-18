@@ -173,7 +173,7 @@ fn prepare_download(tab: crate::ui::views::download::state::DownloadTab, cx: &mu
         |state: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
             if state.tab != tab {
                 state.tab_anim_from = state.tab;
-                state.tab_anim_at = Some(std::time::Instant::now());
+                state.tab_anim_seq = state.tab_anim_seq.wrapping_add(1);
             }
             state.tab = tab;
             state.search_query = SharedString::from("");
