@@ -374,8 +374,23 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
                 width: restored_bounds.size.width / px(1.0),
                 height: restored_bounds.size.height / px(1.0),
             };
-            if let Err(error) = crate::core::ui_prefs::save_map_viewer_window_prefs(&prefs) {
-                tracing::warn!(%error, "failed to save map viewer window size");
+            crate::core::ui_prefs::cache_map_viewer_window_prefs(prefs);
+            if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+                let result = crate::tasks::runtime::run_io_blocking(move || {
+                    crate::core::ui_prefs::save_map_viewer_window_prefs(&prefs)
+                })
+                .await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "failed to save map viewer window size");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "map viewer window size save worker failed");
+                    }
+                }
+            }) {
+                tracing::warn!(%error, "failed to schedule map viewer window size save");
             }
             close_view.update(cx, |this, cx| this.release_window_resources(cx));
             window.remove_window();
@@ -412,7 +427,9 @@ fn map_viewer_window_options(cx: &mut App, title: SharedString) -> WindowOptions
 }
 
 fn map_viewer_window_size(cx: &App) -> Size<Pixels> {
-    let saved = crate::core::ui_prefs::load_map_viewer_window_prefs();
+    // Window opening is a foreground UI action. Disk/JSON loading is prewarmed on the blocking
+    // pool; if startup prewarm has not completed yet, use the default size rather than blocking.
+    let saved = crate::core::ui_prefs::cached_map_viewer_window_prefs();
     let display_size = cx.primary_display().map(|display| display.bounds().size);
     map_viewer_window_size_for_display(saved, display_size)
 }

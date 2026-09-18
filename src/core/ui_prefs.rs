@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
 
 /// Read the native client-area animation preference during UI initialization.
 /// Platforms without a preference adapter use the conservative, static presentation.
@@ -53,6 +54,34 @@ pub struct MapViewerWindowPrefs {
     pub height: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct MapViewerWindowPrefsCache {
+    loaded: bool,
+    value: Option<MapViewerWindowPrefs>,
+}
+
+static MAP_VIEWER_WINDOW_PREFS_CACHE: OnceLock<RwLock<MapViewerWindowPrefsCache>> = OnceLock::new();
+
+fn map_viewer_window_prefs_cache() -> &'static RwLock<MapViewerWindowPrefsCache> {
+    MAP_VIEWER_WINDOW_PREFS_CACHE
+        .get_or_init(|| RwLock::new(MapViewerWindowPrefsCache::default()))
+}
+
+pub fn cached_map_viewer_window_prefs() -> Option<MapViewerWindowPrefs> {
+    let cache = map_viewer_window_prefs_cache()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.value
+}
+
+pub fn cache_map_viewer_window_prefs(prefs: MapViewerWindowPrefs) {
+    let mut cache = map_viewer_window_prefs_cache()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.loaded = true;
+    cache.value = Some(prefs);
+}
+
 fn download_prefs_path() -> PathBuf {
     file_ops::cache_subdir("download_ui_prefs.json")
 }
@@ -66,10 +95,30 @@ pub fn save_download_ui_prefs(prefs: &DownloadUiPrefs) -> io::Result<()> {
 }
 
 pub fn load_map_viewer_window_prefs() -> Option<MapViewerWindowPrefs> {
-    load_json_prefs(map_viewer_window_prefs_path())
+    {
+        let cache = map_viewer_window_prefs_cache()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cache.loaded {
+            return cache.value;
+        }
+    }
+
+    let loaded = load_json_prefs(map_viewer_window_prefs_path());
+    let mut cache = map_viewer_window_prefs_cache()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // A user-driven resize/save may have populated the cache while this disk read was in flight.
+    // Never replace that newer in-memory value with a stale preload result.
+    if !cache.loaded {
+        cache.loaded = true;
+        cache.value = loaded;
+    }
+    cache.value
 }
 
 pub fn save_map_viewer_window_prefs(prefs: &MapViewerWindowPrefs) -> io::Result<()> {
+    cache_map_viewer_window_prefs(*prefs);
     save_json_prefs(map_viewer_window_prefs_path(), prefs)
 }
 

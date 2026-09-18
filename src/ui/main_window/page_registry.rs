@@ -671,6 +671,17 @@ impl MainWindowView {
         this.install_window_observers(window, cx);
         this.install_easter_egg_interceptor(window, cx);
         let _ = this.ensure_download_prefs_loaded(cx);
+        if let Err(error) = crate::tasks::runtime::spawn_io(async {
+            if let Err(error) = crate::tasks::runtime::run_io_blocking(
+                crate::core::ui_prefs::load_map_viewer_window_prefs,
+            )
+            .await
+            {
+                tracing::warn!(%error, "map viewer window prefs preload failed");
+            }
+        }) {
+            tracing::warn!(%error, "failed to schedule map viewer window prefs preload");
+        }
 
         if cx.global::<AgreementState>().is_visible() {
             Self::cache_agreement_document(cx);
