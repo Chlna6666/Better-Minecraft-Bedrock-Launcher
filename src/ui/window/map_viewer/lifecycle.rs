@@ -2019,12 +2019,35 @@ impl MapViewerWindowView {
         let visible_tile_set = visible_tiles.iter().copied().collect::<BTreeSet<_>>();
         self.tile_manager
             .reconcile_viewport_priorities(&visible_tile_set);
-        let visible_renderable_tiles = self.resolve_occupancy_tiles(&visible_tiles, cx);
+
+        let visible_work_limit = visible_tile_foreground_work_limit(true);
+        let mut visible_candidates = visible_tiles
+            .iter()
+            .copied()
+            .filter(|coord| {
+                visible_tile_needs_foreground_work(
+                    &self.tile_chunk_index,
+                    &self.tile_manager,
+                    *coord,
+                )
+            })
+            .take(visible_work_limit.saturating_add(1))
+            .collect::<Vec<_>>();
+        let deferred_visible_work = visible_candidates.len() > visible_work_limit;
+        if deferred_visible_work {
+            visible_candidates.truncate(visible_work_limit);
+        }
+
+        let visible_renderable_tiles = self.resolve_occupancy_tiles(&visible_candidates, cx);
         self.tile_manager.ensure_tiles_for_layout(
             &visible_renderable_tiles,
             TilePriority::Visible,
             self.render_texture_layout,
         );
+        if deferred_visible_work {
+            self.pending_viewport_refresh = true;
+            self.schedule_viewport_work_refresh(cx);
+        }
         if !self.has_render_batch_capacity() && self.tile_manager.has_visible_work() {
             let active_bounds = tile_bounds_from_coords(&visible_tiles).unwrap_or(visible_bounds);
             let cancelled_batches =
