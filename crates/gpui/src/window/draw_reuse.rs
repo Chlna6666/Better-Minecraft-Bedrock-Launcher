@@ -578,6 +578,19 @@ impl Window {
             .rendered_frame
             .retained_element_ranges
             .get(retained_id)?;
+
+        // Mirror WGPUI's retained-layer correctness rule: pointer state is not an entity
+        // dependency, so a cache cannot prove hover-sensitive output is still valid merely from
+        // semantic/layout keys. Repaint while the pointer is inside the element, and for the first
+        // frame after it leaves. Unrelated siblings remain independently replayable.
+        if !retained_pointer_allows_reuse(
+            bounds,
+            retained.had_pointer,
+            self.mouse_position(),
+        ) {
+            return None;
+        }
+
         let plain_text_proven = plain_text_key
             .zip(retained.plain_text_key.as_ref())
             .is_some_and(|(current, previous)| {
@@ -659,6 +672,7 @@ impl Window {
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let paint_context = self.current_retained_paint_context();
+        let had_pointer = bounds.contains(&self.mouse_position());
         let semantic_proof = self
             .next_frame
             .retained_layout_semantics
@@ -685,6 +699,7 @@ impl Window {
             key,
             RetainedElementRange {
                 bounds,
+                had_pointer,
                 layout_fingerprint,
                 semantic_descriptor,
                 semantic_generation,
@@ -728,6 +743,7 @@ impl Window {
 
         let target_metadata_start = self.next_frame.retained_element_order.len();
         let mut rebased = Vec::with_capacity(source_metadata.end - source_metadata.start);
+        let pointer_position = self.mouse_position();
 
         for source_index in source_metadata.clone() {
             let key = self.rendered_frame.retained_element_order[source_index].clone();
@@ -794,6 +810,7 @@ impl Window {
                 key,
                 RetainedElementRange {
                     bounds: source_range.bounds,
+                    had_pointer: source_range.bounds.contains(&pointer_position),
                     layout_fingerprint: source_range.layout_fingerprint,
                     semantic_descriptor: source_range.semantic_descriptor.clone(),
                     semantic_generation: source_range.semantic_generation,
@@ -815,6 +832,14 @@ impl Window {
         }
         true
     }
+}
+
+fn retained_pointer_allows_reuse(
+    bounds: Bounds<Pixels>,
+    had_pointer: bool,
+    pointer_position: Point<Pixels>,
+) -> bool {
+    !had_pointer && !bounds.contains(&pointer_position)
 }
 
 fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {
@@ -898,4 +923,28 @@ fn retained_metadata_range_is_valid(range: &Range<usize>, len: usize) -> bool {
 
 fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {
     start <= end && end <= len
+}
+
+#[cfg(test)]
+mod retained_pointer_reuse_tests {
+    use super::*;
+
+    fn bounds() -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(10.0), px(10.0)),
+            size: size(px(100.0), px(80.0)),
+        }
+    }
+
+    #[test]
+    fn retained_replay_requires_pointer_outside_in_both_frames() {
+        let bounds = bounds();
+        let outside = point(px(0.0), px(0.0));
+        let inside = point(px(20.0), px(20.0));
+
+        assert!(retained_pointer_allows_reuse(bounds, false, outside));
+        assert!(!retained_pointer_allows_reuse(bounds, false, inside));
+        assert!(!retained_pointer_allows_reuse(bounds, true, outside));
+        assert!(!retained_pointer_allows_reuse(bounds, true, inside));
+    }
 }

@@ -137,6 +137,13 @@ impl RetainedSemanticEntry {
 #[derive(Clone)]
 pub(crate) struct RetainedElementRange {
     pub(crate) bounds: Bounds<Pixels>,
+    /// Whether the pointer was inside this retained element when this range was recorded.
+    ///
+    /// Pointer state is paint-time input, not entity state. Reusing a retained subtree while the
+    /// pointer enters, remains inside, or leaves it can therefore replay stale hover-dependent
+    /// pixels/listeners. Keep the previous-frame bit so the replay predicate can conservatively
+    /// force one live pass across both edges of the interaction.
+    pub(crate) had_pointer: bool,
     /// Recursive layout proof captured from the Taffy subtree that produced this element.
     pub(crate) layout_fingerprint: Option<u64>,
     /// Exact direct semantics plus compact child semantic stamps for proof-based reconciliation.
