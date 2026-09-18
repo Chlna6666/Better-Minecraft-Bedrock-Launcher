@@ -124,7 +124,17 @@ pub struct PluginInstance {
     pub translations: BTreeMap<String, BTreeMap<String, String>>,
     pub state: PluginLoadState,
     pub enabled: bool,
+    prepared_wasm: PreparedPluginWasm,
     runtime: Option<Rc<RefCell<PluginExecution>>>,
+}
+
+#[derive(Clone, Debug)]
+enum PreparedPluginWasm {
+    Ready {
+        bytes: Arc<[u8]>,
+        sha256: String,
+    },
+    Error(Arc<str>),
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +142,7 @@ struct PreparedPluginManifest {
     manifest: PluginManifest,
     enabled: bool,
     translations: BTreeMap<String, BTreeMap<String, String>>,
+    wasm: PreparedPluginWasm,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -872,8 +883,6 @@ impl PluginRegistry {
             return Ok(());
         }
 
-        std::fs::create_dir_all(&self.cache_dir)
-            .with_context(|| format!("create wasm cache {}", self.cache_dir.display()))?;
         let config = TinyConfig::new()
             .with_fuel_policy(FuelPolicy::Weighted)
             .with_memory_backend(MemoryBackend::vec())
@@ -888,6 +897,7 @@ impl PluginRegistry {
         let prepared = prepare_plugin_reload_from_sources(
             self.plugins_dir.clone(),
             self.package_cache_dir.clone(),
+            self.cache_dir.clone(),
         )?;
         self.reload_prepared_manifests(prepared)
     }
@@ -908,6 +918,7 @@ impl PluginRegistry {
                 manifest,
                 enabled,
                 translations,
+                wasm,
             } = prepared_plugin;
             if !seen.insert(manifest.id.clone()) {
                 return Err(anyhow!("duplicate plugin id {}", manifest.id));
@@ -943,6 +954,7 @@ impl PluginRegistry {
                 translations,
                 state: PluginLoadState::Unloaded,
                 enabled,
+                prepared_wasm: wasm,
                 runtime: None,
             };
             Self::insert_pages(&mut next_pages, &instance);
@@ -991,8 +1003,14 @@ impl PluginRegistry {
         }
     }
 
-    fn load_manifest(&mut self, manifest: PluginManifest) -> Result<PluginInstance> {
-        let mut execution = self.instantiate_plugin(&manifest)?;
+    fn load_manifest(
+        &mut self,
+        manifest: PluginManifest,
+        translations: BTreeMap<String, BTreeMap<String, String>>,
+        prepared_wasm: PreparedPluginWasm,
+    ) -> Result<PluginInstance> {
+        let mut execution =
+            self.instantiate_plugin(&manifest, translations, &prepared_wasm)?;
 
         let started = Instant::now();
         let context = abi::PluginContext {
@@ -1080,6 +1098,7 @@ impl PluginRegistry {
                 generation: self.generation.saturating_add(1),
             },
             enabled: true,
+            prepared_wasm,
             runtime: Some(Rc::new(RefCell::new(execution))),
         })
     }
@@ -1099,7 +1118,9 @@ impl PluginRegistry {
         }
 
         let manifest = existing.manifest.clone();
-        match self.load_manifest(manifest) {
+        let translations = existing.translations.clone();
+        let prepared_wasm = existing.prepared_wasm.clone();
+        match self.load_manifest(manifest, translations, prepared_wasm) {
             Ok(mut instance) => {
                 if let Some(previous) = self
                     .plugins
@@ -1197,28 +1218,30 @@ impl PluginRegistry {
         }
     }
 
-    fn instantiate_plugin(&mut self, manifest: &PluginManifest) -> Result<PluginExecution> {
+    fn instantiate_plugin(
+        &mut self,
+        manifest: &PluginManifest,
+        translations: BTreeMap<String, BTreeMap<String, String>>,
+        prepared_wasm: &PreparedPluginWasm,
+    ) -> Result<PluginExecution> {
         self.init_engine()?;
-        let wasm_path = manifest.wasm_path();
-        if !wasm_path.exists() {
-            return Err(anyhow!(
-                "plugin wasm entry missing: {}",
-                wasm_path.display()
-            ));
-        }
 
         let Some(engine) = &self.engine else {
             return Err(anyhow!("plugin engine is not initialized"));
         };
 
-        let wasm = std::fs::read(&wasm_path)
-            .with_context(|| format!("read plugin wasm {}", wasm_path.display()))?;
-        let wasm_hash = crate::plugins::manifest::sha256_hex(&wasm);
+        let (wasm, wasm_hash) = match prepared_wasm {
+            PreparedPluginWasm::Ready { bytes, sha256 } => (Arc::clone(bytes), sha256.clone()),
+            PreparedPluginWasm::Error(error) => return Err(anyhow!("{}", error)),
+        };
         let module = if let Some(module) = self.module_cache.get(&wasm_hash) {
             module.clone()
         } else {
-            let module = tinywasm::parse_bytes(&wasm).map_err(|error| {
-                anyhow!("parse plugin wasm {} failed: {error}", wasm_path.display())
+            let module = tinywasm::parse_bytes(wasm.as_ref()).map_err(|error| {
+                anyhow!(
+                    "parse plugin wasm {} failed: {error}",
+                    manifest.wasm_path().display()
+                )
             })?;
             validate_module_abi(&module)?;
             self.module_cache.insert(wasm_hash, module.clone());
@@ -1226,7 +1249,6 @@ impl PluginRegistry {
         };
 
         let locale = current_locale_code();
-        let translations = load_plugin_translations(manifest);
         let storage_dir = self.plugin_storage_dir(&manifest.id);
         let host_state = Rc::new(RefCell::new(HostState::new(
             manifest,
@@ -3448,7 +3470,10 @@ fn theme_token_from_abi(token: abi::ThemeToken) -> ui_dsl::ThemeToken {
 fn prepare_plugin_reload_from_sources(
     plugins_dir: PathBuf,
     package_cache_dir: PathBuf,
+    cache_dir: PathBuf,
 ) -> Result<PreparedPluginReload> {
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("create wasm cache {}", cache_dir.display()))?;
     let manifests =
         crate::plugins::manifest::load_manifests_from_sources(&plugins_dir, &package_cache_dir)?;
     Ok(prepare_plugin_manifests(manifests, &plugins_dir))
@@ -3473,14 +3498,33 @@ fn prepare_plugin_manifests(
             );
         }
         let translations = load_plugin_translations(&manifest);
+        let wasm = prepare_plugin_wasm(&manifest);
         plugins.push(PreparedPluginManifest {
             manifest,
             enabled,
             translations,
+            wasm,
         });
     }
 
     PreparedPluginReload { plugins }
+}
+
+fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
+    let path = manifest.wasm_path();
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let sha256 = crate::plugins::manifest::sha256_hex(&bytes);
+            PreparedPluginWasm::Ready {
+                bytes: Arc::<[u8]>::from(bytes),
+                sha256,
+            }
+        }
+        Err(error) => PreparedPluginWasm::Error(Arc::<str>::from(format!(
+            "read plugin wasm {} failed: {error}",
+            path.display()
+        ))),
+    }
 }
 
 pub fn init(cx: &mut App) {
@@ -3492,11 +3536,12 @@ pub fn init(cx: &mut App) {
 /// 把启动阶段的插件清单扫描放到 IO 线程执行，完成后回主线程提交注册表，
 /// 避免目录扫描与 manifest 解析阻塞首帧。
 fn spawn_initial_reload(cx: &mut App) {
-    let (plugins_dir, package_cache_dir) = {
+    let (plugins_dir, package_cache_dir, cache_dir) = {
         let registry = cx.global::<PluginRegistry>();
         (
             registry.plugins_dir().to_path_buf(),
             registry.package_cache_dir().to_path_buf(),
+            registry.cache_dir().to_path_buf(),
         )
     };
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
@@ -3505,7 +3550,7 @@ fn spawn_initial_reload(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let prepared = crate::tasks::runtime::run_io_blocking(move || {
-            prepare_plugin_reload_from_sources(plugins_dir, package_cache_dir)
+            prepare_plugin_reload_from_sources(plugins_dir, package_cache_dir, cache_dir)
         })
         .await;
 
