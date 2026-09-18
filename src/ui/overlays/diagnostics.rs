@@ -16,10 +16,10 @@ pub fn render_diagnostics_overlay(
     window_height: Pixels,
     i18n: &I18n,
     state: &DiagnosticsState,
+    auto_sentry_enabled: bool,
 ) -> Option<AnyElement> {
     let report = state.pending_report.clone()?;
     let share_payload = diagnostics_share_payload(&report);
-    let auto_sentry_enabled = sentry_auto_enabled();
     let card_width = (window_width - px(48.)).max(px(360.)).min(px(760.));
     let card_height = (window_height - px(72.)).max(px(420.)).min(px(720.));
     let overlay_bg = hsla(0.0, 0.0, 0.0, 0.34);
@@ -339,9 +339,12 @@ pub fn render_diagnostics_overlay(
 }
 
 pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
+    let auto_sentry_enabled = cx
+        .global::<crate::ui::views::settings::state::SettingsPageState>()
+        .error_report_sentry_auto;
     let report = {
         let state = cx.global::<DiagnosticsState>();
-        if state.auto_report_attempted || state.submitting_sentry || !sentry_auto_enabled() {
+        if state.auto_report_attempted || state.submitting_sentry || !auto_sentry_enabled {
             None
         } else {
             state.pending_report.clone()
@@ -397,13 +400,6 @@ pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
         Ok::<(), anyhow::Error>(())
     })
     .detach();
-}
-
-fn sentry_auto_enabled() -> bool {
-    match crate::config::config::read_config() {
-        Ok(config) => crate::config::config::error_report_sentry_auto_enabled(&config.launcher),
-        Err(_) => false,
-    }
 }
 
 fn clear_diagnostics_marker_files() {

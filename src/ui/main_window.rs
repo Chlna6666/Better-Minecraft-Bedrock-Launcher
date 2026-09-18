@@ -567,6 +567,8 @@ impl MainWindowView {
                     model.window_height,
                     cx.global::<I18n>(),
                     cx.global::<crate::ui::state::diagnostics::DiagnosticsState>(),
+                    cx.global::<crate::ui::views::settings::state::SettingsPageState>()
+                        .error_report_sentry_auto,
                 )
         {
             auth_blocked = true;
