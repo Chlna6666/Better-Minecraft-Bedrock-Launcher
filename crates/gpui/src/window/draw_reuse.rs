@@ -598,6 +598,19 @@ impl Window {
             });
         let div_semantics_proven = self.retained_div_semantics_match(retained, layout_id);
 
+        // WGPUI does not generically replay arbitrary element subtrees: its retained fast paths are
+        // explicit cached views/layers with a dependency contract. Our element reconciler must be
+        // at least as conservative. A stable retained address and unchanged bounds are not proof
+        // that paint-time interaction, custom element state, or descendant output stayed equal.
+        //
+        // Only skip an element lifecycle when this frame has an exact semantic proof. Safe Divs
+        // recursively include every child's semantic generation; interactive/custom descendants
+        // intentionally prevent that proof from being constructed. Plain text uses its separate
+        // side-effect-free exact-output proof. Everything else executes prepaint/paint normally.
+        if !retained_outer_replay_semantics_proven(div_semantics_proven, plain_text_proven) {
+            return None;
+        }
+
         // ReconcileSubtree means descendants may have changed even when this element's own bounds
         // are stable. Replay is admitted only by two independent proofs: recursive layout identity
         // and exact paint semantics. A moving absolute/flex/grid descendant changes the first;
@@ -842,6 +855,14 @@ fn retained_pointer_allows_reuse(
     !had_pointer && !bounds.contains(&pointer_position)
 }
 
+#[inline]
+fn retained_outer_replay_semantics_proven(
+    div_semantics_proven: bool,
+    plain_text_proven: bool,
+) -> bool {
+    div_semantics_proven || plain_text_proven
+}
+
 fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {
     matches!(retained_id.0.last(), Some(ElementId::InstanceSlot(_)))
 }
@@ -946,5 +967,13 @@ mod retained_pointer_reuse_tests {
         assert!(!retained_pointer_allows_reuse(bounds, false, inside));
         assert!(!retained_pointer_allows_reuse(bounds, true, outside));
         assert!(!retained_pointer_allows_reuse(bounds, true, inside));
+    }
+
+    #[test]
+    fn retained_outer_replay_requires_exact_semantic_proof() {
+        assert!(retained_outer_replay_semantics_proven(true, false));
+        assert!(retained_outer_replay_semantics_proven(false, true));
+        assert!(retained_outer_replay_semantics_proven(true, true));
+        assert!(!retained_outer_replay_semantics_proven(false, false));
     }
 }
