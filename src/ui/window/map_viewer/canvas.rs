@@ -313,8 +313,9 @@ impl MapCanvasView {
             selection,
         });
         self.refresh_interaction_cursor(self.last_pressed_button);
+        let mut tile_changed = false;
         self.tile_layer.update(cx, |view, cx| {
-            view.set_snapshot(TileLayerSnapshot::from_canvas(&snapshot), cx)
+            tile_changed = view.set_snapshot(TileLayerSnapshot::from_canvas(&snapshot), cx);
         });
         self.overlay_layer.update(cx, |view, cx| {
             view.set_snapshot(OverlayLayerSnapshot::from_canvas(&snapshot), cx)
@@ -329,7 +330,9 @@ impl MapCanvasView {
             view.set_snapshot(PasteControlsSnapshot::from_canvas(&snapshot), cx)
         });
         self.frame_revision = self.frame_revision.saturating_add(1);
-        self.tile_revision = self.tile_revision.saturating_add(1);
+        if tile_changed {
+            self.tile_revision = self.tile_revision.saturating_add(1);
+        }
         // The map canvas is itself cached as an absolute subtree. Child layer
         // notifications do not always invalidate that cached root, so publish
         // the parent notification after replacing all layer snapshots.
@@ -364,8 +367,9 @@ impl MapCanvasView {
         tiles: Arc<TilePaintSnapshot>,
         cx: &mut Context<Self>,
     ) {
+        let mut tile_changed = false;
         self.tile_layer.update(cx, |view, cx| {
-            view.set_snapshot(
+            tile_changed = view.set_snapshot(
                 TileLayerSnapshot {
                     viewport,
                     layout,
@@ -375,10 +379,12 @@ impl MapCanvasView {
                     tiles,
                 },
                 cx,
-            )
+            );
         });
-        self.tile_revision = self.tile_revision.saturating_add(1);
-        cx.notify();
+        if tile_changed {
+            self.tile_revision = self.tile_revision.saturating_add(1);
+            cx.notify();
+        }
     }
 
     pub(super) fn set_hover_label(
@@ -399,7 +405,7 @@ impl Render for MapCanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme_colors(window.animation_time(), cx);
         let frame_revision = self.frame_revision;
-        let tile_revision = (frame_revision, self.tile_revision);
+        let tile_revision = self.tile_revision;
         let hud_revision = (frame_revision, self.hud_revision);
         div()
             .relative()
@@ -474,16 +480,17 @@ struct MapTileLayerView {
 }
 
 impl MapTileLayerView {
-    fn set_snapshot(&mut self, snapshot: TileLayerSnapshot, cx: &mut Context<Self>) {
+    fn set_snapshot(&mut self, snapshot: TileLayerSnapshot, cx: &mut Context<Self>) -> bool {
         if self
             .snapshot
             .as_ref()
             .is_some_and(|current| current.same_as(&snapshot))
         {
-            return;
+            return false;
         }
         self.snapshot = Some(snapshot);
         cx.notify();
+        true
     }
 }
 
