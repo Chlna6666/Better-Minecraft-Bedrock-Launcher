@@ -29,6 +29,8 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use unicode_segmentation::UnicodeSegmentation;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
@@ -39,6 +41,15 @@ use windows::Win32::{
 };
 
 pub(crate) struct CosmicTextSystem(RwLock<CosmicTextSystemState>);
+
+#[cfg(target_os = "linux")]
+struct PreparedLinuxSystemFonts {
+    database: cosmic_text::fontdb::Database,
+    desktop_font_description: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+static PREPARED_LINUX_SYSTEM_FONTS: OnceLock<PreparedLinuxSystemFonts> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FontKey {
@@ -135,7 +146,7 @@ struct StableVerticalRasterFrame {
 impl CosmicTextSystem {
     pub(crate) fn new() -> Self {
         let (mut font_system, system_fonts_loaded) = minimal_startup_font_system();
-        let platform_font_family: SharedString = resolved_platform_font_name(&font_system).into();
+        let platform_font_family: SharedString = startup_platform_font_name(&font_system).into();
         font_system
             .db_mut()
             .set_sans_serif_family(platform_font_family.to_string());
@@ -171,6 +182,23 @@ impl PlatformTextSystem for CosmicTextSystem {
 
     fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()> {
         self.0.write().add_font_paths(paths)
+    }
+
+    fn prepare_system_fonts(&self) {
+        #[cfg(target_os = "linux")]
+        prepare_linux_system_fonts();
+    }
+
+    fn publish_prepared_system_fonts(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            return self.0.write().publish_prepared_linux_system_fonts();
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     fn set_application_font_family(&self, family: SharedString) {
@@ -293,11 +321,19 @@ impl CosmicTextSystemState {
             return;
         }
 
+        #[cfg(target_os = "linux")]
+        if self.publish_prepared_linux_system_fonts() {
+            return;
+        }
+
         self.font_system.db_mut().load_system_fonts();
         self.system_fonts_loaded = true;
 
         #[cfg(target_os = "linux")]
         {
+            // Desktop-specific command discovery is intentionally background-only. If the prepared
+            // snapshot is not ready, fontdb's generic sans-serif mapping is the safe foreground
+            // fallback; a deferred publish will later switch to the desktop family and repaint.
             let resolved_family: SharedString =
                 resolved_platform_font_name(&self.font_system).into();
             self.font_system
@@ -321,6 +357,63 @@ impl CosmicTextSystemState {
         self.coverage_best_fallback_logged = false;
     }
 
+    #[cfg(target_os = "linux")]
+    fn publish_prepared_linux_system_fonts(&mut self) -> bool {
+        let Some(prepared) = PREPARED_LINUX_SYSTEM_FONTS.get() else {
+            return false;
+        };
+
+        let mut changed = false;
+        if !self.system_fonts_loaded {
+            let serif = prepared.database.family_name(&Family::Serif).to_owned();
+            let sans_serif = prepared.database.family_name(&Family::SansSerif).to_owned();
+            let cursive = prepared.database.family_name(&Family::Cursive).to_owned();
+            let fantasy = prepared.database.family_name(&Family::Fantasy).to_owned();
+            let monospace = prepared.database.family_name(&Family::Monospace).to_owned();
+
+            let database = self.font_system.db_mut();
+            let existing = database
+                .faces()
+                .map(|face| (face.post_script_name.clone(), face.index))
+                .collect::<HashSet<_>>();
+            for face in prepared.database.faces() {
+                if existing.contains(&(face.post_script_name.clone(), face.index)) {
+                    continue;
+                }
+                let mut face = face.clone();
+                face.id = cosmic_text::fontdb::ID::dummy();
+                database.push_face_info(face);
+            }
+            database.set_serif_family(serif);
+            database.set_sans_serif_family(sans_serif);
+            database.set_cursive_family(cursive);
+            database.set_fantasy_family(fantasy);
+            database.set_monospace_family(monospace);
+            self.system_fonts_loaded = true;
+            changed = true;
+        }
+
+        let resolved_family: SharedString =
+            resolved_platform_font_name(&self.font_system).into();
+        if self.platform_font_family != resolved_family {
+            self.platform_font_family = resolved_family.clone();
+            self.font_system
+                .db_mut()
+                .set_sans_serif_family(resolved_family.to_string());
+            changed = true;
+        }
+
+        if changed {
+            self.font_ids_by_family_cache.clear();
+            self.swash_cache = SwashCache::new();
+            self.stable_vertical_frame_bounds_cache.clear();
+            self.system_coverage_fallback_face = None;
+            self.system_coverage_fallback_computed = false;
+            self.coverage_best_fallback_logged = false;
+        }
+        changed
+    }
+
     fn load_platform_targeted_fallback_fonts(&mut self) {
         #[cfg(target_os = "windows")]
         {
@@ -342,8 +435,12 @@ impl CosmicTextSystemState {
     fn set_application_font_family(&mut self, family: SharedString) {
         let requested_family = family;
         let resolved_family: SharedString = if requested_family.as_ref() == ".SystemUIFont" {
-            self.ensure_system_fonts_loaded();
-            resolved_platform_font_name(&self.font_system).into()
+            if font_family_exists(&self.font_system, self.platform_font_family.as_ref()) {
+                self.platform_font_family.clone()
+            } else {
+                self.ensure_system_fonts_loaded();
+                resolved_platform_font_name(&self.font_system).into()
+            }
         } else {
             requested_family.clone()
         };
@@ -1812,6 +1909,13 @@ fn linux_desktop_font_family(font_system: &FontSystem) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn linux_desktop_font_description() -> Option<String> {
+    PREPARED_LINUX_SYSTEM_FONTS
+        .get()
+        .and_then(|prepared| prepared.desktop_font_description.clone())
+}
+
+#[cfg(target_os = "linux")]
+fn query_linux_desktop_font_description() -> Option<String> {
     let desktops = [
         std::env::var_os("XDG_CURRENT_DESKTOP"),
         std::env::var_os("XDG_SESSION_DESKTOP"),
@@ -1945,6 +2049,39 @@ fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
     "IBM Plex Sans".to_owned()
 }
 
+fn startup_platform_font_name(font_system: &FontSystem) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        let generic = font_system.db().family_name(&Family::SansSerif).trim();
+        if font_family_exists(font_system, generic) {
+            return generic.to_owned();
+        }
+        for fallback in platform_font_fallbacks() {
+            if font_family_exists(font_system, fallback) {
+                return (*fallback).to_owned();
+            }
+        }
+        return generic.to_owned();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        resolved_platform_font_name(font_system)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_system_fonts() {
+    PREPARED_LINUX_SYSTEM_FONTS.get_or_init(|| {
+        let mut database = cosmic_text::fontdb::Database::new();
+        database.load_system_fonts();
+        PreparedLinuxSystemFonts {
+            database,
+            desktop_font_description: query_linux_desktop_font_description(),
+        }
+    });
+}
+
 fn resolved_platform_font_name(font_system: &FontSystem) -> String {
     let preferred = platform_system_font_name_impl(font_system);
     if font_family_exists(font_system, &preferred) {
@@ -1978,14 +2115,65 @@ fn minimal_startup_font_system() -> (FontSystem, bool) {
         return (FontSystem::new_with_locale_and_db(locale, db), false);
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
-        // Loading every font file can take seconds on Linux and must not happen
-        // while the GPUI event loop is bringing up the first window.
+        // Register one ubiquitous sans face so .SystemUIFont can shape the first frame without a
+        // recursive system-font scan. The complete catalog is prepared on a separate background
+        // database and published after launch.
+        let locale = std::env::var("LANG").unwrap_or_else(|_| "en-US".to_owned());
+        let mut database = cosmic_text::fontdb::Database::new();
+        for path in linux_startup_latin_font_paths() {
+            if database.load_font_file(path).is_ok() {
+                break;
+            }
+        }
+        let startup_family = database
+            .faces()
+            .find_map(|face| face.families.first().map(|family| family.0.clone()));
+        if let Some(family) = startup_family {
+            database.set_sans_serif_family(family);
+        }
+        for path in linux_startup_cjk_font_paths() {
+            if database.load_font_file(path).is_ok() {
+                break;
+            }
+        }
+        return (FontSystem::new_with_locale_and_db(locale, database), false);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
         let locale = std::env::var("LANG").unwrap_or_else(|_| "en-US".to_owned());
         let database = cosmic_text::fontdb::Database::new();
         (FontSystem::new_with_locale_and_db(locale, database), false)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_startup_latin_font_paths() -> &'static [&'static str] {
+    &[
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/TTF/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn linux_startup_cjk_font_paths() -> &'static [&'static str] {
+    &[
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk-vf-fonts/NotoSansCJK-VF.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+    ]
 }
 
 #[cfg(target_os = "windows")]
@@ -2047,6 +2235,22 @@ fn platform_font_fallbacks() -> &'static [&'static str] {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::*;
+
+    #[test]
+    fn startup_platform_font_uses_loaded_generic_without_desktop_probe() {
+        let mut database = cosmic_text::fontdb::Database::new();
+        database.load_font_data(
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/fonts/MiSans/MiSans-Medium.ttf"
+            ))
+            .to_vec(),
+        );
+        database.set_sans_serif_family("MiSans");
+        let font_system = FontSystem::new_with_locale_and_db("en-US".to_owned(), database);
+
+        assert_eq!(startup_platform_font_name(&font_system), "MiSans");
+    }
 
     #[test]
     fn platform_font_prefers_configured_sans_serif_family() {
@@ -2735,10 +2939,16 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn startup_font_system_defers_system_font_scan() {
+    fn startup_font_system_keeps_full_catalog_deferred() {
         let (font_system, system_fonts_loaded) = minimal_startup_font_system();
 
         assert!(!system_fonts_loaded);
+        #[cfg(target_os = "linux")]
+        assert!(
+            font_system.db().faces().count() <= 64,
+            "startup must stay bounded to targeted Latin/CJK font files"
+        );
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(font_system.db().faces().count(), 0);
     }
 

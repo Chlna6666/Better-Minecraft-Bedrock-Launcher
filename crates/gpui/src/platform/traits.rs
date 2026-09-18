@@ -280,6 +280,14 @@ pub enum TextRenderingMode {
 pub(crate) trait PlatformTextSystem: Send + Sync {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
     fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()>;
+    /// Performs expensive platform font discovery without mutating the live text system.
+    fn prepare_system_fonts(&self) {}
+    /// Publishes previously prepared platform font metadata into the live text system.
+    ///
+    /// Returns true when the live font catalog changed.
+    fn publish_prepared_system_fonts(&self) -> bool {
+        false
+    }
     fn set_application_font_family(&self, _family: SharedString) {}
     fn platform_font_family(&self) -> SharedString;
     fn all_font_names(&self) -> Vec<String>;

@@ -311,6 +311,21 @@ impl TextSystem {
         Ok(())
     }
 
+    /// Builds expensive system-font metadata away from the live shaping database.
+    pub fn prepare_system_fonts(&self) {
+        self.platform_text_system.prepare_system_fonts();
+    }
+
+    /// Publishes an already-prepared system-font database and invalidates derived caches.
+    pub fn publish_prepared_system_fonts(&self) -> bool {
+        if !self.platform_text_system.publish_prepared_system_fonts() {
+            return false;
+        }
+        self.font_catalog.invalidate_available_names();
+        self.clear_caches();
+        true
+    }
+
     pub(crate) fn platform_font_family(&self) -> SharedString {
         self.platform_text_system.platform_font_family()
     }
