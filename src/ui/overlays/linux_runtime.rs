@@ -1,4 +1,3 @@
-use crate::tasks::task_manager;
 use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::{button, modal};
@@ -67,19 +66,15 @@ pub fn render_linux_runtime_overlay(
         ));
     }
     if state.status == LinuxRuntimeStatus::Installing {
-        let logs = state
-            .install_task_id
-            .as_ref()
-            .map(|task_id| task_manager::task_logs(task_id.as_ref()))
-            .unwrap_or_else(|| std::sync::Arc::<[std::sync::Arc<str>]>::from([]));
         let stage = state
             .install_snapshot
             .as_ref()
             .map(|snapshot| SharedString::from(snapshot.stage.to_string()))
             .unwrap_or_else(|| t!("LinuxRuntime.preparing_install"));
-        let current_output = logs
+        let current_output = state
+            .install_logs
             .last()
-            .map(|line| SharedString::from(line.to_string()))
+            .map(|line| SharedString::new(line.clone()))
             .or_else(|| {
                 state
                     .install_snapshot

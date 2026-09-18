@@ -14,7 +14,6 @@ pub enum LinuxRuntimeStatus {
     Error,
 }
 
-#[derive(Default)]
 pub struct LinuxRuntimeState {
     pub visible: bool,
     pub check_started: bool,
@@ -23,10 +22,29 @@ pub struct LinuxRuntimeState {
     pub error_message: Option<SharedString>,
     pub install_task_id: Option<Arc<str>>,
     pub install_snapshot: Option<Arc<TaskSnapshot>>,
+    pub install_logs: Arc<[Arc<str>]>,
+    pub install_log_version: u64,
     pub(crate) check: Option<LinuxRuntimeCheck>,
 }
 
 impl Global for LinuxRuntimeState {}
+
+impl Default for LinuxRuntimeState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            check_started: false,
+            request_id: 0,
+            status: LinuxRuntimeStatus::default(),
+            error_message: None,
+            install_task_id: None,
+            install_snapshot: None,
+            install_logs: Arc::from([]),
+            install_log_version: 0,
+            check: None,
+        }
+    }
+}
 
 impl LinuxRuntimeState {
     pub fn begin_check(&mut self, show_while_checking: bool) -> Option<u64> {
@@ -39,6 +57,8 @@ impl LinuxRuntimeState {
         self.error_message = None;
         self.install_task_id = None;
         self.install_snapshot = None;
+        self.install_logs = Arc::from([]);
+        self.install_log_version = 0;
         if show_while_checking {
             self.visible = true;
         }
@@ -59,6 +79,8 @@ impl LinuxRuntimeState {
         self.check = Some(check);
         self.install_task_id = None;
         self.install_snapshot = None;
+        self.install_logs = Arc::from([]);
+        self.install_log_version = 0;
         true
     }
 
@@ -83,6 +105,8 @@ impl LinuxRuntimeState {
         self.error_message = None;
         self.install_task_id = None;
         self.install_snapshot = None;
+        self.install_logs = Arc::from([]);
+        self.install_log_version = 0;
         Some((self.request_id, plan))
     }
 
@@ -92,6 +116,26 @@ impl LinuxRuntimeState {
         }
         self.install_task_id = Some(task_id);
         self.install_snapshot = None;
+        self.install_logs = Arc::from([]);
+        self.install_log_version = 0;
+        true
+    }
+
+    pub fn apply_install_logs(
+        &mut self,
+        request_id: u64,
+        task_id: &str,
+        logs: Arc<[Arc<str>]>,
+        version: u64,
+    ) -> bool {
+        if self.request_id != request_id
+            || self.install_task_id.as_deref() != Some(task_id)
+            || version < self.install_log_version
+        {
+            return false;
+        }
+        self.install_logs = logs;
+        self.install_log_version = version;
         true
     }
 

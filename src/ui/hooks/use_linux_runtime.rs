@@ -49,42 +49,93 @@ pub fn authorize_and_install(cx: &mut App) {
     };
 
     let updates = task_manager::subscribe_task_updates();
+    let log_updates = task_manager::subscribe_task_log_updates();
     let task_id: Arc<str> = Arc::from(start_linux_runtime_install(plan));
     cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
         state.attach_install_task(request_id, task_id.clone())
     });
-    spawn_install_snapshot_pump(request_id, task_id, updates, cx);
+    spawn_install_snapshot_pump(request_id, task_id, updates, log_updates, cx);
 }
 
 fn spawn_install_snapshot_pump(
     request_id: u64,
     task_id: Arc<str>,
     mut updates: task_manager::TaskUpdateReceiver,
+    mut log_updates: tokio::sync::broadcast::Receiver<Arc<str>>,
     cx: &mut App,
 ) {
-    if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
-        cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
-            state.apply_install_snapshot(request_id, snapshot)
-        });
-    }
+    let initial_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+    let initial_logs = task_manager::task_logs_snapshot(task_id.as_ref());
+    cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
+        if let Some(snapshot) = initial_snapshot {
+            state.apply_install_snapshot(request_id, snapshot);
+        }
+        state.apply_install_logs(
+            request_id,
+            task_id.as_ref(),
+            initial_logs.logs,
+            initial_logs.version,
+        )
+    });
 
     cx.spawn(async move |cx| {
         loop {
-            let snapshot = match updates.recv().await {
-                Ok(snapshot) => snapshot,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(request_id, skipped, "Linux install progress updates lagged");
-                    let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) else {
-                        continue;
-                    };
-                    snapshot
+            let snapshot = tokio::select! {
+                update = updates.recv() => match update {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(request_id, skipped, "Linux install progress updates lagged");
+                        task_manager::get_snapshot_arc(task_id.as_ref())
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
+                            state.set_install_error(
+                                request_id,
+                                "安装进度通道已关闭，请重新检测。",
+                            )
+                        })?;
+                        break;
+                    }
+                },
+                log_update = log_updates.recv() => {
+                    match log_update {
+                        Ok(log_task_id) => {
+                            if log_task_id.as_ref() == task_id.as_ref() {
+                                let log_snapshot =
+                                    task_manager::task_logs_snapshot(task_id.as_ref());
+                                cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
+                                    state.apply_install_logs(
+                                        request_id,
+                                        task_id.as_ref(),
+                                        log_snapshot.logs,
+                                        log_snapshot.version,
+                                    )
+                                })?;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(request_id, skipped, "Linux install log updates lagged");
+                            let log_snapshot =
+                                task_manager::task_logs_snapshot(task_id.as_ref());
+                            cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
+                                state.apply_install_logs(
+                                    request_id,
+                                    task_id.as_ref(),
+                                    log_snapshot.logs,
+                                    log_snapshot.version,
+                                )
+                            })?;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            warn!(request_id, "Linux install log update channel closed");
+                            break;
+                        }
+                    }
+                    None
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
-                        state.set_install_error(request_id, "安装进度通道已关闭，请重新检测。")
-                    })?;
-                    break;
-                }
+            };
+            let Some(snapshot) = snapshot else {
+                continue;
             };
             if snapshot.id.as_ref() != task_id.as_ref() {
                 continue;
