@@ -696,52 +696,6 @@ impl PluginRegistry {
         }
     }
 
-    pub fn plugin_readme(&self, plugin_id: &str) -> Result<Option<String>> {
-        self.plugin_readme_for_locale(plugin_id, &current_locale_code())
-    }
-
-    pub fn plugin_readme_for_locale(
-        &self,
-        plugin_id: &str,
-        locale: &str,
-    ) -> Result<Option<String>> {
-        let Some(plugin) = self.plugins.get(plugin_id) else {
-            return Ok(None);
-        };
-        let Some(path) = plugin.manifest.readme_path_for_locale(locale) else {
-            return Ok(None);
-        };
-        if !path.exists() {
-            return Ok(None);
-        }
-        std::fs::read_to_string(&path)
-            .map(Some)
-            .with_context(|| format!("read plugin readme {}", path.display()))
-    }
-
-    pub fn plugin_config_text(&self, plugin_id: &str) -> Result<Option<String>> {
-        let Some(plugin) = self.plugins.get(plugin_id) else {
-            return Ok(None);
-        };
-        let text = crate::plugins::manifest::read_user_config(&plugin.manifest)?;
-        Ok((!text.is_empty()).then_some(text))
-    }
-
-    pub fn plugin_config_schema(&self, plugin_id: &str) -> Result<Option<String>> {
-        let Some(plugin) = self.plugins.get(plugin_id) else {
-            return Ok(None);
-        };
-        let Some(path) = plugin.manifest.config_schema_path() else {
-            return Ok(None);
-        };
-        if !path.exists() {
-            return Ok(None);
-        }
-        std::fs::read_to_string(&path)
-            .map(Some)
-            .with_context(|| format!("read plugin config schema {}", path.display()))
-    }
-
     pub fn plugin_logs(&self, plugin_id: &str) -> Vec<PluginLogEntry> {
         self.logs
             .get(plugin_id)
@@ -762,28 +716,6 @@ impl PluginRegistry {
         let plugin = self.plugins.get(plugin_id)?;
         let translated = translate_plugin_key(&plugin.translations, locale, key, &[]);
         (translated != key).then_some(translated)
-    }
-
-    pub fn write_plugin_config(
-        &mut self,
-        plugin_id: &str,
-        content: &str,
-    ) -> Result<Vec<HostEffect>> {
-        let manifest = self
-            .plugins
-            .get(plugin_id)
-            .map(|plugin| plugin.manifest.clone())
-            .ok_or_else(|| anyhow!("unknown plugin {plugin_id}"))?;
-        crate::plugins::manifest::write_user_config(&manifest, content)?;
-        self.render_cache.invalidate_plugin(plugin_id);
-        Ok(self.handle_event(HostEvent {
-            plugin_id: Some(plugin_id.to_string()),
-            page_id: None,
-            kind: HostEventKind::Global {
-                name: "config-changed".to_string(),
-                payload: String::new(),
-            },
-        }))
     }
 
     pub fn set_plugin_enabled(&mut self, plugin_id: &str, enabled: bool) -> Result<()> {
@@ -4514,34 +4446,6 @@ pub fn plugin_manifest_snapshot(cx: &App, plugin_id: &str) -> Option<PluginManif
         .map(|plugin| plugin.manifest.clone())
 }
 
-pub fn plugin_readme(cx: &App, plugin_id: &str) -> Option<String> {
-    cx.global::<PluginRegistry>()
-        .plugin_readme(plugin_id)
-        .ok()
-        .flatten()
-}
-
-pub fn plugin_readme_for_locale(cx: &App, plugin_id: &str, locale: &str) -> Option<String> {
-    cx.global::<PluginRegistry>()
-        .plugin_readme_for_locale(plugin_id, locale)
-        .ok()
-        .flatten()
-}
-
-pub fn plugin_config_text(cx: &App, plugin_id: &str) -> Option<String> {
-    cx.global::<PluginRegistry>()
-        .plugin_config_text(plugin_id)
-        .ok()
-        .flatten()
-}
-
-pub fn plugin_config_schema(cx: &App, plugin_id: &str) -> Option<String> {
-    cx.global::<PluginRegistry>()
-        .plugin_config_schema(plugin_id)
-        .ok()
-        .flatten()
-}
-
 pub fn plugin_logs(cx: &App, plugin_id: &str) -> Vec<PluginLogEntry> {
     cx.global::<PluginRegistry>().plugin_logs(plugin_id)
 }
@@ -4593,6 +4497,7 @@ where
     };
 
     let plugin_id_for_io = plugin_id.clone();
+    let content_for_state = content.clone();
     cx.spawn(async move |cx| {
         let persisted = crate::tasks::runtime::run_io_blocking(move || {
             crate::plugins::manifest::write_user_config(&manifest, &content)
@@ -4603,8 +4508,16 @@ where
             let result = match persisted {
                 Ok(Ok(())) => {
                     let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-                        if !registry.plugins.contains_key(&plugin_id) {
-                            return Err(anyhow!("unknown plugin {plugin_id}"));
+                        let instance = registry
+                            .plugins
+                            .get_mut(&plugin_id)
+                            .ok_or_else(|| anyhow!("unknown plugin {plugin_id}"))?;
+                        if let Some(runtime) = instance.runtime.as_ref() {
+                            runtime
+                                .borrow_mut()
+                                .host_state
+                                .borrow_mut()
+                                .config_text = Ok(content_for_state.clone());
                         }
                         registry.render_cache.invalidate_plugin(&plugin_id);
                         Ok(registry.handle_event(HostEvent {

@@ -226,12 +226,13 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn clear_history(&mut self, cx: &mut Context<Self>) {
-        let history_dir = history_dir_for_world(&self.world_path);
+        let world_path = self.world_path.clone();
         self.history.loading = true;
         cx.notify();
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
+                    let history_dir = history_dir_for_world(&world_path);
                     match std::fs::remove_dir_all(&history_dir) {
                         Ok(()) => Ok(()),
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
