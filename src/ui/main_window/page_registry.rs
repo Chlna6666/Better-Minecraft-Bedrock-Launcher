@@ -634,6 +634,9 @@ impl MainWindowView {
             download_overlay_active: false,
             download_overlay_task_updates_task: None,
             download_prefs_last_save: None,
+            download_prefs_load_started: false,
+            download_prefs_loaded: false,
+            download_prefs_cache: None,
             download_curseforge_invalidate_seq_seen: 0,
             download_curseforge_invalidate_pending_seen: false,
             manage_controls_initialized: false,
@@ -667,6 +670,7 @@ impl MainWindowView {
         this.install_reactors(cx);
         this.install_window_observers(window, cx);
         this.install_easter_egg_interceptor(window, cx);
+        let _ = this.ensure_download_prefs_loaded(cx);
 
         if cx.global::<AgreementState>().is_visible() {
             Self::cache_agreement_document(cx);

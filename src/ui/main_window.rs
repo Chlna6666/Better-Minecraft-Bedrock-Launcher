@@ -198,6 +198,9 @@ pub struct MainWindowView {
     download_overlay_active: bool,
     download_overlay_task_updates_task: Option<Task<()>>,
     download_prefs_last_save: Option<Instant>,
+    download_prefs_load_started: bool,
+    download_prefs_loaded: bool,
+    download_prefs_cache: Option<crate::core::ui_prefs::DownloadUiPrefs>,
     download_curseforge_invalidate_seq_seen: u64,
     download_curseforge_invalidate_pending_seen: bool,
     manage_controls_initialized: bool,
@@ -1303,12 +1306,50 @@ impl MainWindowView {
         .detach();
     }
 
+    fn ensure_download_prefs_loaded(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.download_prefs_loaded {
+            return true;
+        }
+        if self.download_prefs_load_started {
+            return false;
+        }
+
+        self.download_prefs_load_started = true;
+        cx.spawn(async move |handle, cx| {
+            let result = crate::tasks::runtime::run_io_blocking(
+                crate::core::ui_prefs::load_download_ui_prefs,
+            )
+            .await;
+
+            handle.update(cx, |this, cx| {
+                this.download_prefs_load_started = false;
+                this.download_prefs_loaded = true;
+                match result {
+                    Ok(prefs) => this.download_prefs_cache = prefs,
+                    Err(error) => {
+                        tracing::warn!(%error, "load download ui prefs failed");
+                        this.download_prefs_cache = None;
+                    }
+                }
+                cx.notify();
+            })?;
+
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach_and_log_err(cx);
+
+        false
+    }
+
     fn ensure_download_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.download_controls_initialized {
             return;
         }
+        if !self.ensure_download_prefs_loaded(cx) {
+            return;
+        }
 
-        let prefs = crate::core::ui_prefs::load_download_ui_prefs();
+        let prefs = self.download_prefs_cache.as_ref();
         let initial_page_size = prefs
             .as_ref()
             .map(|p| p.page_size)
@@ -1605,6 +1646,8 @@ impl MainWindowView {
             page_size,
         };
 
+        self.download_prefs_cache = Some(prefs.clone());
+        self.download_prefs_loaded = true;
         self.download_prefs_last_save = Some(now);
         cx.spawn(async move |_this, cx| {
             let result = cx
