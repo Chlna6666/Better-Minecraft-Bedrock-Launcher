@@ -340,8 +340,12 @@ pub struct PluginRegistry {
     watcher_task: Option<gpui::Task<()>>,
     last_error: Option<SharedString>,
     loaded_once: bool,
-    /// 启动阶段的清单扫描正在后台执行；期间跳过同步 reload，避免阻塞首帧。
+    /// 启动阶段的清单扫描正在后台执行；期间不启动第二份文件扫描。
     initial_reload_pending: bool,
+    /// 常规 reload 的文件准备阶段正在 blocking pool 执行。
+    reload_prepare_pending: bool,
+    /// pending 期间又收到 reload 请求；完成当前任务后合并为一次后续 reload。
+    reload_prepare_requested: bool,
     active_modal: Option<PluginModalState>,
 }
 
@@ -417,6 +421,8 @@ impl PluginRegistry {
             last_error: None,
             loaded_once: false,
             initial_reload_pending: false,
+            reload_prepare_pending: false,
+            reload_prepare_requested: false,
             active_modal: None,
         }
     }
@@ -3555,23 +3561,26 @@ fn spawn_initial_reload(cx: &mut App) {
         .await;
 
         cx.update(|cx| {
-            cx.update_global(|registry: &mut PluginRegistry, _cx| {
+            let reload_requested = cx.update_global(|registry: &mut PluginRegistry, _cx| {
                 registry.initial_reload_pending = false;
-                if registry.loaded_once() {
-                    return;
+                if !registry.loaded_once() {
+                    let result = match prepared {
+                        Ok(Ok(prepared)) => registry.reload_prepared_manifests(prepared),
+                        Ok(Err(error)) => Err(error),
+                        Err(error) => Err(anyhow!("{error}")),
+                    };
+                    if let Err(error) = result {
+                        let error_message = crate::plugins::manifest::format_error_chain(&error);
+                        error!(error = %error_message, "plugin initial load failed");
+                        registry.last_error = Some(SharedString::from(error_message));
+                    }
                 }
-                let result = match prepared {
-                    Ok(Ok(prepared)) => registry.reload_prepared_manifests(prepared),
-                    Ok(Err(error)) => Err(error),
-                    Err(error) => Err(anyhow!("{error}")),
-                };
-                if let Err(error) = result {
-                    let error_message = crate::plugins::manifest::format_error_chain(&error);
-                    error!(error = %error_message, "plugin initial load failed");
-                    registry.last_error = Some(SharedString::from(error_message));
-                }
+                std::mem::take(&mut registry.reload_prepare_requested)
             });
             cx.refresh_windows();
+            if reload_requested {
+                reload_all(cx);
+            }
         })?;
         Ok::<(), anyhow::Error>(())
     })
@@ -3579,17 +3588,61 @@ fn spawn_initial_reload(cx: &mut App) {
 }
 
 pub fn reload_all(cx: &mut App) {
-    let theme_snapshot = current_theme_snapshot(cx);
-    cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        if let Err(error) = registry.reload_all() {
-            let error_message = crate::plugins::manifest::format_error_chain(&error);
-            error!(error = %error_message, "plugin reload failed");
-            registry.last_error = Some(SharedString::from(error_message));
-        } else {
-            registry.set_theme_snapshot(theme_snapshot);
+    let should_start = cx.update_global(|registry: &mut PluginRegistry, _cx| {
+        if registry.initial_reload_pending || registry.reload_prepare_pending {
+            registry.reload_prepare_requested = true;
+            return false;
         }
+        registry.reload_prepare_pending = true;
+        true
     });
+    if !should_start {
+        return;
+    }
+
+    let (plugins_dir, package_cache_dir, cache_dir) = {
+        let registry = cx.global::<PluginRegistry>();
+        (
+            registry.plugins_dir().to_path_buf(),
+            registry.package_cache_dir().to_path_buf(),
+            registry.cache_dir().to_path_buf(),
+        )
+    };
+
+    cx.spawn(async move |cx| {
+        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+            prepare_plugin_reload_from_sources(plugins_dir, package_cache_dir, cache_dir)
+        })
+        .await;
+
+        cx.update(|cx| {
+            let theme_snapshot = current_theme_snapshot(cx);
+            let reload_requested = cx.update_global(|registry: &mut PluginRegistry, _cx| {
+                registry.reload_prepare_pending = false;
+                registry.set_theme_snapshot(theme_snapshot);
+                let result = match prepared {
+                    Ok(Ok(prepared)) => registry.reload_prepared_manifests(prepared),
+                    Ok(Err(error)) => Err(error),
+                    Err(error) => Err(anyhow!("{error}")),
+                };
+                if let Err(error) = result {
+                    let error_message = crate::plugins::manifest::format_error_chain(&error);
+                    error!(error = %error_message, "plugin reload failed");
+                    registry.last_error = Some(SharedString::from(error_message));
+                } else {
+                    registry.set_theme_snapshot(theme_snapshot);
+                }
+                std::mem::take(&mut registry.reload_prepare_requested)
+            });
+            cx.refresh_windows();
+            if reload_requested {
+                reload_all(cx);
+            }
+        })?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
 }
 
 pub fn ensure_manifest_index(cx: &mut App) {
