@@ -7,8 +7,7 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
-use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::SettingsPageView;
 use crate::ui::views::settings::common::{
     settings_action_button, settings_card, settings_control_box, settings_value_box,
@@ -33,7 +32,7 @@ pub(super) struct PluginSettingsModel {
     readme: Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
     config_text: Option<String>,
     config_schema: Option<Arc<PluginConfigSchema>>,
-    logs: Vec<PluginLogEntry>,
+    logs: Arc<[PluginLogEntry]>,
     locale: String,
     translations: BTreeMap<String, String>,
     is_dark: bool,
@@ -81,13 +80,13 @@ struct PluginConfigOption {
 
 impl PluginSettingsModel {
     pub(super) fn snapshot(
-        now: std::time::Instant,
         cx: &App,
         state: &SettingsPageState,
         statuses: Vec<PluginStatus>,
+        is_dark: bool,
     ) -> Self {
         if state.tab != SettingsTab::Plugins {
-            return Self::empty(now, cx, state);
+            return Self::empty();
         }
         let selected_id = selected_plugin_id(state, &statuses);
         let selected_status = selected_id
@@ -119,35 +118,36 @@ impl PluginSettingsModel {
                 .cloned()
                 .flatten()
         });
-        let translations = selected_status
-            .and_then(|status| {
-                config_schema.as_deref().map(|schema| {
-                    localized_schema_keys(schema)
-                        .into_iter()
-                        .filter_map(|key| {
-                            crate::plugins::runtime::translate_plugin_resource_for_locale(
-                                cx,
-                                &status.id,
-                                state.plugin_cached_locale.as_ref(),
-                                &key,
-                            )
-                            .map(|value| (key, value))
-                        })
-                        .collect()
+        let translations = if state.plugin_sub_tab == PluginSettingsSubTab::Config {
+            selected_status
+                .and_then(|status| {
+                    config_schema.as_deref().map(|schema| {
+                        localized_schema_keys(schema)
+                            .into_iter()
+                            .filter_map(|key| {
+                                crate::plugins::runtime::translate_plugin_resource_for_locale(
+                                    cx,
+                                    &status.id,
+                                    state.plugin_cached_locale.as_ref(),
+                                    &key,
+                                )
+                                .map(|value| (key, value))
+                            })
+                            .collect()
+                    })
                 })
-            })
-            .unwrap_or_default();
-        let logs = selected_id
-            .as_deref()
-            .map(|plugin_id| crate::plugins::runtime::plugin_logs(cx, plugin_id))
-            .unwrap_or_default();
-        let theme = cx.global::<ThemeState>();
-        let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
-            theme.factor(now),
-            theme.accent,
-        );
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let logs = if state.plugin_sub_tab == PluginSettingsSubTab::Logs {
+            selected_id
+                .as_deref()
+                .map(|plugin_id| crate::plugins::runtime::plugin_log_snapshot(cx, plugin_id))
+                .unwrap_or_else(|| Arc::from([]))
+        } else {
+            Arc::from([])
+        };
 
         Self {
             statuses,
@@ -158,29 +158,21 @@ impl PluginSettingsModel {
             logs,
             locale: state.plugin_cached_locale.to_string(),
             translations,
-            is_dark: colors.bg.l < 0.5,
+            is_dark,
         }
     }
 
-    fn empty(now: std::time::Instant, cx: &App, state: &SettingsPageState) -> Self {
-        let theme = cx.global::<ThemeState>();
-        let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
-            theme.factor(now),
-            theme.accent,
-        );
-
+    fn empty() -> Self {
         Self {
             statuses: Vec::new(),
             selected_id: None,
             readme: None,
             config_text: None,
             config_schema: None,
-            logs: Vec::new(),
-            locale: state.plugin_cached_locale.to_string(),
+            logs: Arc::from([]),
+            locale: String::new(),
             translations: BTreeMap::new(),
-            is_dark: colors.bg.l < 0.5,
+            is_dark: false,
         }
     }
 }

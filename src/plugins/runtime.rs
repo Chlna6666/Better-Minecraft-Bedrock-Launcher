@@ -453,6 +453,7 @@ pub struct PluginRegistry {
     injections: Vec<PluginInjectionRegistration>,
     render_cache: RenderCache,
     logs: BTreeMap<String, VecDeque<PluginLogEntry>>,
+    log_snapshots: BTreeMap<String, Arc<[PluginLogEntry]>>,
     http_cache: PluginHttpFetchCache,
     resource_cache: PluginResourceCache,
     module_cache: BTreeMap<String, Module>,
@@ -537,6 +538,7 @@ impl PluginRegistry {
             injections: Vec::new(),
             render_cache: RenderCache::default(),
             logs: BTreeMap::new(),
+            log_snapshots: BTreeMap::new(),
             http_cache: PluginHttpFetchCache::default(),
             resource_cache: PluginResourceCache::default(),
             module_cache: BTreeMap::new(),
@@ -703,6 +705,13 @@ impl PluginRegistry {
             .unwrap_or_default()
     }
 
+    pub fn plugin_log_snapshot(&self, plugin_id: &str) -> Arc<[PluginLogEntry]> {
+        self.log_snapshots
+            .get(plugin_id)
+            .cloned()
+            .unwrap_or_else(|| Arc::from([]))
+    }
+
     pub fn translate_plugin_resource(&self, plugin_id: &str, key: &str) -> Option<String> {
         self.translate_plugin_resource_for_locale(plugin_id, &current_locale_code(), key)
     }
@@ -793,7 +802,7 @@ impl PluginRegistry {
 
     fn push_log(&mut self, plugin_id: String, level: abi::LogLevel, message: String) {
         const MAX_PLUGIN_LOGS: usize = 200;
-        let logs = self.logs.entry(plugin_id).or_default();
+        let logs = self.logs.entry(plugin_id.clone()).or_default();
         logs.push_back(PluginLogEntry {
             level,
             message: SharedString::from(message),
@@ -801,6 +810,10 @@ impl PluginRegistry {
         while logs.len() > MAX_PLUGIN_LOGS {
             logs.pop_front();
         }
+        self.log_snapshots.insert(
+            plugin_id,
+            Arc::from(logs.iter().cloned().collect::<Vec<_>>()),
+        );
     }
 
     pub fn pages(&self) -> Vec<PluginPage> {
@@ -4448,6 +4461,10 @@ pub fn plugin_manifest_snapshot(cx: &App, plugin_id: &str) -> Option<PluginManif
 
 pub fn plugin_logs(cx: &App, plugin_id: &str) -> Vec<PluginLogEntry> {
     cx.global::<PluginRegistry>().plugin_logs(plugin_id)
+}
+
+pub fn plugin_log_snapshot(cx: &App, plugin_id: &str) -> Arc<[PluginLogEntry]> {
+    cx.global::<PluginRegistry>().plugin_log_snapshot(plugin_id)
 }
 
 pub fn active_modal(cx: &App) -> Option<PluginModalState> {

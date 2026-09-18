@@ -127,10 +127,10 @@ impl Render for SettingsPageView {
             Arc::from(Vec::<String>::new())
         };
         let plugin_model = plugins::PluginSettingsModel::snapshot(
-            now,
             cx,
             cx.global::<SettingsPageState>(),
             plugin_statuses,
+            colors.bg.l < 0.5,
         );
         render_settings_page(
             colors,
