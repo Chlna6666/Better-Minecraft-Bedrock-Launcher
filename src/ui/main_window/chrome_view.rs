@@ -31,10 +31,24 @@ pub(super) struct AppChromeView {
     auth_trigger_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     auth_was_open: bool,
     auth_blocked: bool,
+    update_available: bool,
+    update_modal_open: bool,
+    glass_effect_enabled: bool,
+    plugin_navigation_pages: std::sync::Arc<Vec<crate::plugins::runtime::PluginPage>>,
 }
 
 impl AppChromeView {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (update_available, update_modal_open) = {
+            let update = cx.global::<UpdateState>();
+            (update.available.is_some(), update.show_modal)
+        };
+        let glass_effect_enabled = cx
+            .global::<crate::ui::views::settings::state::SettingsPageState>()
+            .glass_effect_enabled;
+        let plugin_navigation_pages =
+            std::sync::Arc::new(crate::plugins::runtime::navigation_pages(cx));
+
         let mut subscriptions = vec![
             cx.observe_global_in::<BedrockAuthState>(window, |this, window, cx| {
                 let open = cx.global::<BedrockAuthState>().dialog_open;
@@ -54,11 +68,32 @@ impl AppChromeView {
             cx.observe_global::<NavState>(|_, cx| cx.notify()),
             cx.observe_global::<ThemeState>(|_, cx| cx.notify()),
             cx.observe_global::<I18n>(|_, cx| cx.notify()),
-            cx.observe_global::<UpdateState>(|_, cx| cx.notify()),
-            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
-                cx.notify()
+            cx.observe_global::<UpdateState>(|this, cx| {
+                let update = cx.global::<UpdateState>();
+                let available = update.available.is_some();
+                let modal_open = update.show_modal;
+                if this.update_available != available || this.update_modal_open != modal_open {
+                    this.update_available = available;
+                    this.update_modal_open = modal_open;
+                    cx.notify();
+                }
             }),
-            cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|_, cx| cx.notify()),
+            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(
+                |this, cx| {
+                    let enabled = cx
+                        .global::<crate::ui::views::settings::state::SettingsPageState>()
+                        .glass_effect_enabled;
+                    if this.glass_effect_enabled != enabled {
+                        this.glass_effect_enabled = enabled;
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|this, cx| {
+                this.plugin_navigation_pages =
+                    std::sync::Arc::new(crate::plugins::runtime::navigation_pages(cx));
+                cx.notify();
+            }),
         ];
         subscriptions.push(cx.observe_window_bounds(window, |_, window, cx| {
             let show_labels = window.bounds().size.width >= px(1180.);
@@ -88,6 +123,10 @@ impl AppChromeView {
             auth_trigger_bounds: Rc::new(std::cell::Cell::new(None)),
             auth_was_open,
             auth_blocked: false,
+            update_available,
+            update_modal_open,
+            glass_effect_enabled,
+            plugin_navigation_pages,
         }
     }
 
@@ -135,19 +174,15 @@ impl AppChromeView {
                 self.auth_trigger_bounds.clone(),
             )
             .blocked(self.auth_blocked),
-            update_available: cx.global::<UpdateState>().available.is_some(),
+            update_available: self.update_available,
             visual_active_index: nav.visual_active_index(),
             pill_left_steps,
             pill_right_steps,
             labels_layout_factor: nav.labels_layout_factor(now),
             labels_opacity_factor: nav.labels_opacity_factor(now),
             nav_animating: nav.is_animating(now),
-            glass_effect_enabled: cx
-                .global::<crate::ui::views::settings::state::SettingsPageState>()
-                .glass_effect_enabled,
-            plugin_navigation_pages: std::sync::Arc::new(
-                crate::plugins::runtime::navigation_pages(cx),
-            ),
+            glass_effect_enabled: self.glass_effect_enabled,
+            plugin_navigation_pages: self.plugin_navigation_pages.clone(),
         }
     }
 }
@@ -157,7 +192,7 @@ impl Render for AppChromeView {
         let now = window.animation_time();
         let state = self.prepare_render_state(now, window, cx);
         let route = crate::ui::navigation::current_route_target(cx);
-        let update_modal_open = cx.global::<UpdateState>().show_modal;
+        let update_modal_open = self.update_modal_open;
 
         // The navigation pill owns its own retained layout-animation target. Driving the
         // whole chrome view here as well would notify and rebuild all chrome contents per sample.
