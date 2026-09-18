@@ -444,10 +444,10 @@ fn sponsor_avatar(colors: &ThemeColors, item: &AboutSponsorEntry) -> Div {
         return base;
     }
 
+    // SponsorRecord only exposes a non-empty avatar path after the async loader has verified an
+    // existing file or completed tokio::fs::write. Rechecking metadata here would perform one
+    // synchronous filesystem query per visible card on every modal render.
     let avatar_path = PathBuf::from(item.avatar_url.as_ref());
-    if !avatar_path.is_file() {
-        return base;
-    }
 
     base.child(
         img(avatar_path)

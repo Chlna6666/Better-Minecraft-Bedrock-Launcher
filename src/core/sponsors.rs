@@ -192,7 +192,10 @@ async fn download_avatar_to_local(
         extension
     ));
 
-    if tokio::fs::try_exists(&local_path).await.ok()? {
+    if tokio::fs::metadata(&local_path)
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+    {
         return Some(local_path.to_string_lossy().into_owned());
     }
 
