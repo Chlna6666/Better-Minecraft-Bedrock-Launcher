@@ -20,6 +20,7 @@ pub struct UwpBackupToolsState {
     request_id: u64,
     scanning: bool,
     summary: Option<MinecraftDataSummary>,
+    user_data_path: Option<PathBuf>,
     error: Option<LocalizedText>,
     exporting: bool,
     export_status: Option<LocalizedText>,
@@ -33,6 +34,7 @@ impl UwpBackupToolsState {
         self.request_id = self.request_id.wrapping_add(1).max(1);
         self.scanning = false;
         self.summary = None;
+        self.user_data_path = None;
         self.error = None;
         self.exporting = false;
         self.export_status = None;
@@ -48,18 +50,25 @@ impl UwpBackupToolsState {
         self.family_name = Some(family_name.clone());
         self.scanning = true;
         self.summary = None;
+        self.user_data_path = None;
         self.error = None;
         self.exporting = false;
         self.export_status = None;
         Some((self.request_id, family_name.to_string()))
     }
 
-    fn apply_scan(&mut self, request_id: u64, summary: MinecraftDataSummary) {
+    fn apply_scan(
+        &mut self,
+        request_id: u64,
+        summary: MinecraftDataSummary,
+        user_data_path: Option<PathBuf>,
+    ) {
         if self.request_id != request_id {
             return;
         }
         self.scanning = false;
         self.summary = Some(summary);
+        self.user_data_path = user_data_path;
         self.error = None;
     }
 
@@ -69,6 +78,7 @@ impl UwpBackupToolsState {
         }
         self.scanning = false;
         self.summary = None;
+        self.user_data_path = None;
         self.error = Some(error.into());
     }
 }
@@ -104,13 +114,16 @@ pub fn sync_from_safety(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let result = crate::tasks::runtime::run_io_blocking(move || {
-            crate::core::minecraft::uwp_migration::summarize_family(&family_name)
+            let summary = crate::core::minecraft::uwp_migration::summarize_family(&family_name);
+            let path = user_data_path(&summary);
+            let available_path = path.is_dir().then_some(path);
+            (summary, available_path)
         })
         .await;
         cx.update(|cx| match result {
-            Ok(summary) => {
+            Ok((summary, user_data_path)) => {
                 cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-                    state.apply_scan(request_id, summary);
+                    state.apply_scan(request_id, summary, user_data_path);
                 });
             }
             Err(error) => {
@@ -257,11 +270,7 @@ fn open_directory_in_background(path: PathBuf, create_if_missing: bool, cx: &mut
 }
 
 fn open_user_data(cx: &mut App) {
-    let path = cx
-        .global::<UwpBackupToolsState>()
-        .summary
-        .as_ref()
-        .map(user_data_path);
+    let path = cx.global::<UwpBackupToolsState>().user_data_path.clone();
     let Some(path) = path else {
         cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
             state.export_status = Some(LocalizedText::key(crate::i18n_key!(
@@ -408,10 +417,7 @@ pub fn render_uwp_backup_tools(
             .summary
             .as_ref()
             .is_some_and(|summary| summary.data_present && summary.file_count > 0);
-    let can_open_data = state
-        .summary
-        .as_ref()
-        .is_some_and(|summary| user_data_path(summary).is_dir());
+    let can_open_data = state.user_data_path.is_some();
 
     if !attached {
         let compact_label = state
