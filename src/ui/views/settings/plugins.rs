@@ -928,28 +928,23 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                         .on_mouse_down(
                             MouseButton::Left,
                             move |_event, _window, cx| {
-                                match crate::plugins::runtime::set_plugin_enabled(
+                                let success_message = if enabled {
+                                    SharedString::from("插件已禁用")
+                                } else {
+                                    SharedString::from("插件已启用")
+                                };
+                                crate::plugins::runtime::set_plugin_enabled(
                                     cx,
                                     plugin_id.clone(),
                                     !enabled,
-                                ) {
-                                    Ok(()) => {
-                                        toast::success(
-                                            cx,
-                                            if enabled {
-                                                SharedString::from("插件已禁用")
-                                            } else {
-                                                SharedString::from("插件已启用")
-                                            },
-                                        );
-                                    }
-                                    Err(error) => {
-                                        toast::error(
+                                    move |cx, result| match result {
+                                        Ok(()) => toast::success(cx, success_message),
+                                        Err(error) => toast::error(
                                             cx,
                                             SharedString::from(format!("操作失败: {error}")),
-                                        );
-                                    }
-                                }
+                                        ),
+                                    },
+                                );
                             },
                         ),
                     ),
@@ -1000,7 +995,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                         reload_id.clone(),
                                     ) {
                                         Ok(()) => {
-                                            toast::success(cx, SharedString::from("插件已重载"));
+                                            toast::success(cx, SharedString::from("插件重载已安排"));
                                         }
                                         Err(error) => {
                                             toast::error(
@@ -1041,25 +1036,29 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                         .child(
                             small_icon_button(colors, "卸载", lucide_gpui::icon!(trash_2))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                                    match crate::plugins::runtime::uninstall_plugin(
+                                    crate::plugins::runtime::uninstall_plugin(
                                         cx,
                                         uninstall_id.clone(),
-                                    ) {
-                                        Ok(()) => {
-                                            cx.update_global(
-                                                |state: &mut SettingsPageState, _cx| {
-                                                    state.selected_plugin_id = None;
-                                                },
-                                            );
-                                            toast::success(cx, SharedString::from("插件已卸载"));
-                                        }
-                                        Err(error) => {
-                                            toast::error(
+                                        move |cx, result| match result {
+                                            Ok(()) => {
+                                                cx.update_global(
+                                                    |state: &mut SettingsPageState, _cx| {
+                                                        state.selected_plugin_id = None;
+                                                    },
+                                                );
+                                                toast::success(
+                                                    cx,
+                                                    SharedString::from("插件已卸载"),
+                                                );
+                                            }
+                                            Err(error) => toast::error(
                                                 cx,
-                                                SharedString::from(format!("卸载失败: {error}")),
-                                            );
-                                        }
-                                    }
+                                                SharedString::from(format!(
+                                                    "卸载失败: {error}"
+                                                )),
+                                            ),
+                                        },
+                                    );
                                 }),
                         ),
                 ),
@@ -1305,33 +1304,40 @@ fn plugin_config_panel(
                     move |_event, _window, cx| {
                         let content =
                             config_draft_with_inputs(cx, &plugin_id, &save_draft, &editable_fields);
-                        match crate::plugins::runtime::save_plugin_config(
+                        let plugin_id_for_completion = plugin_id.clone();
+                        crate::plugins::runtime::save_plugin_config(
                             cx,
                             plugin_id.clone(),
                             content.clone(),
-                        ) {
-                            Ok(()) => {
-                                cx.update_global(|state: &mut SettingsPageState, _cx| {
-                                    let key = PluginResourceCacheKey {
-                                        plugin_id: plugin_id.clone(),
-                                        generation,
-                                    };
-                                    state.plugin_config_cache.insert(key, Some(content.clone()));
-                                    state.plugin_config_loaded_for =
-                                        Some(SharedString::from(plugin_id.clone()));
-                                    state.plugin_config_draft = SharedString::from(content);
-                                    state.plugin_config_inputs.clear();
-                                    state.plugin_config_inputs_for = None;
-                                });
-                                toast::success(cx, save_success_message.clone());
-                            }
-                            Err(error) => {
-                                toast::error(
+                            move |cx, result| match result {
+                                Ok(()) => {
+                                    cx.update_global(|state: &mut SettingsPageState, _cx| {
+                                        let key = PluginResourceCacheKey {
+                                            plugin_id: plugin_id_for_completion.clone(),
+                                            generation,
+                                        };
+                                        state
+                                            .plugin_config_cache
+                                            .insert(key, Some(content.clone()));
+                                        state.plugin_config_loaded_for = Some(SharedString::from(
+                                            plugin_id_for_completion.clone(),
+                                        ));
+                                        state.plugin_config_draft =
+                                            SharedString::from(content.clone());
+                                        state.plugin_config_inputs.clear();
+                                        state.plugin_config_inputs_for = None;
+                                    });
+                                    toast::success(cx, save_success_message.clone());
+                                }
+                                Err(error) => toast::error(
                                     cx,
-                                    SharedString::from(format!("{}: {error}", save_failed_message)),
-                                );
-                            }
-                        };
+                                    SharedString::from(format!(
+                                        "{}: {error}",
+                                        save_failed_message
+                                    )),
+                                ),
+                            },
+                        );
                     },
                 ),
             ));

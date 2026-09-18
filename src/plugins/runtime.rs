@@ -667,16 +667,7 @@ impl PluginRegistry {
             .get(plugin_id)
             .map(|plugin| plugin.manifest.clone())
             .ok_or_else(|| anyhow!("unknown plugin {plugin_id}"))?;
-        let root_dir = std::fs::canonicalize(&manifest.root_dir)
-            .with_context(|| format!("canonicalize plugin {}", manifest.root_dir.display()))?;
-        let plugins_dir = std::fs::canonicalize(&self.plugins_dir)
-            .with_context(|| format!("canonicalize plugins dir {}", self.plugins_dir.display()))?;
-        if !root_dir.starts_with(&plugins_dir) || root_dir == plugins_dir {
-            bail!("refusing to uninstall plugin outside plugin directory");
-        }
-        fs::remove_dir_all(&root_dir)
-            .with_context(|| format!("remove plugin directory {}", root_dir.display()))?;
-        crate::plugins::state::remove_plugin_state(&self.plugins_dir, plugin_id)?;
+        uninstall_plugin_files(&self.plugins_dir, &manifest, plugin_id)?;
         self.reload_all()
     }
 
@@ -3473,6 +3464,23 @@ fn theme_token_from_abi(token: abi::ThemeToken) -> ui_dsl::ThemeToken {
     }
 }
 
+fn uninstall_plugin_files(
+    plugins_dir: &Path,
+    manifest: &PluginManifest,
+    plugin_id: &str,
+) -> Result<()> {
+    let root_dir = std::fs::canonicalize(&manifest.root_dir)
+        .with_context(|| format!("canonicalize plugin {}", manifest.root_dir.display()))?;
+    let plugins_dir_canonical = std::fs::canonicalize(plugins_dir)
+        .with_context(|| format!("canonicalize plugins dir {}", plugins_dir.display()))?;
+    if !root_dir.starts_with(&plugins_dir_canonical) || root_dir == plugins_dir_canonical {
+        bail!("refusing to uninstall plugin outside plugin directory");
+    }
+    fs::remove_dir_all(&root_dir)
+        .with_context(|| format!("remove plugin directory {}", root_dir.display()))?;
+    crate::plugins::state::remove_plugin_state(plugins_dir, plugin_id)
+}
+
 fn prepare_plugin_reload_from_sources(
     plugins_dir: PathBuf,
     package_cache_dir: PathBuf,
@@ -3863,37 +3871,144 @@ pub fn translate_plugin_resource_for_locale(
         .translate_plugin_resource_for_locale(plugin_id, locale, key)
 }
 
-pub fn save_plugin_config(cx: &mut App, plugin_id: String, content: String) -> Result<()> {
-    let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.write_plugin_config(&plugin_id, &content)
-    })?;
-    apply_host_effects(cx, effects);
-    Ok(())
+pub fn save_plugin_config<F>(
+    cx: &mut App,
+    plugin_id: String,
+    content: String,
+    on_complete: F,
+)
+where
+    F: FnOnce(&mut App, Result<()>) + 'static,
+{
+    let Some(manifest) = plugin_manifest_snapshot(cx, &plugin_id) else {
+        on_complete(cx, Err(anyhow!("unknown plugin {plugin_id}")));
+        return;
+    };
+
+    let plugin_id_for_io = plugin_id.clone();
+    cx.spawn(async move |cx| {
+        let persisted = crate::tasks::runtime::run_io_blocking(move || {
+            crate::plugins::manifest::write_user_config(&manifest, &content)
+        })
+        .await;
+
+        cx.update(|cx| {
+            let result = match persisted {
+                Ok(Ok(())) => {
+                    let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
+                        if !registry.plugins.contains_key(&plugin_id) {
+                            return Err(anyhow!("unknown plugin {plugin_id}"));
+                        }
+                        registry.render_cache.invalidate_plugin(&plugin_id);
+                        Ok(registry.handle_event(HostEvent {
+                            plugin_id: Some(plugin_id.clone()),
+                            page_id: None,
+                            kind: HostEventKind::Global {
+                                name: "config-changed".to_string(),
+                                payload: String::new(),
+                            },
+                        }))
+                    });
+                    match effects {
+                        Ok(effects) => {
+                            apply_host_effects(cx, effects);
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                Ok(Err(error)) => Err(error),
+                Err(error) => Err(anyhow!("{error}")),
+            };
+            on_complete(cx, result);
+        })?;
+
+        tracing::debug!(plugin_id = plugin_id_for_io, "plugin config persistence task finished");
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
 }
 
-pub fn set_plugin_enabled(cx: &mut App, plugin_id: String, enabled: bool) -> Result<()> {
-    let theme_snapshot = current_theme_snapshot(cx);
-    cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        registry.set_plugin_enabled(&plugin_id, enabled)
-    })?;
-    cx.refresh_windows();
-    Ok(())
+pub fn set_plugin_enabled<F>(
+    cx: &mut App,
+    plugin_id: String,
+    enabled: bool,
+    on_complete: F,
+)
+where
+    F: FnOnce(&mut App, Result<()>) + 'static,
+{
+    if !cx.global::<PluginRegistry>().plugins.contains_key(&plugin_id) {
+        on_complete(cx, Err(anyhow!("unknown plugin {plugin_id}")));
+        return;
+    }
+    let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
+
+    cx.spawn(async move |cx| {
+        let plugin_id_for_io = plugin_id.clone();
+        let persisted = crate::tasks::runtime::run_io_blocking(move || {
+            crate::plugins::state::set_plugin_enabled(
+                &plugins_dir,
+                &plugin_id_for_io,
+                enabled,
+            )
+        })
+        .await;
+
+        cx.update(|cx| {
+            let result = match persisted {
+                Ok(result) => result,
+                Err(error) => Err(anyhow!("{error}")),
+            };
+            if result.is_ok() {
+                reload_all(cx);
+            }
+            on_complete(cx, result);
+        })?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
 }
 
-pub fn uninstall_plugin(cx: &mut App, plugin_id: String) -> Result<()> {
-    cx.update_global(|registry: &mut PluginRegistry, _cx| registry.uninstall_plugin(&plugin_id))?;
-    cx.refresh_windows();
-    Ok(())
+pub fn uninstall_plugin<F>(cx: &mut App, plugin_id: String, on_complete: F)
+where
+    F: FnOnce(&mut App, Result<()>) + 'static,
+{
+    let Some(manifest) = plugin_manifest_snapshot(cx, &plugin_id) else {
+        on_complete(cx, Err(anyhow!("unknown plugin {plugin_id}")));
+        return;
+    };
+    let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
+
+    cx.spawn(async move |cx| {
+        let plugin_id_for_io = plugin_id.clone();
+        let removed = crate::tasks::runtime::run_io_blocking(move || {
+            uninstall_plugin_files(&plugins_dir, &manifest, &plugin_id_for_io)
+        })
+        .await;
+
+        cx.update(|cx| {
+            let result = match removed {
+                Ok(result) => result,
+                Err(error) => Err(anyhow!("{error}")),
+            };
+            if result.is_ok() {
+                reload_all(cx);
+            }
+            on_complete(cx, result);
+        })?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
 }
 
 pub fn reload_plugin(cx: &mut App, plugin_id: String) -> Result<()> {
-    let theme_snapshot = current_theme_snapshot(cx);
-    cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        registry.reload_plugin(&plugin_id)
-    })?;
-    cx.refresh_windows();
+    if !cx.global::<PluginRegistry>().plugins.contains_key(&plugin_id) {
+        return Err(anyhow!("unknown plugin {plugin_id}"));
+    }
+    reload_all(cx);
     Ok(())
 }
 
