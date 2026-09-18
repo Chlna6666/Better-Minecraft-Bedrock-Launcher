@@ -69,18 +69,45 @@ pub fn open_platform_settings(cx: &mut App) {
 }
 
 fn complete(cx: &mut App, route: Option<crate::ui::navigation::AppRoute>) {
-    if let Err(error) = crate::config::onboarding::complete_current_onboarding() {
-        cx.update_global(|state: &mut OnboardingTourState, _cx| {
-            state.set_persist_error(crate::localized_text!(
-                "Onboarding.error.persist",
-                error = error
-            ));
-        });
-        return;
-    }
-
+    // Leave the interaction path immediately. Persisting settings.toml performs synchronous
+    // filesystem work (including an explicit flush and legacy-file cleanup), so running it here
+    // would stall the GPUI foreground executor on the user's click.
     cx.update_global(|state: &mut OnboardingTourState, _cx| state.finish());
 
+    cx.spawn(async move |cx| {
+        let persisted = crate::tasks::runtime::run_io_blocking(
+            crate::config::onboarding::complete_current_onboarding,
+        )
+        .await;
+
+        cx.update(|cx| match persisted {
+            Ok(Ok(())) => finish_persisted_onboarding(route, cx),
+            Ok(Err(error)) => restore_onboarding_after_persist_error(error.to_string(), cx),
+            Err(error) => restore_onboarding_after_persist_error(error, cx),
+        })?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
+fn restore_onboarding_after_persist_error(error: String, cx: &mut App) {
+    cx.update_global(|state: &mut OnboardingTourState, _cx| {
+        // finish() hid the overlay before I/O started so the foreground thread could return
+        // immediately. Restore the same scene if persistence failed, preserving the previous
+        // user-visible failure semantics without putting disk I/O back on the UI thread.
+        state.visible = true;
+        state.set_persist_error(crate::localized_text!(
+            "Onboarding.error.persist",
+            error = error
+        ));
+    });
+}
+
+fn finish_persisted_onboarding(
+    route: Option<crate::ui::navigation::AppRoute>,
+    cx: &mut App,
+) {
     #[cfg(target_os = "windows")]
     cx.update_global(
         |state: &mut crate::ui::state::launch_prereq::LaunchPrereqState, _cx| {
