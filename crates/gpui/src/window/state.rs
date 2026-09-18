@@ -109,6 +109,11 @@ impl DirtyFrameDiagnostics {
             | FrameRequestReason::PresentationAnimation.bit();
         (self.frame_request_reasons & mask) != 0
     }
+
+    pub(super) fn requires_fresh_progressive_views(&self) -> bool {
+        let mask = FrameRequestReason::Input.bit() | FrameRequestReason::ImageReady.bit();
+        (self.frame_request_reasons & mask) != 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -241,6 +246,25 @@ mod visual_transform_tests {
                 source_line: 7,
             })
         );
+    }
+
+    #[test]
+    fn input_and_image_ready_require_fresh_progressive_views() {
+        for reason in [FrameRequestReason::Input, FrameRequestReason::ImageReady] {
+            let mut diagnostics = DirtyFrameDiagnostics::default();
+            diagnostics.record_frame_request_reason_at(reason, "latency.rs", 1);
+            assert!(diagnostics.requires_fresh_progressive_views());
+        }
+
+        for reason in [
+            FrameRequestReason::StateNotify,
+            FrameRequestReason::ProgressiveWork,
+            FrameRequestReason::Timer,
+        ] {
+            let mut diagnostics = DirtyFrameDiagnostics::default();
+            diagnostics.record_frame_request_reason_at(reason, "background.rs", 1);
+            assert!(!diagnostics.requires_fresh_progressive_views());
+        }
     }
 }
 

@@ -856,6 +856,7 @@ impl Window {
     }
 
     fn allows_progressive_frame_degradation(&self) -> bool {
+        let diagnostics = self.dirty_frame_diagnostics.borrow();
         self.has_completed_rendered_frame
             // The recovery frame after a degraded draw must present progress instead of
             // repeatedly discarding dirty work.
@@ -864,7 +865,10 @@ impl Window {
             && !self.recently_received_input(Instant::now())
             && self.animation_engine_frame_driver.get().is_none()
             && self.animation_dirty_region.is_empty()
-            && !self.dirty_frame_diagnostics.borrow().is_interactive_or_animating()
+            && !diagnostics.is_interactive_or_animating()
+            // Image-ready frames are latency critical too: once pixels become available, replaying
+            // an older progressive subtree for one more frame produces a visible late pop-in.
+            && !diagnostics.requires_fresh_progressive_views()
     }
 
     pub(crate) fn with_critical_draw<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
