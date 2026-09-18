@@ -102,6 +102,47 @@ impl Window {
         descendants_dirty: bool,
         _cx: &mut App,
     ) {
+        self.invalidate_interactive_region_scoped(
+            view_id,
+            global_id,
+            bounds,
+            descendants_dirty,
+            true,
+        );
+    }
+
+    /// Invalidates one retained interactive path while a platform frame is already running.
+    ///
+    /// `run_platform_frame` executes next-frame callbacks before it decides whether the current
+    /// frame must draw. Scheduling another platform frame from such a callback creates an extra
+    /// cadence source and can queue stale animation work. This variant therefore marks the target
+    /// dirty for the current frame without issuing a second platform-frame request.
+    pub(crate) fn notify_interactive_region_scoped_for_current_frame(
+        &mut self,
+        view_id: EntityId,
+        global_id: Option<&GlobalElementId>,
+        bounds: Bounds<Pixels>,
+        descendants_dirty: bool,
+        _cx: &mut App,
+    ) {
+        self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
+        self.invalidate_interactive_region_scoped(
+            view_id,
+            global_id,
+            bounds,
+            descendants_dirty,
+            false,
+        );
+    }
+
+    fn invalidate_interactive_region_scoped(
+        &mut self,
+        view_id: EntityId,
+        global_id: Option<&GlobalElementId>,
+        bounds: Bounds<Pixels>,
+        descendants_dirty: bool,
+        schedule_frame: bool,
+    ) {
         if !bounds.is_empty() {
             self.animation_dirty_region.push(bounds.scale(self.scale_factor));
         }
@@ -111,7 +152,8 @@ impl Window {
             view_id,
             global_id,
             RetainedInvalidationScope::from_descendants_dirty(descendants_dirty),
-        ) {
+        ) && schedule_frame
+        {
             self.schedule_dirty_frame();
         }
     }

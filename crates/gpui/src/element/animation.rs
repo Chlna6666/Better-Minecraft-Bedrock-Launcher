@@ -764,14 +764,13 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             let dirty_bounds = self.property.dirty_bounds(bounds);
             window.on_next_frame(move |window, cx| {
                 frame_pending.set(false);
-                window.notify_interactive_region_scoped(
+                window.notify_interactive_region_scoped_for_current_frame(
                     view_id,
                     Some(&retained_id),
                     dirty_bounds,
                     false,
                     cx,
                 );
-                window.schedule_interactive_animation_frame();
             });
         }
     }

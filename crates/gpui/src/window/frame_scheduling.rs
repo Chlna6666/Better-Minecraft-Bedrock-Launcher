@@ -146,8 +146,10 @@ impl Window {
                 Some(&retained_id),
                 RetainedInvalidationScope::ReconcileSubtree,
             ) {
+                // This callback already runs inside the platform frame requested by
+                // on_next_frame. Marking the target dirty is enough for the current
+                // evaluate_frame_work pass; scheduling here would queue a redundant frame.
                 window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
-                window.schedule_interactive_animation_frame();
             }
         });
     }

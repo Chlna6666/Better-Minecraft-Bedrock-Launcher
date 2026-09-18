@@ -159,7 +159,10 @@ impl Render for AppChromeView {
         let route = crate::ui::navigation::current_route_target(cx);
         let update_modal_open = cx.global::<UpdateState>().show_modal;
 
-        if state.theme_animating || state.nav_animating {
+        // The navigation pill owns its own retained layout-animation target. Driving the
+        // whole chrome view here as well would notify and rebuild all chrome contents per sample.
+        // Theme interpolation still changes the entire chrome, so it keeps the view-level RAF.
+        if state.theme_animating {
             window.request_animation_frame();
         }
         chrome::render_app_chrome(state, route, update_modal_open)
