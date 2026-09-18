@@ -240,7 +240,7 @@ fn build_inline_pieces(
     default_color: Hsla,
 ) -> Vec<InlinePiece> {
     let mut pieces = Vec::new();
-    for run in &parsed.runs {
+    for run in parsed.runs.iter() {
         let style = InlinePieceStyle {
             color: resolve_run_color(run.color_code, default_color),
             style: run.style,
@@ -546,7 +546,7 @@ fn apply_obfuscated_frame(parsed: &ParsedMinecraftText, frame: u64) -> ParsedMin
     }
 
     let mut text = String::with_capacity(parsed.text.len());
-    for run in &parsed.runs {
+    for run in parsed.runs.iter() {
         let range_text = &parsed.text[run.start..run.end];
         if run.style.obfuscated {
             for (index, ch) in range_text.chars().enumerate() {
