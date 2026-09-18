@@ -12,7 +12,7 @@ use super::tile_render::{
     RenderTilePlan, TileBatchRequest, open_map_render_session, render_tile_batch_stream,
 };
 use super::tile_state::ReadyTile;
-use super::viewport::viewport_screen_for_block;
+use super::viewport::{coordinate_text, viewport_screen_for_block};
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use std::io::Cursor;

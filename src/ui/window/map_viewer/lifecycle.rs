@@ -16,6 +16,7 @@ fn screen_image_bounds(
 
 use super::helpers::*;
 use super::model::*;
+use super::players::cached_item_catalog_snapshot;
 use super::prelude::*;
 use super::tile_cache::decoded_tile_byte_len;
 use super::tile_occupancy::*;
