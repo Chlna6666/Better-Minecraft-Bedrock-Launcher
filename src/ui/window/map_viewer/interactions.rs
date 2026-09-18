@@ -721,8 +721,7 @@ impl MapViewerWindowView {
             let hover_changed = self.update_hover_block(position);
             if hover_changed {
                 self.last_drag_canvas_snapshot_sync = None;
-                let colors = self.theme_colors(cx);
-                self.sync_canvas_snapshot(colors, cx);
+                self.sync_canvas_hover_label(cx);
             }
             return;
         };
@@ -1937,8 +1936,7 @@ impl MapViewerWindowView {
                 let released = self
                     .release_pointer_captures("map canvas mouse move without pressed button", cx);
                 if hover_changed && !released {
-                    let colors = self.theme_colors(cx);
-                    self.sync_canvas_snapshot(colors, cx);
+                    self.sync_canvas_hover_label(cx);
                 }
             }
         }
@@ -4036,7 +4034,7 @@ fn render_copied_chunk_preview_images_blocking(
     )?;
 
     let mut preview_images = BTreeMap::new();
-    while let Ok(Some(event)) = event_receiver.try_next() {
+    while let Ok(event) = event_receiver.try_recv() {
         if cancel.is_some_and(CancelFlag::is_cancelled) {
             return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
         }

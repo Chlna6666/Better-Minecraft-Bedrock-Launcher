@@ -252,6 +252,7 @@ pub(super) struct MapCanvasView {
     paste_controls_layer: Entity<MapPasteControlsView>,
     frame_revision: u64,
     tile_revision: u64,
+    hud_revision: u64,
     map_focus_handle: FocusHandle,
     selection_hit_snapshot: Option<SelectionHitSnapshot>,
     last_pointer_position: Option<Point<Pixels>>,
@@ -294,6 +295,7 @@ impl MapCanvasView {
             paste_controls_layer,
             frame_revision: 0,
             tile_revision: 0,
+            hud_revision: 0,
             map_focus_handle,
             selection_hit_snapshot: None,
             last_pointer_position: None,
@@ -378,6 +380,17 @@ impl MapCanvasView {
         self.tile_revision = self.tile_revision.saturating_add(1);
         cx.notify();
     }
+
+    pub(super) fn set_hover_label(
+        &mut self,
+        hover_label: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.hud_layer
+            .update(cx, |view, cx| view.set_hover_label(hover_label, cx));
+        self.hud_revision = self.hud_revision.saturating_add(1);
+        cx.notify();
+    }
 }
 
 impl EventEmitter<MapCanvasAction> for MapCanvasView {}
@@ -387,6 +400,7 @@ impl Render for MapCanvasView {
         let colors = theme_colors(window.animation_time(), cx);
         let frame_revision = self.frame_revision;
         let tile_revision = (frame_revision, self.tile_revision);
+        let hud_revision = (frame_revision, self.hud_revision);
         div()
             .relative()
             .flex_1()
@@ -396,7 +410,7 @@ impl Render for MapCanvasView {
             .bg(colors.surface)
             .child(cached_absolute_layer(&self.tile_layer, tile_revision))
             .child(cached_absolute_layer(&self.overlay_layer, frame_revision))
-            .child(cached_absolute_layer(&self.hud_layer, frame_revision))
+            .child(cached_absolute_layer(&self.hud_layer, hud_revision))
             .child(render_interaction_layer(
                 &self.map_focus_handle,
                 self.interaction_cursor,
@@ -681,6 +695,17 @@ impl MapHudView {
             return;
         }
         self.snapshot = Some(snapshot);
+        cx.notify();
+    }
+
+    fn set_hover_label(&mut self, hover_label: SharedString, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return;
+        };
+        if snapshot.hover_label == hover_label {
+            return;
+        }
+        snapshot.hover_label = hover_label;
         cx.notify();
     }
 }

@@ -589,6 +589,12 @@ impl MapViewerWindowView {
         self.record_memory_snapshot_if_due();
     }
 
+    pub(super) fn sync_canvas_hover_label(&self, cx: &mut Context<Self>) {
+        let canvas_view = self.canvas_view.clone();
+        let hover_label = self.hover_label.clone();
+        canvas_view.update(cx, |view, cx| view.set_hover_label(hover_label, cx));
+    }
+
     pub(super) fn sync_tile_layer_snapshot(&mut self, colors: ThemeColors, cx: &mut Context<Self>) {
         if !self.viewport_interaction_active() {
             self.refresh_canvas_tiles_for_current_viewport_if_needed(cx);
@@ -1071,9 +1077,6 @@ impl MapViewerWindowView {
             paste_preview_images_generation: self.paste_preview_images_generation,
             highlighted_window: self.professional.highlighted_window.clone(),
             markers_generation: self.markers_generation,
-            hover_block_x: self.hover_block_x,
-            hover_block_z: self.hover_block_z,
-            hover_label: self.hover_label.clone(),
         }
     }
 
