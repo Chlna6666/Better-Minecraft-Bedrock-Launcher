@@ -1850,7 +1850,7 @@ impl MapViewerWindowView {
         self.tile_manager
             .reconcile_viewport_priorities(&visible_tile_set);
         let visible_work_limit = visible_tile_foreground_work_limit(tile_plan.is_interacting);
-        let visible_candidates = tile_plan
+        let mut visible_candidates = tile_plan
             .visible
             .iter()
             .copied()
@@ -1861,20 +1861,12 @@ impl MapViewerWindowView {
                     *coord,
                 )
             })
-            .take(visible_work_limit)
+            .take(visible_work_limit.saturating_add(1))
             .collect::<Vec<_>>();
-        let deferred_visible_work = visible_candidates.len()
-            < tile_plan
-                .visible
-                .iter()
-                .filter(|coord| {
-                    visible_tile_needs_foreground_work(
-                        &self.tile_chunk_index,
-                        &self.tile_manager,
-                        **coord,
-                    )
-                })
-                .count();
+        let deferred_visible_work = visible_candidates.len() > visible_work_limit;
+        if deferred_visible_work {
+            visible_candidates.truncate(visible_work_limit);
+        }
         let visible_renderable_tiles = self.resolve_occupancy_tiles(&visible_candidates, cx);
         self.tile_manager.ensure_tiles_for_layout(
             &visible_renderable_tiles,
