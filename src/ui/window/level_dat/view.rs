@@ -38,7 +38,8 @@ pub struct LevelDatCodeWindowView {
 }
 
 impl LevelDatCodeWindowView {
-    pub fn new(init: LevelDatCodeWindowInit, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(init: LevelDatCodeWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        window.set_title(t!("LevelDat.title").as_ref());
         let validation = level_dat_editor::validate_document_json(init.initial_text.as_ref());
         let json_editor = cx.new(|cx| {
             let mut editor = CodeEditorState::new(cx);
@@ -47,7 +48,8 @@ impl LevelDatCodeWindowView {
             editor
         });
         let subscriptions = vec![
-            cx.observe_global::<I18n>(|_, cx| {
+            cx.observe_global_in::<I18n>(window, |_this, window, cx| {
+                window.set_title(t!("LevelDat.title").as_ref());
                 cx.notify();
             }),
             cx.subscribe(&json_editor, |this, _editor, event, cx| match event {
@@ -239,9 +241,6 @@ impl LevelDatCodeWindowView {
 
 impl Render for LevelDatCodeWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let i18n = cx.global::<I18n>().clone();
-        let window_title = t!("LevelDat.title");
-        window.set_title(&window_title);
         let colors = self.theme_colors(window.animation_time(), cx);
         let editor_text = self.json_editor.read(cx).value();
         let dirty = editor_text != self.saved_text;

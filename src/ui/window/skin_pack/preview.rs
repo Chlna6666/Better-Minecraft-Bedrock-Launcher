@@ -60,12 +60,14 @@ pub struct SkinPreviewWindowView {
 }
 
 impl SkinPreviewWindowView {
-    fn new(init: SkinPreviewWindowInit, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(init: SkinPreviewWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
             cx.observe_global::<ThemeState>(|_, cx| {
                 cx.notify();
             }),
-            cx.observe_global::<I18n>(|_, cx| {
+            cx.observe_global_in::<I18n>(window, |this, window, cx| {
+                let title = t!("SkinPreview.window_title", name = &this.title);
+                window.set_title(title.as_ref());
                 cx.notify();
             }),
         ];
@@ -416,9 +418,6 @@ impl SkinPreviewWindowView {
 impl Render for SkinPreviewWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
-        let i18n = cx.global::<I18n>().clone();
-        let window_title = t!("SkinPreview.window_title", name = &self.title).to_string();
-        window.set_title(&window_title);
         let preview_animating = self.walking && self.mesh.as_ref().is_some_and(Result::is_ok);
         let colors = self.theme_colors(now, cx);
         let model_label = self.current_model_label();

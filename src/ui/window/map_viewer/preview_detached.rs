@@ -84,7 +84,10 @@ impl DetachedPreview3dView {
             }),
         );
         subscriptions.push(cx.observe_global::<ThemeState>(|_this, cx| cx.notify()));
-        subscriptions.push(cx.observe_global::<I18n>(|_this, cx| cx.notify()));
+        subscriptions.push(cx.observe_global_in::<I18n>(window, |_this, window, cx| {
+            window.set_title(t!("MapViewer.preview_model").as_ref());
+            cx.notify();
+        }));
 
         Self {
             owner: owner.downgrade(),
@@ -146,8 +149,6 @@ impl Render for DetachedPreview3dView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = detached_theme_colors(window.animation_time(), cx);
         let i18n = cx.global::<I18n>().clone();
-        let title = t!("MapViewer.preview_model");
-        window.set_title(&title);
         let snapshot = self.owner.upgrade().map(|owner| {
             let main = owner.read(cx);
             (

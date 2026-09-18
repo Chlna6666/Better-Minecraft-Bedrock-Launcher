@@ -73,7 +73,7 @@ impl ImportWindowView {
         import_context: ImportLaunchContext,
         target: ImportWindowTarget,
         presentation: ImportPresentation,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         ensure_local_versions_loaded(false, cx);
@@ -83,9 +83,6 @@ impl ImportWindowView {
                 cx.notify();
             }),
             cx.observe_global::<ThemeState>(|_, cx| {
-                cx.notify();
-            }),
-            cx.observe_global::<I18n>(|_, cx| {
                 cx.notify();
             }),
             cx.observe_global::<LauncherState>(|_, cx| {
@@ -98,6 +95,16 @@ impl ImportWindowView {
                 cx.notify();
             }),
         ];
+        if presentation == ImportPresentation::Window {
+            subscriptions.push(cx.observe_global_in::<I18n>(window, |_this, window, cx| {
+                window.set_title(t!("Import.title").as_ref());
+                cx.notify();
+            }));
+        } else {
+            subscriptions.push(cx.observe_global::<I18n>(|_, cx| {
+                cx.notify();
+            }));
+        }
         #[cfg(target_os = "windows")]
         subscriptions.push(cx.observe_global::<LaunchPrereqState>(|_, cx| {
             cx.notify();
@@ -581,7 +588,6 @@ impl Render for ImportWindowView {
             self.schedule_window_close_after(Duration::from_millis(1200), cx);
         }
         let title = t!("Import.title");
-        window.set_title(&title);
         let processing_label = t!("Import.processing");
         let done_label = t!("Import.done");
         let start_import_label = t!("Import.startImport");

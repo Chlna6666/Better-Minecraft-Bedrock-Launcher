@@ -171,8 +171,6 @@ impl Render for MapViewerWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let i18n = cx.global::<I18n>().clone();
-        let title = t!("MapViewer.window_title", name = &self.asset.display_name).to_string();
-        window.set_title(&title);
         let preview_3d_motion_active = self
             .preview_3d
             .tick_motion(now, self.preview_3d_focus_handle.is_focused(window));

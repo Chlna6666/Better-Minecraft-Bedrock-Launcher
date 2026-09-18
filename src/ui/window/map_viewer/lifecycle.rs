@@ -342,7 +342,9 @@ impl MapViewerWindowView {
                 cx.notify();
             }
         })];
-        subscriptions.push(cx.observe_global::<I18n>(|_, cx| {
+        subscriptions.push(cx.observe_global_in::<I18n>(window, |this, window, cx| {
+            let title = t!("MapViewer.window_title", name = &this.asset.display_name);
+            window.set_title(title.as_ref());
             cx.notify();
         }));
         subscriptions.extend(map_input_subscriptions(&input_fields, cx));
