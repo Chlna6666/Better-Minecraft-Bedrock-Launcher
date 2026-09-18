@@ -110,8 +110,12 @@ impl Render for SettingsPageView {
             theme.accent,
         );
         let window_size = window.bounds().size;
-        let render_engine = about::render_engine_label(window);
         let active_tab = cx.global::<SettingsPageState>().tab;
+        let render_engine = if active_tab == SettingsTab::About {
+            about::render_engine_label(window)
+        } else {
+            SharedString::default()
+        };
         let plugin_statuses = if active_tab == SettingsTab::Plugins {
             plugins::ensure_plugin_resources(window, cx)
         } else {
