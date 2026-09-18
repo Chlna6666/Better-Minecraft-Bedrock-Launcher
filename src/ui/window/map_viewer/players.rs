@@ -275,6 +275,7 @@ struct PlayerRefreshResult {
 
 impl MapViewerWindowView {
     pub(super) fn refresh_players(&mut self, cx: &mut Context<Self>) {
+        self.ensure_player_item_catalog(cx);
         self.players.generation = self.players.generation.saturating_add(1);
         self.players.loading = true;
         self.players.error = None;
@@ -847,8 +848,46 @@ impl MapViewerWindowView {
         self.last_synced_canvas_snapshot_key = None;
     }
 
+    pub(super) fn ensure_player_item_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.player_item_catalog_loaded || self.player_item_catalog_loading {
+            return;
+        }
+
+        let instance_root = PathBuf::from(self.version.path.as_ref());
+        let slot = player_item_catalog_slot(&instance_root);
+        if let Some(cached) = slot.get().cloned() {
+            self.player_item_catalog = cached;
+            self.player_item_catalog_loaded = true;
+            return;
+        }
+
+        self.player_item_catalog_loading = true;
+        cx.spawn(async move |handle, cx| {
+            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+                Arc::clone(slot.get_or_init(|| Arc::new(load_item_catalog(&instance_root))))
+            })
+            .await;
+
+            handle.update(cx, move |this, cx| {
+                this.player_item_catalog_loading = false;
+                match loaded {
+                    Ok(catalog) => {
+                        this.player_item_catalog = catalog;
+                        this.player_item_catalog_loaded = true;
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "map viewer player item catalog load failed");
+                    }
+                }
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     pub(super) fn player_item_catalog(&self) -> Arc<Vec<PlayerItemTexture>> {
-        cached_item_catalog(&PathBuf::from(self.version.path.as_ref()))
+        Arc::clone(&self.player_item_catalog)
     }
 
     pub(super) fn player_quick_item_catalog(&self) -> Vec<PlayerItemTexture> {
@@ -1662,21 +1701,21 @@ fn normalize_item_id(value: &str) -> String {
     }
 }
 
-fn cached_item_catalog(instance_root: &Path) -> Arc<Vec<PlayerItemTexture>> {
-    static CACHE: OnceLock<Mutex<StdHashMap<PathBuf, Arc<Vec<PlayerItemTexture>>>>> =
-        OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(StdHashMap::new()));
-    if let Ok(cache) = cache.lock()
-        && let Some(cached) = cache.get(instance_root)
-    {
-        return cached.clone();
-    }
+type PlayerItemCatalogSlot = Arc<OnceLock<Arc<Vec<PlayerItemTexture>>>>;
 
-    let loaded = Arc::new(load_item_catalog(instance_root));
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(instance_root.to_path_buf(), loaded.clone());
-    }
-    loaded
+fn player_item_catalog_slot(instance_root: &Path) -> PlayerItemCatalogSlot {
+    static CACHE: OnceLock<Mutex<StdHashMap<PathBuf, PlayerItemCatalogSlot>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(StdHashMap::new()));
+    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(
+        cache
+            .entry(instance_root.to_path_buf())
+            .or_insert_with(|| Arc::new(OnceLock::new())),
+    )
+}
+
+pub(super) fn cached_item_catalog_snapshot(instance_root: &Path) -> Option<Arc<Vec<PlayerItemTexture>>> {
+    player_item_catalog_slot(instance_root).get().cloned()
 }
 
 fn player_resource_pack_roots(instance_root: &Path) -> Vec<PathBuf> {

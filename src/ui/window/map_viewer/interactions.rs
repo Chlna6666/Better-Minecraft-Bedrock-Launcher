@@ -342,6 +342,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn open_right_player_panel(&mut self, cx: &mut Context<Self>) {
+        self.ensure_player_item_catalog(cx);
         if self.ui_state.active_right_panel == MapViewerRightPanel::Preview3d {
             self.clear_preview_3d_resources(false);
         }
@@ -402,6 +403,7 @@ impl MapViewerWindowView {
         self.ui_state.active_left_panel = panel;
         self.ui_state.left_panel_open = true;
         if panel == MapViewerLeftPanel::Players {
+            self.ensure_player_item_catalog(cx);
             self.player_workspace.center = PlayerWorkspaceCenter::Inventory;
             if self.players.players.is_empty() {
                 self.player_workspace.open_first_after_refresh = true;

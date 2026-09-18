@@ -327,6 +327,12 @@ impl MapViewerWindowView {
             editor
         });
         let player_workspace = PlayerWorkspaceState::new(window, cx);
+        let player_item_catalog_root = PathBuf::from(init.version.path.as_ref());
+        let cached_player_item_catalog =
+            cached_item_catalog_snapshot(&player_item_catalog_root);
+        let player_item_catalog_loaded = cached_player_item_catalog.is_some();
+        let player_item_catalog =
+            cached_player_item_catalog.unwrap_or_else(|| Arc::new(Vec::new()));
         let mut subscriptions = vec![cx.observe_window_bounds(window, |this, window, cx| {
             if this.update_viewport_size(window) {
                 this.invalidate_professional_overlay_for_viewport_change();
@@ -405,6 +411,9 @@ impl MapViewerWindowView {
             history: MapHistoryState::default(),
             players: PlayerPanelState::default(),
             player_workspace,
+            player_item_catalog,
+            player_item_catalog_loading: false,
+            player_item_catalog_loaded,
             preview_3d: Preview3dState::default(),
             map_focus_handle,
             preview_3d_focus_handle: cx.focus_handle().tab_stop(true),
