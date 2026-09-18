@@ -193,9 +193,6 @@ impl Interactivity {
                         let clicked_state = clicked_state.borrow();
                         self.active = Some(clicked_state.element);
                     }
-                    if self.hover_style.is_some() || self.group_hover_style.is_some() {
-                        element_state.ensure_style_hover_state();
-                    }
                     self.sync_active_tooltip(element_state, window);
                 }
 
@@ -314,13 +311,7 @@ impl Interactivity {
                         .insert(debug_selector.clone(), window.visual_bounds(bounds));
                 }
 
-                self.paint_hover_group_handler(
-                    global_id,
-                    bounds,
-                    element_state.as_mut(),
-                    window,
-                    cx,
-                );
+                self.paint_hover_group_handler(global_id, bounds, window, cx);
 
                 if style.visibility == Visibility::Hidden {
                     return (style, element_state);

@@ -9,9 +9,6 @@ use super::tooltip::ActiveTooltip;
 pub struct InteractiveElementState {
     pub(crate) focus_handle: Option<FocusHandle>,
     pub(crate) clicked_state: Option<Rc<RefCell<ElementClickedState>>>,
-    /// Persistent hover state used by style resolution across layout/prepaint/paint.
-    pub(crate) style_hover_state: Option<Rc<RefCell<ElementHoverState>>>,
-    /// State owned by the imperative hover listener.
     pub(crate) hover_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
@@ -34,13 +31,6 @@ impl ElementClickedState {
     }
 }
 
-/// Whether the element itself or one of its hover groups is hovered.
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
-pub(crate) struct ElementHoverState {
-    pub(crate) group: bool,
-    pub(crate) element: bool,
-}
-
 fn ensure_default<T: Default>(option: &mut Option<Rc<RefCell<T>>>) -> Rc<RefCell<T>> {
     match option {
         Some(value) => value.clone(),
@@ -51,10 +41,6 @@ fn ensure_default<T: Default>(option: &mut Option<Rc<RefCell<T>>>) -> Rc<RefCell
 impl InteractiveElementState {
     pub(crate) fn ensure_clicked_state(&mut self) -> Rc<RefCell<ElementClickedState>> {
         ensure_default(&mut self.clicked_state)
-    }
-
-    pub(crate) fn ensure_style_hover_state(&mut self) -> Rc<RefCell<ElementHoverState>> {
-        ensure_default(&mut self.style_hover_state)
     }
 
     pub(crate) fn ensure_hover_state(&mut self) -> Rc<RefCell<bool>> {

@@ -578,38 +578,12 @@ impl Window {
             .rendered_frame
             .retained_element_ranges
             .get(retained_id)?;
-
-        // Mirror WGPUI's retained-layer correctness rule: pointer state is not an entity
-        // dependency, so a cache cannot prove hover-sensitive output is still valid merely from
-        // semantic/layout keys. Repaint while the pointer is inside the element, and for the first
-        // frame after it leaves. Unrelated siblings remain independently replayable.
-        if !retained_pointer_allows_reuse(
-            bounds,
-            retained.had_pointer,
-            self.mouse_position(),
-        ) {
-            return None;
-        }
-
         let plain_text_proven = plain_text_key
             .zip(retained.plain_text_key.as_ref())
             .is_some_and(|(current, previous)| {
                 current == previous && retained_plain_text_range_is_side_effect_free(retained)
             });
         let div_semantics_proven = self.retained_div_semantics_match(retained, layout_id);
-
-        // WGPUI does not generically replay arbitrary element subtrees: its retained fast paths are
-        // explicit cached views/layers with a dependency contract. Our element reconciler must be
-        // at least as conservative. A stable retained address and unchanged bounds are not proof
-        // that paint-time interaction, custom element state, or descendant output stayed equal.
-        //
-        // Only skip an element lifecycle when this frame has an exact semantic proof. Safe Divs
-        // recursively include every child's semantic generation; interactive/custom descendants
-        // intentionally prevent that proof from being constructed. Plain text uses its separate
-        // side-effect-free exact-output proof. Everything else executes prepaint/paint normally.
-        if !retained_outer_replay_semantics_proven(div_semantics_proven, plain_text_proven) {
-            return None;
-        }
 
         // ReconcileSubtree means descendants may have changed even when this element's own bounds
         // are stable. Replay is admitted only by two independent proofs: recursive layout identity
@@ -685,7 +659,6 @@ impl Window {
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let paint_context = self.current_retained_paint_context();
-        let had_pointer = bounds.contains(&self.mouse_position());
         let semantic_proof = self
             .next_frame
             .retained_layout_semantics
@@ -712,7 +685,6 @@ impl Window {
             key,
             RetainedElementRange {
                 bounds,
-                had_pointer,
                 layout_fingerprint,
                 semantic_descriptor,
                 semantic_generation,
@@ -756,7 +728,6 @@ impl Window {
 
         let target_metadata_start = self.next_frame.retained_element_order.len();
         let mut rebased = Vec::with_capacity(source_metadata.end - source_metadata.start);
-        let pointer_position = self.mouse_position();
 
         for source_index in source_metadata.clone() {
             let key = self.rendered_frame.retained_element_order[source_index].clone();
@@ -823,7 +794,6 @@ impl Window {
                 key,
                 RetainedElementRange {
                     bounds: source_range.bounds,
-                    had_pointer: source_range.bounds.contains(&pointer_position),
                     layout_fingerprint: source_range.layout_fingerprint,
                     semantic_descriptor: source_range.semantic_descriptor.clone(),
                     semantic_generation: source_range.semantic_generation,
@@ -845,22 +815,6 @@ impl Window {
         }
         true
     }
-}
-
-fn retained_pointer_allows_reuse(
-    bounds: Bounds<Pixels>,
-    had_pointer: bool,
-    pointer_position: Point<Pixels>,
-) -> bool {
-    !had_pointer && !bounds.contains(&pointer_position)
-}
-
-#[inline]
-fn retained_outer_replay_semantics_proven(
-    div_semantics_proven: bool,
-    plain_text_proven: bool,
-) -> bool {
-    div_semantics_proven || plain_text_proven
 }
 
 fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {
@@ -944,36 +898,4 @@ fn retained_metadata_range_is_valid(range: &Range<usize>, len: usize) -> bool {
 
 fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {
     start <= end && end <= len
-}
-
-#[cfg(test)]
-mod retained_pointer_reuse_tests {
-    use super::*;
-
-    fn bounds() -> Bounds<Pixels> {
-        Bounds {
-            origin: point(px(10.0), px(10.0)),
-            size: size(px(100.0), px(80.0)),
-        }
-    }
-
-    #[test]
-    fn retained_replay_requires_pointer_outside_in_both_frames() {
-        let bounds = bounds();
-        let outside = point(px(0.0), px(0.0));
-        let inside = point(px(20.0), px(20.0));
-
-        assert!(retained_pointer_allows_reuse(bounds, false, outside));
-        assert!(!retained_pointer_allows_reuse(bounds, false, inside));
-        assert!(!retained_pointer_allows_reuse(bounds, true, outside));
-        assert!(!retained_pointer_allows_reuse(bounds, true, inside));
-    }
-
-    #[test]
-    fn retained_outer_replay_requires_exact_semantic_proof() {
-        assert!(retained_outer_replay_semantics_proven(true, false));
-        assert!(retained_outer_replay_semantics_proven(false, true));
-        assert!(retained_outer_replay_semantics_proven(true, true));
-        assert!(!retained_outer_replay_semantics_proven(false, false));
-    }
 }

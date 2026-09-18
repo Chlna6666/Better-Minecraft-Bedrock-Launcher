@@ -1,6 +1,6 @@
 use crate::{
     App, Bounds, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId, LayoutStyle,
-    MouseMoveEvent, Pixels, SharedString, Style, Window, record_style_refine,
+    MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style, Window, record_style_refine,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -34,7 +34,7 @@ impl GroupHitboxes {
 }
 
 use super::interactivity::Interactivity;
-use super::state::{ElementHoverState, InteractiveElementState};
+use super::state::InteractiveElementState;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ComputedStyleKey {
@@ -71,24 +71,15 @@ impl Interactivity {
             key.focused = self.focus_style.is_some() && focus_handle.is_focused(window);
         }
 
-        if !key.has_active_drag {
-            let persisted_hover = element_state
-                .as_deref()
-                .and_then(|state| state.style_hover_state.as_ref())
-                .map(|state| *state.borrow())
-                .unwrap_or_else(ElementHoverState::default);
-
-            key.group_hovered = self.group_hover_style.is_some()
-                && if hitbox.is_some() {
-                    self.group_hover_style
-                        .as_ref()
-                        .and_then(|group_hover| GroupHitboxes::get(&group_hover.group, cx))
-                        .is_some_and(|group_hitbox_id| group_hitbox_id.is_hovered(window))
-                } else {
-                    persisted_hover.group
-                };
-            key.hovered = self.hover_style.is_some()
-                && hitbox.map_or(persisted_hover.element, |hitbox| hitbox.is_hovered(window));
+        if let Some(hitbox) = hitbox {
+            if !key.has_active_drag {
+                key.group_hovered = self
+                    .group_hover_style
+                    .as_ref()
+                    .and_then(|group_hover| GroupHitboxes::get(&group_hover.group, cx))
+                    .is_some_and(|group_hitbox_id| group_hitbox_id.is_hovered(window));
+                key.hovered = self.hover_style.is_some() && hitbox.is_hovered(window);
+            }
         }
 
         if let Some(element_state) = element_state
@@ -143,8 +134,7 @@ impl Interactivity {
     pub(crate) fn paint_hover_group_handler(
         &self,
         _global_id: Option<&GlobalElementId>,
-        _bounds: Bounds<Pixels>,
-        element_state: Option<&mut InteractiveElementState>,
+        bounds: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -154,23 +144,37 @@ impl Interactivity {
             .and_then(|group_hover| GroupHitboxes::get(&group_hover.group, cx));
 
         if let Some(group_hitbox) = group_hitbox {
-            let initial_hovered = group_hitbox.is_hovered(window);
-            let hover_state = element_state
-                .and_then(|state| state.style_hover_state.as_ref())
-                .cloned();
+            let was_hovered = group_hitbox.is_hovered(window);
             let current_view = window.current_view();
+            let retained_path = window.current_retained_element_id();
+            let descendants_dirty = self.interaction_affects_descendants();
+
+            if was_hovered {
+                let exit_retained_path = retained_path.clone();
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture {
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            exit_retained_path.as_ref(),
+                            bounds,
+                            descendants_dirty,
+                            cx,
+                        );
+                    }
+                });
+            }
 
             window.on_mouse_hit_test_transition(
                 move |_: &MouseMoveEvent, phase, window, cx| {
-                    let group_hovered = group_hitbox.is_hovered(window);
-                    let was_group_hovered = hover_state
-                        .as_ref()
-                        .map_or(initial_hovered, |state| state.borrow().group);
-                    if phase == DispatchPhase::Capture && group_hovered != was_group_hovered {
-                        if let Some(hover_state) = &hover_state {
-                            hover_state.borrow_mut().group = group_hovered;
-                        }
-                        cx.notify(current_view);
+                    let hovered = group_hitbox.is_hovered(window);
+                    if phase == DispatchPhase::Capture && hovered != was_hovered {
+                        window.notify_interactive_region_scoped(
+                            current_view,
+                            retained_path.as_ref(),
+                            bounds,
+                            descendants_dirty,
+                            cx,
+                        );
                     }
                 },
             );

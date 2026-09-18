@@ -220,12 +220,14 @@ impl Window {
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, _| {
-                    // Native enter/leave changes window-level pointer state. Follow upstream GPUI:
-                    // request one coherent frame instead of synthesizing an empty hit-test and
-                    // invalidating retained hover paths independently.
+                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
+                    // CursorEntered does not carry a fresh pointer coordinate. Re-evaluating the
+                    // client resize edge here would reuse the last CursorLeft position and can
+                    // leave a stale horizontal/vertical resize cursor in the middle of the window.
+                    // Normalize the boundary transition to Arrow; the first real MouseMove then
+                    // restores the current element/resize cursor from its fresh coordinate.
                     window.hovered.set(active);
-                    window.refresh();
+                    cx.platform.set_cursor_style(CursorStyle::Arrow);
                 }));
             }
         }));
