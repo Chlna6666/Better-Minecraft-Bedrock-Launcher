@@ -2199,9 +2199,11 @@ pub fn open_external_url(url: impl AsRef<str>) -> PluginResult<()> {
     )
 }
 
-/// Reads a declared/allowed text resource from disk.
+/// Reads a declared/allowed text resource through the host resource cache.
 ///
-/// This performs host filesystem I/O and is rejected while rendering plugin UI.
+/// Exact-file allowlist entries are prewarmed during plugin reload. Other cache misses schedule a
+/// background read and return a `resource-loading` error; render callers are invalidated
+/// automatically when the resource becomes ready.
 pub fn read_resource_text(path: impl AsRef<str>) -> PluginResult<String> {
     match host_call(
         HostOp::ReadResourceText,
@@ -2214,9 +2216,11 @@ pub fn read_resource_text(path: impl AsRef<str>) -> PluginResult<String> {
     }
 }
 
-/// Reads a declared/allowed binary resource from disk.
+/// Reads a declared/allowed binary resource through the host resource cache.
 ///
-/// This performs host filesystem I/O and is rejected while rendering plugin UI.
+/// Exact-file allowlist entries are prewarmed during plugin reload. Other cache misses schedule a
+/// background read and return a `resource-loading` error; render callers are invalidated
+/// automatically when the resource becomes ready.
 pub fn read_resource_bytes(path: impl AsRef<str>) -> PluginResult<Vec<u8>> {
     match host_call(
         HostOp::ReadResourceBytes,

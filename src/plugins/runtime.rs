@@ -56,7 +56,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const HTTP_MAX_BYTES: usize = 512 * 1024;
 const STORAGE_KEY_MAX_BYTES: usize = 128;
 
-static HTTP_REFRESH_NOTIFICATION: OnceLock<
+static ASYNC_HOST_REFRESH_NOTIFICATION: OnceLock<
     Mutex<Option<crate::plugins::watcher::PluginWatcherSender>>,
 > = OnceLock::new();
 static PLUGIN_PERSISTENCE_TX: OnceLock<
@@ -150,6 +150,7 @@ struct PreparedPluginResources {
     icon_path: Option<PathBuf>,
     config_text: std::result::Result<String, Arc<str>>,
     storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
+    resource_values: BTreeMap<String, Arc<[u8]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -265,7 +266,10 @@ enum RenderContext {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-enum HttpInvalidationTarget {
+enum PluginInvalidationTarget {
+    Plugin {
+        plugin_id: String,
+    },
     Page {
         plugin_id: String,
         page_id: String,
@@ -277,10 +281,12 @@ enum HttpInvalidationTarget {
     },
 }
 
-impl HttpInvalidationTarget {
+impl PluginInvalidationTarget {
     fn plugin_id(&self) -> &str {
         match self {
-            Self::Page { plugin_id, .. } | Self::Injection { plugin_id, .. } => plugin_id,
+            Self::Plugin { plugin_id }
+            | Self::Page { plugin_id, .. }
+            | Self::Injection { plugin_id, .. } => plugin_id,
         }
     }
 }
@@ -300,7 +306,7 @@ struct HttpCacheEntry {
     fetched_at: Option<Instant>,
     fetched_at_unix_ms: Option<u64>,
     refreshing: bool,
-    subscribers: BTreeSet<HttpInvalidationTarget>,
+    subscribers: BTreeSet<PluginInvalidationTarget>,
 }
 
 #[derive(Debug)]
@@ -320,6 +326,53 @@ struct PluginHttpFetchCacheState {
     entries: BTreeMap<String, HttpCacheEntry>,
     sender: mpsc::Sender<HttpRefreshResult>,
     receiver: Arc<Mutex<mpsc::Receiver<HttpRefreshResult>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ResourceCacheKey {
+    plugin_id: String,
+    path: String,
+}
+
+#[derive(Debug)]
+struct ResourceCacheEntry {
+    bytes: Option<Arc<[u8]>>,
+    error: Option<String>,
+    loading: bool,
+    subscribers: BTreeSet<PluginInvalidationTarget>,
+}
+
+#[derive(Debug)]
+struct ResourceLoadResult {
+    key: ResourceCacheKey,
+    result: std::result::Result<Vec<u8>, String>,
+}
+
+#[derive(Clone, Debug)]
+struct PluginResourceCache {
+    state: Arc<Mutex<PluginResourceCacheState>>,
+    finished_refresh_pending: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct PluginResourceCacheState {
+    entries: BTreeMap<ResourceCacheKey, ResourceCacheEntry>,
+    sender: mpsc::Sender<ResourceLoadResult>,
+    receiver: Arc<Mutex<mpsc::Receiver<ResourceLoadResult>>>,
+}
+
+impl Default for PluginResourceCache {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            state: Arc::new(Mutex::new(PluginResourceCacheState {
+                entries: BTreeMap::new(),
+                sender,
+                receiver: Arc::new(Mutex::new(receiver)),
+            })),
+            finished_refresh_pending: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl Default for PluginHttpFetchCache {
@@ -364,6 +417,7 @@ struct HostState {
     translations: BTreeMap<String, BTreeMap<String, String>>,
     session: BTreeMap<String, String>,
     http_cache: PluginHttpFetchCache,
+    resource_cache: PluginResourceCache,
     render_context: Option<RenderContext>,
     theme_snapshot: abi::ThemeSnapshot,
     storage_dir: PathBuf,
@@ -399,6 +453,7 @@ pub struct PluginRegistry {
     render_cache: RenderCache,
     logs: BTreeMap<String, VecDeque<PluginLogEntry>>,
     http_cache: PluginHttpFetchCache,
+    resource_cache: PluginResourceCache,
     module_cache: BTreeMap<String, Module>,
     generation: u64,
     reload_tx: Option<crate::plugins::watcher::PluginWatcherSender>,
@@ -442,6 +497,9 @@ pub struct PluginMemorySnapshot {
     pub http_cache_entries: usize,
     pub http_cache_body_bytes: usize,
     pub http_cache_error_bytes: usize,
+    pub resource_cache_entries: usize,
+    pub resource_cache_bytes: usize,
+    pub resource_cache_error_bytes: usize,
     pub log_entries: usize,
     pub log_bytes: usize,
     pub total_estimated_bytes: usize,
@@ -479,6 +537,7 @@ impl PluginRegistry {
             render_cache: RenderCache::default(),
             logs: BTreeMap::new(),
             http_cache: PluginHttpFetchCache::default(),
+            resource_cache: PluginResourceCache::default(),
             module_cache: BTreeMap::new(),
             generation: 0,
             reload_tx: None,
@@ -577,6 +636,9 @@ impl PluginRegistry {
                 let http_cache = self
                     .http_cache
                     .memory_snapshot_for_plugin(instance.manifest.id.as_str());
+                let resource_cache = self
+                    .resource_cache
+                    .memory_snapshot_for_plugin(instance.manifest.id.as_str());
                 let log = plugin_log_memory(
                     self.logs
                         .get(instance.manifest.id.as_str())
@@ -587,6 +649,8 @@ impl PluginRegistry {
                     .saturating_add(render_cache.estimated_bytes)
                     .saturating_add(http_cache.body_bytes)
                     .saturating_add(http_cache.error_bytes)
+                    .saturating_add(resource_cache.bytes)
+                    .saturating_add(resource_cache.error_bytes)
                     .saturating_add(log.bytes);
                 PluginMemorySnapshot {
                     plugin_id: instance.manifest.id.clone(),
@@ -600,6 +664,9 @@ impl PluginRegistry {
                     http_cache_entries: http_cache.entries,
                     http_cache_body_bytes: http_cache.body_bytes,
                     http_cache_error_bytes: http_cache.error_bytes,
+                    resource_cache_entries: resource_cache.entries,
+                    resource_cache_bytes: resource_cache.bytes,
+                    resource_cache_error_bytes: resource_cache.error_bytes,
                     log_entries: log.entries,
                     log_bytes: log.bytes,
                     total_estimated_bytes: total,
@@ -1043,6 +1110,7 @@ impl PluginRegistry {
         self.pages = next_pages;
         self.injections.clear();
         self.render_cache.clear();
+        self.resource_cache = PluginResourceCache::default();
         self.module_cache.clear();
         self.loaded_once = true;
         Ok(())
@@ -1241,6 +1309,22 @@ impl PluginRegistry {
             }
             Err(error) => {
                 let error_message = crate::plugins::manifest::format_error_chain(&error);
+                if error_message.contains("resource-loading") {
+                    debug!(
+                        plugin_id,
+                        error = %error_message,
+                        "plugin lazy load deferred until resource cache is ready"
+                    );
+                    // Resource cache miss is transient. The async resource loader registered a
+                    // plugin-wide subscriber and will request a refresh when bytes arrive. Keep the
+                    // instance retryable and never roll back a valid installed package for this.
+                    if let Some(instance) = self.plugins.get_mut(plugin_id) {
+                        instance.state = PluginLoadState::Unloaded;
+                        instance.runtime = None;
+                    }
+                    return Err(anyhow!("{}", error_message));
+                }
+
                 warn!(
                     plugin_id,
                     error = %error_message,
@@ -1314,11 +1398,14 @@ impl PluginRegistry {
 
         let locale = current_locale_code();
         let storage_dir = self.plugin_storage_dir(&manifest.id);
+        self.resource_cache
+            .seed(&manifest.id, &prepared_resources.resource_values);
         let host_state = Rc::new(RefCell::new(HostState::new(
             manifest,
             locale,
             translations,
             self.http_cache.clone(),
+            self.resource_cache.clone(),
             storage_dir,
             prepared_resources.config_text.clone(),
             prepared_resources.storage_values.clone(),
@@ -1692,18 +1779,22 @@ impl PluginRegistry {
         }
     }
 
-    fn apply_http_refreshes(&mut self) -> bool {
-        let invalidations = self.http_cache.drain_finished();
+    fn apply_async_host_refreshes(&mut self) -> bool {
+        let mut invalidations = self.http_cache.drain_finished();
+        invalidations.extend(self.resource_cache.drain_finished());
         if invalidations.is_empty() {
             return false;
         }
         for invalidation in invalidations {
             match invalidation {
-                HttpInvalidationTarget::Page { plugin_id, page_id } => {
+                PluginInvalidationTarget::Plugin { plugin_id } => {
+                    self.render_cache.invalidate_plugin(&plugin_id);
+                }
+                PluginInvalidationTarget::Page { plugin_id, page_id } => {
                     self.render_cache
                         .invalidate_plugin_page(&plugin_id, &page_id);
                 }
-                HttpInvalidationTarget::Injection {
+                PluginInvalidationTarget::Injection {
                     plugin_id,
                     slot,
                     page,
@@ -1719,8 +1810,8 @@ impl PluginRegistry {
         true
     }
 
-    fn has_finished_http_refreshes(&self) -> bool {
-        self.http_cache.has_finished_refreshes()
+    fn has_finished_async_host_refreshes(&self) -> bool {
+        self.http_cache.has_finished_refreshes() || self.resource_cache.has_finished_refreshes()
     }
 
     pub fn set_watcher(
@@ -1763,6 +1854,7 @@ impl HostState {
         locale: String,
         translations: BTreeMap<String, BTreeMap<String, String>>,
         http_cache: PluginHttpFetchCache,
+        resource_cache: PluginResourceCache,
         storage_dir: PathBuf,
         config_text: std::result::Result<String, Arc<str>>,
         storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
@@ -1775,6 +1867,7 @@ impl HostState {
             translations,
             session: BTreeMap::new(),
             http_cache,
+            resource_cache,
             render_context: None,
             theme_snapshot: abi::ThemeSnapshot::light_default(),
             storage_dir,
@@ -2479,24 +2572,30 @@ fn handle_host_request(
         (code, abi::HostRequest::ReadResourceText { path })
             if code == abi::HostOp::ReadResourceText.code() =>
         {
-            state.require_capability(PluginCapability::ResourceRead)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "resource text read")?;
-            let bytes = read_plugin_resource(&state.manifest, &path)?;
-            let text = String::from_utf8(bytes).map_err(|error| abi::HostError {
-                code: "resource-not-utf8".to_string(),
-                message: format!("plugin resource {path} is not utf-8: {error}"),
-            })?;
+            let bytes = state.resource_cache.read(
+                &state.manifest,
+                &state.plugin_id,
+                state.render_context.as_ref(),
+                &path,
+            )?;
+            let text = std::str::from_utf8(bytes.as_ref())
+                .map_err(|error| abi::HostError {
+                    code: "resource-not-utf8".to_string(),
+                    message: format!("plugin resource {path} is not utf-8: {error}"),
+                })?
+                .to_owned();
             Ok(abi::HostResponse::String(text))
         }
         (code, abi::HostRequest::ReadResourceBytes { path })
             if code == abi::HostOp::ReadResourceBytes.code() =>
         {
-            state.require_capability(PluginCapability::ResourceRead)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "resource bytes read")?;
-            Ok(abi::HostResponse::Bytes(read_plugin_resource(
+            let bytes = state.resource_cache.read(
                 &state.manifest,
+                &state.plugin_id,
+                state.render_context.as_ref(),
                 &path,
-            )?))
+            )?;
+            Ok(abi::HostResponse::Bytes(bytes.as_ref().to_vec()))
         }
         (
             code,
@@ -2710,33 +2809,6 @@ fn manifest_has_any_readme(manifest: &PluginManifest) -> bool {
             .readme_locales
             .values()
             .any(|path| manifest.root_dir.join(path).exists())
-}
-
-fn read_plugin_resource(
-    manifest: &PluginManifest,
-    path: &str,
-) -> std::result::Result<Vec<u8>, abi::HostError> {
-    let resource_path = manifest
-        .resource_path(path)
-        .map_err(|error| abi::HostError {
-            code: "resource-denied".to_string(),
-            message: error.to_string(),
-        })?;
-    let bytes = fs::read(&resource_path).map_err(|error| abi::HostError {
-        code: "resource-read-failed".to_string(),
-        message: format!(
-            "read plugin resource {} failed: {error}",
-            resource_path.display()
-        ),
-    })?;
-    let max_bytes = usize::try_from(manifest.limits.max_resource_bytes).unwrap_or(usize::MAX);
-    if bytes.len() > max_bytes {
-        return Err(abi::HostError {
-            code: "resource-too-large".to_string(),
-            message: format!("plugin resource {path} exceeds {max_bytes} bytes"),
-        });
-    }
-    Ok(bytes)
 }
 
 fn call_plugin_sidecar(
@@ -3186,6 +3258,13 @@ struct PluginHttpCacheMemory {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+struct PluginResourceCacheMemory {
+    entries: usize,
+    bytes: usize,
+    error_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 struct PluginLogMemory {
     entries: usize,
     bytes: usize,
@@ -3230,11 +3309,11 @@ impl PluginHttpFetchCache {
             usize::try_from(manifest.limits.max_http_bytes).unwrap_or(HTTP_MAX_BYTES);
         let max_bytes = requested_max_bytes.clamp(1, manifest_max_bytes.min(HTTP_MAX_BYTES));
         let subscriber = render_context.map(|context| match context {
-            RenderContext::Page { page_id } => HttpInvalidationTarget::Page {
+            RenderContext::Page { page_id } => PluginInvalidationTarget::Page {
                 plugin_id: plugin_id.to_string(),
                 page_id: page_id.clone(),
             },
-            RenderContext::Injection { slot, page } => HttpInvalidationTarget::Injection {
+            RenderContext::Injection { slot, page } => PluginInvalidationTarget::Injection {
                 plugin_id: plugin_id.to_string(),
                 slot: *slot,
                 page: page.clone(),
@@ -3292,7 +3371,7 @@ impl PluginHttpFetchCache {
         })
     }
 
-    fn drain_finished(&self) -> Vec<HttpInvalidationTarget> {
+    fn drain_finished(&self) -> Vec<PluginInvalidationTarget> {
         if !self.finished_refresh_pending.swap(false, Ordering::AcqRel) {
             return Vec::new();
         }
@@ -3386,6 +3465,186 @@ impl PluginHttpFetchCache {
     }
 }
 
+impl PluginResourceCache {
+    fn seed(&self, plugin_id: &str, values: &BTreeMap<String, Arc<[u8]>>) {
+        if values.is_empty() {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        for (path, bytes) in values {
+            state.entries.insert(
+                ResourceCacheKey {
+                    plugin_id: plugin_id.to_string(),
+                    path: path.clone(),
+                },
+                ResourceCacheEntry {
+                    bytes: Some(Arc::clone(bytes)),
+                    error: None,
+                    loading: false,
+                    subscribers: BTreeSet::new(),
+                },
+            );
+        }
+    }
+
+    fn read(
+        &self,
+        manifest: &PluginManifest,
+        plugin_id: &str,
+        render_context: Option<&RenderContext>,
+        path: &str,
+    ) -> std::result::Result<Arc<[u8]>, abi::HostError> {
+        manifest
+            .require_capability(PluginCapability::ResourceRead)
+            .map_err(|error| abi::HostError {
+                code: "capability-denied".to_string(),
+                message: error.to_string(),
+            })?;
+        let resource_path = manifest.resource_path(path).map_err(|error| abi::HostError {
+            code: "resource-denied".to_string(),
+            message: error.to_string(),
+        })?;
+        let key = ResourceCacheKey {
+            plugin_id: plugin_id.to_string(),
+            path: path.to_string(),
+        };
+        let subscriber = match render_context {
+            Some(RenderContext::Page { page_id }) => PluginInvalidationTarget::Page {
+                plugin_id: plugin_id.to_string(),
+                page_id: page_id.clone(),
+            },
+            Some(RenderContext::Injection { slot, page }) => {
+                PluginInvalidationTarget::Injection {
+                    plugin_id: plugin_id.to_string(),
+                    slot: *slot,
+                    page: page.clone(),
+                }
+            }
+            None => PluginInvalidationTarget::Plugin {
+                plugin_id: plugin_id.to_string(),
+            },
+        };
+
+        let mut state = self.state.lock().map_err(|_| abi::HostError {
+            code: "resource-cache-lock-failed".to_string(),
+            message: "plugin resource cache lock failed".to_string(),
+        })?;
+        let sender = state.sender.clone();
+        let entry = state.entries.entry(key.clone()).or_insert_with(|| ResourceCacheEntry {
+            bytes: None,
+            error: None,
+            loading: false,
+            subscribers: BTreeSet::new(),
+        });
+        entry.subscribers.insert(subscriber);
+
+        if let Some(bytes) = entry.bytes.as_ref() {
+            return Ok(Arc::clone(bytes));
+        }
+        if let Some(error) = entry.error.as_ref() {
+            return Err(abi::HostError {
+                code: "resource-read-failed".to_string(),
+                message: error.clone(),
+            });
+        }
+        if !entry.loading {
+            entry.loading = true;
+            spawn_resource_refresh(
+                key,
+                resource_path,
+                usize::try_from(manifest.limits.max_resource_bytes).unwrap_or(usize::MAX),
+                sender,
+                Arc::clone(&self.finished_refresh_pending),
+            );
+        }
+
+        Err(abi::HostError {
+            code: "resource-loading".to_string(),
+            message: format!("plugin resource {path} is loading in the background"),
+        })
+    }
+
+    fn drain_finished(&self) -> Vec<PluginInvalidationTarget> {
+        if !self.finished_refresh_pending.swap(false, Ordering::AcqRel) {
+            return Vec::new();
+        }
+
+        let receiver = {
+            let Ok(state) = self.state.lock() else {
+                self.finished_refresh_pending.store(true, Ordering::Release);
+                return Vec::new();
+            };
+            Arc::clone(&state.receiver)
+        };
+
+        let mut results = Vec::new();
+        let Ok(receiver) = receiver.lock() else {
+            self.finished_refresh_pending.store(true, Ordering::Release);
+            return Vec::new();
+        };
+        while let Ok(result) = receiver.try_recv() {
+            results.push(result);
+        }
+        drop(receiver);
+
+        if results.is_empty() {
+            return Vec::new();
+        }
+
+        let Ok(mut state) = self.state.lock() else {
+            return Vec::new();
+        };
+        let mut invalidations = BTreeSet::new();
+        for result in results {
+            let entry = state.entries.entry(result.key).or_insert_with(|| ResourceCacheEntry {
+                bytes: None,
+                error: None,
+                loading: false,
+                subscribers: BTreeSet::new(),
+            });
+            entry.loading = false;
+            match result.result {
+                Ok(bytes) => {
+                    entry.bytes = Some(Arc::<[u8]>::from(bytes));
+                    entry.error = None;
+                }
+                Err(error) => {
+                    entry.error = Some(error);
+                }
+            }
+            invalidations.extend(entry.subscribers.iter().cloned());
+        }
+        invalidations.into_iter().collect()
+    }
+
+    fn has_finished_refreshes(&self) -> bool {
+        self.finished_refresh_pending.load(Ordering::Acquire)
+    }
+
+    fn memory_snapshot_for_plugin(&self, plugin_id: &str) -> PluginResourceCacheMemory {
+        let Ok(state) = self.state.lock() else {
+            return PluginResourceCacheMemory::default();
+        };
+        let mut memory = PluginResourceCacheMemory::default();
+        for (key, entry) in &state.entries {
+            if key.plugin_id != plugin_id {
+                continue;
+            }
+            memory.entries = memory.entries.saturating_add(1);
+            memory.bytes = memory
+                .bytes
+                .saturating_add(key.path.capacity())
+                .saturating_add(entry.bytes.as_ref().map_or(0, |bytes| bytes.len()));
+            memory.error_bytes = memory
+                .error_bytes
+                .saturating_add(entry.error.as_ref().map_or(0, String::capacity));
+        }
+        memory
+    }
+}
+
 fn plugin_log_memory(slices: Option<(&[PluginLogEntry], &[PluginLogEntry])>) -> PluginLogMemory {
     let Some((front, back)) = slices else {
         return PluginLogMemory::default();
@@ -3401,6 +3660,53 @@ fn plugin_log_memory(slices: Option<(&[PluginLogEntry], &[PluginLogEntry])>) -> 
             .saturating_add(entry.message.len());
     }
     memory
+}
+
+fn spawn_resource_refresh(
+    key: ResourceCacheKey,
+    resource_path: PathBuf,
+    max_bytes: usize,
+    sender: mpsc::Sender<ResourceLoadResult>,
+    finished_refresh_pending: Arc<AtomicBool>,
+) {
+    let fallback_key = key.clone();
+    let fallback_sender = sender.clone();
+    let fallback_finished_refresh_pending = Arc::clone(&finished_refresh_pending);
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+        let loaded = crate::tasks::runtime::run_io_blocking(move || {
+            read_plugin_resource_path(&resource_path, max_bytes)
+        })
+        .await;
+        let result = match loaded {
+            Ok(result) => result,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = sender.send(ResourceLoadResult { key, result }) {
+            warn!(error = ?error, "plugin resource refresh result receiver dropped");
+            return;
+        }
+        finished_refresh_pending.store(true, Ordering::Release);
+        notify_async_host_refresh_finished();
+    }) {
+        if let Err(send_error) = fallback_sender.send(ResourceLoadResult {
+            key: fallback_key,
+            result: Err(format!("schedule resource refresh failed: {error}")),
+        }) {
+            warn!(error = ?send_error, "plugin resource refresh result receiver dropped");
+            return;
+        }
+        fallback_finished_refresh_pending.store(true, Ordering::Release);
+        notify_async_host_refresh_finished();
+    }
+}
+
+fn read_plugin_resource_path(path: &Path, max_bytes: usize) -> std::result::Result<Vec<u8>, String> {
+    let bytes = fs::read(path)
+        .map_err(|error| format!("read plugin resource {} failed: {error}", path.display()))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("plugin resource exceeds {max_bytes} bytes"));
+    }
+    Ok(bytes)
 }
 
 fn spawn_http_refresh(
@@ -3419,7 +3725,7 @@ fn spawn_http_refresh(
             return;
         }
         finished_refresh_pending.store(true, Ordering::Release);
-        notify_http_refresh_finished();
+        notify_async_host_refresh_finished();
     }) {
         if let Err(send_error) = fallback_sender.send(HttpRefreshResult {
             url: fallback_url,
@@ -3429,7 +3735,7 @@ fn spawn_http_refresh(
             return;
         }
         fallback_finished_refresh_pending.store(true, Ordering::Release);
-        notify_http_refresh_finished();
+        notify_async_host_refresh_finished();
     }
 }
 
@@ -3861,6 +4167,7 @@ fn prepare_plugin_resources(
         .join(sanitize_storage_segment(&manifest.id));
     let storage_values = load_storage_snapshot(&storage_dir)
         .map_err(|error| Arc::<str>::from(error.message));
+    let resource_values = prepare_plugin_resource_values(manifest);
 
     PreparedPluginResources {
         has_readme: manifest_has_any_readme(manifest),
@@ -3870,7 +4177,39 @@ fn prepare_plugin_resources(
         icon_path: manifest.icon_path().filter(|path| path.exists()),
         config_text,
         storage_values,
+        resource_values,
     }
+}
+
+fn prepare_plugin_resource_values(manifest: &PluginManifest) -> BTreeMap<String, Arc<[u8]>> {
+    if !manifest.has_capability(&PluginCapability::ResourceRead) {
+        return BTreeMap::new();
+    }
+
+    let max_bytes = usize::try_from(manifest.limits.max_resource_bytes).unwrap_or(usize::MAX);
+    let mut values = BTreeMap::new();
+    for allowed in &manifest.permissions.resource_allow {
+        if allowed.ends_with('/') {
+            continue;
+        }
+        let normalized = allowed.trim_end_matches('/');
+        let Ok(path) = manifest.resource_path(normalized) else {
+            continue;
+        };
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > manifest.limits.max_resource_bytes {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if bytes.len() <= max_bytes {
+            values.insert(normalized.to_string(), Arc::<[u8]>::from(bytes));
+        }
+    }
+    values
 }
 
 fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
@@ -4039,7 +4378,7 @@ pub fn start_watcher(cx: &mut App) {
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
     match crate::plugins::watcher::spawn_plugin_watcher(plugins_dir, cx) {
         Ok((sender, task)) => {
-            set_http_refresh_sender(sender.clone());
+            set_async_host_refresh_sender(sender.clone());
             cx.update_global(|registry: &mut PluginRegistry, _cx| {
                 registry.set_watcher(sender, task);
             });
@@ -4054,15 +4393,15 @@ pub fn start_watcher(cx: &mut App) {
     }
 }
 
-fn set_http_refresh_sender(sender: crate::plugins::watcher::PluginWatcherSender) {
-    let slot = HTTP_REFRESH_NOTIFICATION.get_or_init(|| Mutex::new(None));
+fn set_async_host_refresh_sender(sender: crate::plugins::watcher::PluginWatcherSender) {
+    let slot = ASYNC_HOST_REFRESH_NOTIFICATION.get_or_init(|| Mutex::new(None));
     if let Ok(mut current) = slot.lock() {
         *current = Some(sender);
     }
 }
 
-fn notify_http_refresh_finished() {
-    let Some(slot) = HTTP_REFRESH_NOTIFICATION.get() else {
+fn notify_async_host_refresh_finished() {
+    let Some(slot) = ASYNC_HOST_REFRESH_NOTIFICATION.get() else {
         return;
     };
     let Ok(current) = slot.lock() else {
@@ -4072,7 +4411,7 @@ fn notify_http_refresh_finished() {
         return;
     };
     if let Err(error) =
-        sender.unbounded_send(crate::plugins::watcher::PluginWatcherMessage::HttpRefresh)
+        sender.unbounded_send(crate::plugins::watcher::PluginWatcherMessage::AsyncHostRefresh)
     {
         warn!(error = ?error, "plugin HTTP refresh notification receiver dropped");
     }
@@ -4080,7 +4419,7 @@ fn notify_http_refresh_finished() {
 
 pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<ViewTree>> {
     ensure_loaded(cx);
-    drain_http_refreshes(cx);
+    drain_async_host_refreshes(cx);
 
     {
         let registry = cx.global::<PluginRegistry>();
@@ -4105,7 +4444,7 @@ pub fn render_injections(
     page: Option<&str>,
 ) -> Vec<RenderedInjection> {
     ensure_loaded(cx);
-    drain_http_refreshes(cx);
+    drain_async_host_refreshes(cx);
 
     {
         let registry = cx.global::<PluginRegistry>();
@@ -4143,12 +4482,12 @@ pub fn injection_registrations(
         .collect()
 }
 
-pub(crate) fn drain_http_refreshes(cx: &mut App) -> bool {
-    if !cx.global::<PluginRegistry>().has_finished_http_refreshes() {
+pub(crate) fn drain_async_host_refreshes(cx: &mut App) -> bool {
+    if !cx.global::<PluginRegistry>().has_finished_async_host_refreshes() {
         return false;
     }
 
-    cx.update_global(|registry: &mut PluginRegistry, _cx| registry.apply_http_refreshes())
+    cx.update_global(|registry: &mut PluginRegistry, _cx| registry.apply_async_host_refreshes())
 }
 
 pub fn has_injections(cx: &App, slot: InjectionSlot, page: Option<&str>) -> bool {
@@ -4838,13 +5177,16 @@ max_resource_bytes = 16
         )
         .expect("manifest should parse");
 
-        let bytes =
-            read_plugin_resource(&manifest, "assets/readme.txt").expect("resource should read");
+        let allowed_path = manifest
+            .resource_path("assets/readme.txt")
+            .expect("listed resource path should be allowed");
+        let bytes = read_plugin_resource_path(&allowed_path, 16).expect("resource should read");
         assert_eq!(bytes, b"hello");
 
-        let error = read_plugin_resource(&manifest, "plugin.toml")
+        let error = manifest
+            .resource_path("plugin.toml")
             .expect_err("unlisted resource should be denied");
-        assert_eq!(error.code, "resource-denied");
+        assert!(error.to_string().contains("not allowed"));
     }
 
     #[test]
@@ -4969,7 +5311,7 @@ capabilities = ["event.global", "clipboard.read"]
     #[test]
     fn http_refresh_drain_consumes_finished_result() {
         let cache = PluginHttpFetchCache::default();
-        let invalidation = HttpInvalidationTarget::Page {
+        let invalidation = PluginInvalidationTarget::Page {
             plugin_id: "hello-plugin".to_string(),
             page_id: "main".to_string(),
         };

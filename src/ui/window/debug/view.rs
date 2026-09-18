@@ -385,7 +385,7 @@ fn plugin_memory_summary(report: &PluginMemoryReport) -> String {
 
 fn plugin_memory_line(plugin: &PluginMemorySnapshot) -> String {
     format!(
-        "{} ({}) total={} wasm={} ({} pages) render={} entries/{} http={} entries/{} body + {} errors logs={} entries/{} enabled={} loaded={}",
+        "{} ({}) total={} wasm={} ({} pages) render={} entries/{} http={} entries/{} body + {} errors resources={} entries/{} + {} errors logs={} entries/{} enabled={} loaded={}",
         plugin.name,
         plugin.plugin_id,
         bytes_to_human(plugin.total_estimated_bytes as u64),
@@ -396,6 +396,9 @@ fn plugin_memory_line(plugin: &PluginMemorySnapshot) -> String {
         plugin.http_cache_entries,
         bytes_to_human(plugin.http_cache_body_bytes as u64),
         bytes_to_human(plugin.http_cache_error_bytes as u64),
+        plugin.resource_cache_entries,
+        bytes_to_human(plugin.resource_cache_bytes as u64),
+        bytes_to_human(plugin.resource_cache_error_bytes as u64),
         plugin.log_entries,
         bytes_to_human(plugin.log_bytes as u64),
         bool_label(plugin.enabled),
