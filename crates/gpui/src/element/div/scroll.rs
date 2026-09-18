@@ -259,7 +259,7 @@ impl Interactivity {
         bounds: Bounds<Pixels>,
         style: &crate::Style,
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> Point<Pixels> {
         fn round_to_two_decimals(pixels: Pixels) -> Pixels {
             const ROUNDING_FACTOR: f32 = 100.0;
@@ -293,12 +293,22 @@ impl Interactivity {
                 scroll_offset.y.clamp(-scroll_max.height, px(0.))
             };
 
+            let mut viewport_became_measured = false;
             if let Some(mut scroll_handle_state) = tracked_scroll_handle {
+                let previous_size = scroll_handle_state.bounds.size;
+                viewport_became_measured = (previous_size.width <= px(0.)
+                    && bounds.size.width > px(0.))
+                    || (previous_size.height <= px(0.) && bounds.size.height > px(0.));
                 scroll_handle_state.max_offset = scroll_max;
                 scroll_handle_state.bounds = bounds;
             }
 
-            *scroll_offset
+            let resolved_offset = *scroll_offset;
+            drop(scroll_offset);
+            if viewport_became_measured {
+                cx.notify(window.current_view());
+            }
+            resolved_offset
         } else {
             Point::default()
         }
