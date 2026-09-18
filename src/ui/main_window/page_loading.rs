@@ -19,12 +19,32 @@ impl MainWindowView {
         let force_refresh = download_state.force_refresh_next;
         let tab = download_state.tab;
 
-        self.ensure_download_page_loaded(force_refresh, cx);
-
-        if tab == crate::ui::views::download::state::DownloadTab::ResourcePack {
-            self.ensure_manage_page_loaded(cx);
-            self.ensure_curseforge_loaded(cx);
-            self.ensure_curseforge_results_loaded(false, cx);
+        match tab {
+            crate::ui::views::download::state::DownloadTab::Game => {
+                self.ensure_download_page_loaded(force_refresh, cx);
+            }
+            crate::ui::views::download::state::DownloadTab::ResourcePack => {
+                self.ensure_manage_page_loaded(cx);
+                self.ensure_curseforge_loaded(cx);
+                self.ensure_curseforge_results_loaded(false, cx);
+            }
+            crate::ui::views::download::state::DownloadTab::Mod => {
+                // Mod catalogs and install targets are independent from the remote game-version
+                // API. Load only the active source so entering Download does not fan out several
+                // network/disk jobs that compete with input/render work.
+                self.ensure_manage_page_loaded(cx);
+                crate::ui::views::download::ensure_levilamina_support_loaded(cx);
+                let native_source = cx.read_global(
+                    |state: &crate::ui::views::download::state::DownloadPageState, _cx| {
+                        state.levilauncher_selected_loader == "native"
+                    },
+                );
+                if native_source {
+                    crate::ui::views::download::ensure_native_mods_loaded(cx);
+                } else {
+                    crate::ui::views::download::ensure_levilauncher_loaded(cx);
+                }
+            }
         }
     }
 

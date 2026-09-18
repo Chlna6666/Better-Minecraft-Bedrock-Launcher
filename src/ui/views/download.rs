@@ -330,7 +330,6 @@ pub struct DownloadPageView {
 
 impl DownloadPageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        ensure_levilamina_support_loaded(cx);
         let (
             last_observed_tab,
             last_observed_curseforge_toolbar_signature,
@@ -386,6 +385,17 @@ impl DownloadPageView {
             this.last_observed_mod_panel_signature = mod_panel_signature;
 
             if tab_changed {
+                if tab == DownloadTab::Mod {
+                    ensure_levilamina_support_loaded(cx);
+                    let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
+                        state.levilauncher_selected_loader == "native"
+                    });
+                    if native_source {
+                        ensure_native_mods_loaded(cx);
+                    } else {
+                        ensure_levilauncher_loaded(cx);
+                    }
+                }
                 cx.notify();
                 return;
             }
@@ -621,16 +631,6 @@ pub fn render_download_page(
             ..colors.border
         }));
 
-    if active_tab == DownloadTab::Mod {
-        let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
-            state.levilauncher_selected_loader == "native"
-        });
-        if native_source {
-            ensure_native_mods_loaded(cx);
-        } else {
-            ensure_levilauncher_loaded(cx);
-        }
-    }
     // ResourcePack 自己维护真实的左侧分类栏、右侧内容壳和结果列表加载态。
     // 外层统一骨架只负责游戏和模组，避免把 ResourcePack 整个页面替换掉。
     let show_loading = active_tab != DownloadTab::ResourcePack

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 use tracing::{info, warn};
 
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
@@ -192,6 +192,7 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
     sort_launch_versions(&mut versions);
     let catalog_generation = crate::core::version::catalog_events::local_version_generation();
 
+    let versions_for_cache = versions.clone();
     cx.update_global(|state: &mut LocalVersionsState, _cx| {
         if state.loaded || state.loading || !state.versions.is_empty() {
             return;
@@ -204,6 +205,27 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
         state.error = None;
     });
     sync_manage_page_state_from_local_versions(cx);
+
+    let cache_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::tasks::runtime::run_io_blocking(move || {
+            prime_version_isolation_cache(&versions_for_cache);
+        })
+        .await
+        .map_err(anyhow::Error::msg)?;
+        Ok::<(), anyhow::Error>(())
+    });
+    cx.spawn(async move |cx| {
+        if let Err(error) = cache_task.await {
+            warn!(?error, "prefetched local-version isolation cache prime failed");
+            return Ok::<(), anyhow::Error>(());
+        }
+        cx.update_global(|state: &mut LocalVersionsState, _cx| {
+            state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
+        })?;
+        cx.update(sync_manage_page_state_from_local_versions)?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach_and_log_err(cx);
 }
 
 pub fn remove_local_version(folder_name: &str, cx: &mut App) {
@@ -279,6 +301,16 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
         let mut versions = crate::core::version::api::get_version_list().await?;
         sort_launch_versions(&mut versions);
+
+        let versions_for_cache = versions.clone();
+        if let Err(error) = crate::tasks::runtime::run_io_blocking(move || {
+            prime_version_isolation_cache(&versions_for_cache);
+        })
+        .await
+        {
+            warn!(%error, "local-version isolation cache prime failed");
+        }
+
         Ok::<_, anyhow::Error>(versions)
     });
     cx.spawn(async move |cx| {
@@ -387,9 +419,12 @@ pub fn version_channel_label(i18n: &I18n, name: &str) -> SharedString {
     }
 }
 
-/// 按 (config.json 路径, mtime) 缓存版本隔离开关，避免渲染热路径重复读盘与解析 JSON。
-static VERSION_ISOLATION_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Option<SystemTime>, bool)>>> =
-    OnceLock::new();
+/// Render-time isolation lookup cache.
+///
+/// Disk metadata/read/JSON parsing is intentionally excluded from this path. Local-version
+/// refresh primes the complete cache on the blocking I/O pool before publishing the new version
+/// snapshot, so render/input work is reduced to one in-memory lookup.
+static VERSION_ISOLATION_CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
 
 fn read_enable_isolation_from_config(config_path: &std::path::Path) -> bool {
     let content = match std::fs::read_to_string(config_path) {
@@ -406,25 +441,28 @@ fn read_enable_isolation_from_config(config_path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
-    let config_path = std::path::Path::new(&*version.path).join("config.json");
-    let mtime = std::fs::metadata(&config_path)
-        .and_then(|metadata| metadata.modified())
-        .ok();
+fn prime_version_isolation_cache(versions: &[LaunchVersionEntry]) {
+    let mut next = HashMap::with_capacity(versions.len());
+    for version in versions {
+        let config_path = std::path::Path::new(version.path.as_ref()).join("config.json");
+        next.insert(
+            config_path.clone(),
+            read_enable_isolation_from_config(&config_path),
+        );
+    }
 
     let cache = VERSION_ISOLATION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(cache) = cache.lock()
-        && let Some((cached_mtime, cached_value)) = cache.get(&config_path)
-        && *cached_mtime == mtime
-    {
-        return *cached_value;
-    }
+    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache = next;
+}
 
-    let value = read_enable_isolation_from_config(&config_path);
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(config_path, (mtime, value));
-    }
-    value
+pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
+    let config_path = std::path::Path::new(version.path.as_ref()).join("config.json");
+    let Some(cache) = VERSION_ISOLATION_CACHE.get() else {
+        return false;
+    };
+    let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.get(&config_path).copied().unwrap_or(false)
 }
 
 pub fn version_target_root_path(version: &LaunchVersionEntry) -> Option<SharedString> {
