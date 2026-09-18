@@ -1170,14 +1170,10 @@ impl PluginRegistry {
                     error = %error_message,
                     "plugin lazy load failed"
                 );
-                if let Some(instance) = self.plugins.get(plugin_id)
-                    && let Err(rollback_error) =
-                        crate::plugins::manifest::rollback_installed_package(&instance.manifest)
-                {
-                    warn!(
-                        plugin_id,
-                        error = %crate::plugins::manifest::format_error_chain(&rollback_error),
-                        "failed to roll back installed plugin package"
+                if let Some(instance) = self.plugins.get(plugin_id) {
+                    schedule_installed_package_rollback(
+                        plugin_id.to_string(),
+                        instance.manifest.clone(),
                     );
                 }
                 self.push_log(
@@ -3479,6 +3475,43 @@ fn uninstall_plugin_files(
     fs::remove_dir_all(&root_dir)
         .with_context(|| format!("remove plugin directory {}", root_dir.display()))?;
     crate::plugins::state::remove_plugin_state(plugins_dir, plugin_id)
+}
+
+fn schedule_installed_package_rollback(plugin_id: String, manifest: PluginManifest) {
+    let plugin_id_for_log = plugin_id.clone();
+    let scheduled = crate::tasks::runtime::spawn_io(async move {
+        let rollback = crate::tasks::runtime::run_io_blocking(move || {
+            crate::plugins::manifest::rollback_installed_package(&manifest)
+        })
+        .await;
+
+        match rollback {
+            Ok(Ok(())) => {
+                tracing::debug!(plugin_id, "plugin package rollback finished");
+            }
+            Ok(Err(error)) => {
+                warn!(
+                    plugin_id,
+                    error = %crate::plugins::manifest::format_error_chain(&error),
+                    "failed to roll back installed plugin package"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    plugin_id,
+                    error = %error,
+                    "plugin package rollback blocking task failed"
+                );
+            }
+        }
+    });
+    if let Err(error) = scheduled {
+        warn!(
+            plugin_id = plugin_id_for_log,
+            error = %error,
+            "failed to schedule installed plugin package rollback"
+        );
+    }
 }
 
 fn prepare_plugin_reload_from_sources(
