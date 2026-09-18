@@ -2363,10 +2363,22 @@ pub fn app_info() -> PluginResult<AppInfo> {
     }
 }
 
-/// Runs an executable shipped inside the plugin's declared sidecar directory.
+/// Starts an executable shipped inside the plugin's declared sidecar directory.
 ///
-/// The host constrains the executable path, execution time, and captured output. Set
-/// `max_output_bytes` to zero to start the sidecar without synchronously waiting for it.
+/// This is the non-blocking sidecar path. The host validates the pre-indexed executable name and
+/// queues process creation on its I/O runtime; successful scheduling returns immediately.
+pub fn sidecar_start(
+    name: impl Into<String>,
+    args: impl IntoIterator<Item = impl Into<String>>,
+) -> PluginResult<()> {
+    sidecar_call(name, args, 0, 0).map(|_| ())
+}
+
+/// Compatibility entry point for the sidecar host operation.
+///
+/// `max_output_bytes == 0` queues a non-blocking start. Synchronous captured output is intentionally
+/// rejected by the host because waiting for a child process inside a WASM host call can stall the
+/// GPUI foreground thread for seconds.
 pub fn sidecar_call(
     name: impl Into<String>,
     args: impl IntoIterator<Item = impl Into<String>>,

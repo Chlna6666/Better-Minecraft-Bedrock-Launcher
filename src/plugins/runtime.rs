@@ -21,7 +21,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tinywasm::engine::{Config as TinyConfig, FuelPolicy, MemoryBackend, StackConfig};
 use tinywasm::types::{MemoryArch, WasmType, WasmValue};
@@ -151,6 +150,7 @@ struct PreparedPluginResources {
     config_text: std::result::Result<String, Arc<str>>,
     storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
     resource_values: BTreeMap<String, Arc<[u8]>>,
+    sidecar_files: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -423,6 +423,7 @@ struct HostState {
     storage_dir: PathBuf,
     config_text: std::result::Result<String, Arc<str>>,
     storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
+    sidecar_files: BTreeSet<String>,
     clipboard_text: Option<String>,
     effects: Vec<HostEffect>,
     next_window_id: u64,
@@ -1409,6 +1410,7 @@ impl PluginRegistry {
             storage_dir,
             prepared_resources.config_text.clone(),
             prepared_resources.storage_values.clone(),
+            prepared_resources.sidecar_files.clone(),
         )));
         let mut store = Store::new(engine.clone());
         let imports = host_imports(&mut store, host_state.clone());
@@ -1858,6 +1860,7 @@ impl HostState {
         storage_dir: PathBuf,
         config_text: std::result::Result<String, Arc<str>>,
         storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
+        sidecar_files: BTreeSet<String>,
     ) -> Self {
         Self {
             plugin_id: manifest.id.clone(),
@@ -1873,6 +1876,7 @@ impl HostState {
             storage_dir,
             config_text,
             storage_values,
+            sidecar_files,
             clipboard_text: None,
             effects: Vec::new(),
             next_window_id: 1,
@@ -2612,9 +2616,21 @@ fn handle_host_request(
                     message: "sidecar calls are not allowed while rendering plugin UI".to_string(),
                 });
             }
-            let output =
-                call_plugin_sidecar(&state.manifest, &name, &args, timeout_ms, max_output_bytes)?;
-            Ok(abi::HostResponse::String(output))
+            if max_output_bytes != 0 {
+                return Err(abi::HostError {
+                    code: "sidecar-sync-output-denied".to_string(),
+                    message: format!(
+                        "synchronous sidecar output capture is disabled to keep the UI thread non-blocking (requested timeout {timeout_ms} ms)"
+                    ),
+                });
+            }
+            schedule_plugin_sidecar_start(
+                &state.manifest,
+                &state.sidecar_files,
+                &name,
+                args,
+            )?;
+            Ok(abi::HostResponse::String(String::new()))
         }
         (code, abi::HostRequest::SessionGet { key }) if code == abi::HostOp::SessionGet.code() => {
             Ok(abi::HostResponse::SessionValue(
@@ -2811,98 +2827,62 @@ fn manifest_has_any_readme(manifest: &PluginManifest) -> bool {
             .any(|path| manifest.root_dir.join(path).exists())
 }
 
-fn call_plugin_sidecar(
+fn schedule_plugin_sidecar_start(
     manifest: &PluginManifest,
+    sidecar_files: &BTreeSet<String>,
     name: &str,
-    args: &[String],
-    timeout_ms: u32,
-    max_output_bytes: u32,
-) -> std::result::Result<String, abi::HostError> {
-    let executable = manifest
-        .sidecar_path(name)
-        .map_err(|error| abi::HostError {
-            code: "sidecar-denied".to_string(),
-            message: error.to_string(),
-        })?;
-    if !executable.is_file() {
+    args: Vec<String>,
+) -> std::result::Result<(), abi::HostError> {
+    let executable = manifest.sidecar_path(name).map_err(|error| abi::HostError {
+        code: "sidecar-denied".to_string(),
+        message: error.to_string(),
+    })?;
+    if !sidecar_files.contains(name) {
         return Err(abi::HostError {
             code: "sidecar-not-found".to_string(),
             message: format!("sidecar does not exist: {}", executable.display()),
         });
     }
-    if max_output_bytes == 0 {
-        Command::new(&executable)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| abi::HostError {
-                code: "sidecar-start-failed".to_string(),
-                message: format!("start {}: {error}", executable.display()),
-            })?;
-        return Ok(String::new());
-    }
-    let timeout = Duration::from_millis(u64::from(timeout_ms.clamp(50, 5_000)));
-    let output_limit = usize::try_from(max_output_bytes)
-        .unwrap_or(64 * 1024)
-        .clamp(1, 64 * 1024);
-    let mut child = Command::new(&executable)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| abi::HostError {
-            code: "sidecar-start-failed".to_string(),
-            message: format!("start {}: {error}", executable.display()),
-        })?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(10)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(abi::HostError {
-                    code: "sidecar-timeout".to_string(),
-                    message: format!("sidecar exceeded {} ms", timeout.as_millis()),
-                });
+
+    let plugin_id = manifest.id.clone();
+    crate::tasks::runtime::spawn_io(async move {
+        let executable_for_log = executable.clone();
+        let started = crate::tasks::runtime::run_io_blocking(move || {
+            Command::new(&executable)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map(|_child| ())
+                .map_err(|error| format!("start {}: {error}", executable.display()))
+        })
+        .await;
+
+        match started {
+            Ok(Ok(())) => {
+                debug!(
+                    plugin_id,
+                    executable = %executable_for_log.display(),
+                    "plugin sidecar started"
+                );
             }
-            Err(error) => {
-                return Err(abi::HostError {
-                    code: "sidecar-wait-failed".to_string(),
-                    message: error.to_string(),
-                });
+            Ok(Err(error)) | Err(error) => {
+                warn!(
+                    plugin_id,
+                    executable = %executable_for_log.display(),
+                    error = %error,
+                    "plugin sidecar background start failed"
+                );
             }
         }
-    }
-    let output = child.wait_with_output().map_err(|error| abi::HostError {
-        code: "sidecar-output-failed".to_string(),
-        message: error.to_string(),
-    })?;
-    let bytes = if output.status.success() {
-        output.stdout
-    } else {
-        output.stderr
-    };
-    let bounded = &bytes[..bytes.len().min(output_limit)];
-    let text = String::from_utf8_lossy(bounded).trim().to_string();
-    if output.status.success() {
-        Ok(text)
-    } else {
-        Err(abi::HostError {
-            code: "sidecar-failed".to_string(),
-            message: if text.is_empty() {
-                format!("sidecar exited with {}", output.status)
-            } else {
-                text
-            },
-        })
-    }
+    })
+    .map(|_| ())
+    .map_err(|error| abi::HostError {
+        code: "sidecar-start-schedule-failed".to_string(),
+        message: error,
+    })
 }
-
 fn load_storage_snapshot(
     storage_dir: &Path,
 ) -> std::result::Result<BTreeMap<String, String>, abi::HostError> {
@@ -4168,6 +4148,7 @@ fn prepare_plugin_resources(
     let storage_values = load_storage_snapshot(&storage_dir)
         .map_err(|error| Arc::<str>::from(error.message));
     let resource_values = prepare_plugin_resource_values(manifest);
+    let sidecar_files = prepare_plugin_sidecar_files(manifest);
 
     PreparedPluginResources {
         has_readme: manifest_has_any_readme(manifest),
@@ -4178,7 +4159,31 @@ fn prepare_plugin_resources(
         config_text,
         storage_values,
         resource_values,
+        sidecar_files,
     }
+}
+
+fn prepare_plugin_sidecar_files(manifest: &PluginManifest) -> BTreeSet<String> {
+    if !manifest.has_capability(&PluginCapability::SidecarExec) {
+        return BTreeSet::new();
+    }
+    let Some(sidecar_dir) = manifest.sidecar_dir.as_deref() else {
+        return BTreeSet::new();
+    };
+    let Ok(entries) = std::fs::read_dir(manifest.root_dir.join(sidecar_dir)) else {
+        return BTreeSet::new();
+    };
+
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|file_type| file_type.is_file())
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .collect()
 }
 
 fn prepare_plugin_resource_values(manifest: &PluginManifest) -> BTreeMap<String, Arc<[u8]>> {
@@ -5097,6 +5102,36 @@ fn route_target_from_abi(target: abi::RouteTarget) -> crate::ui::navigation::Rou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_sidecar_index_only_contains_files() {
+        let root = unique_temp_dir("bmcbl-plugin-sidecar-index");
+        let sidecar_dir = root.join("bin");
+        fs::create_dir_all(sidecar_dir.join("nested")).expect("create sidecar test directory");
+        fs::write(sidecar_dir.join("tool.exe"), b"stub").expect("write sidecar test file");
+
+        let manifest = PluginManifest::parse(
+            &root,
+            &format!(
+                r#"
+schema_version = 2
+id = "sidecar-test"
+name = "Sidecar Test"
+version = "0.1.0"
+api_version = "{}"
+entry = "plugin.wasm"
+capabilities = ["sidecar.exec"]
+sidecar_dir = "bin"
+"#,
+                crate::plugins::manifest::CURRENT_API_VERSION
+            ),
+        )
+        .expect("sidecar manifest should parse");
+
+        let files = prepare_plugin_sidecar_files(&manifest);
+        assert!(files.contains("tool.exe"));
+        assert!(!files.contains("nested"));
+    }
 
     #[test]
     fn blocking_host_io_is_denied_during_page_render() {
