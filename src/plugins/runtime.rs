@@ -128,6 +128,18 @@ pub struct PluginInstance {
 }
 
 #[derive(Clone, Debug)]
+struct PreparedPluginManifest {
+    manifest: PluginManifest,
+    enabled: bool,
+    translations: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PreparedPluginReload {
+    plugins: Vec<PreparedPluginManifest>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum HostEffect {
     Toast {
         kind: abi::ToastKind,
@@ -873,27 +885,35 @@ impl PluginRegistry {
     }
 
     pub fn reload_all(&mut self) -> Result<()> {
-        let manifests = crate::plugins::manifest::load_manifests_from_sources(
-            &self.plugins_dir,
-            &self.package_cache_dir,
+        let prepared = prepare_plugin_reload_from_sources(
+            self.plugins_dir.clone(),
+            self.package_cache_dir.clone(),
         )?;
-        self.reload_manifests(manifests)
+        self.reload_prepared_manifests(prepared)
     }
 
     pub fn reload_manifests(&mut self, manifests: Vec<PluginManifest>) -> Result<()> {
+        let prepared = prepare_plugin_manifests(manifests, &self.plugins_dir);
+        self.reload_prepared_manifests(prepared)
+    }
+
+    fn reload_prepared_manifests(&mut self, prepared: PreparedPluginReload) -> Result<()> {
         let mut next_plugins = BTreeMap::new();
         let mut next_pages = BTreeMap::new();
         let mut seen = BTreeSet::new();
-        let disabled_plugins = crate::plugins::state::disabled_plugins(&self.plugins_dir);
         let next_generation = self.generation.saturating_add(1);
 
-        for manifest in manifests {
+        for prepared_plugin in prepared.plugins {
+            let PreparedPluginManifest {
+                manifest,
+                enabled,
+                translations,
+            } = prepared_plugin;
             if !seen.insert(manifest.id.clone()) {
                 return Err(anyhow!("duplicate plugin id {}", manifest.id));
             }
 
             let previous = self.plugins.get(&manifest.id).cloned();
-            let enabled = !disabled_plugins.contains(&manifest.id);
             let shutdown_reason = if enabled {
                 abi::ShutdownReason::Reload
             } else {
@@ -911,16 +931,6 @@ impl PluginRegistry {
                 );
             }
 
-            if enabled
-                && let Err(error) = crate::plugins::manifest::commit_installed_package(&manifest)
-            {
-                warn!(
-                    plugin_id = manifest.id,
-                    error = %crate::plugins::manifest::format_error_chain(&error),
-                    "failed to finalize installed plugin package"
-                );
-            }
-
             let pages = enabled
                 .then(|| Self::default_page_registrations(&manifest))
                 .unwrap_or_default();
@@ -930,7 +940,7 @@ impl PluginRegistry {
                 pages,
                 injections: Vec::new(),
                 subscriptions: BTreeSet::new(),
-                translations: load_plugin_translations(&manifest),
+                translations,
                 state: PluginLoadState::Unloaded,
                 enabled,
                 runtime: None,
@@ -3435,6 +3445,44 @@ fn theme_token_from_abi(token: abi::ThemeToken) -> ui_dsl::ThemeToken {
     }
 }
 
+fn prepare_plugin_reload_from_sources(
+    plugins_dir: PathBuf,
+    package_cache_dir: PathBuf,
+) -> Result<PreparedPluginReload> {
+    let manifests =
+        crate::plugins::manifest::load_manifests_from_sources(&plugins_dir, &package_cache_dir)?;
+    Ok(prepare_plugin_manifests(manifests, &plugins_dir))
+}
+
+fn prepare_plugin_manifests(
+    manifests: Vec<PluginManifest>,
+    plugins_dir: &Path,
+) -> PreparedPluginReload {
+    let disabled_plugins = crate::plugins::state::disabled_plugins(plugins_dir);
+    let mut plugins = Vec::with_capacity(manifests.len());
+
+    for manifest in manifests {
+        let enabled = !disabled_plugins.contains(&manifest.id);
+        if enabled
+            && let Err(error) = crate::plugins::manifest::commit_installed_package(&manifest)
+        {
+            warn!(
+                plugin_id = manifest.id,
+                error = %crate::plugins::manifest::format_error_chain(&error),
+                "failed to finalize installed plugin package"
+            );
+        }
+        let translations = load_plugin_translations(&manifest);
+        plugins.push(PreparedPluginManifest {
+            manifest,
+            enabled,
+            translations,
+        });
+    }
+
+    PreparedPluginReload { plugins }
+}
+
 pub fn init(cx: &mut App) {
     cx.default_global::<PluginRegistry>();
     start_watcher(cx);
@@ -3456,8 +3504,8 @@ fn spawn_initial_reload(cx: &mut App) {
     });
 
     cx.spawn(async move |cx| {
-        let manifests = crate::tasks::runtime::run_io_blocking(move || {
-            crate::plugins::manifest::load_manifests_from_sources(&plugins_dir, &package_cache_dir)
+        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+            prepare_plugin_reload_from_sources(plugins_dir, package_cache_dir)
         })
         .await;
 
@@ -3467,8 +3515,8 @@ fn spawn_initial_reload(cx: &mut App) {
                 if registry.loaded_once() {
                     return;
                 }
-                let result = match manifests {
-                    Ok(Ok(manifests)) => registry.reload_manifests(manifests),
+                let result = match prepared {
+                    Ok(Ok(prepared)) => registry.reload_prepared_manifests(prepared),
                     Ok(Err(error)) => Err(error),
                     Err(error) => Err(anyhow!("{error}")),
                 };
