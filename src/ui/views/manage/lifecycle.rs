@@ -177,7 +177,6 @@ impl ManagePageView {
                 });
                 if changed {
                     this.reset_asset_list_view();
-                    cx.notify();
                 }
             }
         });
@@ -219,7 +218,6 @@ impl ManagePageView {
                 });
                 if changed {
                     this.reset_screenshot_list_view();
-                    cx.notify();
                 }
             }
         });
@@ -261,7 +259,6 @@ impl ManagePageView {
                 });
                 if changed {
                     this.reset_server_list_view();
-                    cx.notify();
                 }
             }
         });
@@ -543,7 +540,6 @@ impl ManagePageView {
             if applied
                 && let Err(error) = handle.update(cx, |this, cx| {
                     this.sync_data_requests(cx);
-                    cx.notify();
                 })
             {
                 tracing::debug!("manage view was released after version config loaded: {error:?}");
@@ -606,7 +602,6 @@ impl ManagePageView {
             if applied
                 && let Err(error) = handle.update(cx, |this, cx| {
                     this.sync_data_requests(cx);
-                    cx.notify();
                 })
             {
                 tracing::debug!("manage view was released after GDK users loaded: {error:?}");
@@ -620,6 +615,17 @@ impl ManagePageView {
         match tab {
             ManageTab::Map => {
                 self.last_assets_signature = None;
+                let needs_clear = {
+                    let state = cx.global::<ManagePageState>();
+                    !state.assets.is_empty()
+                        || state.assets_loading
+                        || !state.assets_loaded
+                        || state.assets_error.is_some()
+                        || !state.selected_asset_keys.is_empty()
+                };
+                if !needs_clear {
+                    return;
+                }
                 self.reset_asset_list_view();
                 cx.update_global(|state: &mut ManagePageState, _cx| {
                     state.assets = Arc::from(Vec::new());
@@ -631,6 +637,16 @@ impl ManagePageView {
             }
             ManageTab::Screenshot => {
                 self.last_screenshots_signature = None;
+                let needs_clear = {
+                    let state = cx.global::<ManagePageState>();
+                    !state.screenshots.is_empty()
+                        || state.screenshots_loading
+                        || !state.screenshots_loaded
+                        || state.screenshots_error.is_some()
+                };
+                if !needs_clear {
+                    return;
+                }
                 self.reset_screenshot_list_view();
                 cx.update_global(|state: &mut ManagePageState, _cx| {
                     state.screenshots = Arc::from(Vec::new());
@@ -641,6 +657,18 @@ impl ManagePageView {
             }
             ManageTab::Server => {
                 self.last_servers_signature = None;
+                let needs_clear = {
+                    let state = cx.global::<ManagePageState>();
+                    !state.servers.is_empty()
+                        || state.servers_loading
+                        || !state.servers_loaded
+                        || state.servers_error.is_some()
+                        || !state.server_motd.is_empty()
+                        || state.server_motd_loading
+                };
+                if !needs_clear {
+                    return;
+                }
                 self.reset_server_list_view();
                 cx.update_global(|state: &mut ManagePageState, _cx| {
                     state.servers = Arc::from(Vec::new());
@@ -657,7 +685,6 @@ impl ManagePageView {
             | ManageTab::ResourcePack
             | ManageTab::SkinPack => {}
         }
-        cx.notify();
     }
 
     pub(super) fn request_assets(
@@ -724,9 +751,8 @@ impl ManagePageView {
                 });
 
             if applied
-                && let Err(error) = handle.update(cx, |this, cx| {
+                && let Err(error) = handle.update(cx, |this, _cx| {
                     this.reset_asset_list_view();
-                    cx.notify();
                 })
             {
                 tracing::debug!("manage view was released after assets loaded: {error:?}");
@@ -790,9 +816,8 @@ impl ManagePageView {
                 });
 
             if applied
-                && let Err(error) = handle.update(cx, |this, cx| {
+                && let Err(error) = handle.update(cx, |this, _cx| {
                     this.reset_screenshot_list_view();
-                    cx.notify();
                 })
             {
                 tracing::debug!("manage view was released after screenshots loaded: {error:?}");
@@ -866,7 +891,6 @@ impl ManagePageView {
                     if !servers_for_motd.is_empty() {
                         this.request_server_motds(servers_for_motd, cx);
                     }
-                    cx.notify();
                 })
             {
                 tracing::debug!("manage view was released after servers loaded: {error:?}");
