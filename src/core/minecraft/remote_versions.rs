@@ -148,6 +148,24 @@ fn write_cache(cache: &CacheFile) {
     }
 }
 
+async fn read_cache_off_thread() -> Option<CacheFile> {
+    match crate::tasks::runtime::run_io_blocking(read_cache).await {
+        Ok(cache) => cache,
+        Err(error) => {
+            tracing::warn!(%error, "remote versions cache read worker failed");
+            None
+        }
+    }
+}
+
+async fn write_cache_off_thread(cache: CacheFile) {
+    if let Err(error) =
+        crate::tasks::runtime::run_io_blocking(move || write_cache(&cache)).await
+    {
+        tracing::warn!(%error, "remote versions cache write worker failed");
+    }
+}
+
 fn parse_version_to_vec_simple(v: &str) -> Vec<u64> {
     v.split(|c| c == '.' || c == '-' || c == '+')
         .map(|seg| {
@@ -388,7 +406,7 @@ fn parse_api_reader_streaming<R: std::io::Read>(
 
 async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMinecraftVersion>> {
     if !force_refresh {
-        if let Some(cache) = read_cache() {
+        if let Some(cache) = read_cache_off_thread().await {
             let age = Duration::from_millis(unix_now_ms().saturating_sub(cache.ts_unix_ms));
             if age <= CACHE_TTL && !cache.versions.is_empty() {
                 return Ok(cache.versions);
@@ -472,12 +490,13 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
         ));
     }
 
-    write_cache(&CacheFile {
+    write_cache_off_thread(CacheFile {
         schema_version: CACHE_SCHEMA_VERSION,
         ts_unix_ms: unix_now_ms(),
         creation_time,
         versions: versions.clone(),
-    });
+    })
+    .await;
 
     Ok(versions)
 }
@@ -498,7 +517,7 @@ pub async fn load_or_fetch_versions(force_refresh: bool) -> Result<Vec<RemoteMin
     }
 
     let last_error = last_error.unwrap_or_else(|| anyhow::anyhow!("remote versions load failed"));
-    if let Some(cache) = read_cache() {
+    if let Some(cache) = read_cache_off_thread().await {
         let age = Duration::from_millis(unix_now_ms().saturating_sub(cache.ts_unix_ms));
         if age <= CACHE_STALE_TTL && !cache.versions.is_empty() {
             tracing::warn!(
