@@ -110,14 +110,9 @@ impl MainWindowView {
                     | this.ensure_update_download_listener(cx)
                     | this.sync_current_background_animation_policy(now, cx);
                 let update_state = cx.global::<UpdateState>();
-                let visible_update_ui_changed = update_state.available.is_some()
-                    || update_state.checking
-                    || update_state.last_error.is_some()
-                    || update_state.downloading
-                    || update_state.show_modal
-                    || update_state.modal_pending_open
-                    || update_state.is_modal_animating(now);
-                if changed || visible_update_ui_changed {
+                let update_modal_needs_render = update_state.modal_pending_open
+                    || update_state.should_render_modal(now);
+                if changed || update_modal_needs_render {
                     cx.notify();
                 }
             }));

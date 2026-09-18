@@ -277,7 +277,6 @@ impl MainWindowView {
                 let task_id = task_id.clone();
                 let update_result = handle.update(cx, |this, cx| {
                     let mut still_downloading = true;
-                    let mut should_notify = false;
                     cx.update_global(|update_state: &mut UpdateState, _cx| {
                         if snapshot.id.as_ref() != task_id {
                             return;
@@ -313,17 +312,15 @@ impl MainWindowView {
                         }
 
                         still_downloading = update_state.downloading;
-                        should_notify = true;
                     });
 
                     if !still_downloading {
                         this.update_download_listener_running = false;
                     }
 
-                    if should_notify {
-                        cx.notify();
-                    }
-
+                    // UpdateState observers decide whether the root currently has visible update UI.
+                    // Do not force MainWindowView dirty for every telemetry snapshot while the modal
+                    // is closed.
                     still_downloading
                 });
 
