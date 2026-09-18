@@ -125,6 +125,7 @@ pub struct PluginInstance {
     pub state: PluginLoadState,
     pub enabled: bool,
     prepared_wasm: PreparedPluginWasm,
+    prepared_resources: PreparedPluginResources,
     runtime: Option<Rc<RefCell<PluginExecution>>>,
 }
 
@@ -137,12 +138,20 @@ enum PreparedPluginWasm {
     Error(Arc<str>),
 }
 
+#[derive(Clone, Debug, Default)]
+struct PreparedPluginResources {
+    has_readme: bool,
+    has_config: bool,
+    icon_path: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug)]
 struct PreparedPluginManifest {
     manifest: PluginManifest,
     enabled: bool,
     translations: BTreeMap<String, BTreeMap<String, String>>,
     wasm: PreparedPluginWasm,
+    resources: PreparedPluginResources,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -487,12 +496,9 @@ impl PluginRegistry {
                         max_resource_bytes: instance.manifest.limits.max_resource_bytes,
                         max_storage_bytes: instance.manifest.limits.max_storage_bytes,
                     },
-                    has_readme: manifest_has_any_readme(&instance.manifest),
-                    has_config: instance
-                        .manifest
-                        .config_schema_path()
-                        .is_some_and(|path| path.exists()),
-                    icon_path: instance.manifest.icon_path().filter(|path| path.exists()),
+                    has_readme: instance.prepared_resources.has_readme,
+                    has_config: instance.prepared_resources.has_config,
+                    icon_path: instance.prepared_resources.icon_path.clone(),
                     root_dir: instance.manifest.root_dir.clone(),
                 }
             })
@@ -799,7 +805,7 @@ impl PluginRegistry {
                     page_id: page.page_id.clone(),
                     title: SharedString::from(page.title.clone()),
                     navigation: page.navigation.clone(),
-                    icon_path: instance.manifest.icon_path().filter(|path| path.exists()),
+                    icon_path: instance.prepared_resources.icon_path.clone(),
                 },
             );
         }
@@ -916,6 +922,7 @@ impl PluginRegistry {
                 enabled,
                 translations,
                 wasm,
+                resources,
             } = prepared_plugin;
             if !seen.insert(manifest.id.clone()) {
                 return Err(anyhow!("duplicate plugin id {}", manifest.id));
@@ -952,6 +959,7 @@ impl PluginRegistry {
                 state: PluginLoadState::Unloaded,
                 enabled,
                 prepared_wasm: wasm,
+                prepared_resources: resources,
                 runtime: None,
             };
             Self::insert_pages(&mut next_pages, &instance);
@@ -1005,6 +1013,7 @@ impl PluginRegistry {
         manifest: PluginManifest,
         translations: BTreeMap<String, BTreeMap<String, String>>,
         prepared_wasm: PreparedPluginWasm,
+        prepared_resources: PreparedPluginResources,
     ) -> Result<PluginInstance> {
         let mut execution =
             self.instantiate_plugin(&manifest, translations, &prepared_wasm)?;
@@ -1096,6 +1105,7 @@ impl PluginRegistry {
             },
             enabled: true,
             prepared_wasm,
+            prepared_resources,
             runtime: Some(Rc::new(RefCell::new(execution))),
         })
     }
@@ -1117,7 +1127,13 @@ impl PluginRegistry {
         let manifest = existing.manifest.clone();
         let translations = existing.translations.clone();
         let prepared_wasm = existing.prepared_wasm.clone();
-        match self.load_manifest(manifest, translations, prepared_wasm) {
+        let prepared_resources = existing.prepared_resources.clone();
+        match self.load_manifest(
+            manifest,
+            translations,
+            prepared_wasm,
+            prepared_resources,
+        ) {
             Ok(mut instance) => {
                 if let Some(previous) = self
                     .plugins
@@ -3540,15 +3556,27 @@ fn prepare_plugin_manifests(
         }
         let translations = load_plugin_translations(&manifest);
         let wasm = prepare_plugin_wasm(&manifest);
+        let resources = prepare_plugin_resources(&manifest);
         plugins.push(PreparedPluginManifest {
             manifest,
             enabled,
             translations,
             wasm,
+            resources,
         });
     }
 
     PreparedPluginReload { plugins }
+}
+
+fn prepare_plugin_resources(manifest: &PluginManifest) -> PreparedPluginResources {
+    PreparedPluginResources {
+        has_readme: manifest_has_any_readme(manifest),
+        has_config: manifest
+            .config_schema_path()
+            .is_some_and(|path| path.exists()),
+        icon_path: manifest.icon_path().filter(|path| path.exists()),
+    }
 }
 
 fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
