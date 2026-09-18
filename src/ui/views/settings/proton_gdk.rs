@@ -1,11 +1,19 @@
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::views::settings::state::{ProtonGdkRunnerEntry, SettingsPageState};
+use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
-pub(super) fn render(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
-    let runner_root = crate::utils::file_ops::runners_dir();
+struct ProtonGdkRuntimeSnapshot {
+    runners: Arc<[ProtonGdkRunnerEntry]>,
+    selected_runner: SharedString,
+    source: SharedString,
+    is_ready: bool,
+}
+
+fn load_runtime_snapshot() -> ProtonGdkRuntimeSnapshot {
     let config = crate::config::config::read_config().unwrap_or_default();
     let mut runners = crate::core::linux_runtime::installed_proton_gdk_runners();
     let configured_path = std::path::PathBuf::from(&config.launcher.proton_gdk_runner);
@@ -18,17 +26,105 @@ pub(super) fn render(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
             configured_path,
         ));
     }
+
+    let resolved_runner = crate::core::linux_runtime::resolve_proton_runner();
     let selected_runner = if config.launcher.proton_gdk_runner.trim().is_empty() {
-        crate::core::linux_runtime::resolve_proton_runner()
+        resolved_runner
+            .as_ref()
             .map(|runner| runner.executable.to_string_lossy().into_owned())
             .unwrap_or_default()
     } else {
-        config.launcher.proton_gdk_runner
+        config.launcher.proton_gdk_runner.clone()
     };
+    let entries = runners
+        .into_iter()
+        .map(|runner| ProtonGdkRunnerEntry {
+            executable: runner.executable().to_path_buf(),
+            display_name: SharedString::from(runner.display_name().to_string()),
+            source_summary: SharedString::from(format!(
+                "{} · {} · {}",
+                runner.source_label(),
+                runner.identity_label(),
+                runner.login_capability()
+            )),
+            release_tag: runner.release_tag().map(|tag| SharedString::from(tag.to_string())),
+            asset_count: runner.bundle_asset_count(),
+        })
+        .collect::<Vec<_>>();
+
+    ProtonGdkRuntimeSnapshot {
+        runners: Arc::from(entries),
+        selected_runner: SharedString::from(selected_runner),
+        source: SharedString::from(config.launcher.proton_gdk_source),
+        is_ready: resolved_runner.is_ok(),
+    }
+}
+
+fn start_runner_snapshot(force: bool, cx: &mut App) {
+    let request_id = cx.update_global(|state: &mut SettingsPageState, _cx| {
+        if !force && (state.proton_gdk_runners_loading || state.proton_gdk_runners_loaded) {
+            return None;
+        }
+        state.proton_gdk_runners_request_id =
+            state.proton_gdk_runners_request_id.wrapping_add(1);
+        state.proton_gdk_runners_loading = true;
+        if force {
+            state.proton_gdk_runners_loaded = false;
+        }
+        Some(state.proton_gdk_runners_request_id)
+    });
+    let Some(request_id) = request_id else {
+        return;
+    };
+
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::run_io_blocking(load_runtime_snapshot).await;
+        cx.update_global(|state: &mut SettingsPageState, _cx| {
+            if state.proton_gdk_runners_request_id != request_id {
+                return;
+            }
+            state.proton_gdk_runners_loading = false;
+            state.proton_gdk_runners_loaded = true;
+            match result {
+                Ok(snapshot) => {
+                    state.proton_gdk_runners = snapshot.runners;
+                    state.proton_gdk_selected_runner = snapshot.selected_runner;
+                    state.proton_gdk_source = snapshot.source;
+                    state.proton_gdk_is_ready = snapshot.is_ready;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "Proton-GDK runner snapshot failed");
+                    state.proton_gdk_runners = Arc::from(Vec::<ProtonGdkRunnerEntry>::new());
+                    state.proton_gdk_selected_runner = SharedString::from("");
+                    state.proton_gdk_is_ready = false;
+                }
+            }
+        })?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach_and_log_err(cx);
+}
+
+pub(super) fn ensure_runner_snapshot(cx: &mut App) {
+    start_runner_snapshot(false, cx);
+}
+
+fn refresh_runner_snapshot(cx: &mut App) {
+    start_runner_snapshot(true, cx);
+}
+
+pub(super) fn render(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    state: &SettingsPageState,
+) -> impl IntoElement {
+    let runner_root = crate::utils::file_ops::runners_dir();
+    let runners = state.proton_gdk_runners.clone();
+    let selected_runner = state.proton_gdk_selected_runner.clone();
     let source = crate::core::linux_runtime::ProtonGdkSource::from_config(
-        &config.launcher.proton_gdk_source,
+        state.proton_gdk_source.as_ref(),
     );
-    let is_ready = crate::core::linux_runtime::resolve_proton_runner().is_ok();
+    let is_ready = state.proton_gdk_is_ready;
     let has_runners = !runners.is_empty();
 
     div()
@@ -107,8 +203,9 @@ pub(super) fn render(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .children(runners.into_iter().map(|runner| {
-                        let selected = selected_runner == runner.executable().to_string_lossy();
+                    .children(runners.iter().cloned().map(|runner| {
+                        let selected = selected_runner.as_ref()
+                            == runner.executable.to_string_lossy().as_ref();
                         installed_runner_card(colors, i18n, runner, selected)
                     })),
             )
@@ -280,9 +377,7 @@ fn source_option(
                 config.launcher.proton_gdk_source = source.config_value().to_string();
             }) {
                 Ok(()) => {
-                    cx.update_global(
-                        |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
-                    );
+                    refresh_runner_snapshot(cx);
                     toast::success(
                         cx,
                         t!(
@@ -422,9 +517,7 @@ fn start_latest_install(cx: &mut App) {
             return anyhow::Ok(());
         };
         if snapshot.status.as_ref() == "completed" {
-            cx.update_global(
-                |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
-            )?;
+            cx.update(|cx| refresh_runner_snapshot(cx))?;
         }
         anyhow::Ok(())
     })
@@ -436,50 +529,63 @@ fn register_local_runner(window: &Window, cx: &mut App) {
         return;
     };
     let root = std::path::PathBuf::from(folder);
-    let executable = [root.join("proton"), root.join("bin").join("proton")]
-        .into_iter()
-        .find(|candidate| candidate.is_file());
-    let Some(executable) = executable else {
-        toast::error(cx, t!("Settings.proton_gdk.runner_not_found"));
-        return;
-    };
-    let executable = executable.to_string_lossy().into_owned();
-    match crate::config::config::update_config(|config| {
-        config.launcher.proton_gdk_runner = executable.clone();
-    }) {
-        Ok(()) => {
-            cx.update_global(
-                |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
-            );
-            toast::success(cx, t!("Settings.proton_gdk.runner_registered"));
-        }
-        Err(error) => {
-            toast::error(
-                cx,
-                t!("Settings.proton_gdk.runner_save_failed", error = error),
-            );
-        }
-    };
+    cx.spawn(async move |cx| {
+        let executable = crate::tasks::runtime::run_io_blocking(move || {
+            [root.join("proton"), root.join("bin").join("proton")]
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+        })
+        .await;
+
+        cx.update(|cx| {
+            let executable = match executable {
+                Ok(Some(executable)) => executable,
+                Ok(None) => {
+                    toast::error(cx, t!("Settings.proton_gdk.runner_not_found"));
+                    return;
+                }
+                Err(error) => {
+                    toast::error(
+                        cx,
+                        SharedString::from(format!("Proton-GDK runner validation failed: {error}")),
+                    );
+                    return;
+                }
+            };
+            let executable = executable.to_string_lossy().into_owned();
+            match crate::config::config::update_config(|config| {
+                config.launcher.proton_gdk_runner = executable.clone();
+            }) {
+                Ok(()) => {
+                    refresh_runner_snapshot(cx);
+                    toast::success(cx, t!("Settings.proton_gdk.runner_registered"));
+                }
+                Err(error) => {
+                    toast::error(
+                        cx,
+                        t!("Settings.proton_gdk.runner_save_failed", error = error),
+                    );
+                }
+            }
+        })?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach_and_log_err(cx);
 }
 
 fn installed_runner_card(
     colors: &ThemeColors,
     i18n: &I18n,
-    runner: crate::core::linux_runtime::InstalledProtonGdkRunner,
+    runner: ProtonGdkRunnerEntry,
     selected: bool,
 ) -> Stateful<Div> {
-    let executable = runner.executable().to_path_buf();
+    let executable = runner.executable;
     let executable_for_action = executable.clone();
     let executable_for_delete = executable.clone();
-    let display_name = runner.display_name().to_string();
-    let source_summary = format!(
-        "{} · {} · {}",
-        runner.source_label(),
-        runner.identity_label(),
-        runner.login_capability()
-    );
-    let release_tag = runner.release_tag().map(str::to_string);
-    let asset_count = runner.bundle_asset_count();
+    let display_name = runner.display_name;
+    let source_summary = runner.source_summary;
+    let release_tag = runner.release_tag;
+    let asset_count = runner.asset_count;
     div()
         .id(SharedString::from(format!(
             "proton-gdk-runner-{}",
@@ -642,9 +748,7 @@ fn installed_runner_card(
                 config.launcher.proton_gdk_runner = path.clone();
             }) {
                 Ok(()) => {
-                    cx.update_global(
-                        |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
-                    );
+                    refresh_runner_snapshot(cx);
                     toast::success(cx, t!("Settings.proton_gdk.default_set"));
                 }
                 Err(error) => {
@@ -743,9 +847,7 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                     );
                     return anyhow::Ok(());
                 }
-                cx.update_global(
-                    |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
-                )?;
+                cx.update(|cx| refresh_runner_snapshot(cx))?;
                 toast::push_async(
                     cx,
                     toast::ToastKind::Success,
@@ -765,6 +867,7 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                     );
                     return anyhow::Ok(());
                 }
+                cx.update(|cx| refresh_runner_snapshot(cx))?;
                 toast::push_async(
                     cx,
                     toast::ToastKind::Success,

@@ -1,5 +1,9 @@
 use gpui::{Entity, Global, ScrollHandle, SharedString, Task};
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::ui::components::input::InputState;
@@ -62,6 +66,16 @@ pub struct LauncherConnectivityItem {
     pub error: Option<SharedString>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+pub struct ProtonGdkRunnerEntry {
+    pub executable: PathBuf,
+    pub display_name: SharedString,
+    pub source_summary: SharedString,
+    pub release_tag: Option<SharedString>,
+    pub asset_count: usize,
+}
+
 pub struct SettingsPageState {
     pub tab: SettingsTab,
     pub launcher_display_mode: LauncherDisplayMode,
@@ -113,6 +127,20 @@ pub struct SettingsPageState {
     pub launcher_connectivity_items: Vec<LauncherConnectivityItem>,
     pub launcher_connectivity_task: Option<Task<()>>,
     pub launcher_connectivity_cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
+    #[cfg(target_os = "linux")]
+    pub proton_gdk_runners_loading: bool,
+    #[cfg(target_os = "linux")]
+    pub proton_gdk_runners_loaded: bool,
+    #[cfg(target_os = "linux")]
+    pub proton_gdk_runners_request_id: u64,
+    #[cfg(target_os = "linux")]
+    pub proton_gdk_runners: Arc<[ProtonGdkRunnerEntry]>,
+    #[cfg(target_os = "linux")]
+    pub proton_gdk_selected_runner: SharedString,
+    #[cfg(target_os = "linux")]
+    pub proton_gdk_source: SharedString,
+    #[cfg(target_os = "linux")]
+    pub proton_gdk_is_ready: bool,
     pub theme_color: SharedString,
     pub background_option: SharedString,
     pub local_image_path: SharedString,
@@ -232,6 +260,20 @@ impl Default for SettingsPageState {
             launcher_connectivity_items: Vec::new(),
             launcher_connectivity_task: None,
             launcher_connectivity_cancel_tx: None,
+            #[cfg(target_os = "linux")]
+            proton_gdk_runners_loading: false,
+            #[cfg(target_os = "linux")]
+            proton_gdk_runners_loaded: false,
+            #[cfg(target_os = "linux")]
+            proton_gdk_runners_request_id: 0,
+            #[cfg(target_os = "linux")]
+            proton_gdk_runners: Arc::from(Vec::<ProtonGdkRunnerEntry>::new()),
+            #[cfg(target_os = "linux")]
+            proton_gdk_selected_runner: SharedString::from(""),
+            #[cfg(target_os = "linux")]
+            proton_gdk_source: SharedString::from(""),
+            #[cfg(target_os = "linux")]
+            proton_gdk_is_ready: false,
             theme_color: SharedString::from(""),
             background_option: SharedString::from(""),
             local_image_path: SharedString::from(""),
@@ -367,6 +409,14 @@ impl SettingsPageState {
         self.launcher_connectivity_running = false;
         self.launcher_connectivity_req_id = 0;
         self.launcher_connectivity_items.clear();
+        #[cfg(target_os = "linux")]
+        {
+            self.proton_gdk_runners_loaded = false;
+            self.proton_gdk_source =
+                SharedString::from(config.launcher.proton_gdk_source.clone());
+            self.proton_gdk_selected_runner =
+                SharedString::from(config.launcher.proton_gdk_runner.clone());
+        }
         self.theme_color = SharedString::from(config.custom_style.theme_color.clone());
         self.background_option = SharedString::from(config.custom_style.background_option.clone());
         self.local_image_path = SharedString::from(config.custom_style.local_image_path.clone());

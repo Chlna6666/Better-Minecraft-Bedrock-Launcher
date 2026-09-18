@@ -73,7 +73,7 @@ pub(super) fn render_settings_content(
             launcher::render_launcher_tab(colors, i18n, state).into_any_element()
         }
         #[cfg(target_os = "linux")]
-        SettingsTab::ProtonGdk => proton_gdk::render(colors, i18n).into_any_element(),
+        SettingsTab::ProtonGdk => proton_gdk::render(colors, i18n, state).into_any_element(),
         SettingsTab::Customization => {
             customization::render_customization_tab(colors, i18n, state, system_font_names)
                 .into_any_element()

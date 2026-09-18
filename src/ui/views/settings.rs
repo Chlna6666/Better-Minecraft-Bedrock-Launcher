@@ -98,6 +98,10 @@ impl SettingsPageView {
 impl Render for SettingsPageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
+        #[cfg(target_os = "linux")]
+        if cx.global::<SettingsPageState>().tab == SettingsTab::ProtonGdk {
+            proton_gdk::ensure_runner_snapshot(cx);
+        }
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
