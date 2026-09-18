@@ -467,22 +467,18 @@ impl MainWindowView {
         // Keep final layout geometry stable and move the rendered primitives with the GPU driver.
         // The physical spring remains unclamped, so its small overshoot is preserved without
         // rebuilding the page/virtual-list layout on every presentation frame.
-        let route_translation = AnimationProperty::translation(
+        // Page motion owns nested scrolling/clipping, so its GPU translation must carry the
+        // resolved visual masks with the primitives. This keeps virtual rows and async images in
+        // the same coordinate space without rasterizing the whole page into a composite layer.
+        let route_translation = AnimationProperty::subtree_translation(
             point(px(18.0 * transition_direction), px(0.0)),
             Point::default(),
         );
-        // A route page is a heterogeneous subtree (text, images, paths and nested clips).
-        // Promote it to one retained compositor layer before translation so every visual primitive
-        // shares the same transform and newly repainted/image-ready children update the same layer.
-        let animated_page = div()
-            .size_full()
-            .child(page)
-            .composite_layer()
-            .with_animation(
-                route_key,
-                spring_motion(apple_spring(0.36, 0.74)).with_property(route_translation),
-                |page, _progress| page,
-            );
+        let animated_page = div().size_full().child(page).with_animation(
+            route_key,
+            spring_motion(apple_spring(0.36, 0.74)).with_property(route_translation),
+            |page, _progress| page,
+        );
 
         div()
             .absolute()

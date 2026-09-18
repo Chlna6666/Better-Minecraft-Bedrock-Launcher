@@ -596,7 +596,7 @@ pub fn render_download_page(
         DownloadTab::Mod => 2i32,
     };
     let slide_direction = (tab_idx(active_tab) - tab_idx(tab_from)).signum() as f32;
-    let tab_transition = AnimationProperty::translation_opacity(
+    let tab_transition = AnimationProperty::subtree_translation_opacity(
         point(px(slide_direction * 24.0), px(0.0)),
         Point::default(),
         0.88,
@@ -656,10 +656,6 @@ pub fn render_download_page(
                 .flex()
                 .flex_col()
                 .child(body)
-                // The tab body contains virtual rows, async images, SVG/path content and nested
-                // clips. Animate one retained composite instead of independently translating those
-                // primitive classes, so image-ready/scroll repaints stay in one coordinate space.
-                .composite_layer()
                 .with_stable_sampled_animation(
                     "download-tab-content-transition",
                     tab_transition,
