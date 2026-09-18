@@ -2,7 +2,7 @@ use crate::ui::theme::colors::ThemeColors;
 use gpui::*;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 const GLYPH_TILE_SIZE: f32 = 32.0;
@@ -11,8 +11,8 @@ const GLYPH_SHEET_E0: &str = "images/minecraft/glyph_E0.png";
 const GLYPH_SHEET_E1: &str = "images/minecraft/glyph_E1.png";
 const OBFUSCATED_FRAME: Duration = Duration::from_millis(16);
 const PARSED_TEXT_CACHE_LIMIT: usize = 512;
-static PARSED_TEXT_CACHE: Lazy<Mutex<HashMap<ParsedTextCacheKey, Arc<ParsedMinecraftText>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static PARSED_TEXT_CACHE: Lazy<RwLock<HashMap<SharedString, Arc<ParsedMinecraftText>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 #[derive(Clone, Copy, Debug, Default)]
 struct MinecraftTextStyle {
@@ -23,26 +23,20 @@ struct MinecraftTextStyle {
     obfuscated: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct MinecraftTextRunSpec {
     start: usize,
     end: usize,
-    color: Hsla,
+    color_code: Option<char>,
     style: MinecraftTextStyle,
 }
 
 #[derive(Clone, Debug)]
 struct ParsedMinecraftText {
     text: SharedString,
-    runs: Vec<MinecraftTextRunSpec>,
+    runs: Arc<[MinecraftTextRunSpec]>,
     has_glyphs: bool,
     has_animatable_obfuscated_ascii: bool,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct ParsedTextCacheKey {
-    text: SharedString,
-    default_color: [u16; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -114,7 +108,7 @@ impl MinecraftFormattedText {
 
 impl RenderOnce for MinecraftFormattedText {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let mut parsed = cached_minecraft_formatted_text(self.text.clone(), self.default_color);
+        let mut parsed = cached_minecraft_formatted_text(self.text.clone());
         if parsed.text.is_empty() {
             return div().into_any_element();
         }
@@ -133,7 +127,7 @@ impl RenderOnce for MinecraftFormattedText {
                 .into_any_element();
         }
 
-        let runs = build_text_runs(&parsed.runs);
+        let runs = build_text_runs(parsed.runs.as_ref(), self.default_color);
 
         let mut container = div()
             .text_size(self.font_size)
@@ -155,7 +149,7 @@ impl RenderOnce for MinecraftFormattedText {
 fn render_glyph_text(component: MinecraftFormattedText, parsed: &ParsedMinecraftText) -> Div {
     let glyph_size = px((component.font_size / px(1.0)).max(14.0));
     let line_height = component.line_height;
-    let pieces = build_inline_pieces(parsed);
+    let pieces = build_inline_pieces(parsed, component.default_color);
 
     let mut root = div()
         .text_size(component.font_size)
@@ -241,11 +235,14 @@ fn render_glyph_piece(code_point: u32, glyph_size: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-fn build_inline_pieces(parsed: &ParsedMinecraftText) -> Vec<InlinePiece> {
+fn build_inline_pieces(
+    parsed: &ParsedMinecraftText,
+    default_color: Hsla,
+) -> Vec<InlinePiece> {
     let mut pieces = Vec::new();
     for run in &parsed.runs {
         let style = InlinePieceStyle {
-            color: run.color,
+            color: resolve_run_color(run.color_code, default_color),
             style: run.style,
         };
         let text = &parsed.text[run.start..run.end];
@@ -339,49 +336,35 @@ fn glyph_sprite_info(code_point: u32) -> Option<(SharedString, u32, u32)> {
     Some((sheet_path, row, column))
 }
 
-fn cached_minecraft_formatted_text(
-    input: impl Into<SharedString>,
-    default_color: Hsla,
-) -> Arc<ParsedMinecraftText> {
+fn cached_minecraft_formatted_text(input: impl Into<SharedString>) -> Arc<ParsedMinecraftText> {
     let input = input.into();
-    let key = ParsedTextCacheKey {
-        text: input.clone(),
-        default_color: color_cache_key(default_color),
-    };
 
-    if let Ok(cache) = PARSED_TEXT_CACHE.lock()
-        && let Some(parsed) = cache.get(&key)
+    if let Ok(cache) = PARSED_TEXT_CACHE.read()
+        && let Some(parsed) = cache.get(&input)
     {
         return parsed.clone();
     }
 
-    let parsed = Arc::new(parse_minecraft_formatted_text(input.as_ref(), default_color));
-    if let Ok(mut cache) = PARSED_TEXT_CACHE.lock() {
+    let parsed = Arc::new(parse_minecraft_formatted_text(input.as_ref()));
+    if let Ok(mut cache) = PARSED_TEXT_CACHE.write() {
+        if let Some(existing) = cache.get(&input) {
+            return existing.clone();
+        }
         if cache.len() >= PARSED_TEXT_CACHE_LIMIT
             && let Some(first_key) = cache.keys().next().cloned()
         {
             cache.remove(&first_key);
         }
-        cache.insert(key, parsed.clone());
+        cache.insert(input, parsed.clone());
     }
     parsed
 }
 
-fn color_cache_key(color: Hsla) -> [u16; 4] {
-    let rgba = Rgba::from(color);
-    [
-        (rgba.r.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16,
-        (rgba.g.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16,
-        (rgba.b.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16,
-        (rgba.a.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16,
-    ]
-}
-
-fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMinecraftText {
+fn parse_minecraft_formatted_text(input: &str) -> ParsedMinecraftText {
     let mut output = String::with_capacity(input.len());
     let mut runs = Vec::new();
     let mut style = MinecraftTextStyle::default();
-    let mut current_color = default_color;
+    let mut current_color_code = None;
     let mut run_start = 0usize;
     let mut has_glyphs = false;
     let mut has_animatable_obfuscated_ascii = false;
@@ -403,7 +386,7 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
                 runs.push(MinecraftTextRunSpec {
                     start: run_start,
                     end: current_len,
-                    color: current_color,
+                    color_code: current_color_code,
                     style,
                 });
             }
@@ -423,12 +406,11 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
                 | 't'
                 | 'u'
                 | 'v' => {
-                    current_color =
-                        minecraft_format_color(next, default_color).unwrap_or(default_color);
+                    current_color_code = Some(next);
                     style = MinecraftTextStyle::default();
                 }
                 'r' => {
-                    current_color = default_color;
+                    current_color_code = None;
                     style = MinecraftTextStyle::default();
                 }
                 'k' => {
@@ -474,7 +456,7 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
         runs.push(MinecraftTextRunSpec {
             start: run_start,
             end: output.len(),
-            color: current_color,
+            color_code: current_color_code,
             style,
         });
     }
@@ -483,31 +465,37 @@ fn parse_minecraft_formatted_text(input: &str, default_color: Hsla) -> ParsedMin
         runs.push(MinecraftTextRunSpec {
             start: 0,
             end: output.len(),
-            color: current_color,
+            color_code: current_color_code,
             style,
         });
     }
 
     ParsedMinecraftText {
         text: SharedString::from(output),
-        runs,
+        runs: Arc::from(runs),
         has_glyphs,
         has_animatable_obfuscated_ascii,
     }
 }
 
-fn build_text_runs(runs: &[MinecraftTextRunSpec]) -> Vec<TextRun> {
+fn build_text_runs(runs: &[MinecraftTextRunSpec], default_color: Hsla) -> Vec<TextRun> {
     runs.iter()
         .map(|spec| {
             make_text_run(
                 spec.end.saturating_sub(spec.start),
                 InlinePieceStyle {
-                    color: spec.color,
+                    color: resolve_run_color(spec.color_code, default_color),
                     style: spec.style,
                 },
             )
         })
         .collect()
+}
+
+fn resolve_run_color(color_code: Option<char>, default_color: Hsla) -> Hsla {
+    color_code
+        .and_then(|code| minecraft_format_color(code, default_color))
+        .unwrap_or(default_color)
 }
 
 fn make_text_run(len: usize, piece_style: InlinePieceStyle) -> TextRun {
@@ -714,7 +702,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn obfuscated_frame_changes_ascii_text() {
-        let parsed = parse_minecraft_formatted_text("§kabcdef", rgb(0xffffff).into());
+        let parsed = parse_minecraft_formatted_text("§kabcdef");
 
         let first = apply_obfuscated_frame(&parsed, 1);
         let second = apply_obfuscated_frame(&parsed, 2);
@@ -727,8 +715,8 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn normal_formatted_text_uses_cacheable_plain_output() {
-        let first = cached_minecraft_formatted_text("§aHello", rgb(0xffffff).into());
-        let second = cached_minecraft_formatted_text("§aHello", rgb(0xffffff).into());
+        let first = cached_minecraft_formatted_text("§aHello");
+        let second = cached_minecraft_formatted_text("§aHello");
 
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(first.text, "Hello");
@@ -738,8 +726,25 @@ mod tests {
     }
 
     #[test]
+    fn parsed_text_cache_is_independent_from_theme_color() {
+        let first = cached_minecraft_formatted_text("§aTheme Stable");
+        let second = cached_minecraft_formatted_text("§aTheme Stable");
+
+        assert!(Arc::ptr_eq(&first, &second));
+        let color_code = first.runs.first().and_then(|run| run.color_code);
+        assert_eq!(
+            resolve_run_color(color_code, rgb(0xffffff).into()),
+            minecraft_format_color('a', rgb(0xffffff).into()).unwrap()
+        );
+        assert_eq!(
+            resolve_run_color(color_code, rgb(0x111111).into()),
+            minecraft_format_color('a', rgb(0x111111).into()).unwrap()
+        );
+    }
+
+    #[test]
     fn obfuscated_non_ascii_text_does_not_request_animation_work() {
-        let parsed = parse_minecraft_formatted_text("§k中文🙂", rgb(0xffffff).into());
+        let parsed = parse_minecraft_formatted_text("§k中文🙂");
 
         assert!(!parsed.has_animatable_obfuscated_ascii);
         assert_eq!(apply_obfuscated_frame(&parsed, 42).text, "中文🙂");
