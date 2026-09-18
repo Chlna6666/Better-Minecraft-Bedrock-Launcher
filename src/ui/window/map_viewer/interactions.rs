@@ -3490,10 +3490,7 @@ impl MapViewerWindowView {
 
     pub(super) fn add_context_marker(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.context_menu {
-            self.markers
-                .entry(self.dimension)
-                .or_default()
-                .push(Marker {
+            Arc::make_mut(self.markers.entry(self.dimension).or_default()).push(Marker {
                     x: menu.block_x,
                     z: menu.block_z,
                     label: SharedString::from(format!("{}, {}", menu.block_x, menu.block_z)),

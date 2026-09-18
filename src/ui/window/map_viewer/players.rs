@@ -410,12 +410,16 @@ impl MapViewerWindowView {
                         if !selected_still_exists {
                             this.players.selected = preferred_player_id(&this.players.players);
                         }
-                        this.markers = result.markers;
+                        this.markers = result
+                            .markers
+                            .into_iter()
+                            .map(|(dimension, markers)| (dimension, Arc::new(markers)))
+                            .collect();
                         this.markers_generation = this.markers_generation.saturating_add(1);
                         this.last_synced_canvas_snapshot_key = None;
 
                         let visible_marker_count =
-                            this.markers.get(&this.dimension).map_or(0, Vec::len);
+                            this.markers.get(&this.dimension).map_or(0, |markers| markers.len());
                         this.status = SharedString::from(format!(
                             "玩家列表已加载 · {} 条记录 · 当前维度 {} 个地图标记",
                             this.players.players.len(),
@@ -815,14 +819,16 @@ impl MapViewerWindowView {
             .unwrap_or_else(|| SharedString::from(player_friendly_label(&detail.id, true)));
 
         for markers in self.markers.values_mut() {
-            markers.retain(|marker| marker.label != label);
+            Arc::make_mut(markers).retain(|marker| marker.label != label);
         }
         if let (Some(position), Some(dimension_id)) = (detail.position, detail.dimension_id) {
             if position[0].is_finite() && position[2].is_finite() {
-                self.markers
-                    .entry(Dimension::from_id(dimension_id))
-                    .or_default()
-                    .push(Marker {
+                Arc::make_mut(
+                    self.markers
+                        .entry(Dimension::from_id(dimension_id))
+                        .or_default(),
+                )
+                .push(Marker {
                         x: position[0]
                             .floor()
                             .clamp(f64::from(i32::MIN), f64::from(i32::MAX))

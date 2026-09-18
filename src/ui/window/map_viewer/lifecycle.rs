@@ -1026,12 +1026,11 @@ impl MapViewerWindowView {
             history_visualization: self.history.visualization.clone(),
             history_visualization_enabled: self.history.visualization_enabled,
             history_visualization_filter: self.history.visualization_filter,
-            markers: Arc::new(
-                self.markers
-                    .get(&self.dimension)
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
+            markers: self
+                .markers
+                .get(&self.dimension)
+                .cloned()
+                .unwrap_or_default(),
             markers_generation: self.markers_generation,
             hover_label: SharedString::from(coordinate_text(
                 self.hover_block_x,

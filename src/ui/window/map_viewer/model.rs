@@ -1729,7 +1729,7 @@ pub struct MapViewerWindowView {
     pub(super) last_synced_canvas_snapshot_key: Option<MapCanvasSnapshotKey>,
     pub(super) last_synced_tile_layer_snapshot_key: Option<TileLayerSnapshotKey>,
     pub(super) render_session: Option<Arc<MapRenderSession>>,
-    pub(super) markers: BTreeMap<Dimension, Vec<Marker>>,
+    pub(super) markers: BTreeMap<Dimension, Arc<Vec<Marker>>>,
     pub(super) markers_generation: u64,
     pub(super) context_menu: Option<ContextMenuState>,
     pub(super) drag: Option<DragState>,
