@@ -32,6 +32,12 @@ pub struct LevelDatCodeWindowView {
     json_editor: Entity<CodeEditorState>,
     validation: LevelDatJsonValidation,
     saved_text: SharedString,
+    editor_dirty: bool,
+    line_count_text: SharedString,
+    char_count_text: SharedString,
+    instance_name: SharedString,
+    document_version_text: SharedString,
+    save_path: SharedString,
     saving: bool,
     status: Option<(WindowStatusKind, SharedString)>,
     _subscriptions: Vec<Subscription>,
@@ -41,6 +47,13 @@ impl LevelDatCodeWindowView {
     pub fn new(init: LevelDatCodeWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_title(t!("LevelDat.title").as_ref());
         let validation = level_dat_editor::validate_document_json(init.initial_text.as_ref());
+        let editor_dirty = init.initial_text != init.saved_text;
+        let line_count_text =
+            SharedString::from(init.initial_text.as_ref().lines().count().max(1).to_string());
+        let char_count_text = SharedString::from(init.initial_text.chars().count().to_string());
+        let instance_name = SharedString::from(init.version.display_name().to_string());
+        let document_version_text = SharedString::from(init.document_version.to_string());
+        let save_path = SharedString::from(format!("{}\\level.dat", init.asset.file_path));
         let json_editor = cx.new(|cx| {
             let mut editor = CodeEditorState::new(cx);
             editor.set_language(CodeEditorLanguage::JsonNbt, cx);
@@ -68,6 +81,12 @@ impl LevelDatCodeWindowView {
             json_editor,
             validation,
             saved_text: init.saved_text,
+            editor_dirty,
+            line_count_text,
+            char_count_text,
+            instance_name,
+            document_version_text,
+            save_path,
             saving: false,
             status: None,
             _subscriptions: subscriptions,
@@ -84,8 +103,16 @@ impl LevelDatCodeWindowView {
         )
     }
 
+    fn update_editor_render_metadata(&mut self, editor_text: &SharedString) {
+        self.editor_dirty = editor_text.as_ref() != self.saved_text.as_ref();
+        self.line_count_text =
+            SharedString::from(editor_text.as_ref().lines().count().max(1).to_string());
+        self.char_count_text = SharedString::from(editor_text.chars().count().to_string());
+    }
+
     fn revalidate(&mut self, cx: &mut Context<Self>) {
         let editor_text = self.json_editor.read(cx).value();
+        self.update_editor_render_metadata(&editor_text);
         self.validation = level_dat_editor::validate_document_json(editor_text.as_ref());
         if self
             .status
@@ -129,6 +156,7 @@ impl LevelDatCodeWindowView {
         self.json_editor.update(cx, |editor, cx| {
             editor.set_value(formatted.clone(), cx);
         });
+        self.update_editor_render_metadata(&formatted);
         self.validation = level_dat_editor::validate_document_json(formatted.as_ref());
         self.status = Some((WindowStatusKind::Success, t!("LevelDat.format_success")));
         cx.notify();
@@ -219,6 +247,7 @@ impl LevelDatCodeWindowView {
                 match result {
                     Ok(()) => {
                         this.saved_text = saved_text.clone();
+                        this.editor_dirty = false;
                         this.validation =
                             level_dat_editor::validate_document_json(saved_text.as_ref());
                         this.status = Some((
@@ -242,15 +271,7 @@ impl LevelDatCodeWindowView {
 impl Render for LevelDatCodeWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme_colors(window.animation_time(), cx);
-        let editor_text = self.json_editor.read(cx).value();
-        let dirty = editor_text != self.saved_text;
-        let line_count = editor_text.as_ref().lines().count().max(1);
-        let char_count = editor_text.chars().count();
-        let instance_name = self.version.display_name().to_string();
-        let document_version = self.document_version.to_string();
-        let line_count_string = line_count.to_string();
-        let char_count_string = char_count.to_string();
-        let save_path = format!("{}\\level.dat", self.asset.file_path);
+        let dirty = self.editor_dirty;
         let status_text = self
             .status
             .as_ref()
@@ -308,7 +329,7 @@ impl Render for LevelDatCodeWindowView {
                                 div()
                                     .text_size(px(11.))
                                     .text_color(colors.text_muted)
-                                    .child(save_path),
+                                    .child(self.save_path.clone()),
                             )
                             .child(
                                 div()
@@ -318,19 +339,19 @@ impl Render for LevelDatCodeWindowView {
                                     .flex_wrap()
                                     .child(info_badge(
                                         &colors,
-                                        t!("LevelDat.instance", name = &instance_name),
+                                        t!("LevelDat.instance", name = &self.instance_name),
                                     ))
                                     .child(info_badge(
                                         &colors,
-                                        t!("LevelDat.version_header", version = &document_version),
+                                        t!("LevelDat.version_header", version = &self.document_version_text),
                                     ))
                                     .child(info_badge(
                                         &colors,
-                                        t!("LevelDat.lines", count = &line_count_string),
+                                        t!("LevelDat.lines", count = &self.line_count_text),
                                     ))
                                     .child(info_badge(
                                         &colors,
-                                        t!("LevelDat.characters", count = &char_count_string),
+                                        t!("LevelDat.characters", count = &self.char_count_text),
                                     ))
                                     .when(dirty, |this| {
                                         this.child(status_badge(
