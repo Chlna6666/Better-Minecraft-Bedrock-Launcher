@@ -133,13 +133,25 @@ pub struct PluginInstance {
     runtime: Option<Rc<RefCell<PluginExecution>>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 enum PreparedPluginWasm {
     Ready {
         module: Module,
         sha256: String,
     },
     Error(Arc<str>),
+}
+
+impl std::fmt::Debug for PreparedPluginWasm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready { sha256, .. } => f
+                .debug_struct("Ready")
+                .field("sha256", sha256)
+                .finish(),
+            Self::Error(error) => f.debug_tuple("Error").field(error).finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -975,7 +987,11 @@ impl PluginRegistry {
     }
 
     pub fn reload_manifests(&mut self, manifests: Vec<PluginManifest>) -> Result<()> {
-        let prepared = prepare_plugin_manifests(manifests, &self.plugins_dir);
+        let prepared = prepare_plugin_manifests(
+            manifests,
+            &self.plugins_dir,
+            &self.package_cache_dir,
+        );
         self.reload_prepared_manifests(prepared)
     }
 

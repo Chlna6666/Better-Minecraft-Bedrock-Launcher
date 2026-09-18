@@ -1073,6 +1073,7 @@ impl MapViewerWindowView {
             markers_generation: self.markers_generation,
             hover_block_x: self.hover_block_x,
             hover_block_z: self.hover_block_z,
+            hover_label: self.hover_label.clone(),
         }
     }
 

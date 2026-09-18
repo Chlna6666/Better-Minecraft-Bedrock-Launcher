@@ -932,12 +932,20 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                     cx,
                                     plugin_id.clone(),
                                     !enabled,
-                                    move |cx, result| match result {
-                                        Ok(()) => toast::success(cx, success_message),
-                                        Err(error) => toast::error(
-                                            cx,
-                                            SharedString::from(format!("操作失败: {error}")),
-                                        ),
+                                    move |cx, result| {
+                                        match result {
+                                            Ok(()) => {
+                                                toast::success(cx, success_message);
+                                            }
+                                            Err(error) => {
+                                                toast::error(
+                                                    cx,
+                                                    SharedString::from(format!(
+                                                        "操作失败: {error}"
+                                                    )),
+                                                );
+                                            }
+                                        }
                                     },
                                 );
                             },
@@ -1046,12 +1054,14 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                                     SharedString::from("插件已卸载"),
                                                 );
                                             }
-                                            Err(error) => toast::error(
-                                                cx,
-                                                SharedString::from(format!(
-                                                    "卸载失败: {error}"
-                                                )),
-                                            ),
+                                            Err(error) => {
+                                                toast::error(
+                                                    cx,
+                                                    SharedString::from(format!(
+                                                        "卸载失败: {error}"
+                                                    )),
+                                                );
+                                            }
                                         },
                                     );
                                 }),
@@ -1320,13 +1330,15 @@ fn plugin_config_panel(
                                     });
                                     toast::success(cx, save_success_message.clone());
                                 }
-                                Err(error) => toast::error(
-                                    cx,
-                                    SharedString::from(format!(
-                                        "{}: {error}",
-                                        save_failed_message
-                                    )),
-                                ),
+                                Err(error) => {
+                                    toast::error(
+                                        cx,
+                                        SharedString::from(format!(
+                                            "{}: {error}",
+                                            save_failed_message
+                                        )),
+                                    );
+                                }
                             },
                         );
                     },
@@ -1728,7 +1740,9 @@ fn import_plugin_package_from_picker(cx: &mut App) {
     let source = PathBuf::from(path);
     let source_for_log = source.clone();
     crate::plugins::runtime::import_plugin_package(cx, source, move |cx, result| match result {
-        Ok(()) => toast::success(cx, success_message),
+        Ok(()) => {
+            toast::success(cx, success_message);
+        }
         Err(error) => {
             warn!(
                 error = ?error,

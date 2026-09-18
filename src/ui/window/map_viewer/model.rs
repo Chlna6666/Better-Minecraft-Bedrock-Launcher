@@ -1740,6 +1740,7 @@ pub struct MapViewerWindowView {
     pub(super) right_selection_drag: Option<RightSelectionDrag>,
     pub(super) hover_block_x: i32,
     pub(super) hover_block_z: i32,
+    pub(super) hover_label: SharedString,
     pub(super) recenter_on_next_metadata: bool,
     pub(super) pending_center_block: Option<(i32, i32)>,
     pub(super) bypass_cache_active: bool,
