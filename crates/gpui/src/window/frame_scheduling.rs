@@ -342,6 +342,12 @@ impl Window {
             .set_transition_spring(element_id, property, spring);
     }
 
+    pub(crate) fn scene_animation_is_active(&self, animation_id: SceneAnimationId) -> bool {
+        self.animation_engine
+            .borrow()
+            .scene_animation_is_active(animation_id)
+    }
+
     /// Notify the current view at or after the given deadline without requesting
     /// continuous animation frames or an immediate presentation.
     ///

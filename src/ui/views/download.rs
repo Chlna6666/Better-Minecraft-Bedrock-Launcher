@@ -590,26 +590,18 @@ pub fn render_download_page(
         let p = tc - 1.0;
         (1.0 + 1.35 * p.powi(3) + 0.35 * p.powi(2)).clamp(0.0, 1.05)
     };
-    let content_opacity = if tab_animating {
-        0.88 + 0.12 * tab_t_eased.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    // Keep the v0.2.0 transition model for page-sized, interactive/virtualized subtrees.
-    // The newer scene-animation wrapper binds every descendant primitive to one persistent
-    // animation id even after motion has stopped, which makes hover-driven redraw/replay share
-    // animation ownership with the entire list.
     let tab_idx = |t: DownloadTab| match t {
         DownloadTab::Game => 0i32,
         DownloadTab::ResourcePack => 1i32,
         DownloadTab::Mod => 2i32,
     };
     let slide_direction = (tab_idx(active_tab) - tab_idx(tab_from)).signum() as f32;
-    let slide_offset_px = if tab_animating {
-        slide_direction * 24.0 * (1.0 - tab_t_eased)
-    } else {
-        0.0
-    };
+    let tab_transition = AnimationProperty::translation_opacity(
+        point(px(slide_direction * 24.0), px(0.0)),
+        Point::default(),
+        0.88,
+        1.0,
+    );
 
     // Mirror `.upstream_bmbl_1/src/components/UnifiedPageLayout/*`:
     // one glass panel with a fixed header, a scrollable content area, and a footer.
@@ -661,13 +653,15 @@ pub fn render_download_page(
                 .flex_1()
                 .min_h(px(0.))
                 .min_w(px(0.))
-                .opacity(content_opacity)
-                .relative()
-                .left(px(slide_offset_px))
                 .flex()
                 .flex_col()
                 .child(body)
-                .with_layout_animation_target(tab_animating),
+                .with_stable_sampled_animation(
+                    "download-tab-content-transition",
+                    tab_transition,
+                    tab_t_eased,
+                    tab_animating,
+                ),
         );
 
     let page = common::page_shell(unified_panel, &colors);

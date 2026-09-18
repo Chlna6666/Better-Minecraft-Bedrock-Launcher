@@ -398,7 +398,6 @@ impl AnimationEngine {
     ) -> bool {
         self.timelines.values().any(|timeline| {
             timeline.scene_animation.is_some_and(|animation| animation.id == animation_id)
-                && timeline.needs_endpoint_reraster
                 && timeline.completion_invalidation.is_none()
         })
     }
@@ -413,11 +412,17 @@ impl AnimationEngine {
         }) else {
             return false;
         };
-        if !timeline.needs_endpoint_reraster || timeline.completion_invalidation.is_some() {
+        if timeline.completion_invalidation.is_some() {
             return false;
         }
         timeline.completion_invalidation = Some(completion_invalidation);
         true
+    }
+
+    pub(crate) fn scene_animation_is_active(&self, animation_id: SceneAnimationId) -> bool {
+        self.timelines.values().any(|timeline| {
+            timeline.scene_animation.is_some_and(|animation| animation.id == animation_id)
+        })
     }
 
     pub(crate) fn completed_scene_text_raster_scale(

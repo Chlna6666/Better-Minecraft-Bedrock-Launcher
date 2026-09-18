@@ -624,6 +624,7 @@ pub struct StableSampledAnimationState {
     animation_id: SceneAnimationId,
     property: AnimationProperty,
     frame_pending: Rc<Cell<bool>>,
+    bound: bool,
 }
 
 /// A caller-sampled scene animation whose primitive ownership survives retained replay.
@@ -645,7 +646,7 @@ impl<E: IntoElement + 'static> IntoElement for StableSampledAnimationElement<E> 
 
 impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = StableSampledAnimationState;
+    type PrepaintState = Option<StableSampledAnimationState>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -684,13 +685,14 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         let (state, binding_changed) = window.with_element_state(
             global_id,
             |state: Option<StableSampledAnimationState>, _window| {
-                let (state, binding_changed) = match state {
+                let (mut state, property_changed) = match state {
                     Some(state) if state.property == self.property => (state, false),
                     Some(state) => (
                         StableSampledAnimationState {
                             animation_id: allocate_stable_sampled_animation_id(),
                             property: self.property,
                             frame_pending: state.frame_pending,
+                            bound: false,
                         },
                         true,
                     ),
@@ -699,17 +701,24 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
                             animation_id: allocate_stable_sampled_animation_id(),
                             property: self.property,
                             frame_pending: Rc::new(Cell::new(false)),
+                            bound: false,
                         },
                         true,
                     ),
                 };
+                let binding_changed = property_changed || state.bound != self.animating;
+                state.bound = self.animating;
                 ((state.clone(), binding_changed), state)
             },
         );
+
+        // Entering or leaving renderer ownership must repaint descendants once. Without this
+        // boundary, retained rows may keep a stale SceneAnimationId after the transition ends.
         window.with_retained_replay_barrier(binding_changed, |window| {
             element.prepaint(window, cx)
         });
-        state
+
+        self.animating.then_some(state)
     }
 
     fn paint(
@@ -722,11 +731,20 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let Some(state) = state.as_ref() else {
+            element.paint(window, cx);
+            return;
+        };
+
         let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
         window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
             animation_id: state.animation_id,
             property: self.property.property,
-            progress: self.progress,
+            progress: if self.progress.is_finite() {
+                self.progress
+            } else {
+                0.0
+            },
             from,
             to,
         });
@@ -737,7 +755,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             |window| element.paint(window, cx),
         );
 
-        if self.animating && !state.frame_pending.replace(true) {
+        if !state.frame_pending.replace(true) {
             let frame_pending = state.frame_pending.clone();
             let view_id = window.current_view();
             let retained_id = window
@@ -795,6 +813,7 @@ pub struct SceneAnimationState {
     spring: Option<crate::Spring>,
     from: [f32; 4],
     to: [f32; 4],
+    bound: bool,
 }
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
@@ -893,18 +912,21 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         } else {
             property.dirty_bounds(bounds)
         };
-        let (state, binding_changed) = window.with_element_state(
+        let (state, binding_changed, active) = window.with_element_state(
             global_id,
             |state: Option<SceneAnimationState>, window| {
-                let (state, binding_changed) = match state {
-                    Some(state)
+                let (mut state, binding_changed, active) = match state {
+                    Some(mut state)
                         if state.property == property
                             && state.spec == spec
                             && state.spring == spring
                             && state.from == from
                             && state.to == to =>
                     {
-                        (state, false)
+                        let active = window.scene_animation_is_active(state.animation_id);
+                        let binding_changed = state.bound != active;
+                        state.bound = active;
+                        (state, binding_changed, active)
                     }
                     _ => {
                         let animation_id = window.start_scene_animation(
@@ -926,18 +948,25 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                                 spring,
                                 from,
                                 to,
+                                bound: true,
                             },
+                            true,
                             true,
                         )
                     }
                 };
-                ((state.clone(), binding_changed), state)
+                ((state.clone(), binding_changed, active), state)
             },
         );
+
+        // The renderer owns this subtree only while the timeline is active. Completion schedules
+        // one targeted repaint, and this barrier guarantees descendants drop the old animation id
+        // instead of replaying it forever into later hover/scroll frames.
         window.with_retained_replay_barrier(binding_changed, |window| {
             element.prepaint(window, cx)
         });
-        Some(state)
+
+        active.then_some(state)
     }
 
     fn paint(
