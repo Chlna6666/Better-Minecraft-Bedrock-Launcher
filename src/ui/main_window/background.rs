@@ -9,6 +9,10 @@ const BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS: f32 = 1_000.0;
 const BACKGROUND_ANIMATION_INACTIVE_MAX_FPS: f32 = 24.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
 const BACKGROUND_GPU_BLUR_MIN_PX: f32 = 0.75;
+// Full-window animated backgrounds are bandwidth-bound: once the user asks for clearly visible
+// blur, a 2x filter target preserves the soft background look while reducing Gaussian pixel work.
+// Small blur stays native-resolution so subtle edge softness does not become blocky.
+const BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX: f32 = 4.0;
 // Background blur is a full-background effect. Nova now isolates backdrop sources by draw order,
 // so the application no longer needs to carve a 60px hole around the titlebar to avoid sharing
 // filter results with the titlebar glass.
@@ -231,10 +235,18 @@ fn background_uses_gpu_blur(blur: f32) -> bool {
 }
 
 fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
-    // BMCBL owns only the user-visible blur strength. Sampling resolution/pass policy belongs to
-    // GPUI so DX12/Vulkan can share one renderer-side tuning rule instead of duplicating thresholds
-    // in the application.
-    BackdropBlurStyle::new(px(blur / 3.0)).auto_quality()
+    // This is a fullscreen image effect, unlike small UI glass. Preserve native sampling for low
+    // blur values, then explicitly halve the filter resolution once the requested softness hides
+    // individual source pixels. The final composite remains full-resolution and keeps the same
+    // GPUI/presentation cadence.
+    let downsample = if blur >= BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX {
+        2
+    } else {
+        1
+    };
+    BackdropBlurStyle::new(px(blur / 3.0))
+        .auto_quality()
+        .downsample(downsample)
 }
 
 fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
@@ -305,8 +317,9 @@ mod tests {
     use super::{
         BACKGROUND_ANIMATION_INACTIVE_MAX_FPS,
         BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
-        BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, animation_suppression_changed,
-        background_animation_policy, background_blur_overlay_color, background_uses_gpu_blur,
+        BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX,
+        animation_suppression_changed, background_animation_policy,
+        background_backdrop_blur_style, background_blur_overlay_color, background_uses_gpu_blur,
     };
 
     #[test]
@@ -353,5 +366,16 @@ mod tests {
             background_blur_overlay_color(f32::MAX).a,
             BACKGROUND_BLUR_OVERLAY_MAX_ALPHA
         );
+    }
+
+    #[test]
+    fn fullscreen_background_blur_downsamples_only_visible_strengths() {
+        let below = (BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX - 0.1).max(0.0);
+        assert_eq!(background_backdrop_blur_style(below).downsample, 1);
+        assert_eq!(
+            background_backdrop_blur_style(BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX).downsample,
+            2
+        );
+        assert_eq!(background_backdrop_blur_style(10.0).downsample, 2);
     }
 }
