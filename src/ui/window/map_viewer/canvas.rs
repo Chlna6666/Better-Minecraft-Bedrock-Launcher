@@ -190,13 +190,10 @@ fn paint_map_images<'a>(
     viewport_interacting: bool,
     context: &'static str,
 ) {
-    match window.paint_images_budgeted(requests, map_tile_new_image_budget(viewport_interacting)) {
-        Ok(progress) => {
-            if progress.deferred_requests > 0 {
-                window.request_animation_frame();
-            }
-        }
-        Err(error) => record_map_tile_paint_error(&error, context),
+    if let Err(error) =
+        window.paint_images_budgeted(requests, map_tile_new_image_budget(viewport_interacting))
+    {
+        record_map_tile_paint_error(&error, context);
     }
 }
 

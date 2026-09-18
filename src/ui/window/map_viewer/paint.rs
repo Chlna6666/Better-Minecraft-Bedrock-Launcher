@@ -462,16 +462,8 @@ fn paint_entity_avatar_requests<'a>(requests: Vec<ImagePaintRequest<'a>>, window
     if requests.is_empty() {
         return;
     }
-    match window.paint_images_budgeted(requests, ENTITY_AVATAR_UPLOAD_BUDGET) {
-        Ok(progress) if progress.deferred_requests > 0 => {
-            // 普通 animation frame 可能直接重放 retained absolute subtree，导致本帧
-            // 因上传预算延期的头像永远不再进入实际 paint。强制刷新图片层但保留 atlas。
-            window.refresh_map_image_uploads();
-        }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::debug!(?error, "failed to paint entity avatars");
-        }
+    if let Err(error) = window.paint_images_budgeted(requests, ENTITY_AVATAR_UPLOAD_BUDGET) {
+        tracing::debug!(?error, "failed to paint entity avatars");
     }
 }
 
