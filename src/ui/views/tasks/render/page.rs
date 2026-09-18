@@ -119,7 +119,7 @@ fn render_task_list(
         entries.push((
             transition_card.model.started_at_unix,
             transition_card.model.id.clone(),
-            transition_card.model,
+            transition_card.model.clone(),
             Some(transition_card.motion),
         ));
     }
@@ -145,11 +145,11 @@ fn render_tasks_body(
     }
 
     if render_model.total_count == 0 {
-        if this.transition_cards().is_empty() {
+        if !this.has_transition_cards() {
             return empty_state(colors, i18n);
         }
 
-        return render_task_list(colors, this, Vec::new(), cx).into_any_element();
+        return render_task_list(colors, this, std::iter::empty(), cx).into_any_element();
     }
 
     render_task_list(
@@ -159,8 +159,7 @@ fn render_tasks_body(
             .active
             .iter()
             .cloned()
-            .chain(render_model.finished.iter().cloned())
-            .collect::<Vec<_>>(),
+            .chain(render_model.finished.iter().cloned()),
         cx,
     )
     .into_any_element()

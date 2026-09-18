@@ -698,15 +698,12 @@ impl TasksPageView {
         self.card_motions.get(task_id).map(|state| state.kind)
     }
 
-    pub(super) fn transition_cards(&self) -> Vec<TaskTransitionCard> {
-        let mut cards: Vec<_> = self.transition_cards.values().cloned().collect();
-        cards.sort_by(|left, right| {
-            left.model
-                .started_at_unix
-                .cmp(&right.model.started_at_unix)
-                .then_with(|| left.model.id.as_ref().cmp(right.model.id.as_ref()))
-        });
-        cards
+    pub(super) fn transition_cards(&self) -> impl Iterator<Item = &TaskTransitionCard> {
+        self.transition_cards.values()
+    }
+
+    pub(super) fn has_transition_cards(&self) -> bool {
+        !self.transition_cards.is_empty()
     }
 
     pub(super) fn mark_user_cancelled(&mut self, task_id: Arc<str>) {
