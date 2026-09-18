@@ -4022,59 +4022,79 @@ pub fn reload_plugins(cx: &mut App) {
     start_watcher(cx);
 }
 
-pub fn import_plugin_package(cx: &mut App, source_path: impl AsRef<Path>) -> Result<()> {
+pub fn import_plugin_package<F>(cx: &mut App, source_path: PathBuf, on_complete: F)
+where
+    F: FnOnce(&mut App, Result<()>) + 'static,
+{
     ensure_loaded(cx);
 
-    let source_path = source_path.as_ref();
     let extension = source_path
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or_default();
     if !extension.eq_ignore_ascii_case(crate::plugins::manifest::PLUGIN_PACKAGE_EXTENSION) {
-        bail!(
-            "plugin package must use .{} extension",
-            crate::plugins::manifest::PLUGIN_PACKAGE_EXTENSION
+        on_complete(
+            cx,
+            Err(anyhow!(
+                "plugin package must use .{} extension",
+                crate::plugins::manifest::PLUGIN_PACKAGE_EXTENSION
+            )),
         );
+        return;
     }
 
+    let Some(file_name) = source_path.file_name().map(ToOwned::to_owned) else {
+        on_complete(
+            cx,
+            Err(anyhow!(
+                "plugin package path has no file name: {}",
+                source_path.display()
+            )),
+        );
+        return;
+    };
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
-    std::fs::create_dir_all(&plugins_dir)
-        .with_context(|| format!("create plugin directory {}", plugins_dir.display()))?;
-    let file_name = source_path.file_name().ok_or_else(|| {
-        anyhow!(
-            "plugin package path has no file name: {}",
-            source_path.display()
-        )
-    })?;
-    let destination = plugins_dir.join(file_name);
-    let source = std::fs::canonicalize(source_path)
-        .with_context(|| format!("canonicalize plugin package {}", source_path.display()))?;
-    let destination_matches_source = destination
-        .exists()
-        .then(|| std::fs::canonicalize(&destination))
-        .transpose()
-        .with_context(|| format!("canonicalize plugin package {}", destination.display()))?
-        .is_some_and(|destination| destination == source);
-    if !destination_matches_source {
-        std::fs::copy(source_path, &destination).with_context(|| {
-            format!(
-                "copy plugin package {} to {}",
-                source_path.display(),
-                destination.display()
-            )
-        })?;
-    }
 
-    let theme_snapshot = current_theme_snapshot(cx);
-    cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        let result = registry.reload_all();
-        if result.is_ok() {
-            registry.set_theme_snapshot(theme_snapshot);
-        }
-        result
-    })?;
-    Ok(())
+    cx.spawn(async move |cx| {
+        let imported = crate::tasks::runtime::run_io_blocking(move || {
+            std::fs::create_dir_all(&plugins_dir)
+                .with_context(|| format!("create plugin directory {}", plugins_dir.display()))?;
+            let destination = plugins_dir.join(file_name);
+            let source = std::fs::canonicalize(&source_path)
+                .with_context(|| format!("canonicalize plugin package {}", source_path.display()))?;
+            let destination_matches_source = destination
+                .exists()
+                .then(|| std::fs::canonicalize(&destination))
+                .transpose()
+                .with_context(|| format!("canonicalize plugin package {}", destination.display()))?
+                .is_some_and(|destination| destination == source);
+            if !destination_matches_source {
+                std::fs::copy(&source_path, &destination).with_context(|| {
+                    format!(
+                        "copy plugin package {} to {}",
+                        source_path.display(),
+                        destination.display()
+                    )
+                })?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        cx.update(|cx| {
+            let result = match imported {
+                Ok(result) => result,
+                Err(error) => Err(anyhow!("{error}")),
+            };
+            if result.is_ok() {
+                reload_all(cx);
+            }
+            on_complete(cx, result);
+        })?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
 }
 
 pub fn dispatch_plugin_action(

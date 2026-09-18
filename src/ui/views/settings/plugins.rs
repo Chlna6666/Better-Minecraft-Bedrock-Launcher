@@ -1735,18 +1735,21 @@ fn import_plugin_package_from_picker(cx: &mut App) {
         )
     });
     let source = PathBuf::from(path);
-    match crate::plugins::runtime::import_plugin_package(cx, &source) {
-        Ok(()) => {
-            toast::success(cx, success_message);
-        }
+    let source_for_log = source.clone();
+    crate::plugins::runtime::import_plugin_package(cx, source, move |cx, result| match result {
+        Ok(()) => toast::success(cx, success_message),
         Err(error) => {
-            warn!(error = ?error, path = %source.display(), "plugin import failed");
+            warn!(
+                error = ?error,
+                path = %source_for_log.display(),
+                "plugin import failed"
+            );
             toast::error(
                 cx,
                 SharedString::from(format!("{}: {error}", failed_message)),
             );
         }
-    }
+    });
 }
 
 fn selected_plugin_id(state: &SettingsPageState, statuses: &[PluginStatus]) -> Option<String> {
