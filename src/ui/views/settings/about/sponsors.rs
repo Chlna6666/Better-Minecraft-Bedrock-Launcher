@@ -140,10 +140,6 @@ pub(super) fn render_sponsors_modal(
 }
 
 fn close_sponsors_modal(cx: &mut App) {
-    if let Err(error) = crate::core::sponsors::clear_avatar_cache() {
-        tracing::warn!("clear sponsor avatar cache failed: {error}");
-    }
-
     let _ = cx.update_global(|state: &mut SettingsPageState, cx| {
         state.about_sponsors_req_id = state.about_sponsors_req_id.saturating_add(1);
         state.about_sponsors_open = false;
@@ -157,10 +153,6 @@ fn close_sponsors_modal(cx: &mut App) {
 }
 
 fn spawn_load_sponsors(cx: &mut App) {
-    if let Err(error) = crate::core::sponsors::clear_avatar_cache() {
-        tracing::warn!("clear sponsor avatar cache failed: {error}");
-    }
-
     let request_id = cx.update_global(|state: &mut SettingsPageState, cx| {
         state.about_sponsors_req_id = state.about_sponsors_req_id.saturating_add(1);
         state.about_sponsors_loading = true;
@@ -201,6 +193,10 @@ fn spawn_load_sponsors(cx: &mut App) {
     .detach();
 
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
+        crate::tasks::runtime::run_io_blocking(crate::core::sponsors::clear_avatar_cache)
+            .await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::from)?;
         crate::core::sponsors::load_sponsors()
             .await
             .map_err(anyhow::Error::msg)
