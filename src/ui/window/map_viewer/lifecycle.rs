@@ -300,10 +300,7 @@ impl MapViewerWindowView {
     pub fn new(init: MapViewerWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let world_path = PathBuf::from(init.world_path.as_ref());
         let window_size = window.viewport_size();
-        let mut viewport = MapViewport::new(window_size);
-        if let Some((spawn_x, spawn_z)) = spawn_block_center(&world_path) {
-            viewport.center_on_block(spawn_x, spawn_z, web_relief_render_layout());
-        }
+        let viewport = MapViewport::new(window_size);
         let input_fields = MapInputFields::new(window, cx);
         let initial_layout = web_relief_render_layout();
         let (initial_center_x, initial_center_z) = viewport.center_block(initial_layout);
@@ -1665,12 +1662,16 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    load_tile_occupancy_index(
+                    // level.dat parsing is filesystem-backed too. Keep it on the same background
+                    // metadata path instead of delaying map-window construction on the UI thread.
+                    let spawn_center = spawn_block_center(&world_path);
+                    let occupancy = load_tile_occupancy_index(
                         world_path,
                         dimension,
                         layout,
                         metadata_cancel_for_task,
-                    )
+                    );
+                    (occupancy, spawn_center)
                 })
                 .await;
             let Some(view) = handle.upgrade() else {
@@ -1686,6 +1687,7 @@ impl MapViewerWindowView {
                 }
                 this.metadata_cancel = None;
                 this.metadata_loading = false;
+                let (result, spawn_center) = result;
                 match result {
                     Ok(result) => {
                         let tile_count = result.index.tile_count();
@@ -1694,8 +1696,8 @@ impl MapViewerWindowView {
                         if let Some((block_x, block_z)) = pending_center_block {
                             this.viewport.center_on_block(block_x, block_z, layout);
                         } else if recenter
-                            && let Some((block_x, block_z)) =
-                                occupancy_center_block(result.index.as_ref())
+                            && let Some((block_x, block_z)) = spawn_center
+                                .or_else(|| occupancy_center_block(result.index.as_ref()))
                         {
                             this.viewport.center_on_block(block_x, block_z, layout);
                         }
