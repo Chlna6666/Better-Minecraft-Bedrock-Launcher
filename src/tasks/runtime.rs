@@ -12,7 +12,7 @@ use tracing::{debug, error, warn};
 
 use super::task_manager::{
     TaskVisibility, create_task_with_details_and_visibility, finish_task, get_snapshot_arc,
-    is_cancelled, register_task_abort_handle, remove_task, update_progress,
+    is_cancelled, refresh_task_telemetry, register_task_abort_handle, remove_task, update_progress,
 };
 
 const DEFAULT_BLOCKING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -267,7 +267,21 @@ where
         };
 
         if !is_cancelled(&task_id_for_worker) {
+            let telemetry_task_id = task_id_for_worker.clone();
+            let telemetry_watchdog = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(250));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    if !refresh_task_telemetry(&telemetry_task_id) {
+                        break;
+                    }
+                }
+            });
+
             future.await;
+            telemetry_watchdog.abort();
         }
     })?;
 

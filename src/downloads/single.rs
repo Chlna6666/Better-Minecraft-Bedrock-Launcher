@@ -194,10 +194,10 @@ pub async fn download_file(
                     downloaded_bytes = downloaded_bytes.saturating_add(len as u64);
 
                     if last_update.elapsed().as_millis() > 100 {
-                        update_progress(task_id, pending_progress, total, Some("downloading"));
                         let _ = maybe_set_task_visualization(task_id, || {
                             Some(build_single_download_visualization(downloaded_bytes, total))
                         });
+                        update_progress(task_id, pending_progress, total, Some("downloading"));
                         pending_progress = 0;
                         last_update = Instant::now();
                     }
@@ -209,10 +209,10 @@ pub async fn download_file(
                 }
 
                 if pending_progress > 0 {
-                    update_progress(task_id, pending_progress, total, Some("downloading"));
                     let _ = maybe_set_task_visualization(task_id, || {
                         Some(build_single_download_visualization(downloaded_bytes, total))
                     });
+                    update_progress(task_id, pending_progress, total, Some("downloading"));
                 }
 
                 writer.flush().await.map_err(CoreError::Io)?;

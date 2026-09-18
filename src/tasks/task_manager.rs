@@ -14,7 +14,7 @@ use tracing::debug;
 const TASK_EMIT_INTERVAL_MS: u128 = 100;
 const TASK_EVENT_BATCH_LIMIT: usize = 256;
 const TASK_PROGRESS_MIN_UPDATE_INTERVAL: f64 = 0.10;
-const TASK_PROGRESS_IDLE_RESET_SECONDS: f64 = 2.0;
+const TASK_PROGRESS_IDLE_RESET_SECONDS: f64 = 1.0;
 const TASK_PROGRESS_EMA_ALPHA: f64 = 0.2;
 const TASK_VISUALIZATION_ENABLED: bool = true;
 const TASK_LOG_LIMIT: usize = 128;
@@ -682,7 +682,13 @@ pub fn update_progress(task_id: &str, delta_bytes: u64, total: Option<u64>, stag
                 }
             }
 
-            if elapsed >= TASK_PROGRESS_MIN_UPDATE_INTERVAL {
+            if stage_changed {
+                // A stage boundary starts a new throughput domain. Keeping the previous download
+                // EMA here makes verifying/extracting/queued states display a frozen MB/s value.
+                t.speed_ema = 0.0;
+                t.last_instant = now;
+                t.last_done = t.done;
+            } else if elapsed >= TASK_PROGRESS_MIN_UPDATE_INTERVAL {
                 let diff = t.done.saturating_sub(t.last_done);
                 if diff > 0 {
                     let inst_speed = (diff as f64) / elapsed;
@@ -694,7 +700,7 @@ pub fn update_progress(task_id: &str, delta_bytes: u64, total: Option<u64>, stag
                     }
                     t.last_instant = now;
                     t.last_done = t.done;
-                } else if elapsed >= TASK_PROGRESS_IDLE_RESET_SECONDS {
+                } else if elapsed >= TASK_PROGRESS_IDLE_RESET_SECONDS && t.speed_ema > 0.0 {
                     t.speed_ema = 0.0;
                     t.last_instant = now;
                     t.last_done = t.done;
@@ -712,6 +718,64 @@ pub fn update_progress(task_id: &str, delta_bytes: u64, total: Option<u64>, stag
     if let Some(snap) = snapshot_to_emit {
         emit_task_update(snap);
     }
+}
+
+/// Refresh transfer telemetry even when the network stream is temporarily silent.
+///
+/// Byte-driven progress reporting otherwise leaves the last non-zero MB/s visible while a
+/// request is stalled. Download runtimes call this periodically; it emits only when a pending
+/// speed sample becomes ready or a stale rate must be reset.
+pub fn refresh_task_telemetry(task_id: &str) -> bool {
+    let mut snapshot_to_emit: Option<TaskSnapshot> = None;
+
+    let still_active = {
+        let mut map = TASKS.lock().unwrap();
+        let Some(task) = map.get_mut(task_id) else {
+            return false;
+        };
+        if is_terminal_status(task.status.as_ref()) {
+            return false;
+        }
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(task.last_instant).as_secs_f64();
+        if elapsed >= TASK_PROGRESS_MIN_UPDATE_INTERVAL {
+            let diff = task.done.saturating_sub(task.last_done);
+            let mut telemetry_changed = false;
+
+            if diff > 0 {
+                let inst_speed = (diff as f64) / elapsed;
+                task.speed_ema = if task.speed_ema <= 0.0 {
+                    inst_speed
+                } else {
+                    task.speed_ema * (1.0 - TASK_PROGRESS_EMA_ALPHA)
+                        + inst_speed * TASK_PROGRESS_EMA_ALPHA
+                };
+                task.last_instant = now;
+                task.last_done = task.done;
+                telemetry_changed = true;
+            } else if elapsed >= TASK_PROGRESS_IDLE_RESET_SECONDS && task.speed_ema > 0.0 {
+                task.speed_ema = 0.0;
+                task.last_instant = now;
+                task.last_done = task.done;
+                telemetry_changed = true;
+            }
+
+            if telemetry_changed {
+                task.mark_emitted(now);
+                task.touch();
+                snapshot_to_emit = Some(task.snapshot());
+            }
+        }
+
+        true
+    };
+
+    if let Some(snapshot) = snapshot_to_emit {
+        emit_task_update(snapshot);
+    }
+
+    still_active
 }
 
 pub fn set_total(task_id: &str, total: Option<u64>) {
@@ -927,6 +991,9 @@ pub fn pause_task(task_id: &str) -> bool {
             if t.supports_pause && !t.cancel_requested && t.status.as_ref() == "running" {
                 t.paused = true;
                 t.status = Arc::<str>::from("paused");
+                t.speed_ema = 0.0;
+                t.last_done = t.done;
+                t.last_instant = Instant::now();
                 t.touch();
                 snapshot_to_emit = Some(t.snapshot());
                 changed = true;
@@ -954,6 +1021,8 @@ pub fn resume_task(task_id: &str) -> bool {
             if t.supports_pause && !t.cancel_requested && t.status.as_ref() == "paused" {
                 t.paused = false;
                 t.status = Arc::<str>::from("running");
+                t.speed_ema = 0.0;
+                t.last_done = t.done;
                 t.last_instant = Instant::now();
                 t.last_emit_instant = Instant::now();
                 t.touch();

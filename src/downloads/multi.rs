@@ -31,7 +31,7 @@ use crate::tasks::task_manager::{
 // =========================================================================
 
 const WORKER_BATCH_SIZE: usize = 1024 * 1024;
-const VISUALIZATION_EMIT_INTERVAL_MS: u64 = 250;
+const VISUALIZATION_EMIT_INTERVAL_MS: u64 = 100;
 const WRITE_CHANNEL_SIZE: usize = 64;
 
 const DEFAULT_DYNAMIC_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
@@ -1095,12 +1095,6 @@ async fn download_multi_partitioned(
                             None,
                         )
                         .await;
-                        update_progress(
-                            &task_id,
-                            pending_progress,
-                            Some(total),
-                            Some("downloading"),
-                        );
                         set_download_visualization_throttled(
                             &task_id,
                             active_threads,
@@ -1113,6 +1107,12 @@ async fn download_multi_partitioned(
                             false,
                         )
                         .await;
+                        update_progress(
+                            &task_id,
+                            pending_progress,
+                            Some(total),
+                            Some("downloading"),
+                        );
                         pending_progress = 0;
                         last_update_time = Instant::now();
                     }
