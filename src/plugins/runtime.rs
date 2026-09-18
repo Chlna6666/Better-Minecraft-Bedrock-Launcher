@@ -131,7 +131,7 @@ pub struct PluginInstance {
 #[derive(Clone, Debug)]
 enum PreparedPluginWasm {
     Ready {
-        bytes: Arc<[u8]>,
+        module: Module,
         sha256: String,
     },
     Error(Arc<str>),
@@ -1223,22 +1223,16 @@ impl PluginRegistry {
             return Err(anyhow!("plugin engine is not initialized"));
         };
 
-        let (wasm, wasm_hash) = match prepared_wasm {
-            PreparedPluginWasm::Ready { bytes, sha256 } => (Arc::clone(bytes), sha256.clone()),
+        let (prepared_module, wasm_hash) = match prepared_wasm {
+            PreparedPluginWasm::Ready { module, sha256 } => (module.clone(), sha256.clone()),
             PreparedPluginWasm::Error(error) => return Err(anyhow!("{}", error)),
         };
         let module = if let Some(module) = self.module_cache.get(&wasm_hash) {
             module.clone()
         } else {
-            let module = tinywasm::parse_bytes(wasm.as_ref()).map_err(|error| {
-                anyhow!(
-                    "parse plugin wasm {} failed: {error}",
-                    manifest.wasm_path().display()
-                )
-            })?;
-            validate_module_abi(&module)?;
-            self.module_cache.insert(wasm_hash, module.clone());
-            module
+            self.module_cache
+                .insert(wasm_hash, prepared_module.clone());
+            prepared_module
         };
 
         let locale = current_locale_code();
@@ -3559,19 +3553,33 @@ fn prepare_plugin_manifests(
 
 fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
     let path = manifest.wasm_path();
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            let sha256 = crate::plugins::manifest::sha256_hex(&bytes);
-            PreparedPluginWasm::Ready {
-                bytes: Arc::<[u8]>::from(bytes),
-                sha256,
-            }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return PreparedPluginWasm::Error(Arc::<str>::from(format!(
+                "read plugin wasm {} failed: {error}",
+                path.display()
+            )));
         }
-        Err(error) => PreparedPluginWasm::Error(Arc::<str>::from(format!(
-            "read plugin wasm {} failed: {error}",
-            path.display()
-        ))),
-    }
+    };
+
+    let sha256 = crate::plugins::manifest::sha256_hex(&bytes);
+    let module = match tinywasm::parse_bytes(&bytes)
+        .map_err(|error| anyhow!("parse plugin wasm {} failed: {error}", path.display()))
+        .and_then(|module| {
+            validate_module_abi(&module)?;
+            Ok(module)
+        })
+    {
+        Ok(module) => module,
+        Err(error) => {
+            return PreparedPluginWasm::Error(Arc::<str>::from(
+                crate::plugins::manifest::format_error_chain(&error),
+            ));
+        }
+    };
+
+    PreparedPluginWasm::Ready { module, sha256 }
 }
 
 pub fn init(cx: &mut App) {
