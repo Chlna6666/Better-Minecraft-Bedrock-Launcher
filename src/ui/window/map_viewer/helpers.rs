@@ -65,32 +65,69 @@ pub(super) const fn default_interactive_render_gpu_backend() -> RenderGpuBackend
 
 const SYSTEM_MEMORY_CACHE_TTL: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Copy, Debug, Default)]
-struct SystemMemoryCache {
-    last_refresh: Option<Instant>,
-    available_bytes: u64,
-}
+static AVAILABLE_SYSTEM_MEMORY_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static SYSTEM_MEMORY_LAST_REFRESH_UNIX: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static SYSTEM_MEMORY_REFRESH_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-impl SystemMemoryCache {
-    fn available_bytes(&mut self) -> u64 {
-        let now = Instant::now();
-        if self.last_refresh.is_none_or(|last_refresh| {
-            now.saturating_duration_since(last_refresh) >= SYSTEM_MEMORY_CACHE_TTL
-        }) {
-            self.available_bytes = refresh_available_system_memory_bytes();
-            self.last_refresh = Some(now);
-        }
-        self.available_bytes
+struct SystemMemoryRefreshGuard;
+
+impl Drop for SystemMemoryRefreshGuard {
+    fn drop(&mut self) {
+        SYSTEM_MEMORY_REFRESH_IN_FLIGHT.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
 pub(super) fn available_system_memory_bytes() -> u64 {
-    static CACHE: OnceLock<Mutex<SystemMemoryCache>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(SystemMemoryCache::default()));
-    match cache.lock() {
-        Ok(mut cache) => cache.available_bytes(),
-        Err(poisoned) => poisoned.into_inner().available_bytes(),
+    AVAILABLE_SYSTEM_MEMORY_BYTES.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(super) fn request_available_system_memory_refresh(
+    cx: &mut Context<MapViewerWindowView>,
+) {
+    let now_unix = system_memory_unix_now_seconds();
+    let last_refresh =
+        SYSTEM_MEMORY_LAST_REFRESH_UNIX.load(std::sync::atomic::Ordering::Acquire);
+    let cached = available_system_memory_bytes();
+    if cached != 0 && now_unix.saturating_sub(last_refresh) < SYSTEM_MEMORY_CACHE_TTL.as_secs() {
+        return;
     }
+
+    if SYSTEM_MEMORY_REFRESH_IN_FLIGHT
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return;
+    }
+
+    cx.spawn(async move |_handle, cx| {
+        let _guard = SystemMemoryRefreshGuard;
+        let available_bytes = cx
+            .background_spawn(async move { refresh_available_system_memory_bytes() })
+            .await;
+        AVAILABLE_SYSTEM_MEMORY_BYTES
+            .store(available_bytes, std::sync::atomic::Ordering::Release);
+        SYSTEM_MEMORY_LAST_REFRESH_UNIX.store(
+            system_memory_unix_now_seconds(),
+            std::sync::atomic::Ordering::Release,
+        );
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
+fn system_memory_unix_now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn refresh_available_system_memory_bytes() -> u64 {

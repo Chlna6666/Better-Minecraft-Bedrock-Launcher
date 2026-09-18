@@ -500,6 +500,7 @@ impl MapViewerWindowView {
             last_visible_error: None,
             _subscriptions: subscriptions,
         };
+        request_available_system_memory_refresh(cx);
         this.spawn_task_updates(cx);
         this.preload_entity_avatar_pool(cx);
         this.update_viewport_size(window);
@@ -2090,6 +2091,7 @@ impl MapViewerWindowView {
         force: bool,
         cx: &mut Context<Self>,
     ) {
+        request_available_system_memory_refresh(cx);
         let budget = ui_tile_memory_budget_bytes(self.viewport, self.render_texture_layout);
         if self.tile_manager.loaded_estimated_bytes() <= budget {
             return;
