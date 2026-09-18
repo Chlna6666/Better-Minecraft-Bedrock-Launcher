@@ -18,6 +18,8 @@ pub struct LauncherState {
     pub launch_args: SharedString,
     pub loader_version: SharedString,
     pub last_snapshot: Option<Arc<TaskSnapshot>>,
+    pub task_logs: Arc<[Arc<str>]>,
+    pub task_log_version: u64,
     pub log_scroll_handle: ScrollHandle,
 }
 
@@ -39,6 +41,8 @@ impl Default for LauncherState {
             launch_args: SharedString::default(),
             loader_version: SharedString::default(),
             last_snapshot: None,
+            task_logs: Arc::from([]),
+            task_log_version: 0,
             log_scroll_handle: ScrollHandle::new(),
         }
     }
@@ -70,7 +74,17 @@ impl LauncherState {
         self.launch_args = launch_args.unwrap_or_default();
         self.loader_version = loader_version;
         self.last_snapshot = None;
+        self.task_logs = Arc::from([]);
+        self.task_log_version = 0;
         self.log_scroll_handle = ScrollHandle::new();
+    }
+
+    pub fn apply_task_logs(&mut self, logs: Arc<[Arc<str>]>, version: u64) {
+        if version < self.task_log_version {
+            return;
+        }
+        self.task_logs = logs;
+        self.task_log_version = version;
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Arc<TaskSnapshot>) {
@@ -122,6 +136,8 @@ impl LauncherState {
         self.launch_args = SharedString::default();
         self.loader_version = SharedString::default();
         self.last_snapshot = None;
+        self.task_logs = Arc::from([]);
+        self.task_log_version = 0;
         self.log_scroll_handle = ScrollHandle::new();
     }
 

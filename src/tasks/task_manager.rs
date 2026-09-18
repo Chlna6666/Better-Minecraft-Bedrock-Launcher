@@ -30,12 +30,49 @@ static TASK_ABORT_HANDLES: Lazy<Mutex<HashMap<String, AbortHandle>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static TASK_CANCEL_HOOKS: Lazy<Mutex<HashMap<String, TaskCancelHook>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static TASK_LOGS: Lazy<Mutex<HashMap<Arc<str>, VecDeque<Arc<str>>>>> =
+struct TaskLogBuffer {
+    entries: VecDeque<Arc<str>>,
+    snapshot: Arc<[Arc<str>]>,
+    version: u64,
+}
+
+impl Default for TaskLogBuffer {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            snapshot: Arc::from([]),
+            version: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskLogSnapshot {
+    pub logs: Arc<[Arc<str>]>,
+    pub version: u64,
+}
+
+impl Default for TaskLogSnapshot {
+    fn default() -> Self {
+        Self {
+            logs: Arc::from([]),
+            version: 0,
+        }
+    }
+}
+
+static TASK_LOGS: Lazy<Mutex<HashMap<Arc<str>, TaskLogBuffer>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 static TASK_EVENTS: Lazy<broadcast::Sender<TaskEvent>> = Lazy::new(|| {
     // Best-effort: drop updates if there are no receivers, or buffer overflow happens.
     let (tx, _rx) = broadcast::channel(4096);
+    tx
+});
+
+static TASK_LOG_EVENTS: Lazy<broadcast::Sender<Arc<str>>> = Lazy::new(|| {
+    // Logs are bounded and only the latest immutable snapshot matters to UI consumers.
+    let (tx, _rx) = broadcast::channel(1024);
     tx
 });
 
@@ -359,6 +396,10 @@ pub fn subscribe_task_events() -> broadcast::Receiver<TaskEvent> {
     TASK_EVENTS.subscribe()
 }
 
+pub fn subscribe_task_log_updates() -> broadcast::Receiver<Arc<str>> {
+    TASK_LOG_EVENTS.subscribe()
+}
+
 pub fn task_event_stream() -> impl futures::Stream<Item = TaskEventDelivery> {
     let receiver = subscribe_task_events();
     futures::stream::unfold(receiver, |mut receiver| async move {
@@ -637,21 +678,36 @@ pub fn set_task_message(task_id: &str, message: Option<String>) -> bool {
 }
 
 pub fn append_task_log(task_id: &str, line: impl Into<String>) -> bool {
-    let mut logs = TASK_LOGS.lock().unwrap();
     let task_id: Arc<str> = Arc::from(task_id);
-    let task_logs = logs.entry(task_id).or_default();
-    if task_logs.len() >= TASK_LOG_LIMIT {
-        task_logs.pop_front();
+    {
+        let mut logs = TASK_LOGS.lock().unwrap();
+        let task_logs = logs.entry(task_id.clone()).or_default();
+        if task_logs.entries.len() >= TASK_LOG_LIMIT {
+            task_logs.entries.pop_front();
+        }
+        task_logs.entries.push_back(Arc::from(line.into()));
+        task_logs.snapshot = Arc::from(task_logs.entries.iter().cloned().collect::<Vec<_>>());
+        task_logs.version = task_logs.version.saturating_add(1);
     }
-    task_logs.push_back(Arc::from(line.into()));
+
+    if TASK_LOG_EVENTS.receiver_count() > 0 {
+        let _ = TASK_LOG_EVENTS.send(task_id);
+    }
     true
 }
 
-pub fn task_logs(task_id: &str) -> Arc<[Arc<str>]> {
+pub fn task_logs_snapshot(task_id: &str) -> TaskLogSnapshot {
     let logs = TASK_LOGS.lock().unwrap();
     logs.get(task_id)
-        .map(|entries| Arc::<[Arc<str>]>::from(entries.iter().cloned().collect::<Vec<_>>()))
-        .unwrap_or_else(|| Arc::<[Arc<str>]>::from([]))
+        .map(|buffer| TaskLogSnapshot {
+            logs: buffer.snapshot.clone(),
+            version: buffer.version,
+        })
+        .unwrap_or_default()
+}
+
+pub fn task_logs(task_id: &str) -> Arc<[Arc<str>]> {
+    task_logs_snapshot(task_id).logs
 }
 
 pub fn update_progress(task_id: &str, delta_bytes: u64, total: Option<u64>, stage: Option<&str>) {
@@ -1354,6 +1410,28 @@ mod tests {
             sequence,
             visibility: TaskVisibility::Visible,
         })
+    }
+
+    #[test]
+    fn task_log_reads_reuse_immutable_snapshot_until_append() {
+        let task_id = format!(
+            "task-log-snapshot-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+
+        append_task_log(&task_id, "first");
+        let first = task_logs_snapshot(&task_id);
+        let repeated = task_logs_snapshot(&task_id);
+        assert_eq!(first.version, 1);
+        assert!(Arc::ptr_eq(&first.logs, &repeated.logs));
+
+        append_task_log(&task_id, "second");
+        let second = task_logs_snapshot(&task_id);
+        assert_eq!(second.version, 2);
+        assert!(!Arc::ptr_eq(&first.logs, &second.logs));
+        assert_eq!(second.logs.len(), 2);
+
+        TASK_LOGS.lock().unwrap().remove(task_id.as_str());
     }
 
     #[test]

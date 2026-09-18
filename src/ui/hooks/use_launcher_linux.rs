@@ -42,12 +42,8 @@ pub struct LaunchVersionDescriptor {
 
 pub fn read_launcher_snapshot(now: std::time::Instant, cx: &App) -> LauncherSnapshot {
     cx.read_global(|state: &LauncherState, _cx| {
-        let logs = state
-            .task_id
-            .as_ref()
-            .map(|task_id| task_manager::task_logs(task_id.as_ref()))
-            .unwrap_or_else(|| Arc::<[Arc<str>]>::from([]));
-        let log_version = launcher_log_version(&logs, state.last_snapshot.as_deref());
+        let logs = state.task_logs.clone();
+        let log_version = state.task_log_version;
         LauncherSnapshot {
             show_modal: state.show_modal,
             modal_visible: state.modal_visible,
@@ -258,35 +254,75 @@ fn begin_launch_task(version: LaunchVersionDescriptor, cx: &mut App) -> Arc<str>
 }
 
 fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
-    // Subscribe before reading the current snapshot so a fast task cannot
-    // finish in the gap between the initial read and receiver creation.
+    // Subscribe before reading current state so a fast update cannot be lost.
     let mut updates = task_manager::subscribe_task_updates();
-    if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
-        cx.update_global(|state: &mut LauncherState, _cx| {
-            if state.task_id.as_deref() == Some(task_id.as_ref()) {
+    let mut log_updates = task_manager::subscribe_task_log_updates();
+    let initial_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+    let initial_logs = task_manager::task_logs_snapshot(task_id.as_ref());
+    cx.update_global(|state: &mut LauncherState, _cx| {
+        if state.task_id.as_deref() == Some(task_id.as_ref()) {
+            if let Some(snapshot) = initial_snapshot {
                 state.apply_snapshot(snapshot);
             }
-        });
-    }
+            state.apply_task_logs(initial_logs.logs, initial_logs.version);
+        }
+    });
 
     cx.spawn({
         let task_id = task_id.clone();
         async move |cx| {
             loop {
-                let snapshot = match updates.recv().await {
-                    Ok(snapshot) => snapshot,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!(skipped, "Linux launcher snapshot pump lagged; resyncing");
-                        let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
-                        else {
-                            continue;
-                        };
-                        snapshot
+                let snapshot = tokio::select! {
+                    update = updates.recv() => match update {
+                        Ok(snapshot) => Some(snapshot),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "Linux launcher snapshot pump lagged; resyncing");
+                            task_manager::get_snapshot_arc(task_id.as_ref())
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            warn!("Linux launcher snapshot pump closed");
+                            break;
+                        }
+                    },
+                    log_update = log_updates.recv() => {
+                        match log_update {
+                            Ok(log_task_id) => {
+                                if log_task_id.as_ref() == task_id.as_ref() {
+                                    let log_snapshot =
+                                        task_manager::task_logs_snapshot(task_id.as_ref());
+                                    cx.update_global(|state: &mut LauncherState, _cx| {
+                                        if state.task_id.as_deref() == Some(task_id.as_ref()) {
+                                            state.apply_task_logs(
+                                                log_snapshot.logs,
+                                                log_snapshot.version,
+                                            );
+                                        }
+                                    })?;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                warn!(skipped, "Linux launcher log pump lagged; resyncing");
+                                let log_snapshot =
+                                    task_manager::task_logs_snapshot(task_id.as_ref());
+                                cx.update_global(|state: &mut LauncherState, _cx| {
+                                    if state.task_id.as_deref() == Some(task_id.as_ref()) {
+                                        state.apply_task_logs(
+                                            log_snapshot.logs,
+                                            log_snapshot.version,
+                                        );
+                                    }
+                                })?;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                warn!("Linux launcher log pump closed");
+                                break;
+                            }
+                        }
+                        None
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        warn!("Linux launcher snapshot pump closed");
-                        break;
-                    }
+                };
+                let Some(snapshot) = snapshot else {
+                    continue;
                 };
                 if snapshot.id.as_ref() != task_id.as_ref() {
                     continue;
@@ -329,22 +365,6 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
         }
     })
     .detach();
-}
-
-fn launcher_log_version(logs: &[Arc<str>], last_snapshot: Option<&TaskSnapshot>) -> u64 {
-    let mut version = logs.len() as u64;
-    if let Some(last) = logs.last() {
-        let mut hash = 0xcbf29ce484222325_u64;
-        for byte in last.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        version ^= hash.rotate_left(7);
-    }
-    if let Some(snapshot) = last_snapshot {
-        version ^= snapshot.sequence.rotate_left(17);
-    }
-    version
 }
 
 fn launcher_snapshot_changed(previous: &LauncherSnapshot, current: &LauncherSnapshot) -> bool {

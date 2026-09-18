@@ -98,15 +98,8 @@ pub fn render_launcher_overlay(
         })
         .unwrap_or_else(|| stage.clone());
     let status_color = line_color(&colors, &status_text);
-    let visible_logs = snapshot
-        .logs
-        .iter()
-        .rev()
-        .take(100)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
+    let visible_log_start = snapshot.logs.len().saturating_sub(100);
+    let visible_logs = &snapshot.logs[visible_log_start..];
     let log_scroll_handle = cx
         .global::<crate::ui::state::launcher::LauncherState>()
         .log_scroll_handle
@@ -314,7 +307,7 @@ pub fn render_launcher_overlay(
                                         .line_height(px(18.))
                                         .text_color(line_color)
                                         .whitespace_normal()
-                                        .child(line_ref.to_string())
+                                        .child(SharedString::new(line.clone()))
                                 })),
                         ),
                 )
