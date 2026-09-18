@@ -1,6 +1,5 @@
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
-use crate::ui::animation::{apple_spring, spring_motion};
 use crate::ui::components::color_picker::normalize_hex_color;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{InputEvent, InputState};
@@ -98,22 +97,6 @@ pub(crate) fn preload_startup_background_target_from_values(
         .unwrap_or(0)
 }
 
-fn route_enter_animation_key(route: &RouteTarget) -> SharedString {
-    match route {
-        RouteTarget::Builtin(builtin) => SharedString::from(match builtin {
-            AppRoute::Home => "main-route-page-enter:/",
-            AppRoute::Download => "main-route-page-enter:/download",
-            AppRoute::Manage => "main-route-page-enter:/list",
-            AppRoute::Tools => "main-route-page-enter:/tools/online",
-            AppRoute::Tasks => "main-route-page-enter:/tasks",
-            AppRoute::Settings => "main-route-page-enter:/settings",
-        }),
-        RouteTarget::Plugin { .. } => {
-            SharedString::from(format!("main-route-page-enter:{}", route.pathname()))
-        }
-    }
-}
-
 fn optional_page_view_element<T>(route_key: &str, view: Option<Entity<T>>) -> AnyElement
 where
     T: Render + 'static,
@@ -189,7 +172,6 @@ struct MainWindowRenderModel {
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
     dropdown_visible: bool,
-    route_transition_direction: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -390,10 +372,6 @@ impl MainWindowView {
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             crate::ui::components::dropdown::has_visible_overlay(now, dropdown_state)
         };
-        let route_transition_direction = cx
-            .global::<crate::ui::state::navigation::NavState>()
-            .pill_direction();
-
         MainWindowRenderModel {
             now,
             route,
@@ -421,11 +399,10 @@ impl MainWindowView {
             toast_visible,
             toast_breadcrumb_visible,
             dropdown_visible,
-            route_transition_direction,
         }
     }
 
-    fn render_active_page(&self, route: &RouteTarget, transition_direction: f32) -> AnyElement {
+    fn render_active_page(&self, route: &RouteTarget) -> AnyElement {
         let page = match route {
             RouteTarget::Builtin(AppRoute::Home) => {
                 optional_page_view_element(AppRoute::Home.pathname(), self.home_page_view.clone())
@@ -454,34 +431,14 @@ impl MainWindowView {
             }
         };
 
-        if crate::core::ui_prefs::reduced_motion() {
-            return div()
-                .absolute()
-                .inset_0()
-                .size_full()
-                .child(page)
-                .into_any_element();
-        }
-
-        let route_key = route_enter_animation_key(route);
-        // Keep the v0.2.0 page-transition semantics: the whole page moves in layout space using the
-        // physical spring sample, including its small overshoot. Do not clamp spring progress or
-        // fade page opacity here: clamping creates an endpoint plateau while the spring is still
-        // moving, which is perceived as a hitch before the rebound continues.
-        let animated_page = div().size_full().child(page).with_animation(
-            route_key,
-            spring_motion(apple_spring(0.36, 0.74)),
-            move |page, progress| {
-                page.relative()
-                    .left(px(18.0 * transition_direction * (1.0 - progress)))
-            },
-        );
-
+        // Route changes must not make an entire page-sized retained subtree a per-frame layout
+        // target. Navigation already has its own lightweight pill animation; the page itself enters
+        // directly at final geometry so virtual lists, images and inputs remain fully replayable.
         div()
             .absolute()
             .inset_0()
             .size_full()
-            .child(animated_page)
+            .child(page)
             .into_any_element()
     }
 
@@ -1728,7 +1685,7 @@ impl Render for MainWindowView {
             );
         }
 
-        let page = self.render_active_page(&model.route, model.route_transition_direction);
+        let page = self.render_active_page(&model.route);
         let (root, mut auth_blocked) = self.compose_root(&model, page, window, cx);
         let root = self
             .compose_easter_egg(root, &model, window, cx)

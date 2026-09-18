@@ -19,8 +19,11 @@ impl Window {
         AsyncWindowContext::new_context(cx.to_async(), self.handle)
     }
 
-    /// Schedule the given closure to be run directly after the current frame is rendered.
-    pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+    fn enqueue_next_frame_callback(
+        &self,
+        reason: FrameRequestReason,
+        callback: impl FnOnce(&mut Window, &mut App) + 'static,
+    ) {
         let should_request_frame = {
             let mut next_frame_callbacks = self.next_frame_callbacks.borrow_mut();
             let should_request_frame = next_frame_callbacks.is_empty();
@@ -28,12 +31,26 @@ impl Window {
             should_request_frame
         };
         if should_request_frame {
-            self.record_frame_request_reason(FrameRequestReason::ExplicitRedraw);
+            self.record_frame_request_reason(reason);
             self.request_platform_frame(RequestFrameOptions {
                 require_presentation: true,
                 force_render: false,
             });
         }
+    }
+
+    /// Schedule the given closure to be run directly after the current frame is rendered.
+    pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+        self.enqueue_next_frame_callback(FrameRequestReason::ExplicitRedraw, callback);
+    }
+
+    /// Schedule a presentation-animation callback without classifying the request as an explicit
+    /// redraw. Animation elements use this so diagnostics and scheduling see one cadence owner.
+    pub(crate) fn on_next_presentation_frame(
+        &self,
+        callback: impl FnOnce(&mut Window, &mut App) + 'static,
+    ) {
+        self.enqueue_next_frame_callback(FrameRequestReason::PresentationAnimation, callback);
     }
 
     /// Schedule a frame to be drawn on the next animation frame.
@@ -134,7 +151,7 @@ impl Window {
         // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a fixed
         // parent cannot hide a moving child, but reusable leaves/subtrees may still prove equality.
         self.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
-        self.on_next_frame(move |window, _cx| {
+        self.enqueue_next_frame_callback(FrameRequestReason::LayoutAnimation, move |window, _cx| {
             if !window
                 .invalidator
                 .take_layout_animation_frame(entity, &retained_id)
@@ -146,8 +163,8 @@ impl Window {
                 Some(&retained_id),
                 RetainedInvalidationScope::ReconcileSubtree,
             ) {
-                // This callback already runs inside the platform frame requested by
-                // on_next_frame. Marking the target dirty is enough for the current
+                // This callback already runs inside the platform frame requested by the
+                // layout cadence. Marking the target dirty is enough for the current
                 // evaluate_frame_work pass; scheduling here would queue a redundant frame.
                 window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
             }

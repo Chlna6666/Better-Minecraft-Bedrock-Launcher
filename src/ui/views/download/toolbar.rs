@@ -7,6 +7,7 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{
     DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, DownloadTab,
 };
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::time::Instant;
@@ -253,7 +254,8 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n, now
         .w(px(stretch))
         .h(px(TAB_HEIGHT))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(colors.surface);
+        .bg(colors.surface)
+        .with_layout_animation_target(animating);
 
     div()
         .relative()

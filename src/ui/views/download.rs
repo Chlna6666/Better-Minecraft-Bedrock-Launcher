@@ -1,10 +1,8 @@
-use crate::ui::animation::ease_out_cubic;
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
-use gpui::AnimationExt as _;
 use gpui::*;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -580,36 +578,7 @@ pub fn render_download_page(
     curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
 ) -> impl IntoElement {
-    let (active_tab, tab_t, tab_animating, tab_from) =
-        cx.read_global(|state: &DownloadPageState, _cx| {
-            let (tab_t, tab_animating) = state.tab_anim_factor(now);
-            (state.tab, tab_t, tab_animating, state.tab_anim_from)
-        });
-    let tab_t_eased = {
-        let tc = tab_t.clamp(0.0, 1.0);
-        let p = tc - 1.0;
-        (1.0 + 1.35 * p.powi(3) + 0.35 * p.powi(2)).clamp(0.0, 1.05)
-    };
-    let content_opacity = if tab_animating {
-        0.88 + 0.12 * tab_t_eased.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    // Keep the v0.2.0 transition model for page-sized, interactive/virtualized subtrees.
-    // The newer scene-animation wrapper binds every descendant primitive to one persistent
-    // animation id even after motion has stopped, which makes hover-driven redraw/replay share
-    // animation ownership with the entire list.
-    let tab_idx = |t: DownloadTab| match t {
-        DownloadTab::Game => 0i32,
-        DownloadTab::ResourcePack => 1i32,
-        DownloadTab::Mod => 2i32,
-    };
-    let slide_direction = (tab_idx(active_tab) - tab_idx(tab_from)).signum() as f32;
-    let slide_offset_px = if tab_animating {
-        slide_direction * 24.0 * (1.0 - tab_t_eased)
-    } else {
-        0.0
-    };
+    let active_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
 
     // Mirror `.upstream_bmbl_1/src/components/UnifiedPageLayout/*`:
     // one glass panel with a fixed header, a scrollable content area, and a footer.
@@ -657,17 +626,16 @@ pub fn render_download_page(
         .flex_col()
         .child(header)
         .child(
+            // Keep the page-sized/virtualized body at final geometry. The toolbar's lightweight
+            // indicator owns the tab animation cadence, so list rows and images are never relaid
+            // out simply to animate a tab transition.
             div()
                 .flex_1()
                 .min_h(px(0.))
                 .min_w(px(0.))
-                .opacity(content_opacity)
-                .relative()
-                .left(px(slide_offset_px))
                 .flex()
                 .flex_col()
-                .child(body)
-                .with_layout_animation_target(tab_animating),
+                .child(body),
         );
 
     let page = common::page_shell(unified_panel, &colors);
