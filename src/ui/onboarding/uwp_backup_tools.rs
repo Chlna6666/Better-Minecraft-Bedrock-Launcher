@@ -221,39 +221,61 @@ fn start_export(window: &mut Window, cx: &mut App) {
     .detach();
 }
 
+fn open_directory_in_background(path: PathBuf, create_if_missing: bool, cx: &mut App) {
+    let display_path = path.display().to_string();
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            if create_if_missing {
+                std::fs::create_dir_all(&path).map_err(|error| {
+                    format!("Failed to create directory {}: {error}", path.display())
+                })?;
+            }
+            open_directory(&path)
+        })
+        .await;
+
+        cx.update(|cx| {
+            cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
+                state.export_status = Some(match result {
+                    Ok(Ok(())) => {
+                        crate::localized_text!("UwpBackup.opened", path = display_path)
+                    }
+                    Ok(Err(error)) => {
+                        crate::localized_text!("UwpBackup.open_failed", detail = error)
+                    }
+                    Err(error) => crate::localized_text!(
+                        "UwpBackup.open_failed",
+                        detail = error.to_string()
+                    ),
+                });
+            });
+        })?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
 fn open_user_data(cx: &mut App) {
     let path = cx
         .global::<UwpBackupToolsState>()
         .summary
         .as_ref()
         .map(user_data_path);
-    let message = match path {
-        Some(path) => match open_directory(&path) {
-            Ok(()) => {
-                crate::localized_text!("UwpBackup.opened", path = path.display().to_string(),)
-            }
-            Err(error) => crate::localized_text!("UwpBackup.open_failed", detail = error),
-        },
-        None => LocalizedText::key(crate::i18n_key!("UwpBackup.scan_not_finished")),
+    let Some(path) = path else {
+        cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
+            state.export_status = Some(LocalizedText::key(crate::i18n_key!(
+                "UwpBackup.scan_not_finished"
+            )));
+        });
+        return;
     };
-    cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-        state.export_status = Some(message);
-    });
+
+    open_directory_in_background(path, false, cx);
 }
 
 fn open_migration_backups(cx: &mut App) {
-    let path = migration_backup_root();
-    let result = std::fs::create_dir_all(&path)
-        .map_err(|error| format!("Failed to create migration backup directory: {error}"))
-        .and_then(|_| open_directory(&path));
-    cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-        state.export_status = Some(match result {
-            Ok(()) => {
-                crate::localized_text!("UwpBackup.opened", path = path.display().to_string(),)
-            }
-            Err(error) => crate::localized_text!("UwpBackup.open_failed", detail = error),
-        });
-    });
+    open_directory_in_background(migration_backup_root(), true, cx);
 }
 
 fn action_button(
