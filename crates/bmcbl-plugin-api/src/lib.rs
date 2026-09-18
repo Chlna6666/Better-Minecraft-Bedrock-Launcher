@@ -2278,9 +2278,10 @@ pub fn storage_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
     }
 }
 
-/// Writes persistent plugin KV storage.
+/// Updates persistent plugin KV storage.
 ///
-/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
+/// The host validates quota and updates the in-memory snapshot immediately, then queues ordered
+/// background persistence. Mutating storage is rejected while rendering plugin UI.
 pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult<()> {
     host_call_unit(
         HostOp::StorageSet,
@@ -2293,7 +2294,8 @@ pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult
 
 /// Deletes a persistent plugin KV value.
 ///
-/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
+/// The in-memory snapshot updates immediately and disk persistence is queued in order. Mutating
+/// storage is rejected while rendering plugin UI.
 pub fn storage_delete(key: impl AsRef<str>) -> PluginResult<()> {
     host_call_unit(
         HostOp::StorageDelete,
@@ -2322,9 +2324,10 @@ pub fn config_read() -> PluginResult<String> {
     read_config()
 }
 
-/// Persists plugin configuration through the host.
+/// Updates plugin configuration through the host.
 ///
-/// This performs atomic host filesystem I/O and is rejected while rendering plugin UI.
+/// TOML is validated and the in-memory snapshot updates immediately; atomic disk persistence is
+/// queued on the host I/O runtime. Configuration mutation is rejected while rendering plugin UI.
 pub fn config_write(text: impl AsRef<str>) -> PluginResult<()> {
     host_call_unit(
         HostOp::WriteConfig,

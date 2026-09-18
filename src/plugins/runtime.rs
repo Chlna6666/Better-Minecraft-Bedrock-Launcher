@@ -59,6 +59,11 @@ const STORAGE_KEY_MAX_BYTES: usize = 128;
 static HTTP_REFRESH_NOTIFICATION: OnceLock<
     Mutex<Option<crate::plugins::watcher::PluginWatcherSender>>,
 > = OnceLock::new();
+static PLUGIN_PERSISTENCE_TX: OnceLock<
+    tokio::sync::mpsc::UnboundedSender<PluginPersistenceOp>,
+> = OnceLock::new();
+
+const PLUGIN_PERSISTENCE_COALESCE_DELAY: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Debug)]
 pub struct PluginPage {
@@ -159,6 +164,53 @@ struct PreparedPluginManifest {
 #[derive(Clone, Debug, Default)]
 struct PreparedPluginReload {
     plugins: Vec<PreparedPluginManifest>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum PluginPersistenceKey {
+    Config(String),
+    Storage { plugin_id: String, key: String },
+}
+
+#[derive(Clone, Debug)]
+enum PluginPersistenceOp {
+    Config {
+        plugin_id: String,
+        manifest: PluginManifest,
+        content: String,
+    },
+    StorageSet {
+        plugin_id: String,
+        storage_dir: PathBuf,
+        key: String,
+        value: String,
+    },
+    StorageDelete {
+        plugin_id: String,
+        storage_dir: PathBuf,
+        key: String,
+    },
+}
+
+impl PluginPersistenceOp {
+    fn key(&self) -> PluginPersistenceKey {
+        match self {
+            Self::Config { plugin_id, .. } => PluginPersistenceKey::Config(plugin_id.clone()),
+            Self::StorageSet { plugin_id, key, .. }
+            | Self::StorageDelete { plugin_id, key, .. } => PluginPersistenceKey::Storage {
+                plugin_id: plugin_id.clone(),
+                key: key.clone(),
+            },
+        }
+    }
+
+    fn plugin_id(&self) -> &str {
+        match self {
+            Self::Config { plugin_id, .. }
+            | Self::StorageSet { plugin_id, .. }
+            | Self::StorageDelete { plugin_id, .. } => plugin_id,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2120,6 +2172,117 @@ fn host_imports(store: &mut Store, host_state: Rc<RefCell<HostState>>) -> Import
     imports
 }
 
+fn schedule_plugin_persistence(
+    operation: PluginPersistenceOp,
+) -> std::result::Result<(), abi::HostError> {
+    let sender = if let Some(sender) = PLUGIN_PERSISTENCE_TX.get() {
+        sender
+    } else {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        start_plugin_persistence_worker(receiver).map_err(|error| abi::HostError {
+            code: "persistence-schedule-failed".to_string(),
+            message: error,
+        })?;
+        let _ = PLUGIN_PERSISTENCE_TX.set(sender);
+        PLUGIN_PERSISTENCE_TX
+            .get()
+            .ok_or_else(|| abi::HostError {
+                code: "persistence-schedule-failed".to_string(),
+                message: "plugin persistence queue initialization failed".to_string(),
+            })?
+    };
+
+    sender.send(operation).map_err(|error| abi::HostError {
+        code: "persistence-schedule-failed".to_string(),
+        message: format!("plugin persistence queue is unavailable: {error}"),
+    })
+}
+
+fn start_plugin_persistence_worker(
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<PluginPersistenceOp>,
+) -> std::result::Result<(), String> {
+    crate::tasks::runtime::spawn_io(async move {
+        while let Some(first) = receiver.recv().await {
+            let mut pending = BTreeMap::new();
+            pending.insert(first.key(), first);
+
+            tokio::time::sleep(PLUGIN_PERSISTENCE_COALESCE_DELAY).await;
+            while let Ok(operation) = receiver.try_recv() {
+                pending.insert(operation.key(), operation);
+            }
+
+            let operations = pending.into_values().collect::<Vec<_>>();
+            let persisted = crate::tasks::runtime::run_io_blocking(move || {
+                operations
+                    .into_iter()
+                    .map(|operation| {
+                        let plugin_id = operation.plugin_id().to_string();
+                        (plugin_id, persist_plugin_operation(operation))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+
+            match persisted {
+                Ok(results) => {
+                    for (plugin_id, result) in results {
+                        if let Err(error) = result {
+                            warn!(
+                                plugin_id,
+                                error = %crate::plugins::manifest::format_error_chain(&error),
+                                "plugin background persistence failed"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, "plugin persistence worker blocking task failed");
+                }
+            }
+        }
+    })
+    .map(|_| ())
+}
+
+fn persist_plugin_operation(operation: PluginPersistenceOp) -> Result<()> {
+    match operation {
+        PluginPersistenceOp::Config {
+            manifest, content, ..
+        } => crate::plugins::manifest::write_user_config(&manifest, &content),
+        PluginPersistenceOp::StorageSet {
+            storage_dir,
+            key,
+            value,
+            ..
+        } => persist_storage_value(&storage_dir, &key, &value).map_err(|error| {
+            anyhow!("{}: {}", error.code, error.message)
+        }),
+        PluginPersistenceOp::StorageDelete {
+            storage_dir, key, ..
+        } => storage_delete(&storage_dir, &key).map_err(|error| {
+            anyhow!("{}: {}", error.code, error.message)
+        }),
+    }
+}
+
+fn storage_snapshot_next_used_bytes(
+    values: &BTreeMap<String, String>,
+    key: &str,
+    value: &str,
+) -> u64 {
+    let used = values
+        .values()
+        .map(|value| value.len() as u64)
+        .fold(0_u64, u64::saturating_add);
+    used.saturating_sub(
+        values
+            .get(key)
+            .map(|current| current.len() as u64)
+            .unwrap_or(0),
+    )
+    .saturating_add(value.len() as u64)
+}
+
 fn require_non_render_blocking_io(
     render_context: Option<&RenderContext>,
     operation: &'static str,
@@ -2388,12 +2551,28 @@ fn handle_host_request(
         {
             state.require_capability(PluginCapability::StorageKv)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "storage set")?;
-            storage_set(
-                &state.storage_dir,
-                &key,
-                &value,
-                state.manifest.limits.max_storage_bytes,
-            )?;
+            validate_storage_key(&key)?;
+            let values = state.storage_values.as_ref().map_err(|error| abi::HostError {
+                code: "storage-state-unavailable".to_string(),
+                message: error.to_string(),
+            })?;
+            let quota_bytes = state.manifest.limits.max_storage_bytes;
+            let next_used = storage_snapshot_next_used_bytes(values, &key, &value);
+            if next_used > quota_bytes {
+                return Err(abi::HostError {
+                    code: "storage-quota-exceeded".to_string(),
+                    message: format!(
+                        "plugin storage quota exceeded ({next_used}/{quota_bytes} bytes)"
+                    ),
+                });
+            }
+
+            schedule_plugin_persistence(PluginPersistenceOp::StorageSet {
+                plugin_id: state.plugin_id.clone(),
+                storage_dir: state.storage_dir.clone(),
+                key: key.clone(),
+                value: value.clone(),
+            })?;
             if let Ok(values) = &mut state.storage_values {
                 values.insert(key, value);
             }
@@ -2404,7 +2583,20 @@ fn handle_host_request(
         {
             state.require_capability(PluginCapability::StorageKv)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "storage delete")?;
-            storage_delete(&state.storage_dir, &key)?;
+            validate_storage_key(&key)?;
+            let values = state.storage_values.as_ref().map_err(|error| abi::HostError {
+                code: "storage-state-unavailable".to_string(),
+                message: error.to_string(),
+            })?;
+            if !values.contains_key(&key) {
+                return Ok(abi::HostResponse::Unit);
+            }
+
+            schedule_plugin_persistence(PluginPersistenceOp::StorageDelete {
+                plugin_id: state.plugin_id.clone(),
+                storage_dir: state.storage_dir.clone(),
+                key: key.clone(),
+            })?;
             if let Ok(values) = &mut state.storage_values {
                 values.remove(&key);
             }
@@ -2436,12 +2628,17 @@ fn handle_host_request(
         {
             state.require_capability(PluginCapability::ConfigWrite)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "config write")?;
-            crate::plugins::manifest::write_user_config(&state.manifest, &text).map_err(
+            crate::plugins::manifest::validate_user_config(&state.manifest, &text).map_err(
                 |error| abi::HostError {
                     code: "config-write-failed".to_string(),
                     message: error.to_string(),
                 },
             )?;
+            schedule_plugin_persistence(PluginPersistenceOp::Config {
+                plugin_id: state.plugin_id.clone(),
+                manifest: state.manifest.clone(),
+                content: text.clone(),
+            })?;
             state.config_text = Ok(text);
             let plugin_id = state.plugin_id.clone();
             state.effects.push(HostEffect::Invalidate {
@@ -2682,6 +2879,15 @@ fn storage_set(
             message: format!("plugin storage quota exceeded ({next_used}/{quota_bytes} bytes)"),
         });
     }
+    persist_storage_value(storage_dir, key, value)
+}
+
+fn persist_storage_value(
+    storage_dir: &Path,
+    key: &str,
+    value: &str,
+) -> std::result::Result<(), abi::HostError> {
+    let path = storage_path(storage_dir, key)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| abi::HostError {
             code: "storage-create-failed".to_string(),
@@ -4569,6 +4775,17 @@ mod tests {
     fn blocking_host_io_is_allowed_outside_render() {
         require_non_render_blocking_io(None, "storage get")
             .expect("event/init host I/O remains available");
+    }
+
+    #[test]
+    fn storage_snapshot_quota_replacement_does_not_double_count_old_value() {
+        let values = BTreeMap::from([
+            ("first".to_string(), "12345".to_string()),
+            ("second".to_string(), "12".to_string()),
+        ]);
+
+        assert_eq!(storage_snapshot_next_used_bytes(&values, "first", "123"), 5);
+        assert_eq!(storage_snapshot_next_used_bytes(&values, "third", "123"), 10);
     }
 
     #[test]

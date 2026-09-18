@@ -1153,10 +1153,15 @@ pub fn read_user_config(manifest: &PluginManifest) -> Result<String> {
     fs::read_to_string(&path).with_context(|| format!("read plugin config {}", path.display()))
 }
 
-pub fn write_user_config(manifest: &PluginManifest, content: &str) -> Result<()> {
+pub fn validate_user_config(manifest: &PluginManifest, content: &str) -> Result<()> {
     content
         .parse::<DocumentMut>()
         .with_context(|| format!("parse plugin config for {}", manifest.id))?;
+    Ok(())
+}
+
+pub fn write_user_config(manifest: &PluginManifest, content: &str) -> Result<()> {
+    validate_user_config(manifest, content)?;
     write_atomic(manifest.user_config_path(), content.as_bytes())
 }
 
