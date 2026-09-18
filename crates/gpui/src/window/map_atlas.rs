@@ -15,14 +15,12 @@ impl Window {
             self.current_retained_element_id(),
             self.current_view_or_root(),
         ) {
-            self.on_next_frame(move |window, _cx| {
-                if window.invalidator.invalidate_retained_path_with_scope(
+            self.on_next_progressive_frame(move |window, _cx| {
+                let _ = window.invalidator.invalidate_retained_path_with_scope(
                     view_id,
                     Some(&retained_id),
                     RetainedInvalidationScope::InvalidateSubtree,
-                ) {
-                    window.schedule_interactive_animation_frame();
-                }
+                );
             });
             return;
         }

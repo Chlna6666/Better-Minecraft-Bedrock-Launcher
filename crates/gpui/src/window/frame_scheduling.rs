@@ -53,6 +53,14 @@ impl Window {
         self.enqueue_next_frame_callback(FrameRequestReason::PresentationAnimation, callback);
     }
 
+    /// Schedule deferred upload/progressive work without misclassifying it as an explicit redraw.
+    pub(crate) fn on_next_progressive_frame(
+        &self,
+        callback: impl FnOnce(&mut Window, &mut App) + 'static,
+    ) {
+        self.enqueue_next_frame_callback(FrameRequestReason::ProgressiveWork, callback);
+    }
+
     /// Schedule a frame to be drawn on the next animation frame.
     ///
     /// This is useful for elements that need to animate continuously, such as a video player or an animated GIF.
