@@ -84,12 +84,11 @@ impl PluginSettingsModel {
         now: std::time::Instant,
         cx: &App,
         state: &SettingsPageState,
+        statuses: Vec<PluginStatus>,
     ) -> Self {
         if state.tab != SettingsTab::Plugins {
             return Self::empty(now, cx, state);
         }
-
-        let statuses = crate::plugins::runtime::statuses(cx);
         let selected_id = selected_plugin_id(state, &statuses);
         let selected_status = selected_id
             .as_deref()
@@ -186,9 +185,12 @@ impl PluginSettingsModel {
     }
 }
 
-pub(super) fn ensure_plugin_resources(window: &mut Window, cx: &mut Context<SettingsPageView>) {
+pub(super) fn ensure_plugin_resources(
+    window: &mut Window,
+    cx: &mut Context<SettingsPageView>,
+) -> Vec<PluginStatus> {
     if cx.global::<SettingsPageState>().tab != SettingsTab::Plugins {
-        return;
+        return Vec::new();
     }
 
     crate::plugins::runtime::ensure_manifest_index(cx);
@@ -374,16 +376,19 @@ pub(super) fn ensure_plugin_resources(window: &mut Window, cx: &mut Context<Sett
         .detach();
     }
 
-    ensure_config_inputs_from_cache(window, cx);
+    ensure_config_inputs_from_cache(window, cx, &statuses);
+    statuses
 }
 
-fn ensure_config_inputs_from_cache(window: &mut Window, cx: &mut Context<SettingsPageView>) {
+fn ensure_config_inputs_from_cache(
+    window: &mut Window,
+    cx: &mut Context<SettingsPageView>,
+    statuses: &[PluginStatus],
+) {
     let state = cx.global::<SettingsPageState>();
     if state.tab != SettingsTab::Plugins || state.plugin_sub_tab != PluginSettingsSubTab::Config {
         return;
     }
-
-    let statuses = crate::plugins::runtime::statuses(cx);
     let Some(plugin_id) = selected_plugin_id(state, &statuses) else {
         return;
     };

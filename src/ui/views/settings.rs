@@ -111,10 +111,14 @@ impl Render for SettingsPageView {
         );
         let window_size = window.bounds().size;
         let render_engine = about::render_engine_label(window);
-        plugins::ensure_plugin_resources(window, cx);
+        let plugin_statuses = plugins::ensure_plugin_resources(window, cx);
         let system_font_names = cx.text_system().font_names();
-        let plugin_model =
-            plugins::PluginSettingsModel::snapshot(now, cx, cx.global::<SettingsPageState>());
+        let plugin_model = plugins::PluginSettingsModel::snapshot(
+            now,
+            cx,
+            cx.global::<SettingsPageState>(),
+            plugin_statuses,
+        );
         render_settings_page(
             colors,
             window_size.width,
