@@ -147,29 +147,43 @@ impl MapViewerWindowView {
         let Some(path) = pick_file_path_with_filter("BMCBL 物品配置", &["json"]) else {
             return;
         };
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) => {
-                self.status = SharedString::from(format!("读取物品配置失败: {error}"));
-                cx.notify();
-                return;
-            }
-        };
-        let mut tag = match parse_workspace_item_import(&text, selection.slot) {
-            Ok(tag) => tag,
-            Err(error) => {
-                self.player_workspace.item_editor_error = Some(SharedString::from(error));
-                cx.notify();
-                return;
-            }
-        };
-        if let Err(error) = set_workspace_item_slot(&mut tag, selection.slot) {
-            self.player_workspace.item_editor_error = Some(SharedString::from(error));
-            cx.notify();
-            return;
-        }
-        self.player_workspace.selected_item = Some(selection);
-        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：配置文件导入", cx);
+        self.status = SharedString::from("正在读取物品配置...");
+        self.player_workspace.item_editor_error = None;
+        cx.notify();
+
+        cx.spawn(async move |handle, cx| {
+            let result = crate::tasks::runtime::run_io_blocking(move || {
+                let text = fs::read_to_string(&path)
+                    .map_err(|error| format!("读取物品配置失败: {error}"))?;
+                parse_workspace_item_import(&text, selection.slot)
+            })
+            .await;
+
+            let Some(view) = handle.upgrade() else {
+                return Ok(());
+            };
+            view.update(cx, move |this, cx| {
+                match result {
+                    Ok(Ok(tag)) => {
+                        this.player_workspace.selected_item = Some(selection);
+                        this.write_player_workspace_slot(
+                            selection,
+                            Some(tag),
+                            "玩家物品：配置文件导入",
+                            cx,
+                        );
+                    }
+                    Ok(Err(error)) | Err(error) => {
+                        this.player_workspace.item_editor_error =
+                            Some(SharedString::from(error.clone()));
+                        this.status = SharedString::from(error);
+                        cx.notify();
+                    }
+                }
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     fn export_player_item_file(&mut self, selection: PlayerItemSelection, cx: &mut Context<Self>) {
@@ -193,11 +207,28 @@ impl MapViewerWindowView {
         ) else {
             return;
         };
-        match fs::write(&path, text) {
-            Ok(()) => self.status = SharedString::from(format!("物品配置已导出：{path}")),
-            Err(error) => self.status = SharedString::from(format!("导出物品配置失败: {error}")),
-        }
+        self.status = SharedString::from("正在导出物品配置...");
         cx.notify();
+        let success_path = path.clone();
+        cx.spawn(async move |handle, cx| {
+            let result = crate::tasks::runtime::run_io_blocking(move || {
+                fs::write(&path, text).map_err(|error| format!("导出物品配置失败: {error}"))
+            })
+            .await;
+
+            let Some(view) = handle.upgrade() else {
+                return Ok(());
+            };
+            view.update(cx, move |this, cx| {
+                this.status = match result {
+                    Ok(Ok(())) => SharedString::from(format!("物品配置已导出：{success_path}")),
+                    Ok(Err(error)) | Err(error) => SharedString::from(error),
+                };
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     fn duplicate_player_item_to_free_slot(
@@ -307,11 +338,30 @@ impl MapViewerWindowView {
         ) else {
             return;
         };
-        match fs::write(&path, text) {
-            Ok(()) => self.status = SharedString::from(format!("玩家背包配置已导出：{path}")),
-            Err(error) => self.status = SharedString::from(format!("导出背包配置失败: {error}")),
-        }
+        self.status = SharedString::from("正在导出玩家背包配置...");
         cx.notify();
+        let success_path = path.clone();
+        cx.spawn(async move |handle, cx| {
+            let result = crate::tasks::runtime::run_io_blocking(move || {
+                fs::write(&path, text).map_err(|error| format!("导出背包配置失败: {error}"))
+            })
+            .await;
+
+            let Some(view) = handle.upgrade() else {
+                return Ok(());
+            };
+            view.update(cx, move |this, cx| {
+                this.status = match result {
+                    Ok(Ok(())) => {
+                        SharedString::from(format!("玩家背包配置已导出：{success_path}"))
+                    }
+                    Ok(Err(error)) | Err(error) => SharedString::from(error),
+                };
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     pub(super) fn render_player_item_context_menu(
