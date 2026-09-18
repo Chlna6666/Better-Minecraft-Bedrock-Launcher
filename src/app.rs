@@ -24,6 +24,7 @@ pub(crate) struct AppBootstrap {
     gpu_adapter_name: Option<String>,
     startup_check_updates: bool,
     agreement_accepted: bool,
+    onboarding_completed: bool,
     launch_mode: LaunchMode,
     font_source: String,
     local_font_path: String,
@@ -47,6 +48,29 @@ impl AppBootstrap {
         let gpu_adapter_name =
             gpu_adapter_name_from_config(renderer_backend, &config.launcher.gpu_adapter_name).await;
 
+        // Legacy agreement/onboarding migration may read, flush, and remove files. Resolve it on
+        // the blocking pool before GPUI takes ownership of the foreground thread; UI globals below
+        // then initialize from these in-memory booleans only.
+        let startup_gate_state = crate::tasks::runtime::run_io_blocking(|| {
+            (
+                crate::config::agreement::is_current_agreement_accepted(),
+                crate::config::onboarding::is_current_onboarding_completed(),
+            )
+        })
+        .await;
+        let (agreement_accepted, onboarding_completed) = match startup_gate_state {
+            Ok(state) => state,
+            Err(error) => {
+                warn!(%error, "failed to resolve startup agreement/onboarding state");
+                (
+                    config.app_state.agreement_accepted_version
+                        >= crate::config::agreement::CURRENT_AGREEMENT_VERSION,
+                    config.app_state.onboarding_completed_version
+                        >= crate::config::onboarding::CURRENT_ONBOARDING_VERSION,
+                )
+            }
+        };
+
         Self {
             debug_enabled: config.launcher.debug,
             theme_color_hex: config.custom_style.theme_color.clone(),
@@ -55,7 +79,8 @@ impl AppBootstrap {
             renderer_backend,
             gpu_adapter_name,
             startup_check_updates: config.launcher.auto_check_updates,
-            agreement_accepted: config.agreement_accepted,
+            agreement_accepted,
+            onboarding_completed,
             launch_mode,
             font_source: config.custom_style.font_source.clone(),
             local_font_path: config.custom_style.local_font_path.clone(),
@@ -339,6 +364,7 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::theme::ThemeState>();
     cx.default_global::<crate::ui::state::update::UpdateState>();
     cx.default_global::<crate::ui::state::agreement::AgreementState>();
+    cx.default_global::<crate::ui::onboarding::state::OnboardingTourState>();
     cx.default_global::<crate::ui::state::diagnostics::DiagnosticsState>();
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     cx.default_global::<crate::ui::state::bedrock_auth::BedrockAuthState>();
@@ -368,6 +394,11 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.update_global(
         |agreement: &mut crate::ui::state::agreement::AgreementState, _cx| {
             agreement.initialize(bootstrap.agreement_accepted);
+        },
+    );
+    cx.update_global(
+        |onboarding: &mut crate::ui::onboarding::state::OnboardingTourState, _cx| {
+            onboarding.initialize(bootstrap.onboarding_completed);
         },
     );
 

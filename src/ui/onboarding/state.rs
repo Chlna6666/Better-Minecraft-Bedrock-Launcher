@@ -154,7 +154,9 @@ impl Global for OnboardingTourState {}
 impl Default for OnboardingTourState {
     fn default() -> Self {
         Self {
-            visible: !crate::config::onboarding::is_current_onboarding_completed(),
+            // Startup persistence/migration is resolved before GPUI starts. Keep Default pure so
+            // constructing this Global can never perform synchronous filesystem work.
+            visible: false,
             scene: OnboardingScene::Welcome,
             reopened: false,
             platform_scanning: false,
@@ -167,6 +169,10 @@ impl Default for OnboardingTourState {
 }
 
 impl OnboardingTourState {
+    pub fn initialize(&mut self, completed: bool) {
+        self.visible = !completed;
+    }
+
     pub fn reopen(&mut self) {
         self.request_id = self.request_id.wrapping_add(1).max(1);
         self.visible = true;
