@@ -1306,6 +1306,8 @@ fn plugin_config_panel(
                         let content =
                             config_draft_with_inputs(cx, &plugin_id, &save_draft, &editable_fields);
                         let plugin_id_for_completion = plugin_id.clone();
+                        let save_success_message = save_success_message.clone();
+                        let save_failed_message = save_failed_message.clone();
                         crate::plugins::runtime::save_plugin_config(
                             cx,
                             plugin_id.clone(),
