@@ -2,7 +2,6 @@ use gpui::{Entity, Global, ScrollHandle, SharedString, Task};
 use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -193,7 +192,10 @@ pub struct SettingsPageState {
     pub plugin_config_inputs_for: Option<SharedString>,
     pub plugin_cached_generation: u64,
     pub plugin_cached_locale: SharedString,
-    pub plugin_readme_cache: BTreeMap<PluginReadmeCacheKey, Option<String>>,
+    pub plugin_readme_cache: BTreeMap<
+        PluginReadmeCacheKey,
+        Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
+    >,
     pub plugin_config_cache: BTreeMap<PluginResourceCacheKey, Option<String>>,
     pub plugin_config_schema_cache: BTreeMap<PluginResourceCacheKey, Option<String>>,
     pub loaded: bool,

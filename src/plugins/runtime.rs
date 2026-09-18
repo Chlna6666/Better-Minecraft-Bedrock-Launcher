@@ -3646,6 +3646,13 @@ pub fn statuses(cx: &App) -> Vec<PluginStatus> {
     cx.global::<PluginRegistry>().statuses()
 }
 
+pub fn plugin_manifest_snapshot(cx: &App, plugin_id: &str) -> Option<PluginManifest> {
+    cx.global::<PluginRegistry>()
+        .plugins
+        .get(plugin_id)
+        .map(|plugin| plugin.manifest.clone())
+}
+
 pub fn plugin_readme(cx: &App, plugin_id: &str) -> Option<String> {
     cx.global::<PluginRegistry>()
         .plugin_readme(plugin_id)

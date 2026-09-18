@@ -23,13 +23,14 @@ use gpui::*;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::warn;
 
 #[derive(Clone)]
 pub(super) struct PluginSettingsModel {
     statuses: Vec<PluginStatus>,
     selected_id: Option<String>,
-    readme: Option<String>,
+    readme: Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
     config_text: Option<String>,
     config_schema: Option<String>,
     logs: Vec<PluginLogEntry>,
@@ -208,9 +209,12 @@ pub(super) fn ensure_plugin_resources(window: &mut Window, cx: &mut Context<Sett
         .max()
         .unwrap_or(0);
 
-    let mut readme_load: Option<(PluginReadmeCacheKey, Option<String>)> = None;
-    let mut config_load: Option<(PluginResourceCacheKey, Option<String>)> = None;
-    let mut schema_load: Option<(PluginResourceCacheKey, Option<String>)> = None;
+    let manifest = selected_status.as_ref().and_then(|status| {
+        crate::plugins::runtime::plugin_manifest_snapshot(cx, status.id.as_str())
+    });
+    let mut readme_load = None;
+    let mut config_load = None;
+    let mut schema_load = None;
     let mut reset_selected = false;
 
     if let Some(status) = selected_status.as_ref() {
@@ -221,11 +225,10 @@ pub(super) fn ensure_plugin_resources(window: &mut Window, cx: &mut Context<Sett
                     generation: status.generation,
                     locale: locale.clone(),
                 };
-                if !snapshot.plugin_readme_cache.contains_key(&key) {
-                    readme_load = Some((
-                        key,
-                        crate::plugins::runtime::plugin_readme_for_locale(cx, &status.id, &locale),
-                    ));
+                if !snapshot.plugin_readme_cache.contains_key(&key)
+                    && let Some(manifest) = manifest.clone()
+                {
+                    readme_load = Some((key, manifest, locale.clone()));
                 }
             }
             PluginSettingsSubTab::Config => {
@@ -233,17 +236,15 @@ pub(super) fn ensure_plugin_resources(window: &mut Window, cx: &mut Context<Sett
                     plugin_id: status.id.clone(),
                     generation: status.generation,
                 };
-                if !snapshot.plugin_config_cache.contains_key(&key) {
-                    config_load = Some((
-                        key.clone(),
-                        crate::plugins::runtime::plugin_config_text(cx, &status.id),
-                    ));
+                if !snapshot.plugin_config_cache.contains_key(&key)
+                    && let Some(manifest) = manifest.clone()
+                {
+                    config_load = Some((key.clone(), manifest));
                 }
-                if !snapshot.plugin_config_schema_cache.contains_key(&key) {
-                    schema_load = Some((
-                        key,
-                        crate::plugins::runtime::plugin_config_schema(cx, &status.id),
-                    ));
+                if !snapshot.plugin_config_schema_cache.contains_key(&key)
+                    && let Some(manifest) = manifest.clone()
+                {
+                    schema_load = Some((key, manifest));
                 }
             }
             PluginSettingsSubTab::Permissions | PluginSettingsSubTab::Logs => {}
@@ -289,16 +290,88 @@ pub(super) fn ensure_plugin_resources(window: &mut Window, cx: &mut Context<Sett
                 state.plugin_config_inputs.clear();
                 state.plugin_config_inputs_for = None;
             }
-            if let Some((key, value)) = readme_load.take() {
-                state.plugin_readme_cache.insert(key, value);
+
+            // Reserve the cache key before the async work starts. Render can run again while the
+            // read is in flight; the placeholder prevents spawning another identical disk task.
+            if let Some((key, _, _)) = readme_load.as_ref() {
+                state.plugin_readme_cache.entry(key.clone()).or_insert(None);
             }
-            if let Some((key, value)) = config_load.take() {
-                state.plugin_config_cache.insert(key, value);
+            if let Some((key, _)) = config_load.as_ref() {
+                state.plugin_config_cache.entry(key.clone()).or_insert(None);
             }
-            if let Some((key, value)) = schema_load.take() {
-                state.plugin_config_schema_cache.insert(key, value);
+            if let Some((key, _)) = schema_load.as_ref() {
+                state
+                    .plugin_config_schema_cache
+                    .entry(key.clone())
+                    .or_insert(None);
             }
         });
+    }
+
+    if let Some((key, manifest, locale)) = readme_load {
+        cx.spawn(async move |handle, cx| {
+            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+                let text = manifest
+                    .readme_path_for_locale(&locale)
+                    .and_then(|path| std::fs::read_to_string(path).ok());
+                text.map(|text| {
+                    Arc::new(parse_markdown_document(&text))
+                })
+            })
+            .await;
+
+            handle.update(cx, move |_this, cx| {
+                let document = loaded.ok().flatten();
+                cx.update_global(|state: &mut SettingsPageState, _cx| {
+                    state.plugin_readme_cache.insert(key, document);
+                });
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    if let Some((key, manifest)) = config_load {
+        cx.spawn(async move |handle, cx| {
+            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+                crate::plugins::manifest::read_user_config(&manifest)
+                    .ok()
+                    .filter(|text| !text.is_empty())
+            })
+            .await;
+
+            handle.update(cx, move |_this, cx| {
+                let content = loaded.ok().flatten();
+                cx.update_global(|state: &mut SettingsPageState, _cx| {
+                    state.plugin_config_cache.insert(key, content);
+                });
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    if let Some((key, manifest)) = schema_load {
+        cx.spawn(async move |handle, cx| {
+            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+                manifest
+                    .config_schema_path()
+                    .and_then(|path| std::fs::read_to_string(path).ok())
+            })
+            .await;
+
+            handle.update(cx, move |_this, cx| {
+                let schema = loaded.ok().flatten();
+                cx.update_global(|state: &mut SettingsPageState, _cx| {
+                    state.plugin_config_schema_cache.insert(key, schema);
+                });
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     ensure_config_inputs_from_cache(window, cx);
@@ -1088,14 +1161,13 @@ fn plugin_readme_panel(
     i18n: &I18n,
     model: &PluginSettingsModel,
 ) -> AnyElement {
-    let Some(markdown) = model.readme.as_ref() else {
+    let Some(document) = model.readme.as_ref() else {
         return empty_panel(colors, t!("PluginSettings.readme_empty"));
     };
-    let document = parse_markdown_document(markdown);
     div()
         .w_full()
         .p(px(2.))
-        .child(render_markdown_document(&document, colors, model.is_dark))
+        .child(render_markdown_document(document.as_ref(), colors, model.is_dark))
         .into_any_element()
 }
 
