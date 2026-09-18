@@ -96,9 +96,8 @@ impl AnimationProperty {
 
     /// Animate translation and opacity through one renderer-owned slot.
     ///
-    /// Translation lane w is a stable bit field understood by Nova: bit 0 carries opacity in
-    /// lane z, while bit 1 translates the resolved visual content mask together with the
-    /// primitive. Ordinary translation keeps both bits clear and preserves fixed-clip semantics.
+    /// The fourth lane is a stable marker understood by Nova's Translation resolver; ordinary
+    /// Translation values keep that lane at zero and retain their existing ABI and behavior.
     pub fn translation_opacity(
         from: Point<Pixels>,
         to: Point<Pixels>,
@@ -114,38 +113,6 @@ impl AnimationProperty {
                 1.0,
             ],
             to: [to.x.0, to.y.0, to_opacity.clamp(0.0, 1.0), 1.0],
-        }
-    }
-
-    /// Animate a translated subtree while moving its already-resolved visual clips with it.
-    ///
-    /// Use this for page/panel motion that owns nested scrolling, images, or clipping. Unlike an
-    /// ordinary translation, which intentionally moves content inside a fixed clip, this keeps
-    /// primitive bounds and their inherited visual masks in the same coordinate space.
-    pub fn subtree_translation(from: Point<Pixels>, to: Point<Pixels>) -> Self {
-        Self {
-            property: TransitionProperty::Translation,
-            from: [from.x.0, from.y.0, 0.0, 2.0],
-            to: [to.x.0, to.y.0, 0.0, 2.0],
-        }
-    }
-
-    /// Animate subtree translation and opacity through one renderer-owned slot.
-    pub fn subtree_translation_opacity(
-        from: Point<Pixels>,
-        to: Point<Pixels>,
-        from_opacity: f32,
-        to_opacity: f32,
-    ) -> Self {
-        Self {
-            property: TransitionProperty::Translation,
-            from: [
-                from.x.0,
-                from.y.0,
-                from_opacity.clamp(0.0, 1.0),
-                3.0,
-            ],
-            to: [to.x.0, to.y.0, to_opacity.clamp(0.0, 1.0), 3.0],
         }
     }
 
@@ -1192,34 +1159,6 @@ mod tests {
         assert_eq!(
             property.resolved_values(bounds, 2.0),
             ([20.0, 10.0, 0.88, 1.0], [0.0, 0.0, 1.0, 1.0])
-        );
-    }
-
-    #[test]
-    fn resolved_subtree_translation_preserves_visual_clip_flag() {
-        let property = AnimationProperty::subtree_translation(
-            Point::new(crate::px(10.0), crate::px(5.0)),
-            Point::new(crate::px(0.0), crate::px(0.0)),
-        );
-        let bounds = Bounds::new(
-            Point::new(crate::px(10.0), crate::px(20.0)),
-            crate::size(crate::px(30.0), crate::px(40.0)),
-        );
-
-        assert_eq!(
-            property.resolved_values(bounds, 2.0),
-            ([20.0, 10.0, 0.0, 2.0], [0.0, 0.0, 0.0, 2.0])
-        );
-
-        let property = AnimationProperty::subtree_translation_opacity(
-            Point::new(crate::px(10.0), crate::px(5.0)),
-            Point::new(crate::px(0.0), crate::px(0.0)),
-            0.88,
-            1.0,
-        );
-        assert_eq!(
-            property.resolved_values(bounds, 2.0),
-            ([20.0, 10.0, 0.88, 3.0], [0.0, 0.0, 1.0, 3.0])
         );
     }
 

@@ -18,7 +18,6 @@ struct VisualAnimation {
     scale: f32,
     opacity: f32,
     scales_geometry: u32,
-    translates_mask: u32,
     clip_left: f32,
     clip_right: f32,
     clip_top: f32,
@@ -33,7 +32,6 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
     animation.scale = 1.0;
     animation.opacity = 1.0;
     animation.scales_geometry = 0u;
-    animation.translates_mask = 0u;
     animation.clip_left = 0.0;
     animation.clip_right = 0.0;
     animation.clip_top = 0.0;
@@ -65,17 +63,13 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
             animation.origin = sampled.zw;
             animation.scales_geometry = 1u;
         }
-        // Translation lane w is a compact flag field. Bit 0 carries opacity in sampled.z; bit 1
-        // moves the resolved visual mask with the primitive for page/subtree motion. Ordinary
-        // translation keeps both bits clear and therefore still moves inside a fixed clip.
+        // Translation moves primitive bounds only. The clip mask intentionally stays fixed, which
+        // matches the existing CPU animation semantics. The optional fourth-lane marker lets one
+        // translation slot also carry opacity in sampled.z without changing the animation ABI.
         case 2u: {
             animation.translation = sampled.xy;
-            let flags = u32(sampled.w);
-            if ((flags & 1u) != 0u) {
+            if (sampled.w > 0.5) {
                 animation.opacity = clamp(sampled.z, 0.0, 1.0);
-            }
-            if ((flags & 2u) != 0u) {
-                animation.translates_mask = 1u;
             }
         }
         // Scale around the primitive's static center.
@@ -122,10 +116,6 @@ fn animation_content_mask(mask: ContentMask, animation: VisualAnimation) -> Cont
         result.corner_radii.top_right *= animation.scale;
         result.corner_radii.bottom_right *= animation.scale;
         result.corner_radii.bottom_left *= animation.scale;
-    }
-    if (animation.translates_mask != 0u) {
-        result.bounds.origin += animation.translation;
-        result.corner_bounds.origin += animation.translation;
     }
     if (animation.clips_geometry != 0u) {
         let mask_right = result.bounds.origin.x + result.bounds.size.x;

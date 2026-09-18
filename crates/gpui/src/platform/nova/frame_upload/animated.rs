@@ -621,7 +621,6 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
                 crate::ScaledPixels(sampled[0]),
                 crate::ScaledPixels(sampled[1]),
             );
-            let flags = sampled[3].round() as u32;
             match primitive {
                 Primitive::Quad(quad) => quad.bounds.origin += translation,
                 Primitive::Shadow(shadow) => shadow.bounds.origin += translation,
@@ -630,34 +629,12 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
                 Primitive::BackdropBlur(blur) => blur.bounds.origin += translation,
                 Primitive::Blur(blur) => {
                     blur.bounds.origin += translation;
-                    // Element-composite blur has historically moved its capture mask together with
-                    // the composite. Keep that behavior for ordinary translation as well.
                     blur.content_mask.bounds.origin += translation;
                     blur.content_mask.corner_bounds.origin += translation;
                 }
                 _ => {}
             }
-            if (flags & 2) != 0 {
-                let translate_mask =
-                    |mask: &mut crate::ContentMask<crate::ScaledPixels>| {
-                        mask.bounds.origin += translation;
-                        mask.corner_bounds.origin += translation;
-                    };
-                match primitive {
-                    Primitive::Quad(quad) => translate_mask(&mut quad.content_mask),
-                    Primitive::Shadow(shadow) => translate_mask(&mut shadow.content_mask),
-                    Primitive::MonochromeSprite(sprite) => {
-                        translate_mask(&mut sprite.content_mask)
-                    }
-                    Primitive::PolychromeSprite(sprite) => {
-                        translate_mask(&mut sprite.content_mask)
-                    }
-                    Primitive::BackdropBlur(blur) => translate_mask(&mut blur.content_mask),
-                    Primitive::Blur(_) => {}
-                    _ => {}
-                }
-            }
-            if (flags & 1) != 0 {
+            if sampled[3] > 0.5 {
                 apply_opacity(primitive, sampled[2].clamp(0.0, 1.0));
             }
         }
@@ -855,68 +832,6 @@ mod tests {
         let resolved = resolve_animation_values(&values);
         assert_eq!(resolved.get(&first).unwrap().sampled[0], 1.0);
         assert_eq!(resolved.get(&sparse).unwrap().sampled[0], 2.0);
-    }
-
-    #[test]
-    fn subtree_translation_moves_visual_mask_while_ordinary_translation_does_not() {
-        let base_bounds = crate::bounds(
-            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
-            crate::size(crate::ScaledPixels(40.0), crate::ScaledPixels(30.0)),
-        );
-        let mask_bounds = crate::bounds(
-            crate::point(crate::ScaledPixels(12.0), crate::ScaledPixels(22.0)),
-            crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(10.0)),
-        );
-        let mut ordinary = Primitive::Quad(Quad {
-            bounds: base_bounds,
-            content_mask: crate::ContentMask::new(mask_bounds),
-            ..Default::default()
-        });
-        apply_value(
-            &mut ordinary,
-            &SceneAnimationValue {
-                animation_id: crate::SceneAnimationId(1),
-                property: TransitionProperty::Translation,
-                progress: 1.0,
-                from: [0.0, 0.0, 0.0, 0.0],
-                to: [5.0, 7.0, 0.0, 0.0],
-            },
-        );
-        let Primitive::Quad(ordinary) = ordinary else {
-            unreachable!()
-        };
-        assert_eq!(
-            ordinary.bounds.origin,
-            crate::point(crate::ScaledPixels(15.0), crate::ScaledPixels(27.0))
-        );
-        assert_eq!(ordinary.content_mask.bounds, mask_bounds);
-
-        let mut subtree = Primitive::Quad(Quad {
-            bounds: base_bounds,
-            content_mask: crate::ContentMask::new(mask_bounds),
-            ..Default::default()
-        });
-        apply_value(
-            &mut subtree,
-            &SceneAnimationValue {
-                animation_id: crate::SceneAnimationId(2),
-                property: TransitionProperty::Translation,
-                progress: 1.0,
-                from: [0.0, 0.0, 0.0, 2.0],
-                to: [5.0, 7.0, 0.0, 2.0],
-            },
-        );
-        let Primitive::Quad(subtree) = subtree else {
-            unreachable!()
-        };
-        assert_eq!(
-            subtree.bounds.origin,
-            crate::point(crate::ScaledPixels(15.0), crate::ScaledPixels(27.0))
-        );
-        assert_eq!(
-            subtree.content_mask.bounds.origin,
-            crate::point(crate::ScaledPixels(17.0), crate::ScaledPixels(29.0))
-        );
     }
 
     #[test]

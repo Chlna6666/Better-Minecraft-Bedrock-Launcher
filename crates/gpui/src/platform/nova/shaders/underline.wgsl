@@ -17,7 +17,6 @@ struct UnderlineVisualAnimation {
     scale: f32,
     opacity: f32,
     scales_geometry: u32,
-    translates_mask: u32,
 }
 
 fn resolve_underline_visual_animation(slot_plus_one: u32, bounds: Bounds) -> UnderlineVisualAnimation {
@@ -27,7 +26,6 @@ fn resolve_underline_visual_animation(slot_plus_one: u32, bounds: Bounds) -> Und
     animation.scale = 1.0;
     animation.opacity = 1.0;
     animation.scales_geometry = 0u;
-    animation.translates_mask = 0u;
 
     if (globals.pad == 0u || slot_plus_one == 0u) {
         return animation;
@@ -50,16 +48,12 @@ fn resolve_underline_visual_animation(slot_plus_one: u32, bounds: Bounds) -> Und
             animation.origin = sampled.zw;
             animation.scales_geometry = 1u;
         }
-        // Translation lane w mirrors ordinary primitive semantics: bit 0 carries opacity and bit 1
-        // moves the resolved visual mask for page/subtree motion.
+        // Translation keeps the clip mask fixed in screen space. A marked translation may carry
+        // opacity in sampled.z so text decoration stays synchronized with the owning subtree.
         case 2u: {
             animation.translation = sampled.xy;
-            let flags = u32(sampled.w);
-            if ((flags & 1u) != 0u) {
+            if (sampled.w > 0.5) {
                 animation.opacity = clamp(sampled.z, 0.0, 1.0);
-            }
-            if ((flags & 2u) != 0u) {
-                animation.translates_mask = 1u;
             }
         }
         // Scale around the primitive's static center.
@@ -95,10 +89,6 @@ fn underline_animation_content_mask(mask: ContentMask, animation: UnderlineVisua
         result.corner_radii.top_right *= animation.scale;
         result.corner_radii.bottom_right *= animation.scale;
         result.corner_radii.bottom_left *= animation.scale;
-    }
-    if (animation.translates_mask != 0u) {
-        result.bounds.origin += animation.translation;
-        result.corner_bounds.origin += animation.translation;
     }
     return result;
 }
