@@ -193,14 +193,12 @@ impl ManagePageView {
             usize::MAX,
         );
         let no_versions = filtered_version_indices.is_empty();
-        let visible_versions = filtered_version_indices[virtual_list_plan.render_slice.start_index
-            ..virtual_list_plan
-                .render_slice
-                .end_index
-                .min(filtered_version_indices.len())]
-            .iter()
-            .filter_map(|&index| state.versions.get(index))
-            .collect::<Vec<_>>();
+        let visible_version_indices = &filtered_version_indices
+            [virtual_list_plan.render_slice.start_index
+                ..virtual_list_plan
+                    .render_slice
+                    .end_index
+                    .min(filtered_version_indices.len())];
         let version_scroll_handle_for_event = self.version_scroll_handle.clone();
         crate::ui::components::page_shell::split_sidebar_panel(colors)
             .p(px(10.))
@@ -310,7 +308,9 @@ impl ManagePageView {
                     .when(virtual_list_plan.render_slice.top_spacer > px(0.), |this| {
                         this.child(div().h(virtual_list_plan.render_slice.top_spacer))
                     })
-                    .children(visible_versions.into_iter().map(|version| {
+                    .children(visible_version_indices.iter().filter_map(|&index| {
+                        state.versions.get(index)
+                    }).map(|version| {
                         let selected = state
                             .selected_folder
                             .as_ref()
