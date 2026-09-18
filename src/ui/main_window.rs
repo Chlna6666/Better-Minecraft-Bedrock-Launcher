@@ -454,7 +454,7 @@ impl MainWindowView {
             }
         };
 
-        if crate::core::ui_prefs::reduced_motion() || transition_direction == 0.0 {
+        if crate::core::ui_prefs::reduced_motion() {
             return div()
                 .absolute()
                 .inset_0()
@@ -464,23 +464,18 @@ impl MainWindowView {
         }
 
         let route_key = route_enter_animation_key(route);
-        // Direct layout placement and opacity spring animation without root scene_animation.
-        // Avoids establishing a root scene animation binding that triggers recursive composite_layer
-        // offscreen promotion for nested animated children (buttons, tabs, switches, loaders),
-        // eliminates full-window FBO allocations, and preserves crisp subpixel text antialiasing.
-        let animated_page = div()
-            .relative()
-            .size_full()
-            .child(page)
-            .with_animation(
-                route_key,
-                spring_motion(apple_spring(0.36, 0.74)),
-                move |page, progress| {
-                    let p = progress.clamp(0.0, 1.0);
-                    let offset_x = (1.0 - p) * 18.0 * transition_direction;
-                    page.opacity(p).left(px(offset_x))
-                },
-            );
+        // Keep the v0.2.0 page-transition semantics: the whole page moves in layout space using the
+        // physical spring sample, including its small overshoot. Do not clamp spring progress or
+        // fade page opacity here: clamping creates an endpoint plateau while the spring is still
+        // moving, which is perceived as a hitch before the rebound continues.
+        let animated_page = div().size_full().child(page).with_animation(
+            route_key,
+            spring_motion(apple_spring(0.36, 0.74)),
+            move |page, progress| {
+                page.relative()
+                    .left(px(18.0 * transition_direction * (1.0 - progress)))
+            },
+        );
 
         div()
             .absolute()
