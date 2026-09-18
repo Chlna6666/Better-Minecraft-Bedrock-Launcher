@@ -412,7 +412,6 @@ impl MainWindowView {
                                 s.download_curseforge_api_base = value;
                             },
                         );
-                        this.notify_settings_page(cx);
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
                         let (base, http, socks) = cx.read_global(
@@ -443,7 +442,6 @@ impl MainWindowView {
                                 s.download_http_proxy_url = value;
                             },
                         );
-                        this.notify_settings_page(cx);
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
                         let (base, http, socks) = cx.read_global(
@@ -474,7 +472,6 @@ impl MainWindowView {
                                 s.download_socks_proxy_url = value;
                             },
                         );
-                        this.notify_settings_page(cx);
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
                         let (base, http, socks) = cx.read_global(
@@ -512,8 +509,6 @@ impl MainWindowView {
                             ThemeState::set_accent_hex(&hex, cx);
                         }
 
-                        this.notify_all_page_views(cx);
-                        cx.notify();
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
                         let (
@@ -574,7 +569,6 @@ impl MainWindowView {
                                 s.local_image_path = value;
                             },
                         );
-                        this.notify_settings_page(cx);
                         cx.notify();
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
@@ -641,7 +635,6 @@ impl MainWindowView {
                                 }
                             },
                         );
-                        this.notify_settings_page(cx);
                         cx.notify();
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
