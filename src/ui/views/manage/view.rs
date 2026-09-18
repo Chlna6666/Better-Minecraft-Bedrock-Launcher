@@ -687,12 +687,16 @@ impl ManagePageView {
             let p = 1.0 - tc;
             (1.0 - p.powi(3)).clamp(0.0, 1.0)
         };
-        let version_transition = AnimationProperty::translation_opacity(
-            point(px(0.0), px(10.0)),
-            Point::default(),
-            0.0,
-            1.0,
-        );
+        let version_opacity = if version_animating {
+            version_t_eased
+        } else {
+            1.0
+        };
+        let version_slide_offset = if version_animating {
+            10.0 * (1.0 - version_t_eased)
+        } else {
+            0.0
+        };
 
         let (tab_t, tab_animating) = self.tab_anim_factor(now);
         let tab_t_eased = {
@@ -711,14 +715,20 @@ impl ManagePageView {
         };
         let tab_from = self.tab_anim_from.unwrap_or(ManageTab::Mod);
         let slide_direction = (tab_idx(state.tab) - tab_idx(tab_from)).signum() as f32;
-        let tab_transition = AnimationProperty::translation_opacity(
-            point(px(slide_direction * 20.0), px(0.0)),
-            Point::default(),
-            0.88,
-            1.0,
-        );
+        let tab_opacity = if tab_animating {
+            0.88 + 0.12 * tab_t_eased
+        } else {
+            1.0
+        };
+        let tab_slide_offset = if tab_animating {
+            slide_direction * 20.0 * (1.0 - tab_t_eased)
+        } else {
+            0.0
+        };
         let main_panel = crate::ui::components::page_shell::split_content_panel(colors)
+            .opacity(version_opacity)
             .relative()
+            .top(px(version_slide_offset))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.import_dropped_assets(paths.paths(), window, cx);
             }))
@@ -916,6 +926,9 @@ impl ManagePageView {
                         div()
                             .flex_1()
                             .min_h(px(0.))
+                            .opacity(tab_opacity)
+                            .relative()
+                            .left(px(tab_slide_offset))
                             .child(if state.version_config_loading {
                                 empty_state(
                                     colors,
@@ -967,22 +980,12 @@ impl ManagePageView {
                                     ),
                                 }
                             })
-                            .with_stable_sampled_animation(
-                                "manage-tab-content-transition",
-                                tab_transition,
-                                tab_t_eased,
-                                tab_animating,
-                            ),
+                            .with_layout_animation_target(tab_animating),
                     ),
             );
 
         main_panel
-            .with_stable_sampled_animation(
-                "manage-version-content-transition",
-                version_transition,
-                version_t_eased,
-                version_animating,
-            )
+            .with_layout_animation_target(version_animating)
             .into_any_element()
     }
 }
