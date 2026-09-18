@@ -12,8 +12,10 @@ fn download_snapshot_meaningfully_changed(
         return true;
     };
 
-    previous.sequence != next.sequence
-        || previous.status != next.status
+    // sequence is transport ordering metadata, not visible UI state. It is checked separately
+    // by the listener to reject stale snapshots; treating every sequence tick as a visual change
+    // defeats this filter and rebuilds the open update modal even when displayed values are stable.
+    previous.status != next.status
         || previous.stage != next.stage
         || previous.done != next.done
         || previous.total != next.total
@@ -359,5 +361,58 @@ impl MainWindowView {
         UpdateRenderState {
             suppress_background_animation_frames,
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::download_snapshot_meaningfully_changed;
+    use crate::tasks::task_manager::{TaskSnapshot, TaskVisibility};
+    use std::sync::Arc;
+
+    fn snapshot(sequence: u64, done: u64) -> Arc<TaskSnapshot> {
+        Arc::new(TaskSnapshot {
+            id: Arc::from("update-download"),
+            title: Arc::from("update"),
+            detail: None,
+            stage: Arc::from("download"),
+            total: Some(100),
+            done,
+            speed_bytes_per_sec: 100.0,
+            eta: Arc::from("1s"),
+            percent: Some(done as f64),
+            status: Arc::from("running"),
+            cancel_requested: false,
+            message: None,
+            supports_pause: false,
+            visualization: None,
+            started_at_unix: 0,
+            last_update_unix: 0,
+            sequence,
+            visibility: TaskVisibility::Visible,
+        })
+    }
+
+    #[test]
+    fn download_snapshot_sequence_only_change_is_not_visual() {
+        let previous = snapshot(1, 10);
+        let next = snapshot(2, 10);
+
+        assert!(!download_snapshot_meaningfully_changed(
+            Some(&previous),
+            next.as_ref()
+        ));
+    }
+
+    #[test]
+    fn download_snapshot_progress_change_is_visual() {
+        let previous = snapshot(1, 10);
+        let next = snapshot(2, 11);
+
+        assert!(download_snapshot_meaningfully_changed(
+            Some(&previous),
+            next.as_ref()
+        ));
     }
 }
