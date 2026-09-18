@@ -455,19 +455,32 @@ impl Window {
         // ceiling and could redraw the same GIF/APNG frame repeatedly before that deadline.
         let presentation_deadline = deadline.max(rate_limited_deadline);
 
+        // If the media frame becomes ready before the next expected presentation, do not create
+        // a high-frequency timer (for example a 1ms timer from a malformed/very-fast GIF). Keep
+        // exactly one platform-frame request pending and let VSync determine 60/120/144/240Hz.
+        // Slow media still sleeps until its real deadline below, so this does not redraw the same
+        // frame continuously.
+        let follow_platform_cadence = self.active.get()
+            && presentation_deadline
+                <= now + self.frame_throttle.presentation_interval_hint();
+        if follow_platform_cadence || presentation_deadline <= now {
+            // A previously armed slower deadline is now obsolete. Its task observes the missing
+            // map entry and exits without notifying the view.
+            self.image_animation_deadline_pending
+                .borrow_mut()
+                .remove(&entity);
+            self.last_inactive_animation_frame.set(Some(now));
+            self.record_frame_request_reason(FrameRequestReason::ImageReady);
+            self.request_animation_frame();
+            return;
+        }
+
         let existing = self
             .image_animation_deadline_pending
             .borrow()
             .get(&entity)
             .copied();
         if existing.is_some_and(|(pending_deadline, _)| pending_deadline <= presentation_deadline) {
-            return;
-        }
-
-        if presentation_deadline <= now {
-            self.last_inactive_animation_frame.set(Some(now));
-            self.record_frame_request_reason(FrameRequestReason::ImageReady);
-            self.request_animation_frame();
             return;
         }
 

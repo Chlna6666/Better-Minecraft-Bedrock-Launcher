@@ -100,6 +100,18 @@ impl WindowFrameThrottle {
         budget.clamp(MIN_DYNAMIC_FRAME_BUDGET, DEFAULT_DISPLAY_FRAME_INTERVAL)
     }
 
+    /// Best current estimate of one platform presentation interval.
+    ///
+    /// Image animation uses this only as a hand-off threshold: media that becomes ready within
+    /// one display interval should request the next platform frame and let VSync own cadence,
+    /// rather than arming a sub-VSync timer that can wake the foreground executor hundreds of
+    /// times per second.
+    pub(in crate::window) fn presentation_interval_hint(self) -> Duration {
+        self.estimated_frame_interval
+            .unwrap_or(DEFAULT_DISPLAY_FRAME_INTERVAL)
+            .clamp(MIN_DYNAMIC_FRAME_BUDGET, DEFAULT_DISPLAY_FRAME_INTERVAL)
+    }
+
     pub(super) fn retry_delay(self) -> Duration {
         let frame_interval = self
             .estimated_frame_interval
@@ -203,6 +215,27 @@ mod tests {
             throttle.generation_warning_budget(),
             DEFAULT_DISPLAY_FRAME_INTERVAL.mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
         );
+    }
+
+    #[test]
+    fn presentation_interval_hint_defaults_to_sixty_hz() {
+        let throttle = WindowFrameThrottle::default();
+
+        assert_eq!(
+            throttle.presentation_interval_hint(),
+            DEFAULT_DISPLAY_FRAME_INTERVAL
+        );
+    }
+
+    #[test]
+    fn presentation_interval_hint_tracks_observed_high_refresh() {
+        let mut throttle = WindowFrameThrottle::default();
+        let now = Instant::now();
+        let interval = Duration::from_micros(4_167);
+        throttle.record_frame_start(now);
+        throttle.record_frame_start(now + interval);
+
+        assert_eq!(throttle.presentation_interval_hint(), interval);
     }
 
     #[test]
