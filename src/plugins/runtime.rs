@@ -2105,6 +2105,22 @@ fn host_imports(store: &mut Store, host_state: Rc<RefCell<HostState>>) -> Import
     imports
 }
 
+fn require_non_render_blocking_io(
+    render_context: Option<&RenderContext>,
+    operation: &'static str,
+) -> std::result::Result<(), abi::HostError> {
+    if render_context.is_none() {
+        return Ok(());
+    }
+
+    Err(abi::HostError {
+        code: "blocking-io-render-denied".to_string(),
+        message: format!(
+            "{operation} is not allowed while rendering plugin UI; load or persist data during init/event handling and keep render state in memory"
+        ),
+    })
+}
+
 fn handle_host_request(
     host_state: &Rc<RefCell<HostState>>,
     op: i32,
@@ -2208,6 +2224,7 @@ fn handle_host_request(
         }
         (code, abi::HostRequest::ReadConfig) if code == abi::HostOp::ReadConfig.code() => {
             state.require_capability(PluginCapability::ConfigRead)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "config read")?;
             let config =
                 crate::plugins::manifest::read_user_config(&state.manifest).map_err(|error| {
                     abi::HostError {
@@ -2287,6 +2304,7 @@ fn handle_host_request(
             if code == abi::HostOp::ReadResourceText.code() =>
         {
             state.require_capability(PluginCapability::ResourceRead)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "resource text read")?;
             let bytes = read_plugin_resource(&state.manifest, &path)?;
             let text = String::from_utf8(bytes).map_err(|error| abi::HostError {
                 code: "resource-not-utf8".to_string(),
@@ -2298,6 +2316,7 @@ fn handle_host_request(
             if code == abi::HostOp::ReadResourceBytes.code() =>
         {
             state.require_capability(PluginCapability::ResourceRead)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "resource bytes read")?;
             Ok(abi::HostResponse::Bytes(read_plugin_resource(
                 &state.manifest,
                 &path,
@@ -2342,6 +2361,7 @@ fn handle_host_request(
         }
         (code, abi::HostRequest::StorageGet { key }) if code == abi::HostOp::StorageGet.code() => {
             state.require_capability(PluginCapability::StorageKv)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "storage get")?;
             Ok(abi::HostResponse::SessionValue(storage_get(
                 &state.storage_dir,
                 &key,
@@ -2351,6 +2371,7 @@ fn handle_host_request(
             if code == abi::HostOp::StorageSet.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "storage set")?;
             storage_set(
                 &state.storage_dir,
                 &key,
@@ -2363,6 +2384,7 @@ fn handle_host_request(
             if code == abi::HostOp::StorageDelete.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "storage delete")?;
             storage_delete(&state.storage_dir, &key)?;
             Ok(abi::HostResponse::Unit)
         }
@@ -2370,6 +2392,7 @@ fn handle_host_request(
             if code == abi::HostOp::StorageList.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "storage list")?;
             Ok(abi::HostResponse::StringList(storage_list(
                 &state.storage_dir,
                 prefix.as_deref(),
@@ -2379,6 +2402,7 @@ fn handle_host_request(
             if code == abi::HostOp::WriteConfig.code() =>
         {
             state.require_capability(PluginCapability::ConfigWrite)?;
+            require_non_render_blocking_io(state.render_context.as_ref(), "config write")?;
             crate::plugins::manifest::write_user_config(&state.manifest, &text).map_err(
                 |error| abi::HostError {
                     code: "config-write-failed".to_string(),
@@ -4464,6 +4488,24 @@ fn route_target_from_abi(target: abi::RouteTarget) -> crate::ui::navigation::Rou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocking_host_io_is_denied_during_page_render() {
+        let context = RenderContext::Page {
+            page_id: "main".to_string(),
+        };
+
+        let error = require_non_render_blocking_io(Some(&context), "storage get")
+            .expect_err("render-time blocking I/O must be rejected");
+
+        assert_eq!(error.code, "blocking-io-render-denied");
+    }
+
+    #[test]
+    fn blocking_host_io_is_allowed_outside_render() {
+        require_non_render_blocking_io(None, "storage get")
+            .expect("event/init host I/O remains available");
+    }
 
     #[test]
     fn storage_rejects_quota_overflow() {

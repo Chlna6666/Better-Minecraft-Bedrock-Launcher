@@ -2092,6 +2092,10 @@ pub fn tr_arg(key: impl Into<String>, value: impl Into<String>) -> I18nArg {
     }
 }
 
+/// Reads plugin configuration through the host.
+///
+/// This performs host filesystem I/O and is rejected while rendering plugin UI. Read it during
+/// initialization or event handling and retain render-facing values in session/plugin state.
 pub fn read_config() -> PluginResult<String> {
     match host_call(HostOp::ReadConfig, &HostRequest::ReadConfig)? {
         HostResponse::String(text) => Ok(text),
@@ -2195,6 +2199,9 @@ pub fn open_external_url(url: impl AsRef<str>) -> PluginResult<()> {
     )
 }
 
+/// Reads a declared/allowed text resource from disk.
+///
+/// This performs host filesystem I/O and is rejected while rendering plugin UI.
 pub fn read_resource_text(path: impl AsRef<str>) -> PluginResult<String> {
     match host_call(
         HostOp::ReadResourceText,
@@ -2207,6 +2214,9 @@ pub fn read_resource_text(path: impl AsRef<str>) -> PluginResult<String> {
     }
 }
 
+/// Reads a declared/allowed binary resource from disk.
+///
+/// This performs host filesystem I/O and is rejected while rendering plugin UI.
 pub fn read_resource_bytes(path: impl AsRef<str>) -> PluginResult<Vec<u8>> {
     match host_call(
         HostOp::ReadResourceBytes,
@@ -2253,6 +2263,9 @@ pub fn session_set(key: impl AsRef<str>, value: Option<impl AsRef<str>>) -> Plug
     )
 }
 
+/// Reads persistent plugin KV storage.
+///
+/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
 pub fn storage_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
     match host_call(
         HostOp::StorageGet,
@@ -2265,6 +2278,9 @@ pub fn storage_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
     }
 }
 
+/// Writes persistent plugin KV storage.
+///
+/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
 pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult<()> {
     host_call_unit(
         HostOp::StorageSet,
@@ -2275,6 +2291,9 @@ pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult
     )
 }
 
+/// Deletes a persistent plugin KV value.
+///
+/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
 pub fn storage_delete(key: impl AsRef<str>) -> PluginResult<()> {
     host_call_unit(
         HostOp::StorageDelete,
@@ -2284,6 +2303,9 @@ pub fn storage_delete(key: impl AsRef<str>) -> PluginResult<()> {
     )
 }
 
+/// Lists persistent plugin KV keys.
+///
+/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
 pub fn storage_list(prefix: Option<impl AsRef<str>>) -> PluginResult<Vec<String>> {
     match host_call(
         HostOp::StorageList,
@@ -2300,6 +2322,9 @@ pub fn config_read() -> PluginResult<String> {
     read_config()
 }
 
+/// Persists plugin configuration through the host.
+///
+/// This performs atomic host filesystem I/O and is rejected while rendering plugin UI.
 pub fn config_write(text: impl AsRef<str>) -> PluginResult<()> {
     host_call_unit(
         HostOp::WriteConfig,
