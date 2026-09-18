@@ -445,6 +445,7 @@ impl MapViewerWindowView {
             right_selection_drag: None,
             hover_block_x: 0,
             hover_block_z: 0,
+            hover_label: SharedString::from(coordinate_text(0, 0)),
             recenter_on_next_metadata: true,
             pending_center_block: None,
             bypass_cache_active: false,
@@ -1032,10 +1033,7 @@ impl MapViewerWindowView {
                 .cloned()
                 .unwrap_or_default(),
             markers_generation: self.markers_generation,
-            hover_label: SharedString::from(coordinate_text(
-                self.hover_block_x,
-                self.hover_block_z,
-            )),
+            hover_label: self.hover_label.clone(),
         }
     }
 

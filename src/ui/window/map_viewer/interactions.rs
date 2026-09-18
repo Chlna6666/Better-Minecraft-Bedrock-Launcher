@@ -1193,8 +1193,11 @@ impl MapViewerWindowView {
     pub(super) fn update_hover_block(&mut self, position: Point<Pixels>) -> bool {
         let (block_x, block_z) = self.viewport.screen_to_block(position, self.active_layout);
         let changed = self.hover_block_x != block_x || self.hover_block_z != block_z;
-        self.hover_block_x = block_x;
-        self.hover_block_z = block_z;
+        if changed {
+            self.hover_block_x = block_x;
+            self.hover_block_z = block_z;
+            self.hover_label = SharedString::from(coordinate_text(block_x, block_z));
+        }
         changed
     }
 

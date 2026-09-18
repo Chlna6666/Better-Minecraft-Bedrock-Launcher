@@ -1665,6 +1665,7 @@ pub(super) struct MapCanvasSnapshotKey {
     pub(super) markers_generation: u64,
     pub(super) hover_block_x: i32,
     pub(super) hover_block_z: i32,
+    pub(super) hover_label: SharedString,
 }
 
 #[derive(Clone, PartialEq)]
