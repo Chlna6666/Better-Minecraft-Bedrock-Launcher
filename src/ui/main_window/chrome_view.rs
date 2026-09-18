@@ -35,6 +35,7 @@ pub(super) struct AppChromeView {
     update_modal_open: bool,
     glass_effect_enabled: bool,
     plugin_navigation_pages: std::sync::Arc<Vec<crate::plugins::runtime::PluginPage>>,
+    nav_render_signature: (usize, usize, usize, bool),
 }
 
 impl AppChromeView {
@@ -48,6 +49,15 @@ impl AppChromeView {
             .glass_effect_enabled;
         let plugin_navigation_pages =
             std::sync::Arc::new(crate::plugins::runtime::navigation_pages(cx));
+        let nav_render_signature = {
+            let nav = cx.global::<NavState>();
+            (
+                nav.visual_active_index(),
+                nav.pill_from_index,
+                nav.pill_to_index,
+                nav.labels_target_visible,
+            )
+        };
 
         let mut subscriptions = vec![
             cx.observe_global_in::<BedrockAuthState>(window, |this, window, cx| {
@@ -64,8 +74,21 @@ impl AppChromeView {
                 }
                 cx.notify();
             }),
-            cx.observe_global::<gpui_router::RouterState>(|_, cx| cx.notify()),
-            cx.observe_global::<NavState>(|_, cx| cx.notify()),
+            cx.observe_global::<NavState>(|this, cx| {
+                let signature = {
+                    let nav = cx.global::<NavState>();
+                    (
+                        nav.visual_active_index(),
+                        nav.pill_from_index,
+                        nav.pill_to_index,
+                        nav.labels_target_visible,
+                    )
+                };
+                if this.nav_render_signature != signature {
+                    this.nav_render_signature = signature;
+                    cx.notify();
+                }
+            }),
             cx.observe_global::<ThemeState>(|_, cx| cx.notify()),
             cx.observe_global::<I18n>(|_, cx| cx.notify()),
             cx.observe_global::<UpdateState>(|this, cx| {
@@ -127,6 +150,7 @@ impl AppChromeView {
             update_modal_open,
             glass_effect_enabled,
             plugin_navigation_pages,
+            nav_render_signature,
         }
     }
 
@@ -191,7 +215,6 @@ impl Render for AppChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let state = self.prepare_render_state(now, window, cx);
-        let route = crate::ui::navigation::current_route_target(cx);
         let update_modal_open = self.update_modal_open;
 
         // The navigation pill owns its own retained layout-animation target. Driving the
@@ -200,6 +223,6 @@ impl Render for AppChromeView {
         if state.theme_animating {
             window.request_animation_frame();
         }
-        chrome::render_app_chrome(state, route, update_modal_open)
+        chrome::render_app_chrome(state, update_modal_open)
     }
 }

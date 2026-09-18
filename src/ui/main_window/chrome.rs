@@ -38,7 +38,6 @@ fn icon(path: &'static str, color: Hsla, size: Pixels) -> Svg {
 
 pub(super) fn render_app_chrome(
     state: TopbarRenderState,
-    _route: RouteTarget,
     update_modal_open: bool,
 ) -> AnyElement {
     let colors = lerp_theme_colors(

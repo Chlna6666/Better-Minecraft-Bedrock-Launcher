@@ -117,12 +117,6 @@ impl MainWindowView {
                 }
             }));
         self._reactor_subscriptions
-            .push(cx.observe_global::<gpui_router::RouterState>(|this, cx| {
-                if this.sync_current_background_animation_policy(Instant::now(), cx) {
-                    cx.notify();
-                }
-            }));
-        self._reactor_subscriptions
             .push(cx.observe_global::<DebugState>(|this, cx| {
                 if this.sync_current_background_animation_policy(Instant::now(), cx) {
                     cx.notify();
