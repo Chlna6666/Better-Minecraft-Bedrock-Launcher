@@ -32,7 +32,7 @@ pub(super) struct PluginSettingsModel {
     selected_id: Option<String>,
     readme: Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
     config_text: Option<String>,
-    config_schema: Option<String>,
+    config_schema: Option<Arc<PluginConfigSchema>>,
     logs: Vec<PluginLogEntry>,
     locale: String,
     translations: BTreeMap<String, String>,
@@ -40,7 +40,7 @@ pub(super) struct PluginSettingsModel {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct PluginConfigSchema {
+pub(super) struct PluginConfigSchema {
     #[serde(default)]
     fields: Vec<PluginConfigField>,
 }
@@ -122,22 +122,20 @@ impl PluginSettingsModel {
         });
         let translations = selected_status
             .and_then(|status| {
-                config_schema
-                    .as_deref()
-                    .and_then(|schema| localized_schema_keys(schema).ok())
-                    .map(|keys| {
-                        keys.into_iter()
-                            .filter_map(|key| {
-                                crate::plugins::runtime::translate_plugin_resource_for_locale(
-                                    cx,
-                                    &status.id,
-                                    state.plugin_cached_locale.as_ref(),
-                                    &key,
-                                )
-                                .map(|value| (key, value))
-                            })
-                            .collect()
-                    })
+                config_schema.as_deref().map(|schema| {
+                    localized_schema_keys(schema)
+                        .into_iter()
+                        .filter_map(|key| {
+                            crate::plugins::runtime::translate_plugin_resource_for_locale(
+                                cx,
+                                &status.id,
+                                state.plugin_cached_locale.as_ref(),
+                                &key,
+                            )
+                            .map(|value| (key, value))
+                        })
+                        .collect()
+                })
             })
             .unwrap_or_default();
         let logs = selected_id
@@ -359,6 +357,8 @@ pub(super) fn ensure_plugin_resources(window: &mut Window, cx: &mut Context<Sett
                 manifest
                     .config_schema_path()
                     .and_then(|path| std::fs::read_to_string(path).ok())
+                    .and_then(|text| toml::from_str::<PluginConfigSchema>(&text).ok())
+                    .map(Arc::new)
             })
             .await;
 
@@ -394,7 +394,7 @@ fn ensure_config_inputs_from_cache(window: &mut Window, cx: &mut Context<Setting
         plugin_id: plugin_id.clone(),
         generation: status.generation,
     };
-    let Some(schema_text) = state
+    let Some(schema) = state
         .plugin_config_schema_cache
         .get(&cache_key)
         .cloned()
@@ -402,13 +402,11 @@ fn ensure_config_inputs_from_cache(window: &mut Window, cx: &mut Context<Setting
     else {
         return;
     };
-    let Some(schema) = toml::from_str::<PluginConfigSchema>(&schema_text).ok() else {
-        return;
-    };
     let fields = schema
         .fields
-        .into_iter()
-        .filter(is_text_config_field)
+        .iter()
+        .filter(|field| is_text_config_field(field))
+        .cloned()
         .collect::<Vec<_>>();
     let expected_keys = fields
         .iter()
@@ -1271,14 +1269,10 @@ fn plugin_config_panel(
 ) -> AnyElement {
     let config_text = model.config_text.clone().unwrap_or_default();
     let draft = current_config_draft(state, &status.id, &config_text);
-    let schema = model
-        .config_schema
-        .as_deref()
-        .and_then(|text| toml::from_str::<PluginConfigSchema>(text).ok());
+    let schema = model.config_schema.as_deref();
 
     let save_draft = draft.clone();
     let editable_fields = schema
-        .as_ref()
         .map(|schema| {
             schema
                 .fields
@@ -1346,7 +1340,7 @@ fn plugin_config_panel(
         let values = draft
             .parse::<toml::Value>()
             .unwrap_or_else(|_| toml::Value::Table(Default::default()));
-        for field in schema.fields {
+        for field in &schema.fields {
             panel = panel.child(render_config_field(
                 colors,
                 i18n,
@@ -1354,7 +1348,7 @@ fn plugin_config_panel(
                 &status.id,
                 &model.locale,
                 &model.translations,
-                &field,
+                field,
                 &values,
                 &draft,
             ));
@@ -1915,17 +1909,16 @@ fn localized_plugin_text(
     })
 }
 
-fn localized_schema_keys(schema_text: &str) -> Result<Vec<String>, toml::de::Error> {
-    let schema = toml::from_str::<PluginConfigSchema>(schema_text)?;
+fn localized_schema_keys(schema: &PluginConfigSchema) -> Vec<String> {
     let mut keys = Vec::new();
-    for field in schema.fields {
-        push_translation_key(&mut keys, field.label_key);
-        push_translation_key(&mut keys, field.description_key);
-        for option in field.options {
-            push_translation_key(&mut keys, option.label_key);
+    for field in &schema.fields {
+        push_translation_key(&mut keys, field.label_key.clone());
+        push_translation_key(&mut keys, field.description_key.clone());
+        for option in &field.options {
+            push_translation_key(&mut keys, option.label_key.clone());
         }
     }
-    Ok(keys)
+    keys
 }
 
 fn plugin_config_inputs_match(
