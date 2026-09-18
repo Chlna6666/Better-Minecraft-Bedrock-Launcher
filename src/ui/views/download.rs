@@ -656,6 +656,10 @@ pub fn render_download_page(
                 .flex()
                 .flex_col()
                 .child(body)
+                // The tab body contains virtual rows, async images, SVG/path content and nested
+                // clips. Animate one retained composite instead of independently translating those
+                // primitive classes, so image-ready/scroll repaints stay in one coordinate space.
+                .composite_layer()
                 .with_stable_sampled_animation(
                     "download-tab-content-transition",
                     tab_transition,

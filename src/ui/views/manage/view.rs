@@ -967,6 +967,9 @@ impl ManagePageView {
                                     ),
                                 }
                             })
+                            // Keep virtualized rows, thumbnails, paths and clips under one
+                            // compositor transform while this tab transition is active.
+                            .composite_layer()
                             .with_stable_sampled_animation(
                                 "manage-tab-content-transition",
                                 tab_transition,
@@ -976,7 +979,10 @@ impl ManagePageView {
                     ),
             );
 
+        // Version switches move the complete interactive panel. Composite first so
+        // asynchronous child repaints cannot acquire a different scene-animation transform.
         main_panel
+            .composite_layer()
             .with_stable_sampled_animation(
                 "manage-version-content-transition",
                 version_transition,
