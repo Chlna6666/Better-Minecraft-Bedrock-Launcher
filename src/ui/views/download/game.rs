@@ -630,21 +630,11 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
         )
     };
 
-    let scroll_bounds_height = state.game_rows_scroll.bounds().size.height;
-    if scroll_bounds_height <= px(0.) {
-        window.request_animation_frame();
-    }
-    let viewport_height = if scroll_bounds_height > px(0.) {
-        scroll_bounds_height
-    } else {
-        (window.viewport_size().height - px(180.)).max(px(GAME_ROW_PITCH_PX * 10.0))
-    };
-
     let virtual_list_plan = compute_virtual_list_plan(
         page_rows.len(),
         GAME_ROW_PITCH_PX,
         state.game_rows_scroll.offset().y,
-        viewport_height,
+        state.game_rows_scroll.bounds().size.height,
         GAME_ROW_OVERSCAN,
         GAME_ROW_HEAVY_BUDGET,
     );
