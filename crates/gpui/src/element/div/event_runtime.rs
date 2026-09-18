@@ -73,27 +73,31 @@ impl Interactivity {
 
         let hover_changes_style = self.hover_style.is_some()
             || cx.active_drag.is_some() && !self.drag_over_styles.is_empty();
-        if hover_changes_style {
+        let hover_changes_cursor = self.base_style.mouse_cursor.is_some();
+        if hover_changes_style || hover_changes_cursor {
             let hitbox = hitbox.clone();
-            let was_hovered = hitbox.is_hovered(window);
+            let initial_hovered = hitbox.is_hovered(window);
+            let hover_state = self.hover_style.as_ref().and_then(|_| {
+                element_state
+                    .as_ref()
+                    .and_then(|state| state.style_hover_state.as_ref())
+                    .cloned()
+            });
             let current_view = window.current_view();
-
-            // Follow the same correctness boundary as upstream GPUI: a hover transition changes
-            // view state, so rebuild that view and let retained reconciliation decide what can be
-            // replayed. Retained-path-only invalidation is too narrow here because hit testing is
-            // frame-global and MouseExited clears the whole pointer hit-test set at once.
-            if was_hovered {
-                window.on_mouse_event(move |_: &MouseExitEvent, phase, _window, cx| {
-                    if phase == DispatchPhase::Capture {
-                        cx.notify(current_view);
-                    }
-                });
-            }
 
             window.on_mouse_hit_test_transition(
                 move |_: &MouseMoveEvent, phase, window, cx| {
                     let hovered = hitbox.is_hovered(window);
-                    if phase == DispatchPhase::Capture && hovered != was_hovered {
+                    let was_hovered = hover_state
+                        .as_ref()
+                        .map_or(initial_hovered, |state| state.borrow().element);
+                    if phase == DispatchPhase::Capture
+                        && hovered != was_hovered
+                        && hover_changes_style
+                    {
+                        if let Some(hover_state) = &hover_state {
+                            hover_state.borrow_mut().element = hovered;
+                        }
                         cx.notify(current_view);
                     }
                 },
