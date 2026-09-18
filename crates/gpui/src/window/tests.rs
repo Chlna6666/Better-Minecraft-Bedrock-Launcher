@@ -507,6 +507,60 @@ fn active_image_animation_immediate_requests_are_coalesced(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn active_image_animation_waits_for_media_deadline(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
+            .unwrap()
+    });
+
+    window
+        .update(cx, |_, window, cx| {
+            window.active.set(true);
+            window.last_inactive_animation_frame.set(None);
+            let entity = cx.entity_id();
+            let test_window = window.platform_window.as_test().unwrap().clone();
+            let baseline = test_window.requested_frame_count();
+
+            window.test_request_image_animation_frame_at(
+                entity,
+                Instant::now() + Duration::from_millis(50),
+                cx,
+            );
+
+            assert_eq!(
+                test_window.requested_frame_count(),
+                baseline,
+                "a future media frame must not trigger an immediate duplicate redraw"
+            );
+            assert!(window.test_image_animation_frame_pending());
+        })
+        .unwrap();
+    cx.background_executor.allow_parking();
+}
+
+#[gpui::test]
+fn minimized_image_animation_does_not_schedule_frames(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
+            .unwrap()
+    });
+
+    window
+        .update(cx, |_, window, cx| {
+            let entity = cx.entity_id();
+            let test_window = window.platform_window.as_test().unwrap().clone();
+            test_window.0.lock().shown = false;
+            let baseline = test_window.requested_frame_count();
+
+            window.test_request_image_animation_frame_at(entity, Instant::now(), cx);
+
+            assert_eq!(test_window.requested_frame_count(), baseline);
+            assert!(!window.test_image_animation_frame_pending());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn drag_mouse_move_keeps_window_dirty(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

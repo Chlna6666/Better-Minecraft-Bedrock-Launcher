@@ -2,7 +2,11 @@ use super::*;
 use tracing::{info, instrument};
 
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
-const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
+// This is only a safety ceiling for malformed/zero-delay animated media. Foreground pacing is
+// owned by GPUI's platform presentation loop, so the background follows the actual display cadence
+// instead of running a second application-level 12 FPS clock.
+const BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS: f32 = 1_000.0;
+const BACKGROUND_ANIMATION_INACTIVE_MAX_FPS: f32 = 24.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
 const BACKGROUND_GPU_BLUR_MIN_PX: f32 = 0.75;
 // Background blur is a full-background effect. Nova now isolates backdrop sources by draw order,
@@ -98,7 +102,7 @@ impl AppBackgroundView {
     }
 
     fn animation_policy(&self, window: &Window) -> ImageAnimationPolicy {
-        background_animation_policy(self.animation_suppressed, window.is_window_active())
+        background_animation_policy(self.animation_suppressed, window.is_minimized())
     }
 
     fn render_background_layer(
@@ -244,15 +248,15 @@ fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
 
 fn background_animation_policy(
     animation_suppressed: bool,
-    window_active: bool,
+    window_minimized: bool,
 ) -> ImageAnimationPolicy {
-    if animation_suppressed || !window_active {
+    if animation_suppressed || window_minimized {
         ImageAnimationPolicy::paused()
     } else {
         ImageAnimationPolicy {
             play: true,
-            max_fps: Some(BACKGROUND_ANIMATION_MAX_FPS),
-            inactive_max_fps: None,
+            max_fps: Some(BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS),
+            inactive_max_fps: Some(BACKGROUND_ANIMATION_INACTIVE_MAX_FPS),
         }
     }
 }
@@ -299,28 +303,36 @@ impl Render for AppBackgroundView {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKGROUND_ANIMATION_MAX_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
+        BACKGROUND_ANIMATION_INACTIVE_MAX_FPS,
+        BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
         BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, animation_suppression_changed,
         background_animation_policy, background_blur_overlay_color, background_uses_gpu_blur,
     };
 
     #[test]
     fn background_animation_policy_pauses_when_suppressed() {
-        let policy = background_animation_policy(true, true);
+        let policy = background_animation_policy(true, false);
         assert!(!policy.play);
     }
 
     #[test]
-    fn background_animation_policy_pauses_when_window_inactive() {
-        let policy = background_animation_policy(false, false);
-        assert!(!policy.play);
-    }
-
-    #[test]
-    fn background_animation_policy_caps_active_playback() {
+    fn background_animation_policy_pauses_when_window_minimized() {
         let policy = background_animation_policy(false, true);
+        assert!(!policy.play);
+    }
+
+    #[test]
+    fn background_animation_policy_uses_gpui_pacing_with_inactive_cap() {
+        let policy = background_animation_policy(false, false);
         assert!(policy.play);
-        assert_eq!(policy.max_fps, Some(BACKGROUND_ANIMATION_MAX_FPS));
+        assert_eq!(
+            policy.max_fps,
+            Some(BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS)
+        );
+        assert_eq!(
+            policy.inactive_max_fps,
+            Some(BACKGROUND_ANIMATION_INACTIVE_MAX_FPS)
+        );
     }
 
     #[test]

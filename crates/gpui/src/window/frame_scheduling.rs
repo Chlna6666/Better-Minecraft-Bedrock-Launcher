@@ -434,12 +434,9 @@ impl Window {
         let Some(entity) = self.current_view_or_root() else {
             return;
         };
-        let existing = self
-            .image_animation_deadline_pending
-            .borrow()
-            .get(&entity)
-            .copied();
-        if existing.is_some_and(|(pending_deadline, _)| pending_deadline <= deadline) {
+        // Animated media must not keep a minimized window alive. A restore/activation redraw will
+        // paint the image again and re-arm playback from the current media frame.
+        if self.platform_window.is_minimized() {
             return;
         }
 
@@ -448,15 +445,26 @@ impl Window {
         } else {
             animation_config.inactive_minimum_frame_duration()
         };
-        let now = deadline.min(Instant::now());
-        let remaining = match self.last_inactive_animation_frame.get() {
-            Some(last_frame) => minimum_frame_duration
-                .checked_sub(now.saturating_duration_since(last_frame))
-                .unwrap_or_default(),
-            None => Duration::ZERO,
-        };
+        let now = Instant::now();
+        let rate_limited_deadline = self
+            .last_inactive_animation_frame
+            .get()
+            .and_then(|last_frame| last_frame.checked_add(minimum_frame_duration))
+            .unwrap_or(now);
+        // Respect the media frame's real presentation deadline. The old path only enforced the FPS
+        // ceiling and could redraw the same GIF/APNG frame repeatedly before that deadline.
+        let presentation_deadline = deadline.max(rate_limited_deadline);
 
-        if remaining.is_zero() {
+        let existing = self
+            .image_animation_deadline_pending
+            .borrow()
+            .get(&entity)
+            .copied();
+        if existing.is_some_and(|(pending_deadline, _)| pending_deadline <= presentation_deadline) {
+            return;
+        }
+
+        if presentation_deadline <= now {
             self.last_inactive_animation_frame.set(Some(now));
             self.record_frame_request_reason(FrameRequestReason::ImageReady);
             self.request_animation_frame();
@@ -470,19 +478,23 @@ impl Window {
         self.image_animation_deadline_generation.set(generation);
         self.image_animation_deadline_pending
             .borrow_mut()
-            .insert(entity, (deadline, generation));
+            .insert(entity, (presentation_deadline, generation));
 
         let pending = self.image_animation_deadline_pending.clone();
         let last_frame = self.last_inactive_animation_frame.clone();
         let handle = self.handle;
+        let delay = presentation_deadline.saturating_duration_since(now);
         self.spawn(cx, async move |cx| {
-            cx.background_executor().timer(remaining).await;
-            if pending.borrow().get(&entity).copied() != Some((deadline, generation)) {
+            cx.background_executor().timer(delay).await;
+            if pending.borrow().get(&entity).copied() != Some((presentation_deadline, generation)) {
                 return;
             }
             pending.borrow_mut().remove(&entity);
-            last_frame.set(Some(Instant::now()));
             let _ = ignore_window_not_found(handle.update(cx, |_, window, cx| {
+                if window.platform_window.is_minimized() {
+                    return;
+                }
+                last_frame.set(Some(Instant::now()));
                 window.record_frame_request_reason(FrameRequestReason::ImageReady);
                 cx.notify(entity);
             }));
