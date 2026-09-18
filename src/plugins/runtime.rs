@@ -138,11 +138,13 @@ enum PreparedPluginWasm {
     Error(Arc<str>),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct PreparedPluginResources {
     has_readme: bool,
     has_config: bool,
     icon_path: Option<PathBuf>,
+    config_text: std::result::Result<String, Arc<str>>,
+    storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
 }
 
 #[derive(Clone, Debug)]
@@ -313,6 +315,8 @@ struct HostState {
     render_context: Option<RenderContext>,
     theme_snapshot: abi::ThemeSnapshot,
     storage_dir: PathBuf,
+    config_text: std::result::Result<String, Arc<str>>,
+    storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
     clipboard_text: Option<String>,
     effects: Vec<HostEffect>,
     next_window_id: u64,
@@ -1015,8 +1019,12 @@ impl PluginRegistry {
         prepared_wasm: PreparedPluginWasm,
         prepared_resources: PreparedPluginResources,
     ) -> Result<PluginInstance> {
-        let mut execution =
-            self.instantiate_plugin(&manifest, translations, &prepared_wasm)?;
+        let mut execution = self.instantiate_plugin(
+            &manifest,
+            translations,
+            &prepared_wasm,
+            &prepared_resources,
+        )?;
 
         let started = Instant::now();
         let context = abi::PluginContext {
@@ -1232,6 +1240,7 @@ impl PluginRegistry {
         manifest: &PluginManifest,
         translations: BTreeMap<String, BTreeMap<String, String>>,
         prepared_wasm: &PreparedPluginWasm,
+        prepared_resources: &PreparedPluginResources,
     ) -> Result<PluginExecution> {
         self.init_engine()?;
 
@@ -1259,6 +1268,8 @@ impl PluginRegistry {
             translations,
             self.http_cache.clone(),
             storage_dir,
+            prepared_resources.config_text.clone(),
+            prepared_resources.storage_values.clone(),
         )));
         let mut store = Store::new(engine.clone());
         let imports = host_imports(&mut store, host_state.clone());
@@ -1701,6 +1712,8 @@ impl HostState {
         translations: BTreeMap<String, BTreeMap<String, String>>,
         http_cache: PluginHttpFetchCache,
         storage_dir: PathBuf,
+        config_text: std::result::Result<String, Arc<str>>,
+        storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
     ) -> Self {
         Self {
             plugin_id: manifest.id.clone(),
@@ -1713,6 +1726,8 @@ impl HostState {
             render_context: None,
             theme_snapshot: abi::ThemeSnapshot::light_default(),
             storage_dir,
+            config_text,
+            storage_values,
             clipboard_text: None,
             effects: Vec::new(),
             next_window_id: 1,
@@ -2224,15 +2239,13 @@ fn handle_host_request(
         }
         (code, abi::HostRequest::ReadConfig) if code == abi::HostOp::ReadConfig.code() => {
             state.require_capability(PluginCapability::ConfigRead)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "config read")?;
-            let config =
-                crate::plugins::manifest::read_user_config(&state.manifest).map_err(|error| {
-                    abi::HostError {
-                        code: "config-read-failed".to_string(),
-                        message: error.to_string(),
-                    }
-                })?;
-            Ok(abi::HostResponse::String(config))
+            match &state.config_text {
+                Ok(config) => Ok(abi::HostResponse::String(config.clone())),
+                Err(error) => Err(abi::HostError {
+                    code: "config-read-failed".to_string(),
+                    message: error.to_string(),
+                }),
+            }
         }
         (
             code,
@@ -2361,11 +2374,14 @@ fn handle_host_request(
         }
         (code, abi::HostRequest::StorageGet { key }) if code == abi::HostOp::StorageGet.code() => {
             state.require_capability(PluginCapability::StorageKv)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "storage get")?;
-            Ok(abi::HostResponse::SessionValue(storage_get(
-                &state.storage_dir,
-                &key,
-            )?))
+            validate_storage_key(&key)?;
+            match &state.storage_values {
+                Ok(values) => Ok(abi::HostResponse::SessionValue(values.get(&key).cloned())),
+                Err(error) => Err(abi::HostError {
+                    code: "storage-read-failed".to_string(),
+                    message: error.to_string(),
+                }),
+            }
         }
         (code, abi::HostRequest::StorageSet { key, value })
             if code == abi::HostOp::StorageSet.code() =>
@@ -2378,6 +2394,9 @@ fn handle_host_request(
                 &value,
                 state.manifest.limits.max_storage_bytes,
             )?;
+            if let Ok(values) = &mut state.storage_values {
+                values.insert(key, value);
+            }
             Ok(abi::HostResponse::Unit)
         }
         (code, abi::HostRequest::StorageDelete { key })
@@ -2386,17 +2405,31 @@ fn handle_host_request(
             state.require_capability(PluginCapability::StorageKv)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "storage delete")?;
             storage_delete(&state.storage_dir, &key)?;
+            if let Ok(values) = &mut state.storage_values {
+                values.remove(&key);
+            }
             Ok(abi::HostResponse::Unit)
         }
         (code, abi::HostRequest::StorageList { prefix })
             if code == abi::HostOp::StorageList.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "storage list")?;
-            Ok(abi::HostResponse::StringList(storage_list(
-                &state.storage_dir,
-                prefix.as_deref(),
-            )?))
+            if let Some(prefix) = prefix.as_deref() {
+                validate_storage_key_prefix(prefix)?;
+            }
+            match &state.storage_values {
+                Ok(values) => Ok(abi::HostResponse::StringList(
+                    values
+                        .keys()
+                        .filter(|key| prefix.as_deref().is_none_or(|prefix| key.starts_with(prefix)))
+                        .cloned()
+                        .collect(),
+                )),
+                Err(error) => Err(abi::HostError {
+                    code: "storage-list-failed".to_string(),
+                    message: error.to_string(),
+                }),
+            }
         }
         (code, abi::HostRequest::WriteConfig { text })
             if code == abi::HostOp::WriteConfig.code() =>
@@ -2409,6 +2442,7 @@ fn handle_host_request(
                     message: error.to_string(),
                 },
             )?;
+            state.config_text = Ok(text);
             let plugin_id = state.plugin_id.clone();
             state.effects.push(HostEffect::Invalidate {
                 plugin_id,
@@ -2598,6 +2632,18 @@ fn call_plugin_sidecar(
             },
         })
     }
+}
+
+fn load_storage_snapshot(
+    storage_dir: &Path,
+) -> std::result::Result<BTreeMap<String, String>, abi::HostError> {
+    let mut values = BTreeMap::new();
+    for key in storage_list(storage_dir, None)? {
+        if let Some(value) = storage_get(storage_dir, &key)? {
+            values.insert(key, value);
+        }
+    }
+    Ok(values)
 }
 
 fn storage_get(
@@ -3557,12 +3603,17 @@ fn prepare_plugin_reload_from_sources(
         .with_context(|| format!("create wasm cache {}", cache_dir.display()))?;
     let manifests =
         crate::plugins::manifest::load_manifests_from_sources(&plugins_dir, &package_cache_dir)?;
-    Ok(prepare_plugin_manifests(manifests, &plugins_dir))
+    Ok(prepare_plugin_manifests(
+        manifests,
+        &plugins_dir,
+        &package_cache_dir,
+    ))
 }
 
 fn prepare_plugin_manifests(
     manifests: Vec<PluginManifest>,
     plugins_dir: &Path,
+    package_cache_dir: &Path,
 ) -> PreparedPluginReload {
     let disabled_plugins = crate::plugins::state::disabled_plugins(plugins_dir);
     let mut plugins = Vec::with_capacity(manifests.len());
@@ -3580,7 +3631,7 @@ fn prepare_plugin_manifests(
         }
         let translations = load_plugin_translations(&manifest);
         let wasm = prepare_plugin_wasm(&manifest);
-        let resources = prepare_plugin_resources(&manifest);
+        let resources = prepare_plugin_resources(&manifest, package_cache_dir);
         plugins.push(PreparedPluginManifest {
             manifest,
             enabled,
@@ -3593,13 +3644,26 @@ fn prepare_plugin_manifests(
     PreparedPluginReload { plugins }
 }
 
-fn prepare_plugin_resources(manifest: &PluginManifest) -> PreparedPluginResources {
+fn prepare_plugin_resources(
+    manifest: &PluginManifest,
+    package_cache_dir: &Path,
+) -> PreparedPluginResources {
+    let config_text = crate::plugins::manifest::read_user_config(manifest)
+        .map_err(|error| Arc::<str>::from(crate::plugins::manifest::format_error_chain(&error)));
+    let storage_dir = package_cache_dir
+        .join("storage")
+        .join(sanitize_storage_segment(&manifest.id));
+    let storage_values = load_storage_snapshot(&storage_dir)
+        .map_err(|error| Arc::<str>::from(error.message));
+
     PreparedPluginResources {
         has_readme: manifest_has_any_readme(manifest),
         has_config: manifest
             .config_schema_path()
             .is_some_and(|path| path.exists()),
         icon_path: manifest.icon_path().filter(|path| path.exists()),
+        config_text,
+        storage_values,
     }
 }
 

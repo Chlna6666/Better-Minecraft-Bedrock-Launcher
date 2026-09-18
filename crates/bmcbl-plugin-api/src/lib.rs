@@ -2263,9 +2263,9 @@ pub fn session_set(key: impl AsRef<str>, value: Option<impl AsRef<str>>) -> Plug
     )
 }
 
-/// Reads persistent plugin KV storage.
+/// Reads the host-prepared persistent plugin KV snapshot.
 ///
-/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
+/// Reads are memory-only and safe while rendering plugin UI.
 pub fn storage_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
     match host_call(
         HostOp::StorageGet,
@@ -2303,9 +2303,9 @@ pub fn storage_delete(key: impl AsRef<str>) -> PluginResult<()> {
     )
 }
 
-/// Lists persistent plugin KV keys.
+/// Lists keys from the host-prepared persistent plugin KV snapshot.
 ///
-/// Persistent storage uses host filesystem I/O and is rejected while rendering plugin UI.
+/// Reads are memory-only and safe while rendering plugin UI.
 pub fn storage_list(prefix: Option<impl AsRef<str>>) -> PluginResult<Vec<String>> {
     match host_call(
         HostOp::StorageList,
