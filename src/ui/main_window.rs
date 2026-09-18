@@ -1075,7 +1075,21 @@ impl MainWindowView {
         self.notify_download_page(cx);
 
         let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-            remote_versions::load_or_fetch_versions(force_refresh).await
+            let remote = remote_versions::load_or_fetch_versions(force_refresh).await?;
+            let versions = remote
+                .into_iter()
+                .map(|v| crate::ui::views::download::state::DownloadRemoteVersion {
+                    version: SharedString::from(v.version),
+                    package_id: SharedString::from(v.package_id),
+                    version_type: v.version_type,
+                    build_type: SharedString::from(v.build_type),
+                    archival_status: v.archival_status,
+                    meta_present: v.meta_present,
+                    md5: v.md5.map(SharedString::from),
+                    is_gdk: v.is_gdk,
+                })
+                .collect::<Vec<_>>();
+            Ok::<_, anyhow::Error>(versions)
         });
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
@@ -1083,27 +1097,7 @@ impl MainWindowView {
             let result = load_task.await;
 
             match result {
-                Ok(remote) => {
-                    let mut versions = Vec::with_capacity(remote.len());
-
-                    for v in remote {
-                        let package_id = SharedString::from(v.package_id.clone());
-                        let version = SharedString::from(v.version.clone());
-                        let build_type = SharedString::from(v.build_type.clone());
-                        let md5 = v.md5.clone().map(SharedString::from);
-
-                        versions.push(crate::ui::views::download::state::DownloadRemoteVersion {
-                            version,
-                            package_id,
-                            version_type: v.version_type,
-                            build_type,
-                            archival_status: v.archival_status,
-                            meta_present: v.meta_present,
-                            md5,
-                            is_gdk: v.is_gdk,
-                        });
-                    }
-
+                Ok(versions) => {
                     let (applied, refresh_again) = cx.update_global(
                         |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
                             if s.versions_request_id != request_id {
@@ -1183,17 +1177,32 @@ impl MainWindowView {
         self.notify_download_page(cx);
 
         let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-            async {
-                let client =
-                    crate::core::curseforge::CurseForgeClient::new().map_err(anyhow::Error::msg)?;
-                let (categories, versions) =
-                    tokio::join!(client.get_categories(), client.get_minecraft_versions());
-                Ok::<_, anyhow::Error>((
-                    categories.map_err(anyhow::Error::msg)?,
-                    versions.map_err(anyhow::Error::msg)?,
-                ))
-            }
-            .await
+            let client =
+                crate::core::curseforge::CurseForgeClient::new().map_err(anyhow::Error::msg)?;
+            let (categories, versions) =
+                tokio::join!(client.get_categories(), client.get_minecraft_versions());
+
+            let mut entries = categories
+                .map_err(anyhow::Error::msg)?
+                .into_iter()
+                .map(|c| crate::ui::views::download::state::CurseForgeCategoryEntry {
+                    id: c.id,
+                    name: SharedString::from(c.name),
+                    slug: SharedString::from(c.slug),
+                    icon_url: c.icon_url.map(SharedString::from),
+                    is_class: c.is_class.unwrap_or(false),
+                    class_id: c.class_id,
+                    parent_category_id: c.parent_category_id,
+                })
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.id);
+            let version_entries = versions
+                .map_err(anyhow::Error::msg)?
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Vec<_>>();
+
+            Ok::<_, anyhow::Error>((entries, version_entries))
         });
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
@@ -1203,28 +1212,7 @@ impl MainWindowView {
         cx.spawn(async move |_this, cx| {
             let result = load_task.await;
             match result {
-                Ok((categories, versions)) => {
-                    let mut entries = categories
-                        .into_iter()
-                        .map(
-                            |c| crate::ui::views::download::state::CurseForgeCategoryEntry {
-                                id: c.id,
-                                name: SharedString::from(c.name),
-                                slug: SharedString::from(c.slug),
-                                icon_url: c.icon_url.map(SharedString::from),
-                                is_class: c.is_class.unwrap_or(false),
-                                class_id: c.class_id,
-                                parent_category_id: c.parent_category_id,
-                            },
-                        )
-                        .collect::<Vec<_>>();
-                    entries.sort_by_key(|entry| entry.id);
-
-                    let version_entries = versions
-                        .into_iter()
-                        .map(SharedString::from)
-                        .collect::<Vec<_>>();
-
+                Ok((entries, version_entries)) => {
                     match cx.update_global(
                         |s: &mut crate::ui::views::download::state::DownloadPageState, cx| {
                             if s.curseforge_view_epoch != curseforge_view_epoch

@@ -6,7 +6,7 @@ use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
     TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast,
     maybe_set_task_visualization, set_task_visualization, set_total, update_progress,
-    wait_until_active_fast,
+    update_progress_with_visualization, wait_until_active_fast,
 };
 use futures_util::StreamExt;
 use reqwest::header::{self, HeaderMap};
@@ -194,10 +194,13 @@ pub async fn download_file(
                     downloaded_bytes = downloaded_bytes.saturating_add(len as u64);
 
                     if last_update.elapsed().as_millis() > 100 {
-                        let _ = maybe_set_task_visualization(task_id, || {
-                            Some(build_single_download_visualization(downloaded_bytes, total))
-                        });
-                        update_progress(task_id, pending_progress, total, Some("downloading"));
+                        update_progress_with_visualization(
+                            task_id,
+                            pending_progress,
+                            total,
+                            Some("downloading"),
+                            build_single_download_visualization(downloaded_bytes, total),
+                        );
                         pending_progress = 0;
                         last_update = Instant::now();
                     }
@@ -209,10 +212,13 @@ pub async fn download_file(
                 }
 
                 if pending_progress > 0 {
-                    let _ = maybe_set_task_visualization(task_id, || {
-                        Some(build_single_download_visualization(downloaded_bytes, total))
-                    });
-                    update_progress(task_id, pending_progress, total, Some("downloading"));
+                    update_progress_with_visualization(
+                        task_id,
+                        pending_progress,
+                        total,
+                        Some("downloading"),
+                        build_single_download_visualization(downloaded_bytes, total),
+                    );
                 }
 
                 writer.flush().await.map_err(CoreError::Io)?;

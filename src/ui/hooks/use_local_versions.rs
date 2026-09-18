@@ -163,6 +163,16 @@ where
 
 fn sync_manage_page_state_from_local_versions(cx: &mut App) {
     let snapshot = read_local_versions_snapshot(cx);
+    let already_synced = cx.read_global(|state: &ManagePageState, _cx| {
+        state.versions_revision == snapshot.revision
+            && state.loaded == snapshot.loaded
+            && state.loading == snapshot.loading
+            && state.error == snapshot.error
+    });
+    if already_synced {
+        return;
+    }
+
     let versions = managed_versions_from_local_versions(&snapshot);
 
     cx.update_global(|state: &mut ManagePageState, _cx| {
@@ -277,17 +287,18 @@ fn take_pending_local_versions_refresh(state: &mut LocalVersionsState) -> bool {
 
 pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
     let catalog_generation = crate::core::version::catalog_events::local_version_generation();
+    let skip_without_mutation = cx.read_global(|state: &LocalVersionsState, _cx| {
+        let effective_force = force_refresh || state.catalog_generation < catalog_generation;
+        !effective_force && (state.loading || state.loaded)
+    });
+    if skip_without_mutation {
+        return;
+    }
+
     let should_spawn = cx.update_global(|state: &mut LocalVersionsState, _cx| {
         request_local_versions_refresh(state, force_refresh, catalog_generation)
     });
-
     if !should_spawn {
-        info!(
-            force_refresh,
-            catalog_generation,
-            "ensure_local_versions_loaded: refresh skipped (already loading or loaded)"
-        );
-        sync_manage_page_state_from_local_versions(cx);
         return;
     }
 

@@ -655,6 +655,26 @@ pub fn task_logs(task_id: &str) -> Arc<[Arc<str>]> {
 }
 
 pub fn update_progress(task_id: &str, delta_bytes: u64, total: Option<u64>, stage: Option<&str>) {
+    update_progress_inner(task_id, delta_bytes, total, stage, None);
+}
+
+pub fn update_progress_with_visualization(
+    task_id: &str,
+    delta_bytes: u64,
+    total: Option<u64>,
+    stage: Option<&str>,
+    visualization: TaskVisualization,
+) {
+    update_progress_inner(task_id, delta_bytes, total, stage, Some(visualization));
+}
+
+fn update_progress_inner(
+    task_id: &str,
+    delta_bytes: u64,
+    total: Option<u64>,
+    stage: Option<&str>,
+    visualization: Option<TaskVisualization>,
+) {
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
 
     {
@@ -669,6 +689,12 @@ pub fn update_progress(task_id: &str, delta_bytes: u64, total: Option<u64>, stag
             }
             if let Some(s) = stage {
                 t.stage = Arc::from(s);
+            }
+
+            if let Some(visualization) = visualization {
+                if *t.visualization != visualization {
+                    t.visualization = Arc::new(visualization);
+                }
             }
 
             t.touch();

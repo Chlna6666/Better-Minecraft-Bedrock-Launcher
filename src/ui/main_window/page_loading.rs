@@ -49,8 +49,9 @@ impl MainWindowView {
     }
 
     pub(super) fn ensure_manage_page_loaded(&mut self, cx: &mut Context<Self>) {
+        // LocalVersionsState drives ManagePageState and the view observes that global directly.
+        // Avoid an unconditional extra notify when the snapshot is already current.
         crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(false, cx);
-        self.notify_manage_page(cx);
     }
 
     pub(super) fn ensure_settings_loaded(&mut self, cx: &mut Context<Self>) {

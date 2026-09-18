@@ -23,7 +23,7 @@ use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
     ByteRangeVisualization, TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast,
     set_task_visualization, set_total, task_visualization_enabled, update_progress,
-    wait_until_active_fast,
+    update_progress_with_visualization, wait_until_active_fast,
 };
 
 // =========================================================================
@@ -595,6 +595,71 @@ async fn set_download_visualization(
     );
 }
 
+async fn snapshot_download_visualization(
+    worker_total: usize,
+    worker_active: usize,
+    unit_total: usize,
+    unit_done: usize,
+    current_item: Option<String>,
+    visualization: &Mutex<DownloadVisualizationState>,
+) -> TaskVisualization {
+    let (threads, downloaded_ranges) = {
+        let visualization = visualization.lock().await;
+        (
+            visualization.threads.clone(),
+            visualization.downloaded_ranges.to_vec(),
+        )
+    };
+    build_download_visualization(
+        worker_total,
+        worker_active,
+        unit_total,
+        unit_done,
+        current_item,
+        Some(downloaded_ranges),
+        Some(threads),
+    )
+}
+
+async fn take_download_visualization_throttled(
+    worker_total: usize,
+    worker_active: usize,
+    unit_total: usize,
+    unit_done: usize,
+    current_item: Option<String>,
+    visualization: &Mutex<DownloadVisualizationState>,
+    last_emit_at: &Mutex<Instant>,
+) -> Option<TaskVisualization> {
+    if !task_visualization_enabled() {
+        return None;
+    }
+
+    let should_emit = {
+        let mut last_emit_at = last_emit_at.lock().await;
+        if last_emit_at.elapsed() >= Duration::from_millis(VISUALIZATION_EMIT_INTERVAL_MS) {
+            *last_emit_at = Instant::now();
+            true
+        } else {
+            false
+        }
+    };
+    if !should_emit {
+        return None;
+    }
+
+    Some(
+        snapshot_download_visualization(
+            worker_total,
+            worker_active,
+            unit_total,
+            unit_done,
+            current_item,
+            visualization,
+        )
+        .await,
+    )
+}
+
 async fn set_download_visualization_throttled(
     task_id: &str,
     worker_total: usize,
@@ -1095,8 +1160,7 @@ async fn download_multi_partitioned(
                             None,
                         )
                         .await;
-                        set_download_visualization_throttled(
-                            &task_id,
+                        let visualization = take_download_visualization_throttled(
                             active_threads,
                             active_workers.load(Ordering::Relaxed),
                             total_units,
@@ -1104,15 +1168,24 @@ async fn download_multi_partitioned(
                             None,
                             download_visualization.as_ref(),
                             visualization_last_emit_at.as_ref(),
-                            false,
                         )
                         .await;
-                        update_progress(
-                            &task_id,
-                            pending_progress,
-                            Some(total),
-                            Some("downloading"),
-                        );
+                        if let Some(visualization) = visualization {
+                            update_progress_with_visualization(
+                                &task_id,
+                                pending_progress,
+                                Some(total),
+                                Some("downloading"),
+                                visualization,
+                            );
+                        } else {
+                            update_progress(
+                                &task_id,
+                                pending_progress,
+                                Some(total),
+                                Some("downloading"),
+                            );
+                        }
                         pending_progress = 0;
                         last_update_time = Instant::now();
                     }
