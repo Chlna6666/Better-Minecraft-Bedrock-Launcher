@@ -15,13 +15,19 @@ const MOD_CARD_HEIGHT: f32 = 160.0;
 pub(super) fn should_render_loading(state: &DownloadPageState, tab: DownloadTab) -> bool {
     match tab {
         DownloadTab::Game => {
-            (state.loading || state.force_refresh_next) && state.versions.is_empty()
+            !state.loaded && state.error.is_none() && state.versions.is_empty()
         }
         DownloadTab::ResourcePack => {
             (!state.curseforge_loaded && state.curseforge_loading)
                 || (state.curseforge_results_loading && state.curseforge_mods.is_empty())
         }
-        DownloadTab::Mod => state.levilauncher_loading && !state.levilauncher_loaded,
+        DownloadTab::Mod => {
+            if state.levilauncher_selected_loader == "native" {
+                !state.native_mods_loaded && state.native_mods_error.is_none()
+            } else {
+                !state.levilauncher_loaded && state.levilauncher_error.is_none()
+            }
+        }
     }
 }
 

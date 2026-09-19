@@ -19,7 +19,7 @@ type ModPanelRenderSignature = (
 );
 
 #[derive(Default)]
-struct ModPanelRenderCache {
+pub(super) struct ModPanelRenderCache {
     last_signature: Option<ModPanelRenderSignature>,
     total_mods: usize,
     total_pages: usize,
@@ -112,7 +112,12 @@ fn rebuild_mod_panel_render_cache(
     }
 }
 
-pub(super) fn render_mod_panel(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
+pub(super) fn render_mod_panel(
+    cx: &mut App,
+    colors: &ThemeColors,
+    cache: &mut ModPanelRenderCache,
+    image_cache: &Entity<BoundedImageCache>,
+) -> Div {
     let i18n = cx.global::<I18n>().clone();
     let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
         state.levilauncher_selected_loader == "native"
@@ -131,33 +136,25 @@ pub(super) fn render_mod_panel(window: &mut Window, cx: &mut App, colors: &Theme
         }
     }
 
-    let cache = window.use_keyed_state("download-mod-panel-cache", cx, |_, _| {
-        ModPanelRenderCache::default()
-    });
     let render_signature =
         cx.read_global(|state: &DownloadPageState, _cx| build_mod_panel_render_signature(state));
-    let cache_needs_rebuild = cache.read(cx).last_signature.as_ref() != Some(&render_signature);
-    if cache_needs_rebuild {
-        let rebuilt_cache = cx.read_global(|state: &DownloadPageState, _cx| {
+    if cache.last_signature.as_ref() != Some(&render_signature) {
+        *cache = cx.read_global(|state: &DownloadPageState, _cx| {
             rebuild_mod_panel_render_cache(state, render_signature.clone())
-        });
-        cache.update(cx, |cached, _| {
-            *cached = rebuilt_cache;
         });
     }
 
     let state = cx.global::<DownloadPageState>();
-    let cached = cache.read(cx);
-    let total_mods = cached.total_mods;
-    let total_pages = cached.total_pages;
-    let page_index = cached.page_index;
+    let total_mods = cache.total_mods;
+    let total_pages = cache.total_pages;
+    let page_index = cache.page_index;
     let loader_type = state.levilauncher_selected_loader.as_ref();
     let loader_ver = state.levilauncher_selected_loader_version.as_ref();
 
     let main_content = if total_mods == 0 {
         render_empty_state(colors, &i18n)
     } else {
-        render_mod_grid(colors, &cached.page_mods, state, &i18n)
+        render_mod_grid(colors, &cache.page_mods, state, &i18n, image_cache)
     };
 
     let stats_bar = render_stats_bar(colors, total_mods, loader_type, loader_ver, &i18n);
@@ -390,6 +387,7 @@ fn render_mod_grid(
     mods: &[LeviLaminaModEntry],
     _state: &DownloadPageState,
     i18n: &I18n,
+    image_cache: &Entity<BoundedImageCache>,
 ) -> Div {
     let mut grid = div()
         .w_full()
@@ -399,7 +397,13 @@ fn render_mod_grid(
         .items_stretch();
 
     for (idx, mod_entry) in mods.iter().enumerate() {
-        grid = grid.child(render_mod_card(colors, mod_entry, idx, i18n));
+        grid = grid.child(render_mod_card(
+            colors,
+            mod_entry,
+            idx,
+            i18n,
+            image_cache,
+        ));
     }
 
     grid
@@ -410,6 +414,7 @@ fn render_mod_card(
     mod_entry: &LeviLaminaModEntry,
     idx: usize,
     i18n: &I18n,
+    image_cache: &Entity<BoundedImageCache>,
 ) -> AnyElement {
     let mod_clone = (*mod_entry).clone();
     let mod_clone_for_detail = mod_clone.clone();
@@ -420,6 +425,53 @@ fn render_mod_card(
             .h(px(48.))
             .rounded(px(crate::ui::theme::tokens::radius::SM))
             .object_fit(ObjectFit::Cover)
+            .image_cache(image_cache)
+            .with_loading({
+                let colors = *colors;
+                move || {
+                    div()
+                        .w(px(48.))
+                        .h(px(48.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
+                        .bg(Hsla {
+                            a: 0.08,
+                            ..colors.accent
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path(lucide_gpui::icon!(layers))
+                                .size(px(22.))
+                                .text_color(colors.accent),
+                        )
+                        .into_any_element()
+                }
+            })
+            .with_fallback({
+                let colors = *colors;
+                move || {
+                    div()
+                        .w(px(48.))
+                        .h(px(48.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
+                        .bg(Hsla {
+                            a: 0.08,
+                            ..colors.accent
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path(lucide_gpui::icon!(layers))
+                                .size(px(22.))
+                                .text_color(colors.accent),
+                        )
+                        .into_any_element()
+                }
+            })
             .into_any_element()
     } else {
         div()

@@ -205,22 +205,46 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> 
 
                     match tab {
                         DownloadTab::Game => {
-                            if !s.loaded && !s.loading {
-                                s.force_refresh_next = true;
-                            }
                             s.game_rows_scroll.set_offset(point(px(0.), px(0.)));
                         }
                         DownloadTab::ResourcePack => {
-                            if !s.curseforge_loaded && !s.curseforge_loading {
-                                s.curseforge_invalidate_seq =
-                                    s.curseforge_invalidate_seq.wrapping_add(1);
-                            }
                             s.curseforge_results_scroll
                                 .set_offset(point(px(0.), px(0.)));
                             s.curseforge_sidebar_scroll
                                 .set_offset(point(px(0.), px(0.)));
                         }
                         DownloadTab::Mod => {}
+                    }
+                });
+
+                // Never start I/O or invalidate a large catalog inside the pointer dispatch that
+                // starts the transition. Let the first visual frame land, then kick the work.
+                window.on_next_frame(move |_window, cx| match tab {
+                    DownloadTab::Game => {
+                        cx.update_global(|s: &mut DownloadPageState, _cx| {
+                            if !s.loaded && !s.loading {
+                                s.force_refresh_next = true;
+                            }
+                        });
+                    }
+                    DownloadTab::ResourcePack => {
+                        cx.update_global(|s: &mut DownloadPageState, _cx| {
+                            if !s.curseforge_loaded && !s.curseforge_loading {
+                                s.curseforge_invalidate_seq =
+                                    s.curseforge_invalidate_seq.wrapping_add(1);
+                            }
+                        });
+                    }
+                    DownloadTab::Mod => {
+                        super::ensure_levilamina_support_loaded(cx);
+                        let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
+                            state.levilauncher_selected_loader == "native"
+                        });
+                        if native_source {
+                            super::ensure_native_mods_loaded(cx);
+                        } else {
+                            super::ensure_levilauncher_loaded(cx);
+                        }
                     }
                 });
             })
@@ -420,7 +444,8 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
             ..colors.text_secondary
         })
         .disabled(refresh_disabled)
-        .on_click(|_ev, _window, cx: &mut App| {
+        .on_click(|_ev, window, cx: &mut App| {
+            let refreshed_tab = cx.read_global(|s: &DownloadPageState, _cx| s.tab);
             cx.update_global(|s: &mut DownloadPageState, cx| match s.tab {
                 DownloadTab::Game => {
                     s.force_refresh_next = true;
@@ -463,6 +488,19 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                     s.levilauncher_scroll.set_offset(point(px(0.), px(0.)));
                 }
             });
+            if refreshed_tab == DownloadTab::Mod {
+                window.on_next_frame(|_window, cx| {
+                    super::ensure_levilamina_support_loaded(cx);
+                    let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
+                        state.levilauncher_selected_loader == "native"
+                    });
+                    if native_source {
+                        super::ensure_native_mods_loaded(cx);
+                    } else {
+                        super::ensure_levilauncher_loaded(cx);
+                    }
+                });
+            }
         })
         .into_any_element();
 
@@ -681,21 +719,32 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                 loader_type_options,
                 selected_loader_type_index,
                 source_enabled,
-                move |ix, _window, cx| {
+                move |ix, window, cx| {
                     let chosen_loader = cx.read_global(|s: &DownloadPageState, _cx| {
                         s.levilauncher_loaders
                             .get(ix)
                             .cloned()
                             .unwrap_or_else(|| all_label.clone())
                     });
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                    let changed = cx.update_global(|s: &mut DownloadPageState, _cx| {
                         if s.levilauncher_selected_loader == chosen_loader {
-                            return;
+                            return false;
                         }
-                        s.levilauncher_selected_loader = chosen_loader;
+                        s.levilauncher_selected_loader = chosen_loader.clone();
                         s.levilauncher_page_index = 0;
                         s.levilauncher_scroll.set_offset(point(px(0.), px(0.)));
+                        true
                     });
+                    if changed {
+                        window.on_next_frame(move |_window, cx| {
+                            super::ensure_levilamina_support_loaded(cx);
+                            if chosen_loader == "native" {
+                                super::ensure_native_mods_loaded(cx);
+                            } else {
+                                super::ensure_levilauncher_loaded(cx);
+                            }
+                        });
+                    }
                 },
             )
             .with_height(px(CONTROL_HEIGHT))

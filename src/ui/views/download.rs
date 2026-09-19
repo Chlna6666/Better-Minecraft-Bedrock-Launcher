@@ -310,6 +310,9 @@ pub struct DownloadPageView {
     _subscriptions: Vec<Subscription>,
     curseforge_resource_panel: Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<Entity<game::DownloadGamePanelView>>,
+    mod_panel_cache: mods::ModPanelRenderCache,
+    mod_image_cache: Entity<BoundedImageCache>,
+    secondary_prefetch_scheduled: bool,
     last_observed_tab: DownloadTab,
     active: bool,
     last_observed_curseforge_toolbar_signature: (
@@ -384,17 +387,9 @@ impl DownloadPageView {
             this.last_observed_mod_panel_signature = mod_panel_signature;
 
             if tab_changed {
-                if tab == DownloadTab::Mod {
-                    ensure_levilamina_support_loaded(cx);
-                    let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
-                        state.levilauncher_selected_loader == "native"
-                    });
-                    if native_source {
-                        ensure_native_mods_loaded(cx);
-                    } else {
-                        ensure_levilauncher_loaded(cx);
-                    }
-                }
+                // The input event owns only the route/state transition. Secondary catalog I/O is
+                // scheduled after a rendered frame so it cannot sit between the click and the first
+                // compositor-owned tab animation sample.
                 cx.notify();
                 return;
             }
@@ -480,6 +475,15 @@ impl DownloadPageView {
             _subscriptions: subscriptions,
             curseforge_resource_panel: cx.new(curseforge::CurseForgeResourcePanelView::new),
             game_panel_view,
+            mod_panel_cache: mods::ModPanelRenderCache::default(),
+            mod_image_cache: BoundedImageCache::new(
+                BoundedImageCacheConfig {
+                    max_items: 96,
+                    max_bytes: 48 * 1024 * 1024,
+                },
+                cx,
+            ),
+            secondary_prefetch_scheduled: false,
             last_observed_tab,
             active: true,
             last_observed_curseforge_toolbar_signature,
@@ -526,6 +530,24 @@ impl Render for DownloadPageView {
         );
         let window_size = window.bounds().size;
         let active_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
+
+        if self.active && !self.secondary_prefetch_scheduled {
+            self.secondary_prefetch_scheduled = true;
+            window.on_next_frame(|_window, cx| {
+                // Preload the common Mod data while the user is still looking at the current tab.
+                // Hidden-state observers absorb the resulting global updates without repainting the
+                // Download page unless Mod is actually active.
+                ensure_levilamina_support_loaded(cx);
+                let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
+                    state.levilauncher_selected_loader == "native"
+                });
+                if native_source {
+                    ensure_native_mods_loaded(cx);
+                } else {
+                    ensure_levilauncher_loaded(cx);
+                }
+            });
+        }
         let game_panel_view = if active_tab == DownloadTab::Game {
             Some(self.ensure_game_panel_view(cx))
         } else {
@@ -564,6 +586,8 @@ impl Render for DownloadPageView {
                 window_size.height,
                 &self.curseforge_resource_panel,
                 game_panel_view.as_ref(),
+                &mut self.mod_panel_cache,
+                &self.mod_image_cache,
             ))
     }
 }
@@ -576,6 +600,8 @@ pub fn render_download_page(
     window_height: Pixels,
     curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
+    mod_panel_cache: &mut mods::ModPanelRenderCache,
+    mod_image_cache: &Entity<BoundedImageCache>,
 ) -> impl IntoElement {
     let (active_tab, tab_anim_from, tab_anim_seq) =
         cx.read_global(|state: &DownloadPageState, _cx| {
@@ -617,7 +643,10 @@ pub fn render_download_page(
                 .map(IntoElement::into_any_element)
                 .unwrap_or_else(|| div().size_full().into_any_element()),
             DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
-            DownloadTab::Mod => mods::render_mod_panel(window, cx, &colors).into_any_element(),
+            DownloadTab::Mod => {
+                mods::render_mod_panel(cx, &colors, mod_panel_cache, mod_image_cache)
+                    .into_any_element()
+            }
         }
     };
 
