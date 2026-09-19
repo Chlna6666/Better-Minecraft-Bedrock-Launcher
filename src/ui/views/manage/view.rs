@@ -912,6 +912,7 @@ impl ManagePageView {
                                         .min_w(px(0.))
                                         .min_h(px(0.))
                                         .child(content)
+                                        .composite_layer()
                                         .with_animation(
                                             tab_content_animation_key(
                                                 "manage-tab-content",

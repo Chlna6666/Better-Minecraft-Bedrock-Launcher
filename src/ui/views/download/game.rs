@@ -71,6 +71,7 @@ type GamePanelRenderSignature = (
 
 pub(crate) struct DownloadGamePanelView {
     _subscriptions: Vec<Subscription>,
+    icon_cache: Entity<BoundedImageCache>,
     last_observed_signature: GamePanelObserveSignature,
     last_observed_dialog_signature: GameDialogObserveSignature,
 }
@@ -126,9 +127,17 @@ impl DownloadGamePanelView {
         })];
 
         subscriptions.shrink_to_fit();
+        let icon_cache = BoundedImageCache::new(
+            BoundedImageCacheConfig {
+                max_items: 4,
+                max_bytes: 4 * 1024 * 1024,
+            },
+            cx,
+        );
 
         Self {
             _subscriptions: subscriptions,
+            icon_cache,
             last_observed_signature,
             last_observed_dialog_signature,
         }
@@ -178,7 +187,7 @@ impl Render for DownloadGamePanelView {
             theme.accent,
         );
 
-        render_game_panel(window, cx, &colors)
+        render_game_panel(window, cx, &colors, &self.icon_cache)
     }
 }
 
@@ -575,7 +584,12 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
         )
 }
 
-pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
+pub(super) fn render_game_panel(
+    window: &mut Window,
+    cx: &mut App,
+    colors: &ThemeColors,
+    icon_cache: &Entity<BoundedImageCache>,
+) -> Div {
     let i18n = cx.global::<I18n>().clone();
     let cache = window.use_keyed_state("download-game-panel-cache", cx, |_, _| {
         GamePanelRenderCache::default()
@@ -755,6 +769,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 row.active_task_running,
                 row.active_snapshot.clone(),
                 row.levilamina_supported,
+                icon_cache,
             ))
             .child(div().h(px(12.)));
     }
@@ -1078,6 +1093,7 @@ fn render_version_row(
     active_task_running: bool,
     active_task: Option<Arc<TaskSnapshot>>,
     levilamina_supported: bool,
+    icon_cache: &Entity<BoundedImageCache>,
 ) -> AnyElement {
     let channel_bg = if is_preview {
         colors.badge_beta_bg
@@ -1179,6 +1195,7 @@ fn render_version_row(
                     div().w(px(64.)).flex().items_center().child(
                         img(icon_path)
                             .id(("download-game-row-icon", row_element_id))
+                            .image_cache(icon_cache)
                             .w(px(42.))
                             .h(px(42.))
                             .rounded(px(crate::ui::theme::tokens::radius::SM))

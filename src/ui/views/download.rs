@@ -630,6 +630,7 @@ pub fn render_download_page(
             .min_w(px(0.))
             .min_h(px(0.))
             .child(body)
+            .composite_layer()
             .with_animation(
                 tab_content_animation_key("download-tab-content", tab_anim_seq),
                 tab_content_motion(tab_anim_from.index(), active_tab.index()),
