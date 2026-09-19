@@ -391,7 +391,9 @@ fn paint_chunk_clustered_entity_avatars(
 
         let chunk_px = entity_chunk_screen_size_px(viewport, layout);
         let icon_size = (chunk_px * 0.85).clamp(11.0, 16.0);
-        for key in scratch.chunk_cluster_order.iter().copied() {
+        let chunk_cluster_count = scratch.chunk_cluster_order.len();
+        for cluster_index in 0..chunk_cluster_count {
+            let key = scratch.chunk_cluster_order[cluster_index];
             let Some(cluster) = scratch.chunk_clusters.get(&key).copied() else {
                 continue;
             };
@@ -474,7 +476,9 @@ fn paint_screen_clustered_entity_avatars(
         }
 
         let icon_size = 13.0;
-        for key in scratch.screen_cluster_order.iter().copied() {
+        let screen_cluster_count = scratch.screen_cluster_order.len();
+        for cluster_index in 0..screen_cluster_count {
+            let key = scratch.screen_cluster_order[cluster_index];
             let Some(cluster) = scratch.screen_clusters.get(&key).copied() else {
                 continue;
             };
