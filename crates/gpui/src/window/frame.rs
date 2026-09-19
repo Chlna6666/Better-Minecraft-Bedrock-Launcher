@@ -479,9 +479,11 @@ impl Frame {
         {
             self.element_states.shrink_to(state_target);
         }
+        let accessed_state_target =
+            FRAME_MIN_RETAINED_CAPACITY.max(self.accessed_element_states.len());
         trim_frame_vec_capacity(
             &mut self.accessed_element_states,
-            FRAME_MIN_RETAINED_CAPACITY.max(self.accessed_element_states.len()),
+            accessed_state_target,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
         self.dispatch_tree.trim_retained_capacity(false);
@@ -510,14 +512,18 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
+        let input_handler_target =
+            FRAME_MIN_RETAINED_CAPACITY.max(self.input_handlers.len());
         trim_frame_vec_capacity(
             &mut self.input_handlers,
-            FRAME_MIN_RETAINED_CAPACITY.max(self.input_handlers.len()),
+            input_handler_target,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
+        let tooltip_request_target =
+            FRAME_MIN_RETAINED_CAPACITY.max(self.tooltip_requests.len());
         trim_frame_vec_capacity(
             &mut self.tooltip_requests,
-            FRAME_MIN_RETAINED_CAPACITY.max(self.tooltip_requests.len()),
+            tooltip_request_target,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
         trim_frame_vec_capacity(
