@@ -191,6 +191,10 @@ pub(crate) struct Frame {
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
     pub(crate) retained_element_order: Vec<ReconcileKey>,
+    /// Reusable transfer buffer for retained metadata migration. It is intentionally not trimmed
+    /// by the normal frame-to-frame working-set pass because it is empty between replays; replay
+    /// itself owns its hysteresis using the subtree size it just processed.
+    pub(crate) retained_replay_scratch: Vec<(ReconcileKey, RetainedElementRange)>,
     /// Current request-layout semantic proofs keyed by the newly allocated layout node.
     pub(crate) retained_layout_semantics: FxHashMap<LayoutId, RetainedSemanticEntry>,
     /// Number of ambiguous retained identities painted into this frame. Drawable snapshots this
@@ -324,6 +328,7 @@ impl Frame {
             retained_scene_segments: Vec::new(),
             retained_element_ranges: FxHashMap::default(),
             retained_element_order: Vec::new(),
+            retained_replay_scratch: Vec::new(),
             retained_layout_semantics: FxHashMap::default(),
             retained_unstable_identity_count: 0,
 
@@ -359,6 +364,7 @@ impl Frame {
         self.retained_scene_segments.clear();
         self.retained_element_ranges.clear();
         self.retained_element_order.clear();
+        self.retained_replay_scratch.clear();
         self.retained_layout_semantics.clear();
         self.retained_unstable_identity_count = 0;
         self.hitboxes.clear();
@@ -460,6 +466,7 @@ impl Frame {
             + self.retained_scene_segments.capacity()
             + self.retained_element_ranges.capacity()
             + self.retained_element_order.capacity()
+            + self.retained_replay_scratch.capacity()
             + self.retained_layout_semantics.capacity()
             + self.tab_stops.retained_capacity()
             + self.debug_container_capacity()
@@ -525,6 +532,11 @@ impl Frame {
         );
         trim_frame_vec_capacity(
             &mut self.retained_element_order,
+            FRAME_MIN_RETAINED_CAPACITY,
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        trim_frame_vec_capacity(
+            &mut self.retained_replay_scratch,
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
@@ -625,6 +637,7 @@ impl Frame {
                 self.retained_element_ranges
                     .shrink_to(floor.max(self.retained_element_ranges.len()));
                 self.retained_element_order.shrink_to(floor);
+                self.retained_replay_scratch.shrink_to(floor);
                 self.retained_layout_semantics
                     .shrink_to(floor.max(self.retained_layout_semantics.len()));
                 self.tab_stops.trim_retained_capacity(matches!(

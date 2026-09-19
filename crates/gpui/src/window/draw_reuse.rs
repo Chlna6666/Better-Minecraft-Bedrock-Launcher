@@ -6,6 +6,9 @@ use super::frame::{
 use super::state::ElementVisualTransform;
 use super::*;
 
+const RETAINED_REPLAY_SCRATCH_MIN_CAPACITY: usize = 32;
+const RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER: usize = 4;
+
 impl Window {
     pub(super) fn prepaint_deferred_draws(
         &mut self,
@@ -740,92 +743,126 @@ impl Window {
         }
 
         let target_metadata_start = self.next_frame.retained_element_order.len();
-        let mut rebased = Vec::with_capacity(source_metadata.end - source_metadata.start);
 
+        // Validate the complete span before moving any retained payload out of the rendered frame.
+        // This keeps the fallback path conservative even if a malformed/duplicate retained range
+        // is encountered.
         for source_index in source_metadata.clone() {
-            let key = self.rendered_frame.retained_element_order[source_index].clone();
-            let Some(source_range) = self.rendered_frame.retained_element_ranges.get(&key) else {
+            let key = &self.rendered_frame.retained_element_order[source_index];
+            let Some(source_range) = self.rendered_frame.retained_element_ranges.get(key) else {
                 return false;
             };
             if source_range.metadata_range.start < source_metadata.start
                 || source_range.metadata_range.end > source_metadata.end
+                || rebase_prepaint_range(
+                    &source_range.prepaint_range,
+                    source_prepaint,
+                    target_prepaint,
+                )
+                .is_none()
+                || rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
+                    .is_none()
+                || source_range
+                    .div_self_scene
+                    .as_ref()
+                    .is_some_and(|self_scene| {
+                        rebase_scene_range(
+                            &self_scene.child_scene_range,
+                            source_paint,
+                            target_paint,
+                        )
+                        .is_none()
+                    })
             {
                 return false;
             }
 
-            let Some(prepaint_range) = rebase_prepaint_range(
-                &source_range.prepaint_range,
-                source_prepaint,
-                target_prepaint,
-            ) else {
-                return false;
-            };
-            let Some(paint_range) =
-                rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
-            else {
-                return false;
-            };
-            let div_self_scene =
-                if let Some(source_self_scene) = source_range.div_self_scene.as_ref() {
-                    let Some(child_scene_range) = rebase_scene_range(
-                        &source_self_scene.child_scene_range,
-                        source_paint,
-                        target_paint,
-                    ) else {
-                        return false;
-                    };
-                    Some(crate::element::RetainedDivSelfScene {
-                        style: source_self_scene.style.clone(),
-                        child_scene_range,
-                    })
-                } else {
-                    None
-                };
-            let Some(metadata_start_offset) = source_range
+            let Some(start_offset) = source_range
                 .metadata_range
                 .start
                 .checked_sub(source_metadata.start)
             else {
                 return false;
             };
-            let Some(metadata_end_offset) = source_range
+            let Some(end_offset) = source_range
                 .metadata_range
                 .end
                 .checked_sub(source_metadata.start)
             else {
                 return false;
             };
-            let Some(metadata_start) = target_metadata_start.checked_add(metadata_start_offset)
-            else {
+            if target_metadata_start.checked_add(start_offset).is_none()
+                || target_metadata_start.checked_add(end_offset).is_none()
+            {
                 return false;
-            };
-            let Some(metadata_end) = target_metadata_start.checked_add(metadata_end_offset) else {
-                return false;
-            };
-
-            rebased.push((
-                key,
-                RetainedElementRange {
-                    bounds: source_range.bounds,
-                    layout_fingerprint: source_range.layout_fingerprint,
-                    semantic_descriptor: source_range.semantic_descriptor.clone(),
-                    semantic_generation: source_range.semantic_generation,
-                    prepaint_range,
-                    paint_range,
-                    metadata_range: metadata_start..metadata_end,
-                    paint_context: source_range.paint_context.clone(),
-                    div_self_scene,
-                    plain_text_key: source_range.plain_text_key.clone(),
-                    identity_stable: source_range.identity_stable,
-                    subtree_stable: source_range.subtree_stable,
-                },
-            ));
+            }
         }
 
-        for (key, range) in rebased {
+        let replayed_count = source_metadata.end - source_metadata.start;
+        let mut moved = std::mem::take(&mut self.next_frame.retained_replay_scratch);
+        moved.clear();
+        if moved.capacity() < replayed_count {
+            moved.reserve(replayed_count);
+        }
+
+        for source_index in source_metadata.clone() {
+            let key = self.rendered_frame.retained_element_order[source_index].clone();
+            let Some(range) = self.rendered_frame.retained_element_ranges.remove(&key) else {
+                // Duplicate/missing identity: restore every payload already moved and abandon replay.
+                for (key, range) in moved.drain(..) {
+                    self.rendered_frame.retained_element_ranges.insert(key, range);
+                }
+                self.next_frame.retained_replay_scratch = moved;
+                return false;
+            };
+            moved.push((key, range));
+        }
+
+        for (key, mut range) in moved.drain(..) {
+            range.prepaint_range = rebase_prepaint_range(
+                &range.prepaint_range,
+                source_prepaint,
+                target_prepaint,
+            )
+            .expect("retained metadata prepaint range was validated before transfer");
+            range.paint_range =
+                rebase_paint_range(&range.paint_range, source_paint, target_paint)
+                    .expect("retained metadata paint range was validated before transfer");
+            if let Some(self_scene) = range.div_self_scene.as_mut() {
+                self_scene.child_scene_range = rebase_scene_range(
+                    &self_scene.child_scene_range,
+                    source_paint,
+                    target_paint,
+                )
+                .expect("retained div scene range was validated before transfer");
+            }
+
+            let metadata_start_offset = range
+                .metadata_range
+                .start
+                .checked_sub(source_metadata.start)
+                .expect("retained metadata start offset was validated before transfer");
+            let metadata_end_offset = range
+                .metadata_range
+                .end
+                .checked_sub(source_metadata.start)
+                .expect("retained metadata end offset was validated before transfer");
+            range.metadata_range =
+                target_metadata_start + metadata_start_offset..target_metadata_start + metadata_end_offset;
+
             self.next_frame.retained_element_order.push(key.clone());
             self.next_frame.retained_element_ranges.insert(key, range);
         }
+
+        // Keep a stable replay subtree allocation hot, but let a much smaller later replay retire a
+        // pathological high-water mark. Normal frame swapping must not use len()==0 to shrink this.
+        let target = RETAINED_REPLAY_SCRATCH_MIN_CAPACITY.max(replayed_count);
+        if moved.capacity()
+            > target.saturating_mul(RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER)
+        {
+            moved.shrink_to(target);
+        }
+        self.next_frame.retained_replay_scratch = moved;
         true
     }
 }
