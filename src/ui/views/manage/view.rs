@@ -2,6 +2,7 @@ use super::*;
 
 pub struct ManagePageView {
     pub(super) _subscriptions: Vec<Subscription>,
+    pub(super) active: bool,
     pub(super) asset_search_input: Option<Entity<InputState>>,
     pub(super) screenshot_search_input: Option<Entity<InputState>>,
     pub(super) server_search_input: Option<Entity<InputState>>,
@@ -41,14 +42,20 @@ impl ManagePageView {
                 let signature = ManageRenderSignature::from_state(cx.global::<ManagePageState>());
                 if this.last_global_render_signature != signature {
                     this.last_global_render_signature = signature;
+                    if this.active {
+                        cx.notify();
+                    }
+                }
+            }),
+            cx.observe_global::<ThemeState>(|this, cx| {
+                if this.active {
                     cx.notify();
                 }
             }),
-            cx.observe_global::<ThemeState>(|_, cx| {
-                cx.notify();
-            }),
-            cx.observe_global::<I18n>(|_, cx| {
-                cx.notify();
+            cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
             }),
             cx.observe_global::<ImportCompletionState>(|this, cx| {
                 let imported_folder = cx.global::<ImportCompletionState>().version_folder.clone();
@@ -67,16 +74,21 @@ impl ManagePageView {
                     });
                     this.last_assets_signature = None;
                     this.reset_asset_list_view();
-                    cx.notify();
+                    if this.active {
+                        cx.notify();
+                    }
                 }
             }),
-            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
-                cx.notify();
+            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
             }),
         ];
 
         Self {
             _subscriptions: subscriptions,
+            active: false,
             asset_search_input: None,
             screenshot_search_input: None,
             server_search_input: None,
@@ -101,6 +113,18 @@ impl ManagePageView {
             last_screenshots_signature: None,
             last_servers_signature: None,
             last_global_render_signature: initial_render_signature,
+        }
+    }
+
+    pub(super) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            // Inactive residents absorb state/signature updates without waking the window. One
+            // notification on reactivation is enough to render the latest state.
+            cx.notify();
         }
     }
 

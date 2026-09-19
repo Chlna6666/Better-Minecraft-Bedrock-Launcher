@@ -31,7 +31,13 @@ impl MainWindowView {
             );
         }
 
-        self.release_inactive_target_resources(route, cx);
+        cx.update_global(
+            |state: &mut crate::ui::components::dropdown::DropdownOverlayState, _cx| {
+                state.clear();
+            },
+        );
+        let recent_target = self.recent_page_target.clone();
+        self.evict_nonresident_pages(route, recent_target.as_ref(), cx);
     }
 
     fn on_route_changed_registry(&mut self, route: &RouteTarget, cx: &mut Context<Self>) {
@@ -59,6 +65,9 @@ impl MainWindowView {
         let previous_route = self.last_route_for_side_effects.take();
 
         if previous_route.as_ref() != Some(&route) {
+            // A -> B keeps A hot; A -> B -> C evicts A and keeps B. The policy lives entirely in
+            // MainWindowView so ordinary page code remains unaware of cache residency.
+            self.recent_page_target = previous_route.clone();
             self.sync_route_navigation(&route, cx);
             self.on_route_changed_cleanup(previous_route.as_ref(), &route, cx);
             self.on_route_changed_registry(&route, cx);

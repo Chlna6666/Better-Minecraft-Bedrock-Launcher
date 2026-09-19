@@ -211,6 +211,8 @@ pub struct MainWindowView {
     tasks_page_view: Option<Entity<crate::ui::views::tasks::TasksPageView>>,
     plugin_page_view: Option<Entity<crate::ui::views::plugin::PluginPageView>>,
     plugin_page_key: Option<(String, String)>,
+    recent_plugin_page_view: Option<Entity<crate::ui::views::plugin::PluginPageView>>,
+    recent_plugin_page_key: Option<(String, String)>,
     download_controls_initialized: bool,
     download_controls_subscriptions: Vec<Subscription>,
     download_overlay_active: bool,
@@ -235,6 +237,9 @@ pub struct MainWindowView {
     settings_load_started: bool,
     background_animation_suppressed: bool,
     last_route_for_side_effects: Option<RouteTarget>,
+    // The residency policy is centralized: one inactive route may stay warm next to the active
+    // route. Page implementations do not need cache hooks or special navigation code.
+    recent_page_target: Option<RouteTarget>,
     runtime_font_logged: bool,
     startup_route_bootstrapped: bool,
     startup_deferred_ready: bool,
@@ -289,7 +294,11 @@ impl MainWindowView {
         window.is_minimized()
     }
 
-    fn maybe_trim_working_set_on_minimize(&mut self, window: &Window) {
+    fn maybe_trim_working_set_on_minimize(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let is_minimized = Self::is_window_minimized(window);
         if is_minimized == self.was_window_minimized {
             return;
@@ -299,6 +308,12 @@ impl MainWindowView {
         if !is_minimized {
             return;
         }
+
+        // Memory pressure wins over navigation locality. The active page remains available while
+        // the single inactive resident is released before the OS working-set trim.
+        self.recent_page_target = None;
+        let active_target = crate::ui::navigation::current_route_target(cx);
+        self.evict_nonresident_pages(&active_target, None, cx);
 
         info!("window_minimized: scheduling working set trim");
         crate::utils::memory::spawn_working_set_trim_task("window_minimized");

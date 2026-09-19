@@ -18,6 +18,14 @@ impl MainWindowView {
             });
         }
 
+        let manage_page_active = matches!(route, RouteTarget::Builtin(AppRoute::Manage));
+        if let Some(view) = &self.manage_page_view {
+            let _ = view.update(cx, |view, cx| {
+                view.set_active(manage_page_active, cx);
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+
         let tasks_page_active = matches!(route, RouteTarget::Builtin(AppRoute::Tasks));
         if let Some(view) = &self.tasks_page_view {
             let _ = view.update(cx, |view, cx| {
@@ -63,9 +71,30 @@ impl MainWindowView {
     }
 
     pub(super) fn prewarm_page_view_for_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {
-        self.ensure_page_view_for_route(route, cx);
         let current_route = crate::ui::navigation::current_route_target(cx);
+        let target = RouteTarget::Builtin(route);
+        if current_route == target {
+            self.ensure_page_view_for_route(route, cx);
+            self.sync_page_active_flags(&current_route, cx);
+            return;
+        }
+
+        if self.recent_page_target.is_some() {
+            return;
+        }
+
+        self.ensure_page_view_for_route(route, cx);
+        self.recent_page_target = Some(target.clone());
+        self.evict_nonresident_pages(&current_route, Some(&target), cx);
         self.sync_page_active_flags(&current_route, cx);
+    }
+
+    fn plugin_key_matches_target(key: &(String, String), target: &RouteTarget) -> bool {
+        matches!(
+            target,
+            RouteTarget::Plugin { plugin_id, page_id }
+                if &key.0 == plugin_id && &key.1 == page_id
+        )
     }
 
     pub(super) fn ensure_page_view_for_target(
@@ -75,22 +104,41 @@ impl MainWindowView {
     ) {
         match target {
             RouteTarget::Builtin(route) => {
-                self.plugin_page_view = None;
-                self.plugin_page_key = None;
                 self.ensure_page_view_for_route(*route, cx);
             }
             RouteTarget::Plugin { plugin_id, page_id } => {
                 let key = (plugin_id.clone(), page_id.clone());
-                if self.plugin_page_key.as_ref() != Some(&key) {
-                    self.plugin_page_view = Some(cx.new(|cx| {
-                        crate::ui::views::plugin::PluginPageView::new(
-                            plugin_id.clone(),
-                            page_id.clone(),
-                            cx,
-                        )
-                    }));
-                    self.plugin_page_key = Some(key);
+                if self.plugin_page_key.as_ref() == Some(&key) {
+                    return;
                 }
+
+                if self.recent_plugin_page_key.as_ref() == Some(&key) {
+                    std::mem::swap(&mut self.plugin_page_view, &mut self.recent_plugin_page_view);
+                    std::mem::swap(&mut self.plugin_page_key, &mut self.recent_plugin_page_key);
+                    return;
+                }
+
+                let previous_plugin =
+                    self.plugin_page_key.take().zip(self.plugin_page_view.take());
+                if let Some((previous_key, previous_view)) = previous_plugin {
+                    let previous_target = RouteTarget::Plugin {
+                        plugin_id: previous_key.0.clone(),
+                        page_id: previous_key.1.clone(),
+                    };
+                    if self.recent_page_target.as_ref() == Some(&previous_target) {
+                        self.recent_plugin_page_key = Some(previous_key);
+                        self.recent_plugin_page_view = Some(previous_view);
+                    }
+                }
+
+                self.plugin_page_view = Some(cx.new(|cx| {
+                    crate::ui::views::plugin::PluginPageView::new(
+                        plugin_id.clone(),
+                        page_id.clone(),
+                        cx,
+                    )
+                }));
+                self.plugin_page_key = Some(key);
             }
         }
     }
@@ -232,17 +280,17 @@ impl MainWindowView {
 
     pub(super) fn install_window_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self._window_subscriptions
-            .push(cx.observe_window_bounds(window, |this, window, _cx| {
-                this.maybe_trim_working_set_on_minimize(window);
+            .push(cx.observe_window_bounds(window, |this, window, cx| {
+                this.maybe_trim_working_set_on_minimize(window, cx);
             }));
         self._window_subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
-                this.maybe_trim_working_set_on_minimize(window);
+                this.maybe_trim_working_set_on_minimize(window, cx);
                 if this.sync_current_background_animation_policy(Instant::now(), cx) {
                     cx.notify();
                 }
             }));
-        self.maybe_trim_working_set_on_minimize(window);
+        self.maybe_trim_working_set_on_minimize(window, cx);
     }
 
     pub(super) fn release_download_page(&mut self, cx: &mut Context<Self>) {
@@ -438,88 +486,59 @@ impl MainWindowView {
         self.plugin_page_key = None;
     }
 
-    pub(super) fn release_inactive_route_resources(
-        &mut self,
-        active_route: AppRoute,
-        cx: &mut Context<Self>,
-    ) {
-        cx.update_global(
-            |state: &mut crate::ui::components::dropdown::DropdownOverlayState, _cx| {
-                state.clear();
-            },
-        );
-
-        match active_route {
-            AppRoute::Home => {
-                self.release_download_page(cx);
-                self.release_manage_page(cx);
-                self.release_tools_page(cx);
-                self.release_settings_page(cx);
-                self.release_tasks_page();
-                self.release_plugin_page();
-            }
-            AppRoute::Download => {
-                self.release_home_page();
-                self.release_manage_page(cx);
-                self.release_tools_page(cx);
-                self.release_settings_page(cx);
-                self.release_tasks_page();
-                self.release_plugin_page();
-            }
-            AppRoute::Manage => {
-                self.release_home_page();
-                self.release_download_page(cx);
-                self.release_tools_page(cx);
-                self.release_settings_page(cx);
-                self.release_tasks_page();
-                self.release_plugin_page();
-            }
-            AppRoute::Tools => {
-                self.release_home_page();
-                self.release_download_page(cx);
-                self.release_manage_page(cx);
-                self.release_settings_page(cx);
-                self.release_tasks_page();
-                self.release_plugin_page();
-            }
-            AppRoute::Tasks => {
-                self.release_home_page();
-                self.release_manage_page(cx);
-                self.release_tools_page(cx);
-                self.release_settings_page(cx);
-                self.release_plugin_page();
-            }
-            AppRoute::Settings => {
-                self.release_home_page();
-                self.release_download_page(cx);
-                self.release_manage_page(cx);
-                self.release_tools_page(cx);
-                self.release_tasks_page();
-                self.release_plugin_page();
-            }
-        }
+    fn release_recent_plugin_page(&mut self) {
+        clear_optional_page_view(&mut self.recent_plugin_page_view);
+        self.recent_plugin_page_key = None;
     }
 
-    pub(super) fn release_inactive_target_resources(
+    pub(super) fn evict_nonresident_pages(
         &mut self,
         active_target: &RouteTarget,
+        recent_target: Option<&RouteTarget>,
         cx: &mut Context<Self>,
     ) {
-        match active_target {
-            RouteTarget::Builtin(route) => self.release_inactive_route_resources(*route, cx),
-            RouteTarget::Plugin { .. } => {
-                cx.update_global(
-                    |state: &mut crate::ui::components::dropdown::DropdownOverlayState, _cx| {
-                        state.clear();
-                    },
-                );
-                self.release_home_page();
-                self.release_download_page(cx);
-                self.release_manage_page(cx);
-                self.release_tools_page(cx);
-                self.release_settings_page(cx);
-                self.release_tasks_page();
-            }
+        let is_resident = |candidate: &RouteTarget| {
+            candidate == active_target || recent_target.is_some_and(|recent| recent == candidate)
+        };
+        let keep_builtin = |route: AppRoute| is_resident(&RouteTarget::Builtin(route));
+
+        if !keep_builtin(AppRoute::Home) {
+            self.release_home_page();
+        }
+        if !keep_builtin(AppRoute::Download) {
+            self.release_download_page(cx);
+        }
+        if !keep_builtin(AppRoute::Manage) {
+            self.release_manage_page(cx);
+        }
+        if !keep_builtin(AppRoute::Tools) {
+            self.release_tools_page(cx);
+        }
+        if !keep_builtin(AppRoute::Tasks) {
+            self.release_tasks_page();
+        }
+        if !keep_builtin(AppRoute::Settings) {
+            self.release_settings_page(cx);
+        }
+
+        let plugin_is_resident = |key: &(String, String)| {
+            Self::plugin_key_matches_target(key, active_target)
+                || recent_target
+                    .is_some_and(|recent| Self::plugin_key_matches_target(key, recent))
+        };
+        if self
+            .plugin_page_key
+            .as_ref()
+            .is_some_and(|key| !plugin_is_resident(key))
+        {
+            self.release_plugin_page();
+        }
+        if self
+            .recent_plugin_page_key
+            .as_ref()
+            .is_some_and(|key| !plugin_is_resident(key))
+        {
+            self.release_recent_plugin_page();
         }
     }
 
@@ -564,11 +583,10 @@ impl MainWindowView {
             }
 
             Timer::after(STARTUP_INTERACTION_WARMUP_DELAY).await;
-            if let Err(error) = handle.update(cx, |this, cx| {
+            if let Err(error) = handle.update(cx, |_this, cx| {
                 let preloaded = crate::ui::views::settings::preload_static_assets(cx);
-                this.prewarm_page_view_for_route(AppRoute::Settings, cx);
                 tracing::debug!(
-                    "startup interaction warmup scheduled: settings_images={} settings_view=true",
+                    "startup interaction warmup scheduled: settings_images={}",
                     preloaded
                 );
             }) {
@@ -623,6 +641,8 @@ impl MainWindowView {
             tasks_page_view: None,
             plugin_page_view: None,
             plugin_page_key: None,
+            recent_plugin_page_view: None,
+            recent_plugin_page_key: None,
             download_controls_initialized: false,
             download_controls_subscriptions: Vec::new(),
             download_overlay_active: false,
@@ -647,6 +667,7 @@ impl MainWindowView {
             settings_load_started: false,
             background_animation_suppressed: false,
             last_route_for_side_effects: None,
+            recent_page_target: None,
             runtime_font_logged: false,
             startup_route_bootstrapped: false,
             startup_deferred_ready: false,
