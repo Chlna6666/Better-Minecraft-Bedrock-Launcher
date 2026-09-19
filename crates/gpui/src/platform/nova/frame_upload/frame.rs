@@ -15,6 +15,12 @@ pub(in crate::platform::nova) struct RetainedResidentSpan {
     pub(in crate::platform::nova) byte_hash: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::platform::nova) struct ResolvedMeshAnimation {
+    pub(in crate::platform::nova) property: u32,
+    pub(in crate::platform::nova) sampled: [f32; 4],
+}
+
 #[derive(Clone, Copy, Default)]
 pub(in crate::platform::nova) struct FrameUploadSummary {
     pub(in crate::platform::nova) quad_count: u32,
@@ -149,6 +155,8 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) custom_mesh_3d_animation_ids:
         Vec<Option<crate::SceneAnimationId>>,
     pub(in crate::platform::nova) custom_mesh_3d_animations: Vec<u8>,
+    pub(in crate::platform::nova) custom_mesh_3d_resolved_animation_scratch:
+        FxHashMap<crate::SceneAnimationId, ResolvedMeshAnimation>,
     pub(in crate::platform::nova) custom_mesh_3d_meshes: Vec<Arc<GpuMesh3d>>,
     pub(in crate::platform::nova) custom_mesh_3d_shaders: Vec<Arc<GpuMesh3dShader>>,
     pub(in crate::platform::nova) custom_mesh_3d_ids: FxHashSet<GpuMesh3dId>,

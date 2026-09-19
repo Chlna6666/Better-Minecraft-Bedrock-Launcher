@@ -7,11 +7,8 @@ pub(super) const MESH_ANIMATION_PROPERTY_SCALE: u32 = 2;
 pub(super) const MESH_ANIMATION_PROPERTY_TRANSLATION: u32 = 3;
 pub(super) const MESH_ANIMATION_PROPERTY_TRANSFORM: u32 = 4;
 
-#[derive(Clone, Copy)]
-struct ResolvedMeshAnimation {
-    property: u32,
-    sampled: [f32; 4],
-}
+const CUSTOM_MESH_ANIMATION_SCRATCH_MIN_CAPACITY: usize = 8;
+const CUSTOM_MESH_ANIMATION_SCRATCH_TRIM_MULTIPLIER: usize = 4;
 
 impl ResolvedMeshAnimation {
     fn from_scene_value(value: &SceneAnimationValue) -> Option<Self> {
@@ -63,37 +60,81 @@ impl FrameUpload {
     /// Retained frames therefore rewrite only this sidecar instead of mesh parameters or vertices.
     pub(super) fn rebuild_custom_mesh_3d_animations(&mut self) {
         self.custom_mesh_3d_animations.clear();
+        self.custom_mesh_3d_resolved_animation_scratch.clear();
+
         let draw_count = self.custom_mesh_3d_animation_ids.len();
+        let id_target = CUSTOM_MESH_ANIMATION_SCRATCH_MIN_CAPACITY.max(draw_count);
+        if self.custom_mesh_3d_animation_ids.capacity()
+            > id_target.saturating_mul(CUSTOM_MESH_ANIMATION_SCRATCH_TRIM_MULTIPLIER)
+        {
+            self.custom_mesh_3d_animation_ids.shrink_to(id_target);
+        }
+
+        let byte_target = draw_count.saturating_mul(PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES);
+        let retained_byte_target = (CUSTOM_MESH_ANIMATION_SCRATCH_MIN_CAPACITY
+            * PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES)
+            .max(byte_target);
+        if self.custom_mesh_3d_animations.capacity()
+            > retained_byte_target.saturating_mul(CUSTOM_MESH_ANIMATION_SCRATCH_TRIM_MULTIPLIER)
+        {
+            self.custom_mesh_3d_animations
+                .shrink_to(retained_byte_target);
+        }
+
         if draw_count == 0 {
+            trim_resolved_mesh_animation_scratch(
+                &mut self.custom_mesh_3d_resolved_animation_scratch,
+                0,
+            );
             return;
         }
-        self.custom_mesh_3d_animations
-            .reserve(draw_count.saturating_mul(PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES));
+        self.custom_mesh_3d_animations.reserve(byte_target);
 
-        let mut resolved = FxHashMap::default();
-        resolved.reserve(self.sampled_animation_values.len());
+        self.custom_mesh_3d_resolved_animation_scratch
+            .reserve(self.sampled_animation_values.len());
         for value in &self.sampled_animation_values {
             let Some(resolved_value) = ResolvedMeshAnimation::from_scene_value(value) else {
                 continue;
             };
             // Match Nova's ordinary animation resolver: the first value for a duplicate id wins.
-            resolved
+            self.custom_mesh_3d_resolved_animation_scratch
                 .entry(value.animation_id)
                 .or_insert(resolved_value);
         }
 
-        for animation_id in &self.custom_mesh_3d_animation_ids {
-            write_mesh_animation_record(
-                &mut self.custom_mesh_3d_animations,
-                animation_id
+        {
+            let resolved = &self.custom_mesh_3d_resolved_animation_scratch;
+            let output = &mut self.custom_mesh_3d_animations;
+            for animation_id in &self.custom_mesh_3d_animation_ids {
+                let resolved_value = animation_id
                     .as_ref()
-                    .and_then(|animation_id| resolved.get(animation_id).copied()),
-            );
+                    .and_then(|animation_id| resolved.get(animation_id).copied());
+                write_mesh_animation_record(output, resolved_value);
+            }
         }
         debug_assert_eq!(
             self.custom_mesh_3d_animations.len(),
             draw_count * PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES
         );
+
+        let resolved_count = self.custom_mesh_3d_resolved_animation_scratch.len();
+        self.custom_mesh_3d_resolved_animation_scratch.clear();
+        trim_resolved_mesh_animation_scratch(
+            &mut self.custom_mesh_3d_resolved_animation_scratch,
+            resolved_count,
+        );
+    }
+}
+
+fn trim_resolved_mesh_animation_scratch(
+    scratch: &mut FxHashMap<crate::SceneAnimationId, ResolvedMeshAnimation>,
+    working_set: usize,
+) {
+    let target = CUSTOM_MESH_ANIMATION_SCRATCH_MIN_CAPACITY.max(working_set);
+    if scratch.capacity()
+        > target.saturating_mul(CUSTOM_MESH_ANIMATION_SCRATCH_TRIM_MULTIPLIER)
+    {
+        scratch.shrink_to(target);
     }
 }
 
@@ -154,7 +195,27 @@ mod tests {
             },
         ];
 
+        upload
+            .custom_mesh_3d_resolved_animation_scratch
+            .reserve(1024);
+        let oversized_scratch_capacity =
+            upload.custom_mesh_3d_resolved_animation_scratch.capacity();
         upload.rebuild_custom_mesh_3d_animations();
+
+        assert!(upload.custom_mesh_3d_resolved_animation_scratch.is_empty());
+        assert!(
+            upload.custom_mesh_3d_resolved_animation_scratch.capacity()
+                < oversized_scratch_capacity,
+            "mesh animation scratch should retire a one-frame high-water mark"
+        );
+        let retained_scratch_capacity =
+            upload.custom_mesh_3d_resolved_animation_scratch.capacity();
+        upload.rebuild_custom_mesh_3d_animations();
+        assert_eq!(
+            upload.custom_mesh_3d_resolved_animation_scratch.capacity(),
+            retained_scratch_capacity,
+            "stable mesh animation working sets should reuse scratch buckets"
+        );
 
         assert_eq!(
             upload.custom_mesh_3d_animations.len(),

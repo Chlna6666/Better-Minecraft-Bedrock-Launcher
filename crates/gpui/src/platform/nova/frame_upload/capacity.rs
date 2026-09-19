@@ -24,10 +24,18 @@ impl FrameUpload {
             self.animated_primitives.capacity() * std::mem::size_of::<AnimatedUpload>(),
             self.sampled_animation_values.capacity()
                 * std::mem::size_of::<crate::SceneAnimationValue>(),
+            self.gpu_indexed_underline_animation_ids.capacity()
+                * std::mem::size_of::<Option<crate::SceneAnimationId>>(),
+            self.gpu_indexed_animation_values.capacity(),
             self.animated_primitive_staging.capacity(),
             self.animated_visual_bounds_scratch.capacity()
                 * std::mem::size_of::<crate::Bounds<crate::ScaledPixels>>(),
             self.custom_mesh_3d_parameters.capacity(),
+            self.custom_mesh_3d_animation_ids.capacity()
+                * std::mem::size_of::<Option<crate::SceneAnimationId>>(),
+            self.custom_mesh_3d_animations.capacity(),
+            self.custom_mesh_3d_meshes.capacity() * std::mem::size_of::<Arc<GpuMesh3d>>(),
+            self.custom_mesh_3d_shaders.capacity() * std::mem::size_of::<Arc<GpuMesh3dShader>>(),
             self.path_paint_key_scratch.capacity(),
             self.path_rasterization_encode_scratch.capacity(),
         ]
@@ -109,6 +117,16 @@ impl FrameUpload {
         trim_upload_vec(&mut self.animated_primitives, 64, multiplier);
         trim_upload_vec(&mut self.sampled_animation_values, 64, multiplier);
         trim_upload_vec(
+            &mut self.gpu_indexed_underline_animation_ids,
+            64,
+            multiplier,
+        );
+        trim_upload_vec(
+            &mut self.gpu_indexed_animation_values,
+            64 * PACKED_ANIMATION_VALUE_BYTES,
+            multiplier,
+        );
+        trim_upload_vec(
             &mut self.animated_primitive_staging,
             PACKED_BACKDROP_BLUR_BYTES,
             multiplier,
@@ -134,6 +152,7 @@ impl FrameUpload {
             .shrink_to(hash_floor);
         self.backdrop_blur_current_animation_ids_scratch
             .shrink_to(hash_floor);
+        self.gpu_indexed_animation_slots.shrink_to(hash_floor);
         self.gpu_indexed_source_animation_ids.shrink_to(hash_floor);
         self.gpu_indexed_composite_animation_ids
             .shrink_to(hash_floor);
@@ -145,6 +164,15 @@ impl FrameUpload {
             16 * PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES,
             multiplier,
         );
+        trim_upload_vec(&mut self.custom_mesh_3d_animation_ids, 16, multiplier);
+        trim_upload_vec(
+            &mut self.custom_mesh_3d_animations,
+            16 * PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES,
+            multiplier,
+        );
+        self.custom_mesh_3d_resolved_animation_scratch.clear();
+        self.custom_mesh_3d_resolved_animation_scratch
+            .shrink_to(8 * multiplier);
         trim_upload_vec(&mut self.custom_mesh_3d_meshes, 8, multiplier);
         trim_upload_vec(&mut self.custom_mesh_3d_shaders, 8, multiplier);
         self.custom_mesh_3d_ids.shrink_to(8 * multiplier);
