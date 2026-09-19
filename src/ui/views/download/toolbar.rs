@@ -83,7 +83,8 @@ fn render_toolbar_search(
                         16.0,
                         colors.text_secondary,
                     ))
-                    .w_full()
+                    .flex_1()
+                    .min_w(px(0.))
                     .h(px(CONTROL_HEIGHT))
                     .with_size(crate::ui::components::input::InputSize::Medium),
             )
