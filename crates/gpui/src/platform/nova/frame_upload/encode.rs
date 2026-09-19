@@ -803,13 +803,6 @@ impl FrameUpload {
             vertex_count,
         };
         self.path_rasterization_encode_scratch.clear();
-        if self.path_rasterization_cache.len() >= MAX_PATH_RASTERIZATION_CACHE_ENTRIES {
-            let mut keep = false;
-            self.path_rasterization_cache.retain(|_, _| {
-                keep = !keep;
-                keep
-            });
-        }
         self.path_rasterization_cache.insert(key, entry.clone());
         self.path_rasterization_cache_misses =
             self.path_rasterization_cache_misses.saturating_add(1);
@@ -835,9 +828,6 @@ impl FrameUpload {
             && memo.last_xy_bits == last_xy_bits
         {
             return memo.geometry_hash;
-        }
-        if self.path_geometry_hash_memo.len() >= MAX_PATH_RASTERIZATION_CACHE_ENTRIES {
-            self.path_geometry_hash_memo.clear();
         }
         let geometry_hash = path_geometry_hash(&path.vertices);
         self.path_geometry_hash_memo.insert(
