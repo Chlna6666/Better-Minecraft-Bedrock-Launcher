@@ -42,24 +42,33 @@ pub(crate) fn preload_static_assets(cx: &mut App) -> usize {
 pub struct SettingsPageView {
     _subscriptions: Vec<Subscription>,
     last_update_checking: bool,
+    active: bool,
+    background_prepare_scheduled: bool,
+    prepared_tab: Option<SettingsTab>,
 }
 
 impl SettingsPageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let last_update_checking = cx.global::<UpdateState>().checking;
         let subscriptions = vec![
-            cx.observe_global::<SettingsPageState>(|_, cx| {
-                let tab = cx.global::<SettingsPageState>().tab;
-                tracing::trace!(?tab, "settings view notify source=SettingsPageState");
-                cx.notify();
+            cx.observe_global::<SettingsPageState>(|this, cx| {
+                if this.active {
+                    let tab = cx.global::<SettingsPageState>().tab;
+                    tracing::trace!(?tab, "settings view notify source=SettingsPageState");
+                    cx.notify();
+                }
             }),
-            cx.observe_global::<ThemeState>(|_, cx| {
-                tracing::trace!("settings view notify source=ThemeState");
-                cx.notify();
+            cx.observe_global::<ThemeState>(|this, cx| {
+                if this.active {
+                    tracing::trace!("settings view notify source=ThemeState");
+                    cx.notify();
+                }
             }),
-            cx.observe_global::<I18n>(|_, cx| {
-                tracing::trace!("settings view notify source=I18n");
-                cx.notify();
+            cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
+                    tracing::trace!("settings view notify source=I18n");
+                    cx.notify();
+                }
             }),
             cx.observe_global::<UpdateState>(|this, cx| {
                 let route = crate::ui::navigation::current_route(cx);
@@ -67,7 +76,8 @@ impl SettingsPageView {
                 let update_state = cx.global::<UpdateState>();
                 let checking_changed = this.last_update_checking != update_state.checking;
                 this.last_update_checking = update_state.checking;
-                if route == crate::ui::navigation::AppRoute::Settings
+                if this.active
+                    && route == crate::ui::navigation::AppRoute::Settings
                     && settings_state.tab == SettingsTab::About
                     && checking_changed
                 {
@@ -78,10 +88,12 @@ impl SettingsPageView {
                     cx.notify();
                 }
             }),
-            cx.observe_global::<PluginRegistry>(|_, cx| {
+            cx.observe_global::<PluginRegistry>(|this, cx| {
                 let route = crate::ui::navigation::current_route(cx);
                 let tab = cx.global::<SettingsPageState>().tab;
-                if route == crate::ui::navigation::AppRoute::Settings && tab == SettingsTab::Plugins
+                if this.active
+                    && route == crate::ui::navigation::AppRoute::Settings
+                    && tab == SettingsTab::Plugins
                 {
                     tracing::trace!(?tab, "settings view notify source=PluginRegistry");
                     cx.notify();
@@ -91,6 +103,19 @@ impl SettingsPageView {
         Self {
             _subscriptions: subscriptions,
             last_update_checking,
+            active: false,
+            background_prepare_scheduled: false,
+            prepared_tab: None,
+        }
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            cx.notify();
         }
     }
 }
@@ -98,10 +123,36 @@ impl SettingsPageView {
 impl Render for SettingsPageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
-        #[cfg(target_os = "linux")]
-        if cx.global::<SettingsPageState>().tab == SettingsTab::ProtonGdk {
-            proton_gdk::ensure_runner_snapshot(cx);
+
+        if self.active && !self.background_prepare_scheduled {
+            self.background_prepare_scheduled = true;
+            window.on_next_frame(|_window, cx| {
+                // Prepare plugin metadata after Settings has presented once. The actual directory
+                // scan/manifest preparation remains on the blocking-I/O executor.
+                crate::plugins::runtime::ensure_manifest_index(cx);
+            });
         }
+
+        let active_tab = cx.global::<SettingsPageState>().tab;
+        if self.active && self.prepared_tab != Some(active_tab) {
+            self.prepared_tab = Some(active_tab);
+            window.on_next_frame(move |_window, cx| match active_tab {
+                SettingsTab::Launcher => {
+                    tabs::refresh_gpu_adapters_if_needed(cx);
+                    launcher::logs::refresh_log_stats(cx);
+                }
+                // Plugin manifests are already opportunistically prepared by the one-shot
+                // Settings background preparation above. Do not enqueue a second reload when the
+                // first visible tab is Plugins.
+                SettingsTab::Plugins => {}
+                #[cfg(target_os = "linux")]
+                SettingsTab::ProtonGdk => {
+                    proton_gdk::ensure_runner_snapshot(cx);
+                }
+                SettingsTab::Game | SettingsTab::Customization | SettingsTab::About => {}
+            });
+        }
+
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
@@ -110,7 +161,6 @@ impl Render for SettingsPageView {
             theme.accent,
         );
         let window_size = window.bounds().size;
-        let active_tab = cx.global::<SettingsPageState>().tab;
         let render_engine = if active_tab == SettingsTab::About {
             about::render_engine_label(window)
         } else {

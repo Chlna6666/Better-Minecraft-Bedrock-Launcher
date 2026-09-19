@@ -185,8 +185,8 @@ pub(super) fn ensure_plugin_resources(
         return Vec::new();
     }
 
-    crate::plugins::runtime::ensure_manifest_index(cx);
-
+    // Plugin manifest preparation is scheduled once by SettingsPageView after the tab transition
+    // frame. Keep this render helper limited to snapshots and per-resource async cache fills.
     let snapshot = cx.global::<SettingsPageState>();
     let statuses = crate::plugins::runtime::statuses(cx);
     let locale = cx.global::<I18n>().locale().code().to_string();

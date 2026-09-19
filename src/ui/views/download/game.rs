@@ -72,6 +72,8 @@ type GamePanelRenderSignature = (
 pub(crate) struct DownloadGamePanelView {
     _subscriptions: Vec<Subscription>,
     icon_cache: Entity<BoundedImageCache>,
+    render_cache: GamePanelRenderCache,
+    active: bool,
     last_observed_signature: GamePanelObserveSignature,
     last_observed_dialog_signature: GameDialogObserveSignature,
 }
@@ -112,7 +114,7 @@ impl DownloadGamePanelView {
 
             if this.last_observed_signature != game_signature {
                 this.last_observed_signature = game_signature;
-                if cx.global::<DownloadPageState>().tab == DownloadTab::Game {
+                if this.active && cx.global::<DownloadPageState>().tab == DownloadTab::Game {
                     cx.notify();
                 }
                 return;
@@ -120,7 +122,7 @@ impl DownloadGamePanelView {
 
             if this.last_observed_dialog_signature != dialog_signature {
                 this.last_observed_dialog_signature = dialog_signature;
-                if cx.global::<DownloadPageState>().tab == DownloadTab::Game {
+                if this.active && cx.global::<DownloadPageState>().tab == DownloadTab::Game {
                     cx.notify();
                 }
             }
@@ -138,8 +140,20 @@ impl DownloadGamePanelView {
         Self {
             _subscriptions: subscriptions,
             icon_cache,
+            render_cache: GamePanelRenderCache::default(),
+            active: false,
             last_observed_signature,
             last_observed_dialog_signature,
+        }
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            cx.notify();
         }
     }
 }
@@ -187,7 +201,13 @@ impl Render for DownloadGamePanelView {
             theme.accent,
         );
 
-        render_game_panel(window, cx, &colors, &self.icon_cache)
+        render_game_panel(
+            window,
+            cx,
+            &colors,
+            &self.icon_cache,
+            &mut self.render_cache,
+        )
     }
 }
 
@@ -589,20 +609,14 @@ pub(super) fn render_game_panel(
     cx: &mut App,
     colors: &ThemeColors,
     icon_cache: &Entity<BoundedImageCache>,
+    cache: &mut GamePanelRenderCache,
 ) -> Div {
     let i18n = cx.global::<I18n>().clone();
-    let cache = window.use_keyed_state("download-game-panel-cache", cx, |_, _| {
-        GamePanelRenderCache::default()
-    });
     let render_signature =
         cx.read_global(|state: &DownloadPageState, _cx| build_game_panel_render_signature(state));
-    let cache_needs_rebuild = cache.read(cx).last_signature.as_ref() != Some(&render_signature);
-    if cache_needs_rebuild {
-        let rebuilt_cache = cx.read_global(|state: &DownloadPageState, _cx| {
+    if cache.last_signature.as_ref() != Some(&render_signature) {
+        *cache = cx.read_global(|state: &DownloadPageState, _cx| {
             rebuild_game_panel_render_cache(state, render_signature.clone())
-        });
-        cache.update(cx, |cached, _| {
-            *cached = rebuilt_cache;
         });
     }
 
@@ -634,15 +648,12 @@ pub(super) fn render_game_panel(
         )));
     }
 
-    let (filtered_total, total_pages, page_index, page_rows) = {
-        let cached = cache.read(cx);
-        (
-            cached.filtered_total,
-            cached.total_pages,
-            cached.page_index,
-            cached.page_rows.clone(),
-        )
-    };
+    let (filtered_total, total_pages, page_index, page_rows) = (
+        cache.filtered_total,
+        cache.total_pages,
+        cache.page_index,
+        cache.page_rows.clone(),
+    );
 
     let virtual_list_plan = compute_virtual_list_plan(
         page_rows.len(),

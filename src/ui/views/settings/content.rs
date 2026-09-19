@@ -149,13 +149,14 @@ fn animated_settings_panel(
         SettingsTab::About => "settings-content-about",
     };
 
-    // 布局直接保持在目标位置，只让 Nova 对最终 scene 做 10px presentation translation。
-    // 设置页普通图标走 SVG atlas sprite，不需要为这段过渡重跑整个内容树的 layout。
+    // Keep final layout geometry stable, capture the mixed text/image/SVG subtree once, and let
+    // Nova animate the resulting compositor layer instead of transforming primitive types unevenly.
     div()
         .w_full()
         .min_w(px(0.))
         .when(fill_height, |this| this.h_full().min_h(px(0.)))
         .child(panel)
+        .composite_layer()
         .with_animation(
             key,
             spring_motion(spring_smooth()).with_property(AnimationProperty::translation(

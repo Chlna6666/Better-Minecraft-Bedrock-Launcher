@@ -33,6 +33,14 @@ impl MainWindowView {
                 Ok::<(), anyhow::Error>(())
             });
         }
+
+        let settings_page_active = matches!(route, RouteTarget::Builtin(AppRoute::Settings));
+        if let Some(view) = &self.settings_page_view {
+            let _ = view.update(cx, |view, cx| {
+                view.set_active(settings_page_active, cx);
+                Ok::<(), anyhow::Error>(())
+            });
+        }
     }
 
     pub(super) fn ensure_page_view_for_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {

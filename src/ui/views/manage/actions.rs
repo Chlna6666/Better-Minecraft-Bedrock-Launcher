@@ -178,15 +178,24 @@ impl ManagePageView {
     }
 
     pub(super) fn set_tab(&mut self, tab: ManageTab, cx: &mut Context<Self>) {
-        let changed = cx.update_global(|state: &mut ManagePageState, _cx| {
+        let previous_tab = cx.update_global(|state: &mut ManagePageState, _cx| {
             if state.tab == tab {
-                return false;
+                return None;
             }
 
-            state.tab_anim_from = state.tab;
+            let previous_tab = state.tab;
+            state.tab_anim_from = previous_tab;
             state.tab_anim_seq = state.tab_anim_seq.wrapping_add(1);
             state.tab = tab;
             state.selected_asset_keys.clear();
+            if is_asset_tab(previous_tab) && is_asset_tab(tab) {
+                // Asset tabs share one backing Arc. Mark it stale without dropping it in the input
+                // handler; the first target frame renders a stable loading state and async replace
+                // retires the previous Arc later.
+                state.assets_loaded = false;
+                state.assets_loading = false;
+                state.assets_error = None;
+            }
             match tab {
                 ManageTab::Map | ManageTab::Screenshot => {
                     state.asset_sort_key = ManageAssetSortKey::Date;
@@ -201,18 +210,35 @@ impl ManagePageView {
                     state.asset_sort_desc = false;
                 }
             }
-            true
+            Some(previous_tab)
         });
-        if !changed {
+        let Some(previous_tab) = previous_tab else {
             return;
+        };
+
+        if is_asset_tab(previous_tab) && is_asset_tab(tab) {
+            self.last_assets_signature = None;
         }
 
-        self.last_assets_signature = None;
-        self.last_screenshots_signature = None;
-        self.last_servers_signature = None;
-        self.reset_asset_list_view();
-        self.reset_screenshot_list_view();
-        self.reset_server_list_view();
+        // Data request signatures already include the target tab/user/configuration. Do not clear
+        // every hidden list here: Screenshot/Server can be reused instantly after visiting another
+        // tab, while asset tabs automatically reload only when their AssetsLoadSignature changes.
+        match tab {
+            ManageTab::Mod
+            | ManageTab::ResourcePack
+            | ManageTab::SkinPack
+            | ManageTab::Map => {
+                self.asset_scroll_handle.set_offset(point(px(0.), px(0.)));
+            }
+            ManageTab::Screenshot => {
+                self.screenshot_scroll_handle
+                    .set_offset(point(px(0.), px(0.)));
+            }
+            ManageTab::Server => {
+                self.server_scroll_handle.set_offset(point(px(0.), px(0.)));
+            }
+            ManageTab::Statistics => {}
+        }
         // ManagePageState's signature observer owns the single redraw notification.
     }
 

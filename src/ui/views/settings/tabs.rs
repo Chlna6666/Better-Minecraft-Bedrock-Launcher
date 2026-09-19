@@ -132,24 +132,26 @@ pub(super) fn render_tabs(
                     ..colors.accent
                 })
             })
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                let committed_blur = cx.update_global(|s: &mut SettingsPageState, _cx| {
-                    if s.commit_background_blur_preview() {
-                        Some(s.background_blur)
-                    } else {
-                        None
-                    }
-                });
+            .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
+                let (changed, committed_blur) =
+                    cx.update_global(|s: &mut SettingsPageState, _cx| {
+                        if s.tab == tab {
+                            return (false, None);
+                        }
+                        let committed_blur = s
+                            .commit_background_blur_preview()
+                            .then_some(s.background_blur);
+                        s.tab = tab;
+                        (true, committed_blur)
+                    });
+                if !changed {
+                    return;
+                }
                 if let Some(blur) = committed_blur {
                     crate::ui::views::settings::common::spawn_persist_background_blur(blur, cx);
                 }
-                cx.update_global(|s: &mut SettingsPageState, _cx| {
-                    s.tab = tab;
-                });
-                if tab == SettingsTab::Launcher {
-                    refresh_gpu_adapters_if_needed(cx);
-                    super::launcher::logs::refresh_log_stats(cx);
-                }
+                // SettingsPageView observes the committed tab and schedules any secondary work
+                // exactly once after this visual transition frame.
             })
     };
 

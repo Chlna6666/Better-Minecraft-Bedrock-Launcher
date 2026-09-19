@@ -387,26 +387,31 @@ impl DownloadPageView {
             this.last_observed_mod_panel_signature = mod_panel_signature;
 
             if tab_changed {
-                // The input event owns only the route/state transition. Secondary catalog I/O is
-                // scheduled after a rendered frame so it cannot sit between the click and the first
-                // compositor-owned tab animation sample.
-                cx.notify();
-                return;
-            }
-
-            if tab == DownloadTab::Mod {
-                if mod_panel_changed {
+                // Keep signatures current while resident but hidden, without waking the window.
+                if this.active {
                     cx.notify();
                 }
                 return;
             }
 
-            if tab == DownloadTab::ResourcePack && curseforge_toolbar_changed {
+            if tab == DownloadTab::Mod {
+                if this.active && mod_panel_changed {
+                    cx.notify();
+                }
+                return;
+            }
+
+            if this.active
+                && tab == DownloadTab::ResourcePack
+                && curseforge_toolbar_changed
+            {
                 cx.notify();
             }
         }));
-        subscriptions.push(cx.observe_global::<ThemeState>(|_, cx| {
-            cx.notify();
+        subscriptions.push(cx.observe_global::<ThemeState>(|this, cx| {
+            if this.active {
+                cx.notify();
+            }
         }));
 
         let page_jump_input =
@@ -485,7 +490,7 @@ impl DownloadPageView {
             ),
             secondary_prefetch_scheduled: false,
             last_observed_tab,
-            active: true,
+            active: false,
             last_observed_curseforge_toolbar_signature,
             last_observed_mod_panel_signature,
         }
@@ -500,6 +505,11 @@ impl DownloadPageView {
         }
 
         let view = cx.new(game::DownloadGamePanelView::new);
+        let active = self.active;
+        let _ = view.update(cx, |view, cx| {
+            view.set_active(active, cx);
+            Ok::<(), anyhow::Error>(())
+        });
         self.game_panel_view = Some(view.clone());
         view
     }
@@ -515,6 +525,15 @@ impl DownloadPageView {
             view.set_active(active, cx);
             Ok::<(), anyhow::Error>(())
         });
+        if let Some(game_panel_view) = &self.game_panel_view {
+            let _ = game_panel_view.update(cx, |view, cx| {
+                view.set_active(active, cx);
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+        if active {
+            cx.notify();
+        }
     }
 }
 

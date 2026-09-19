@@ -606,7 +606,7 @@ pub(super) fn render_asset_list(
         .into_any_element();
     }
 
-    if state.assets_loading && state.assets.is_empty() {
+    if !state.assets_loaded && state.assets_error.is_none() {
         return empty_state(
             colors,
             "images/manage/empty.svg",
