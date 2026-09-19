@@ -122,6 +122,18 @@ impl TaffyLayoutEngine {
     }
 
     pub fn clear(&mut self) {
+        // Observe the frame that just finished before clearing it. This is the real active layout
+        // working set and lets a large-to-small page transition return excess buckets without
+        // disturbing stable large pages.
+        let absolute_layout_count = self.absolute_layout_bounds.len();
+        let unrounded_origin_count = self.unrounded_layout_origins.len();
+        let computed_layout_count = self.computed_layouts.len();
+        let fingerprint_count = self.node_fingerprints.len();
+        let metadata_count = self.node_layout_metadata.len();
+        let measured_subtree_count = self.measured_subtrees.len();
+        let computed_root_count = self.computed_root_keys.len();
+        let node_working_set = self.nodes_requested;
+
         self.save_retained_layout_roots();
         self.taffy.clear();
         self.absolute_layout_bounds.clear();
@@ -131,6 +143,25 @@ impl TaffyLayoutEngine {
         self.node_layout_metadata.clear();
         self.measured_subtrees.clear();
         self.computed_root_keys.clear();
+
+        macro_rules! trim_to_working_set {
+            ($collection:expr, $count:expr) => {{
+                let collection = &mut $collection;
+                let target = Self::MIN_RETAINED_CAPACITY.max($count);
+                if collection.capacity() > target.saturating_mul(4) {
+                    collection.shrink_to(target);
+                }
+            }};
+        }
+        trim_to_working_set!(self.absolute_layout_bounds, absolute_layout_count);
+        trim_to_working_set!(self.unrounded_layout_origins, unrounded_origin_count);
+        trim_to_working_set!(self.computed_layouts, computed_layout_count);
+        trim_to_working_set!(self.node_fingerprints, fingerprint_count);
+        trim_to_working_set!(self.node_layout_metadata, metadata_count);
+        trim_to_working_set!(self.measured_subtrees, measured_subtree_count);
+        trim_to_working_set!(self.computed_root_keys, computed_root_count);
+        trim_to_working_set!(self.subtree_scratch, node_working_set);
+
         self.nodes_requested = 0;
         self.measured_nodes_requested = 0;
         self.roots_computed = 0;
@@ -593,6 +624,23 @@ impl TaffyLayoutEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_clear_releases_excess_layout_working_set_capacity() {
+        let mut engine = TaffyLayoutEngine::new();
+        engine.absolute_layout_bounds.reserve(4096);
+        engine.node_fingerprints.reserve(4096);
+        engine.computed_root_keys.reserve(4096);
+        let bounds_capacity = engine.absolute_layout_bounds.capacity();
+        let fingerprints_capacity = engine.node_fingerprints.capacity();
+        let roots_capacity = engine.computed_root_keys.capacity();
+
+        engine.clear();
+
+        assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
+        assert!(engine.node_fingerprints.capacity() < fingerprints_capacity);
+        assert!(engine.computed_root_keys.capacity() < roots_capacity);
+    }
 
     #[test]
     fn aggressive_trim_releases_layout_high_watermark_capacity() {

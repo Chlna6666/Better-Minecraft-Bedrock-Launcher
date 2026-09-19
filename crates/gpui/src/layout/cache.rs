@@ -75,41 +75,58 @@ impl TaffyLayoutEngine {
     }
 
     pub(super) fn save_retained_layout_roots(&mut self) {
-        self.previous_layout_roots.clear();
-        let computed_root_keys = std::mem::take(&mut self.computed_root_keys);
-        for (root_key, root_id) in computed_root_keys {
-            if let Some(nodes) = self.retained_layout_nodes(root_id) {
-                if let Some(previous_nodes) = self.previous_layout_roots.get_mut(&root_key) {
-                    *previous_nodes = nodes;
-                } else {
-                    self.previous_layout_roots.insert(root_key, nodes);
-                }
-            }
-        }
-    }
+        // Keep scratch vectors and per-root retained-node buffers hot across frames. Stable layout
+        // roots should not rebuild the same heap allocations on every frame.
+        let mut computed_root_keys = std::mem::take(&mut self.computed_root_keys);
+        let mut subtree_scratch = std::mem::take(&mut self.subtree_scratch);
 
-    pub(super) fn retained_layout_nodes(
-        &self,
-        root_id: LayoutId,
-    ) -> Option<Vec<RetainedLayoutNode>> {
-        self.subtree_nodes(root_id)
-            .into_iter()
-            .map(|id| {
-                Some(RetainedLayoutNode {
-                    bounds: self.absolute_layout_bounds.get(&id).copied()?,
+        for (root_key, root_id) in computed_root_keys.iter().copied() {
+            let mut retained_nodes = self
+                .previous_layout_roots
+                .remove(&root_key)
+                .unwrap_or_default();
+            retained_nodes.clear();
+            subtree_scratch.clear();
+            self.collect_subtree_nodes_into(root_id, &mut subtree_scratch);
+
+            let mut complete = true;
+            for id in subtree_scratch.iter().copied() {
+                let Some(bounds) = self.absolute_layout_bounds.get(&id).copied() else {
+                    complete = false;
+                    break;
+                };
+                retained_nodes.push(RetainedLayoutNode {
+                    bounds,
                     measure_input: self
                         .taffy
                         .get_node_context(id.into())
                         .and_then(|node_context| node_context.last_measure_input),
-                })
-            })
-            .collect()
-    }
+                });
+            }
 
-    pub(super) fn subtree_nodes(&self, root_id: LayoutId) -> Vec<LayoutId> {
-        let mut nodes = Vec::new();
-        self.collect_subtree_nodes_into(root_id, &mut nodes);
-        nodes
+            if complete {
+                let target = 32usize.max(retained_nodes.len());
+                if retained_nodes.capacity() > target.saturating_mul(4) {
+                    retained_nodes.shrink_to(target);
+                }
+                self.previous_layout_roots.insert(root_key, retained_nodes);
+            }
+        }
+
+        self.previous_layout_roots.retain(|key, _| {
+            computed_root_keys
+                .iter()
+                .any(|(current_key, _)| current_key == key)
+        });
+        let root_target = 8usize.max(self.previous_layout_roots.len());
+        if self.previous_layout_roots.capacity() > root_target.saturating_mul(4) {
+            self.previous_layout_roots.shrink_to(root_target);
+        }
+
+        computed_root_keys.clear();
+        subtree_scratch.clear();
+        self.computed_root_keys = computed_root_keys;
+        self.subtree_scratch = subtree_scratch;
     }
 
     pub(super) fn collect_subtree_nodes_into(&self, root_id: LayoutId, nodes: &mut Vec<LayoutId>) {

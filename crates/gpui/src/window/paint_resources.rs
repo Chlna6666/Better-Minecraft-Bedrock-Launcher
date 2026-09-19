@@ -638,19 +638,14 @@ impl Window {
     /// the UI, the removal remains pending and is safely applied before presentation.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         let image_id = data.id;
-        let had_window_residency = self
-            .animated_image_slots
-            .keys()
-            .any(|slot_key| slot_key.image_id == image_id)
-            || self
-                .image_paint_tile_cache
-                .keys()
-                .any(|cache_key| cache_key.image_id == image_id);
-
+        let animated_slots_before = self.animated_image_slots.len();
         self.animated_image_slots
             .retain(|slot_key, _| slot_key.image_id != image_id);
+        let image_tiles_before = self.image_paint_tile_cache.len();
         self.image_paint_tile_cache
             .retain(|cache_key, _| cache_key.image_id != image_id);
+        let had_window_residency = self.animated_image_slots.len() != animated_slots_before
+            || self.image_paint_tile_cache.len() != image_tiles_before;
         self.sprite_atlas.remove_image(image_id);
         record_image_drop(1);
 
