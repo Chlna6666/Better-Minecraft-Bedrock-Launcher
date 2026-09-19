@@ -74,11 +74,35 @@ pub(super) fn compact_result_header(
         .flex()
         .items_center()
         .gap(px(5.))
-        .ml_auto()
         .child(compact_result_tag(colors, source_label, true))
         .when_some(detail_label, |tags, detail| {
             tags.child(compact_result_tag(colors, detail, false))
         });
+
+    let count = div()
+        .flex_none()
+        .ml_auto()
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .child(
+            div()
+                .flex_none()
+                .w(px(6.))
+                .h(px(6.))
+                .rounded_full()
+                .bg(colors.accent),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .text_size(px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(colors.text_secondary)
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(count_label),
+        );
 
     div()
         .w_full()
@@ -94,33 +118,8 @@ pub(super) fn compact_result_header(
         .flex()
         .items_center()
         .gap(px(8.))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .flex()
-                .items_center()
-                .gap(px(7.))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(6.))
-                        .h(px(6.))
-                        .rounded_full()
-                        .bg(colors.accent),
-                )
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(colors.text_secondary)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(count_label),
-                ),
-        )
         .child(tags)
+        .child(count)
 }
 
 pub(crate) fn panel_shell(colors: &ThemeColors) -> Div {
