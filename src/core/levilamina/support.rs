@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use crate::http::proxy::get_client_for_proxy;
 
-const VERSION_DATABASE_URL: &str = "https://raw.githubusercontent.com/LiteLDev/levilamina-client-version-db/refs/heads/main/v2/version-db.json";
+const VERSION_DATABASE_URL: &str =
+    "https://fastly.jsdelivr.net/gh/LiteLDev/levilamina-client-version-db@main/v2/version-db.json";
 const API_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 static SUPPORT_DATABASE_CACHE: Lazy<Mutex<Option<LeviLaminaSupportDatabase>>> =
     Lazy::new(|| Mutex::new(None));
