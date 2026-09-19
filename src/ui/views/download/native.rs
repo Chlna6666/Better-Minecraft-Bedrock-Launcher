@@ -129,7 +129,8 @@ pub(super) fn render_panel(
                 .min_h(px(0.))
                 .overflow_y_scrollbar()
                 .track_scroll(&state.levilauncher_scroll)
-                .p(px(20.))
+                .px(px(20.))
+                .py(px(12.))
                 .child(content),
         )
         .child(render_pagination(
