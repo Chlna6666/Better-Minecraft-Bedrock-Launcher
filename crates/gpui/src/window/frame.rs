@@ -450,10 +450,23 @@ impl Frame {
             + self.retained_element_ranges.capacity()
             + self.retained_element_order.capacity()
             + self.retained_layout_semantics.capacity()
+            + self.tab_stops.retained_capacity()
             + self.debug_container_capacity()
     }
 
     fn trim_retained_capacity(&mut self) {
+        let state_target = FRAME_MIN_RETAINED_CAPACITY.max(self.element_states.len());
+        if self.element_states.capacity()
+            > state_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.element_states.shrink_to(state_target);
+        }
+        trim_frame_vec_capacity(
+            &mut self.accessed_element_states,
+            FRAME_MIN_RETAINED_CAPACITY.max(self.accessed_element_states.len()),
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        self.dispatch_tree.trim_retained_capacity(false);
         trim_frame_vec_capacity(
             &mut self.mouse_listeners,
             FRAME_MIN_RETAINED_CAPACITY,
@@ -477,6 +490,16 @@ impl Frame {
         trim_frame_vec_capacity(
             &mut self.deferred_retained_metadata,
             FRAME_MIN_RETAINED_CAPACITY,
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        trim_frame_vec_capacity(
+            &mut self.input_handlers,
+            FRAME_MIN_RETAINED_CAPACITY.max(self.input_handlers.len()),
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        trim_frame_vec_capacity(
+            &mut self.tooltip_requests,
+            FRAME_MIN_RETAINED_CAPACITY.max(self.tooltip_requests.len()),
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
         trim_frame_vec_capacity(
@@ -506,6 +529,61 @@ impl Frame {
             self.retained_layout_semantics
                 .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_layout_semantics.len()));
         }
+        self.tab_stops.trim_retained_capacity(false);
+    }
+
+    /// Clears this scratch frame and adapts its retained capacity to the frame that just won the
+    /// swap. Stable large pages keep their hot allocations; a large-to-small page transition
+    /// returns only capacity that is far above the new working set.
+    pub(crate) fn clear_for_reuse(&mut self, current: &Self) {
+        self.clear();
+
+        macro_rules! trim_vec_against {
+            ($field:ident) => {{
+                let target = FRAME_MIN_RETAINED_CAPACITY.max(current.$field.len());
+                if self.$field.capacity()
+                    > target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+                {
+                    self.$field.shrink_to(target);
+                }
+            }};
+        }
+
+        let state_target = FRAME_MIN_RETAINED_CAPACITY.max(current.element_states.len());
+        if self.element_states.capacity()
+            > state_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.element_states.shrink_to(state_target);
+        }
+        trim_vec_against!(accessed_element_states);
+        self.dispatch_tree
+            .trim_for_reuse_against(&current.dispatch_tree);
+        trim_vec_against!(mouse_listeners);
+        trim_vec_against!(hitboxes);
+        trim_vec_against!(window_control_hitboxes);
+        trim_vec_against!(deferred_draws);
+        trim_vec_against!(deferred_retained_metadata);
+        trim_vec_against!(input_handlers);
+        trim_vec_against!(tooltip_requests);
+        trim_vec_against!(cursor_styles);
+        trim_vec_against!(retained_scene_segments);
+        trim_vec_against!(retained_element_order);
+
+        let ranges_target =
+            FRAME_MIN_RETAINED_CAPACITY.max(current.retained_element_ranges.len());
+        if self.retained_element_ranges.capacity()
+            > ranges_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.retained_element_ranges.shrink_to(ranges_target);
+        }
+        let semantics_target =
+            FRAME_MIN_RETAINED_CAPACITY.max(current.retained_layout_semantics.len());
+        if self.retained_layout_semantics.capacity()
+            > semantics_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.retained_layout_semantics.shrink_to(semantics_target);
+        }
+        self.tab_stops.trim_for_reuse_against(&current.tab_stops);
     }
 
     pub(super) fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
@@ -537,6 +615,10 @@ impl Frame {
                 self.retained_element_order.shrink_to(floor);
                 self.retained_layout_semantics
                     .shrink_to(floor.max(self.retained_layout_semantics.len()));
+                self.tab_stops.trim_retained_capacity(matches!(
+                    level,
+                    GpuiMemoryTrimLevel::Aggressive
+                ));
                 #[cfg(any(test, feature = "test-support"))]
                 self.debug_bounds
                     .shrink_to(floor.max(self.debug_bounds.len()));

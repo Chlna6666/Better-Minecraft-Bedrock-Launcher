@@ -93,6 +93,33 @@ impl DispatchTree {
             + self.view_node_ids.capacity()
     }
 
+    pub(crate) fn trim_for_reuse_against(&mut self, current: &Self) {
+        const WATERMARK_MULTIPLIER: usize = 4;
+        macro_rules! trim_vec {
+            ($field:ident) => {{
+                let target = Self::MIN_RETAINED_CAPACITY.max(current.$field.len());
+                if self.$field.capacity() > target.saturating_mul(WATERMARK_MULTIPLIER) {
+                    self.$field.shrink_to(target);
+                }
+            }};
+        }
+        trim_vec!(node_stack);
+        trim_vec!(context_stack);
+        trim_vec!(view_stack);
+        trim_vec!(nodes);
+
+        let focusable_target = Self::MIN_RETAINED_CAPACITY.max(current.focusable_node_ids.len());
+        if self.focusable_node_ids.capacity()
+            > focusable_target.saturating_mul(WATERMARK_MULTIPLIER)
+        {
+            self.focusable_node_ids.shrink_to(focusable_target);
+        }
+        let view_target = Self::MIN_RETAINED_CAPACITY.max(current.view_node_ids.len());
+        if self.view_node_ids.capacity() > view_target.saturating_mul(WATERMARK_MULTIPLIER) {
+            self.view_node_ids.shrink_to(view_target);
+        }
+    }
+
     pub(crate) fn trim_retained_capacity(&mut self, aggressive: bool) {
         let floor = if aggressive {
             0

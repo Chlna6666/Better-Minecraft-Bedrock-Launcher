@@ -26,6 +26,9 @@ impl Default for TabStopMap {
 }
 
 impl TabStopMap {
+    const MIN_RETAINED_CAPACITY: usize = 16;
+    const TRIM_WATERMARK_MULTIPLIER: usize = 4;
+
     pub fn insert(&mut self, focus_handle: &FocusHandle) {
         self.insertion_history
             .push(TabStopOperation::Insert(focus_handle.clone()));
@@ -52,11 +55,44 @@ impl TabStopMap {
     }
 
     pub fn clear(&mut self) {
-        *self = Self::default();
+        // This map is rebuilt every frame. Preserve the Vec/HashMap allocations so focus-heavy
+        // pages do not pay an allocator round-trip on every draw; pressure/working-set trimming
+        // below returns excess capacity when the page actually becomes smaller.
         self.current_path.0.clear();
         self.insertion_history.clear();
         self.by_id.clear();
         self.order = SumTree::new(());
+    }
+
+    pub(crate) fn retained_capacity(&self) -> usize {
+        self.insertion_history.capacity() + self.by_id.capacity()
+    }
+
+    pub(crate) fn trim_for_reuse_against(&mut self, current: &Self) {
+        let history_target = Self::MIN_RETAINED_CAPACITY.max(current.insertion_history.len());
+        if self.insertion_history.capacity()
+            > history_target.saturating_mul(Self::TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.insertion_history.shrink_to(history_target);
+        }
+
+        let by_id_target = Self::MIN_RETAINED_CAPACITY.max(current.by_id.len());
+        if self.by_id.capacity()
+            > by_id_target.saturating_mul(Self::TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.by_id.shrink_to(by_id_target);
+        }
+    }
+
+    pub(crate) fn trim_retained_capacity(&mut self, aggressive: bool) {
+        let floor = if aggressive {
+            0
+        } else {
+            Self::MIN_RETAINED_CAPACITY
+        };
+        self.insertion_history
+            .shrink_to(floor.max(self.insertion_history.len()));
+        self.by_id.shrink_to(floor.max(self.by_id.len()));
     }
 
     pub fn next(&self, focused_id: Option<&FocusId>) -> Option<FocusHandle> {

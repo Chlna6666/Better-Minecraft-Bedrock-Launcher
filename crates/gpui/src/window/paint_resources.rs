@@ -726,6 +726,53 @@ impl Window {
         }
         self.rendered_frame.trim_retained_capacity_for_level(level);
         self.next_frame.trim_retained_capacity_for_level(level);
+        self.invalidator.trim_retained_capacity(level);
+
+        let floor = if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            0
+        } else {
+            16
+        };
+        let eager = !matches!(level, GpuiMemoryTrimLevel::Light);
+        macro_rules! trim_collection {
+            ($collection:expr) => {{
+                let collection = &mut $collection;
+                let target = floor.max(collection.len());
+                if eager || collection.capacity() > target.saturating_mul(4) {
+                    collection.shrink_to(target);
+                }
+            }};
+        }
+
+        trim_collection!(self.text_style_stack);
+        trim_collection!(self.rendered_entity_stack);
+        trim_collection!(self.view_bounds_stack);
+        trim_collection!(self.element_offset_stack);
+        trim_collection!(self.content_mask_stack);
+        trim_collection!(self.visual_content_mask_stack);
+        trim_collection!(self.image_cache_stack);
+        trim_collection!(self.animated_image_slots);
+        trim_collection!(self.image_paint_tile_cache);
+        trim_collection!(self.dirty_views);
+        trim_collection!(self.focus_retained_targets);
+
+        {
+            let mut views = self.viewport_dependent_views.borrow_mut();
+            trim_collection!(*views);
+        }
+        {
+            let mut pending = self.animation_frame_pending_entities.borrow_mut();
+            trim_collection!(*pending);
+        }
+        {
+            let mut pending = self.image_animation_deadline_pending.borrow_mut();
+            trim_collection!(*pending);
+        }
+        {
+            let mut pending = self.deadline_invalidation_pending.borrow_mut();
+            trim_collection!(*pending);
+        }
+
         if let Some(layout_engine) = self.layout_engine.as_mut() {
             layout_engine.trim_retained_capacity(level);
         }

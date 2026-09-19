@@ -416,8 +416,24 @@ impl WindowInvalidator {
             inner.active_generic_dirty_views.clear();
         } else {
             inner.active_targeted_replay = inner.pending_targeted_replay;
-            inner.active_targeted_elements = mem::take(&mut inner.pending_targeted_elements);
-            inner.active_generic_dirty_views = mem::take(&mut inner.pending_generic_dirty_views);
+            // Reuse the previous active hash tables as the next pending buffers instead of
+            // dropping their buckets every frame. The active side receives the freshly queued
+            // provenance; the old active side is cleared only after the swap.
+            {
+                // Split the RefMut into an ordinary mutable reference first so Rust can prove the
+                // two fields are disjoint while swapping their backing allocations.
+                let inner = &mut *inner;
+                mem::swap(
+                    &mut inner.active_targeted_elements,
+                    &mut inner.pending_targeted_elements,
+                );
+                mem::swap(
+                    &mut inner.active_generic_dirty_views,
+                    &mut inner.pending_generic_dirty_views,
+                );
+            }
+            inner.pending_targeted_elements.clear();
+            inner.pending_generic_dirty_views.clear();
             inner.pending_targeted_replay = false;
             if !inner.active_targeted_replay {
                 inner.active_targeted_elements.clear();
@@ -561,6 +577,33 @@ impl WindowInvalidator {
 
     pub fn replace_views(&self, views: FxHashSet<EntityId>) {
         self.inner.borrow_mut().dirty_views = views;
+    }
+
+    pub(in crate::window) fn trim_retained_capacity(&self, level: GpuiMemoryTrimLevel) {
+        let mut inner = self.inner.borrow_mut();
+        let floor = if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            0
+        } else {
+            16
+        };
+        let eager = !matches!(level, GpuiMemoryTrimLevel::Light);
+
+        macro_rules! trim_collection {
+            ($field:ident) => {{
+                let target = floor.max(inner.$field.len());
+                if eager || inner.$field.capacity() > target.saturating_mul(4) {
+                    inner.$field.shrink_to(target);
+                }
+            }};
+        }
+
+        trim_collection!(dirty_views);
+        trim_collection!(pending_targeted_elements);
+        trim_collection!(pending_generic_dirty_views);
+        trim_collection!(pending_layout_animation_frames);
+        trim_collection!(pending_layout_animation_deadlines);
+        trim_collection!(active_targeted_elements);
+        trim_collection!(active_generic_dirty_views);
     }
 
     pub fn not_drawing(&self) -> bool {
