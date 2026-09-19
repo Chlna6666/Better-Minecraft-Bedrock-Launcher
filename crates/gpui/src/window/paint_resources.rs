@@ -663,6 +663,61 @@ impl Window {
         Ok(())
     }
 
+    /// Prunes static image atlas tiles that are absent from both the current and immediately
+    /// previous committed retained scenes.
+    ///
+    /// This deliberately does not evict decoded RenderImages. Source/CPU image lifetime remains
+    /// owned by the image cache, while derived GPU residency follows scene liveness. Keeping two
+    /// committed generations mirrors frame-cache liveness schemes used by immediate-mode UI
+    /// renderers and avoids upload churn when an item briefly leaves the viewport.
+    pub(crate) fn prune_static_image_atlas_residency(&mut self) {
+        if self.image_paint_tile_cache.is_empty() {
+            return;
+        }
+
+        let mut live_tiles = std::mem::take(&mut self.image_paint_live_tiles_scratch);
+        live_tiles.clear();
+        self.rendered_frame
+            .scene
+            .collect_polychrome_tile_ids_into(&mut live_tiles);
+        self.next_frame
+            .scene
+            .collect_polychrome_tile_ids_into(&mut live_tiles);
+
+        let atlas = self.sprite_atlas.clone();
+        self.image_paint_tile_cache.retain(|key, tile| {
+            if live_tiles.contains(&(tile.texture_id, tile.tile_id.0)) {
+                return true;
+            }
+
+            atlas.remove(&crate::AtlasKey::from(RenderImageParams {
+                image_id: key.image_id,
+                frame_slot: key.frame_slot,
+                pixel_format: key.pixel_format,
+            }));
+            false
+        });
+
+        const MIN_RETAINED_IMAGE_TILES: usize = 16;
+        const IMAGE_TILE_TRIM_WATERMARK_MULTIPLIER: usize = 4;
+
+        let cache_target = MIN_RETAINED_IMAGE_TILES.max(self.image_paint_tile_cache.len());
+        if self.image_paint_tile_cache.capacity()
+            > cache_target.saturating_mul(IMAGE_TILE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.image_paint_tile_cache.shrink_to(cache_target);
+        }
+
+        let live_target = MIN_RETAINED_IMAGE_TILES.max(live_tiles.len());
+        if live_tiles.capacity()
+            > live_target.saturating_mul(IMAGE_TILE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            live_tiles.shrink_to(live_target);
+        }
+        live_tiles.clear();
+        self.image_paint_live_tiles_scratch = live_tiles;
+    }
+
     /// Schedules a delayed moderate memory trim after this window loses focus.
     ///
     /// Reclaiming idle image and GPU scratch state on every transient deactivation causes
@@ -748,6 +803,7 @@ impl Window {
         trim_collection!(self.image_cache_stack);
         trim_collection!(self.animated_image_slots);
         trim_collection!(self.image_paint_tile_cache);
+        trim_collection!(self.image_paint_live_tiles_scratch);
         trim_collection!(self.dirty_views);
         trim_collection!(self.focus_retained_targets);
 

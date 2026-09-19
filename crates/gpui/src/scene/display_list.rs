@@ -730,6 +730,25 @@ impl Scene {
         self.animation_values.extend(values);
     }
 
+    /// Collects atlas allocation identities referenced by image/emoji sprites in this retained
+    /// scene, including nested element-blur scenes.
+    ///
+    /// Window image residency pruning intersects this set with the static image-tile lookup, so
+    /// non-image polychrome sprites are harmless: they never match an image cache entry.
+    pub(crate) fn collect_polychrome_tile_ids_into(
+        &self,
+        ids: &mut FxHashSet<(crate::AtlasTextureId, u32)>,
+    ) {
+        ids.extend(
+            self.polychrome_sprites
+                .iter()
+                .map(|sprite| (sprite.tile.texture_id, sprite.tile.tile_id.0)),
+        );
+        for blur in &self.blurs {
+            blur.content.collect_polychrome_tile_ids_into(ids);
+        }
+    }
+
     pub(crate) fn collect_animation_ids_into(
         &self,
         ids: &mut FxHashSet<SceneAnimationId>,

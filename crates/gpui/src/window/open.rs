@@ -421,6 +421,7 @@ impl Window {
             image_cache_stack: Vec::new(),
             animated_image_slots: FxHashMap::default(),
             image_paint_tile_cache: FxHashMap::default(),
+            image_paint_live_tiles_scratch: FxHashSet::default(),
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })

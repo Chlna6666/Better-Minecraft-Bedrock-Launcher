@@ -175,6 +175,9 @@ impl Window {
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+        // Keep static image atlas residency aligned with the two-generation retained-scene
+        // working set before the previous frame is cleared for scratch reuse.
+        self.prune_static_image_atlas_residency();
         self.next_frame.clear_for_reuse(&self.rendered_frame);
         self.viewport_dependent_views
             .borrow_mut()

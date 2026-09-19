@@ -339,6 +339,10 @@ pub struct Window {
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(super) animated_image_slots: FxHashMap<AnimatedImageSlotKey, usize>,
     pub(super) image_paint_tile_cache: FxHashMap<ImagePaintTileCacheKey, AtlasTile>,
+    /// Reused liveness set for static GPU image tiles. Entries are derived from the current and
+    /// previous committed retained scenes, not from CPU paint calls, so retained replay remains
+    /// authoritative.
+    pub(super) image_paint_live_tiles_scratch: FxHashSet<(crate::AtlasTextureId, u32)>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
     pub(super) render_dirty_region: DirtyRegion,

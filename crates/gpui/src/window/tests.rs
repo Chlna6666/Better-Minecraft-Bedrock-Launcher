@@ -294,6 +294,59 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn static_image_atlas_residency_follows_two_committed_scene_generations(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
+            .unwrap()
+    });
+    let image = Arc::new(
+        RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, vec![255, 0, 0, 255]).unwrap(),
+    );
+
+    window
+        .update(cx, |_, window, _| {
+            let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1.0), px(1.0)));
+            window.invalidator.set_phase(DrawPhase::Paint);
+            window
+                .paint_image(bounds, Corners::all(px(0.0)), image.clone(), 0, false)
+                .unwrap();
+            window.invalidator.set_phase(DrawPhase::None);
+            assert_eq!(window.image_paint_tile_cache.len(), 1);
+
+            // Commit the image frame. Its tile is live in the current scene.
+            std::mem::swap(&mut window.rendered_frame, &mut window.next_frame);
+            window.prune_static_image_atlas_residency();
+            assert_eq!(window.image_paint_tile_cache.len(), 1);
+            window.next_frame.clear_for_reuse(&window.rendered_frame);
+
+            // Commit one image-free frame. The immediately previous scene still grants one
+            // generation of residency grace, preventing scroll/transition upload thrash.
+            std::mem::swap(&mut window.rendered_frame, &mut window.next_frame);
+            window.prune_static_image_atlas_residency();
+            assert_eq!(window.image_paint_tile_cache.len(), 1);
+            window.next_frame.clear_for_reuse(&window.rendered_frame);
+
+            // A second consecutive image-free frame proves the retained scene no longer references
+            // the tile. GPU residency is retired even though the decoded source Arc is still alive.
+            std::mem::swap(&mut window.rendered_frame, &mut window.next_frame);
+            window.prune_static_image_atlas_residency();
+            assert!(window.image_paint_tile_cache.is_empty());
+            assert!(Arc::strong_count(&image) >= 1);
+
+            // The still-live CPU image can populate GPU residency again on demand.
+            window.invalidator.set_phase(DrawPhase::Paint);
+            window
+                .paint_image(bounds, Corners::all(px(0.0)), image.clone(), 0, false)
+                .unwrap();
+            window.invalidator.set_phase(DrawPhase::None);
+            assert_eq!(window.image_paint_tile_cache.len(), 1);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn paint_svg_skips_zero_sized_bounds(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
