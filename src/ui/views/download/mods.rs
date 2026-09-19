@@ -70,22 +70,18 @@ fn rebuild_mod_panel_render_cache(
     let loader_type = state.levilauncher_selected_loader.as_ref();
     let loader_ver = state.levilauncher_selected_loader_version.as_ref();
 
-    let filtered_mods: Vec<&LeviLaminaModEntry> = state
-        .levilauncher_all_mods
-        .iter()
-        .filter(|m| {
-            if !query.is_empty()
-                && !contains_ignore_ascii_case(&m.name, &query)
-                && !contains_ignore_ascii_case(&m.description, &query)
-                && !contains_ignore_ascii_case(&m.package_id, &query)
-            {
-                return false;
-            }
-            mod_matches_loader_version(m, loader_type, loader_ver)
-        })
-        .collect();
+    let matches = |m: &&LeviLaminaModEntry| {
+        if !query.is_empty()
+            && !contains_ignore_ascii_case(&m.name, &query)
+            && !contains_ignore_ascii_case(&m.description, &query)
+            && !contains_ignore_ascii_case(&m.package_id, &query)
+        {
+            return false;
+        }
+        mod_matches_loader_version(m, loader_type, loader_ver)
+    };
 
-    let total_mods = filtered_mods.len();
+    let total_mods = state.levilauncher_all_mods.iter().filter(matches).count();
     let page_size = state.levilauncher_page_size.max(1);
     let total_pages = (total_mods + page_size - 1) / page_size;
     let page_index = state
@@ -93,15 +89,14 @@ fn rebuild_mod_panel_render_cache(
         .min(total_pages.saturating_sub(1));
 
     let start_idx = page_index * page_size;
-    let end_idx = (start_idx + page_size).min(total_mods);
-    let page_mods = if start_idx < total_mods {
-        filtered_mods[start_idx..end_idx]
-            .iter()
-            .map(|m| (*m).clone())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let page_mods = state
+        .levilauncher_all_mods
+        .iter()
+        .filter(matches)
+        .skip(start_idx)
+        .take(page_size)
+        .cloned()
+        .collect();
 
     ModPanelRenderCache {
         last_signature: Some(signature),

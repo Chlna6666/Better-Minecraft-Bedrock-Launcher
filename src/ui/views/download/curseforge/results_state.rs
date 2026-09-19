@@ -14,7 +14,6 @@ pub(crate) fn invalidate_results_in_state(state: &mut DownloadPageState, cx: &mu
     state.curseforge_last_query_key = SharedString::from("");
     state.curseforge_results_transition_at = None;
     state.curseforge_mods.clear();
-    state.curseforge_mods.shrink_to_fit();
     state.curseforge_mod_page_open = false;
     state.curseforge_mod_page_loading = false;
     state.curseforge_mod_page_error = None;
@@ -42,7 +41,6 @@ pub(crate) fn begin_page_results_transition_in_state(state: &mut DownloadPageSta
     state.curseforge_results_epoch = state.curseforge_results_epoch.wrapping_add(1);
     state.curseforge_results_loading = true;
     state.curseforge_mods.clear();
-    state.curseforge_mods.shrink_to_fit();
     state.curseforge_results_error = None;
     state.curseforge_disable_result_logos = true;
     // 关键：翻页时不立即重置滚动条，等待新数据加载完成后再重置

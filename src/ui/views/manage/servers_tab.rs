@@ -308,11 +308,17 @@ impl ServerListRenderCache {
     }
 }
 
+fn cmp_ascii_case_insensitive(left: &str, right: &str) -> std::cmp::Ordering {
+    left.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+}
+
 pub(super) fn build_filtered_server_indices(
     state: &ManagePageState,
     signature: &ServerListSignature,
 ) -> Vec<usize> {
-    let query = signature.query.as_ref().to_ascii_lowercase();
+    let query = signature.query.as_ref();
     let mut indices = Vec::with_capacity(state.servers.len());
     for (index, server) in state.servers.iter().enumerate() {
         if query.is_empty()
@@ -325,10 +331,7 @@ pub(super) fn build_filtered_server_indices(
     indices.sort_by(|left, right| {
         let left = &state.servers[*left];
         let right = &state.servers[*right];
-        left.name
-            .as_ref()
-            .to_ascii_lowercase()
-            .cmp(&right.name.as_ref().to_ascii_lowercase())
+        cmp_ascii_case_insensitive(left.name.as_ref(), right.name.as_ref())
             .then_with(|| left.address.as_ref().cmp(right.address.as_ref()))
             .then_with(|| left.port.cmp(&right.port))
     });

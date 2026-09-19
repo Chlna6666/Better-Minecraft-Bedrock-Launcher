@@ -478,7 +478,7 @@ pub(super) fn build_filtered_asset_indices(
     state: &ManagePageState,
     signature: &AssetListSignature,
 ) -> Vec<usize> {
-    let query = signature.query.as_ref().to_ascii_lowercase();
+    let query = signature.query.as_ref();
     let mut entries = Vec::with_capacity(state.assets.len());
 
     for (index, asset) in state.assets.iter().enumerate() {
@@ -550,7 +550,15 @@ pub(super) fn asset_matches_query(asset: &ManageAssetEntry, query: &str) -> bool
 }
 
 pub(super) fn text_contains_query(text: &SharedString, query: &str) -> bool {
-    text.as_ref().to_ascii_lowercase().contains(query)
+    if query.is_empty() {
+        return true;
+    }
+    let haystack = text.as_ref().as_bytes();
+    let needle = query.as_bytes();
+    needle.len() <= haystack.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
 }
 pub(super) fn render_asset_list(
     colors: &ThemeColors,

@@ -148,7 +148,6 @@ fn close_sponsors_modal(cx: &mut App) {
         state.about_sponsors_error = None;
         state.about_sponsors_skeleton_phase = 0;
         state.about_sponsors.clear();
-        state.about_sponsors.shrink_to_fit();
     });
 }
 

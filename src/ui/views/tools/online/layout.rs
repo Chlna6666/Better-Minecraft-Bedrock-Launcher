@@ -187,24 +187,41 @@ pub(in crate::ui::views::tools) fn normalized_player_name(state: &ToolsPageState
     }
 }
 
-pub(in crate::ui::views::tools) fn append_online_log(message: impl Into<String>, cx: &mut App) {
-    let message = message.into();
+pub(in crate::ui::views::tools) fn append_online_log(message: impl AsRef<str>, cx: &mut App) {
+    const MAX_LINES: usize = 80;
+
+    let message = message.as_ref();
     if message.trim().is_empty() {
         return;
     }
 
     cx.update_global(|state: &mut ToolsPageState, _cx| {
-        let mut lines = state
-            .online_log
-            .as_ref()
-            .lines()
-            .rev()
-            .take(79)
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        lines.reverse();
-        lines.push(message);
-        state.online_log = SharedString::from(lines.join("\n"));
+        let existing = state.online_log.as_ref();
+        let mut keep_from = 0usize;
+        let mut newline_count = 0usize;
+        for (index, byte) in existing.bytes().enumerate().rev() {
+            if byte == b'\n' {
+                newline_count += 1;
+                if newline_count == MAX_LINES - 1 {
+                    keep_from = index + 1;
+                    break;
+                }
+            }
+        }
+
+        let tail = &existing[keep_from..];
+        let separator_len = usize::from(!tail.is_empty());
+        let mut next = String::with_capacity(
+            tail.len()
+                .saturating_add(separator_len)
+                .saturating_add(message.len()),
+        );
+        if !tail.is_empty() {
+            next.push_str(tail);
+            next.push('\n');
+        }
+        next.push_str(message);
+        state.online_log = SharedString::from(next);
     });
 }
 

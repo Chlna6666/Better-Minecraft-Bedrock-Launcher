@@ -173,13 +173,14 @@ impl ToolsPageState {
                 return Some(latency);
             }
         }
-        let latencies: Vec<u64> = self.peers.iter().filter_map(|p| p.latency_ms).collect();
-        if latencies.is_empty() {
-            None
-        } else {
-            let sum: u64 = latencies.iter().sum();
-            Some(sum / latencies.len() as u64)
-        }
+        let (sum, count) = self
+            .peers
+            .iter()
+            .filter_map(|peer| peer.latency_ms)
+            .fold((0_u64, 0_u64), |(sum, count), latency| {
+                (sum.saturating_add(latency), count + 1)
+            });
+        (count != 0).then_some(sum / count)
     }
 
     pub(crate) fn begin_online_operation(&mut self, operation: OnlineOperation) -> Option<u64> {

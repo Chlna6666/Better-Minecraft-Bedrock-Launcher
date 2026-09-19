@@ -82,7 +82,7 @@ pub(super) fn build_filtered_screenshot_indices(
     state: &ManagePageState,
     signature: &ScreenshotListSignature,
 ) -> Vec<usize> {
-    let query = signature.query.as_ref().to_ascii_lowercase();
+    let query = signature.query.as_ref();
     let mut indices = Vec::with_capacity(state.screenshots.len());
     for (index, screenshot) in state.screenshots.iter().enumerate() {
         if query.is_empty()

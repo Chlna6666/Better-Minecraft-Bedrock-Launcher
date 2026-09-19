@@ -93,19 +93,17 @@ fn render_room_members_list(
     i18n: &I18n,
     state: &ToolsPageState,
 ) -> impl IntoElement {
-    // 排序：房主 (is_room_host == true) 强制置顶展示
-    let mut sorted_players = state.players.clone();
-    sorted_players.sort_by_key(|player| !player.is_room_host);
+    let players_empty = state.players.is_empty();
 
     div()
         .w_full()
         .flex()
         .flex_col()
         .gap(px(7.))
-        .when(state.peers_loading && sorted_players.is_empty(), |this| {
+        .when(state.peers_loading && players_empty, |this| {
             this.child(empty_row(colors, t!("Online.syncing_members")))
         })
-        .when(sorted_players.is_empty() && !state.peers_loading, |this| {
+        .when(players_empty && !state.peers_loading, |this| {
             this.child(empty_row(
                 colors,
                 if state.easytier_running {
@@ -115,11 +113,15 @@ fn render_room_members_list(
                 },
             ))
         })
-        .when(!sorted_players.is_empty(), |this| {
+        .when(!players_empty, |this| {
+            // Keep the host first without cloning/sorting the whole player vector every render.
             this.children(
-                sorted_players
-                    .into_iter()
-                    .map(|player| render_player_row(colors, i18n, &player)),
+                state
+                    .players
+                    .iter()
+                    .filter(|player| player.is_room_host)
+                    .chain(state.players.iter().filter(|player| !player.is_room_host))
+                    .map(|player| render_player_row(colors, i18n, player)),
             )
         })
 }

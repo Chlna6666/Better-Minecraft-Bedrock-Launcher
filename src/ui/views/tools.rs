@@ -2,9 +2,7 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::settings::state::SettingsPageState;
-use crate::ui::views::tools::state::{
-    OnlineOperation, OnlinePeerEntry, OnlinePlayerEntry, ToolsPageState, ToolsTab,
-};
+use crate::ui::views::tools::state::{OnlineOperation, ToolsPageState, ToolsTab};
 use gpui::*;
 use std::time::Duration;
 
@@ -38,7 +36,8 @@ struct ToolsRenderSignature {
     discovery_retrying: bool,
     online_error: Option<SharedString>,
     online_log: SharedString,
-    abandoned_nodes: Vec<SharedString>,
+    abandoned_nodes_ptr: usize,
+    abandoned_nodes_len: usize,
     abandoned_nodes_visible: bool,
     easytier_running: bool,
     easytier_hostname: SharedString,
@@ -50,8 +49,10 @@ struct ToolsRenderSignature {
     host_room_code: SharedString,
     peers_loading: bool,
     network_nodes_expanded: bool,
-    players: Vec<OnlinePlayerEntry>,
-    peers: Vec<OnlinePeerEntry>,
+    players_ptr: usize,
+    players_len: usize,
+    peers_ptr: usize,
+    peers_len: usize,
 }
 
 impl ToolsRenderSignature {
@@ -79,7 +80,8 @@ impl ToolsRenderSignature {
             discovery_retrying: state.discovery_retrying,
             online_error: state.online_error.clone(),
             online_log: state.online_log.clone(),
-            abandoned_nodes: state.abandoned_nodes.clone(),
+            abandoned_nodes_ptr: state.abandoned_nodes.as_ptr() as usize,
+            abandoned_nodes_len: state.abandoned_nodes.len(),
             abandoned_nodes_visible: state.are_abandoned_nodes_visible(),
             easytier_running: state.easytier_running,
             easytier_hostname: state.easytier_hostname.clone(),
@@ -91,8 +93,10 @@ impl ToolsRenderSignature {
             host_room_code: state.host_room_code.clone(),
             peers_loading: state.peers_loading,
             network_nodes_expanded: state.network_nodes_expanded,
-            players: state.players.clone(),
-            peers: state.peers.clone(),
+            players_ptr: state.players.as_ptr() as usize,
+            players_len: state.players.len(),
+            peers_ptr: state.peers.as_ptr() as usize,
+            peers_len: state.peers.len(),
         }
     }
 }
@@ -101,6 +105,7 @@ pub struct ToolsPageView {
     _subscriptions: Vec<Subscription>,
     _online_refresh_task: Task<()>,
     last_render_signature: Option<ToolsRenderSignature>,
+    active: bool,
 }
 
 impl ToolsPageView {
@@ -110,22 +115,32 @@ impl ToolsPageView {
                 let signature = ToolsRenderSignature::from_state(cx.global::<ToolsPageState>());
                 if this.last_render_signature.as_ref() != Some(&signature) {
                     this.last_render_signature = Some(signature);
+                    if this.active {
+                        cx.notify();
+                    }
+                }
+            }),
+            cx.observe_global::<ThemeState>(|this: &mut Self, cx| {
+                if this.active {
                     cx.notify();
                 }
             }),
-            cx.observe_global::<ThemeState>(|_, cx| {
-                cx.notify();
-            }),
-            cx.observe_global::<SettingsPageState>(|_, cx| {
-                cx.notify();
+            cx.observe_global::<SettingsPageState>(|this: &mut Self, cx| {
+                if this.active {
+                    cx.notify();
+                }
             }),
         ];
         let online_refresh_task = cx.spawn(async move |_this, cx| {
             loop {
                 Timer::after(Duration::from_secs(3)).await;
                 if let Err(error) = cx.update(|cx| {
-                    actions::refresh_status(cx);
-                    actions::check_nat(cx);
+                    if crate::ui::navigation::current_route(cx)
+                        == crate::ui::navigation::AppRoute::Tools
+                    {
+                        actions::refresh_status(cx);
+                        actions::check_nat(cx);
+                    }
                 }) {
                     tracing::warn!("online refresh task update failed: {error:?}");
                 }
@@ -137,6 +152,17 @@ impl ToolsPageView {
             last_render_signature: Some(ToolsRenderSignature::from_state(
                 cx.global::<ToolsPageState>(),
             )),
+            active: false,
+        }
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            cx.notify();
         }
     }
 }

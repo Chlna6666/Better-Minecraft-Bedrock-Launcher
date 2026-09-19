@@ -26,6 +26,14 @@ impl MainWindowView {
             });
         }
 
+        let tools_page_active = matches!(route, RouteTarget::Builtin(AppRoute::Tools));
+        if let Some(view) = &self.tools_page_view {
+            let _ = view.update(cx, |view, cx| {
+                view.set_active(tools_page_active, cx);
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+
         let tasks_page_active = matches!(route, RouteTarget::Builtin(AppRoute::Tasks));
         if let Some(view) = &self.tasks_page_view {
             let _ = view.update(cx, |view, cx| {

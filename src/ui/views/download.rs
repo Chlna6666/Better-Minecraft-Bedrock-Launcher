@@ -311,6 +311,7 @@ pub struct DownloadPageView {
     curseforge_resource_panel: Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<Entity<game::DownloadGamePanelView>>,
     mod_panel_cache: mods::ModPanelRenderCache,
+    native_mod_panel_cache: native::NativeModPanelRenderCache,
     mod_image_cache: Entity<BoundedImageCache>,
     secondary_prefetch_scheduled: bool,
     last_observed_tab: DownloadTab,
@@ -481,6 +482,7 @@ impl DownloadPageView {
             curseforge_resource_panel: cx.new(curseforge::CurseForgeResourcePanelView::new),
             game_panel_view,
             mod_panel_cache: mods::ModPanelRenderCache::default(),
+            native_mod_panel_cache: native::NativeModPanelRenderCache::default(),
             mod_image_cache: BoundedImageCache::new(
                 BoundedImageCacheConfig {
                     max_items: 96,
@@ -606,6 +608,7 @@ impl Render for DownloadPageView {
                 &self.curseforge_resource_panel,
                 game_panel_view.as_ref(),
                 &mut self.mod_panel_cache,
+                &mut self.native_mod_panel_cache,
                 &self.mod_image_cache,
             ))
     }
@@ -620,6 +623,7 @@ pub fn render_download_page(
     curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
     mod_panel_cache: &mut mods::ModPanelRenderCache,
+    native_mod_panel_cache: &mut native::NativeModPanelRenderCache,
     mod_image_cache: &Entity<BoundedImageCache>,
 ) -> impl IntoElement {
     let (active_tab, tab_anim_from, tab_anim_seq) =
@@ -663,7 +667,13 @@ pub fn render_download_page(
                 .unwrap_or_else(|| div().size_full().into_any_element()),
             DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
             DownloadTab::Mod => {
-                mods::render_mod_panel(cx, &colors, mod_panel_cache, mod_image_cache)
+                mods::render_mod_panel(
+                    cx,
+                    &colors,
+                    mod_panel_cache,
+                    native_mod_panel_cache,
+                    mod_image_cache,
+                )
                     .into_any_element()
             }
         }

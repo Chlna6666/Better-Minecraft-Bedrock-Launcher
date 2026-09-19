@@ -7,6 +7,17 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
 use gpui::*;
 
+type NativeModPanelRenderSignature = (usize, usize, SharedString, usize, usize);
+
+#[derive(Default)]
+pub(super) struct NativeModPanelRenderCache {
+    last_signature: Option<NativeModPanelRenderSignature>,
+    total_mods: usize,
+    total_pages: usize,
+    page_index: usize,
+    page_indices: Vec<usize>,
+}
+
 fn contains_ignore_ascii_case(haystack: &str, needle_lower: &str) -> bool {
     needle_lower.is_empty()
         || haystack
@@ -15,7 +26,68 @@ fn contains_ignore_ascii_case(haystack: &str, needle_lower: &str) -> bool {
             .any(|window| window.eq_ignore_ascii_case(needle_lower.as_bytes()))
 }
 
-pub(super) fn render_panel(cx: &mut App, colors: &ThemeColors) -> Div {
+fn build_render_signature(state: &DownloadPageState) -> NativeModPanelRenderSignature {
+    (
+        state.native_mods.as_ptr() as usize,
+        state.native_mods.len(),
+        state.search_query.clone(),
+        state.levilauncher_page_index,
+        state.levilauncher_page_size,
+    )
+}
+
+fn entry_matches_query(entry: &NativeModEntry, query: &str) -> bool {
+    query.is_empty()
+        || contains_ignore_ascii_case(&entry.name, query)
+        || contains_ignore_ascii_case(&entry.description, query)
+        || contains_ignore_ascii_case(&entry.id, query)
+        || entry
+            .tags
+            .iter()
+            .any(|tag| contains_ignore_ascii_case(tag, query))
+}
+
+fn rebuild_render_cache(
+    state: &DownloadPageState,
+    signature: NativeModPanelRenderSignature,
+) -> NativeModPanelRenderCache {
+    let query = state.search_query.trim().to_ascii_lowercase();
+    let total_mods = state
+        .native_mods
+        .iter()
+        .filter(|entry| entry_matches_query(entry, &query))
+        .count();
+    let page_size = state.levilauncher_page_size.max(1);
+    let total_pages = (total_mods + page_size - 1) / page_size;
+    let page_index = state
+        .levilauncher_page_index
+        .min(total_pages.saturating_sub(1));
+    let start = page_index.saturating_mul(page_size);
+
+    let page_indices = state
+        .native_mods
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry_matches_query(entry, &query))
+        .skip(start)
+        .take(page_size)
+        .map(|(index, _)| index)
+        .collect();
+
+    NativeModPanelRenderCache {
+        last_signature: Some(signature),
+        total_mods,
+        total_pages,
+        page_index,
+        page_indices,
+    }
+}
+
+pub(super) fn render_panel(
+    cx: &mut App,
+    colors: &ThemeColors,
+    cache: &mut NativeModPanelRenderCache,
+) -> Div {
     let state = cx.global::<DownloadPageState>();
     if state.native_mods_loading && !state.native_mods_loaded {
         return render_loading(colors);
@@ -24,33 +96,10 @@ pub(super) fn render_panel(cx: &mut App, colors: &ThemeColors) -> Div {
         return render_error(colors, &error);
     }
 
-    let query = state.search_query.trim().to_ascii_lowercase();
-    let filtered = state
-        .native_mods
-        .iter()
-        .filter(|entry| {
-            query.is_empty()
-                || contains_ignore_ascii_case(&entry.name, &query)
-                || contains_ignore_ascii_case(&entry.description, &query)
-                || contains_ignore_ascii_case(&entry.id, &query)
-                || entry
-                    .tags
-                    .iter()
-                    .any(|tag| contains_ignore_ascii_case(tag, &query))
-        })
-        .collect::<Vec<_>>();
-    let page_size = state.levilauncher_page_size.max(1);
-    let total_pages = (filtered.len() + page_size - 1) / page_size;
-    let page_index = state
-        .levilauncher_page_index
-        .min(total_pages.saturating_sub(1));
-    let start = page_index * page_size;
-    let end = (start + page_size).min(filtered.len());
-    let page = if start < end {
-        &filtered[start..end]
-    } else {
-        &[]
-    };
+    let signature = build_render_signature(state);
+    if cache.last_signature.as_ref() != Some(&signature) {
+        *cache = rebuild_render_cache(state, signature);
+    }
 
     let mut grid = div()
         .w_full()
@@ -58,10 +107,12 @@ pub(super) fn render_panel(cx: &mut App, colors: &ThemeColors) -> Div {
         .flex_wrap()
         .gap(px(16.))
         .items_stretch();
-    for (index, entry) in page.iter().enumerate() {
-        grid = grid.child(render_card(colors, entry, index));
+    for (index, entry_index) in cache.page_indices.iter().copied().enumerate() {
+        if let Some(entry) = state.native_mods.get(entry_index) {
+            grid = grid.child(render_card(colors, entry, index));
+        }
     }
-    let content = if filtered.is_empty() {
+    let content = if cache.total_mods == 0 {
         render_empty(colors)
     } else {
         grid
@@ -71,7 +122,7 @@ pub(super) fn render_panel(cx: &mut App, colors: &ThemeColors) -> Div {
         .size_full()
         .flex()
         .flex_col()
-        .child(render_stats(colors, filtered.len()))
+        .child(render_stats(colors, cache.total_mods))
         .child(
             div()
                 .flex_1()
@@ -80,7 +131,7 @@ pub(super) fn render_panel(cx: &mut App, colors: &ThemeColors) -> Div {
                 .p(px(20.))
                 .child(content),
         )
-        .child(render_pagination(colors, page_index, total_pages))
+        .child(render_pagination(colors, cache.page_index, cache.total_pages))
 }
 
 fn render_loading(colors: &ThemeColors) -> Div {
@@ -186,9 +237,14 @@ fn render_stats(colors: &ThemeColors, count: usize) -> Div {
 }
 
 fn render_card(colors: &ThemeColors, entry: &NativeModEntry, index: usize) -> AnyElement {
-    let entry_for_click = entry.clone();
-    let file_names = entry.files.keys().cloned().collect::<Vec<_>>();
-    let file_label = file_names.join(", ");
+    let entry_id = entry.id.clone();
+    let mut file_label = String::new();
+    for (file_index, file_name) in entry.files.keys().enumerate() {
+        if file_index != 0 {
+            file_label.push_str(", ");
+        }
+        file_label.push_str(file_name);
+    }
     div()
         .id(ElementId::NamedInteger(
             "native-mod-card".into(),
@@ -273,7 +329,18 @@ fn render_card(colors: &ThemeColors, entry: &NativeModEntry, index: usize) -> An
                         ..colors.accent
                     })
                     .text_color(colors.accent)
-                    .on_click(move |_, _, cx| open_modal(entry_for_click.clone(), cx)),
+                    .on_click(move |_, _, cx| {
+                        let selected = cx.read_global(|state: &DownloadPageState, _cx| {
+                            state
+                                .native_mods
+                                .iter()
+                                .find(|entry| entry.id.as_str() == entry_id.as_str())
+                                .cloned()
+                        });
+                        if let Some(entry) = selected {
+                            open_modal(entry, cx);
+                        }
+                    }),
                 ),
         )
         .into_any_element()
