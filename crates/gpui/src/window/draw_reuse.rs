@@ -498,7 +498,7 @@ impl Window {
         self.next_frame.retained_layout_semantics.insert(
             layout_id,
             RetainedSemanticEntry {
-                descriptor,
+                descriptor: Some(descriptor),
                 stamp: RetainedSemanticStamp {
                     segment: retained_segment.clone(),
                     generation,
@@ -516,9 +516,12 @@ impl Window {
         let Some(current) = self.next_frame.retained_layout_semantics.get(&layout_id) else {
             return false;
         };
+        let Some(descriptor) = current.descriptor.as_ref() else {
+            return false;
+        };
         current.identity_is_stable()
-            && matches!(&current.descriptor, RetainedSemanticDescriptor::Div { .. })
-            && retained.semantic_descriptor.as_ref() == Some(&current.descriptor)
+            && matches!(descriptor, RetainedSemanticDescriptor::Div { .. })
+            && retained.semantic_descriptor.as_ref() == Some(descriptor)
             && retained.semantic_generation == Some(current.stamp.generation)
     }
 
@@ -659,12 +662,17 @@ impl Window {
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let paint_context = self.current_retained_paint_context();
+        // Keep the hash-map slot/bucket alive as a frame-local arena, but transfer the expensive
+        // descriptor payload into retained metadata instead of cloning TextStyle/child stamps.
         let semantic_proof = self
             .next_frame
             .retained_layout_semantics
-            .get(&layout_id)
+            .get_mut(&layout_id)
             .filter(|entry| entry.identity_is_stable())
-            .map(|entry| (entry.descriptor.clone(), entry.stamp.generation));
+            .and_then(|entry| {
+                let generation = entry.stamp.generation;
+                entry.descriptor.take().map(|descriptor| (descriptor, generation))
+            });
         let (semantic_descriptor, semantic_generation) = semantic_proof
             .map(|(descriptor, generation)| (Some(descriptor), Some(generation)))
             .unwrap_or((None, None));

@@ -117,7 +117,9 @@ pub(crate) enum RetainedSemanticDescriptor {
 /// Current-frame semantic proof registered as soon as an element finishes request-layout.
 #[derive(Clone)]
 pub(crate) struct RetainedSemanticEntry {
-    pub(crate) descriptor: RetainedSemanticDescriptor,
+    /// Frame-local payload. The map entry itself is kept as a stable arena slot so its hash
+    /// bucket can be reused next frame; paint moves the descriptor into RetainedElementRange.
+    pub(crate) descriptor: Option<RetainedSemanticDescriptor>,
     pub(crate) stamp: RetainedSemanticStamp,
     pub(crate) identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
 }
