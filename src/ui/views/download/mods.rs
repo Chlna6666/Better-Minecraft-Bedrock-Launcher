@@ -165,6 +165,7 @@ pub(super) fn render_mod_panel(
         .child(
             div()
                 .flex_1()
+                .min_h(px(0.))
                 .overflow_y_scrollbar()
                 .track_scroll(&state.levilauncher_scroll)
                 .p(px(20.))
