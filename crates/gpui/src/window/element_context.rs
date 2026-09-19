@@ -419,6 +419,40 @@ impl Window {
         text_raster_scale: f32,
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
+        self.with_scene_animation_impl(
+            animation_id,
+            property,
+            text_raster_scale,
+            None,
+            paint,
+        )
+    }
+
+    pub(crate) fn with_scene_blur_animation<R>(
+        &mut self,
+        animation_id: crate::SceneAnimationId,
+        text_raster_scale: f32,
+        capture_bounds: Bounds<Pixels>,
+        max_radius_device: f32,
+        paint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_scene_animation_impl(
+            animation_id,
+            crate::TransitionProperty::Blur,
+            text_raster_scale,
+            Some((capture_bounds, max_radius_device)),
+            paint,
+        )
+    }
+
+    fn with_scene_animation_impl<R>(
+        &mut self,
+        animation_id: crate::SceneAnimationId,
+        property: crate::TransitionProperty,
+        text_raster_scale: f32,
+        blur_capture: Option<(Bounds<Pixels>, f32)>,
+        paint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
         self.invalidator.debug_assert_paint();
 
         let completed_text_raster_scale = self
@@ -461,7 +495,7 @@ impl Window {
         // Scene primitives currently carry one animation id. Promote an existing parent visual
         // animation to a retained composite before entering a nested animation so the child cannot
         // replace the parent's motion binding. Re-entering this method is safe because
-        // `paint_element_blur` temporarily removes the promoted parent binding while capturing.
+        // paint_element_blur temporarily removes the promoted parent binding while capturing.
         if self.scene_animation.is_some_and(|(_, parent_property)| {
             matches!(
                 parent_property,
@@ -477,6 +511,28 @@ impl Window {
             let result = self.paint_composite_layer(capture_bounds, |window| {
                 window.with_scene_animation(animation_id, property, 1.0, paint)
             });
+            self.scene_text_raster_scale = previous_text_raster_scale;
+            return result;
+        }
+
+        // Blur is a subtree filter, not a per-primitive property. Capture the subtree once with
+        // the largest endpoint sigma so its 3-sigma sampling footprint stays stable for the whole
+        // animation. Per-frame samples then update only the compact blur descriptor/kernel buffers.
+        if property == crate::TransitionProperty::Blur {
+            const MIN_SIGMA: f32 = 1.0 / 4096.0;
+            let (capture_bounds, max_radius_device) = blur_capture.unwrap_or_else(|| {
+                let scale = (self.scale_factor() * self.visual_scale()).abs();
+                (self.content_mask().bounds, MIN_SIGMA * scale.max(1.0))
+            });
+            let device_scale = (self.scale_factor() * self.visual_scale()).abs();
+            let sigma = if max_radius_device.is_finite() && device_scale > f32::EPSILON {
+                (max_radius_device.abs() / device_scale).max(MIN_SIGMA)
+            } else {
+                MIN_SIGMA
+            };
+            let previous_animation = self.scene_animation.replace((animation_id, property));
+            let result = self.paint_element_blur(capture_bounds, px(sigma), paint);
+            self.scene_animation = previous_animation;
             self.scene_text_raster_scale = previous_text_raster_scale;
             return result;
         }

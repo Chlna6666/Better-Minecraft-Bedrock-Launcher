@@ -85,6 +85,26 @@ impl AnimationProperty {
         }
     }
 
+    /// Animate a CSS-style Gaussian blur radius for the whole retained subtree.
+    ///
+    /// Values are logical pixels. Nova captures the subtree once using the largest endpoint
+    /// radius, then advances the actual filter radius without rerendering the owning view.
+    pub fn blur(from: Pixels, to: Pixels) -> Self {
+        let sanitize = |value: Pixels| {
+            let value = f32::from(value);
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        };
+        Self {
+            property: TransitionProperty::Blur,
+            from: [sanitize(from), 0.0, 0.0, 0.0],
+            to: [sanitize(to), 0.0, 0.0, 0.0],
+        }
+    }
+
     /// Animate a visual translation without changing layout.
     pub fn translation(from: Point<Pixels>, to: Point<Pixels>) -> Self {
         Self {
@@ -173,7 +193,12 @@ impl AnimationProperty {
         }
     }
 
-    fn resolved_values(self, bounds: Bounds<Pixels>, scale_factor: f32) -> ([f32; 4], [f32; 4]) {
+    fn resolved_values(
+        self,
+        bounds: Bounds<Pixels>,
+        scale_factor: f32,
+        visual_scale: f32,
+    ) -> ([f32; 4], [f32; 4]) {
         match self.property {
             TransitionProperty::Translation => {
                 // Scene primitive bounds are already converted to device-scaled `ScaledPixels`.
@@ -185,6 +210,18 @@ impl AnimationProperty {
                 from[1] *= scale_factor;
                 to[0] *= scale_factor;
                 to[1] *= scale_factor;
+                (from, to)
+            }
+            TransitionProperty::Blur => {
+                let scale = if scale_factor.is_finite() && visual_scale.is_finite() {
+                    (scale_factor * visual_scale).abs()
+                } else {
+                    1.0
+                };
+                let mut from = self.from;
+                let mut to = self.to;
+                from[0] = from[0].max(0.0) * scale;
+                to[0] = to[0].max(0.0) * scale;
                 (from, to)
             }
             TransitionProperty::Transform => {
@@ -250,6 +287,14 @@ impl AnimationProperty {
                 translated_bounds(bounds, self.from).union(&translated_bounds(bounds, self.to))
             }
             TransitionProperty::Rotation => rotation_bounds(bounds),
+            TransitionProperty::Blur => {
+                let radius = self.from[0].abs().max(self.to[0].abs());
+                if radius.is_finite() && radius > 0.0 {
+                    bounds.dilate(crate::px(radius * 3.0 + 0.5))
+                } else {
+                    bounds
+                }
+            }
             _ => bounds,
         }
     }
@@ -271,6 +316,34 @@ impl AnimationProperty {
             SPRING_TRANSLATION_PROGRESS_MAX,
         );
         Some(first.union(&last))
+    }
+}
+
+fn paint_scene_animation<R>(
+    window: &mut Window,
+    animation_id: SceneAnimationId,
+    property: AnimationProperty,
+    bounds: Bounds<Pixels>,
+    from: [f32; 4],
+    to: [f32; 4],
+    paint: impl FnOnce(&mut Window) -> R,
+) -> R {
+    if property.property == TransitionProperty::Blur {
+        let max_radius_device = from[0].abs().max(to[0].abs());
+        window.with_scene_blur_animation(
+            animation_id,
+            property.text_raster_scale(),
+            bounds,
+            max_radius_device,
+            paint,
+        )
+    } else {
+        window.with_scene_animation(
+            animation_id,
+            property.property,
+            property.text_raster_scale(),
+            paint,
+        )
     }
 }
 
@@ -597,7 +670,7 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
+        let (from, to) = self.property.resolved_values(bounds, window.scale_factor(), window.visual_scale());
         window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
             animation_id: state.animation_id,
             property: self.property.property,
@@ -609,10 +682,13 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
             from,
             to,
         });
-        window.with_scene_animation(
+        paint_scene_animation(
+            window,
             state.animation_id,
-            self.property.property,
-            self.property.text_raster_scale(),
+            self.property,
+            bounds,
+            from,
+            to,
             |window| element.paint(window, cx),
         );
     }
@@ -736,7 +812,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             return;
         };
 
-        let (from, to) = self.property.resolved_values(bounds, window.scale_factor());
+        let (from, to) = self.property.resolved_values(bounds, window.scale_factor(), window.visual_scale());
         window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
             animation_id: state.animation_id,
             property: self.property.property,
@@ -748,10 +824,13 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             from,
             to,
         });
-        window.with_scene_animation(
+        paint_scene_animation(
+            window,
             state.animation_id,
-            self.property.property,
-            self.property.text_raster_scale(),
+            self.property,
+            bounds,
+            from,
+            to,
             |window| element.paint(window, cx),
         );
 
@@ -903,7 +982,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
         let spring = self.animations[0].spring;
-        let (from, to) = property.resolved_values(bounds, window.scale_factor());
+        let (from, to) = property.resolved_values(bounds, window.scale_factor(), window.visual_scale());
         // Custom curves may overshoot by an arbitrary amount. Translation starts conservatively at
         // viewport scope; a physical spring can be tightened after paint reveals actual scene bounds.
         let dirty_bounds = if property.property == TransitionProperty::Translation {
@@ -984,10 +1063,13 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         };
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
-        window.with_scene_animation(
+        paint_scene_animation(
+            window,
             state.animation_id,
-            state.property.property,
-            state.property.text_raster_scale(),
+            state.property,
+            bounds,
+            state.from,
+            state.to,
             |window| {
                 element.paint(window, cx);
                 if state.spring.is_some()
@@ -1126,6 +1208,26 @@ mod tests {
     }
 
     #[test]
+    fn declared_blur_uses_renderer_gpu_driver_and_device_radius() {
+        let property = AnimationProperty::blur(crate::px(2.0), crate::px(12.0));
+        let animation = Animation::new(Duration::from_millis(240)).with_property(property);
+        let (declared, spec) = animation.scene_animation().expect("scene animation");
+        let bounds = Bounds::new(
+            Point::new(crate::px(0.0), crate::px(0.0)),
+            crate::size(crate::px(100.0), crate::px(60.0)),
+        );
+
+        assert_eq!(declared.property, TransitionProperty::Blur);
+        assert_eq!(
+            declared.resolved_values(bounds, 2.0, 1.5),
+            ([6.0, 0.0, 0.0, 0.0], [36.0, 0.0, 0.0, 0.0])
+        );
+        assert!(TransitionProperty::Blur.supports_gpu_driver());
+        assert_eq!(TransitionProperty::Blur.preferred_driver(), AnimationDriver::Gpu);
+        assert_eq!(spec.driver, AnimationDriver::Auto);
+    }
+
+    #[test]
     fn resolved_translation_uses_device_pixel_distance() {
         let property = AnimationProperty::translation(
             Point::new(crate::px(10.0), crate::px(5.0)),
@@ -1137,7 +1239,7 @@ mod tests {
         );
 
         assert_eq!(
-            property.resolved_values(bounds, 2.0),
+            property.resolved_values(bounds, 2.0, 1.0),
             ([20.0, 10.0, 0.0, 0.0], [80.0, 30.0, 0.0, 0.0])
         );
     }
@@ -1156,7 +1258,7 @@ mod tests {
         );
 
         assert_eq!(
-            property.resolved_values(bounds, 2.0),
+            property.resolved_values(bounds, 2.0, 1.0),
             ([20.0, 10.0, 0.88, 1.0], [0.0, 0.0, 1.0, 1.0])
         );
     }
@@ -1168,7 +1270,7 @@ mod tests {
             Point::new(crate::px(10.0), crate::px(20.0)),
             crate::size(crate::px(30.0), crate::px(40.0)),
         );
-        let (from, to) = property.resolved_values(bounds, 2.0);
+        let (from, to) = property.resolved_values(bounds, 2.0, 1.0);
 
         assert_eq!(from, [0.0, 50.0, 80.0, 0.0]);
         assert_eq!(to, [1.0, 50.0, 80.0, 0.0]);
@@ -1183,14 +1285,14 @@ mod tests {
 
         let top = AnimationProperty::vertical_reveal(crate::VerticalRevealEdge::Top, 0.0, 1.0);
         assert_eq!(
-            top.resolved_values(bounds, 2.0),
+            top.resolved_values(bounds, 2.0, 1.0),
             ([20.0, 80.0, 40.0, 40.0], [20.0, 80.0, 40.0, 120.0])
         );
 
         let bottom =
             AnimationProperty::vertical_reveal(crate::VerticalRevealEdge::Bottom, 0.25, 1.0);
         assert_eq!(
-            bottom.resolved_values(bounds, 2.0),
+            bottom.resolved_values(bounds, 2.0, 1.0),
             ([20.0, 80.0, 100.0, 120.0], [20.0, 80.0, 40.0, 120.0])
         );
     }
@@ -1204,13 +1306,13 @@ mod tests {
 
         let left = AnimationProperty::horizontal_reveal(HorizontalRevealEdge::Left, 0.25, 1.0);
         assert_eq!(
-            left.resolved_values(bounds, 2.0),
+            left.resolved_values(bounds, 2.0, 1.0),
             ([20.0, 35.0, 40.0, 120.0], [20.0, 80.0, 40.0, 120.0])
         );
 
         let right = AnimationProperty::horizontal_reveal(HorizontalRevealEdge::Right, 0.0, 0.5);
         assert_eq!(
-            right.resolved_values(bounds, 2.0),
+            right.resolved_values(bounds, 2.0, 1.0),
             ([80.0, 80.0, 40.0, 120.0], [50.0, 80.0, 40.0, 120.0])
         );
     }

@@ -79,8 +79,9 @@ impl TransitionProperty {
         }
     }
 
-    /// Returns true if this property can be sampled by the current generic GPU
-    /// animation path without primitive-specific fallback checks.
+    /// Returns true if this property can advance on the renderer-owned visual path without
+    /// rebuilding the owning view. Filter properties may still refresh their compact GPU
+    /// descriptors while retaining the captured scene and GPU targets.
     pub fn supports_gpu_driver(self) -> bool {
         matches!(
             self,
@@ -89,6 +90,7 @@ impl TransitionProperty {
                 | Self::Translation
                 | Self::Scale
                 | Self::Rotation
+                | Self::Blur
                 | Self::ClipReveal
         )
     }

@@ -184,23 +184,26 @@ struct BackdropBlurAnimationSample {
     base_mask_bounds: crate::Bounds<crate::ScaledPixels>,
     sampled_bounds: crate::Bounds<crate::ScaledPixels>,
     sampled_mask_bounds: crate::Bounds<crate::ScaledPixels>,
-    radius: crate::ScaledPixels,
+    base_radius: crate::ScaledPixels,
+    sampled_radius: crate::ScaledPixels,
 }
 
 #[derive(Clone, Copy)]
 struct AnimatedPrimitiveSample {
     visual_bounds: crate::Bounds<crate::ScaledPixels>,
     backdrop_blur: Option<BackdropBlurAnimationSample>,
+    filter_parameters_changed: bool,
 }
 
 impl BackdropBlurAnimationSample {
     fn can_use_base_filter(self) -> bool {
-        bounds_contains(self.base_bounds, self.sampled_bounds)
+        self.base_radius == self.sampled_radius
+            && bounds_contains(self.base_bounds, self.sampled_bounds)
             && bounds_contains(self.base_mask_bounds, self.sampled_mask_bounds)
     }
 
     fn base_source_region(self) -> crate::Bounds<crate::ScaledPixels> {
-        let sigma = self.radius.0.abs();
+        let sigma = self.base_radius.0.abs();
         let support = if sigma.is_finite() && sigma > 0.0 {
             crate::ScaledPixels(sigma * 3.0 + 0.5)
         } else {
@@ -249,6 +252,10 @@ impl AnimatedUpload {
     ) -> AnimatedPrimitiveSample {
         let mut primitive = self.primitive.clone();
         let resolved_value = values.get(&self.animation_id).copied();
+        let filter_parameters_changed = resolved_value.is_some_and(|value| {
+            value.property == TransitionProperty::Blur
+                && matches!(primitive, Primitive::BackdropBlur(_) | Primitive::Blur(_))
+        });
         let composite_rotation = resolved_value.filter(|value| {
             value.property == TransitionProperty::Rotation
                 && matches!(primitive, Primitive::Blur(_))
@@ -280,7 +287,8 @@ impl AnimatedUpload {
                     base_mask_bounds: base.content_mask.bounds,
                     sampled_bounds: sampled.bounds,
                     sampled_mask_bounds: sampled.content_mask.bounds,
-                    radius: base.radius,
+                    base_radius: base.radius,
+                    sampled_radius: sampled.radius,
                 })
             }
             _ => None,
@@ -307,6 +315,7 @@ impl AnimatedUpload {
         AnimatedPrimitiveSample {
             visual_bounds,
             backdrop_blur,
+            filter_parameters_changed,
         }
     }
 
@@ -376,6 +385,7 @@ impl FrameUpload {
         );
 
         let mut blur_samples: SmallVec<[BackdropBlurAnimationSample; 4]> = SmallVec::new();
+        let mut filter_parameters_changed = false;
         let mut sampled_visual_bounds = std::mem::take(&mut self.animated_visual_bounds_scratch);
         sampled_visual_bounds.clear();
         sampled_visual_bounds.reserve(self.animated_primitives.len());
@@ -385,6 +395,7 @@ impl FrameUpload {
 
         for primitive in &self.animated_primitives {
             let sample = primitive.sample_resolved(&resolved_animation_values, size, &mut staging);
+            filter_parameters_changed |= sample.filter_parameters_changed;
             sampled_visual_bounds.push(sample.visual_bounds);
             let buffer = match primitive.kind {
                 AnimatedPrimitiveKind::Quad => &mut self.quads,
@@ -425,7 +436,7 @@ impl FrameUpload {
             filter_refresh_indices.insert(*index);
         }
 
-        if !filter_refresh_indices.is_empty() {
+        if filter_parameters_changed || !filter_refresh_indices.is_empty() {
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes_for_current_frame();
             self.backdrop_blur_passes_dirty_this_frame = true;
@@ -639,6 +650,18 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
             }
         }
         TransitionProperty::Rotation => {}
+        TransitionProperty::Blur => {
+            let radius = if sampled[0].is_finite() {
+                crate::ScaledPixels(sampled[0].max(0.0))
+            } else {
+                crate::ScaledPixels(0.0)
+            };
+            match primitive {
+                Primitive::BackdropBlur(blur) => blur.radius = radius,
+                Primitive::Blur(blur) => blur.radius = radius,
+                _ => {}
+            }
+        }
         TransitionProperty::ClipReveal => {
             apply_clip_reveal(primitive, sampled[0], sampled[1], sampled[2], sampled[3])
         }
@@ -925,6 +948,38 @@ mod tests {
         assert_eq!(quad.bounds.origin.x, crate::ScaledPixels(20.0));
         assert_eq!(quad.bounds.origin.y, crate::ScaledPixels(22.0));
         assert_eq!(quad.border_color.a, 0.75);
+    }
+
+    #[test]
+    fn retained_blur_animation_updates_radius_without_changing_capture_bounds() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(80.0)),
+        );
+        let mut primitive = Primitive::Blur(crate::PaintBlur {
+            order: 0,
+            animation_id: Some(crate::SceneAnimationId(3)),
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(24.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(3),
+                property: TransitionProperty::Blur,
+                progress: 0.5,
+                from: [4.0, 0.0, 0.0, 0.0],
+                to: [20.0, 0.0, 0.0, 0.0],
+            },
+        );
+        let Primitive::Blur(blur) = primitive else {
+            panic!("blur");
+        };
+        assert_eq!(blur.radius, crate::ScaledPixels(12.0));
+        assert_eq!(blur.bounds, bounds);
     }
 
     #[test]
