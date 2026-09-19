@@ -1145,6 +1145,61 @@ impl Scene {
             + self.gpu_meshes_3d.capacity()
             + self.animation_values.capacity()
             + self.prepared_batches.batches.capacity()
+            + self.primitive_bounds.retained_capacity()
+            + self.layer_stack.capacity()
+            + self.blur_captures.capacity()
+            + self.retained_chunk_candidates.capacity()
+            + self.prepared_retained_quad_chunks.capacity()
+    }
+
+    pub(crate) fn trim_for_reuse_against(&mut self, current: &Self) {
+        macro_rules! trim_vec_against {
+            ($field:ident) => {{
+                let target = SCENE_MIN_RETAINED_CAPACITY.max(current.$field.len());
+                if self.$field.capacity()
+                    > target.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
+                {
+                    self.$field.shrink_to(target);
+                }
+            }};
+        }
+
+        trim_vec_against!(paint_operations);
+        trim_vec_against!(layer_stack);
+        trim_vec_against!(shadows);
+        trim_vec_against!(quads);
+        trim_vec_against!(paths);
+        trim_vec_against!(underlines);
+        trim_vec_against!(monochrome_sprites);
+        trim_vec_against!(polychrome_sprites);
+        trim_vec_against!(surfaces);
+        trim_vec_against!(backdrop_blurs);
+        trim_vec_against!(blurs);
+        trim_vec_against!(gpu_meshes_3d);
+        trim_vec_against!(animation_values);
+        trim_vec_against!(blur_captures);
+        trim_vec_against!(retained_chunk_candidates);
+        trim_vec_against!(prepared_retained_quad_chunks);
+
+        let batch_target =
+            SCENE_MIN_RETAINED_CAPACITY.max(current.prepared_batches.batches.len());
+        if self.prepared_batches.batches.capacity()
+            > batch_target.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.prepared_batches.batches.shrink_to(batch_target);
+            self.prepared_batches.retained_capacity = self.prepared_batches.batches.capacity();
+        }
+
+        self.primitive_bounds.trim_for_reuse_against(
+            &current.primitive_bounds,
+            SCENE_MIN_RETAINED_CAPACITY,
+            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+
+        // The old frame just became scratch. Seed its high-water history from the frame that is
+        // actually visible now, not from a page that may have disappeared during this transition.
+        self.recent_peak_paint_operations = current.paint_operations.len();
+        self.recent_peak_primitives = current.primitive_count();
     }
 
     fn trim_retained_capacity(&mut self) {

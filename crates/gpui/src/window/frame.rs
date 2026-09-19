@@ -537,6 +537,7 @@ impl Frame {
     /// returns only capacity that is far above the new working set.
     pub(crate) fn clear_for_reuse(&mut self, current: &Self) {
         self.clear();
+        self.scene.trim_for_reuse_against(&current.scene);
 
         macro_rules! trim_vec_against {
             ($field:ident) => {{

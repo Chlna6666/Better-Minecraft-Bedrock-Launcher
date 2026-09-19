@@ -32,6 +32,27 @@ where
         self.stack.clear();
     }
 
+    pub(crate) fn retained_capacity(&self) -> usize {
+        self.nodes.capacity() + self.stack.capacity()
+    }
+
+    pub(crate) fn trim_for_reuse_against(
+        &mut self,
+        current: &Self,
+        floor: usize,
+        multiplier: usize,
+    ) {
+        let multiplier = multiplier.max(1);
+        let node_target = floor.max(current.nodes.len());
+        if self.nodes.capacity() > node_target.saturating_mul(multiplier) {
+            self.nodes.shrink_to(node_target);
+        }
+        let stack_target = floor.min(8).max(current.stack.len());
+        if self.stack.capacity() > stack_target.saturating_mul(multiplier) {
+            self.stack.shrink_to(stack_target);
+        }
+    }
+
     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
         self.insert_internal(new_bounds, None)
     }
