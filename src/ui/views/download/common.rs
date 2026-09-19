@@ -19,6 +19,109 @@ pub(crate) fn status_card(colors: &ThemeColors, text: &str, accent: Option<Hsla>
     )
 }
 
+fn compact_result_tag(colors: &ThemeColors, label: SharedString, accent: bool) -> Div {
+    let (background, border, text) = if accent {
+        (
+            Hsla {
+                a: 0.08,
+                ..colors.accent
+            },
+            Hsla {
+                a: 0.14,
+                ..colors.accent
+            },
+            colors.accent,
+        )
+    } else {
+        (
+            Hsla {
+                a: 0.045,
+                ..colors.text_primary
+            },
+            Hsla {
+                a: 0.07,
+                ..colors.border
+            },
+            colors.text_muted,
+        )
+    };
+
+    div()
+        .flex_none()
+        .max_w(px(132.))
+        .px(px(7.))
+        .py(px(2.))
+        .rounded_full()
+        .bg(background)
+        .border_1()
+        .border_color(border)
+        .text_size(px(10.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(text)
+        .overflow_hidden()
+        .text_ellipsis()
+        .child(label)
+}
+
+pub(super) fn compact_result_header(
+    colors: &ThemeColors,
+    count_label: SharedString,
+    source_label: SharedString,
+    detail_label: Option<SharedString>,
+) -> Div {
+    let tags = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .child(compact_result_tag(colors, source_label, true))
+        .when_some(detail_label, |tags, detail| {
+            tags.child(compact_result_tag(colors, detail, false))
+        });
+
+    div()
+        .w_full()
+        .flex_none()
+        .min_h(px(32.))
+        .px(px(16.))
+        .py(px(5.))
+        .border_b_1()
+        .border_color(Hsla {
+            a: 0.06,
+            ..colors.border
+        })
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(6.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(colors.accent),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(colors.text_secondary)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(count_label),
+                ),
+        )
+        .child(tags)
+}
+
 pub(crate) fn panel_shell(colors: &ThemeColors) -> Div {
     crate::ui::components::page_shell::inner_well(colors)
         .flex_1()

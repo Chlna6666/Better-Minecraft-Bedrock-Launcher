@@ -154,7 +154,7 @@ pub(super) fn render_mod_panel(
         render_mod_grid(colors, &cache.page_mods, state, &i18n, image_cache)
     };
 
-    let stats_bar = render_stats_bar(colors, total_mods, loader_type, loader_ver, &i18n);
+    let stats_bar = render_stats_bar(colors, total_mods, loader_type, loader_ver);
     let pagination = render_pagination(colors, page_index, total_pages, total_mods, &i18n);
 
     div()
@@ -308,77 +308,22 @@ fn render_stats_bar(
     total_mods: usize,
     loader_type: &str,
     loader_ver: &str,
-    i18n: &I18n,
 ) -> Div {
     let all_filter = loader_type.is_empty() || loader_type == "全部" || loader_type == "全部加载器";
     let all_versions = loader_ver.is_empty() || loader_ver == "全部版本" || loader_ver == "全部";
-    let loader_filter_text = if all_filter {
-        if all_versions {
-            t!("LeviLaminaMods.filter_all")
-        } else {
-            t!("LeviLaminaMods.filter_all_loader", version = loader_ver)
-        }
-    } else if all_versions {
-        SharedString::from(loader_type.to_owned())
+    let source_label = if all_filter {
+        t!("common.all")
     } else {
-        t!(
-            "LeviLaminaMods.filter_loader_version",
-            loader = loader_type,
-            version = loader_ver
-        )
+        SharedString::from(loader_type.to_owned())
     };
+    let version_label = (!all_versions).then(|| SharedString::from(loader_ver.to_owned()));
 
-    div()
-        .w_full()
-        .px(px(20.))
-        .py(px(10.))
-        .bg(Hsla {
-            a: 0.03,
-            ..colors.text_primary
-        })
-        .border_b_1()
-        .border_color(Hsla {
-            a: 0.08,
-            ..colors.border
-        })
-        .flex()
-        .items_center()
-        .justify_between()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .px(px(8.))
-                        .py(px(2.))
-                        .rounded(px(crate::ui::theme::tokens::radius::SM))
-                        .bg(Hsla {
-                            a: 0.1,
-                            ..colors.accent
-                        })
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(colors.accent)
-                        .child(t!("LeviLaminaMods.count", count = total_mods)),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(colors.text_muted)
-                        .child(t!(
-                            "LeviLaminaMods.filter_current",
-                            filter = loader_filter_text
-                        )),
-                ),
-        )
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(colors.text_muted)
-                .child(t!("LeviLaminaMods.client_source")),
-        )
+    super::common::compact_result_header(
+        colors,
+        t!("LeviLaminaMods.count", count = total_mods),
+        source_label,
+        version_label,
+    )
 }
 
 fn render_mod_grid(

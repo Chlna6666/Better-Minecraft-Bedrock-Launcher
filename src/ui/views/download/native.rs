@@ -221,25 +221,12 @@ fn render_empty(colors: &ThemeColors) -> Div {
 }
 
 fn render_stats(colors: &ThemeColors, count: usize) -> Div {
-    div()
-        .w_full()
-        .px(px(20.))
-        .py(px(10.))
-        .bg(Hsla {
-            a: 0.03,
-            ..colors.text_primary
-        })
-        .border_b_1()
-        .border_color(Hsla {
-            a: 0.08,
-            ..colors.border
-        })
-        .child(
-            div()
-                .text_size(px(12.))
-                .text_color(colors.text_muted)
-                .child(t!("NativeMods.count", count = count)),
-        )
+    super::common::compact_result_header(
+        colors,
+        t!("NativeMods.count", count = count),
+        t!("DownloadPage.filter_native"),
+        None,
+    )
 }
 
 fn render_card(colors: &ThemeColors, entry: &NativeModEntry, index: usize) -> AnyElement {
