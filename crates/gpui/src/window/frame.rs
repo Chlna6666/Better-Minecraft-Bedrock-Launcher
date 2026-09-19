@@ -160,6 +160,15 @@ pub(crate) struct RetainedElementRange {
     pub(crate) subtree_stable: bool,
 }
 
+/// Minimal replay handle returned after a retained element has passed all semantic, layout and
+/// interaction safety checks. Keeping this separate from RetainedElementRange avoids cloning the
+/// retained semantic descriptor and paint payload on the fast path.
+pub(crate) struct RetainedReplayRanges {
+    pub(crate) prepaint_range: Range<PrepaintStateIndex>,
+    pub(crate) paint_range: Range<PaintIndex>,
+    pub(crate) metadata_range: Range<usize>,
+}
+
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,

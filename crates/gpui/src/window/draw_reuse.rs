@@ -1,6 +1,7 @@
 use super::frame::{
     DeferredRetainedMetadata, DeferredRetainedReplay, ReconcileKey, RetainedElementRange,
-    RetainedPaintContext, RetainedSemanticDescriptor, RetainedSemanticEntry, RetainedSemanticStamp,
+    RetainedPaintContext, RetainedReplayRanges, RetainedSemanticDescriptor, RetainedSemanticEntry,
+    RetainedSemanticStamp,
 };
 use super::state::ElementVisualTransform;
 use super::*;
@@ -537,7 +538,7 @@ impl Window {
         layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         plain_text_key: Option<&crate::element::RetainedPlainTextKey>,
-    ) -> Option<RetainedElementRange> {
+    ) -> Option<RetainedReplayRanges> {
         if self.force_view_cache_refresh() {
             return None;
         }
@@ -636,7 +637,11 @@ impl Window {
         {
             return None;
         }
-        Some(retained.clone())
+        Some(RetainedReplayRanges {
+            prepaint_range: retained.prepaint_range.clone(),
+            paint_range: retained.paint_range.clone(),
+            metadata_range: retained.metadata_range.clone(),
+        })
     }
 
     /// Number of post-order reconciliation metadata records emitted into the current frame.
