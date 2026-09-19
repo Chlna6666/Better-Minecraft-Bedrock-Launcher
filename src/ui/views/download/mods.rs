@@ -5,6 +5,7 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
+use super::native::NativeModPanelRenderCache;
 use gpui::*;
 
 type ModPanelRenderSignature = (
@@ -111,6 +112,7 @@ pub(super) fn render_mod_panel(
     cx: &mut App,
     colors: &ThemeColors,
     cache: &mut ModPanelRenderCache,
+    native_cache: &mut NativeModPanelRenderCache,
     image_cache: &Entity<BoundedImageCache>,
 ) -> Div {
     let i18n = cx.global::<I18n>().clone();
@@ -118,7 +120,7 @@ pub(super) fn render_mod_panel(
         state.levilauncher_selected_loader == "native"
     });
     if native_source {
-        return super::native::render_panel(cx, colors);
+        return super::native::render_panel(cx, colors, native_cache);
     }
     {
         let state = cx.global::<DownloadPageState>();
