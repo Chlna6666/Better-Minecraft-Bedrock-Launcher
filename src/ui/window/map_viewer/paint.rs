@@ -11,6 +11,8 @@ const ENTITY_CHUNK_LOD_MIN_CHUNK_PX: f32 = 10.0;
 const ENTITY_SCREEN_CLUSTER_CELL_PX: f32 = 24.0;
 const ENTITY_AVATAR_UPLOAD_BUDGET: usize = 32;
 const ENTITY_VISIBILITY_MARGIN_PX: f32 = 52.0;
+const ENTITY_LOD_SCRATCH_MIN_CAPACITY: usize = 64;
+const ENTITY_LOD_SCRATCH_TRIM_MULTIPLIER: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EntityLodMode {
@@ -49,23 +51,78 @@ struct EntityScreenClusterAccum {
     representative_has_avatar: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EntityAvatarCandidate {
+    representative_index: usize,
+    block_x: f32,
+    block_z: f32,
+    icon_size: f32,
+}
+
 #[derive(Default)]
 struct EntityLodScratch {
     chunk_clusters: HashMap<EntityChunkClusterKey, EntityChunkClusterAccum>,
     chunk_cluster_order: Vec<EntityChunkClusterKey>,
     screen_clusters: HashMap<EntityScreenClusterKey, EntityScreenClusterAccum>,
     screen_cluster_order: Vec<EntityScreenClusterKey>,
+    avatar_candidates: Vec<EntityAvatarCandidate>,
 }
 
 impl EntityLodScratch {
+    fn begin_avatar_frame(&mut self) {
+        self.avatar_candidates.clear();
+    }
+
+    fn finish_avatar_frame(&mut self) {
+        let target = ENTITY_LOD_SCRATCH_MIN_CAPACITY.max(self.avatar_candidates.len());
+        self.avatar_candidates.clear();
+        if self.avatar_candidates.capacity()
+            > target.saturating_mul(ENTITY_LOD_SCRATCH_TRIM_MULTIPLIER)
+        {
+            self.avatar_candidates.shrink_to(target);
+        }
+    }
+
     fn begin_chunk_frame(&mut self) {
         self.chunk_clusters.clear();
         self.chunk_cluster_order.clear();
+        self.begin_avatar_frame();
+    }
+
+    fn finish_chunk_frame(&mut self) {
+        let target = ENTITY_LOD_SCRATCH_MIN_CAPACITY.max(self.chunk_cluster_order.len());
+        if self.chunk_clusters.capacity()
+            > target.saturating_mul(ENTITY_LOD_SCRATCH_TRIM_MULTIPLIER)
+        {
+            self.chunk_clusters.shrink_to(target);
+        }
+        if self.chunk_cluster_order.capacity()
+            > target.saturating_mul(ENTITY_LOD_SCRATCH_TRIM_MULTIPLIER)
+        {
+            self.chunk_cluster_order.shrink_to(target);
+        }
+        self.finish_avatar_frame();
     }
 
     fn begin_screen_frame(&mut self) {
         self.screen_clusters.clear();
         self.screen_cluster_order.clear();
+        self.begin_avatar_frame();
+    }
+
+    fn finish_screen_frame(&mut self) {
+        let target = ENTITY_LOD_SCRATCH_MIN_CAPACITY.max(self.screen_cluster_order.len());
+        if self.screen_clusters.capacity()
+            > target.saturating_mul(ENTITY_LOD_SCRATCH_TRIM_MULTIPLIER)
+        {
+            self.screen_clusters.shrink_to(target);
+        }
+        if self.screen_cluster_order.capacity()
+            > target.saturating_mul(ENTITY_LOD_SCRATCH_TRIM_MULTIPLIER)
+        {
+            self.screen_cluster_order.shrink_to(target);
+        }
+        self.finish_avatar_frame();
     }
 }
 
@@ -247,35 +304,46 @@ fn paint_exact_entity_avatars(
     entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
     window: &mut Window,
 ) {
-    let mut avatar_requests = Vec::with_capacity(overlay_paint.entity_points.len().min(4_096));
-    for point in &overlay_paint.entity_points {
-        if entity_screen_position(bounds, viewport, layout, point, ENTITY_VISIBILITY_MARGIN_PX)
-            .is_none()
-        {
-            continue;
+    ENTITY_LOD_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        scratch.begin_avatar_frame();
+        let icon_size = overlay_icon_size_px(viewport, layout);
+        for (index, point) in overlay_paint.entity_points.iter().enumerate() {
+            if entity_screen_position(bounds, viewport, layout, point, ENTITY_VISIBILITY_MARGIN_PX)
+                .is_none()
+            {
+                continue;
+            }
+            if entity_avatar_arc(point, entity_avatar_pool).is_none() {
+                paint_point_marker(
+                    bounds,
+                    viewport,
+                    layout,
+                    point.block_x,
+                    point.block_z,
+                    rgb(0xf97316).into(),
+                    window,
+                );
+                continue;
+            }
+            scratch.avatar_candidates.push(EntityAvatarCandidate {
+                representative_index: index,
+                block_x: point.block_x,
+                block_z: point.block_z,
+                icon_size,
+            });
         }
-        let Some(image) = entity_avatar_arc(point, entity_avatar_pool) else {
-            paint_point_marker(
-                bounds,
-                viewport,
-                layout,
-                point.block_x,
-                point.block_z,
-                rgb(0xf97316).into(),
-                window,
-            );
-            continue;
-        };
-        avatar_requests.push(entity_avatar_request(
+        paint_entity_avatar_candidates(
+            &scratch.avatar_candidates,
             bounds,
             viewport,
             layout,
-            point.block_x,
-            point.block_z,
-            image.as_ref(),
-        ));
-    }
-    paint_entity_avatar_requests(avatar_requests, window);
+            overlay_paint,
+            entity_avatar_pool,
+            window,
+        );
+        scratch.finish_avatar_frame();
+    });
 }
 
 fn paint_chunk_clustered_entity_avatars(
@@ -323,7 +391,6 @@ fn paint_chunk_clustered_entity_avatars(
 
         let chunk_px = entity_chunk_screen_size_px(viewport, layout);
         let icon_size = (chunk_px * 0.85).clamp(11.0, 16.0);
-        let mut avatar_requests = Vec::with_capacity(scratch.chunk_cluster_order.len());
         for key in scratch.chunk_cluster_order.iter().copied() {
             let Some(cluster) = scratch.chunk_clusters.get(&key).copied() else {
                 continue;
@@ -332,23 +399,29 @@ fn paint_chunk_clustered_entity_avatars(
             let block_x = (cluster.sum_block_x / f64::from(count)) as f32;
             let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
             let representative = &overlay_paint.entity_points[cluster.representative_index];
-            let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
+            if entity_avatar_arc(representative, entity_avatar_pool).is_none() {
                 paint_entity_cluster_fallback(
                     bounds, viewport, layout, block_x, block_z, count, window,
                 );
                 continue;
-            };
-            avatar_requests.push(entity_avatar_request_sized(
-                bounds,
-                viewport,
-                layout,
+            }
+            scratch.avatar_candidates.push(EntityAvatarCandidate {
+                representative_index: cluster.representative_index,
                 block_x,
                 block_z,
                 icon_size,
-                image.as_ref(),
-            ));
+            });
         }
-        paint_entity_avatar_requests(avatar_requests, window);
+        paint_entity_avatar_candidates(
+            &scratch.avatar_candidates,
+            bounds,
+            viewport,
+            layout,
+            overlay_paint,
+            entity_avatar_pool,
+            window,
+        );
+        scratch.finish_chunk_frame();
     });
 }
 
@@ -401,7 +474,6 @@ fn paint_screen_clustered_entity_avatars(
         }
 
         let icon_size = 13.0;
-        let mut avatar_requests = Vec::with_capacity(scratch.screen_cluster_order.len());
         for key in scratch.screen_cluster_order.iter().copied() {
             let Some(cluster) = scratch.screen_clusters.get(&key).copied() else {
                 continue;
@@ -410,23 +482,29 @@ fn paint_screen_clustered_entity_avatars(
             let block_x = (cluster.sum_block_x / f64::from(count)) as f32;
             let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
             let representative = &overlay_paint.entity_points[cluster.representative_index];
-            let Some(image) = entity_avatar_arc(representative, entity_avatar_pool) else {
+            if entity_avatar_arc(representative, entity_avatar_pool).is_none() {
                 paint_entity_cluster_fallback(
                     bounds, viewport, layout, block_x, block_z, count, window,
                 );
                 continue;
-            };
-            avatar_requests.push(entity_avatar_request_sized(
-                bounds,
-                viewport,
-                layout,
+            }
+            scratch.avatar_candidates.push(EntityAvatarCandidate {
+                representative_index: cluster.representative_index,
                 block_x,
                 block_z,
                 icon_size,
-                image.as_ref(),
-            ));
+            });
         }
-        paint_entity_avatar_requests(avatar_requests, window);
+        paint_entity_avatar_candidates(
+            &scratch.avatar_candidates,
+            bounds,
+            viewport,
+            layout,
+            overlay_paint,
+            entity_avatar_pool,
+            window,
+        );
+        scratch.finish_screen_frame();
     });
 }
 
@@ -458,10 +536,33 @@ fn paint_entity_cluster_fallback(
     );
 }
 
-fn paint_entity_avatar_requests<'a>(requests: Vec<ImagePaintRequest<'a>>, window: &mut Window) {
-    if requests.is_empty() {
+fn paint_entity_avatar_candidates(
+    candidates: &[EntityAvatarCandidate],
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    overlay_paint: &ProfessionalOverlayPaintCache,
+    entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
+    window: &mut Window,
+) {
+    if candidates.is_empty() {
         return;
     }
+    let requests = candidates.iter().filter_map(|candidate| {
+        let representative = overlay_paint
+            .entity_points
+            .get(candidate.representative_index)?;
+        let image = entity_avatar_arc(representative, entity_avatar_pool)?;
+        Some(entity_avatar_request_sized(
+            bounds,
+            viewport,
+            layout,
+            candidate.block_x,
+            candidate.block_z,
+            candidate.icon_size,
+            image.as_ref(),
+        ))
+    });
     if let Err(error) = window.paint_images_budgeted(requests, ENTITY_AVATAR_UPLOAD_BUDGET) {
         tracing::debug!(?error, "failed to paint entity avatars");
     }
@@ -1060,25 +1161,6 @@ fn paint_paste_preview_images(
     if let Err(error) = window.paint_images(requests) {
         tracing::debug!(?error, "failed to paint paste preview chunk images");
     }
-}
-
-fn entity_avatar_request<'a>(
-    bounds: Bounds<Pixels>,
-    viewport: MapViewport,
-    layout: RenderLayout,
-    block_x: f32,
-    block_z: f32,
-    image: &'a RenderImage,
-) -> ImagePaintRequest<'a> {
-    entity_avatar_request_sized(
-        bounds,
-        viewport,
-        layout,
-        block_x,
-        block_z,
-        overlay_icon_size_px(viewport, layout),
-        image,
-    )
 }
 
 fn entity_avatar_request_sized<'a>(

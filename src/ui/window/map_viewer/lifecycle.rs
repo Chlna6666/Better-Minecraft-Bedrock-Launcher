@@ -725,14 +725,17 @@ impl MapViewerWindowView {
         snapshot: TilePaintSnapshot,
         cx: &mut Context<Self>,
     ) {
-        let dropped_screen_images = self
-            .canvas_tile_snapshot
-            .screen_images
-            .iter()
-            .map(|image| image.image.clone())
-            .collect::<Vec<_>>();
-        self.canvas_tile_snapshot = Arc::new(snapshot);
-        Self::drop_render_images(dropped_screen_images, cx);
+        // Keep the previous Arc alive while retiring its screen images. This avoids building an
+        // intermediate Vec<Arc<RenderImage>> on every snapshot replacement.
+        let previous =
+            std::mem::replace(&mut self.canvas_tile_snapshot, Arc::new(snapshot));
+        Self::drop_render_images(
+            previous
+                .screen_images
+                .iter()
+                .map(|image| image.image.clone()),
+            cx,
+        );
     }
 
     pub(super) fn record_memory_snapshot_if_due(&mut self) {
@@ -1020,6 +1023,13 @@ impl MapViewerWindowView {
         changed_tiles.sort_unstable();
         changed_tiles.dedup();
         self.refresh_canvas_tiles_if_changed(&changed_tiles, colors, cx);
+
+        // Preserve the burst-sized allocation for the next interaction. If the synchronous refresh
+        // queued new coordinates, keep those entries authoritative instead of overwriting them.
+        if self.pending_interaction_ready_tiles.is_empty() {
+            changed_tiles.clear();
+            self.pending_interaction_ready_tiles = changed_tiles;
+        }
     }
 
     pub(super) fn canvas_snapshot(&self, colors: ThemeColors) -> MapCanvasSnapshot {
