@@ -117,7 +117,7 @@ impl ManagePageView {
         }
     }
 
-    pub(super) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.active == active {
             return;
         }
