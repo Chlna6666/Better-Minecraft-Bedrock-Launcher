@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::animation::{tab_content_animation_key, tab_content_motion};
 
 pub struct ManagePageView {
     pub(super) _subscriptions: Vec<Subscription>,
@@ -849,55 +850,82 @@ impl ManagePageView {
                         div()
                             .flex_1()
                             .min_h(px(0.))
-                            .child(if state.version_config_loading {
-                                empty_state(
-                                    colors,
-                                    "images/manage/empty.svg",
-                                    "正在读取版本配置",
-                                    "请稍候，BMCBL 正在准备当前实例的管理设置。",
-                                )
-                                .into_any_element()
-                            } else {
-                                match state.tab {
-                                    ManageTab::Statistics => {
-                                        render_statistics_tab(colors, version, cx)
-                                    }
-                                    ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => {
-                                        render_asset_list(
+                            .child({
+                                let content = if state.version_config_loading {
+                                    empty_state(
+                                        colors,
+                                        "images/manage/empty.svg",
+                                        "正在读取版本配置",
+                                        "请稍候，BMCBL 正在准备当前实例的管理设置。",
+                                    )
+                                    .into_any_element()
+                                } else {
+                                    match state.tab {
+                                        ManageTab::Statistics => {
+                                            render_statistics_tab(colors, version, cx)
+                                        }
+                                        ManageTab::Mod
+                                        | ManageTab::ResourcePack
+                                        | ManageTab::Map => render_asset_list(
                                             colors,
                                             version,
                                             state,
                                             filtered_assets,
                                             &self.asset_scroll_handle,
                                             cx,
-                                        )
+                                        ),
+                                        ManageTab::SkinPack => render_skin_pack_management(
+                                            colors,
+                                            version,
+                                            state,
+                                            filtered_assets,
+                                            &self.asset_scroll_handle,
+                                            window,
+                                            cx,
+                                        ),
+                                        ManageTab::Screenshot => render_screenshot_list(
+                                            colors,
+                                            &i18n,
+                                            version,
+                                            state,
+                                            filtered_screenshots,
+                                            &self.screenshot_scroll_handle,
+                                            cx,
+                                        ),
+                                        ManageTab::Server => render_server_list(
+                                            colors,
+                                            version,
+                                            state,
+                                            filtered_servers,
+                                            &self.server_scroll_handle,
+                                            cx,
+                                        ),
                                     }
-                                    ManageTab::SkinPack => render_skin_pack_management(
-                                        colors,
-                                        version,
-                                        state,
-                                        filtered_assets,
-                                        &self.asset_scroll_handle,
-                                        window,
-                                        cx,
-                                    ),
-                                    ManageTab::Screenshot => render_screenshot_list(
-                                        colors,
-                                        &i18n,
-                                        version,
-                                        state,
-                                        filtered_screenshots,
-                                        &self.screenshot_scroll_handle,
-                                        cx,
-                                    ),
-                                    ManageTab::Server => render_server_list(
-                                        colors,
-                                        version,
-                                        state,
-                                        filtered_servers,
-                                        &self.server_scroll_handle,
-                                        cx,
-                                    ),
+                                };
+
+                                if state.tab_anim_seq != 0
+                                    && state.tab_anim_from != state.tab
+                                    && !crate::core::ui_prefs::reduced_motion()
+                                {
+                                    div()
+                                        .size_full()
+                                        .min_w(px(0.))
+                                        .min_h(px(0.))
+                                        .child(content)
+                                        .with_animation(
+                                            tab_content_animation_key(
+                                                "manage-tab-content",
+                                                state.tab_anim_seq,
+                                            ),
+                                            tab_content_motion(
+                                                state.tab_anim_from.index(),
+                                                state.tab.index(),
+                                            ),
+                                            |content, _progress| content,
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    content
                                 }
                             }),
                     ),

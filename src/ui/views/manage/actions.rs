@@ -178,7 +178,13 @@ impl ManagePageView {
     }
 
     pub(super) fn set_tab(&mut self, tab: ManageTab, cx: &mut Context<Self>) {
-        cx.update_global(|state: &mut ManagePageState, _cx| {
+        let changed = cx.update_global(|state: &mut ManagePageState, _cx| {
+            if state.tab == tab {
+                return false;
+            }
+
+            state.tab_anim_from = state.tab;
+            state.tab_anim_seq = state.tab_anim_seq.wrapping_add(1);
             state.tab = tab;
             state.selected_asset_keys.clear();
             match tab {
@@ -195,14 +201,19 @@ impl ManagePageView {
                     state.asset_sort_desc = false;
                 }
             }
+            true
         });
+        if !changed {
+            return;
+        }
+
         self.last_assets_signature = None;
         self.last_screenshots_signature = None;
         self.last_servers_signature = None;
         self.reset_asset_list_view();
         self.reset_screenshot_list_view();
         self.reset_server_list_view();
-        cx.notify();
+        // ManagePageState's signature observer owns the single redraw notification.
     }
 
     pub(super) fn open_selected_version_folder(&mut self, cx: &mut Context<Self>) {

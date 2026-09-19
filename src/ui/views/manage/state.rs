@@ -16,6 +16,20 @@ pub enum ManageTab {
     Server,
 }
 
+impl ManageTab {
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Statistics => 0,
+            Self::Mod => 1,
+            Self::ResourcePack => 2,
+            Self::SkinPack => 3,
+            Self::Map => 4,
+            Self::Screenshot => 5,
+            Self::Server => 6,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagePackSubtype {
     Resource,
@@ -200,6 +214,8 @@ pub enum ManageServerMotdStatus {
 #[derive(Clone)]
 pub struct ManagePageState {
     pub tab: ManageTab,
+    pub tab_anim_seq: u64,
+    pub tab_anim_from: ManageTab,
     pub versions_revision: u64,
     pub loaded: bool,
     pub loading: bool,
@@ -290,6 +306,8 @@ impl Default for ManagePageState {
     fn default() -> Self {
         Self {
             tab: ManageTab::Mod,
+            tab_anim_seq: 0,
+            tab_anim_from: ManageTab::Mod,
             versions_revision: 0,
             loaded: false,
             loading: false,

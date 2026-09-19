@@ -13,6 +13,16 @@ pub enum DownloadTab {
     Mod,
 }
 
+impl DownloadTab {
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Game => 0,
+            Self::ResourcePack => 1,
+            Self::Mod => 2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceCategory {
     All,

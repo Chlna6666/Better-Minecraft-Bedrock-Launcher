@@ -1,3 +1,4 @@
+use crate::ui::animation::{tab_content_animation_key, tab_content_motion};
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
@@ -576,7 +577,10 @@ pub fn render_download_page(
     curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
 ) -> impl IntoElement {
-    let active_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
+    let (active_tab, tab_anim_from, tab_anim_seq) =
+        cx.read_global(|state: &DownloadPageState, _cx| {
+            (state.tab, state.tab_anim_from, state.tab_anim_seq)
+        });
 
     // Mirror `.upstream_bmbl_1/src/components/UnifiedPageLayout/*`:
     // one glass panel with a fixed header, a scrollable content area, and a footer.
@@ -615,6 +619,25 @@ pub fn render_download_page(
             DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
             DownloadTab::Mod => mods::render_mod_panel(window, cx, &colors).into_any_element(),
         }
+    };
+
+    let body = if tab_anim_seq != 0
+        && tab_anim_from != active_tab
+        && !crate::core::ui_prefs::reduced_motion()
+    {
+        div()
+            .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .child(body)
+            .with_animation(
+                tab_content_animation_key("download-tab-content", tab_anim_seq),
+                tab_content_motion(tab_anim_from.index(), active_tab.index()),
+                |content, _progress| content,
+            )
+            .into_any_element()
+    } else {
+        body
     };
 
     let unified_panel = crate::ui::components::page_shell::page_panel(&colors)

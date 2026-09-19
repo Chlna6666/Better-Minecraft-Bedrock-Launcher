@@ -1,5 +1,6 @@
 use gpui::{
-    Animation, AnimationDriver, AnimationSpec, Easing, RepeatMode, Spring, SpringPhysics, Window,
+    Animation, AnimationDriver, AnimationProperty, AnimationSpec, Easing, RepeatMode, SharedString,
+    Spring, SpringPhysics, Window, point, px,
 };
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,26 @@ pub fn spring_snappy() -> Spring {
 /// Q 弹弹簧：明显回弹（用于展开、导航胶囊等重点交互）。
 pub fn spring_bouncy() -> Spring {
     apple_spring(0.42, 0.62)
+}
+
+/// Shared renderer-owned transition for tab/subpage content.
+///
+/// Callers keep their subtree at final geometry and only provide the previous/current logical
+/// indices. Nova owns translation + opacity sampling, so virtual lists, text and images are not
+/// relaid out on every animation frame.
+pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
+    let direction = if to_index >= from_index { 1.0 } else { -1.0 };
+    spring_motion(spring_snappy()).with_property(AnimationProperty::translation_opacity(
+        point(px(16.0 * direction), px(0.0)),
+        point(px(0.0), px(0.0)),
+        0.90,
+        1.0,
+    ))
+}
+
+/// Stable transition key helper for state-driven tab/subpage switches.
+pub fn tab_content_animation_key(scope: &str, sequence: u64) -> SharedString {
+    SharedString::from(format!("{scope}-{sequence}"))
 }
 
 /// 一次采样得到的弹簧状态。
