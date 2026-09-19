@@ -514,7 +514,7 @@ impl Scene {
         &self,
         damage: Bounds<ScaledPixels>,
     ) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
-        let mut damage_regions = Vec::new();
+        let mut damage_regions = SmallVec::<[Bounds<ScaledPixels>; 8]>::new();
         self.collect_backdrop_blur_damage(damage, &mut damage_regions);
         damage_regions.into_iter()
     }
@@ -523,7 +523,7 @@ impl Scene {
         &self,
         plan: &BackdropBlurDamagePlan,
     ) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
-        let mut output_damage = Vec::new();
+        let mut output_damage = SmallVec::<[Bounds<ScaledPixels>; 8]>::new();
         for (_, blur) in backdrop_blur_operations(&self.paint_operations) {
             let (full_refresh, source_damage) =
                 plan.source_damage_for_orders(blur.order, blur.order);
@@ -551,7 +551,7 @@ impl Scene {
     fn collect_backdrop_blur_damage(
         &self,
         damage: Bounds<ScaledPixels>,
-        damage_regions: &mut Vec<Bounds<ScaledPixels>>,
+        damage_regions: &mut SmallVec<[Bounds<ScaledPixels>; 8]>,
     ) {
         for blur in &self.backdrop_blurs {
             // Each blur carries its own kernel support. A 0.1px background filter must never inherit
@@ -1384,7 +1384,8 @@ impl Scene {
     }
 
     fn prepare_retained_quad_chunks(&mut self) {
-        let mut prepared = Vec::new();
+        let mut prepared = std::mem::take(&mut self.prepared_retained_quad_chunks);
+        prepared.clear();
         for candidate in &self.retained_chunk_candidates {
             let Some(operations) = self.paint_operations.get(candidate.scene_range.clone()) else {
                 continue;
