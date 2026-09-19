@@ -94,6 +94,24 @@ impl PlatformAtlas for MetalAtlas {
         }
     }
 
+    fn remove_image(&self, image_id: crate::ImageId) {
+        // Image eviction is a cold path. Collect matching image keys first so remove() keeps
+        // texture ref-counting and native deallocation as the single source of truth.
+        let keys = {
+            let lock = self.0.lock();
+            lock.tiles_by_key
+                .keys()
+                .filter(|key| {
+                    matches!(key, AtlasKey::Image(params) if params.image_id == image_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for key in keys {
+            self.remove(&key);
+        }
+    }
+
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
         let Some(tile) = lock.tiles_by_key.remove(key) else {
