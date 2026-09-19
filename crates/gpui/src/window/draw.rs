@@ -185,10 +185,9 @@ impl Window {
                     .view_path(*view_id)
                     .is_empty()
             });
-        let live_scene_animation_ids = self.rendered_frame.scene.animation_ids();
         self.animation_engine
             .borrow_mut()
-            .retain_scene_animations(&live_scene_animation_ids);
+            .retain_scene_animations_for_scene(&self.rendered_frame.scene);
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
 

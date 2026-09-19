@@ -153,6 +153,7 @@ pub struct AnimationEngine {
     group_timelines: FxHashMap<AnimationGroupId, AnimationGroupTimeline>,
     visual_group_ids: FxHashSet<AnimationGroupId>,
     layout_group_ids: FxHashSet<AnimationGroupId>,
+    live_scene_animation_ids_scratch: FxHashSet<SceneAnimationId>,
     next_group_id: u64,
     frame_pending: bool,
 }
@@ -464,6 +465,22 @@ impl AnimationEngine {
                 property,
             })
             .map(|timeline| timeline.driver)
+    }
+
+    pub(crate) fn retain_scene_animations_for_scene(&mut self, scene: &crate::scene::Scene) {
+        let mut live_ids = std::mem::take(&mut self.live_scene_animation_ids_scratch);
+        live_ids.clear();
+        scene.collect_animation_ids_into(&mut live_ids);
+        let live_count = live_ids.len();
+
+        self.retain_scene_animations(&live_ids);
+
+        let target = 16usize.max(live_count);
+        if live_ids.capacity() > target.saturating_mul(4) {
+            live_ids.shrink_to(target);
+        }
+        live_ids.clear();
+        self.live_scene_animation_ids_scratch = live_ids;
     }
 
     pub(crate) fn retain_scene_animations(&mut self, live_ids: &FxHashSet<SceneAnimationId>) {

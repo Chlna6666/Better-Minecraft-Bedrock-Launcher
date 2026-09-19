@@ -1,5 +1,6 @@
 use crate::{Bounds, GlobalElementId, ScaledPixels, SceneFrameMetrics, TransitionProperty};
 use collections::FxHashSet;
+use smallvec::SmallVec;
 
 use super::BoundsTree;
 use std::ops::Range;
@@ -107,13 +108,13 @@ const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BackdropBlurDamagePlan {
-    entries: Vec<BackdropBlurSourceDamage>,
+    entries: SmallVec<[BackdropBlurSourceDamage; 4]>,
 }
 
 #[derive(Clone, Debug)]
 struct BackdropBlurSourceDamage {
     order: DrawOrder,
-    source_damage: Vec<Bounds<ScaledPixels>>,
+    source_damage: SmallVec<[Bounds<ScaledPixels>; 4]>,
     full_refresh: bool,
 }
 
@@ -166,7 +167,7 @@ impl BackdropBlurDamagePlan {
         let index = self.entries.len();
         self.entries.push(BackdropBlurSourceDamage {
             order,
-            source_damage: Vec::new(),
+            source_damage: SmallVec::new(),
             full_refresh: false,
         });
         &mut self.entries[index]
@@ -263,14 +264,14 @@ impl Scene {
                 });
             }
         }
-        for (group_range, group_bounds) in self.element_blur_groups() {
+        self.for_each_element_blur_group(|group_range, group_bounds| {
             if group_range.start < range.end && range.start < group_range.end {
                 bounds = Some(match bounds {
                     Some(bounds) => bounds.union(&group_bounds),
                     None => group_bounds,
                 });
             }
-        }
+        });
         bounds
     }
 
@@ -341,21 +342,24 @@ impl Scene {
         if changed_range.start >= changed_range.end {
             return;
         }
-        for (group_range, bounds) in self.element_blur_groups() {
+        self.for_each_element_blur_group(|group_range, bounds| {
             if group_range.start < changed_range.end && changed_range.start < group_range.end {
                 visit(bounds);
             }
-        }
+        });
     }
 
-    fn element_blur_groups(&self) -> Vec<(Range<usize>, Bounds<ScaledPixels>)> {
-        let mut groups = Vec::new();
-        let mut stack = Vec::<(usize, BlurCapture, Bounds<ScaledPixels>)>::new();
+    fn for_each_element_blur_group(
+        &self,
+        mut visit: impl FnMut(Range<usize>, Bounds<ScaledPixels>),
+    ) {
+        let mut stack =
+            SmallVec::<[(usize, &BlurCapture, Bounds<ScaledPixels>); 4]>::new();
 
         for (index, operation) in self.paint_operations.iter().enumerate() {
             match operation {
                 PaintOperation::StartBlur(config) => {
-                    stack.push((index, config.clone(), config.bounds));
+                    stack.push((index, config, config.bounds));
                 }
                 PaintOperation::Primitive(primitive) => {
                     let primitive_bounds = primitive.visual_bounds();
@@ -378,12 +382,11 @@ impl Scene {
                     for (_, _, parent_bounds) in &mut stack {
                         *parent_bounds = parent_bounds.union(&bounds);
                     }
-                    groups.push((start..index + 1, bounds));
+                    visit(start..index + 1, bounds);
                 }
                 PaintOperation::EndLayer => {}
             }
         }
-        groups
     }
 
     pub(crate) fn requires_full_redraw_fallback(&self) -> bool {
@@ -412,7 +415,7 @@ impl Scene {
 
         let current_blurs = backdrop_blur_operations(&self.paint_operations);
         let previous_blurs = backdrop_blur_operations(&previous.paint_operations);
-        if current_blurs.len() != previous_blurs.len() {
+        if current_blurs.clone().count() != previous_blurs.clone().count() {
             for (_, blur) in current_blurs {
                 plan.mark_full(blur.order);
             }
@@ -420,7 +423,7 @@ impl Scene {
         }
 
         for ((current_index, current_blur), (previous_index, previous_blur)) in
-            current_blurs.into_iter().zip(previous_blurs)
+            current_blurs.zip(previous_blurs)
         {
             if current_blur != previous_blur {
                 plan.mark_full(current_blur.order);
@@ -727,17 +730,36 @@ impl Scene {
         self.animation_values.extend(values);
     }
 
-    pub(crate) fn animation_ids(&self) -> FxHashSet<SceneAnimationId> {
-        self.paint_operations
-            .iter()
-            .filter_map(|operation| match operation {
-                PaintOperation::Primitive(primitive) => primitive.animation_id(),
-                PaintOperation::StartBlur(blur) => blur.animation_id,
+    pub(crate) fn collect_animation_ids_into(
+        &self,
+        ids: &mut FxHashSet<SceneAnimationId>,
+    ) {
+        for operation in &self.paint_operations {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    if let Some(animation_id) = primitive.animation_id() {
+                        ids.insert(animation_id);
+                    }
+                    if let Primitive::Blur(blur) = primitive {
+                        blur.content.collect_animation_ids_into(ids);
+                    }
+                }
+                PaintOperation::StartBlur(blur) => {
+                    if let Some(animation_id) = blur.animation_id {
+                        ids.insert(animation_id);
+                    }
+                }
                 PaintOperation::StartLayer(_)
                 | PaintOperation::EndLayer
-                | PaintOperation::EndBlur => None,
-            })
-            .collect()
+                | PaintOperation::EndBlur => {}
+            }
+        }
+    }
+
+    pub(crate) fn animation_ids(&self) -> FxHashSet<SceneAnimationId> {
+        let mut ids = FxHashSet::default();
+        self.collect_animation_ids_into(&mut ids);
+        ids
     }
 
     fn order_for_primitive(&mut self, primitive: &Primitive) -> Option<DrawOrder> {
@@ -1454,7 +1476,9 @@ impl Scene {
     }
 }
 
-fn backdrop_blur_operations(operations: &[PaintOperation]) -> Vec<(usize, &PaintBackdropBlur)> {
+fn backdrop_blur_operations(
+    operations: &[PaintOperation],
+) -> impl Iterator<Item = (usize, &PaintBackdropBlur)> + Clone {
     operations
         .iter()
         .enumerate()
@@ -1466,7 +1490,6 @@ fn backdrop_blur_operations(operations: &[PaintOperation]) -> Vec<(usize, &Paint
             | PaintOperation::StartBlur(_)
             | PaintOperation::EndBlur => None,
         })
-        .collect()
 }
 
 fn backdrop_blur_source_region(blur: &PaintBackdropBlur) -> Bounds<ScaledPixels> {
