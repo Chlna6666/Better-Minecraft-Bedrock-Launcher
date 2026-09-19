@@ -1205,8 +1205,8 @@ fn render_version_row(
                 .child(
                     div().w(px(64.)).flex().items_center().child(
                         img(icon_path)
-                            .id(("download-game-row-icon", row_element_id))
                             .image_cache(icon_cache)
+                            .id(("download-game-row-icon", row_element_id))
                             .w(px(42.))
                             .h(px(42.))
                             .rounded(px(crate::ui::theme::tokens::radius::SM))
