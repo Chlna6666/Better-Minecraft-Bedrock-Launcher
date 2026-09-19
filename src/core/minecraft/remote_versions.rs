@@ -16,11 +16,10 @@ use tokio::time::sleep;
 use tracing::debug;
 
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60 * 12);
-const CACHE_STALE_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const CACHE_FILE_NAME: &str = "appx_api_cache.json";
 const CACHE_BACKUP_COUNT: usize = 3;
-// Version 4 invalidates data fetched from retired or incorrect version-list endpoints.
-const CACHE_SCHEMA_VERSION: u32 = 4;
+// Version 5 removes compatibility with the old unclassified cache location.
+const CACHE_SCHEMA_VERSION: u32 = 5;
 const REMOTE_VERSIONS_MAX_ATTEMPTS: usize = 3;
 const REMOTE_VERSIONS_RETRY_DELAY_MS: u64 = 250;
 
@@ -52,16 +51,8 @@ fn cache_path() -> PathBuf {
     file_ops::versions_api_cache_dir().join(CACHE_FILE_NAME)
 }
 
-fn legacy_cache_path() -> PathBuf {
-    file_ops::bmcbl_subdir("cache").join(CACHE_FILE_NAME)
-}
-
 fn cache_backup_path(index: usize) -> PathBuf {
     file_ops::versions_api_cache_dir().join(format!("appx_api_cache.{}.json", index))
-}
-
-fn legacy_cache_backup_path(index: usize) -> PathBuf {
-    file_ops::bmcbl_subdir("cache").join(format!("appx_api_cache.{}.json", index))
 }
 
 fn unix_now_ms() -> u64 {
@@ -83,20 +74,8 @@ fn read_cache() -> Option<CacheFile> {
         return Some(v);
     }
 
-    let legacy = legacy_cache_path();
-    if let Some(v) = read_one(&legacy) {
-        return Some(v);
-    }
-
     for i in 1..=CACHE_BACKUP_COUNT {
         let backup = cache_backup_path(i);
-        if let Some(v) = read_one(&backup) {
-            return Some(v);
-        }
-    }
-
-    for i in 1..=CACHE_BACKUP_COUNT {
-        let backup = legacy_cache_backup_path(i);
         if let Some(v) = read_one(&backup) {
             return Some(v);
         }
@@ -159,9 +138,7 @@ async fn read_cache_off_thread() -> Option<CacheFile> {
 }
 
 async fn write_cache_off_thread(cache: CacheFile) {
-    if let Err(error) =
-        crate::tasks::runtime::run_io_blocking(move || write_cache(&cache)).await
-    {
+    if let Err(error) = crate::tasks::runtime::run_io_blocking(move || write_cache(&cache)).await {
         tracing::warn!(%error, "remote versions cache write worker failed");
     }
 }
@@ -516,20 +493,7 @@ pub async fn load_or_fetch_versions(force_refresh: bool) -> Result<Vec<RemoteMin
         }
     }
 
-    let last_error = last_error.unwrap_or_else(|| anyhow::anyhow!("remote versions load failed"));
-    if let Some(cache) = read_cache_off_thread().await {
-        let age = Duration::from_millis(unix_now_ms().saturating_sub(cache.ts_unix_ms));
-        if age <= CACHE_STALE_TTL && !cache.versions.is_empty() {
-            tracing::warn!(
-                cause = %last_error.root_cause(),
-                cache_age_seconds = age.as_secs(),
-                "remote versions refresh unavailable; using stale cache"
-            );
-            return Ok(cache.versions);
-        }
-    }
-
-    Err(last_error)
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("remote versions load failed")))
 }
 
 #[cfg(test)]
