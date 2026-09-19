@@ -1086,6 +1086,12 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     assert_eq!(first.path_vertex_count, 3);
     assert_eq!(upload.path_rasterization_cache_hits, 0);
     assert_eq!(upload.path_rasterization_cache_misses, 1);
+    assert!(upload.path_rasterization_encode_scratch.is_empty());
+    let encode_scratch_capacity = upload.path_rasterization_encode_scratch.capacity();
+    assert!(
+        encode_scratch_capacity >= 3 * PACKED_PATH_RASTERIZATION_VERTEX_BYTES,
+        "cache-miss encoding should retain its reusable scratch allocation"
+    );
 
     let second = upload.encode(
         &scene,
@@ -1097,6 +1103,11 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     assert_eq!(second.path_vertex_count, 3);
     assert_eq!(upload.path_rasterization_cache_hits, 1);
     assert_eq!(upload.path_rasterization_cache_misses, 1);
+    assert_eq!(
+        upload.path_rasterization_encode_scratch.capacity(),
+        encode_scratch_capacity,
+        "a cache hit must not churn the reusable miss-encoding buffer"
+    );
 }
 
 #[test]

@@ -160,6 +160,9 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) path_geometry_hash_memo:
         FxHashMap<crate::PathCacheId, PathGeometryHashMemo>,
     pub(in crate::platform::nova) path_paint_key_scratch: Vec<u8>,
+    /// Reused encoder buffer for path-rasterization cache misses. The final cache entry remains an
+    /// independent Arc<[u8]>; this buffer only removes the short-lived per-path Vec allocation.
+    pub(in crate::platform::nova) path_rasterization_encode_scratch: Vec<u8>,
     pub(in crate::platform::nova) retained_quad_chunks:
         FxHashMap<RetainedChunkId, PackedRetainedQuadChunk>,
     pub(in crate::platform::nova) resident_quad_spans: Vec<RetainedResidentSpan>,

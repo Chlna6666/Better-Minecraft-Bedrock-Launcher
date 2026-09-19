@@ -751,15 +751,28 @@ impl FrameUpload {
             return Some(entry.clone());
         }
 
-        let mut bytes =
-            Vec::with_capacity(path.vertices.len() * PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
-        for vertex in &path.vertices {
-            write_path_rasterization_vertex(&mut bytes, vertex, &path.color, &content_mask);
+        let encoded_bytes = path
+            .vertices
+            .len()
+            .saturating_mul(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
+        self.path_rasterization_encode_scratch.clear();
+        if self.path_rasterization_encode_scratch.capacity() < encoded_bytes {
+            self.path_rasterization_encode_scratch.reserve(encoded_bytes);
         }
+        for vertex in &path.vertices {
+            write_path_rasterization_vertex(
+                &mut self.path_rasterization_encode_scratch,
+                vertex,
+                &path.color,
+                &content_mask,
+            );
+        }
+        debug_assert_eq!(self.path_rasterization_encode_scratch.len(), encoded_bytes);
         let entry = PathRasterizationCacheEntry {
-            bytes: Arc::<[u8]>::from(bytes.into_boxed_slice()),
+            bytes: Arc::<[u8]>::from(self.path_rasterization_encode_scratch.as_slice()),
             vertex_count,
         };
+        self.path_rasterization_encode_scratch.clear();
         if self.path_rasterization_cache.len() >= MAX_PATH_RASTERIZATION_CACHE_ENTRIES {
             let mut keep = false;
             self.path_rasterization_cache.retain(|_, _| {
