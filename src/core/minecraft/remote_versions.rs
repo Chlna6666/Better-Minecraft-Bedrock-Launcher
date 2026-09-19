@@ -17,9 +17,8 @@ use tracing::debug;
 
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60 * 12);
 const CACHE_FILE_NAME: &str = "appx_api_cache.json";
-const CACHE_BACKUP_COUNT: usize = 3;
-// Version 5 removes compatibility with the old unclassified cache location.
-const CACHE_SCHEMA_VERSION: u32 = 5;
+// Version 6 uses one current cache file and removes all legacy cache readers.
+const CACHE_SCHEMA_VERSION: u32 = 6;
 const REMOTE_VERSIONS_MAX_ATTEMPTS: usize = 3;
 const REMOTE_VERSIONS_RETRY_DELAY_MS: u64 = 250;
 
@@ -51,10 +50,6 @@ fn cache_path() -> PathBuf {
     file_ops::versions_api_cache_dir().join(CACHE_FILE_NAME)
 }
 
-fn cache_backup_path(index: usize) -> PathBuf {
-    file_ops::versions_api_cache_dir().join(format!("appx_api_cache.{}.json", index))
-}
-
 fn unix_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -62,7 +57,20 @@ fn unix_now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn remove_legacy_backup_files() {
+    for index in 1..=3 {
+        let path = file_ops::versions_api_cache_dir().join(format!("appx_api_cache.{index}.json"));
+        if let Err(error) = fs::remove_file(path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "obsolete remote versions cache removal failed");
+        }
+    }
+}
+
 fn read_cache() -> Option<CacheFile> {
+    remove_legacy_backup_files();
+
     fn read_one(path: &PathBuf) -> Option<CacheFile> {
         let raw = fs::read_to_string(path).ok()?;
         let cache: CacheFile = serde_json::from_str(&raw).ok()?;
@@ -74,37 +82,7 @@ fn read_cache() -> Option<CacheFile> {
         return Some(v);
     }
 
-    for i in 1..=CACHE_BACKUP_COUNT {
-        let backup = cache_backup_path(i);
-        if let Some(v) = read_one(&backup) {
-            return Some(v);
-        }
-    }
-
     None
-}
-
-fn rotate_cache_files() {
-    if CACHE_BACKUP_COUNT == 0 {
-        return;
-    }
-
-    let path = cache_path();
-
-    let last = cache_backup_path(CACHE_BACKUP_COUNT);
-    let _ = fs::remove_file(&last);
-
-    for i in (1..CACHE_BACKUP_COUNT).rev() {
-        let src = cache_backup_path(i);
-        let dst = cache_backup_path(i + 1);
-        if src.exists() {
-            let _ = fs::rename(src, dst);
-        }
-    }
-
-    if path.exists() {
-        let _ = fs::rename(&path, cache_backup_path(1));
-    }
 }
 
 fn write_cache(cache: &CacheFile) {
@@ -116,8 +94,6 @@ fn write_cache(cache: &CacheFile) {
     let Ok(raw) = serde_json::to_string(cache) else {
         return;
     };
-
-    rotate_cache_files();
 
     // Best-effort atomic replace on Windows: write tmp, then rename into place.
     let tmp = path.with_extension("json.tmp");

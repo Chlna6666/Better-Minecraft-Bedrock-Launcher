@@ -1,3 +1,4 @@
+pub(crate) mod api_cache;
 #[path = "bedrock_auth_local.rs"]
 pub(crate) mod bedrock_auth;
 pub mod curseforge;

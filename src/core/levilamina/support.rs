@@ -3,10 +3,13 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::http::proxy::get_client_for_proxy;
 
 const VERSION_DATABASE_URL: &str = "https://raw.githubusercontent.com/LiteLDev/levilamina-client-version-db/refs/heads/main/v2/version-db.json";
+const API_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 static SUPPORT_DATABASE_CACHE: Lazy<Mutex<Option<LeviLaminaSupportDatabase>>> =
     Lazy::new(|| Mutex::new(None));
 
@@ -18,6 +21,20 @@ pub struct LeviLaminaSupportDatabase {
 }
 
 impl LeviLaminaSupportDatabase {
+    /// Returns every loader version published by the compatibility database, sorted newest first.
+    #[must_use]
+    pub fn all_loader_versions(&self) -> Vec<String> {
+        let mut versions = self
+            .versions
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        versions.sort_by(|left, right| super::compare_version_desc(left, right));
+        versions.dedup();
+        versions
+    }
+
     #[must_use]
     pub fn loader_versions(&self, game_version: &str) -> Vec<String> {
         loader_versions_for_game(&self.versions, game_version)
@@ -52,12 +69,45 @@ async fn fetch_support_database() -> Result<LeviLaminaSupportDatabase, String> {
     Ok(database)
 }
 
-/// Clears the in-memory compatibility database so the next UI load fetches the current data.
+fn api_cache_path() -> PathBuf {
+    crate::utils::file_ops::levilamina_api_cache_dir().join("version-db.json")
+}
+
+async fn read_api_cache() -> Option<LeviLaminaSupportDatabase> {
+    let path = api_cache_path();
+    match crate::tasks::runtime::run_io_blocking(move || {
+        crate::core::api_cache::read_fresh(&path, API_CACHE_TTL)
+    })
+    .await
+    {
+        Ok(cache) => cache,
+        Err(error) => {
+            tracing::warn!(%error, "LeviLamina support API cache read worker failed");
+            None
+        }
+    }
+}
+
+async fn write_api_cache(database: LeviLaminaSupportDatabase) {
+    let path = api_cache_path();
+    if let Err(error) = crate::tasks::runtime::run_io_blocking(move || {
+        crate::core::api_cache::write(&path, &database)
+    })
+    .await
+    {
+        tracing::warn!(%error, "LeviLamina support API cache write worker failed");
+    }
+}
+
+/// Clears the compatibility database and its current disk cache so the next UI load fetches data.
 pub fn clear_cache() {
     let mut cache = SUPPORT_DATABASE_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cache = None;
+    if let Err(error) = crate::core::api_cache::remove(&api_cache_path()) {
+        tracing::warn!(%error, "LeviLamina support API cache removal failed");
+    }
 }
 
 /// Returns the LeviLamina compatibility database cached for this process.
@@ -72,7 +122,15 @@ pub async fn support_database() -> Result<LeviLaminaSupportDatabase, String> {
         return Ok(database);
     }
 
+    if let Some(database) = read_api_cache().await {
+        *SUPPORT_DATABASE_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(database.clone());
+        return Ok(database);
+    }
+
     let database = fetch_support_database().await?;
+    write_api_cache(database.clone()).await;
     *SUPPORT_DATABASE_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(database.clone());

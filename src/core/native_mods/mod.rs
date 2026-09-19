@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -10,6 +12,7 @@ mod install;
 pub use install::{NativeModInstallRequest, start_install};
 
 const INDEX_URL: &str = "https://pkg.roundstudio.top/index.json";
+const API_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
 static INDEX_CACHE: Lazy<Mutex<Option<Vec<NativeModEntry>>>> = Lazy::new(|| Mutex::new(None));
 
@@ -67,12 +70,15 @@ struct GithubLatestRelease {
     tag_name: String,
 }
 
-/// Clears the in-memory native-mod catalog so the next UI load fetches the current index.
+/// Clears the native-mod catalog and its current disk cache so the next UI load fetches the index.
 pub fn clear_cache() {
     let mut cache = INDEX_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cache = None;
+    if let Err(error) = crate::core::api_cache::remove(&api_cache_path()) {
+        tracing::warn!(%error, "native-mod API cache removal failed");
+    }
 }
 
 /// Returns the native-mod catalog cached for the lifetime of this process.
@@ -87,11 +93,49 @@ pub async fn package_index() -> Result<Vec<NativeModEntry>, String> {
         return Ok(entries);
     }
 
+    if let Some(entries) = read_api_cache().await {
+        *INDEX_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(entries.clone());
+        return Ok(entries);
+    }
+
     let entries = fetch_index().await?;
+    write_api_cache(entries.clone()).await;
     *INDEX_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(entries.clone());
     Ok(entries)
+}
+
+fn api_cache_path() -> PathBuf {
+    crate::utils::file_ops::native_mods_api_cache_dir().join("index.json")
+}
+
+async fn read_api_cache() -> Option<Vec<NativeModEntry>> {
+    let path = api_cache_path();
+    match crate::tasks::runtime::run_io_blocking(move || {
+        crate::core::api_cache::read_fresh(&path, API_CACHE_TTL)
+    })
+    .await
+    {
+        Ok(cache) => cache,
+        Err(error) => {
+            tracing::warn!(%error, "native-mod API cache read worker failed");
+            None
+        }
+    }
+}
+
+async fn write_api_cache(entries: Vec<NativeModEntry>) {
+    let path = api_cache_path();
+    if let Err(error) = crate::tasks::runtime::run_io_blocking(move || {
+        crate::core::api_cache::write(&path, &entries)
+    })
+    .await
+    {
+        tracing::warn!(%error, "native-mod API cache write worker failed");
+    }
 }
 
 async fn fetch_index() -> Result<Vec<NativeModEntry>, String> {

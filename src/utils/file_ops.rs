@@ -69,6 +69,16 @@ pub fn versions_api_cache_dir() -> PathBuf {
     api_cache_dir().join("versions")
 }
 
+/// Returns the disk cache directory for LeviLamina API responses.
+pub fn levilamina_api_cache_dir() -> PathBuf {
+    api_cache_dir().join("levilamina")
+}
+
+/// Returns the disk cache directory for native-mod API responses.
+pub fn native_mods_api_cache_dir() -> PathBuf {
+    api_cache_dir().join("native_mods")
+}
+
 #[cfg(target_os = "linux")]
 pub fn state_dir() -> PathBuf {
     linux_xdg_app_dir("XDG_STATE_HOME", &[".local", "state"], Path::new("state"))
@@ -143,6 +153,8 @@ pub fn create_initial_directories() {
         api_cache_dir(),
         curseforge_api_cache_dir(),
         versions_api_cache_dir(),
+        levilamina_api_cache_dir(),
+        native_mods_api_cache_dir(),
     ];
     #[cfg(target_os = "linux")]
     let dirs = {

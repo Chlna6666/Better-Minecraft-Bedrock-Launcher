@@ -2,7 +2,9 @@ use crate::http::proxy::get_client_for_proxy;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 mod archive;
 mod install;
@@ -22,6 +24,7 @@ pub use support::{
 };
 
 const LEVILAUNCHER_INDEX_URL: &str = "https://lipr.levimc.org/levilauncher.json";
+const API_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 static INDEX_CACHE: Lazy<Mutex<Option<LeviLaminaIndexResult>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -250,12 +253,44 @@ async fn fetch_levilamina_index() -> Result<LeviLaminaIndexResult, String> {
     })
 }
 
-/// Clears the in-memory package index so the next UI load fetches the current registry.
+fn api_cache_path() -> PathBuf {
+    crate::utils::file_ops::levilamina_api_cache_dir().join("levilauncher.json")
+}
+
+async fn read_api_cache() -> Option<LeviLaminaIndexResult> {
+    let path = api_cache_path();
+    match crate::tasks::runtime::run_io_blocking(move || {
+        crate::core::api_cache::read_fresh(&path, API_CACHE_TTL)
+    })
+    .await
+    {
+        Ok(cache) => cache,
+        Err(error) => {
+            tracing::warn!(%error, "LeviLamina API cache read worker failed");
+            None
+        }
+    }
+}
+
+async fn write_api_cache(index: LeviLaminaIndexResult) {
+    let path = api_cache_path();
+    if let Err(error) =
+        crate::tasks::runtime::run_io_blocking(move || crate::core::api_cache::write(&path, &index))
+            .await
+    {
+        tracing::warn!(%error, "LeviLamina API cache write worker failed");
+    }
+}
+
+/// Clears the package index and its current disk cache so the next UI load fetches the registry.
 pub fn clear_cache() {
     let mut cache = INDEX_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cache = None;
+    if let Err(error) = crate::core::api_cache::remove(&api_cache_path()) {
+        tracing::warn!(%error, "LeviLamina API cache removal failed");
+    }
 }
 
 /// Returns the LeviLamina package index cached for the lifetime of this process.
@@ -271,7 +306,15 @@ pub async fn package_index() -> Result<LeviLaminaIndexResult, String> {
         return Ok(index);
     }
 
+    if let Some(index) = read_api_cache().await {
+        *INDEX_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(index.clone());
+        return Ok(index);
+    }
+
     let index = fetch_levilamina_index().await?;
+    write_api_cache(index.clone()).await;
     *INDEX_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(index.clone());
