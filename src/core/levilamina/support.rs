@@ -1,12 +1,14 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use tokio::sync::OnceCell;
 
 use crate::http::proxy::get_client_for_proxy;
 
 const VERSION_DATABASE_URL: &str = "https://raw.githubusercontent.com/LiteLDev/levilamina-client-version-db/refs/heads/main/v2/version-db.json";
-static SUPPORT_DATABASE_CACHE: OnceCell<LeviLaminaSupportDatabase> = OnceCell::const_new();
+static SUPPORT_DATABASE_CACHE: Lazy<Mutex<Option<LeviLaminaSupportDatabase>>> =
+    Lazy::new(|| Mutex::new(None));
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct LeviLaminaSupportDatabase {
@@ -50,14 +52,31 @@ async fn fetch_support_database() -> Result<LeviLaminaSupportDatabase, String> {
     Ok(database)
 }
 
+/// Clears the in-memory compatibility database so the next UI load fetches the current data.
+pub fn clear_cache() {
+    let mut cache = SUPPORT_DATABASE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache = None;
+}
+
 /// Returns the LeviLamina compatibility database cached for this process.
 ///
 /// A failed request is not stored, allowing a later request to retry.
 pub async fn support_database() -> Result<LeviLaminaSupportDatabase, String> {
-    let database = SUPPORT_DATABASE_CACHE
-        .get_or_try_init(|| async { fetch_support_database().await })
-        .await?;
-    Ok(database.clone())
+    if let Some(database) = SUPPORT_DATABASE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    {
+        return Ok(database);
+    }
+
+    let database = fetch_support_database().await?;
+    *SUPPORT_DATABASE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(database.clone());
+    Ok(database)
 }
 
 #[must_use]
@@ -91,7 +110,11 @@ fn game_versions_match(target: &[u64], supported: &[u64]) -> bool {
 }
 
 fn version_form_matches(target: &[u64], supported_form: &[u64]) -> bool {
-    supported_form == target || supported_form.starts_with(target)
+    supported_form == target
+        || supported_form.starts_with(target)
+        || (target.len() >= 4
+            && supported_form.len() >= 4
+            && target[..target.len() - 1] == supported_form[..supported_form.len() - 1])
 }
 
 fn numeric_version(version: &str) -> Option<Vec<u64>> {

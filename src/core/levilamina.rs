@@ -1,7 +1,8 @@
 use crate::http::proxy::get_client_for_proxy;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::OnceCell;
+use std::sync::Mutex;
 
 mod archive;
 mod install;
@@ -15,10 +16,13 @@ pub use install::{
     LeviLaminaInstallStage, LeviLaminaInstallation, inspect_installation, install_loader,
     start_install, start_uninstall,
 };
-pub use support::{LeviLaminaSupportDatabase, loader_versions_for_game, support_database};
+pub use support::{
+    LeviLaminaSupportDatabase, clear_cache as clear_support_cache, loader_versions_for_game,
+    support_database,
+};
 
 const LEVILAUNCHER_INDEX_URL: &str = "https://lipr.levimc.org/levilauncher.json";
-static INDEX_CACHE: OnceCell<LeviLaminaIndexResult> = OnceCell::const_new();
+static INDEX_CACHE: Lazy<Mutex<Option<LeviLaminaIndexResult>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LipIndex {
@@ -246,15 +250,32 @@ async fn fetch_levilamina_index() -> Result<LeviLaminaIndexResult, String> {
     })
 }
 
+/// Clears the in-memory package index so the next UI load fetches the current registry.
+pub fn clear_cache() {
+    let mut cache = INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache = None;
+}
+
 /// Returns the LeviLamina package index cached for the lifetime of this process.
 ///
 /// Failed requests are not cached, so a later UI request can retry after a transient
 /// network or server failure.
 pub async fn package_index() -> Result<LeviLaminaIndexResult, String> {
-    let index = INDEX_CACHE
-        .get_or_try_init(|| async { fetch_levilamina_index().await })
-        .await?;
-    Ok(index.clone())
+    if let Some(index) = INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    {
+        return Ok(index);
+    }
+
+    let index = fetch_levilamina_index().await?;
+    *INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(index.clone());
+    Ok(index)
 }
 
 pub fn mod_matches_loader_version(

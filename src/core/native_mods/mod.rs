@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
+use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::sync::OnceCell;
 
 mod install;
 
@@ -10,7 +11,7 @@ pub use install::{NativeModInstallRequest, start_install};
 
 const INDEX_URL: &str = "https://pkg.roundstudio.top/index.json";
 
-static INDEX_CACHE: OnceCell<Vec<NativeModEntry>> = OnceCell::const_new();
+static INDEX_CACHE: Lazy<Mutex<Option<Vec<NativeModEntry>>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeModEntry {
@@ -66,14 +67,31 @@ struct GithubLatestRelease {
     tag_name: String,
 }
 
+/// Clears the in-memory native-mod catalog so the next UI load fetches the current index.
+pub fn clear_cache() {
+    let mut cache = INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache = None;
+}
+
 /// Returns the native-mod catalog cached for the lifetime of this process.
 ///
 /// The catalog is independent from the LeviLamina registry. Failed requests are not cached.
 pub async fn package_index() -> Result<Vec<NativeModEntry>, String> {
-    let entries = INDEX_CACHE
-        .get_or_try_init(|| async { fetch_index().await })
-        .await?;
-    Ok(entries.clone())
+    if let Some(entries) = INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    {
+        return Ok(entries);
+    }
+
+    let entries = fetch_index().await?;
+    *INDEX_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(entries.clone());
+    Ok(entries)
 }
 
 async fn fetch_index() -> Result<Vec<NativeModEntry>, String> {

@@ -13,6 +13,16 @@ fn loader_versions_match_zero_padded_game_version() {
 }
 
 #[test]
+fn loader_versions_match_current_game_revision_alias() {
+    let versions = HashMap::from([("1.26.51.01".to_string(), vec!["26.51.0".to_string()])]);
+
+    assert_eq!(
+        loader_versions_for_game(&versions, "1.26.51.0"),
+        vec!["26.51.0"]
+    );
+}
+
+#[test]
 fn loader_versions_match_short_download_version_prefix() {
     let versions = HashMap::from([("1.26.20.04".to_string(), vec!["26.20.7".to_string()])]);
 
