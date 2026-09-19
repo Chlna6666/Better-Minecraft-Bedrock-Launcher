@@ -41,6 +41,10 @@ impl FrameUpload {
         stream_capacity
             .saturating_add(chunk_capacity)
             .saturating_add(
+                self.active_retained_chunk_ids_scratch.capacity()
+                    * std::mem::size_of::<RetainedChunkId>(),
+            )
+            .saturating_add(
                 self.resident_quad_spans.capacity() * std::mem::size_of::<RetainedResidentSpan>(),
             )
     }
@@ -184,17 +188,21 @@ impl FrameUpload {
         }
 
         self.resident_quad_spans.clear();
+        self.active_retained_chunk_ids_scratch.clear();
         if matches!(
             level,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
         ) {
             self.retained_quad_chunks.clear();
         }
-        self.retained_quad_chunks.shrink_to(match level {
+        let retained_chunk_floor = match level {
             GpuiMemoryTrimLevel::Light => 64,
             GpuiMemoryTrimLevel::Moderate => 16,
             GpuiMemoryTrimLevel::Aggressive => 0,
-        });
+        };
+        self.retained_quad_chunks.shrink_to(retained_chunk_floor);
+        self.active_retained_chunk_ids_scratch
+            .shrink_to(retained_chunk_floor);
         trim_upload_vec(&mut self.resident_quad_spans, 16, multiplier);
     }
 

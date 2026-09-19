@@ -165,5 +165,8 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) path_rasterization_encode_scratch: Vec<u8>,
     pub(in crate::platform::nova) retained_quad_chunks:
         FxHashMap<RetainedChunkId, PackedRetainedQuadChunk>,
+    /// Reusable liveness set for retained quad-cache pruning. The set is empty between reset
+    /// encodes, but keeping its buckets avoids rebuilding a hash table every retained frame.
+    pub(in crate::platform::nova) active_retained_chunk_ids_scratch: FxHashSet<RetainedChunkId>,
     pub(in crate::platform::nova) resident_quad_spans: Vec<RetainedResidentSpan>,
 }

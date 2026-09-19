@@ -905,6 +905,44 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     assert_eq!(upload.retained_quad_chunks.len(), 1);
     assert_eq!(first_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
+    assert!(upload.active_retained_chunk_ids_scratch.is_empty());
+    let active_chunk_scratch_capacity = upload.active_retained_chunk_ids_scratch.capacity();
+    assert!(
+        active_chunk_scratch_capacity >= 1,
+        "retained cache pruning should keep its hash allocation hot"
+    );
+
+    let cached_bytes_ptr = upload
+        .retained_quad_chunks
+        .values()
+        .next()
+        .expect("retained chunk cache should contain the encoded chunk")
+        .bytes
+        .as_ptr();
+    let same_generation = retained_quad_scene(1);
+    let same_generation_summary = upload.encode(
+        &same_generation,
+        drawable_size,
+        &rendering_parameters,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(same_generation_summary.retained_chunk_hits, 0);
+    let same_generation_cached = upload
+        .retained_quad_chunks
+        .values()
+        .next()
+        .expect("same retained identity should remain cached");
+    assert_eq!(
+        same_generation_cached.bytes.as_ptr(),
+        cached_bytes_ptr,
+        "dirty retained chunks should reuse their byte backing allocation"
+    );
+    assert_eq!(
+        upload.active_retained_chunk_ids_scratch.capacity(),
+        active_chunk_scratch_capacity,
+        "stable retained working sets should reuse the liveness hash table"
+    );
 
     let mut partially_dirty = crate::Scene::default();
     partially_dirty.replay(0..previous.len(), &previous);

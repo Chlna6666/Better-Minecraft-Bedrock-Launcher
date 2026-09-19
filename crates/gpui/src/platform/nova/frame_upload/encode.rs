@@ -2,6 +2,9 @@ use super::*;
 use std::hash::Hasher;
 use std::ops::Range;
 
+const RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER: usize = 4;
+const RETAINED_CHUNK_SCRATCH_MIN_CAPACITY: usize = 16;
+
 /// Primitives clipped to a zero-area mask are invisible on screen but can produce
 /// undefined shader coverage (white garbage) in the rasterizer, so they are culled
 /// before packing instead of being handed to the GPU.
@@ -561,13 +564,27 @@ impl FrameUpload {
             }
         }
         if reset {
-            let active_chunks: FxHashSet<_> = scene
-                .prepared_retained_quad_chunks()
-                .iter()
-                .map(|chunk| chunk.id.clone())
-                .collect();
-            self.retained_quad_chunks
-                .retain(|id, _| active_chunks.contains(id));
+            self.active_retained_chunk_ids_scratch.clear();
+            self.active_retained_chunk_ids_scratch.extend(
+                scene
+                    .prepared_retained_quad_chunks()
+                    .iter()
+                    .map(|chunk| chunk.id.clone()),
+            );
+            let active_chunk_count = self.active_retained_chunk_ids_scratch.len();
+            {
+                let active_chunks = &self.active_retained_chunk_ids_scratch;
+                self.retained_quad_chunks
+                    .retain(|id, _| active_chunks.contains(id));
+            }
+            self.active_retained_chunk_ids_scratch.clear();
+            let scratch_target = RETAINED_CHUNK_SCRATCH_MIN_CAPACITY.max(active_chunk_count);
+            if self.active_retained_chunk_ids_scratch.capacity()
+                > scratch_target.saturating_mul(RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER)
+            {
+                self.active_retained_chunk_ids_scratch
+                    .shrink_to(scratch_target);
+            }
             self.rebuild_custom_mesh_3d_animations();
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes_for_current_frame();
@@ -608,24 +625,37 @@ impl FrameUpload {
                 );
                 if count == chunk.quad_range.len() as u32 {
                     let byte_end = self.quads.len();
-                    let bytes = self.quads[byte_start..].to_vec();
+                    let encoded_bytes = &self.quads[byte_start..byte_end];
                     let mut hasher = collections::FxHasher::default();
-                    hasher.write(&bytes);
+                    hasher.write(encoded_bytes);
                     let byte_hash = hasher.finish();
                     self.resident_quad_spans.push(RetainedResidentSpan {
                         id: chunk.id.clone(),
                         range: byte_start..byte_end,
                         byte_hash,
                     });
-                    self.retained_quad_chunks.insert(
-                        chunk.id.clone(),
-                        PackedRetainedQuadChunk {
-                            bytes,
+
+                    let byte_target = PACKED_QUAD_BYTES.max(encoded_bytes.len());
+                    let cached = self
+                        .retained_quad_chunks
+                        .entry(chunk.id.clone())
+                        .or_insert_with(|| PackedRetainedQuadChunk {
+                            bytes: Vec::with_capacity(encoded_bytes.len()),
                             byte_hash,
                             quad_count: count,
                             is_solid,
-                        },
-                    );
+                        });
+                    cached.bytes.clear();
+                    if cached.bytes.capacity()
+                        > byte_target
+                            .saturating_mul(RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER)
+                    {
+                        cached.bytes.shrink_to(byte_target);
+                    }
+                    cached.bytes.extend_from_slice(encoded_bytes);
+                    cached.byte_hash = byte_hash;
+                    cached.quad_count = count;
+                    cached.is_solid = is_solid;
                 }
             }
             cursor = chunk.quad_range.end;
