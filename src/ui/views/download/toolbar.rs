@@ -16,11 +16,7 @@ const CONTROL_HEIGHT: f32 = 38.0;
 const TAB_INSET: f32 = 3.0;
 const TAB_HEIGHT: f32 = CONTROL_HEIGHT - 2.0 * (TAB_INSET + 1.0);
 
-pub(super) fn render_toolbar(
-    colors: &ThemeColors,
-    state: &DownloadPageState,
-    i18n: &I18n,
-) -> Div {
+pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {
     let search = render_toolbar_search(colors, state, i18n);
 
     div()
@@ -446,6 +442,17 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
         .disabled(refresh_disabled)
         .on_click(|_ev, window, cx: &mut App| {
             let refreshed_tab = cx.read_global(|s: &DownloadPageState, _cx| s.tab);
+            if refreshed_tab == DownloadTab::Mod {
+                crate::core::levilamina::clear_support_cache();
+                let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
+                    state.levilauncher_selected_loader == "native"
+                });
+                if native_source {
+                    crate::core::native_mods::clear_cache();
+                } else {
+                    crate::core::levilamina::clear_cache();
+                }
+            }
             cx.update_global(|s: &mut DownloadPageState, cx| match s.tab {
                 DownloadTab::Game => {
                     s.force_refresh_next = true;

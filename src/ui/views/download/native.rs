@@ -131,7 +131,11 @@ pub(super) fn render_panel(
                 .p(px(20.))
                 .child(content),
         )
-        .child(render_pagination(colors, cache.page_index, cache.total_pages))
+        .child(render_pagination(
+            colors,
+            cache.page_index,
+            cache.total_pages,
+        ))
 }
 
 fn render_loading(colors: &ThemeColors) -> Div {
@@ -183,6 +187,7 @@ fn render_error(colors: &ThemeColors, error: &SharedString) -> Div {
                 .bg(colors.accent)
                 .text_color(colors.btn_primary_text)
                 .on_click(|_, _, cx| {
+                    crate::core::native_mods::clear_cache();
                     cx.update_global(|state: &mut DownloadPageState, _| {
                         state.native_mods_loaded = false;
                         state.native_mods_loading = false;

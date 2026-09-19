@@ -260,6 +260,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString, i18n: &I18n) -> 
                 .bg(colors.accent)
                 .text_color(colors.btn_primary_text)
                 .on_click(|_ev, _window, cx| {
+                    crate::core::levilamina::clear_cache();
                     cx.update_global(|s: &mut DownloadPageState, _cx| {
                         s.levilauncher_loaded = false;
                         s.levilauncher_loading = false;
@@ -392,13 +393,7 @@ fn render_mod_grid(
         .items_stretch();
 
     for (idx, mod_entry) in mods.iter().enumerate() {
-        grid = grid.child(render_mod_card(
-            colors,
-            mod_entry,
-            idx,
-            i18n,
-            image_cache,
-        ));
+        grid = grid.child(render_mod_card(colors, mod_entry, idx, i18n, image_cache));
     }
 
     grid
