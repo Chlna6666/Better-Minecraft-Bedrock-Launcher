@@ -2,6 +2,14 @@
 
 All notable changes to `bedrock-render` are tracked here.
 
+## Unreleased
+
+### Added
+
+- Added `RenderSimdPolicy::Auto`/`Scalar` for controlled CPU pack-kernel A/B
+  comparisons, native RGBA/BGRA full-pipeline benchmarks, and the read-only
+  `compare_backends` CPU/GPU comparison example.
+
 ## 0.3.4 - 2026-07-18
 
 ### Added
@@ -57,7 +65,7 @@ All notable changes to `bedrock-render` are tracked here.
   probe cache. Session rendering can now validate tile dependencies by world
   signature, chunk state, and tile-to-chunk references before trusting cached
   decoded output.
-- Added decoded v2 streaming APIs through `TileStreamEventV2`,
+- Added decoded tile streaming APIs through `DecodedTileEvent`,
   `DecodedTileImage`, `RenderTileOutputOptions`, and `TilePixelFormat`, with
   RGBA8 output by default and BGRA8 available for UI toolkits that prefer it.
 - Added tile index cache diagnostics to `RenderPipelineStats` for trusted hits,

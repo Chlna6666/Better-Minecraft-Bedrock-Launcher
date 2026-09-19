@@ -799,6 +799,7 @@ dependencies = [
  "bytes",
  "criterion",
  "crossbeam-channel",
+ "fearless_simd",
  "image",
  "indexmap",
  "json5",

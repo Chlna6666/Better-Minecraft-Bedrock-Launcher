@@ -48,6 +48,104 @@ cargo bench --bench render --bench cache --all-features -- --baseline before
 追加；它不重写完整 checkpoint 索引。超过阈值的下一批会在后台 checkpoint，因此应另行
 记录该低频写放大，而不要把它混入交互刷新中位数。
 
+## CPU SIMD 执行矩阵
+
+Criterion 快速套件测量的是完整 render pipeline，不能把整张地图耗时直接标成 SIMD
+收益。当前生产 compose 直接写出请求的 `Rgba8` 或 `Bgra8`，缓存也按像素格式保存
+原生字节；无邻域光照的连续已解析颜色会进入 `fearless_simd` pack kernel，复杂
+邻域光照的邻域读取和浮点计算仍保持 scalar；形成连续最终颜色后仍可使用 SIMD
+完成打包。
+
+| 阶段 | 当前状态 | SIMD 判断 |
+| --- | --- | --- |
+| RGBA/BGRA 连续打包 | `pixels.rs::pack_colors` | `Auto` 使用 SIMD；`Scalar` 是完整 pipeline 基线 |
+| 有邻域光照的 RGBA/BGRA 写入 | `compose_region_tile_from_prepared` 或 lighting-only compose | 邻域计算 scalar；最终连续颜色在 `Auto` 下统一进入 pack kernel |
+| RGBA/BGRA 缓存 | `FastRgbaZstd` / `FastBgraZstd` | 原生格式命中；格式不匹配就是 miss |
+| RGB brightness/shade、tint、blend | semantic sample 阶段 | 只有形成连续 buffer 后再做 A/B |
+| heightmap、boundary/shadow mask | lookup/邻域读取仍在前面 | 暂不强行 SIMD |
+| block-state、palette、HashMap、LevelDB | 控制流和随机访问 | 不适合 SIMD |
+
+### SIMD A/B 规则
+
+`<64 B` 使用 scalar；`64–256 B` 必须 benchmark 后决定；`>256 B` 才是候选。任何
+候选都必须在相同输入、相同输出格式和 release 构建下比较 scalar、可用指令集和自动
+选择，并记录 CPU、编译参数、tile 尺寸和中位数。`--no-default-features` 不是“关闭
+SIMD”的开关；完整 pipeline 的无 SIMD 基线需要单独的受控编译配置。
+
+2026-09-20 release pack A/B 记录：RGBA scalar/SSE2/SSE4.2/AVX2/auto 约为
+40.2/44.2/49.4/53.8/40.8 µs，BGRA 约为 101.4/56.1/288.0/290.4/44.3 µs。
+pack kernel 已接入所有 CPU compose 分支的最终连续颜色打包；邻域读取和光照算术仍保持
+scalar，`Scalar` 继续保留直接写出基线。
+
+```powershell
+cargo build --release -p bedrock-render
+cargo test --release -p bedrock-render --lib benchmark_packed_color_instruction_sets -- --ignored --nocapture
+```
+
+完整 pipeline 的 scalar/Auto 对照使用 `RenderOptions::simd`，当前覆盖 biome
+RGBA、biome BGRA、lighting-only surface RGBA 和 heightmap：
+
+```powershell
+cargo bench -p bedrock-render --bench render --all-features -- "biome_tile_256"
+cargo bench -p bedrock-render --bench render --all-features -- "surface_tile_256_rgba"
+cargo bench -p bedrock-render --bench render --all-features -- "surface_tile_256_rgba_flat"
+cargo bench -p bedrock-render --bench render --all-features -- "surface_tile_256_rgba_lighting_only"
+cargo bench -p bedrock-render --bench render --all-features -- "heightmap_tile_256_rgba"
+```
+
+输出中的 `scalar` 是“无显式 SIMD kernel”的对照，`sse2`、`sse4.2`、`avx2` 是强制
+指令集 kernel，`auto` 是 `fearless_simd` 的运行时选择。它们只比较连续 color pack
+候选；完整 pipeline 的结果必须查看对应的 `*_scalar` 与 `*_auto` case。没有全局进程级
+“关闭 CPU 指令集”开关，单次渲染使用 `RenderOptions::simd = Scalar` 做基线；也不要把
+`--no-default-features` 当成 SIMD off。
+
+这里的 Scalar 表示不调用显式 `fearless_simd` kernel；Rust/LLVM 仍可能对普通标量循环
+做编译器自动向量化，因此它是工程 A/B 基线，不是禁用 CPU ISA 的硬件隔离实验。
+
+`auto` 会在当前平台选择可用的 NEON、WASM SIMD 或 x86 指令集；Windows x86 的
+显式 A/B 目前列出 SSE2、SSE4.2 和 AVX2。新增其它 kernel 前必须先有同一输入的
+scalar 对照和 release 中位数。
+
+不要新增 `rgba_to_bgra`、`bgra_to_rgba` 或等价隐式转换 helper。若缓存的
+`pixel_format` 与请求不同，必须记录 cache miss 并按请求格式重新 compose。
+
+多线程调度先批量 probe cache，再只把 miss 交给渲染队列；worker 数量会按实际 tile
+数量裁剪，命中项不会创建无效的 compose 任务。loader、bake、compose 阶段分别受
+`RenderCpuPipelineOptions` 上限和 pipeline queue depth 约束。比较
+`tile_batch_auto_threads` 与 `tile_batch_single_thread` 时，同时记录 cache hit/miss、
+`worker_threads`、`world_worker_threads` 和各阶段耗时，不能只看总耗时。
+
+### 调度与内存审计（2026-09-20）
+
+已经确认的调度开销：每个 region wave 会创建一个本地 Rayon pool；wave 内有可用
+tile 时，`render_web_tile_indexes` 还会创建 compose pool。前一个 pool 的 region
+worker 仍在运行，因此两个 pool 以及 region 内的 Bedrock world worker 可能同时存在。
+本次已把 compose pool 限制为 `worker_count - region_worker_count`（至少 1），避免
+两个 render pool 都按完整 worker budget 建线程；两个 pool 仍会重叠，所以仍需测量
+线程唤醒、上下文切换和 cache 竞争。`RenderPipelineStats::peak_worker_threads` 当前
+是配置上限，不是系统实际活跃线程数，不能把它当成 oversubscription 已被解决的证据。
+
+已经确认的内存放大点：
+
+- `render_tiles_from_shared_bakes` 把 `ChunkBake` 深拷贝进每个 `TileComposeTask`；
+  原始 bake map 与排队任务会同时存活。
+- `RegionPlan` 的 chunk position 列表会同时出现在全局 region map 和每个 tile 的
+  readiness plan 中。
+- prepared compose 会同时保留颜色、邻域高度、水深和最终 RGBA buffer；pack 阶段
+  还可能有一份 `u32` 颜色 staging。
+- tile cache writer 仍按至少 64 个 work item 初始化，单 tile 请求可能无谓启动多个
+  编码线程和一个提交线程；由于 writer 在 session 内复用，不能只把这个下限删除，
+  下一步应先加入按 session 最大请求量安全扩容/缩容的测量后再改。
+- 显式增大 `pipeline_depth`/`queue_depth` 会按 item 数量放大这些对象，当前内存预算
+  只约束 region wave 选择，不覆盖所有队列和临时 buffer。
+- region bake memory LRU 现在会在命中时刷新顺序，并在重复 key 插入前去重，避免
+  `memory_order` 因重复 key 无界增长。
+
+下一步应先用同一 world、相同 cache 状态测量 pool 创建时间、channel wait、实际活动
+线程和 RSS/allocator peak，再决定是否把 pool 提升为 session 级复用、把 `ChunkBake`
+改成共享所有权，或为每个 worker 引入 scratch buffer。没有这些数据前，不应直接把
+`worker_count` 调大或把 queue depth 设成 128；那只会增加调度和内存压力。
+
 如果只需要固定 `key=value` 字段的机器可读报告，可以使用不匹配任何 Criterion case
 的过滤器：
 
@@ -73,12 +171,87 @@ v0.2.0 editor 门面还会输出：
 
 ## GPU 对比套件
 
+### 真实世界只读对照
+
+`examples/compare_backends.rs` 从指定世界的主世界选择区块最多的 16×16 区域，
+只读打开 LevelDB，并绕过 tile cache。它关闭邻域光照来隔离连续 resolved-color
+pack kernel，输出 `cpu-scalar`、`cpu-auto`、DX11、Vulkan 的总耗时、
+RGBA 哈希、实际 GPU backend 和 upload/dispatch/readback 耗时。GPU 不可用时报告错误，
+不会把 CPU fallback 当成 GPU 结果。
+
+```powershell
+cargo run --release -p bedrock-render --example compare_backends --features "gpu-dx11 gpu-vulkan" -- "<world-path>"
+```
+
+DX11/Vulkan shader 当前只复制 CPU 已生成的 RGBA，因此整图 GPU 数据只衡量上传、
+复制与读回的开销；它不代表 tint、shade、blend 在 GPU 上执行。当前 batch 参数
+只影响 GPU 进入条件和调度，实际仍按 tile 提交 copy kernel，并不是一次多 tile dispatch。
+当前 GPU compose 只接受原生 `Rgba8`；请求 `Bgra8` 时保持 CPU 原生 BGRA 路径，
+不会为了进入 GPU 额外做通道转换。
+
+### Windows CPU/GPU 混合渲染边界
+
+当前 DX11 和 Vulkan kernel 仍是 RGBA copy kernel：调用顺序是
+`CPU semantic/bake/lighting -> GPU upload/copy -> CPU readback`。它可以验证
+设备、队列、上传和读回统计，但不能加速 terrain lighting、biome tint、boundary
+或 shadow。因此 `gpu_tiles > 0` 不能单独证明 GPU 做了有效渲染工作。
+
+Windows 上可实施的混合路径应保持 LevelDB、block-state、palette、chunk traversal
+和 cache 在 CPU；CPU 先生成紧凑的 `PreparedTileCompose`，GPU 再处理连续数值阶段：
+
+```text
+CPU semantic/bake
+    -> colors + 9-neighbor heights + water mask
+    -> DX11/Vulkan terrain-lighting compute
+    -> optional shadow/boundary mask
+    -> one batch readback
+    -> CPU encode/cache or GPUI upload
+```
+
+首个 kernel 应限制为 `SurfaceBlocks`/`HeightMap` 的纯 height lighting，暂时排除
+atlas material、block-volume 和动态材质 cast shadow。`terrain_lit_color` 的 Sobel、
+法线、sqrt、光照因子和 RGB shade 是连续算术，适合 GPU；palette lookup、材质分支和
+动态 ray/max shadow 仍由 CPU 保留。`PreparedTileCompose` 当前每个 256×256 tile
+约有 256 KiB colors、2.25 MiB 的 9-height `i32` 数据和 256 KiB water mask，应该
+先改成紧凑 SoA/`i16` 输入，再评估上传成本。
+
+现有 GPU backend 每个 tile 都创建 upload/output/readback resource，并同步等待
+readback；真正的收益需要多 tile 合批、复用 staging/storage buffer，并让 CPU 准备
+下一批时 GPU 处理上一批。`max_in_flight`、`pipeline_level` 和 staging pool 当前
+还没有形成这条执行路径。DX11 compute 和 Vulkan WGSL 应先共享同一 golden tile，
+逐像素比较 CPU Scalar 与 GPU 输出后再开启默认路径。当前 `Bgra8` 继续走 CPU 原生
+输出，直到 GPU shader 明确支持 BGRA storage，否则不做通道转换。
+
+Windows GPU 对比必须增加 `cpu-scalar`、`cpu-auto`、`gpu-copy`、`gpu-terrain` 和
+`cpu-gpu-mixed` 五组，并同时记录 upload、dispatch、readback、实际 GPU tile 数、
+像素 hash/误差和总耗时。单 tile 或 decode/bake 占主导的整图不能作为 GPU 算法收益
+证明。macOS 不在这条路径的支持范围内。
+
+2026-09-20 在 Radeon RX 7600M XT 和指定的 Bedrock level2 世界上，所选区域有
+256/256 个 chunk，四条路径的 RGBA hash 都是 `467b5130af7dda59`：
+
+| 路径 | 总耗时 | compose | GPU 实际后端 |
+| --- | ---: | ---: | --- |
+| `cpu-scalar` | 478 ms | 4 ms | — |
+| `cpu-auto` | 498 ms | 4 ms | — |
+| `dx11` | 443 ms | 8 ms | `Dx11` / Radeon RX 7600M XT |
+| `vulkan` | 476 ms | 15 ms | `Vulkan` / Radeon RX 7600M XT |
+
+这次运行表明同一输入下 Auto 与 Scalar 结果一致；该单次整图样本中 Auto 比 Scalar
+慢 14 ms，不能宣称 SIMD 已让整图变快，因为 decode/bake 占主要时间且计时噪声大。
+应以 release Criterion 的多次中位数决定是否扩大 kernel。缓存格式和 GPU 输出格式
+应在同一请求中保持一致，不能通过额外的 RGBA/BGRA 转换修补结果。
+
 GPU 对比是 opt-in 的，因为它依赖本机驱动、适配器和后台负载。运行前把
 `benches/render.rs` 中的 `RUN_GPU_COMPARISON_REPORTS` 改为 `true`；Windows 专业对比
 应该至少覆盖 `CPU`、`Auto`、`DX11` 和 `Vulkan` 四个路径：
 
+> 该历史 Criterion 报告直接使用 `MapRenderer::new`，没有初始化 GPU context；
+> `backend=dx11/vulkan` 标签可能仍对应 `gpu_tiles=0`。真实 GPU 对比请使用上面的
+> `compare_backends` 示例，并确认 `gpu_tiles > 0` 和 `gpu_actual`。
+
 ```powershell
-cargo bench --bench render --features "gpu-dx11 gpu-vulkan" -- --noplot __machine_report_only__
+cargo bench -p bedrock-render --bench render --features "gpu-dx11 gpu-vulkan" -- --noplot __machine_report_only__
 ```
 
 如果需要同时验证 DX12 crate 编译，可单独在 `bedrock-render` 仓库运行
@@ -209,6 +382,65 @@ WAL delta, not a complete generation-index rewrite. Record the infrequent
 checkpoint separately so its write amplification is not folded into the
 interactive refresh median.
 
+## CPU SIMD Execution Matrix
+
+The Criterion render suite measures the complete pipeline; its tile time must
+not be reported as a SIMD speedup without a matching scalar case. Production
+compose writes the requested `Rgba8` or `Bgra8` order directly. Every CPU
+compose branch now sends its contiguous final colors through the safe
+`fearless_simd` pack kernel under `Auto`; semantic lookup, neighborhood reads,
+and floating-point shading stay scalar.
+The cache stores native order in separate `FastRgbaZstd` or `FastBgraZstd` entries.
+A pixel-format mismatch is a cache miss, not a conversion pass.
+
+Keep small writes scalar (`<64 B`). Benchmark the `64–256 B` range before
+choosing a kernel; larger contiguous buffers are SIMD candidates. Compare
+scalar, each available instruction set, and runtime auto-dispatch with the
+same release build, input, output order, tile size, and CPU. The pack kernel has
+production `Auto` and controlled `Scalar` paths. The isolated instruction-set
+benchmark remains useful for deciding whether each target should keep runtime
+dispatch:
+
+```powershell
+cargo build --release -p bedrock-render
+cargo test --release -p bedrock-render --lib benchmark_packed_color_instruction_sets -- --ignored --nocapture
+```
+
+The 2026-09-20 release pack A/B measured RGBA scalar/SSE2/SSE4.2/AVX2/auto at
+40.2/44.2/49.4/53.8/40.8 µs and BGRA at 101.4/56.1/288.0/290.4/44.3 µs.
+
+The full-pipeline A/B cases use `RenderOptions::simd` and currently cover biome
+RGBA, biome BGRA, lighting-only surface RGBA, and heightmap:
+
+```powershell
+cargo bench -p bedrock-render --bench render --all-features -- "biome_tile_256"
+cargo bench -p bedrock-render --bench render --all-features -- "surface_tile_256_rgba"
+cargo bench -p bedrock-render --bench render --all-features -- "surface_tile_256_rgba_flat"
+cargo bench -p bedrock-render --bench render --all-features -- "surface_tile_256_rgba_lighting_only"
+cargo bench -p bedrock-render --bench render --all-features -- "heightmap_tile_256_rgba"
+```
+
+The benchmark labels are `scalar`, `sse2`, `sse4.2`, `avx2`, and `auto`.
+`--no-default-features` does not disable CPU instruction sets, and there is no
+process-wide SIMD-off switch. Use `RenderOptions::simd = Scalar` for a per-render
+baseline. Scalar means no explicit `fearless_simd` kernel; LLVM may still
+auto-vectorize ordinary scalar loops, so this is an engineering A/B control,
+not a hardware ISA isolation experiment. Full-pipeline claims must use the matching
+`*_scalar` and Auto cases. Do not add RGBA/BGRA conversion helpers; cache
+entries with the wrong `pixel_format` must be recomposed in the requested order.
+
+`auto` selects available NEON, WASM SIMD, or x86 instructions on the current target;
+the explicit Windows x86 A/B cases currently cover SSE2, SSE4.2, and AVX2. Add another
+kernel only with a matching scalar control and release-mode median.
+
+For multi-threaded scheduling, cache probing happens before the render queue and
+only misses enter compose. Worker counts are clamped to the number of tiles, so
+cache hits do not create empty compose work. Loader, bake, and compose stages
+also honor their `RenderCpuPipelineOptions` limits and pipeline queue depth.
+Compare `tile_batch_auto_threads` with `tile_batch_single_thread` together with
+cache hit/miss counts, `worker_threads`, `world_worker_threads`, and per-stage
+timings rather than total elapsed time alone.
+
 The harness also prints one-shot machine-readable report lines before Criterion
 samples. Use a filter that matches no Criterion case when you only need those
 lines:
@@ -242,8 +474,60 @@ background load. Set `RUN_GPU_COMPARISON_REPORTS` to `true` in
 `benches/render.rs` first. On Windows, professional comparisons should cover
 `CPU`, `Auto`, `DX11`, and `Vulkan`:
 
+For the same real world and the full CPU scalar/SIMD comparison, use the
+read-only `compare_backends` example. It disables neighborhood lighting so the
+contiguous resolved-color pack kernel is exercised, then emits `cpu-scalar`,
+`cpu-auto`, `dx11`, and `vulkan`; the GPU rows require an actual GPU backend and
+never silently convert a CPU fallback into a GPU result.
+The current GPU compose contract accepts native `Rgba8` only; `Bgra8` stays on
+the native CPU path until its shader/layout contract is verified, with no channel
+conversion helper added.
+
+### Windows CPU/GPU Hybrid Rendering Boundary
+
+The current DX11 and Vulkan kernels are still RGBA copy kernels. The pipeline is
+`CPU semantic/bake/lighting -> GPU upload/copy -> CPU readback`, so it measures
+device, transfer, and synchronization costs but does not accelerate terrain
+lighting, biome tint, boundary, or shadow. `gpu_tiles > 0` alone is not evidence
+that useful rendering work ran on the GPU.
+
+The first useful Windows hybrid kernel should keep LevelDB, block-state, palette,
+chunk traversal, and cache work on the CPU. CPU prepares compact
+`PreparedTileCompose` colors, nine-neighbor heights, and water masks; DX11/Vulkan
+then computes height lighting and later shadow/boundary masks in a batched dispatch.
+Atlas material branches, block-volume logic, and dynamic ray/max shadows should
+remain on CPU until a matching GPU data layout and golden-tile comparison exist.
+
+The current per-tile resource creation and synchronous readback must be replaced by
+batched dispatch plus reusable staging/storage buffers before expecting a speedup.
+`max_in_flight`, `pipeline_level`, and staging pool settings do not yet implement
+that execution path. Native `Bgra8` remains CPU output until the GPU shader supports
+BGRA storage directly. Windows validation should compare `cpu-scalar`, `cpu-auto`,
+`gpu-copy`, `gpu-terrain`, and `cpu-gpu-mixed`, including transfer timings and
+pixel equality/error; macOS is outside this path.
+
 ```powershell
-cargo bench --bench render --features "gpu-dx11 gpu-vulkan" -- --noplot __machine_report_only__
+cargo run --release -p bedrock-render --example compare_backends --features "gpu-dx11 gpu-vulkan" -- "<world-path>"
+```
+
+The 2026-09-20 run on the supplied `Bedrock level2` world selected 256/256
+Overworld chunks on a Radeon RX 7600M XT. All four rows produced the same RGBA
+hash, `467b5130af7dda59`:
+
+| Path | Total | Compose | Actual GPU |
+| --- | ---: | ---: | --- |
+| `cpu-scalar` | 478 ms | 4 ms | — |
+| `cpu-auto` | 498 ms | 4 ms | — |
+| `dx11` | 443 ms | 8 ms | `Dx11` / Radeon RX 7600M XT |
+| `vulkan` | 476 ms | 15 ms | `Vulkan` / Radeon RX 7600M XT |
+
+The example uses lighting off to exercise the contiguous resolved-color pack
+kernel. This single full-world sample did not show an Auto win: Auto was 20 ms
+slower than Scalar while decode and bake dominated. Use release Criterion
+medians before widening the SIMD kernel.
+
+```powershell
+cargo bench -p bedrock-render --bench render --features "gpu-dx11 gpu-vulkan" -- --noplot __machine_report_only__
 ```
 
 If DX12 crate compilation needs to be verified, run

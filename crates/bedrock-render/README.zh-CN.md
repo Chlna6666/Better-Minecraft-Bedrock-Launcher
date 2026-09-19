@@ -188,7 +188,7 @@ session.render_web_tiles_streaming(
                 // 解码或直接交给 UI 图片缓存。
             }
             TileStreamEvent::Rendered { planned, tile } => {
-                // 立即展示 tile.rgba，并保留 tile.encoded 给 cache。
+                // 按 tile.pixel_format 的顺序展示 tile.rgba，并保留 tile.encoded 给 cache。
             }
             TileStreamEvent::Failed { planned, error } => {
                 eprintln!("tile failed: {error}");
@@ -244,10 +244,12 @@ cargo run --example render_streaming_session -- <world_path>
 ```
 
 如果 UI 图片缓存希望直接接收解码后的像素，可以使用
-`render_web_tiles_streaming_v2`、`render_web_tiles_streaming_v2` 或
-`render_web_tiles_streaming_channel_v2`。这些接口会通过
-`TileStreamEventV2::Ready` 返回 `DecodedTileImage`；默认像素格式是
+`render_decoded_tiles`、`render_decoded_tiles_async` 或
+`render_decoded_tiles_channel`。这些接口会通过
+`DecodedTileEvent::Ready` 返回 `DecodedTileImage`；默认像素格式是
 `TilePixelFormat::Rgba8`，也可以通过 `RenderTileOutputOptions` 请求 `Bgra8`。
+Rust 标识符不能使用点号，因此异步入口使用短的 `_async` 后缀；旧的 `v2`
+命名已删除且不保留兼容别名。
 
 ## 预览工具
 
@@ -545,8 +547,16 @@ bedrock_render_report case=surface_region_rgba storage=dynamic backend=default e
 `bedrock-world` exact batch 读取路径；`storage=generic` 是 typed storage 热路径，
 `storage=dynamic` 是兼容动态 trait 路径。
 
-更多细节见 [docs/API.md](docs/API.md)、[docs/TESTING.md](docs/TESTING.md) 和
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+`RenderTileOutputOptions` 请求 `Bgra8` 时，新瓦片在 compose 阶段直接按 BGRA 写出，
+GPUI 不需要再做一次通道转换。`TilePixelFormat` 是 `TileCacheKey` 的一部分：
+`FastRgbaZstd` 和 `FastBgraZstd` 分别保存原生 RGBA/BGRA 字节，缓存格式不一致时直接
+判定 miss 并按请求格式重新渲染。生产 API 不提供 RGBA/BGRA 转换；WebP/PNG 只接受
+原生 RGBA。指令集 A/B、缓存规则和测试细节见 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)、
+[docs/API.md](docs/API.md) 与 [docs/TESTING.md](docs/TESTING.md)。
+
+`RenderOptions::simd` 默认使用 `RenderSimdPolicy::Auto`，对连续的已解析颜色打包选择
+安全的运行时 SIMD；设置为 `RenderSimdPolicy::Scalar` 可以得到没有显式 SIMD kernel 的
+CPU 基线。这个开关不改变 block-state、palette、邻域阴影或边界判定。
 
 ## 当前限制
 

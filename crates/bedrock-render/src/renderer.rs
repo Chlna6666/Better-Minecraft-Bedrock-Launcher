@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod gpu;
 pub mod occupancy;
+mod pixels;
 pub mod pipeline;
 
 /// Render source backed by `bedrock-world` automatic world opening.
@@ -9,7 +10,8 @@ pub type WorldRenderSource = pipeline::LevelDbRenderSource;
 pub use pipeline::{
     AtlasRenderOptions, BakeDiagnostics, BakeOptions, BlockBoundaryRenderOptions,
     BlockVolumeRenderOptions, ChunkRegion, ChunkTileLayout, DEFAULT_PALETTE_VERSION,
-    DecodedTileImage, DepthPlane, FastRgbaZstdHeader, FastRgbaZstdTile, HeightPlane, ImageFormat,
+    DecodedTileImage, DepthPlane, FastBgraZstdTile, FastRgbaZstdHeader, FastRgbaZstdTile,
+    HeightPlane, ImageFormat,
     MAX_RENDER_THREADS, MAX_TILE_SIZE_PIXELS, MapRenderSession, MapRenderSessionConfig,
     MapRenderer, PlannedTile, RENDERER_CACHE_VERSION, RegionBake, RegionBakePayload, RegionCoord,
     RegionLayout, RenderBackend, RenderCachePolicy, RenderCancelFlag, RenderChunkSource,
@@ -18,12 +20,14 @@ pub use pipeline::{
     RenderGpuPipelineLevel, RenderJob, RenderLayout, RenderMemoryBudget, RenderMode, RenderOptions,
     RenderPerformanceOptions, RenderPerformanceProfile, RenderPipelineStats, RenderProgress,
     RenderProgressSink, RenderSurfaceLoadPolicy, RenderTaskControl, RenderThreadingOptions,
-    RenderTileOutputOptions, RenderTilePriority, RenderWebTilesResult, ResolvedRenderBackend,
+    RenderSimdPolicy, RenderTileOutputOptions, RenderTilePriority, RenderWebTilesResult,
+    ResolvedRenderBackend,
     RgbaPlane, SurfacePlane, SurfacePlaneAtlas, SurfaceRenderOptions, TerrainLightingOptions,
     TerrainLightingPreset, TileCache, TileCacheKey, TileCoord, TileImage, TilePathScheme,
-    TilePixelFormat, TileReadySource, TileSet, TileStreamEvent, TileStreamEventV2,
-    decode_fast_rgba_zstd, decode_fast_rgba_zstd_header, encode_fast_rgba_zstd,
-    encode_fast_rgba_zstd_with_validation, tile_cache_validation_value,
+    DecodedTileEvent, TilePixelFormat, TileReadySource, TileSet, TileStreamEvent,
+    decode_fast_bgra_zstd, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
+    encode_fast_bgra_zstd, encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation,
+    tile_cache_validation_value,
 };
 
 pub use occupancy::{

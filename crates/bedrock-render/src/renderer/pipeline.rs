@@ -249,26 +249,54 @@ pub enum ImageFormat {
     Png,
     /// Encode `TileImage::encoded` as zstd-compressed raw RGBA tile bytes.
     FastRgbaZstd,
-    /// Return raw RGBA pixels without encoded bytes.
+    /// Encode `TileImage::encoded` as zstd-compressed raw BGRA tile bytes.
+    FastBgraZstd,
+    /// Return raw pixels in the requested [`TilePixelFormat`] without encoded bytes.
     Rgba,
 }
 
 /// Decoded pixel layout used by interactive tile streams.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TilePixelFormat {
     /// Red, green, blue, alpha byte order.
     Rgba8,
     /// Blue, green, red, alpha byte order.
     ///
-    /// This output requires a per-tile RGBA-to-BGRA conversion and allocation.
-    /// Prefer [`TilePixelFormat::Rgba8`] for latency-sensitive interactive streams.
+    /// This order is produced and cached directly. It is never converted to
+    /// or from [`Self::Rgba8`].
     Bgra8,
 }
 
-/// Output contract for the v2 decoded tile stream.
+impl TilePixelFormat {
+    const fn cache_format(self) -> ImageFormat {
+        match self {
+            Self::Rgba8 => ImageFormat::FastRgbaZstd,
+            Self::Bgra8 => ImageFormat::FastBgraZstd,
+        }
+    }
+
+    const fn cache_slug(self) -> &'static str {
+        match self {
+            Self::Rgba8 => "rgba",
+            Self::Bgra8 => "bgra",
+        }
+    }
+
+    const fn cache_value(self) -> u32 {
+        match self {
+            Self::Rgba8 => 0,
+            Self::Bgra8 => 1,
+        }
+    }
+}
+
+/// Output contract for the decoded tile stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderTileOutputOptions {
-    /// Pixel order emitted in [`DecodedTileImage::pixels`].
+    /// Pixel order emitted in [`DecodedTileImage::pixels`] and used by the tile cache key.
+    ///
+    /// A cache entry in the other order is a miss; the renderer never converts
+    /// a cached tile between these formats.
     pub pixel_format: TilePixelFormat,
 }
 
@@ -606,6 +634,17 @@ impl PlannedTile {
 pub struct RenderOptions {
     /// Requested output format.
     pub format: ImageFormat,
+    /// Raw pixel order emitted by tile rendering APIs.
+    ///
+    /// Encoded output remains in the encoder's native format. Both `Rgba8` and
+    /// `Bgra8` are written directly by compose and have separate cache keys.
+    pub pixel_format: TilePixelFormat,
+    /// CPU pixel-kernel policy used for contiguous post-processing and packing.
+    ///
+    /// `Auto` selects a runtime-safe SIMD kernel for sufficiently large buffers;
+    /// `Scalar` is the controlled baseline used by A/B benchmarks. Semantic
+    /// block lookup and neighbor-dependent shading remain scalar.
+    pub simd: RenderSimdPolicy,
     /// Lossy encoder quality when the selected encoder supports quality.
     pub quality: u8,
     /// Requested render backend.
@@ -648,6 +687,8 @@ impl Default for RenderOptions {
     fn default() -> Self {
         Self {
             format: ImageFormat::WebP,
+            pixel_format: TilePixelFormat::Rgba8,
+            simd: RenderSimdPolicy::Auto,
             quality: 90,
             backend: RenderBackend::Cpu,
             cpu: RenderCpuPipelineOptions::default(),
@@ -2316,13 +2357,49 @@ pub struct TileImage {
     pub width: u32,
     /// Image height in pixels.
     pub height: u32,
-    /// Raw RGBA bytes shared between stream consumers and caches.
+    /// Raw decoded bytes in [`Self::pixel_format`] order.
     pub rgba: Arc<[u8]>,
+    /// Byte order used by [`Self::rgba`].
+    pub pixel_format: TilePixelFormat,
     /// Encoded image bytes when an encoded format was requested.
     pub encoded: Option<Vec<u8>>,
 }
 
-/// Decoded tile pixels emitted by the interactive v2 tile stream.
+/// Runtime policy for CPU SIMD kernels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum RenderSimdPolicy {
+    /// Use the best safe kernel selected by `fearless_simd` for bulk buffers.
+    #[default]
+    Auto,
+    /// Disable explicit SIMD kernels for a scalar A/B baseline.
+    Scalar,
+}
+
+impl RenderSimdPolicy {
+    pub(super) const fn uses_simd(self, byte_len: usize) -> bool {
+        matches!(self, Self::Auto) && byte_len >= 64
+    }
+}
+
+impl TileImage {
+    /// Consumes a tile and exposes its bytes without changing their byte order.
+    ///
+    /// Pixel format is part of the cache identity. Callers must request the
+    /// format they need before rendering; a format mismatch is a cache miss,
+    /// not a conversion opportunity.
+    #[must_use]
+    pub fn into_decoded(self) -> DecodedTileImage {
+        DecodedTileImage {
+            coord: self.coord,
+            width: self.width,
+            height: self.height,
+            pixels: self.rgba,
+            pixel_format: self.pixel_format,
+        }
+    }
+}
+
+/// Decoded tile pixels emitted by the interactive decoded tile stream.
 #[derive(Debug, Clone)]
 pub struct DecodedTileImage {
     /// Tile coordinate rendered by this image.
@@ -2350,13 +2427,29 @@ pub struct FastRgbaZstdTile {
     pub rgba: Vec<u8>,
 }
 
+/// Decoded bytes from a `FastBgraZstd` tile cache entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FastBgraZstdTile {
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Optional fast validation value stored in the cache header.
+    pub validation_value: Option<u64>,
+    /// Raw BGRA bytes.
+    pub bgra: Vec<u8>,
+}
+
 struct FastRgbaZstdSharedTile {
     width: u32,
     height: u32,
     rgba: Arc<[u8]>,
 }
 
-/// Header metadata from a `FastRgbaZstd` tile cache entry.
+/// Header metadata from a `FastRgbaZstd` or `FastBgraZstd` tile cache entry.
+///
+/// The header describes the raw payload shape; byte order is selected by the
+/// corresponding [`TileCacheKey::pixel_format`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FastRgbaZstdHeader {
     /// Encoded cache format version.
@@ -3168,6 +3261,9 @@ fn plane_index(width: u32, height: u32, pixel_x: u32, pixel_z: u32) -> Option<us
 }
 
 /// Cache key for encoded tile images.
+///
+/// `pixel_format` is part of the identity. An RGBA entry and a BGRA entry
+/// never share a key; a mismatch is a cache miss and must be re-rendered.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TileCacheKey {
     /// Stable world identifier.
@@ -3188,6 +3284,8 @@ pub struct TileCacheKey {
     pub blocks_per_pixel: u32,
     /// Output pixels generated per source block.
     pub pixels_per_block: u32,
+    /// Raw byte order stored in the tile and cache payload.
+    pub pixel_format: TilePixelFormat,
     /// Tile X coordinate.
     pub tile_x: i32,
     /// Tile Z coordinate.
@@ -3215,6 +3313,7 @@ pub fn tile_cache_validation_value(
     fnv1a_write_u32(&mut hash, key.chunks_per_tile);
     fnv1a_write_u32(&mut hash, key.blocks_per_pixel);
     fnv1a_write_u32(&mut hash, key.pixels_per_block);
+    fnv1a_write_u32(&mut hash, key.pixel_format.cache_value());
     fnv1a_write_i32(&mut hash, key.tile_x);
     fnv1a_write_i32(&mut hash, key.tile_z);
     fnv1a_write_str(&mut hash, &key.extension);
@@ -3279,11 +3378,17 @@ impl RegionBakeMemoryCache {
 
     fn get(&mut self, key: RegionBakeKey, options: &RenderOptions) -> Option<Arc<RegionBake>> {
         let key = self.key_for(key, options);
-        self.memory.get(&key).cloned()
+        let value = self.memory.get(&key).cloned();
+        if value.is_some() {
+            self.memory_order.retain(|existing| existing != &key);
+            self.memory_order.push_back(key);
+        }
+        value
     }
 
     fn insert(&mut self, key: RegionBakeKey, bake: Arc<RegionBake>, options: &RenderOptions) {
         let key = self.key_for(key, options);
+        self.memory_order.retain(|existing| existing != &key);
         self.memory_order.push_back(key.clone());
         self.memory.insert(key.clone(), bake);
         while self.memory.len() > self.memory_limit {
@@ -3319,7 +3424,8 @@ enum TileCacheDiskRead {
 }
 
 enum TileCacheWritePayload {
-    FastRgbaZstd {
+    FastTileZstd {
+        pixel_format: TilePixelFormat,
         rgba: Arc<[u8]>,
         width: u32,
         height: u32,
@@ -3378,13 +3484,20 @@ impl SessionTileMemoryIndex {
     }
 
     fn get(&mut self, key: &SessionTileMemoryKey) -> Option<TileImage> {
-        let tile = self.entries.get(key).cloned()?;
+        let tile = self
+            .entries
+            .get(key)
+            .filter(|tile| tile.pixel_format == key.pixel_format)
+            .cloned()?;
         self.order.retain(|existing| existing != key);
         self.order.push_back(key.clone());
         Some(tile)
     }
 
     fn insert(&mut self, key: SessionTileMemoryKey, tile: TileImage) {
+        if key.pixel_format != tile.pixel_format {
+            return;
+        }
         self.order.retain(|existing| existing != &key);
         self.order.push_back(key.clone());
         self.entries.insert(key.clone(), tile);
@@ -3413,7 +3526,7 @@ fn session_tile_memory_key(
             chunk_positions,
             validation_seed,
         ),
-        pixel_format: TilePixelFormat::Rgba8,
+        pixel_format: cache_key.pixel_format,
     })
 }
 
@@ -3483,9 +3596,15 @@ impl TileCache {
     }
 
     /// Returns a tile from the in-memory cache.
+    ///
+    /// The stored byte order must equal `key.pixel_format`; otherwise this is
+    /// a miss and no conversion is attempted.
     #[must_use]
     pub fn get_memory(&mut self, key: &TileCacheKey) -> Option<TileImage> {
-        self.memory.get(key).cloned()
+        self.memory
+            .get(key)
+            .filter(|tile| tile.pixel_format == key.pixel_format)
+            .cloned()
     }
 
     fn load_authority_snapshot(
@@ -3556,6 +3675,14 @@ impl TileCache {
     /// Inserts a decoded tile into the in-memory LRU cache without writing disk cache bytes.
     #[allow(clippy::needless_pass_by_value)]
     pub fn insert_memory(&mut self, key: TileCacheKey, tile: TileImage) {
+        if key.pixel_format != tile.pixel_format {
+            log::debug!(
+                "tile cache format mismatch treated as miss (key={:?}, tile={:?})",
+                key.pixel_format,
+                tile.pixel_format
+            );
+            return;
+        }
         self.memory_order.retain(|existing| existing != &key);
         self.memory_order.push_back(key.clone());
         self.memory.insert(key.clone(), tile);
@@ -3632,7 +3759,7 @@ fn tile_authority_cache_key_from_tile_key(key: &TileCacheKey) -> TileAuthorityCa
         world_id: key.world_id.clone(),
         world_signature: key.world_signature.clone(),
         renderer_signature: key.world_signature.clone(),
-        mode_slug: key.mode.clone(),
+        mode_slug: format!("{}-{}", key.mode, key.pixel_format.cache_slug()),
         renderer_version: key.renderer_version,
         palette_version: key.palette_version,
         dimension: key.dimension,
@@ -4052,18 +4179,27 @@ fn prepare_tile_cache_entry(
         }
     };
     let prepared = match &write.payload {
-        TileCacheWritePayload::FastRgbaZstd {
+        TileCacheWritePayload::FastTileZstd {
+            pixel_format,
             region,
             chunk_positions,
             validation_seed,
             ..
-        } => prepare_fast_rgba_zstd_commit(
-            &write.key,
-            &encoded,
-            Some(*region),
-            Some(chunk_positions.as_ref()),
-            *validation_seed,
-        ),
+        } => {
+            if write.key.pixel_format != *pixel_format {
+                Err(BedrockRenderError::Validation(
+                    "tile cache payload pixel format does not match its key".to_string(),
+                ))
+            } else {
+                prepare_fast_rgba_zstd_commit(
+                    &write.key,
+                    &encoded,
+                    Some(*region),
+                    Some(chunk_positions.as_ref()),
+                    *validation_seed,
+                )
+            }
+        }
         TileCacheWritePayload::EmptyNegative {
             region,
             validation_seed,
@@ -4184,7 +4320,8 @@ fn encode_tile_cache_write_payload(
     payload: &TileCacheWritePayload,
 ) -> Result<Vec<u8>> {
     match payload {
-        TileCacheWritePayload::FastRgbaZstd {
+        TileCacheWritePayload::FastTileZstd {
+            pixel_format,
             rgba,
             width,
             height,
@@ -4193,6 +4330,11 @@ fn encode_tile_cache_write_payload(
             validation_seed,
             flags,
         } => {
+            if key.pixel_format != *pixel_format {
+                return Err(BedrockRenderError::Validation(
+                    "tile cache payload pixel format does not match its key".to_string(),
+                ));
+            }
             let validation_value =
                 tile_cache_validation_value(key, region, chunk_positions, *validation_seed);
             if *flags == FAST_RGBA_ZSTD_FLAG_EMPTY_NEGATIVE {
@@ -4299,6 +4441,10 @@ fn region_wave_worker_split(
         region_workers,
         world_workers_per_region,
     }
+}
+
+fn region_wave_compose_worker_count(worker_count: usize, region_worker_count: usize) -> usize {
+    worker_count.saturating_sub(region_worker_count).max(1)
 }
 
 fn resolve_render_worker_count(options: &RenderOptions, work_items: usize) -> Result<usize> {
@@ -4433,10 +4579,10 @@ pub enum TileStreamEvent {
     },
 }
 
-/// Streaming events emitted by the decoded v2 tile stream.
+/// Streaming events emitted by the decoded tile stream.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
-pub enum TileStreamEventV2 {
+pub enum DecodedTileEvent {
     /// Tile is decoded and ready to display.
     Ready {
         /// Planned tile that was satisfied.
@@ -4630,12 +4776,12 @@ where
 
         let ordered_tiles = prioritized_planned_tiles(planned_tiles, options.priority);
         let cache_read_format = matches!(options.cache_policy, RenderCachePolicy::Use)
-            .then_some(ImageFormat::FastRgbaZstd);
+            .then_some(options.pixel_format.cache_format());
         let cache_write_format = matches!(
             options.cache_policy,
             RenderCachePolicy::Use | RenderCachePolicy::Refresh
         )
-        .then_some(ImageFormat::FastRgbaZstd);
+        .then_some(options.pixel_format.cache_format());
         if let Some(cache_format) = cache_read_format {
             let probe_workers = resolve_cpu_worker_count(&options, ordered_tiles.len())?.max(1);
             let cache = Arc::clone(&self.cache);
@@ -4732,7 +4878,9 @@ where
                 &authority_snapshots,
                 ordered_tiles
                     .iter()
-                    .map(|planned| self.cache_key_for_planned(planned, cache_format)),
+                    .map(|planned| {
+                        self.cache_key_for_planned(planned, cache_format, options.pixel_format)
+                    }),
             )?;
             let blob_readers_for_batch =
                 open_tile_authority_blob_readers_for_batch(&cache, &authority_snapshots_for_batch)?;
@@ -4740,8 +4888,16 @@ where
             if probe_workers <= 1 || ordered_tiles.len() <= 1 {
                 let mut decode_scratch = TileCacheDecodeScratch::new();
                 for (ordinal, planned) in ordered_tiles.iter().enumerate() {
-                    let render_key = self.cache_key_for_planned(planned, render_format);
-                    let cache_key = self.cache_key_for_planned(planned, cache_format);
+                    let render_key = self.cache_key_for_planned(
+                        planned,
+                        render_format,
+                        options.pixel_format,
+                    );
+                    let cache_key = self.cache_key_for_planned(
+                        planned,
+                        cache_format,
+                        options.pixel_format,
+                    );
                     let probe = resolve_tile_cache_entry(
                         &cache,
                         &session_tile_memory,
@@ -4769,8 +4925,16 @@ where
                     .into_iter()
                     .enumerate()
                     .map(|(ordinal, planned)| {
-                        let render_key = self.cache_key_for_planned(&planned, render_format);
-                        let cache_key = self.cache_key_for_planned(&planned, cache_format);
+                        let render_key = self.cache_key_for_planned(
+                            &planned,
+                            render_format,
+                            options.pixel_format,
+                        );
+                        let cache_key = self.cache_key_for_planned(
+                            &planned,
+                            cache_format,
+                            options.pixel_format,
+                        );
                         TileCacheProbeWork {
                             ordinal,
                             planned,
@@ -4892,7 +5056,11 @@ where
                 .is_some_and(|positions| positions.is_empty())
             {
                 if let Some(cache_format) = cache_write_format {
-                    let cache_key = self.cache_key_for_planned(&planned, cache_format);
+                    let cache_key = self.cache_key_for_planned(
+                        &planned,
+                        cache_format,
+                        options.pixel_format,
+                    );
                     if let Some(write) = empty_negative_tile_cache_write(
                         &cache_key,
                         &planned,
@@ -4948,9 +5116,16 @@ where
                     render_group,
                     options.clone(),
                     |planned, tile| {
-                        let render_key = self.cache_key_for_planned(&planned, render_format);
-                        let session_memory_key =
-                            session_tile_memory_key(&render_key, &planned, tile_cache_validation_seed);
+                        let render_key = self.cache_key_for_planned(
+                            &planned,
+                            render_format,
+                            options.pixel_format,
+                        );
+                        let session_memory_key = session_tile_memory_key(
+                            &render_key,
+                            &planned,
+                            tile_cache_validation_seed,
+                        );
                         let cache_write = cache_write_format.and_then(|cache_format| {
                             let Some(chunk_positions) = planned.chunk_positions.as_ref() else {
                                 log::trace!(
@@ -4962,8 +5137,13 @@ where
                                 return None;
                             };
                             Some(TileCacheWrite {
-                                key: self.cache_key_for_planned(&planned, cache_format),
-                                payload: TileCacheWritePayload::FastRgbaZstd {
+                                key: self.cache_key_for_planned(
+                                    &planned,
+                                    cache_format,
+                                    options.pixel_format,
+                                ),
+                                payload: TileCacheWritePayload::FastTileZstd {
+                                    pixel_format: options.pixel_format,
                                     rgba: Arc::clone(&tile.rgba),
                                     width: tile.width,
                                     height: tile.height,
@@ -4996,6 +5176,7 @@ where
                                     width: tile.width,
                                     height: tile.height,
                                     rgba: Arc::clone(&tile.rgba),
+                                    pixel_format: tile.pixel_format,
                                     encoded: None,
                                 },
                             );
@@ -5011,6 +5192,7 @@ where
                                         width: tile.width,
                                         height: tile.height,
                                         rgba: Arc::clone(&tile.rgba),
+                                        pixel_format: tile.pixel_format,
                                         encoded: None,
                                     },
                                 );
@@ -5132,7 +5314,7 @@ where
     ///
     /// Returns an error if rendering, cancellation, cache decoding, or the sink fails.
     #[allow(clippy::too_many_lines)]
-    pub fn render_web_tiles_streaming_v2<F>(
+    pub fn render_decoded_tiles<F>(
         &self,
         planned_tiles: &[PlannedTile],
         mut options: RenderOptions,
@@ -5140,9 +5322,10 @@ where
         sink: F,
     ) -> Result<RenderWebTilesResult>
     where
-        F: Fn(TileStreamEventV2) -> Result<()> + Send + Sync + 'static,
+        F: Fn(DecodedTileEvent) -> Result<()> + Send + Sync + 'static,
     {
         options.format = ImageFormat::Rgba;
+        options.pixel_format = output.pixel_format;
         let sink = Arc::new(sink);
         self.render_web_tiles_streaming(planned_tiles, options, {
             let sink = Arc::clone(&sink);
@@ -5151,22 +5334,22 @@ where
                     planned,
                     tile,
                     source,
-                } => sink.as_ref()(TileStreamEventV2::Ready {
+                } => sink.as_ref()(DecodedTileEvent::Ready {
                     planned,
-                    tile: decoded_tile_from_tile_image(tile, output),
+                    tile: tile.into_decoded(),
                     source,
                 }),
                 TileStreamEvent::Empty { planned } => {
-                    sink.as_ref()(TileStreamEventV2::Empty { planned })
+                    sink.as_ref()(DecodedTileEvent::Empty { planned })
                 }
                 TileStreamEvent::Failed { planned, error } => {
-                    sink.as_ref()(TileStreamEventV2::Failed { planned, error })
+                    sink.as_ref()(DecodedTileEvent::Failed { planned, error })
                 }
                 TileStreamEvent::Progress(progress) => {
-                    sink.as_ref()(TileStreamEventV2::Progress(progress))
+                    sink.as_ref()(DecodedTileEvent::Progress(progress))
                 }
                 TileStreamEvent::Complete { diagnostics, stats } => {
-                    sink.as_ref()(TileStreamEventV2::Complete { diagnostics, stats })
+                    sink.as_ref()(DecodedTileEvent::Complete { diagnostics, stats })
                 }
             }
         })
@@ -5196,13 +5379,13 @@ where
     }
 
     #[cfg(feature = "async")]
-    /// Runs [`MapRenderSession::render_web_tiles_streaming_v2`] on a Tokio
+    /// Runs [`MapRenderSession::render_decoded_tiles`] on a Tokio
     /// blocking task.
     ///
     /// # Errors
     ///
     /// Returns an error if the blocking task fails or rendering fails.
-    pub async fn render_web_tiles_streaming_v2_async<F>(
+    pub async fn render_decoded_tiles_async<F>(
         self: Arc<Self>,
         planned_tiles: Vec<PlannedTile>,
         options: RenderOptions,
@@ -5210,10 +5393,10 @@ where
         sink: F,
     ) -> Result<RenderWebTilesResult>
     where
-        F: Fn(TileStreamEventV2) -> Result<()> + Send + Sync + 'static,
+        F: Fn(DecodedTileEvent) -> Result<()> + Send + Sync + 'static,
     {
         tokio::task::spawn_blocking(move || {
-            self.render_web_tiles_streaming_v2(&planned_tiles, options, output, sink)
+            self.render_decoded_tiles(&planned_tiles, options, output, sink)
         })
         .await
         .map_err(|error| BedrockRenderError::Join(error.to_string()))?
@@ -5273,13 +5456,13 @@ where
     /// # Errors
     ///
     /// Returns an error only if the channel capacity is invalid.
-    pub async fn render_web_tiles_streaming_channel_v2(
+    pub async fn render_decoded_tiles_channel(
         self: Arc<Self>,
         planned_tiles: Vec<PlannedTile>,
         options: RenderOptions,
         output: RenderTileOutputOptions,
         capacity: usize,
-    ) -> Result<tokio::sync::mpsc::Receiver<TileStreamEventV2>> {
+    ) -> Result<tokio::sync::mpsc::Receiver<DecodedTileEvent>> {
         let capacity = capacity.max(1);
         let (sender, receiver) = tokio::sync::mpsc::channel(capacity);
         let error_sender = sender.clone();
@@ -5292,7 +5475,7 @@ where
                     )
                 })
             };
-            if let Err(error) = self.render_web_tiles_streaming_v2(
+            if let Err(error) = self.render_decoded_tiles(
                 &planned_tiles,
                 options,
                 output,
@@ -5302,7 +5485,7 @@ where
                 let message = error.to_string();
                 for planned in planned_tiles_for_error {
                     if error_sender
-                        .blocking_send(TileStreamEventV2::Failed {
+                        .blocking_send(DecodedTileEvent::Failed {
                             planned,
                             error: message.clone(),
                         })
@@ -5449,7 +5632,12 @@ where
         Ok(renderable_chunks)
     }
 
-    fn cache_key_for_planned(&self, planned: &PlannedTile, format: ImageFormat) -> TileCacheKey {
+    fn cache_key_for_planned(
+        &self,
+        planned: &PlannedTile,
+        format: ImageFormat,
+        pixel_format: TilePixelFormat,
+    ) -> TileCacheKey {
         TileCacheKey {
             world_id: self.config.world_id.clone(),
             world_signature: self.config.world_signature.clone(),
@@ -5460,6 +5648,7 @@ where
             chunks_per_tile: planned.layout.chunks_per_tile,
             blocks_per_pixel: planned.layout.blocks_per_pixel,
             pixels_per_block: planned.layout.pixels_per_block,
+            pixel_format,
             tile_x: planned.job.coord.x,
             tile_z: planned.job.coord.z,
             extension: image_format_extension(format).to_string(),
@@ -5576,6 +5765,11 @@ fn resolve_tile_cache_entry(
 ) -> Result<TileCacheProbe> {
     let mut read_ms = 0;
     let mut decode_ms = 0;
+    if format != cache_key.pixel_format.cache_format() {
+        return Ok(tile_cache_probe_miss(
+            planned, read_ms, decode_ms, false, false,
+        ));
+    }
     let session_memory_key = session_tile_memory_key(render_key, planned, validation_seed);
     if let Some(memory_key) = session_memory_key.as_ref()
         && let Some(tile) = session_tile_memory
@@ -5623,7 +5817,7 @@ fn resolve_tile_cache_entry(
         });
     }
 
-    if format != ImageFormat::FastRgbaZstd {
+    if !matches!(format, ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd) {
         return Ok(tile_cache_probe_miss(
             planned, read_ms, decode_ms, false, false,
         ));
@@ -5770,6 +5964,7 @@ fn resolve_tile_cache_entry(
         width: decoded.width,
         height: decoded.height,
         rgba: decoded.rgba,
+        pixel_format: cache_key.pixel_format,
         encoded: Some(encoded),
     };
     let source = if header.validation_value.is_some() {
@@ -5787,6 +5982,7 @@ fn resolve_tile_cache_entry(
                 width: tile.width,
                 height: tile.height,
                 rgba: Arc::clone(&tile.rgba),
+                pixel_format: tile.pixel_format,
                 encoded: None,
             },
         );
@@ -5799,6 +5995,7 @@ fn resolve_tile_cache_entry(
                     width: tile.width,
                     height: tile.height,
                     rgba: Arc::clone(&tile.rgba),
+                    pixel_format: tile.pixel_format,
                     encoded: None,
                 },
             );
@@ -5822,7 +6019,9 @@ fn empty_negative_tile_cache_write(
     format: ImageFormat,
     validation_seed: u64,
 ) -> Option<TileCacheWrite> {
-    if format != ImageFormat::FastRgbaZstd || validation_seed == 0 {
+    if !matches!(format, ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd)
+        || validation_seed == 0
+    {
         return None;
     }
     let chunk_positions = planned.chunk_positions.as_deref()?;
@@ -5847,7 +6046,7 @@ fn tile_cache_entry_decision(
     format: ImageFormat,
     validation_seed: u64,
 ) -> Result<TileCacheEntryDecision> {
-    if format != ImageFormat::FastRgbaZstd {
+    if !matches!(format, ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd) {
         return Ok(TileCacheEntryDecision::Image);
     }
     let header = match decode_fast_rgba_zstd_header(encoded) {
@@ -6804,6 +7003,10 @@ where
         let miss_plans = Arc::new(miss_plans);
 
         let pool = render_cpu_pool(region_worker_count)?;
+        // A wave composes tiles while its region workers are still active. Cap the
+        // second pool so two render pools do not both allocate the full worker budget.
+        let compose_worker_count =
+            region_wave_compose_worker_count(worker_count, region_worker_count);
         pool.scope(|scope| {
             for _ in 0..region_worker_count {
                 let next_plan = Arc::clone(&next_plan);
@@ -6862,7 +7065,7 @@ where
                     &ready_tile_indexes,
                     options,
                     &regions,
-                    worker_count,
+                    compose_worker_count,
                     self.gpu.as_ref(),
                     sink,
                 )?;
@@ -6924,7 +7127,7 @@ where
                         &ready_tile_indexes,
                         options,
                         &regions,
-                        worker_count,
+                        compose_worker_count,
                         self.gpu.as_ref(),
                         sink,
                     )?;
@@ -6978,8 +7181,10 @@ where
             sink.emit(diagnostics);
         }
 
-        if let Some(gpu) =
-            gpu.filter(|_| should_process_tile_on_gpu(options, job.tile_size, work_items))
+        if let Some(gpu) = gpu.filter(|_| {
+            options.pixel_format == TilePixelFormat::Rgba8
+                && should_process_tile_on_gpu(options, job.tile_size, work_items)
+        })
         {
             let processed = process_tile_rgba_on_gpu(gpu, &rgba, options)?;
             if processed.diagnostics.tiles == 0 {
@@ -6990,13 +7195,20 @@ where
             }
         }
 
-        let encoded = encode_image(&rgba, job.tile_size, job.tile_size, options.format)?;
+        let encoded = encode_image(
+            &rgba,
+            job.tile_size,
+            job.tile_size,
+            options.format,
+            options.pixel_format,
+        )?;
         Ok((
             TileImage {
                 coord: job.coord,
                 width: job.tile_size,
                 height: job.tile_size,
                 rgba: Arc::<[u8]>::from(rgba),
+                pixel_format: options.pixel_format,
                 encoded,
             },
             stats,
@@ -7140,12 +7352,19 @@ where
         if let Some(sink) = &options.diagnostics {
             sink.emit(diagnostics);
         }
-        let encoded = encode_image(&rgba, job.tile_size, job.tile_size, options.format)?;
+        let encoded = encode_image(
+            &rgba,
+            job.tile_size,
+            job.tile_size,
+            options.format,
+            options.pixel_format,
+        )?;
         Ok(TileImage {
             coord: job.coord,
             width: job.tile_size,
             height: job.tile_size,
             rgba: Arc::<[u8]>::from(rgba),
+            pixel_format: options.pixel_format,
             encoded,
         })
     }
@@ -7750,6 +7969,37 @@ fn compose_region_tile_cpu<S>(
 where
     S: StorageBackend,
 {
+    if options.simd == RenderSimdPolicy::Auto
+        && !lighting_enabled_for(job.mode, options.surface)
+        && !atlas_enabled_for(job.mode, options.surface, job)
+        && !block_volume_enabled_for(job.mode, options.surface, job)
+    {
+        let mut diagnostics = RenderDiagnostics::default();
+        let mut colors = Vec::with_capacity(pixel_count);
+        let mut pixel_index = 0usize;
+        for pixel_z in 0..job.tile_size {
+            for pixel_x in 0..job.tile_size {
+                if (pixel_count > 4096) && pixel_index.is_multiple_of(4096) {
+                    check_cancelled(options)?;
+                }
+                let color = region_tile_pixel_color(
+                    &renderer.palette,
+                    job,
+                    options,
+                    regions,
+                    pixel_x,
+                    pixel_z,
+                    &mut diagnostics,
+                )?;
+                colors.push(pack_rgba_color(color));
+                pixel_index += 1;
+            }
+        }
+        return Ok((
+            pack_color_words(&colors, options.pixel_format, options.simd),
+            diagnostics,
+        ));
+    }
     if block_volume_enabled_for(job.mode, options.surface, job)
         || atlas_enabled_for(job.mode, options.surface, job)
     {
@@ -7760,12 +8010,22 @@ where
             regions,
         )?;
         return Ok((
-            compose_region_tile_from_prepared(&renderer.palette, &prepared, job, options.surface),
+            compose_region_tile_from_prepared(
+                &renderer.palette,
+                &prepared,
+                job,
+                options.surface,
+                options.pixel_format,
+                options.simd,
+            ),
             prepared.diagnostics,
         ));
     }
     let mut diagnostics = RenderDiagnostics::default();
-    let mut rgba = vec![0; pixel_count.saturating_mul(4)];
+    let mut colors =
+        (options.simd == RenderSimdPolicy::Auto).then(|| Vec::with_capacity(pixel_count));
+    let mut pixels = (options.simd == RenderSimdPolicy::Scalar)
+        .then(|| vec![0; pixel_count.saturating_mul(4)]);
     let mut pixel_index = 0usize;
     for pixel_z in 0..job.tile_size {
         for pixel_x in 0..job.tile_size {
@@ -7781,11 +8041,24 @@ where
                 pixel_z,
                 &mut diagnostics,
             )?;
-            write_rgba_pixel(&mut rgba, pixel_index, color);
+            if let Some(colors) = colors.as_mut() {
+                colors.push(pack_rgba_color(color));
+            } else if let Some(pixels) = pixels.as_mut() {
+                write_pixel(pixels, pixel_index, color, options.pixel_format);
+            }
             pixel_index += 1;
         }
     }
-    Ok((rgba, diagnostics))
+    let pixels = match (colors, pixels) {
+        (Some(colors), None) => pack_color_words(&colors, options.pixel_format, options.simd),
+        (None, Some(pixels)) => pixels,
+        _ => {
+            return Err(BedrockRenderError::Validation(
+                "render SIMD output buffers must be mutually exclusive".to_string(),
+            ));
+        }
+    };
+    Ok((pixels, diagnostics))
 }
 
 fn compose_tile_from_chunk_bakes_cpu<S>(
@@ -7799,6 +8072,37 @@ fn compose_tile_from_chunk_bakes_cpu<S>(
 where
     S: StorageBackend,
 {
+    if options.simd == RenderSimdPolicy::Auto
+        && !lighting_enabled_for(job.mode, options.surface)
+        && !atlas_enabled_for(job.mode, options.surface, job)
+        && !block_volume_enabled_for(job.mode, options.surface, job)
+    {
+        let mut colors = Vec::with_capacity(pixel_count);
+        let mut pixel_index = 0usize;
+        for pixel_z in 0..job.tile_size {
+            for pixel_x in 0..job.tile_size {
+                if (pixel_count > 4096) && pixel_index.is_multiple_of(4096) {
+                    check_cancelled(options)?;
+                }
+                let color = baked_tile_pixel_color(
+                    &renderer.palette,
+                    job,
+                    options,
+                    bakes,
+                    pixel_x,
+                    pixel_z,
+                    diagnostics,
+                )?;
+                colors.push(pack_rgba_color(color));
+                pixel_index += 1;
+            }
+        }
+        return Ok(pack_color_words(
+            &colors,
+            options.pixel_format,
+            options.simd,
+        ));
+    }
     if block_volume_enabled_for(job.mode, options.surface, job)
         || atlas_enabled_for(job.mode, options.surface, job)
     {
@@ -7814,9 +8118,14 @@ where
             &prepared,
             job,
             options.surface,
+            options.pixel_format,
+            options.simd,
         ));
     }
-    let mut rgba = vec![0; pixel_count.saturating_mul(4)];
+    let mut colors =
+        (options.simd == RenderSimdPolicy::Auto).then(|| Vec::with_capacity(pixel_count));
+    let mut pixels = (options.simd == RenderSimdPolicy::Scalar)
+        .then(|| vec![0; pixel_count.saturating_mul(4)]);
     let mut pixel_index = 0usize;
     for pixel_z in 0..job.tile_size {
         for pixel_x in 0..job.tile_size {
@@ -7832,11 +8141,25 @@ where
                 pixel_z,
                 diagnostics,
             )?;
-            write_rgba_pixel(&mut rgba, pixel_index, color);
+            if let Some(colors) = colors.as_mut() {
+                colors.push(pack_rgba_color(color));
+            } else if let Some(pixels) = pixels.as_mut() {
+                write_pixel(pixels, pixel_index, color, options.pixel_format);
+            }
             pixel_index += 1;
         }
     }
-    Ok(rgba)
+    match (colors, pixels) {
+        (Some(colors), None) => Ok(pack_color_words(
+            &colors,
+            options.pixel_format,
+            options.simd,
+        )),
+        (None, Some(pixels)) => Ok(pixels),
+        _ => Err(BedrockRenderError::Validation(
+            "render SIMD output buffers must be mutually exclusive".to_string(),
+        )),
+    }
 }
 
 fn region_tile_pixel_color(
@@ -8491,12 +8814,14 @@ fn compose_region_tile_from_prepared(
     prepared: &PreparedTileCompose,
     job: &RenderJob,
     surface: SurfaceRenderOptions,
+    pixel_format: TilePixelFormat,
+    simd: RenderSimdPolicy,
 ) -> Vec<u8> {
     let pixel_count = usize::try_from(job.tile_size)
         .ok()
         .and_then(|size| size.checked_mul(size))
         .unwrap_or(0);
-    let mut rgba = vec![0; pixel_count.saturating_mul(4)];
+    let mut colors = Vec::with_capacity(pixel_count);
     for (pixel_index, packed_color) in prepared.colors.iter().copied().enumerate() {
         let mut color = unpack_rgba_color(packed_color);
         if prepared.lighting_enabled {
@@ -8552,9 +8877,9 @@ fn compose_region_tile_from_prepared(
                 };
             }
         }
-        write_rgba_pixel(&mut rgba, pixel_index, color);
+        colors.push(pack_rgba_color(color));
     }
-    rgba
+    pack_color_words(&colors, pixel_format, simd)
 }
 
 fn pack_rgba_color(color: RgbaColor) -> u32 {
@@ -8571,6 +8896,44 @@ fn unpack_rgba_color(color: u32) -> RgbaColor {
         u8_from_u32((color >> 16) & 0xff),
         u8_from_u32((color >> 24) & 0xff),
     )
+}
+
+fn pack_color_words(
+    colors: &[u32],
+    pixel_format: TilePixelFormat,
+    simd: RenderSimdPolicy,
+) -> Vec<u8> {
+    let mut pixels = vec![0; colors.len().saturating_mul(4)];
+    super::pixels::pack_colors(colors, &mut pixels, pixel_format, simd);
+    pixels
+}
+
+fn write_pixel(
+    pixels: &mut [u8],
+    pixel_index: usize,
+    color: RgbaColor,
+    pixel_format: TilePixelFormat,
+) {
+    let Some(offset) = pixel_index.checked_mul(4) else {
+        return;
+    };
+    let Some(pixel) = pixels.get_mut(offset..offset.saturating_add(4)) else {
+        return;
+    };
+    match pixel_format {
+        TilePixelFormat::Rgba8 => {
+            pixel[0] = color.red;
+            pixel[1] = color.green;
+            pixel[2] = color.blue;
+            pixel[3] = color.alpha;
+        }
+        TilePixelFormat::Bgra8 => {
+            pixel[0] = color.blue;
+            pixel[1] = color.green;
+            pixel[2] = color.red;
+            pixel[3] = color.alpha;
+        }
+    }
 }
 
 fn validate_job(job: &RenderJob) -> Result<()> {
@@ -8679,6 +9042,7 @@ const fn image_format_extension(format: ImageFormat) -> &'static str {
         ImageFormat::WebP => "webp",
         ImageFormat::Png => "png",
         ImageFormat::FastRgbaZstd => "brtile",
+        ImageFormat::FastBgraZstd => "brtile-bgra",
         ImageFormat::Rgba => "rgba",
     }
 }
@@ -8799,19 +9163,6 @@ impl RgbaAccumulator {
             u8_from_u64(alpha),
         ))
     }
-}
-
-fn write_rgba_pixel(rgba: &mut [u8], pixel_index: usize, color: RgbaColor) {
-    let Some(offset) = pixel_index.checked_mul(4) else {
-        return;
-    };
-    let Some(pixel) = rgba.get_mut(offset..offset.saturating_add(4)) else {
-        return;
-    };
-    pixel[0] = color.red;
-    pixel[1] = color.green;
-    pixel[2] = color.blue;
-    pixel[3] = color.alpha;
 }
 
 fn lighting_enabled_for(mode: RenderMode, surface: SurfaceRenderOptions) -> bool {
@@ -12294,40 +12645,28 @@ fn non_empty_biome_id(id: Option<u32>) -> Option<u32> {
 }
 
 fn encode_image(
-    rgba: &[u8],
+    pixels: &[u8],
     width: u32,
     height: u32,
     format: ImageFormat,
+    pixel_format: TilePixelFormat,
 ) -> Result<Option<Vec<u8>>> {
     match format {
         ImageFormat::Rgba => Ok(None),
-        ImageFormat::WebP => encode_webp(rgba, width, height).map(Some),
-        ImageFormat::Png => encode_png(rgba, width, height).map(Some),
-        ImageFormat::FastRgbaZstd => encode_fast_rgba_zstd(rgba, width, height).map(Some),
-    }
-}
-
-fn rgba_to_bgra(mut rgba: Vec<u8>) -> Vec<u8> {
-    for pixel in rgba.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-    rgba
-}
-
-fn decoded_tile_from_tile_image(
-    tile: TileImage,
-    output: RenderTileOutputOptions,
-) -> DecodedTileImage {
-    let pixels = match output.pixel_format {
-        TilePixelFormat::Rgba8 => tile.rgba,
-        TilePixelFormat::Bgra8 => Arc::from(rgba_to_bgra(tile.rgba.as_ref().to_vec())),
-    };
-    DecodedTileImage {
-        coord: tile.coord,
-        width: tile.width,
-        height: tile.height,
-        pixels,
-        pixel_format: output.pixel_format,
+        ImageFormat::WebP | ImageFormat::Png | ImageFormat::FastRgbaZstd
+            if pixel_format != TilePixelFormat::Rgba8 => Err(BedrockRenderError::Validation(
+            "encoded RGBA output requires native Rgba8 pixels; request ImageFormat::Rgba for Bgra8"
+                .to_string(),
+        )),
+        ImageFormat::FastBgraZstd if pixel_format != TilePixelFormat::Bgra8 => {
+            Err(BedrockRenderError::Validation(
+                "FastBgraZstd requires native Bgra8 pixels".to_string(),
+            ))
+        }
+        ImageFormat::WebP => encode_webp(pixels, width, height).map(Some),
+        ImageFormat::Png => encode_png(pixels, width, height).map(Some),
+        ImageFormat::FastRgbaZstd => encode_fast_rgba_zstd(pixels, width, height).map(Some),
+        ImageFormat::FastBgraZstd => encode_fast_bgra_zstd(pixels, width, height).map(Some),
     }
 }
 
@@ -12346,6 +12685,13 @@ pub fn encode_fast_rgba_zstd(rgba: &[u8], width: u32, height: u32) -> Result<Vec
         fast_rgba_content_flags(rgba),
         0,
     )
+}
+
+/// Encodes native BGRA tile bytes into the fast zstd-backed tile cache format.
+///
+/// The byte order is preserved exactly; this function never swizzles the input.
+pub fn encode_fast_bgra_zstd(bgra: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    encode_fast_rgba_zstd(bgra, width, height)
 }
 
 /// Encodes RGBA tile bytes as fast zstd-backed cache bytes with a tile validation value.
@@ -12523,6 +12869,17 @@ pub fn decode_fast_rgba_zstd(bytes: &[u8]) -> Result<FastRgbaZstdTile> {
     let header = decode_fast_rgba_zstd_header(bytes)?;
     let mut scratch = TileCacheDecodeScratch::new();
     decode_fast_rgba_zstd_with_header(bytes, header, &mut scratch)
+}
+
+/// Decodes native BGRA bytes from a `FastBgraZstd` tile cache entry.
+pub fn decode_fast_bgra_zstd(bytes: &[u8]) -> Result<FastBgraZstdTile> {
+    let tile = decode_fast_rgba_zstd(bytes)?;
+    Ok(FastBgraZstdTile {
+        width: tile.width,
+        height: tile.height,
+        validation_value: tile.validation_value,
+        bgra: tile.rgba,
+    })
 }
 
 /// Decodes only the header from a fast zstd-backed tile cache entry.
@@ -12806,21 +13163,17 @@ mod tests {
             width: 1,
             height: 1,
             rgba: pixels.clone(),
+            pixel_format: TilePixelFormat::Rgba8,
             encoded: None,
         };
-        let decoded = decoded_tile_from_tile_image(
-            tile,
-            RenderTileOutputOptions {
-                pixel_format: TilePixelFormat::Rgba8,
-            },
-        );
+        let decoded = tile.into_decoded();
 
         assert!(Arc::ptr_eq(&decoded.pixels, &pixels));
     }
 
     #[test]
-    fn decoded_bgra_tile_image_freezes_converted_pixels() {
-        let pixels = Arc::<[u8]>::from([1, 2, 3, 255]);
+    fn decoded_bgra_tile_image_reuses_native_pixels() {
+        let pixels = Arc::<[u8]>::from([3, 2, 1, 255]);
         let tile = TileImage {
             coord: TileCoord {
                 x: 0,
@@ -12830,17 +13183,96 @@ mod tests {
             width: 1,
             height: 1,
             rgba: pixels.clone(),
+            pixel_format: TilePixelFormat::Bgra8,
             encoded: None,
         };
-        let decoded = decoded_tile_from_tile_image(
-            tile,
-            RenderTileOutputOptions {
-                pixel_format: TilePixelFormat::Bgra8,
-            },
-        );
+        let decoded = tile.into_decoded();
 
-        assert!(!Arc::ptr_eq(&decoded.pixels, &pixels));
+        assert!(Arc::ptr_eq(&decoded.pixels, &pixels));
+        assert_eq!(decoded.pixel_format, TilePixelFormat::Bgra8);
+    }
+
+    #[test]
+    fn decoded_bgra_tile_image_keeps_unique_native_payload_in_place() {
+        let pixels = Arc::<[u8]>::from(vec![3, 2, 1, 255].repeat(256));
+        let original_ptr = Arc::as_ptr(&pixels);
+        let tile = TileImage {
+            coord: TileCoord {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            width: 16,
+            height: 16,
+            rgba: pixels,
+            pixel_format: TilePixelFormat::Bgra8,
+            encoded: None,
+        };
+        let decoded = tile.into_decoded();
+
+        assert!(std::ptr::addr_eq(Arc::as_ptr(&decoded.pixels), original_ptr));
+        assert_eq!(&decoded.pixels[..4], &[3, 2, 1, 255]);
+    }
+
+    #[test]
+    fn decoded_bgra_tile_image_reuses_native_payload() {
+        let pixels = Arc::<[u8]>::from([3, 2, 1, 255]);
+        let original_ptr = Arc::as_ptr(&pixels);
+        let tile = TileImage {
+            coord: TileCoord {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            width: 1,
+            height: 1,
+            rgba: pixels,
+            pixel_format: TilePixelFormat::Bgra8,
+            encoded: None,
+        };
+        let decoded = tile.into_decoded();
+
+        assert!(std::ptr::addr_eq(Arc::as_ptr(&decoded.pixels), original_ptr));
         assert_eq!(decoded.pixels.as_ref(), &[3, 2, 1, 255]);
+    }
+
+    #[test]
+    fn compose_pixel_writer_keeps_requested_channel_order() {
+        for (pixel_format, expected) in [
+            (TilePixelFormat::Rgba8, [1, 2, 3, 255]),
+            (TilePixelFormat::Bgra8, [3, 2, 1, 255]),
+        ] {
+            let mut pixels = [0; 4];
+            write_pixel(
+                &mut pixels,
+                0,
+                RgbaColor::new(1, 2, 3, 255),
+                pixel_format,
+            );
+            assert_eq!(pixels, expected);
+        }
+    }
+
+    #[test]
+    fn pack_colors_writes_requested_channel_order() {
+        let color = pack_rgba_color(RgbaColor::new(1, 2, 3, 4));
+        let mut rgba = [0; 4];
+        super::super::pixels::pack_colors(
+            &[color],
+            &mut rgba,
+            TilePixelFormat::Rgba8,
+            RenderSimdPolicy::Auto,
+        );
+        assert_eq!(rgba, [1, 2, 3, 4]);
+
+        let mut bgra = [0; 4];
+        super::super::pixels::pack_colors(
+            &[color],
+            &mut bgra,
+            TilePixelFormat::Bgra8,
+            RenderSimdPolicy::Auto,
+        );
+        assert_eq!(bgra, [3, 2, 1, 4]);
     }
 
     fn cardinal_heights(west: i16, east: i16, north: i16, south: i16) -> TerrainHeightNeighborhood {
@@ -13040,6 +13472,7 @@ mod tests {
             chunks_per_tile: planned.layout.chunks_per_tile,
             blocks_per_pixel: planned.layout.blocks_per_pixel,
             pixels_per_block: planned.layout.pixels_per_block,
+            pixel_format: TilePixelFormat::Rgba8,
             tile_x: planned.job.coord.x,
             tile_z: planned.job.coord.z,
             extension: image_format_extension(ImageFormat::FastRgbaZstd).to_string(),
@@ -13375,6 +13808,8 @@ mod tests {
                 world_workers_per_region: 1,
             }
         );
+        assert_eq!(region_wave_compose_worker_count(6, 2), 4);
+        assert_eq!(region_wave_compose_worker_count(2, 2), 1);
     }
 
     #[test]
@@ -13462,10 +13897,15 @@ mod tests {
             RegionBakeMemoryCache::new(4, RENDERER_CACHE_VERSION, DEFAULT_PALETTE_VERSION);
 
         assert!(cache.get(key, &options).is_none());
-        cache.insert(key, Arc::new(region), &options);
+        let region = Arc::new(region);
+        cache.insert(key, Arc::clone(&region), &options);
         let first = cache.get(key, &options).expect("first cache hit");
         let second = cache.get(key, &options).expect("second cache hit");
         assert!(Arc::ptr_eq(&first, &second));
+        for _ in 0..8 {
+            cache.insert(key, Arc::clone(&region), &options);
+        }
+        assert_eq!(cache.memory_order.len(), 1);
 
         let mut different_layout = options.clone();
         different_layout.region_layout = RegionLayout {
@@ -16843,6 +17283,43 @@ mod tests {
                 .expect("render diagnostic mode");
             assert_eq!(tile.rgba.len(), 16);
         }
+
+        let job = RenderJob {
+            tile_size: 16,
+            ..RenderJob::new(
+                TileCoord {
+                    x: 0,
+                    z: 0,
+                    dimension: Dimension::Overworld,
+                },
+                RenderMode::HeightMap,
+            )
+        };
+        for pixel_format in [TilePixelFormat::Rgba8, TilePixelFormat::Bgra8] {
+            let scalar = renderer
+                .render_tile(
+                    job.clone(),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        pixel_format,
+                        simd: RenderSimdPolicy::Scalar,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render scalar heightmap");
+            let auto = renderer
+                .render_tile(
+                    job.clone(),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        pixel_format,
+                        simd: RenderSimdPolicy::Auto,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render auto heightmap");
+            assert_eq!(auto.rgba, scalar.rgba);
+        }
     }
 
     #[test]
@@ -18431,6 +18908,7 @@ mod tests {
             chunks_per_tile: 16,
             blocks_per_pixel: 1,
             pixels_per_block: 1,
+            pixel_format: TilePixelFormat::Rgba8,
             tile_x: 0,
             tile_z: 0,
             extension: "webp".to_string(),
@@ -18441,6 +18919,8 @@ mod tests {
         changed_layout.blocks_per_pixel = 4;
         let mut changed_pixel_scale = base.clone();
         changed_pixel_scale.pixels_per_block = 2;
+        let mut changed_pixel_format = base.clone();
+        changed_pixel_format.pixel_format = TilePixelFormat::Bgra8;
 
         let base = tile_authority_cache_key_from_tile_key(&base);
         assert_ne!(
@@ -18455,6 +18935,31 @@ mod tests {
             base.validation_value(),
             tile_authority_cache_key_from_tile_key(&changed_pixel_scale).validation_value()
         );
+        assert_ne!(
+            base.validation_value(),
+            tile_authority_cache_key_from_tile_key(&changed_pixel_format).validation_value()
+        );
+    }
+
+    #[test]
+    fn tile_cache_format_mismatch_is_a_miss() {
+        let planned = planned_tile_at(0, 0);
+        let rgba_key = tile_cache_key_for_test(&planned);
+        let mut bgra_key = rgba_key.clone();
+        bgra_key.pixel_format = TilePixelFormat::Bgra8;
+        bgra_key.extension = image_format_extension(ImageFormat::FastBgraZstd).to_string();
+        let tile = TileImage {
+            coord: planned.job.coord,
+            width: 1,
+            height: 1,
+            rgba: Arc::from([1, 2, 3, 255]),
+            pixel_format: TilePixelFormat::Rgba8,
+            encoded: None,
+        };
+        let mut cache = TileCache::new(std::env::temp_dir(), 2);
+        cache.insert_memory(rgba_key, tile);
+
+        assert!(cache.get_memory(&bgra_key).is_none());
     }
 
     #[test]
@@ -18490,6 +18995,35 @@ mod tests {
         assert_eq!(header.validation_value, Some(0xabc));
         assert_eq!(decoded.validation_value, Some(0xabc));
         assert_eq!(decoded.rgba, rgba);
+    }
+
+    #[test]
+    fn fast_bgra_zstd_keeps_native_channel_order() {
+        let bgra = vec![3, 2, 1, 255, 6, 5, 4, 255];
+        let encoded = encode_image(
+            &bgra,
+            2,
+            1,
+            ImageFormat::FastBgraZstd,
+            TilePixelFormat::Bgra8,
+        )
+        .expect("encode native BGRA cache tile")
+        .expect("encoded BGRA cache tile");
+        let decoded = decode_fast_bgra_zstd(&encoded).expect("decode native BGRA cache tile");
+
+        assert_eq!(decoded.bgra, bgra);
+    }
+
+    #[test]
+    fn encoded_rgba_formats_reject_bgra_without_converting() {
+        assert!(encode_image(
+            &[3, 2, 1, 255],
+            1,
+            1,
+            ImageFormat::FastRgbaZstd,
+            TilePixelFormat::Bgra8,
+        )
+        .is_err());
     }
 
     #[test]
@@ -18672,7 +19206,8 @@ mod tests {
             )
             .expect("tile byte length")
         ]);
-        let fast_payload = TileCacheWritePayload::FastRgbaZstd {
+        let fast_payload = TileCacheWritePayload::FastTileZstd {
+            pixel_format: TilePixelFormat::Rgba8,
             rgba,
             width: planned.job.tile_size,
             height: planned.job.tile_size,
@@ -19170,6 +19705,7 @@ mod tests {
             chunks_per_tile: layout.chunks_per_tile,
             blocks_per_pixel: layout.blocks_per_pixel,
             pixels_per_block: layout.pixels_per_block,
+            pixel_format: TilePixelFormat::Rgba8,
             tile_x: 0,
             tile_z: 0,
             extension: image_format_extension(ImageFormat::FastRgbaZstd).to_string(),
@@ -19249,6 +19785,7 @@ mod tests {
             chunks_per_tile: layout.chunks_per_tile,
             blocks_per_pixel: layout.blocks_per_pixel,
             pixels_per_block: layout.pixels_per_block,
+            pixel_format: TilePixelFormat::Rgba8,
             tile_x: 0,
             tile_z: 0,
             extension: image_format_extension(ImageFormat::FastRgbaZstd).to_string(),

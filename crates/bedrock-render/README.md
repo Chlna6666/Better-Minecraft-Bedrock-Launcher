@@ -209,7 +209,7 @@ session.render_web_tiles_streaming(
                 // Decode or hand encoded bytes to the UI image cache.
             }
             TileStreamEvent::Rendered { planned, tile } => {
-                // Present tile.rgba immediately and keep tile.encoded for cache.
+                // Present tile.rgba in tile.pixel_format order; keep tile.encoded for cache.
             }
             TileStreamEvent::Failed { planned, error } => {
                 eprintln!("tile failed: {error}");
@@ -268,10 +268,20 @@ cargo run --example render_streaming_session -- <world_path>
 ```
 
 For UI image caches that want decoded pixels directly, use
-`render_web_tiles_streaming_v2`, `render_web_tiles_streaming_v2`, or
-`render_web_tiles_streaming_channel_v2`. These emit `TileStreamEventV2::Ready`
+`render_decoded_tiles`, `render_decoded_tiles_async`, or
+`render_decoded_tiles_channel`. These emit `DecodedTileEvent::Ready`
 with `DecodedTileImage` pixels in `TilePixelFormat::Rgba8` by default, or
-`Bgra8` when requested through `RenderTileOutputOptions`.
+`Bgra8` when requested through `RenderTileOutputOptions`; fresh tiles are
+written in that order during compose so GPUI does not need a second swizzle.
+`TilePixelFormat` is part of `TileCacheKey`: `FastRgbaZstd` and `FastBgraZstd`
+store their native byte order, and a cache-format mismatch is a miss that
+re-renders the tile. There is no RGBA/BGRA conversion path. WebP and PNG
+accept native RGBA only.
+
+`RenderOptions::simd` defaults to `RenderSimdPolicy::Auto` and selects a safe
+runtime SIMD kernel for contiguous resolved-color packing. Set it to
+`RenderSimdPolicy::Scalar` for the no-explicit-SIMD CPU baseline. It does not
+change block-state or palette lookup, neighborhood shading, or boundary logic.
 
 ## Preview Tool
 
@@ -591,8 +601,12 @@ opt-in; set `RUN_FULL_BENCHMARKS` to `true` in `benches/render.rs` first:
 cargo bench --bench render --all-features
 ```
 
-More details are in [docs/API.md](docs/API.md), [docs/TESTING.md](docs/TESTING.md),
-and [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+SIMD decisions follow the documented bulk-data crossover rules in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md). The production path writes the requested
+RGBA/BGRA order directly; it does not expose an order-conversion helper. Cache
+identity includes `TilePixelFormat`, with separate `FastRgbaZstd` and
+`FastBgraZstd` payloads. A format mismatch is a cache miss. API and testing
+details are in [docs/API.md](docs/API.md) and [docs/TESTING.md](docs/TESTING.md).
 
 ## Current Limits
 

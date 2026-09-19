@@ -4,10 +4,11 @@
 use bedrock_render::{
     ChunkRegion, MapRenderSession, MapRenderSessionConfig, RenderCachePolicy,
     RenderExecutionProfile, RenderLayout, RenderThreadingOptions, RenderTileOutputOptions,
-    TilePixelFormat, TileReadySource, TileStreamEvent, TileStreamEventV2,
+    DecodedTileEvent, TileReadySource, TileStreamEvent,
 };
 use bedrock_render::{
-    ImageFormat, MapRenderer, RenderJob, RenderMode, RenderOptions, RenderPalette, TileCoord,
+    ImageFormat, MapRenderer, RenderJob, RenderMode, RenderOptions, RenderPalette,
+    RenderSimdPolicy, TileCoord, TilePixelFormat,
 };
 use bedrock_world::{BedrockLevelDbStorage, World, OpenOptions, Dimension};
 use std::path::PathBuf;
@@ -60,6 +61,59 @@ fn renders_fixture_biome_tile_as_rgba() {
         .expect("render fixture biome tile");
     assert_eq!(tile.rgba.len(), 16 * 16 * 4);
     assert!(tile.rgba.chunks_exact(4).any(|pixel| pixel[3] != 0));
+}
+
+#[test]
+fn biome_tile_simd_auto_matches_scalar_for_rgba_and_bgra() {
+    let world_path = fixture_world_path();
+    if !world_path.join("db").join("CURRENT").exists() {
+        return;
+    }
+    let storage = Arc::new(BedrockLevelDbStorage::open(world_path.join("db")).expect("open db"));
+    let world = Arc::new(World::from_storage(
+        world_path,
+        storage,
+        OpenOptions::default(),
+    ));
+    let renderer = MapRenderer::new(world, RenderPalette::default());
+    let job = RenderJob {
+        tile_size: 64,
+        ..RenderJob::new(
+            TileCoord {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            RenderMode::Biome { y: 64 },
+        )
+    };
+
+    for pixel_format in [TilePixelFormat::Rgba8, TilePixelFormat::Bgra8] {
+        let scalar = renderer
+            .render_tile(
+                job.clone(),
+                &RenderOptions {
+                    format: ImageFormat::Rgba,
+                    pixel_format,
+                    simd: RenderSimdPolicy::Scalar,
+                    ..RenderOptions::default()
+                },
+            )
+            .expect("render scalar biome tile");
+        let auto = renderer
+            .render_tile(
+                job.clone(),
+                &RenderOptions {
+                    format: ImageFormat::Rgba,
+                    pixel_format,
+                    simd: RenderSimdPolicy::Auto,
+                    ..RenderOptions::default()
+                },
+            )
+            .expect("render SIMD biome tile");
+        assert_eq!(auto.pixel_format, pixel_format);
+        assert_eq!(auto.rgba, scalar.rgba);
+    }
 }
 
 #[cfg(feature = "webp")]
@@ -180,7 +234,7 @@ fn streaming_session_emits_rendered_then_cached_events() {
 
 #[cfg(feature = "webp")]
 #[test]
-fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
+fn decoded_stream_emits_rgba_tiles_from_render_by_default() {
     let world_path = fixture_world_path();
     if !world_path.join("db").join("CURRENT").exists() {
         return;
@@ -199,7 +253,7 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
         MapRenderSessionConfig {
             cache_root: cache_root.clone(),
             world_id: "fixture".to_string(),
-            world_signature: "streaming-v2-test".to_string(),
+            world_signature: "decoded-stream-test".to_string(),
             cull_missing_chunks: true,
             ..MapRenderSessionConfig::default()
         },
@@ -230,7 +284,7 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
     let rendered_tiles = Arc::new(AtomicUsize::new(0));
     let complete = Arc::new(AtomicUsize::new(0));
     session
-        .render_web_tiles_streaming_v2(
+        .render_decoded_tiles(
             &planned_tiles,
             RenderOptions {
                 threading: RenderThreadingOptions::Single,
@@ -245,7 +299,7 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
                 let complete = Arc::clone(&complete);
                 move |event| {
                     match event {
-                        TileStreamEventV2::Ready {
+                        DecodedTileEvent::Ready {
                             tile,
                             source: TileReadySource::Render,
                             ..
@@ -254,7 +308,7 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
                             assert!(!tile.pixels.is_empty());
                             rendered_tiles.fetch_add(1, Ordering::Relaxed);
                         }
-                        TileStreamEventV2::Complete { .. } => {
+                        DecodedTileEvent::Complete { .. } => {
                             complete.fetch_add(1, Ordering::Relaxed);
                         }
                         _ => {}
@@ -263,7 +317,7 @@ fn streaming_session_v2_emits_rgba_tiles_from_render_by_default() {
                 }
             },
         )
-        .expect("first v2 streaming render");
+        .expect("first decoded streaming render");
     assert_eq!(rendered_tiles.load(Ordering::Relaxed), 1);
     assert_eq!(complete.load(Ordering::Relaxed), 1);
 

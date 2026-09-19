@@ -41,8 +41,9 @@ density. `RenderOptions` controls output format, backend, threading, memory
 budget, CPU/GPU pipeline policy, priority, diagnostics, cancellation, and
 surface shading.
 
-`ImageFormat::Rgba` is the cheapest validation format. `ImageFormat::WebP` and
-`ImageFormat::Png` populate `TileImage::encoded` when their features are enabled.
+`ImageFormat::Rgba` is the cheapest validation format and returns raw bytes in
+`RenderOptions::pixel_format` order. `ImageFormat::WebP` and `ImageFormat::Png`
+populate `TileImage::encoded` when their features are enabled.
 
 ## Session Streaming
 
@@ -88,12 +89,29 @@ that prefers an async channel, use `render_web_tiles_streaming_channel`; it
 returns a `tokio::sync::mpsc::Receiver<TileStreamEvent>` immediately and lets
 the render task continue in the background.
 
-Use `render_web_tiles_streaming_v2`,
-`render_web_tiles_streaming_v2`, or `render_web_tiles_streaming_channel_v2`
+Use `render_decoded_tiles`, `render_decoded_tiles_async`, or
+`render_decoded_tiles_channel`
 when a UI wants decoded pixels instead of encoded tile bytes. These APIs emit
-`TileStreamEventV2::Ready` with `DecodedTileImage`; `RenderTileOutputOptions`
+`DecodedTileEvent::Ready` with `DecodedTileImage`; `RenderTileOutputOptions`
 selects `TilePixelFormat::Rgba8` by default or `Bgra8` for consumers that
-prefer BGRA byte order.
+prefer BGRA byte order. Fresh tiles are written in the requested order during
+compose, so a GPUI consumer does not pay a post-render swizzle. A standalone
+`TileImage` uses `into_decoded()` and preserves its native order. Pixel format is
+part of `TileCacheKey`: an RGBA cache entry requested as BGRA (or the reverse)
+is a miss and is rendered again. No conversion helper may be added for this
+boundary. `FastRgbaZstd` stores native RGBA bytes and `FastBgraZstd` stores
+native BGRA bytes. Use `encode_fast_bgra_zstd`/`decode_fast_bgra_zstd` for
+explicit BGRA cache payloads; WebP/PNG require native RGBA input.
+
+Set `RenderOptions::simd` to `RenderSimdPolicy::Auto` (the default) for the
+bulk pixel pack kernel, or `RenderSimdPolicy::Scalar` for a controlled CPU
+baseline. The policy only affects contiguous resolved-color packing; block
+state lookup, palette lookup, neighbor shading, and boundary decisions remain
+scalar until a separate A/B result justifies a batch kernel.
+
+Rust does not allow `.` in an identifier, so the async entry point uses the
+short `_async` suffix alongside the synchronous `render_decoded_tiles` method;
+the removed `v2` names have no compatibility aliases.
 
 ## Cache Identity
 
@@ -166,6 +184,41 @@ compose, and encode coordination:
 The renderer does not use Rayon global pool state. Long-lived sessions reuse the
 same world, renderer, cache, and diagnostics path while each render request
 keeps cancellation and progress scoped to its generation.
+
+### Scheduling And Memory Audit (2026-09-20)
+
+One scheduling cost is confirmed: every region wave creates a local Rayon pool.
+When a tile becomes ready inside that wave, `render_web_tile_indexes` creates a
+second compose pool while the region pool is still running. The compose pool is
+now capped at `worker_count - region_worker_count` (minimum one), so both render
+pools do not allocate the full worker budget. The pools can still overlap with
+Bedrock world workers, adding wakeups, context switches, and cache contention that
+can hide a small pixel-pack gain.
+`RenderPipelineStats::peak_worker_threads` is currently a configured bound, not an
+observed active-thread count, so it does not prove that oversubscription is absent.
+
+The main confirmed memory amplifiers are:
+
+- `render_tiles_from_shared_bakes` deep-copies each `ChunkBake` into every
+  `TileComposeTask` while the source bake map remains alive.
+- Region chunk-position vectors are retained in both the global region map and
+  per-tile readiness plans.
+- Prepared compose retains colors, neighborhood heights, water depths, and the
+  final RGBA buffer at the same time; the pack stage may add another `u32`
+  staging buffer.
+- The tile-cache writer still initializes at least 64 work items, which can start
+  extra encode threads for a single-tile request. Because the writer is reused by
+  the session, removing that floor safely requires measured resize behavior across
+  later larger requests and remains a follow-up.
+- Increasing `pipeline_depth` or `queue_depth` multiplies queued objects. The
+  region memory budget does not cover every queue or temporary buffer.
+- Region-bake LRU hits now refresh order and repeated keys are removed before
+  insertion, preventing unbounded duplicate entries in `memory_order`.
+
+Before changing worker counts or queue depth, collect pool-creation time, channel
+wait, observed active threads, and RSS/allocator peak on the same world and cache
+state. Those measurements decide whether to reuse a session-level pool, share
+`ChunkBake` ownership, or add per-worker scratch buffers.
 
 ## Render Modes
 
@@ -278,12 +331,16 @@ fallback renders.
   `readback_workers=0` use profile-aware automatic defaults.
 - `buffer_pool_bytes=0` and `staging_pool_bytes=0` enable automatic reusable
   storage/readback pool budgets. Explicit non-zero values cap each pool.
+- The current GPU compose contract accepts native `Rgba8` tiles. A `Bgra8`
+  request stays on the native CPU path until a GPU shader/layout contract is
+  verified; it is never converted through an `rgba_to_bgra` helper.
 
 The GPU path uses a single `wgpu` device with a bounded in-flight queue. CPU
 workers continue to load, bake, and prepare tiles while GPU jobs upload,
-dispatch, and read back results. Web/region ready tiles are submitted through a
-true batch path, so `batch_size` and `batch_pixels` affect submit/readback
-counts. Stats expose selected backend, adapter name/vendor/device type,
+dispatch, and read back results. Web/region ready tiles currently use the batch
+settings only for admission and scheduling; the copy kernel is still submitted
+per tile, so these settings do not yet provide one multi-tile GPU dispatch. Stats
+expose selected backend, adapter name/vendor/device type,
 `gpu_supported_tiles`, `gpu_skipped_tiles`, `gpu_skip_reason`, `gpu_batches`,
 `gpu_batch_tiles`, `gpu_submit_batches`, `gpu_readback_batches`,
 `gpu_uploaded_bytes`, `gpu_readback_bytes`, `gpu_prepare_ms`, `gpu_max_in_flight`,
@@ -293,6 +350,15 @@ counts. Stats expose selected backend, adapter name/vendor/device type,
 `world_load_ms`, `db_read_ms`, `decode_ms`, `region_copy_ms`, and
 `world_worker_threads`, which helps distinguish a slow shader from an idle GPU
 waiting for LevelDB/decode/bake work.
+
+The current DX11/Vulkan implementation still uses a copy kernel after CPU
+composition. It does not accelerate terrain lighting or shadows. A future Windows
+hybrid path must pass compact prepared colors, neighbor heights, and water masks to
+a batched terrain-lighting kernel, then keep atlas material and dynamic shadow-ray
+branches on CPU until their GPU data layout has pixel-level validation. Per-tile
+resource creation and synchronous readback must be replaced with reusable staging
+buffers and multi-tile dispatch before enabling that path by default. macOS is not
+part of this backend contract.
 
 Environment overrides remain supported:
 

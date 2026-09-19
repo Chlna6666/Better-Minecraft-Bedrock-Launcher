@@ -2,7 +2,8 @@ use bedrock_render::{
     BakeOptions, ChunkRegion, ImageFormat, MapRenderer, RenderBackend, RenderExecutionProfile,
     RenderGpuBackend, RenderGpuFallbackPolicy, RenderGpuOptions, RenderGpuPipelineLevel, RenderJob,
     RenderLayout, RenderMemoryBudget, RenderMode, RenderOptions, RenderPalette,
-    RenderThreadingOptions, TileCoord,
+    RenderSimdPolicy, RenderThreadingOptions, SurfaceRenderOptions, TerrainLightingOptions,
+    TileCoord,
     editor::{MapEditInvalidation, MapWorldEditor},
 };
 use bedrock_world::{
@@ -350,6 +351,49 @@ fn render_benches(c: &mut Criterion) {
                 .expect("render biome tile");
         });
     });
+    c.bench_function("bedrock_render/biome_tile_256_rgba_scalar", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::Biome { y: 64 }),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        simd: RenderSimdPolicy::Scalar,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render scalar biome tile");
+        });
+    });
+    c.bench_function("bedrock_render/biome_tile_256_bgra_auto", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::Biome { y: 64 }),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        pixel_format: bedrock_render::TilePixelFormat::Bgra8,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render BGRA biome tile");
+        });
+    });
+    c.bench_function("bedrock_render/biome_tile_256_bgra_scalar", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::Biome { y: 64 }),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        pixel_format: bedrock_render::TilePixelFormat::Bgra8,
+                        simd: RenderSimdPolicy::Scalar,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render scalar BGRA biome tile");
+        });
+    });
     c.bench_function("bedrock_render/biome_tile_256_webp", |bench| {
         bench.iter(|| {
             renderer
@@ -399,6 +443,92 @@ fn render_benches(c: &mut Criterion) {
                 .expect("render surface tile");
         });
     });
+    c.bench_function("bedrock_render/surface_tile_256_rgba_scalar", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::SurfaceBlocks),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        simd: RenderSimdPolicy::Scalar,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render scalar surface tile");
+        });
+    });
+    c.bench_function("bedrock_render/surface_tile_256_rgba_flat", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::SurfaceBlocks),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        surface: SurfaceRenderOptions {
+                            lighting: TerrainLightingOptions::off(),
+                            ..SurfaceRenderOptions::default()
+                        },
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render flat surface tile");
+        });
+    });
+    c.bench_function("bedrock_render/surface_tile_256_rgba_flat_scalar", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::SurfaceBlocks),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        surface: SurfaceRenderOptions {
+                            lighting: TerrainLightingOptions::off(),
+                            ..SurfaceRenderOptions::default()
+                        },
+                        simd: RenderSimdPolicy::Scalar,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render scalar flat surface tile");
+        });
+    });
+    let lighting_only_surface = SurfaceRenderOptions {
+        atlas: bedrock_render::AtlasRenderOptions::off(),
+        block_volume: bedrock_render::BlockVolumeRenderOptions::off(),
+        ..SurfaceRenderOptions::default()
+    };
+    c.bench_function("bedrock_render/surface_tile_256_rgba_lighting_only", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::SurfaceBlocks),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        surface: lighting_only_surface,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render lighting-only surface tile");
+        });
+    });
+    c.bench_function(
+        "bedrock_render/surface_tile_256_rgba_lighting_only_scalar",
+        |bench| {
+            bench.iter(|| {
+                renderer
+                    .render_tile(
+                        RenderJob::new(coord, RenderMode::SurfaceBlocks),
+                        &RenderOptions {
+                            format: ImageFormat::Rgba,
+                            surface: lighting_only_surface,
+                            simd: RenderSimdPolicy::Scalar,
+                            ..RenderOptions::default()
+                        },
+                    )
+                    .expect("render scalar lighting-only surface tile");
+            });
+        },
+    );
     c.bench_function("bedrock_render/bake_chunk_surface", |bench| {
         bench.iter(|| {
             renderer
@@ -441,6 +571,20 @@ fn render_benches(c: &mut Criterion) {
                     },
                 )
                 .expect("render heightmap tile");
+        });
+    });
+    c.bench_function("bedrock_render/heightmap_tile_256_rgba_scalar", |bench| {
+        bench.iter(|| {
+            renderer
+                .render_tile(
+                    RenderJob::new(coord, RenderMode::HeightMap),
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        simd: RenderSimdPolicy::Scalar,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render scalar heightmap tile");
         });
     });
     c.bench_function("bedrock_render/cave_slice_tile_256_rgba", |bench| {
