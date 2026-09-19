@@ -674,7 +674,7 @@ pub fn render_download_page(
                     native_mod_panel_cache,
                     mod_image_cache,
                 )
-                    .into_any_element()
+                .into_any_element()
             }
         }
     };
@@ -849,6 +849,18 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
     curseforge::render_curseforge_install_overlay(colors, cx)
 }
 
+fn merge_support_loader_versions(state: &mut DownloadPageState) {
+    for version in state.levilamina_support.all_loader_versions() {
+        let version = SharedString::from(version);
+        if !state.levilauncher_loader_versions.contains(&version) {
+            state.levilauncher_loader_versions.push(version);
+        }
+    }
+    state.levilauncher_loader_versions.sort_by(|left, right| {
+        crate::core::levilamina::compare_version_desc(left.as_ref(), right.as_ref())
+    });
+}
+
 pub fn ensure_levilauncher_loaded(cx: &mut App) {
     let (loaded, loading) = cx
         .read_global(|s: &DownloadPageState, _cx| (s.levilauncher_loaded, s.levilauncher_loading));
@@ -879,6 +891,7 @@ pub fn ensure_levilauncher_loaded(cx: &mut App) {
                         .map(SharedString::from)
                         .collect();
                     s.levilauncher_all_mods = data.client_mods;
+                    merge_support_loader_versions(s);
                 }
                 Err(err) => {
                     s.levilauncher_loaded = false;
@@ -954,6 +967,9 @@ pub fn ensure_levilamina_support_loaded(cx: &mut App) {
                 Ok(database) => {
                     state.levilamina_support_loaded = true;
                     state.levilamina_support = database;
+                    if state.levilauncher_loaded {
+                        merge_support_loader_versions(state);
+                    }
                 }
                 Err(error) => {
                     state.levilamina_support_loaded = false;

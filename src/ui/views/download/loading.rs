@@ -14,9 +14,7 @@ const MOD_CARD_HEIGHT: f32 = 160.0;
 
 pub(super) fn should_render_loading(state: &DownloadPageState, tab: DownloadTab) -> bool {
     match tab {
-        DownloadTab::Game => {
-            !state.loaded && state.error.is_none() && state.versions.is_empty()
-        }
+        DownloadTab::Game => !state.loaded && state.error.is_none() && state.versions.is_empty(),
         DownloadTab::ResourcePack => {
             (!state.curseforge_loaded && state.curseforge_loading)
                 || (state.curseforge_results_loading && state.curseforge_mods.is_empty())

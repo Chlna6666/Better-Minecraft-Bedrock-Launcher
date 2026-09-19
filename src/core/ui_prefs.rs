@@ -63,8 +63,7 @@ struct MapViewerWindowPrefsCache {
 static MAP_VIEWER_WINDOW_PREFS_CACHE: OnceLock<RwLock<MapViewerWindowPrefsCache>> = OnceLock::new();
 
 fn map_viewer_window_prefs_cache() -> &'static RwLock<MapViewerWindowPrefsCache> {
-    MAP_VIEWER_WINDOW_PREFS_CACHE
-        .get_or_init(|| RwLock::new(MapViewerWindowPrefsCache::default()))
+    MAP_VIEWER_WINDOW_PREFS_CACHE.get_or_init(|| RwLock::new(MapViewerWindowPrefsCache::default()))
 }
 
 pub fn cached_map_viewer_window_prefs() -> Option<MapViewerWindowPrefs> {
