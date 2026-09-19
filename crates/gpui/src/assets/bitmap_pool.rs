@@ -15,6 +15,7 @@ const HUGE_BITMAP_BUCKET_GRANULARITY: usize = 4 * 1024 * 1024;
 const SMALL_REUSE_CLASS_LIMIT: usize = 1024 * 1024;
 const MEDIUM_REUSE_CLASS_LIMIT: usize = 8 * 1024 * 1024;
 const LARGE_REUSE_CLASS_LIMIT: usize = 32 * 1024 * 1024;
+const MAX_OVERSIZED_IDLE_REUSE_MULTIPLIER: usize = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BitmapPoolSnapshot {
@@ -165,6 +166,13 @@ impl BitmapPool {
 
         buffer.clear();
         let max_bytes = self.max_bytes.load(Ordering::Relaxed);
+        // Active image allocations are intentionally unbounded by this pool policy. Once a
+        // decode buffer becomes idle, retaining a one-off allocation many times larger than the
+        // normal reuse working set turns a transient large image into persistent RSS. Keep
+        // moderately oversized hot buffers reusable, but return extreme spikes to the allocator.
+        if capacity > max_bytes.saturating_mul(MAX_OVERSIZED_IDLE_REUSE_MULTIPLIER) {
+            return;
+        }
         let class = Self::reuse_class(capacity);
         let mut state = self.state.lock();
 
@@ -329,17 +337,27 @@ mod tests {
     }
 
     #[test]
-    fn oversized_image_buffer_is_kept_as_single_hot_reuse_slot() {
+    fn moderately_oversized_image_buffer_is_kept_as_single_hot_reuse_slot() {
+        let pool = BitmapPool::new(1024);
+        pool.release(Vec::with_capacity(2048));
+
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.free_buffers, 1);
+        assert!(snapshot.retained_bytes >= 2048);
+
+        let reused = pool.acquire_capacity(1500);
+        assert!(reused.capacity() >= 2048);
+        assert_eq!(pool.snapshot().free_buffers, 0);
+    }
+
+    #[test]
+    fn extreme_one_off_image_buffer_is_not_kept_idle() {
         let pool = BitmapPool::new(1024);
         pool.release(Vec::with_capacity(4096));
 
         let snapshot = pool.snapshot();
-        assert_eq!(snapshot.free_buffers, 1);
-        assert!(snapshot.retained_bytes >= 4096);
-
-        let reused = pool.acquire_capacity(3000);
-        assert!(reused.capacity() >= 4096);
-        assert_eq!(pool.snapshot().free_buffers, 0);
+        assert_eq!(snapshot.free_buffers, 0);
+        assert_eq!(snapshot.retained_bytes, 0);
     }
 
     #[test]

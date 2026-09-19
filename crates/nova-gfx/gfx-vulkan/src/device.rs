@@ -28,7 +28,8 @@ use gfx_core::{
     CommandEncoderId, CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, DrawTriangleDesc,
     FilterMode, Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxError,
     GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-    GfxSurfaceDevice, GfxTextureTransferDevice, GfxThreadingMode, IndexBufferBinding, IndexFormat,
+    GfxSurfaceDevice, GfxTextureTransferDevice, GfxThreadingMode, GfxMemoryTrimLevel,
+    IndexBufferBinding, IndexFormat,
     LoadOp, MemoryLocation, PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode,
     PrimitiveTopology, RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc,
     RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
@@ -2104,6 +2105,55 @@ impl VulkanDevice {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn trim_upload_command_pool(&mut self, retained_count: usize) {
+        if self.upload_command_pool.len() <= retained_count {
+            return;
+        }
+        let released = self.upload_command_pool.split_off(retained_count);
+        for commands in released {
+            destroy_upload_commands(&self.device, &commands);
+        }
+    }
+
+    /// Releases completed staging/upload caches without touching live Vulkan resources.
+    pub fn trim_memory(&mut self, level: GfxMemoryTrimLevel) -> Result<()> {
+        if matches!(level, GfxMemoryTrimLevel::Light) {
+            self.poll_cleanup();
+            return Ok(());
+        }
+
+        self.wait_for_pending_work()?;
+        let target_idle_pages = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+            1
+        } else {
+            0
+        };
+        let mut retained_page_count =
+            self.upload_ring.trim_idle_pages_to(target_idle_pages);
+        if retained_page_count == 1
+            && self
+                .upload_ring
+                .page_size(0)
+                .is_some_and(|size| size > self.upload_ring.configured_page_size())
+        {
+            retained_page_count = self.upload_ring.trim_idle_pages_to(0);
+        }
+        self.trim_upload_pages(retained_page_count)?;
+
+        let retained_upload_commands =
+            if matches!(level, GfxMemoryTrimLevel::Moderate) {
+                1
+            } else {
+                0
+            };
+        self.trim_upload_command_pool(retained_upload_commands);
+        if matches!(level, GfxMemoryTrimLevel::Aggressive) {
+            self.upload_pages.shrink_to_fit();
+            self.upload_command_pool.shrink_to_fit();
+        }
+        Ok(())
     }
 
     fn retire_deferred_upload(&mut self, commands: VulkanUploadCommands, fence: vk::Fence) {

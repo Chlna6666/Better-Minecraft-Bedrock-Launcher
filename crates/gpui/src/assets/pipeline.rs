@@ -36,7 +36,11 @@ pub struct ImagePipelineConfig {
     pub bitmap_pool_bytes: usize,
     /// Controls whether bounds-aware decode is gated by visibility.
     pub bounds_policy: ImageBoundsPolicy,
-    /// Trim image staging and bitmap pool when a window loses activation.
+    /// Trim idle image staging and reusable bitmap memory after a window stays inactive.
+    ///
+    /// This never limits active image allocations. The window lifecycle applies a delayed
+    /// moderate trim so short focus changes keep hot resources while long-hidden windows stop
+    /// retaining decode/upload scratch indefinitely.
     pub trim_memory_on_hidden: bool,
     /// Log slow image processing when this duration is exceeded.
     pub slow_image_threshold: std::time::Duration,
@@ -55,7 +59,7 @@ impl Default for ImagePipelineConfig {
             // This is intentionally a free-buffer retention budget, not an image memory limit.
             bitmap_pool_bytes: 64 * 1024 * 1024,
             bounds_policy: ImageBoundsPolicy::Explicit,
-            trim_memory_on_hidden: false,
+            trim_memory_on_hidden: true,
             slow_image_threshold: std::time::Duration::from_millis(16),
             slow_upload_bytes: 8 * 1024 * 1024,
             slow_upload_threshold: std::time::Duration::from_millis(4),

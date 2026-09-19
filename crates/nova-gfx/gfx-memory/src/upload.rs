@@ -245,12 +245,21 @@ impl UploadRingAllocator {
     /// resources whose indices are outside this range.
     #[must_use]
     pub fn trim_idle_pages(&mut self) -> usize {
+        self.trim_idle_pages_to(self.desc.max_retained_idle_pages)
+    }
+
+    /// Releases trailing fully-idle pages until at most the requested number remain.
+    ///
+    /// Busy pages are never removed. Backends use this after fence completion to reduce staging
+    /// residency under memory pressure without imposing any ceiling on active upload sizes.
+    #[must_use]
+    pub fn trim_idle_pages_to(&mut self, max_retained_idle_pages: usize) -> usize {
         let mut idle_pages = self
             .pages
             .iter()
             .filter(|page| page.retire_fence.is_none() && page.offset == 0)
             .count();
-        while idle_pages > self.desc.max_retained_idle_pages {
+        while idle_pages > max_retained_idle_pages {
             let Some(page) = self.pages.last() else {
                 break;
             };
@@ -261,6 +270,12 @@ impl UploadRingAllocator {
             idle_pages = idle_pages.saturating_sub(1);
         }
         self.pages.len()
+    }
+
+    /// Returns the configured normal staging page size. Individual uploads may allocate more.
+    #[must_use]
+    pub const fn configured_page_size(&self) -> u64 {
+        self.desc.page_size
     }
 
     /// Returns upload ring accounting.
@@ -322,6 +337,39 @@ mod tests {
         assert_eq!(first.offset, 0);
         assert_eq!(second.offset, 512);
         assert_eq!(third.offset, 1024);
+    }
+
+    #[test]
+    fn pressure_trim_releases_all_completed_idle_pages() {
+        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
+            page_size: 512,
+            alignment: 256,
+            max_retained_idle_pages: 2,
+        })
+        .expect("ring descriptor should be valid");
+
+        ring.allocate(300).expect("allocation should succeed");
+        ring.retire_used_pages(1);
+        ring.complete_fence(1);
+
+        assert_eq!(ring.trim_idle_pages_to(0), 0);
+        assert_eq!(ring.stats().reserved_bytes, 0);
+    }
+
+    #[test]
+    fn pressure_trim_never_releases_busy_pages() {
+        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
+            page_size: 512,
+            alignment: 256,
+            max_retained_idle_pages: 2,
+        })
+        .expect("ring descriptor should be valid");
+
+        ring.allocate(300).expect("allocation should succeed");
+        ring.retire_used_pages(1);
+
+        assert_eq!(ring.trim_idle_pages_to(0), 1);
+        assert_eq!(ring.stats().busy_page_count, 1);
     }
 
     #[test]

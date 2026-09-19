@@ -41,7 +41,8 @@ mod platform {
         CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, FilterMode, Format, GfxBackend,
         GfxCommandDevice, GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice,
         GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice,
-        GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
+        GfxThreadingMode, GfxMemoryTrimLevel, IndexBufferBinding, IndexFormat, LoadOp,
+        MemoryLocation,
         PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode, PrimitiveTopology,
         RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc,
         RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
@@ -2154,6 +2155,47 @@ mod platform {
 
         fn trim_upload_pages(&mut self, retained_page_count: usize) {
             self.upload_pages.truncate(retained_page_count);
+        }
+
+        /// Releases completed upload/staging caches without touching live GPU resources.
+        pub fn trim_memory(&mut self, level: GfxMemoryTrimLevel) -> Result<()> {
+            if matches!(level, GfxMemoryTrimLevel::Light) {
+                self.poll_cleanup();
+                return Ok(());
+            }
+
+            self.wait_for_pending_work()?;
+            let target_idle_pages = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+                1
+            } else {
+                0
+            };
+            let mut retained_page_count =
+                self.upload_ring.trim_idle_pages_to(target_idle_pages);
+            if retained_page_count == 1
+                && self
+                    .upload_ring
+                    .page_size(0)
+                    .is_some_and(|size| size > self.upload_ring.configured_page_size())
+            {
+                // Do not turn one giant, one-off upload into the permanent retained hot page.
+                retained_page_count = self.upload_ring.trim_idle_pages_to(0);
+            }
+            self.trim_upload_pages(retained_page_count);
+
+            let retained_upload_commands =
+                if matches!(level, GfxMemoryTrimLevel::Moderate) {
+                    1
+                } else {
+                    0
+                };
+            self.upload_command_pool.truncate(retained_upload_commands);
+            if matches!(level, GfxMemoryTrimLevel::Aggressive) {
+                self.upload_pages.shrink_to_fit();
+                self.upload_command_pool.shrink_to_fit();
+                self.deferred_command_encoders.shrink_to_fit();
+            }
+            Ok(())
         }
 
         /// Queues `payload` for release once every submission recorded so far has
