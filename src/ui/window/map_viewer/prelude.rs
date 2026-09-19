@@ -115,8 +115,8 @@ pub(super) use bedrock_render::{
     RenderMode, RenderOptions, RenderPalette, RenderPipelineStats, RenderTaskControl,
     RenderThreadingOptions, RenderTileOutputOptions, RenderTilePriority, ResolvedRenderBackend,
     SurfaceRenderOptions, TerrainLightingOptions, TileCoord, TileOccupancyIndex,
-    TileOccupancyIndexRequest, TileOccupancyIndexSource, TilePixelFormat, TileReadySource,
-    TileStreamEventV2,
+    DecodedTileEvent, TileOccupancyIndexRequest, TileOccupancyIndexSource, TilePixelFormat,
+    TileReadySource,
     editor::{
         ActorRecord, ActorSource, Biome3d, BlockEntityRecord, GlobalRecordKind,
         HardcodedSpawnAreaKind, HeightMap2d, MapEditInvalidation, MapItemId, MapWorldEditor,

@@ -1,13 +1,12 @@
 use anyhow::{Context, Result, bail};
 use bedrock_world::{
-    chunk::{ChunkPos, Dimension, ChunkValue},
+    chunk::{ChunkPos, ChunkValue, Dimension},
     query::{
-        ChunkRecordFingerprint, ChunkRecordQuery, ChunkRecordQueryResult,
-        chunk_fingerprints,
+        ChunkRecordFingerprint, ChunkRecordQuery, ChunkRecordQueryResult, chunk_fingerprints,
         load_chunks,
     },
     surface::CancelFlag,
-    world::{World, OpenOptions},
+    world::{OpenOptions, World},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};

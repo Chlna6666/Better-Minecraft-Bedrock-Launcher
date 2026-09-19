@@ -304,11 +304,11 @@ pub(super) fn render_tile_batch_stream(
         planned_tiles.len(),
     );
     let output_options = RenderTileOutputOptions {
-        pixel_format: TilePixelFormat::Rgba8,
+        pixel_format: TilePixelFormat::Bgra8,
     };
 
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_session.render_web_tiles_streaming_v2(
+        render_session.render_decoded_tiles(
             &planned_tiles,
             render_options,
             output_options,
@@ -320,7 +320,7 @@ pub(super) fn render_tile_batch_stream(
                         return Err(bedrock_render::BedrockRenderError::Cancelled);
                     }
                     match event {
-                        TileStreamEventV2::Ready {
+                        DecodedTileEvent::Ready {
                             planned,
                             tile,
                             source,
@@ -379,7 +379,7 @@ pub(super) fn render_tile_batch_stream(
                             };
                             send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
                         }
-                        TileStreamEventV2::Empty { planned } => {
+                        DecodedTileEvent::Empty { planned } => {
                             let coord = (planned.job.coord.x, planned.job.coord.z);
                             tracing::trace!(tile = ?coord, "map_viewer tile_empty");
                             send_tile_event_or_cancel(
@@ -391,7 +391,7 @@ pub(super) fn render_tile_batch_stream(
                                 },
                             )?;
                         }
-                        TileStreamEventV2::Failed { planned, error } => {
+                        DecodedTileEvent::Failed { planned, error } => {
                             tracing::warn!(
                                 tile = ?(planned.job.coord.x, planned.job.coord.z),
                                 %error,
@@ -406,8 +406,8 @@ pub(super) fn render_tile_batch_stream(
                                 },
                             )?;
                         }
-                        TileStreamEventV2::Progress(_) => {}
-                        TileStreamEventV2::Complete {
+                        DecodedTileEvent::Progress(_) => {}
+                        DecodedTileEvent::Complete {
                             diagnostics,
                             mut stats,
                         } => {
@@ -552,7 +552,7 @@ pub(super) fn render_viewport_composite_stream(
     let stream_cancel = render_cancel.clone();
     let failed_tiles = Arc::new(AtomicUsize::new(0));
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_session.render_web_tiles_streaming_v2(
+        render_session.render_decoded_tiles(
             &planned_tiles,
             render_options,
             output_options,
@@ -565,7 +565,7 @@ pub(super) fn render_viewport_composite_stream(
                         return Err(bedrock_render::BedrockRenderError::Cancelled);
                     }
                     match event {
-                        TileStreamEventV2::Ready { planned, tile, .. } => {
+                        DecodedTileEvent::Ready { planned, tile, .. } => {
                             let coord = (planned.job.coord.x, planned.job.coord.z);
                             let mut compositor = compositor
                                 .lock()
@@ -574,8 +574,8 @@ pub(super) fn render_viewport_composite_stream(
                                 .blend_tile(coord, &tile)
                                 .map_err(bedrock_render::BedrockRenderError::Validation)?;
                         }
-                        TileStreamEventV2::Empty { .. } => {}
-                        TileStreamEventV2::Failed { planned, error } => {
+                        DecodedTileEvent::Empty { .. } => {}
+                        DecodedTileEvent::Failed { planned, error } => {
                             failed_tiles.fetch_add(1, Ordering::Relaxed);
                             tracing::debug!(
                                 tile = ?(planned.job.coord.x, planned.job.coord.z),
@@ -583,8 +583,8 @@ pub(super) fn render_viewport_composite_stream(
                                 "map_viewer viewport_composite_tile_failed"
                             );
                         }
-                        TileStreamEventV2::Progress(_) => {}
-                        TileStreamEventV2::Complete {
+                        DecodedTileEvent::Progress(_) => {}
+                        DecodedTileEvent::Complete {
                             diagnostics,
                             mut stats,
                         } => {
@@ -834,13 +834,6 @@ pub(super) fn render_chunk_patches_blocking(
         base_tile.width,
         base_tile.height,
     )?;
-    if base_pixel_format != TilePixelFormat::Rgba8 {
-        return Err(format!(
-            "旧瓦片格式不支持局部合并: {:?} {}x{}",
-            base_tile.pixel_format, base_tile.width, base_tile.height
-        ));
-    }
-
     let mut merged_pixels = Vec::from(base_pixels);
     let mut diagnostics = RenderDiagnostics::default();
     let mut stats = RenderPipelineStats {
@@ -873,6 +866,9 @@ pub(super) fn render_chunk_patches_blocking(
     };
     let mut render_options = render_options;
     render_options.region_layout = patch_region_layout;
+    // Patch pixels must use the base tile's native order so merge can copy
+    // rows without introducing a conversion pass.
+    render_options.pixel_format = base_pixel_format;
     render_options.gpu.pipeline_level = RenderGpuPipelineLevel::ComposeOnly;
     render_options.gpu.batch_pixels = usize::try_from(patch_size).unwrap_or(64).saturating_pow(2);
 
@@ -895,21 +891,22 @@ pub(super) fn render_chunk_patches_blocking(
             .render_tile(job, &render_options)
             .map_err(|error| format!("局部 chunk {},{} 渲染失败: {error}", chunk.x, chunk.z))?;
         stats.cpu_tiles = stats.cpu_tiles.saturating_add(1);
-        let patch = DecodedTileImage {
-            coord: patch.coord,
-            width: patch.width,
-            height: patch.height,
-            pixels: patch.rgba,
-            pixel_format: TilePixelFormat::Rgba8,
-        };
-        merge_chunk_patch_into_tile_pixels(&mut merged_pixels, tile_size, layout, chunk, patch)?;
+        let patch = patch.into_decoded();
+        merge_chunk_patch_into_tile_pixels(
+            &mut merged_pixels,
+            base_pixel_format,
+            tile_size,
+            layout,
+            chunk,
+            patch,
+        )?;
     }
 
     let (image, pixel_format, width, height, estimated_bytes) =
         render_image_from_decoded_tile_parts(
             tile_size,
             tile_size,
-            TilePixelFormat::Rgba8,
+            base_pixel_format,
             Arc::from(merged_pixels),
         )?;
     Ok(ChunkPatchRenderResult {
@@ -930,12 +927,13 @@ pub(super) fn render_chunk_patches_blocking(
 
 pub(super) fn merge_chunk_patch_into_tile_pixels(
     tile_pixels: &mut [u8],
+    tile_pixel_format: TilePixelFormat,
     tile_size: u32,
     layout: RenderLayout,
     chunk: ChunkPos,
     patch: DecodedTileImage,
 ) -> Result<(), String> {
-    if patch.pixel_format != TilePixelFormat::Rgba8 {
+    if patch.pixel_format != tile_pixel_format {
         return Err(format!(
             "局部 chunk 像素格式不支持: {:?}",
             patch.pixel_format

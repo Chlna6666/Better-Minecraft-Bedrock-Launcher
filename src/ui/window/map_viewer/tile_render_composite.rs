@@ -126,7 +126,7 @@ pub(super) fn render_viewport_composite_stream(
     let failed_tiles = Arc::new(AtomicUsize::new(0));
 
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_session.render_web_tiles_streaming_v2(
+        render_session.render_decoded_tiles(
             &planned_tiles,
             render_options,
             output_options,
@@ -139,7 +139,7 @@ pub(super) fn render_viewport_composite_stream(
                         return Err(bedrock_render::BedrockRenderError::Cancelled);
                     }
                     match event {
-                        TileStreamEventV2::Ready { planned, tile, .. } => {
+                        DecodedTileEvent::Ready { planned, tile, .. } => {
                             let coord = (planned.job.coord.x, planned.job.coord.z);
                             let preview = {
                                 let mut compositor = compositor.lock().map_err(|_| {
@@ -160,8 +160,8 @@ pub(super) fn render_viewport_composite_stream(
                                 std::thread::sleep(PROGRESSIVE_PREVIEW_PRESENT_INTERVAL);
                             }
                         }
-                        TileStreamEventV2::Empty { .. } => {}
-                        TileStreamEventV2::Failed { planned, error } => {
+                        DecodedTileEvent::Empty { .. } => {}
+                        DecodedTileEvent::Failed { planned, error } => {
                             failed_tiles.fetch_add(1, Ordering::Relaxed);
                             tracing::debug!(
                                 tile = ?(planned.job.coord.x, planned.job.coord.z),
@@ -169,8 +169,8 @@ pub(super) fn render_viewport_composite_stream(
                                 "map_viewer viewport_composite_tile_failed"
                             );
                         }
-                        TileStreamEventV2::Progress(_) => {}
-                        TileStreamEventV2::Complete {
+                        DecodedTileEvent::Progress(_) => {}
+                        DecodedTileEvent::Complete {
                             diagnostics,
                             mut stats,
                         } => {

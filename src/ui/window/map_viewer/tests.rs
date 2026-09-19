@@ -3770,6 +3770,7 @@ fn chunk_patch_merge_only_replaces_matching_chunk_pixels() {
 
     merge_chunk_patch_into_tile_pixels(
         &mut tile_pixels,
+        TilePixelFormat::Rgba8,
         2,
         layout,
         ChunkPos {
@@ -3785,6 +3786,42 @@ fn chunk_patch_merge_only_replaces_matching_chunk_pixels() {
         tile_pixels,
         vec![1, 1, 1, 255, 2, 2, 2, 255, 3, 3, 3, 255, 9, 8, 7, 255,]
     );
+}
+
+#[::core::prelude::v1::test]
+fn chunk_patch_merge_accepts_matching_bgra_pixels() {
+    let layout = RenderLayout {
+        chunks_per_tile: 2,
+        blocks_per_pixel: 16,
+        pixels_per_block: 1,
+    };
+    let mut tile_pixels = vec![1, 2, 3, 255].repeat(4);
+    let patch = DecodedTileImage {
+        coord: TileCoord {
+            x: 1,
+            z: 1,
+            dimension: Dimension::Overworld,
+        },
+        width: 1,
+        height: 1,
+        pixels: Arc::from(vec![7, 8, 9, 255]),
+        pixel_format: TilePixelFormat::Bgra8,
+    };
+
+    merge_chunk_patch_into_tile_pixels(
+        &mut tile_pixels,
+        TilePixelFormat::Bgra8,
+        2,
+        layout,
+        ChunkPos {
+            x: 1,
+            z: 1,
+            dimension: Dimension::Overworld,
+        },
+        patch,
+    )
+    .expect("merge BGRA patch");
+    assert_eq!(&tile_pixels[12..16], &[7, 8, 9, 255]);
 }
 
 #[::core::prelude::v1::test]
