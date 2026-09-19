@@ -930,7 +930,7 @@ pub(super) fn render_asset_row(
             div()
                 .text_size(px(11.))
                 .text_color(colors.text_secondary)
-                .child(mod_type_label(mod_type.as_ref())),
+                .child(mod_type_label(mod_type.as_ref(), i18n)),
         );
     }
     if let Some(enabled) = asset.enabled {

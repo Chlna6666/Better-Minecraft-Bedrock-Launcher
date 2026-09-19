@@ -458,12 +458,20 @@ pub(super) fn scroll_event_delta_y(event: &ScrollWheelEvent) -> Pixels {
     }
 }
 
-pub(super) fn mod_type_label(raw: &str) -> SharedString {
+pub(super) fn mod_type_label(raw: &str, i18n: &crate::ui::state::i18n::I18n) -> SharedString {
     match raw.trim() {
-        "preload-native" => SharedString::from("Preload Native"),
-        "hot-inject" => SharedString::from("Hot Inject"),
-        "native" => SharedString::from("Native"),
-        "lse-quickjs" => SharedString::from("LSE QuickJS"),
+        "preload-native" => i18n
+            .lookup("AssetManager.mod_type_preload_native")
+            .unwrap_or_else(|| SharedString::from("Native Load")),
+        "hot-inject" => i18n
+            .lookup("AssetManager.mod_type_hot_inject")
+            .unwrap_or_else(|| SharedString::from("Delayed Load")),
+        "native" => i18n
+            .lookup("AssetManager.mod_type_native")
+            .unwrap_or_else(|| SharedString::from("Native")),
+        "lse-quickjs" => i18n
+            .lookup("AssetManager.mod_type_lse_quickjs")
+            .unwrap_or_else(|| SharedString::from("LSE QuickJS")),
         value if !value.is_empty() => SharedString::from(value.to_string()),
         _ => SharedString::from("Unknown"),
     }
