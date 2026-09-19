@@ -1,5 +1,6 @@
 use super::*;
 use crate::TransformOrigin;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 struct RetainedAutoIdentityKey {
@@ -19,14 +20,73 @@ pub(crate) enum RetainedElementIdentity {
     Positional,
 }
 
+type RetainedAutoIdentityToken = u64;
+
+static NEXT_RETAINED_AUTO_IDENTITY_TOKEN: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Default)]
 struct RetainedIdentityScope {
-    auto_occurrences: FxHashMap<RetainedAutoIdentityKey, u32>,
+    auto_occurrences: FxHashMap<RetainedAutoIdentityToken, u32>,
     owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
 }
 
+#[derive(Default)]
+struct RetainedIdentityScopePool {
+    active: Vec<RetainedIdentityScope>,
+    spare: Vec<RetainedIdentityScope>,
+}
+
+impl RetainedIdentityScopePool {
+    fn push_scope(&mut self, owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>) {
+        let mut scope = self.spare.pop().unwrap_or_default();
+        scope.auto_occurrences.clear();
+        scope.owner_ambiguity.clear();
+        scope.owner_ambiguity.extend(owner_ambiguity);
+        self.active.push(scope);
+    }
+
+    fn pop_scope(&mut self) {
+        let Some(mut scope) = self.active.pop() else {
+            return;
+        };
+
+        let target = 8usize.max(scope.auto_occurrences.len());
+        if scope.auto_occurrences.capacity() > target.saturating_mul(4) {
+            scope.auto_occurrences.shrink_to(target);
+        }
+        scope.auto_occurrences.clear();
+        scope.owner_ambiguity.clear();
+        self.spare.push(scope);
+    }
+
+    fn clear_active(&mut self) {
+        while !self.active.is_empty() {
+            self.pop_scope();
+        }
+    }
+}
+
 thread_local! {
-    static RETAINED_IDENTITY_SCOPES: RefCell<Vec<RetainedIdentityScope>> = RefCell::new(Vec::new());
+    static RETAINED_AUTO_IDENTITY_TOKENS:
+        RefCell<FxHashMap<RetainedAutoIdentityKey, RetainedAutoIdentityToken>> =
+        RefCell::new(FxHashMap::default());
+    static RETAINED_IDENTITY_SCOPES:
+        RefCell<RetainedIdentityScopePool> =
+        RefCell::new(RetainedIdentityScopePool::default());
+}
+
+fn retained_auto_identity_token(key: RetainedAutoIdentityKey) -> RetainedAutoIdentityToken {
+    RETAINED_AUTO_IDENTITY_TOKENS.with(|tokens| {
+        let mut tokens = tokens.borrow_mut();
+        if let Some(token) = tokens.get(&key).copied() {
+            return token;
+        }
+
+        let token = NEXT_RETAINED_AUTO_IDENTITY_TOKEN.fetch_add(1, AtomicOrdering::Relaxed);
+        assert_ne!(token, 0, "retained auto identity token space exhausted");
+        tokens.insert(key, token);
+        token
+    })
 }
 
 impl Window {
@@ -80,29 +140,27 @@ impl Window {
             // a slot-only child scope inherits its parent's ambiguity conservatively. If an unwind
             // ever leaves more identity scopes than slot scopes, discard them and reconstruct the
             // unknown prefix as ambiguous rather than upgrading an inconsistent stack to stable.
-            if scopes.len() > depth {
-                scopes.clear();
+            if scopes.active.len() > depth {
+                scopes.clear_active();
                 for _ in 0..depth {
-                    let mut scope = RetainedIdentityScope::default();
-                    scope.owner_ambiguity.push(Rc::new(Cell::new(true)));
-                    scopes.push(scope);
+                    let mut owner_ambiguity = SmallVec::new();
+                    owner_ambiguity.push(Rc::new(Cell::new(true)));
+                    scopes.push_scope(owner_ambiguity);
                 }
             } else {
-                while scopes.len() < depth {
-                    let synthetic_depth = scopes.len();
+                while scopes.active.len() < depth {
+                    let synthetic_depth = scopes.active.len();
                     let keyed_boundary = self.retained_element_id_stack.len() > synthetic_depth;
                     let owner_ambiguity = if keyed_boundary {
                         SmallVec::new()
                     } else {
                         scopes
+                            .active
                             .last()
                             .map(|scope| scope.owner_ambiguity.clone())
                             .unwrap_or_default()
                     };
-                    scopes.push(RetainedIdentityScope {
-                        auto_occurrences: FxHashMap::default(),
-                        owner_ambiguity,
-                    });
+                    scopes.push_scope(owner_ambiguity);
                 }
             }
 
@@ -116,25 +174,26 @@ impl Window {
                     element_type,
                     ordinal,
                 } => {
-                    let key = RetainedAutoIdentityKey {
+                    let identity_token = retained_auto_identity_token(RetainedAutoIdentityKey {
                         mount,
                         source,
                         element_type,
-                    };
+                    });
                     let occurrence = ordinal.unwrap_or_else(|| {
-                        let Some(parent) = scopes.last_mut() else {
+                        let Some(parent) = scopes.active.last_mut() else {
                             return 0;
                         };
-                        let next = parent.auto_occurrences.entry(key).or_insert(0);
+                        let next = parent
+                            .auto_occurrences
+                            .entry(identity_token)
+                            .or_insert(0);
                         let occurrence = *next;
                         *next = next.saturating_add(1);
                         occurrence
                     });
                     (
                         ElementId::RetainedAutoSlot {
-                            mount,
-                            source,
-                            element_type,
+                            identity_token,
                             occurrence,
                         },
                         SmallVec::new(),
@@ -142,6 +201,7 @@ impl Window {
                 }
                 RetainedElementIdentity::Positional => {
                     let mut ambiguity = scopes
+                        .active
                         .last()
                         .map(|scope| scope.owner_ambiguity.clone())
                         .unwrap_or_default();
@@ -150,10 +210,7 @@ impl Window {
                 }
             };
 
-            scopes.push(RetainedIdentityScope {
-                auto_occurrences: FxHashMap::default(),
-                owner_ambiguity: ambiguity.clone(),
-            });
+            scopes.push_scope(ambiguity.clone());
             (segment, ambiguity)
         });
 
@@ -168,7 +225,7 @@ impl Window {
         self.retained_child_slot_stack.pop();
         self.retained_element_id_stack.pop();
         RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            scopes.borrow_mut().pop();
+            scopes.borrow_mut().pop_scope();
         });
     }
 

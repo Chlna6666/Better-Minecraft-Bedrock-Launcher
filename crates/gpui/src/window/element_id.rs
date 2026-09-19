@@ -1,5 +1,4 @@
 use super::*;
-use std::any::TypeId;
 
 /// An identifier for an [`Element`].
 ///
@@ -27,14 +26,12 @@ pub enum ElementId {
     NamedChild(Box<ElementId>, SharedString),
     /// Internal automatic hierarchy identity used only by retained element reconciliation.
     ///
-    /// `mount` is the parent-facing insertion/erasure call site, while `source` is the concrete
-    /// element's own construction site. Keeping both prevents reusable helpers from collapsing
-    /// every child onto one internal `div()` line without requiring application-authored IDs.
+    /// The static mount/source/type descriptor is interned once and represented by
+    /// identity_token. Dynamic siblings only vary by occurrence. Keeping this path segment
+    /// compact reduces retained-key copies without introducing per-element heap allocation.
     #[doc(hidden)]
     RetainedAutoSlot {
-        mount: Option<core::panic::Location<'static>>,
-        source: Option<core::panic::Location<'static>>,
-        element_type: TypeId,
+        identity_token: u64,
         occurrence: u32,
     },
     /// Internal positional identity used only by retained element reconciliation.
@@ -62,22 +59,10 @@ impl Display for ElementId {
             ElementId::CodeLocation(location) => write!(f, "{}", location)?,
             ElementId::NamedChild(id, name) => write!(f, "{}-{}", id, name)?,
             ElementId::RetainedAutoSlot {
-                mount,
-                source,
-                element_type,
+                identity_token,
                 occurrence,
             } => {
-                write!(f, "@auto[")?;
-                if let Some(mount) = mount {
-                    write!(f, "mount={mount}")?;
-                }
-                if let Some(source) = source {
-                    if mount.is_some() {
-                        write!(f, ",")?;
-                    }
-                    write!(f, "source={source}")?;
-                }
-                write!(f, ",type={element_type:?}]#{occurrence}")?;
+                write!(f, "@auto[{identity_token}]#{occurrence}")?;
             }
             ElementId::InstanceSlot(slot) => write!(f, "@{}", slot)?,
         }
