@@ -111,9 +111,32 @@ impl Window {
         available_space: Size<AvailableSpace>,
         cx: &mut App,
     ) {
+        self.compute_layout_with_diagnostic_id(layout_id, available_space, None, cx);
+    }
+
+    pub(crate) fn compute_layout_with_diagnostic_id(
+        &mut self,
+        layout_id: LayoutId,
+        available_space: Size<AvailableSpace>,
+        diagnostic_id: Option<&GlobalElementId>,
+        cx: &mut App,
+    ) {
         self.invalidator.debug_assert_prepaint();
 
+        if self
+            .last_generation_stats
+            .deadline_remaining_at_layout_start_us
+            .is_none()
+        {
+            self.last_generation_stats
+                .deadline_remaining_at_layout_start_us =
+                super::draw::deadline_remaining_micros(self.draw_deadline);
+        }
+
         let mut layout_engine = self.layout_engine.take().unwrap();
+        if let Some(diagnostic_id) = diagnostic_id {
+            layout_engine.register_root_diagnostic_id(layout_id, diagnostic_id);
+        }
         layout_engine.compute_layout(layout_id, available_space, self, cx);
         self.layout_engine = Some(layout_engine);
     }

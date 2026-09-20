@@ -507,7 +507,9 @@ impl MainWindowView {
         if let Some(chrome_view) = &self.chrome_view {
             root = root.child(
                 AnyView::from(chrome_view.clone())
-                    .cached_absolute_by(&"main-window-chrome")
+                    // Keep the chrome root traversable so its brand/nav/auth/control cache
+                    // boundaries can reconcile independently. Caching this whole absolute
+                    // surface can replay a stale blur/text scene after a partial frame.
                     .critical()
                     .into_any_element(),
             );

@@ -1,9 +1,8 @@
 use std::time::{Duration, Instant};
 
-use super::TARGET_FRAME_GENERATION_BUDGET;
-
 const HIGH_REFRESH_FRAME_BUDGET_HEADROOM: f32 = 0.85;
 const HIGH_REFRESH_FRAME_INTERVAL: Duration = Duration::from_millis(8);
+const FASTEST_SUPPORTED_DISPLAY_INTERVAL: Duration = Duration::from_micros(4_167);
 const MIN_DYNAMIC_FRAME_BUDGET: Duration = Duration::from_millis(2);
 const DEFAULT_DISPLAY_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 const FRAME_GENERATION_WARNING_HEADROOM: f32 = 0.95;
@@ -116,16 +115,15 @@ impl WindowFrameThrottle {
         let frame_interval = self
             .estimated_frame_interval
             .unwrap_or(HIGH_REFRESH_FRAME_INTERVAL);
-        frame_interval.clamp(TARGET_FRAME_GENERATION_BUDGET, HIGH_REFRESH_FRAME_INTERVAL)
+        frame_interval.clamp(FASTEST_SUPPORTED_DISPLAY_INTERVAL, HIGH_REFRESH_FRAME_INTERVAL)
     }
 
     pub(super) fn generation_warning_budget(self) -> Duration {
         self.estimated_frame_interval
             .filter(|interval| *interval <= DEFAULT_DISPLAY_FRAME_INTERVAL)
             .unwrap_or(DEFAULT_DISPLAY_FRAME_INTERVAL)
-            .max(HIGH_REFRESH_FRAME_INTERVAL)
+            .max(FASTEST_SUPPORTED_DISPLAY_INTERVAL)
             .mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
-            .max(TARGET_FRAME_GENERATION_BUDGET)
     }
 
     pub(super) fn should_warn_generation_budget_miss(&mut self, now: Instant) -> bool {
@@ -200,7 +198,7 @@ mod tests {
 
         assert_eq!(
             throttle.generation_warning_budget(),
-            HIGH_REFRESH_FRAME_INTERVAL.mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
+            FASTEST_SUPPORTED_DISPLAY_INTERVAL.mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
         );
     }
 
@@ -239,6 +237,23 @@ mod tests {
     }
 
     #[test]
+    fn frame_budget_tracks_observed_display_intervals() {
+        for refresh_rate in [60, 120, 144, 165, 240] {
+            let mut throttle = WindowFrameThrottle::default();
+            let now = Instant::now();
+            let interval = Duration::from_secs_f64(1.0 / f64::from(refresh_rate));
+            throttle.record_frame_start(now);
+            throttle.record_frame_start(now + interval);
+
+            assert_eq!(
+                throttle.frame_budget(),
+                interval.mul_f32(HIGH_REFRESH_FRAME_BUDGET_HEADROOM),
+                "refresh rate: {refresh_rate} Hz"
+            );
+        }
+    }
+
+    #[test]
     fn retry_delay_uses_observed_high_refresh_interval() {
         let mut throttle = WindowFrameThrottle::default();
         let now = Instant::now();
@@ -247,6 +262,16 @@ mod tests {
         throttle.record_frame_start(now + Duration::from_millis(8));
 
         assert_eq!(throttle.retry_delay(), Duration::from_millis(8));
+    }
+
+    #[test]
+    fn retry_delay_tracks_two_hundred_forty_hertz() {
+        let mut throttle = WindowFrameThrottle::default();
+        let now = Instant::now();
+        throttle.record_frame_start(now);
+        throttle.record_frame_start(now + FASTEST_SUPPORTED_DISPLAY_INTERVAL);
+
+        assert_eq!(throttle.retry_delay(), FASTEST_SUPPORTED_DISPLAY_INTERVAL);
     }
 
     #[test]

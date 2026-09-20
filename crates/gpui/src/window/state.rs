@@ -14,6 +14,9 @@ pub(super) struct FrameGenerationStats {
     pub(super) scene: SceneFrameMetrics,
     pub(super) frame_retained_capacity: usize,
     pub(super) list_measured_items: usize,
+    pub(super) deadline_remaining_at_prepaint_start_us: Option<i64>,
+    pub(super) deadline_remaining_at_layout_start_us: Option<i64>,
+    pub(super) deadline_remaining_at_paint_start_us: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -425,6 +428,8 @@ pub struct Window {
     pub(super) draw_deadline: Option<Instant>,
     pub(super) draw_was_degraded: bool,
     pub(super) recovering_degraded_draw: bool,
+    pub(super) degraded_draw_count: u64,
+    pub(super) recovery_full_redraw_count: u64,
     pub(super) last_generation_stats: FrameGenerationStats,
     pub(super) dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
     pub(super) pending_list_measured_items: usize,

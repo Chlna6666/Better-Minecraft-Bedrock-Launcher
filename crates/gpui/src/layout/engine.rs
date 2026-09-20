@@ -1,6 +1,6 @@
 use crate::{
-    App, Bounds, DefiniteLength, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels, Size, Style,
-    Window, point, relative, size,
+    App, Bounds, DefiniteLength, GlobalElementId, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
+    Size, Style, Window, point, relative, size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
 use smallvec::SmallVec;
@@ -9,7 +9,7 @@ use std::{
     hash::{Hash, Hasher},
     time::{Duration, Instant},
 };
-use taffy::TaffyTree;
+use taffy::{TaffyTree, TraversePartialTree as _};
 
 use super::{
     convert::ToTaffy,
@@ -40,6 +40,12 @@ struct NodeLayoutMetadata {
     scale_factor: f32,
 }
 
+struct LayoutRootDiagnosticNode {
+    style_fingerprint: u64,
+    subtree_fingerprint: Option<u64>,
+    child_count: usize,
+}
+
 pub(super) struct NodeContext {
     pub(super) measure: NodeMeasureFn,
     pub(super) is_pure: bool,
@@ -60,6 +66,9 @@ pub struct TaffyLayoutEngine {
     pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
     pub(super) computed_root_keys: Vec<(LayoutRootCacheKey, LayoutId)>,
     pub(super) subtree_scratch: Vec<LayoutId>,
+    root_diagnostic_ids: FxHashMap<LayoutId, GlobalElementId>,
+    previous_root_diagnostics: FxHashMap<GlobalElementId, Vec<LayoutRootDiagnosticNode>>,
+    current_root_diagnostics: FxHashMap<GlobalElementId, Vec<LayoutRootDiagnosticNode>>,
     pub(super) nodes_requested: usize,
     pub(super) measured_nodes_requested: usize,
     pub(super) roots_computed: usize,
@@ -108,6 +117,9 @@ impl TaffyLayoutEngine {
             previous_layout_roots: FxHashMap::default(),
             computed_root_keys: Vec::new(),
             subtree_scratch: Vec::new(),
+            root_diagnostic_ids: FxHashMap::default(),
+            previous_root_diagnostics: FxHashMap::default(),
+            current_root_diagnostics: FxHashMap::default(),
             nodes_requested: 0,
             measured_nodes_requested: 0,
             roots_computed: 0,
@@ -135,6 +147,17 @@ impl TaffyLayoutEngine {
         let node_working_set = self.nodes_requested;
 
         self.save_retained_layout_roots();
+        std::mem::swap(
+            &mut self.previous_root_diagnostics,
+            &mut self.current_root_diagnostics,
+        );
+        self.current_root_diagnostics.clear();
+        self.root_diagnostic_ids.clear();
+        if !log::log_enabled!(log::Level::Trace) {
+            self.previous_root_diagnostics = FxHashMap::default();
+            self.current_root_diagnostics = FxHashMap::default();
+            self.root_diagnostic_ids = FxHashMap::default();
+        }
         self.taffy.clear();
         self.absolute_layout_bounds.clear();
         self.unrounded_layout_origins.clear();
@@ -174,6 +197,88 @@ impl TaffyLayoutEngine {
         self.layout_time = Duration::ZERO;
     }
 
+    pub(crate) fn register_root_diagnostic_id(&mut self, id: LayoutId, identity: &GlobalElementId) {
+        if log::log_enabled!(log::Level::Trace) {
+            self.root_diagnostic_ids.insert(id, identity.clone());
+        }
+    }
+
+    fn record_root_diagnostic(&mut self, id: LayoutId, cache_hit: bool) {
+        let Some(identity) = self.root_diagnostic_ids.get(&id).cloned() else {
+            return;
+        };
+        let mut nodes = std::mem::take(&mut self.subtree_scratch);
+        nodes.clear();
+        self.collect_subtree_nodes_into(id, &mut nodes);
+        let mut snapshot = Vec::with_capacity(nodes.len());
+        for node_id in &nodes {
+            let metadata = &self.node_layout_metadata[node_id];
+            let mut hasher = FxHasher::default();
+            self.hash_layout_style(
+                &metadata.style,
+                metadata.rem_size,
+                metadata.scale_factor,
+                &mut hasher,
+            );
+            snapshot.push(LayoutRootDiagnosticNode {
+                style_fingerprint: hasher.finish(),
+                subtree_fingerprint: self.node_fingerprints[node_id],
+                child_count: self.taffy.child_count((*node_id).into()),
+            });
+        }
+        if !cache_hit {
+            if let Some(previous) = self.previous_root_diagnostics.get(&identity) {
+                let divergence =
+                    previous
+                        .iter()
+                        .zip(&snapshot)
+                        .enumerate()
+                        .find_map(|(index, (old, new))| {
+                            if old.child_count != new.child_count {
+                                Some((index, "children"))
+                            } else if old.style_fingerprint != new.style_fingerprint {
+                                Some((index, "style"))
+                            } else if old.child_count == 0
+                                && old.subtree_fingerprint != new.subtree_fingerprint
+                            {
+                                Some((index, "measured_content"))
+                            } else {
+                                None
+                            }
+                        });
+                let divergence = divergence.or_else(|| {
+                    (previous.len() != snapshot.len())
+                        .then_some((previous.len().min(snapshot.len()), "node_count"))
+                });
+                if let Some((index, reason)) = divergence {
+                    log::trace!(
+                        "gpui layout root cache divergence: root={} preorder_node={} reason={} old_nodes={} new_nodes={}",
+                        identity,
+                        index,
+                        reason,
+                        previous.len(),
+                        snapshot.len(),
+                    );
+                } else {
+                    log::trace!(
+                        "gpui layout root cache miss without local divergence: root={} nodes={} (constraints or unavailable fingerprint)",
+                        identity,
+                        snapshot.len(),
+                    );
+                }
+            } else {
+                log::trace!(
+                    "gpui layout root cache miss without prior root: root={} nodes={}",
+                    identity,
+                    snapshot.len(),
+                );
+            }
+        }
+        self.current_root_diagnostics.insert(identity, snapshot);
+        nodes.clear();
+        self.subtree_scratch = nodes;
+    }
+
     pub(crate) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
         let floor = match level {
             GpuiMemoryTrimLevel::Light => Self::MIN_RETAINED_CAPACITY,
@@ -195,6 +300,16 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.computed_root_keys.len()));
         self.subtree_scratch
             .shrink_to(floor.max(self.subtree_scratch.len()));
+        if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            self.previous_root_diagnostics.clear();
+            self.current_root_diagnostics.clear();
+        }
+        self.root_diagnostic_ids
+            .shrink_to(floor.max(self.root_diagnostic_ids.len()));
+        self.previous_root_diagnostics
+            .shrink_to(floor.max(self.previous_root_diagnostics.len()));
+        self.current_root_diagnostics
+            .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.previous_layout_roots.clear();
         } else {
@@ -376,6 +491,7 @@ impl TaffyLayoutEngine {
         let root_key = self.root_cache_key(id, available_space);
         if let Some(root_key) = root_key {
             if self.try_retain_layout(id, &root_key, window, cx) {
+                self.record_root_diagnostic(id, true);
                 self.computed_layouts.insert(id);
                 self.computed_root_keys.push((root_key, id));
                 self.layout_cache_hits = self.layout_cache_hits.saturating_add(1);
@@ -387,6 +503,7 @@ impl TaffyLayoutEngine {
         } else {
             self.layout_cache_misses = self.layout_cache_misses.saturating_add(1);
         }
+        self.record_root_diagnostic(id, false);
         // Leaving this here until we have a better instrumentation approach.
         // println!("Laying out {} children", self.count_all_children(id)?);
         // println!("Max layout depth: {}", self.max_depth(0, id)?);

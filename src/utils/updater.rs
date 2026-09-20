@@ -197,13 +197,9 @@ pub async fn check_updates(
 ) -> Result<serde_json::Value, String> {
     let use_acceleration = should_use_acceleration().await;
 
-    let final_api_base = if let Some(base) = api_base {
-        base
-    } else if use_acceleration {
-        "https://updater.bmcbl.com".to_string()
-    } else {
-        "https://api.github.com".to_string()
-    };
+    // The former updater.bmcbl.com proxy is retired. Keep an explicit base useful for
+    // tests/custom deployments, but use GitHub's API directly for normal checks.
+    let final_api_base = api_base.unwrap_or_else(|| "https://api.github.com".to_string());
 
     let config = read_config().map_err(|e| format!("读取配置失败：{}", e))?;
     let update_channel = config.launcher.update_channel;
@@ -226,23 +222,7 @@ pub async fn check_updates(
     );
     let start_time = std::time::Instant::now();
 
-    let client = if use_acceleration && final_api_base.contains("updater.bmcbl.com") {
-        let optimized_ip = get_optimized_ip().await;
-
-        if let Some(ip) = optimized_ip {
-            info!("使用优选 IP {} 连接更新 API", ip);
-            reqwest::Client::builder()
-                .resolve("updater.bmcbl.com", ip)
-                .user_agent("BMCBL-Updater")
-                .timeout(Duration::from_secs(15))
-                .build()
-                .map_err(|e| format!("构建优选 HTTP 客户端失败：{}", e))?
-        } else {
-            get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?
-        }
-    } else {
-        get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?
-    };
+    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?;
 
     let resp = client
         .get(&url)
@@ -277,9 +257,9 @@ pub async fn check_updates(
         .map_err(|e| format!("读取响应内容失败：{}", e))?;
     debug!("GitHub API 响应内容预览：{:.500}...", raw_body);
 
-    let releases: Vec<GitHubRelease> = serde_json::from_str(&raw_body).map_err(|e| {
-        error!("JSON 解析失败，收到的完整内容：{}", raw_body);
-        format!("解析 JSON 失败：{}", e)
+    let releases: Vec<GitHubRelease> = serde_json::from_str(&raw_body).map_err(|error| {
+        warn!(error = %error, "GitHub API 响应不是有效的发布列表 JSON");
+        format!("解析 JSON 失败：{}", error)
     })?;
 
     let current = app_info::get_version();

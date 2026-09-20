@@ -6,12 +6,12 @@ mod throttle;
 use throttle::FrameActivity;
 pub(super) use throttle::WindowFrameThrottle;
 
-pub(crate) const TARGET_FRAME_GENERATION_BUDGET: Duration = Duration::from_millis(4);
 const BACKGROUND_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_millis(250);
 const MINIMIZED_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_secs(1);
 const FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(100);
 const RECENT_INPUT_DIRTY_FRAME_GRACE: Duration = Duration::from_millis(500);
-pub(super) const DIRTY_FRAME_BACKPRESSURE_BUDGET: Duration = TARGET_FRAME_GENERATION_BUDGET;
+#[cfg(test)]
+pub(super) const DIRTY_FRAME_BACKPRESSURE_BUDGET: Duration = Duration::from_millis(4);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FrameCompletion {
@@ -779,12 +779,17 @@ impl Window {
             let first_rendered_entity = dirty_frame_diagnostics.first_rendered_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::warn!(
-                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} view_render_count_by_type={:?} view_render_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} degraded_count={} recovery_full_redraw_count={} deadline_remaining_at_prepaint_start_us={:?} deadline_remaining_at_layout_start_us={:?} deadline_remaining_at_paint_start_us={:?} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} view_render_count_by_type={:?} view_render_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 generation_elapsed,
                 warning_budget,
                 progressive_budget,
                 draw_was_degraded,
+                self.degraded_draw_count,
+                self.recovery_full_redraw_count,
+                stats.deadline_remaining_at_prepaint_start_us,
+                stats.deadline_remaining_at_layout_start_us,
+                stats.deadline_remaining_at_paint_start_us,
                 stats.layout.nodes,
                 stats.layout.measured_nodes,
                 stats.layout.roots,

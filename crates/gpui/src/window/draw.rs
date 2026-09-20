@@ -14,6 +14,23 @@ fn record_draw_phase_metrics(metrics: FramePhaseMetrics) {
     record_frame_phase_metrics(metrics);
 }
 
+pub(super) fn deadline_remaining_micros(deadline: Option<Instant>) -> Option<i64> {
+    let deadline = deadline?;
+    let now = Instant::now();
+    let remaining = if deadline >= now {
+        deadline
+            .duration_since(now)
+            .as_micros()
+            .min(i64::MAX as u128) as i64
+    } else {
+        -(now
+            .duration_since(deadline)
+            .as_micros()
+            .min(i64::MAX as u128) as i64)
+    };
+    Some(remaining)
+}
+
 impl<'a> RetainedEntitySegments<'a> {
     fn new(segment: &'a RetainedSceneSegment) -> Self {
         Self {
@@ -75,6 +92,12 @@ impl Window {
         self.dirty_frame_scheduled = false;
         self.draw_deadline = Some(Instant::now() + frame_budget);
         self.draw_was_degraded = false;
+        self.last_generation_stats
+            .deadline_remaining_at_prepaint_start_us = None;
+        self.last_generation_stats
+            .deadline_remaining_at_layout_start_us = None;
+        self.last_generation_stats
+            .deadline_remaining_at_paint_start_us = None;
         record_window_layout_recompute(self.handle.window_id().as_u64());
         let directly_dirty_views = self.invalidate_entities();
         self.pending_list_measured_items = 0;
@@ -114,6 +137,7 @@ impl Window {
         &mut self,
         restored_input_handler_index: Option<usize>,
     ) -> ArenaClearNeeded {
+        self.degraded_draw_count = self.degraded_draw_count.saturating_add(1);
         self.restore_input_handler_after_degraded_draw(restored_input_handler_index);
         self.finish_layout_and_text_frame();
         let frame_retained_capacity = self.next_frame.retained_capacity();
@@ -130,7 +154,8 @@ impl Window {
         self.invalidator.set_dirty(true);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
-        self.force_full_redraw.set(true);
+        // The submitted scene is still intact. Rebuild view caches on recovery because partial
+        // frame ranges cannot be replayed, but let the completed scene determine pixel damage.
         self.force_view_cache_refresh = true;
         self.recovering_degraded_draw = true;
         self.draw_deadline = None;
@@ -328,8 +353,20 @@ impl Window {
             != self.rendered_frame.scene.backdrop_blurs.len()
             || self.next_frame.scene.has_backdrop_blurs()
                 != self.rendered_frame.scene.has_backdrop_blurs();
-        let requires_full_redraw =
-            force_full_redraw || scene_requires_full_redraw || backdrop_blur_topology_changed;
+        let recovery_scene_uncovered = self.recovering_degraded_draw
+            && [&self.rendered_frame, &self.next_frame]
+                .iter()
+                .any(|frame| {
+                    let scene_len = frame.scene.len();
+                    scene_len != 0
+                        && !frame.retained_scene_segments.iter().any(|segment| {
+                            segment.scene_range.start == 0 && segment.scene_range.end == scene_len
+                        })
+                });
+        let requires_full_redraw = force_full_redraw
+            || scene_requires_full_redraw
+            || backdrop_blur_topology_changed
+            || recovery_scene_uncovered;
 
         if requires_full_redraw {
             if scene_requires_full_redraw {
@@ -362,6 +399,9 @@ impl Window {
             }
         }
 
+        if self.recovering_degraded_draw && dirty_region.is_full() {
+            self.recovery_full_redraw_count = self.recovery_full_redraw_count.saturating_add(1);
+        }
         self.render_present_mode = if dirty_region.is_full()
             || (dirty_region.is_empty() && self.next_frame.retained_scene_segments.is_empty())
         {
@@ -380,7 +420,7 @@ impl Window {
         dirty_region: &mut DirtyRegion,
         directly_dirty_views: &[EntityId],
     ) {
-        if directly_dirty_views.is_empty() {
+        if directly_dirty_views.is_empty() && !self.recovering_degraded_draw {
             return;
         }
 
@@ -402,10 +442,9 @@ impl Window {
                 .or_insert_with(|| RetainedEntitySegments::new(segment));
         }
 
-        // Diff the directly invalidated view's retained scene operations. A layout-driven spring
-        // often belongs to a full-window page view even though only a button, pill, or menu changes;
-        // using the whole view segment would promote that animation to full-window presentation.
-        for entity_id in directly_dirty_views {
+        // Recovery rebuilds every view cache, so compare every retained entity. On ordinary
+        // frames only directly invalidated views need scene-operation comparison.
+        let mut diff_entity = |entity_id: &EntityId| {
             let previous = previous_entities.get(entity_id);
             let current = current_entities.get(entity_id);
             let diffed = previous.zip(current).is_some_and(|(previous, current)| {
@@ -426,6 +465,22 @@ impl Window {
                 if let Some(current) = current {
                     dirty_region.push(current.bounds);
                 }
+            }
+        };
+        if self.recovering_degraded_draw {
+            for entity_id in current_entities.keys() {
+                diff_entity(entity_id);
+            }
+            for entity_id in previous_entities.keys() {
+                if !current_entities.contains_key(entity_id) {
+                    diff_entity(entity_id);
+                }
+            }
+        } else {
+            // A layout-driven spring often belongs to a full-window page view even though only
+            // a button or pill changed. Diffing the scene avoids whole-view pixel damage.
+            for entity_id in directly_dirty_views {
+                diff_entity(entity_id);
             }
         }
 
@@ -522,6 +577,9 @@ impl Window {
     }
 
     fn draw_roots(&mut self, cx: &mut App) -> FramePhaseMetrics {
+        self.last_generation_stats
+            .deadline_remaining_at_prepaint_start_us =
+            deadline_remaining_micros(self.draw_deadline);
         let prepaint_started_at = Instant::now();
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
@@ -588,6 +646,8 @@ impl Window {
         let prepaint_time = prepaint_started_at.elapsed();
 
         let paint_started_at = Instant::now();
+        self.last_generation_stats
+            .deadline_remaining_at_paint_start_us = deadline_remaining_micros(self.draw_deadline);
         self.invalidator.set_phase(DrawPhase::Paint);
         self.with_critical_draw(|window| root_element.paint(window, cx));
 

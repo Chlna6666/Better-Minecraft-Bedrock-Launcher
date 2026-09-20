@@ -435,6 +435,7 @@ fn degraded_draw_does_not_publish_discarded_cached_view_ranges(cx: &mut TestAppC
         window.draw(cx).clear();
         assert!(window.draw_was_degraded());
         assert!(window.test_recovering_degraded_draw());
+        assert!(!window.test_force_full_redraw());
 
         root.update(cx, |root, _cx| {
             root.expire_budget = false;
@@ -443,6 +444,7 @@ fn degraded_draw_does_not_publish_discarded_cached_view_ranges(cx: &mut TestAppC
         window.draw(cx).clear();
         assert!(!window.draw_was_degraded());
         assert_eq!(window.rendered_frame.hitboxes.len(), 2);
+        assert!(!window.test_render_dirty_region_is_full());
     })
     .unwrap();
 }

@@ -391,6 +391,8 @@ impl Window {
             draw_deadline: None,
             draw_was_degraded: false,
             recovering_degraded_draw: false,
+            degraded_draw_count: 0,
+            recovery_full_redraw_count: 0,
             last_generation_stats: FrameGenerationStats::default(),
             dirty_frame_diagnostics,
             pending_list_measured_items: 0,

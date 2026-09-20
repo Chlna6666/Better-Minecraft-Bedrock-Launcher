@@ -235,7 +235,10 @@ impl ToTaffy<taffy::style::Style> for LayoutStyle {
 
 impl ToTaffy<f32> for AbsoluteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> f32 {
-        round_to_device_pixel(self.to_pixels(rem_size).0, scale_factor)
+        // Keep layout geometry fractional in device pixels until Taffy has resolved alignment.
+        // Snapping here turns a centered 22px child in a 26px track into 27px and 32px at 1.25x,
+        // leaving an odd remainder that cannot be represented by equal device-pixel margins.
+        self.to_pixels(rem_size).0 * scale_factor
     }
 }
 

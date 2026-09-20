@@ -238,6 +238,14 @@ impl Window {
         self.recovering_degraded_draw
     }
 
+    pub(crate) fn test_force_full_redraw(&self) -> bool {
+        self.force_full_redraw.get()
+    }
+
+    pub(crate) fn test_render_dirty_region_is_full(&self) -> bool {
+        self.render_dirty_region.is_full()
+    }
+
     pub(crate) fn test_complete_frame(
         &mut self,
         _drawn_frame_duration: Option<Duration>,
