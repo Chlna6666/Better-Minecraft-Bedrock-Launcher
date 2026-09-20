@@ -121,6 +121,19 @@ impl Arena {
         self.current_chunk_index = 0;
     }
 
+    /// Release capacity retained by a completed frame after an explicit memory trim.
+    /// An arena with live elements must keep its chunks until the frame clears them.
+    pub(crate) fn trim(&mut self) {
+        if !self.elements.is_empty() {
+            return;
+        }
+        self.chunks.truncate(1);
+        self.chunks.shrink_to_fit();
+        self.elements.shrink_to_fit();
+        self.chunks[0].reset();
+        self.current_chunk_index = 0;
+    }
+
     #[inline(always)]
     pub fn alloc<T>(&mut self, f: impl FnOnce() -> T) -> ArenaBox<T> {
         #[inline(always)]
@@ -276,6 +289,22 @@ mod tests {
         arena.alloc(|| 4u32);
 
         assert_eq!(arena.capacity(), 24);
+    }
+
+    #[test]
+    fn trim_releases_chunks_only_after_clear() {
+        let mut arena = Arena::new(8);
+        arena.alloc(|| 1u64);
+        arena.alloc(|| 2u64);
+        assert_eq!(arena.capacity(), 16);
+
+        arena.trim();
+        assert_eq!(arena.capacity(), 16);
+
+        arena.clear();
+        arena.trim();
+        assert_eq!(arena.capacity(), 8);
+        assert_eq!(*arena.alloc(|| 3u64), 3);
     }
 
     #[test]

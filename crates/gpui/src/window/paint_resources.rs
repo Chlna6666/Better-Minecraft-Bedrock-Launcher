@@ -764,6 +764,9 @@ impl Window {
 
     /// Hints the platform renderer backing this window to release idle GPUI resources.
     pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
+        if !matches!(level, GpuiMemoryTrimLevel::Light) {
+            super::focus::ELEMENT_ARENA.with_borrow_mut(|arena| arena.trim());
+        }
         if releases_resident_image_element_bitmaps(level) {
             self.rendered_frame.release_image_element_bitmaps();
             self.next_frame.release_image_element_bitmaps();
