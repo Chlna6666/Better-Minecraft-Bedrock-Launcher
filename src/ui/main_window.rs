@@ -143,25 +143,6 @@ struct AgreementRenderState {
     accept_unlocked: bool,
 }
 
-struct TopbarRenderState {
-    theme_k: f32,
-    theme_target_dark: bool,
-    theme_animating: bool,
-    theme_accent: Option<Hsla>,
-    window_width: Pixels,
-    window_height: Pixels,
-    auth: chrome::auth::RenderState,
-    update_available: bool,
-    visual_active_index: usize,
-    pill_left_steps: f32,
-    pill_right_steps: f32,
-    labels_layout_factor: f32,
-    labels_opacity_factor: f32,
-    nav_animating: bool,
-    glass_effect_enabled: bool,
-    plugin_navigation_pages: std::sync::Arc<Vec<crate::plugins::runtime::PluginPage>>,
-}
-
 struct MainWindowRenderModel {
     now: Instant,
     route: RouteTarget,

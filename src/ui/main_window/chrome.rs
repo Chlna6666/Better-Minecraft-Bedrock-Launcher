@@ -1,10 +1,9 @@
-use super::TopbarRenderState;
 pub(super) mod auth;
 
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::{dark_colors, glass_backdrop_blur_style, lerp_theme_colors, light_colors};
+use crate::ui::theme::{ThemeColors, glass_backdrop_blur_style};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::time::Instant;
@@ -23,90 +22,101 @@ impl Default for AppChromeState {
 
 impl Global for AppChromeState {}
 
-#[derive(Clone)]
-struct NavItem {
+pub(super) struct NavItem {
     id: SharedString,
     icon_path: &'static str,
-    image_icon_path: Option<std::path::PathBuf>,
+    image_icon_path: Option<std::sync::Arc<std::path::Path>>,
     label: SharedString,
-    target: RouteTarget,
+    target: std::sync::Arc<RouteTarget>,
+}
+
+const BUILTIN_NAV: [(AppRoute, &'static str, crate::i18n::I18nKey); 6] = [
+    (
+        AppRoute::Home,
+        lucide_gpui::icon!(house),
+        crate::i18n_key!("Sidebar.launch"),
+    ),
+    (
+        AppRoute::Download,
+        lucide_gpui::icon!(download),
+        crate::i18n_key!("Sidebar.download"),
+    ),
+    (
+        AppRoute::Manage,
+        lucide_gpui::icon!(list),
+        crate::i18n_key!("Sidebar.versions"),
+    ),
+    (
+        AppRoute::Tools,
+        lucide_gpui::icon!(wrench),
+        crate::i18n_key!("Sidebar.tools"),
+    ),
+    (
+        AppRoute::Tasks,
+        lucide_gpui::icon!(activity),
+        crate::i18n_key!("Tasks.nav_title"),
+    ),
+    (
+        AppRoute::Settings,
+        lucide_gpui::icon!(settings),
+        crate::i18n_key!("Sidebar.settings"),
+    ),
+];
+
+pub(super) fn navigation_items(cx: &App) -> Vec<NavItem> {
+    let i18n = cx.global::<crate::ui::state::i18n::I18n>();
+    let plugin_pages = crate::plugins::runtime::navigation_pages(cx);
+    let mut items = Vec::with_capacity(BUILTIN_NAV.len() + plugin_pages.len());
+    items.extend(BUILTIN_NAV.iter().map(|(route, icon_path, key)| NavItem {
+        id: route.pathname().into(),
+        icon_path,
+        image_icon_path: None,
+        label: i18n.t_key(*key),
+        target: std::sync::Arc::new(RouteTarget::Builtin(*route)),
+    }));
+    items.extend(plugin_pages.into_iter().map(|page| {
+        let target = RouteTarget::Plugin {
+            plugin_id: page.plugin_id,
+            page_id: page.page_id,
+        };
+        NavItem {
+            id: target.pathname().into(),
+            icon_path: lucide_gpui::icon!(plug),
+            image_icon_path: page.icon_path.map(Into::into),
+            label: page
+                .navigation
+                .map_or(page.title, |navigation| navigation.label.into()),
+            target: std::sync::Arc::new(target),
+        }
+    }));
+    items
 }
 
 fn icon(path: &'static str, color: Hsla, size: Pixels) -> Svg {
     svg().path(path).size(size).text_color(color)
 }
 
-pub(super) fn render_app_chrome(
-    state: TopbarRenderState,
-    update_modal_open: bool,
+const APP_VERSION_LABEL: &str = concat!("v", env!("BMCBL_BUILD_VERSION"));
+
+pub(super) struct NavRenderState {
+    pub window_width: Pixels,
+    pub visual_active_index: usize,
+    pub pill_left_steps: f32,
+    pub pill_right_steps: f32,
+    pub labels_layout_factor: f32,
+    pub labels_opacity_factor: f32,
+    pub nav_animating: bool,
+}
+
+pub(super) fn render_nav(
+    state: NavRenderState,
+    nav_items: &[NavItem],
+    colors: &ThemeColors,
 ) -> AnyElement {
-    let colors = lerp_theme_colors(
-        light_colors(),
-        dark_colors(),
-        state.theme_k,
-        state.theme_accent,
-    );
     let window_width_px = state.window_width / px(1.);
     let labels_layout_factor = state.labels_layout_factor.clamp(0.0, 1.0);
     let labels_opacity_factor = state.labels_opacity_factor.clamp(0.0, 1.0);
     let nav_animating = state.nav_animating;
-    let mut nav_items = vec![
-        (
-            lucide_gpui::icon!(house),
-            t!("Sidebar.launch"),
-            AppRoute::Home,
-        ),
-        (
-            lucide_gpui::icon!(download),
-            t!("Sidebar.download"),
-            AppRoute::Download,
-        ),
-        (
-            lucide_gpui::icon!(list),
-            t!("Sidebar.versions"),
-            AppRoute::Manage,
-        ),
-        (
-            lucide_gpui::icon!(wrench),
-            t!("Sidebar.tools"),
-            AppRoute::Tools,
-        ),
-        (
-            lucide_gpui::icon!(activity),
-            t!("Tasks.nav_title"),
-            AppRoute::Tasks,
-        ),
-        (
-            lucide_gpui::icon!(settings),
-            t!("Sidebar.settings"),
-            AppRoute::Settings,
-        ),
-    ]
-    .into_iter()
-    .map(|(icon_path, label, target)| NavItem {
-        id: target.pathname().into(),
-        icon_path,
-        image_icon_path: None,
-        label,
-        target: RouteTarget::Builtin(target),
-    })
-    .collect::<Vec<_>>();
-    nav_items.extend(state.plugin_navigation_pages.iter().map(|page| {
-        let target = RouteTarget::Plugin {
-            plugin_id: page.plugin_id.clone(),
-            page_id: page.page_id.clone(),
-        };
-        NavItem {
-            id: target.pathname().into(),
-            icon_path: lucide_gpui::icon!(plug),
-            image_icon_path: page.icon_path.clone(),
-            label: page.navigation.as_ref().map_or_else(
-                || page.title.clone(),
-                |navigation| SharedString::from(navigation.label.clone()),
-            ),
-            target,
-        }
-    }));
 
     let link_padding_x = if window_width_px <= 1000.0 {
         px(10.)
@@ -134,8 +144,7 @@ pub(super) fn render_app_chrome(
         .clamp(0.0, maximum_right_px + overshoot_slack_px);
     let pill_inner_inset_px = 1.5;
     let pill_offset = capsule_padding + px(left_edge_px.min(right_edge_px) + pill_inner_inset_px);
-    let pill_width =
-        px(((right_edge_px - left_edge_px).abs() - pill_inner_inset_px * 2.).max(0.));
+    let pill_width = px(((right_edge_px - left_edge_px).abs() - pill_inner_inset_px * 2.).max(0.));
 
     // Only this absolute child changes geometry while the pill springs are active. Keep the
     // retained invalidation boundary here instead of wrapping the whole nav tree, so icons, labels
@@ -159,7 +168,7 @@ pub(super) fn render_app_chrome(
         .rounded(px(24.))
         .bg(colors.text_primary.opacity(0.045))
         .child(pill)
-        .children(nav_items.into_iter().enumerate().map(|(index, item)| {
+        .children(nav_items.iter().enumerate().map(|(index, item)| {
             let active = index == active_index;
             let foreground = if active {
                 rgb(0xffffff).into()
@@ -180,6 +189,7 @@ pub(super) fn render_app_chrome(
             // overflow-hidden text still emits clip/glyph primitives that show up
             // as white blocks during interactive resize.
             let show_label = labels_layout_factor > 0.02 && labels_opacity_factor > 0.02;
+            let target = item.target.clone();
             div()
                 .id((ElementId::from("main-nav"), item.id.clone()))
                 .relative()
@@ -197,7 +207,7 @@ pub(super) fn render_app_chrome(
                 .active(|style| style.scale(0.94))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
-                    navigation::navigate_target(cx, item.target.clone());
+                    navigation::navigate_target(cx, (*target).clone());
                 })
                 .child(
                     div()
@@ -222,8 +232,10 @@ pub(super) fn render_app_chrome(
                 }))
         }));
 
-    let auth_inline = auth::trigger(&state.auth, &colors);
+    nav.into_any_element()
+}
 
+pub(super) fn render_controls(theme_target_dark: bool, colors: &ThemeColors) -> AnyElement {
     let icon_button = |id: &'static str, path: &'static str| {
         div()
             .id(id)
@@ -244,11 +256,10 @@ pub(super) fn render_app_chrome(
         .flex()
         .items_center()
         .gap(px(5.))
-        .child(auth_inline)
         .child(
             icon_button(
                 "theme-toggle-linux",
-                if state.theme_target_dark {
+                if theme_target_dark {
                     lucide_gpui::icon!(sun)
                 } else {
                     lucide_gpui::icon!(moon)
@@ -282,6 +293,104 @@ pub(super) fn render_app_chrome(
                 }),
         );
 
+    controls.into_any_element()
+}
+
+pub(super) fn render_brand(
+    colors: &ThemeColors,
+    update_available: bool,
+    update_modal_open: bool,
+) -> AnyElement {
+    let update_active = update_available && !update_modal_open;
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(9.))
+        .child(
+            img("icons/logo.png")
+                .size(px(34.))
+                .flex_shrink_0()
+                .rounded(px(0.))
+                .object_fit(ObjectFit::Contain),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .when(update_active, |element| {
+                    element
+                        .cursor_pointer()
+                        .occlude()
+                        .window_control_area(WindowControlArea::Client)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.update_global(|update: &mut UpdateState, _| {
+                                update.request_open_modal(Instant::now());
+                            });
+                        })
+                })
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.accent)
+                        .child("BMCBL"),
+                )
+                .child(
+                    div()
+                        .text_size(px(9.5))
+                        .text_color(colors.text_secondary)
+                        .child(APP_VERSION_LABEL),
+                ),
+        )
+        .when(update_active, |element| {
+            element.child(
+                div()
+                    .id("topbar-update-badge")
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .px(px(8.))
+                    .py(px(3.))
+                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
+                    .bg(colors.accent.opacity(0.14))
+                    .border_1()
+                    .border_color(colors.accent.opacity(0.30))
+                    .cursor_pointer()
+                    .occlude()
+                    .window_control_area(WindowControlArea::Client)
+                    .hover(|style| style.bg(colors.accent.opacity(0.22)))
+                    .active(|style| style.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.update_global(|update: &mut UpdateState, _| {
+                            update.request_open_modal(Instant::now());
+                        });
+                    })
+                    .child(div().size(px(6.)).rounded_full().bg(colors.accent))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(colors.accent)
+                            .child(t!("Topbar.update_available")),
+                    ),
+            )
+        })
+        .into_any_element()
+}
+
+pub(super) fn render_shell(
+    colors: &ThemeColors,
+    glass_effect_enabled: bool,
+    brand: AnyElement,
+    controls: AnyElement,
+    nav: AnyElement,
+    auth: AnyElement,
+) -> AnyElement {
     let titlebar_mouse_down = |event: &MouseDownEvent, window: &mut Window, cx: &mut App| {
         cx.update_global(|state: &mut AppChromeState, _cx| {
             state
@@ -303,12 +412,10 @@ pub(super) fn render_app_chrome(
         .left(px(0.))
         .right(px(0.))
         .h(px(60.))
-        .bg(colors.surface.opacity(if state.glass_effect_enabled {
-            0.78
-        } else {
-            1.0
-        }))
-        .when(state.glass_effect_enabled, |element| {
+        .bg(colors
+            .surface
+            .opacity(if glass_effect_enabled { 0.78 } else { 1.0 }))
+        .when(glass_effect_enabled, |element| {
             element.backdrop_blur(glass_backdrop_blur_style())
         })
         .border_b_1()
@@ -321,7 +428,7 @@ pub(super) fn render_app_chrome(
                 .on_mouse_down(MouseButton::Left, titlebar_mouse_down)
                 .on_mouse_move(titlebar_mouse_move)
                 .on_mouse_up(MouseButton::Left, |_, _, cx| {
-                    cx.update_global(|state: &mut AppChromeState, _cx| {
+                    cx.update_global(|state: &mut AppChromeState, _| {
                         state.titlebar_gesture.handle_mouse_up();
                     });
                 })
@@ -333,94 +440,7 @@ pub(super) fn render_app_chrome(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.))
-                        .child(
-                            img("icons/logo.png")
-                                .size(px(34.))
-                                .flex_shrink_0()
-                                .rounded(px(0.))
-                                .object_fit(ObjectFit::Contain),
-                        )
-                        .child({
-                            let update_active = state.update_available && !update_modal_open;
-                            div()
-                                .flex_shrink_0()
-                                .flex()
-                                .flex_col()
-                                .when(update_active, |element| {
-                                    element
-                                        .cursor_pointer()
-                                        .occlude()
-                                        .window_control_area(WindowControlArea::Client)
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation();
-                                            cx.update_global(|update: &mut UpdateState, _cx| {
-                                                update.request_open_modal(Instant::now());
-                                            });
-                                        })
-                                })
-                                .child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(colors.accent)
-                                        .child("BMCBL"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(9.5))
-                                        .text_color(colors.text_secondary)
-                                        .child(format!("v{}", crate::utils::app_info::get_version())),
-                                )
-                        })
-                        .when(state.update_available && !update_modal_open, |element| {
-                            element.child(
-                                div()
-                                    .id("topbar-update-badge")
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.))
-                                    .px(px(8.))
-                                    .py(px(3.))
-                                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                                    .bg(colors.accent.opacity(0.14))
-                                    .border_1()
-                                    .border_color(colors.accent.opacity(0.30))
-                                    .cursor_pointer()
-                                    .occlude()
-                                    .window_control_area(WindowControlArea::Client)
-                                    .hover(|style| style.bg(colors.accent.opacity(0.22)))
-                                    .active(|style| {
-                                        style.scale(crate::ui::theme::tokens::motion::PRESS_SCALE)
-                                    })
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation();
-                                        cx.update_global(|update: &mut UpdateState, _cx| {
-                                            update.request_open_modal(Instant::now());
-                                        });
-                                    })
-                                    .child(
-                                        div()
-                                            .size(px(6.))
-                                            .rounded_full()
-                                            .bg(colors.accent),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(colors.accent)
-                                            .child(t!("Topbar.update_available")),
-                                    ),
-                            )
-                        }),
-                )
+                .child(brand)
                 .child(controls),
         )
         .child(
@@ -437,13 +457,6 @@ pub(super) fn render_app_chrome(
         .absolute()
         .inset_0()
         .child(topbar)
-        .when(state.auth.visible(), |root| {
-            root.child(auth::panel(
-                &state.auth,
-                &colors,
-                size(state.window_width, state.window_height),
-                state.glass_effect_enabled,
-            ))
-        })
+        .child(auth)
         .into_any_element()
 }

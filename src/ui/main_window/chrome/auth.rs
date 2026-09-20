@@ -114,7 +114,7 @@ impl RenderState {
         self
     }
 
-    pub(super) fn visible(&self) -> bool {
+    pub(in crate::ui::main_window) fn visible(&self) -> bool {
         self.open || self.progress > 0.001
     }
 
@@ -191,7 +191,7 @@ fn status_hint(phase: AuthPhase) -> SharedString {
     }
 }
 
-pub(super) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
+pub(in crate::ui::main_window) fn trigger(state: &RenderState, colors: &ThemeColors) -> AnyElement {
     let trigger_bounds = state.trigger_bounds.clone();
     let chevron = icon(lucide_gpui::icon!(chevron_down), colors.text_secondary, 12.)
         .with_stable_sampled_animation(
@@ -318,7 +318,7 @@ fn header(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn panel(
+pub(in crate::ui::main_window) fn panel(
     state: &RenderState,
     colors: &ThemeColors,
     viewport: Size<Pixels>,
