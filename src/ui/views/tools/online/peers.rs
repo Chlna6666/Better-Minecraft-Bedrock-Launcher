@@ -296,45 +296,46 @@ fn render_peer_list(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -
 }
 
 fn render_peer_groups(colors: &ThemeColors, i18n: &I18n, peers: &[OnlinePeerEntry]) -> Vec<Div> {
-    [
-        (
-            OnlinePeerRole::Server,
+    let mut groups: [Vec<_>; 4] = std::array::from_fn(|_| Vec::new());
+    for (index, peer) in peers.iter().enumerate() {
+        let role = match peer.role {
+            OnlinePeerRole::Server => 0,
+            OnlinePeerRole::User => 1,
+            OnlinePeerRole::Relay => 2,
+            OnlinePeerRole::Unknown => 3,
+        };
+        groups[role].push((index, peer));
+    }
+
+    groups
+        .into_iter()
+        .zip([
             crate::i18n_key!("Online.role_server"),
-        ),
-        (OnlinePeerRole::User, crate::i18n_key!("Online.role_user")),
-        (OnlinePeerRole::Relay, crate::i18n_key!("Online.role_relay")),
-        (
-            OnlinePeerRole::Unknown,
+            crate::i18n_key!("Online.role_user"),
+            crate::i18n_key!("Online.role_relay"),
             crate::i18n_key!("Online.role_unknown"),
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(role, title)| {
-        let peers: Vec<_> = peers
-            .iter()
-            .enumerate()
-            .filter(|(_, peer)| peer.role == role)
-            .collect();
-        (!peers.is_empty()).then(|| {
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.text_muted)
-                        .child(i18n.t_key(title)),
-                )
-                .children(
-                    peers
-                        .into_iter()
-                        .map(|(index, peer)| render_peer_row(colors, i18n, index, peer)),
-                )
+        ])
+        .filter_map(|(peers, title)| {
+            (!peers.is_empty()).then(|| {
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(colors.text_muted)
+                            .child(i18n.t_key(title)),
+                    )
+                    .children(
+                        peers
+                            .into_iter()
+                            .map(|(index, peer)| render_peer_row(colors, i18n, index, peer)),
+                    )
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 fn render_peer_row(

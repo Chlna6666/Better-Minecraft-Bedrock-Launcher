@@ -6,7 +6,6 @@ use crate::ui::views::tasks::{
     TaskCardMotionKind, TaskCardViewModel, TasksPageRenderModel, TasksPageView,
 };
 use gpui::prelude::FluentBuilder as _;
-use std::sync::Arc;
 
 fn loading_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     div()
@@ -90,53 +89,48 @@ fn header_stat(colors: &ThemeColors, label: SharedString, value: impl ToString) 
         )
 }
 
-fn render_task_list(
+fn render_task_list<'a>(
     colors: &ThemeColors,
-    this: &TasksPageView,
-    items: impl IntoIterator<Item = TaskCardViewModel>,
+    this: &'a TasksPageView,
+    items: impl IntoIterator<Item = &'a TaskCardViewModel>,
     cx: &mut Context<TasksPageView>,
 ) -> Div {
     let mut list = div().w_full().flex().flex_col().gap(px(12.));
-    let mut entries: Vec<(u64, Arc<str>, TaskCardViewModel, Option<TaskCardMotionKind>)> = items
+    let mut entries: Vec<(&TaskCardViewModel, Option<TaskCardMotionKind>)> = items
         .into_iter()
         .map(|item| {
-            let sort_key = item.started_at_unix;
             let motion = this.task_motion_kind(item.id.as_ref());
-            (sort_key, item.id.clone(), item, motion)
+            (item, motion)
         })
         .collect();
 
     for transition_card in this.transition_cards() {
-        if this
-            .render_model
-            .active
+        if entries
             .iter()
-            .chain(this.render_model.finished.iter())
-            .any(|item| item.id == transition_card.model.id)
+            .any(|(item, _)| item.id == transition_card.model.id)
         {
             continue;
         }
-        entries.push((
-            transition_card.model.started_at_unix,
-            transition_card.model.id.clone(),
-            transition_card.model.clone(),
-            Some(transition_card.motion),
-        ));
+        entries.push((&transition_card.model, Some(transition_card.motion)));
     }
 
-    entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    entries.sort_by(|(left, _), (right, _)| {
+        left.started_at_unix
+            .cmp(&right.started_at_unix)
+            .then_with(|| left.id.cmp(&right.id))
+    });
 
-    for (_, _, model, motion) in entries {
-        list = list.child(render_task_card(colors, &model, motion, cx));
+    for (model, motion) in entries {
+        list = list.child(render_task_card(colors, model, motion, cx));
     }
 
     list
 }
 
-fn render_tasks_body(
+fn render_tasks_body<'a>(
     colors: &ThemeColors,
-    this: &TasksPageView,
-    render_model: &TasksPageRenderModel,
+    this: &'a TasksPageView,
+    render_model: &'a TasksPageRenderModel,
     i18n: &I18n,
     cx: &mut Context<TasksPageView>,
 ) -> AnyElement {
@@ -158,8 +152,7 @@ fn render_tasks_body(
         render_model
             .active
             .iter()
-            .cloned()
-            .chain(render_model.finished.iter().cloned()),
+            .chain(render_model.finished.iter()),
         cx,
     )
     .into_any_element()
