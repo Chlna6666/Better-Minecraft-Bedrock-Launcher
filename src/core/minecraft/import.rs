@@ -1106,7 +1106,10 @@ fn process_single_archive(
         target_type, target_dir_name, final_dest
     );
     info!("Importing {:?} to {:?}", target_type, final_dest);
-    extract_archive_parallel(file_path, &final_dest)?;
+    install_directory_transactionally(&final_dest, overwrite, |staging| {
+        extract_archive_parallel(file_path, staging)
+            .with_context(|| format!("Failed to extract {:?} into staging", file_path))
+    })?;
 
     Ok(())
 }
@@ -1659,11 +1662,10 @@ fn extract_archive(archive: &mut ZipArchive<File>, dest_root: &Path) -> Result<(
 }
 
 fn extract_archive_parallel(file_path: &Path, dest_root: &Path) -> Result<()> {
-    if !dest_root.exists() {
-        fs::create_dir_all(dest_root)?;
-    }
+    fs::create_dir_all(dest_root)
+        .with_context(|| format!("Failed to create extraction root {:?}", dest_root))?;
 
-    // 第一次遍历：计算公共根目录 + 记录索引与路径
+    // 第一次遍历：计算公共根目录 + 记录已验证的安全路径。
     let file = File::open(file_path)?;
     let mut archive = ZipArchive::new(file)?;
 
@@ -1674,7 +1676,13 @@ fn extract_archive_parallel(file_path: &Path, dest_root: &Path) -> Result<()> {
 
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
-        let path = PathBuf::from(file.name()?.as_ref());
+        let Some(path) = file.enclosed_name().map(Path::to_path_buf) else {
+            return Err(anyhow::anyhow!(
+                "Unsafe archive entry path at index {} in {}",
+                i,
+                file_path.display()
+            ));
+        };
         if path.to_string_lossy().contains("__MACOSX") {
             continue;
         }
@@ -1708,59 +1716,58 @@ fn extract_archive_parallel(file_path: &Path, dest_root: &Path) -> Result<()> {
         common_root = None;
     }
 
-    // 并行解压（按块）：每个线程只打开一次 ZipArchive，避免“每个文件条目都重开 zip”导致的巨大开销。
-    // 对于 .mctemplate 这种包含海量小文件的包，这个改动能显著加速。
+    // 每个 Rayon worker/chunk 只打开一次 ZipArchive；任何 I/O/ZIP 错误都会中止安装，
+    // 禁止过去“单个文件失败但最终仍返回 Ok”的半包假成功。
     let common_root_cloned = common_root.clone();
     const CHUNK_SIZE: usize = 64;
 
-    entries.par_chunks(CHUNK_SIZE).for_each(|chunk| {
-        let Ok(file) = File::open(file_path) else {
-            return;
-        };
-        let Ok(mut z) = ZipArchive::new(file) else {
-            return;
-        };
+    entries
+        .par_chunks(CHUNK_SIZE)
+        .try_for_each(|chunk| -> Result<()> {
+            let file = File::open(file_path)
+                .with_context(|| format!("Failed to reopen archive {}", file_path.display()))?;
+            let mut archive = ZipArchive::new(file)
+                .with_context(|| format!("Failed to reopen ZIP {}", file_path.display()))?;
 
-        for (idx, original_path, is_dir) in chunk {
-            if original_path.to_string_lossy().contains("__MACOSX") {
-                continue;
-            }
-
-            let relative_path = if let Some(ref root) = common_root_cloned {
-                if let Ok(stripped) = original_path.strip_prefix(root) {
-                    stripped.to_path_buf()
+            for (index, original_path, is_dir) in chunk {
+                let relative_path = if let Some(ref root) = common_root_cloned {
+                    original_path
+                        .strip_prefix(root)
+                        .unwrap_or(original_path.as_path())
+                        .to_path_buf()
                 } else {
                     original_path.clone()
+                };
+                if relative_path.as_os_str().is_empty() {
+                    continue;
                 }
-            } else {
-                original_path.clone()
-            };
 
-            if relative_path.as_os_str().is_empty() {
-                continue;
-            }
-            let target_path = dest_root.join(&relative_path);
-            if !target_path.starts_with(dest_root) {
-                continue;
-            }
-
-            if *is_dir {
-                let _ = fs::create_dir_all(&target_path);
-                continue;
-            }
-
-            if let Some(p) = target_path.parent() {
-                let _ = fs::create_dir_all(p);
-            }
-
-            if let Ok(mut entry) = z.by_index(*idx) {
-                if let Ok(out) = std::fs::File::create(&target_path) {
-                    let mut out = std::io::BufWriter::new(out);
-                    let _ = std::io::copy(&mut entry, &mut out);
+                let target_path = dest_root.join(&relative_path);
+                if *is_dir {
+                    fs::create_dir_all(&target_path)
+                        .with_context(|| format!("Failed to create {:?}", target_path))?;
+                    continue;
                 }
+
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent)
+                        .with_context(|| format!("Failed to create {:?}", parent))?;
+                }
+
+                let mut entry = archive
+                    .by_index(*index)
+                    .with_context(|| format!("Failed to read ZIP entry {}", index))?;
+                let output = File::create(&target_path)
+                    .with_context(|| format!("Failed to create {:?}", target_path))?;
+                let mut output = std::io::BufWriter::new(output);
+                std::io::copy(&mut entry, &mut output)
+                    .with_context(|| format!("Failed to extract {:?}", relative_path))?;
+                output
+                    .flush()
+                    .with_context(|| format!("Failed to flush {:?}", target_path))?;
             }
-        }
-    });
+            Ok(())
+        })?;
 
     Ok(())
 }
@@ -2158,14 +2165,11 @@ fn import_world_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> R
         }
     }
 
-    if final_dest.exists() {
-        fs::remove_dir_all(&final_dest)
-            .with_context(|| format!("Failed to remove existing world dir {:?}", final_dest))?;
-    }
-
     debug!("Import world dir: {:?} -> {:?}", dir, final_dest);
-    copy_dir_recursive(dir, &final_dest)
-        .with_context(|| format!("Failed to copy world dir {:?} -> {:?}", dir, final_dest))?;
+    install_directory_transactionally(&final_dest, overwrite, |staging| {
+        copy_dir_recursive(dir, staging)
+            .with_context(|| format!("Failed to copy world {:?} -> staging {:?}", dir, staging))
+    })?;
 
     Ok(())
 }
@@ -2271,6 +2275,95 @@ fn collect_inner_archives_and_dirs(
         }
     }
 
+    Ok(())
+}
+
+fn unique_install_sibling(final_dest: &Path, role: &str) -> Result<PathBuf> {
+    let parent = final_dest
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Install target has no parent: {:?}", final_dest))?;
+    fs::create_dir_all(parent)?;
+    let name = final_dest
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("package");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    for attempt in 0..64_u32 {
+        let candidate = parent.join(format!(
+            ".{name}.bmcb-{role}-{}-{nonce}-{attempt}",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(anyhow::anyhow!(
+        "Unable to allocate staging path beside {:?}",
+        final_dest
+    ))
+}
+
+fn install_directory_transactionally(
+    final_dest: &Path,
+    overwrite: bool,
+    populate: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let staging = unique_install_sibling(final_dest, "install")?;
+    fs::create_dir(&staging)
+        .with_context(|| format!("Failed to create install staging {:?}", staging))?;
+
+    if let Err(error) = populate(&staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+
+    let backup = if final_dest.exists() {
+        if !overwrite {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(anyhow::anyhow!(
+                "Install target already exists: {}",
+                final_dest.display()
+            ));
+        }
+        let backup = unique_install_sibling(final_dest, "backup")?;
+        fs::rename(final_dest, &backup).with_context(|| {
+            format!(
+                "Failed to move existing install {:?} to backup {:?}",
+                final_dest, backup
+            )
+        })?;
+        Some(backup)
+    } else {
+        None
+    };
+
+    if let Err(error) = fs::rename(&staging, final_dest) {
+        if let Some(backup) = backup.as_ref() {
+            if let Err(restore_error) = fs::rename(backup, final_dest) {
+                return Err(anyhow::anyhow!(
+                    "Install commit failed: {error}; rollback also failed: {restore_error}"
+                ));
+            }
+        }
+        let _ = fs::remove_dir_all(&staging);
+        return Err(anyhow::anyhow!(
+            "Failed to commit install {:?}: {error}",
+            final_dest
+        ));
+    }
+
+    if let Some(backup) = backup
+        && let Err(error) = fs::remove_dir_all(&backup)
+    {
+        warn!(
+            "Installed {:?}, but failed to remove backup {:?}: {error}",
+            final_dest, backup
+        );
+    }
     Ok(())
 }
 
@@ -2382,15 +2475,11 @@ fn import_pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Re
         counter += 1;
     }
 
-    if final_dest.exists() {
-        // overwrite 路径：先清掉旧目录再复制
-        fs::remove_dir_all(&final_dest)
-            .with_context(|| format!("Failed to remove existing dir {:?}", final_dest))?;
-    }
-
     debug!("Import pack dir: {:?} -> {:?}", dir, final_dest);
-    copy_dir_recursive(dir, &final_dest)
-        .with_context(|| format!("Failed to copy {:?} -> {:?}", dir, final_dest))?;
+    install_directory_transactionally(&final_dest, overwrite, |staging| {
+        copy_dir_recursive(dir, staging)
+            .with_context(|| format!("Failed to copy {:?} -> staging {:?}", dir, staging))
+    })?;
 
     Ok(())
 }
