@@ -455,6 +455,21 @@ fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
 }
 
 #[test]
+fn retained_range_rejects_partial_element_blur_capture() {
+    let child_bounds = Bounds::new(
+        point(ScaledPixels(12.0), ScaledPixels(12.0)),
+        size(ScaledPixels(8.0), ScaledPixels(8.0)),
+    );
+    let scene = element_blur_scene(child_bounds);
+    assert!(scene.len() >= 3);
+
+    assert!(scene.range_has_balanced_element_blurs(0..scene.len()));
+    assert!(!scene.range_has_balanced_element_blurs(0..1));
+    assert!(scene.range_has_balanced_element_blurs(1..2));
+    assert!(!scene.range_has_balanced_element_blurs(scene.len() - 1..scene.len()));
+}
+
+#[test]
 fn blur_capture_state_tracks_nested_captures() {
     let capture = BlurCapture {
         animation_id: None,
