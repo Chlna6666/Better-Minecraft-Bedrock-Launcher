@@ -115,6 +115,7 @@ pub(super) fn close_curseforge_install_modal(cx: &mut App) {
         state.curseforge_install_open = false;
         state.curseforge_install_stage =
             crate::ui::views::download::state::CurseForgeInstallStage::Idle;
+        state.curseforge_install_error = None;
         state.curseforge_install_files_request_id =
             state.curseforge_install_files_request_id.wrapping_add(1);
     });
@@ -361,9 +362,6 @@ pub(super) fn open_curseforge_install_modal(
         state.curseforge_install_files_request_id =
             state.curseforge_install_files_request_id.wrapping_add(1);
         state.curseforge_install_selected_file_id = None;
-        state.curseforge_install_task_id = None;
-        state.curseforge_install_downloaded_path = None;
-        state.curseforge_install_conflict_message = None;
         state.curseforge_install_target_folder = default_target;
     });
 
@@ -385,9 +383,6 @@ pub(super) fn open_curseforge_install_modal_for_file(
         state.curseforge_install_files_request_id =
             state.curseforge_install_files_request_id.wrapping_add(1);
         state.curseforge_install_selected_file_id = Some(file_id);
-        state.curseforge_install_task_id = None;
-        state.curseforge_install_downloaded_path = None;
-        state.curseforge_install_conflict_message = None;
         state.curseforge_install_target_folder = default_target;
     });
 }

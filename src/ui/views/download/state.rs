@@ -148,12 +148,6 @@ pub struct CurseForgeFileEntry {
 pub enum CurseForgeInstallStage {
     Idle,
     LoadingFiles,
-    Downloading,
-    Inspecting,
-    CheckingConflict,
-    Conflict,
-    Installing,
-    Success,
     Error,
 }
 
@@ -255,9 +249,6 @@ pub struct DownloadPageState {
     pub curseforge_install_files_request_id: u64,
     pub curseforge_install_selected_file_id: Option<i32>,
     pub curseforge_install_target_folder: Option<SharedString>,
-    pub curseforge_install_task_id: Option<SharedString>,
-    pub curseforge_install_downloaded_path: Option<SharedString>,
-    pub curseforge_install_conflict_message: Option<SharedString>,
     pub levilauncher_loaded: bool,
     pub levilauncher_loading: bool,
     pub levilauncher_error: Option<SharedString>,
@@ -391,9 +382,6 @@ impl Default for DownloadPageState {
             curseforge_install_files_request_id: 0,
             curseforge_install_selected_file_id: None,
             curseforge_install_target_folder: None,
-            curseforge_install_task_id: None,
-            curseforge_install_downloaded_path: None,
-            curseforge_install_conflict_message: None,
             levilauncher_loaded: false,
             levilauncher_loading: false,
             levilauncher_error: None,
@@ -480,9 +468,6 @@ impl DownloadPageState {
             || !self.curseforge_install_files.is_empty()
             || self.curseforge_install_selected_file_id.is_some()
             || self.curseforge_install_target_folder.is_some()
-            || self.curseforge_install_task_id.is_some()
-            || self.curseforge_install_downloaded_path.is_some()
-            || self.curseforge_install_conflict_message.is_some()
     }
 
     pub fn release_route_state(&mut self, cx: &mut App) {
@@ -587,9 +572,6 @@ impl DownloadPageState {
         self.curseforge_install_files.clear();
         self.curseforge_install_selected_file_id = None;
         self.curseforge_install_target_folder = None;
-        self.curseforge_install_task_id = None;
-        self.curseforge_install_downloaded_path = None;
-        self.curseforge_install_conflict_message = None;
     }
 
     pub fn bump_curseforge_results_list_seq(&mut self) {

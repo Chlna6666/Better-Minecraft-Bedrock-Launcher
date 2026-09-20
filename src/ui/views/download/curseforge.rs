@@ -133,9 +133,6 @@ struct CurseForgeResourcePanelSignature {
     install_file_count: usize,
     install_selected_file_id: Option<i32>,
     install_target_folder: Option<SharedString>,
-    install_task_id: Option<SharedString>,
-    install_downloaded_path: Option<SharedString>,
-    install_conflict_message: Option<SharedString>,
     mod_page_open: bool,
     mod_page_loading: bool,
     mod_page_error: Option<SharedString>,
@@ -154,9 +151,6 @@ fn curseforge_resource_panel_signature(
         install_file_count: state.curseforge_install_files.len(),
         install_selected_file_id: state.curseforge_install_selected_file_id,
         install_target_folder: state.curseforge_install_target_folder.clone(),
-        install_task_id: state.curseforge_install_task_id.clone(),
-        install_downloaded_path: state.curseforge_install_downloaded_path.clone(),
-        install_conflict_message: state.curseforge_install_conflict_message.clone(),
         mod_page_open: state.curseforge_mod_page_open,
         mod_page_loading: state.curseforge_mod_page_loading,
         mod_page_error: state.curseforge_mod_page_error.clone(),
@@ -2608,21 +2602,6 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
 }
 
 fn close_curseforge_install_modal_from_ui(cx: &mut App) {
-    let task_id = cx.read_global(|state: &DownloadPageState, _cx| {
-        if matches!(
-            state.curseforge_install_stage,
-            crate::ui::views::download::state::CurseForgeInstallStage::Downloading
-        ) {
-            state.curseforge_install_task_id.clone()
-        } else {
-            None
-        }
-    });
-
-    if let Some(task_id) = task_id {
-        crate::tasks::task_manager::cancel_task(task_id.as_ref());
-    }
-
     modals::close_curseforge_install_modal(cx);
 }
 
@@ -3031,9 +3010,6 @@ fn render_curseforge_install_file_option(
                                 state.curseforge_install_stage =
                                     crate::ui::views::download::state::CurseForgeInstallStage::Idle;
                                 state.curseforge_install_error = None;
-                                state.curseforge_install_task_id = None;
-                                state.curseforge_install_downloaded_path = None;
-                                state.curseforge_install_conflict_message = None;
                                 if default_target.is_some() {
                                     state.curseforge_install_target_folder = default_target;
                                 }
@@ -3353,13 +3329,6 @@ fn render_curseforge_install_modal(
                 }
             };
 
-            cx.update_global(|state: &mut DownloadPageState, _cx| {
-                state.curseforge_install_task_id = Some(SharedString::from(task_id.clone()));
-                state.curseforge_install_error = None;
-                state.curseforge_install_downloaded_path = None;
-                state.curseforge_install_conflict_message = None;
-            });
-
             // Confirmation is the hand-off point. The durable AppRuntime task owns everything
             // after this line, so the install modal must not stay mounted just to display progress.
             modals::close_curseforge_install_modal(cx);
@@ -3372,16 +3341,6 @@ fn render_curseforge_install_modal(
             });
             cx.spawn(async move |cx| {
                 let snapshot = wait_task.await?;
-                let finished_task_id = snapshot.id.clone();
-                cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    if state
-                        .curseforge_install_task_id
-                        .as_ref()
-                        .is_some_and(|current| current.as_ref() == finished_task_id.as_ref())
-                    {
-                        state.curseforge_install_task_id = None;
-                    }
-                })?;
                 cx.update(|cx| {
                     let i18n = cx.global::<I18n>();
                     match snapshot.status.as_ref() {

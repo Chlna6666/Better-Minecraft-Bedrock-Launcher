@@ -209,7 +209,7 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
             crate::tasks::task_manager::TaskEventDelivery::ResyncRequired => {
                 let (task_ids, has_stale_snapshots) =
                     cx.read_global(|state: &DownloadPageState, _cx| {
-                        let mut task_ids = state
+                        let task_ids = state
                             .operations_by_package
                             .values()
                             .flat_map(|operation| {
@@ -220,9 +220,6 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
                             })
                             .flatten()
                             .collect::<Vec<_>>();
-                        if let Some(task_id) = &state.curseforge_install_task_id {
-                            task_ids.push(task_id.clone());
-                        }
                         (task_ids, !state.task_snapshots.is_empty())
                     });
                 if task_ids.is_empty() && !has_stale_snapshots {
@@ -259,10 +256,7 @@ fn download_state_tracks_task(state: &DownloadPageState, task_id: &str) -> bool 
                 .extract_task_id
                 .as_ref()
                 .is_some_and(|tracked| tracked.as_ref() == task_id)
-    }) || state
-        .curseforge_install_task_id
-        .as_ref()
-        .is_some_and(|tracked| tracked.as_ref() == task_id)
+    })
 }
 
 fn task_event_relevant_to_download_state(
