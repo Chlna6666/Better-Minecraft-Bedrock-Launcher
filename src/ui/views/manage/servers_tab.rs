@@ -201,78 +201,55 @@ impl ManagePageView {
             }
         };
 
-        dialog.pending = true;
         let version = dialog.version.clone();
         let config = dialog.config.clone();
         let selected_gdk_user = dialog.selected_gdk_user.clone();
         let editing_key = dialog.editing_key.clone();
-        cx.spawn(async move |handle, cx| {
-            let result = crate::tasks::runtime::run_blocking(
-                crate::tasks::runtime::BlockingTaskOptions::hidden("manage_server_save"),
-                move || {
-                    if let Some(key) = editing_key.as_ref() {
-                        data::update_external_server(
-                            &version,
-                            &config,
-                            selected_gdk_user.as_ref().map(SharedString::as_ref),
-                            key.as_ref(),
-                            &name,
-                            &address,
-                            port,
-                        )
-                    } else {
-                        data::add_external_server(
-                            &version,
-                            &config,
-                            selected_gdk_user.as_ref().map(SharedString::as_ref),
-                            &name,
-                            &address,
-                            port,
-                        )
-                    }
-                },
+        let editing = editing_key.is_some();
+        let task_result = if let Some(key) = editing_key {
+            data::start_update_external_server_task(
+                &version,
+                &config,
+                selected_gdk_user.as_ref().map(SharedString::as_ref),
+                key.to_string(),
+                name,
+                address,
+                port,
             )
-            .await;
-            let _ = handle.update(cx, |this, cx| {
-                match result {
-                    Ok(_) => {
-                        let editing = this
-                            .server_editor_dialog
-                            .as_ref()
-                            .is_some_and(|dialog| dialog.editing_key.is_some());
-                        this.server_editor_dialog = None;
-                        this.last_servers_signature = None;
-                        cx.update_global(|state: &mut ManagePageState, _cx| {
-                            state.servers_loaded = false;
-                            state.servers_loading = false;
-                            state.servers_error = None;
-                            state.server_motd = Arc::new(HashMap::new());
-                            state.server_motd_loading = false;
-                            state.server_motd_request_id =
-                                state.server_motd_request_id.wrapping_add(1);
-                        });
-                        let i18n = cx.global::<I18n>().clone();
-                        toast::success(
-                            cx,
-                            if editing {
-                                t!("ManagePage.server_saved")
-                            } else {
-                                t!("ManagePage.server_added")
-                            },
-                        );
-                    }
-                    Err(error) => {
-                        if let Some(dialog) = this.server_editor_dialog.as_mut() {
-                            dialog.pending = false;
-                        }
-                        toast::error(cx, SharedString::from(error));
-                    }
+        } else {
+            data::start_add_external_server_task(
+                &version,
+                &config,
+                selected_gdk_user.as_ref().map(SharedString::as_ref),
+                name,
+                address,
+                port,
+            )
+        };
+
+        match task_result {
+            Ok(task_id) => {
+                self.server_editor_dialog = None;
+                let view_handle = cx.entity().downgrade();
+                watch_server_mutation_task(
+                    task_id,
+                    if editing {
+                        t!("ManagePage.server_saved")
+                    } else {
+                        t!("ManagePage.server_added")
+                    },
+                    view_handle,
+                    cx,
+                );
+            }
+            Err(error) => {
+                if let Some(dialog) = self.server_editor_dialog.as_mut() {
+                    dialog.pending = false;
                 }
-                cx.notify();
-            });
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+                toast::error(cx, SharedString::from(error));
+            }
+        }
+        cx.notify();
     }
 }
 

@@ -231,50 +231,51 @@ pub async fn load_external_servers(
     Ok(entries.into_iter().map(manage_server_from_core).collect())
 }
 
-pub fn add_external_server(
+pub fn start_add_external_server_task(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
-    name: &str,
-    address: &str,
+    name: String,
+    address: String,
     port: u16,
-) -> Result<ManageServerEntry, String> {
-    let options = external_server_options(version, config, selected_gdk_user);
-    let name = name.to_string();
-    let address = address.to_string();
-    crate::core::minecraft::servers::add_external_server(&options, &name, &address, port)
-        .map(manage_server_from_core)
-        .map_err(|error| format!("添加服务器失败: {error:?}"))
+) -> Result<String, String> {
+    crate::core::minecraft::servers::start_add_external_server_task(
+        external_server_options(version, config, selected_gdk_user),
+        name,
+        address,
+        port,
+    )
 }
 
-pub fn update_external_server(
+pub fn start_update_external_server_task(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
-    key: &str,
-    name: &str,
-    address: &str,
+    key: String,
+    name: String,
+    address: String,
     port: u16,
-) -> Result<ManageServerEntry, String> {
-    let options = external_server_options(version, config, selected_gdk_user);
-    let key = key.to_string();
-    let name = name.to_string();
-    let address = address.to_string();
-    crate::core::minecraft::servers::update_external_server(&options, &key, &name, &address, port)
-        .map(manage_server_from_core)
-        .map_err(|error| format!("编辑服务器失败: {error:?}"))
+) -> Result<String, String> {
+    crate::core::minecraft::servers::start_update_external_server_task(
+        external_server_options(version, config, selected_gdk_user),
+        key,
+        name,
+        address,
+        port,
+    )
 }
 
-pub fn delete_external_server(
+pub fn start_delete_external_server_task(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
-    key: &str,
-) -> Result<(), String> {
-    let options = external_server_options(version, config, selected_gdk_user);
-    let key = key.to_string();
-    crate::core::minecraft::servers::delete_external_server(&options, &key)
-        .map_err(|error| format!("删除服务器失败: {error:?}"))
+    entry: &ManageServerEntry,
+) -> Result<String, String> {
+    crate::core::minecraft::servers::start_delete_external_server_task(
+        external_server_options(version, config, selected_gdk_user),
+        entry.key.to_string(),
+        format!("{} · {}:{}", entry.name, entry.address, entry.port),
+    )
 }
 
 pub async fn query_server_motd_batch(

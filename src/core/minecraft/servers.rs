@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,104 +48,375 @@ pub fn read_external_servers(options: &GamePathOptions) -> Result<Vec<ExternalSe
         .collect())
 }
 
-pub fn write_external_servers(
-    options: &GamePathOptions,
-    entries: &[ExternalServerEntry],
-) -> Result<()> {
-    let file_path =
-        resolve_external_servers_file(options).context("无法解析 external_servers.txt 路径")?;
-    write_entries_to_file(&file_path, entries)
+enum ServerMutation {
+    Add {
+        name: String,
+        address: String,
+        port: u16,
+    },
+    Update {
+        key: String,
+        name: String,
+        address: String,
+        port: u16,
+    },
+    Delete {
+        key: String,
+    },
 }
 
-pub fn add_external_server(
-    options: &GamePathOptions,
-    name: &str,
-    address: &str,
-    port: u16,
-) -> Result<ExternalServerEntry> {
-    let (name, address) = validate_server_input(name, address, port)?;
-
-    let file_path =
-        resolve_external_servers_file(options).context("无法解析 external_servers.txt 路径")?;
-    let mut lines = read_external_server_lines(&file_path)?;
-    let next_index = lines
-        .iter()
-        .filter_map(|line| match line {
-            ExternalServerLine::Parsed { entry, .. } => Some(entry.index),
-            ExternalServerLine::Raw(_) => None,
-        })
-        .max()
-        .map_or(0, |index| index + 1);
-    let line_number = lines.len() + 1;
-    let entry = ExternalServerEntry {
-        key: server_key(next_index, address, port),
-        index: next_index,
-        name: name.to_string(),
-        address: address.to_string(),
-        port,
-        file_path: file_path.to_string_lossy().to_string(),
-        line_number,
-    };
-    lines.push(ExternalServerLine::Parsed {
-        entry: entry.clone(),
-        metadata: current_unix_seconds().to_string(),
-    });
-    write_lines_to_file(&file_path, &lines)?;
-
-    Ok(entry)
+enum ServerMutationOutcome {
+    Completed(String),
+    Cancelled(String),
 }
 
-pub fn update_external_server(
-    options: &GamePathOptions,
-    key: &str,
-    name: &str,
-    address: &str,
-    port: u16,
-) -> Result<ExternalServerEntry> {
-    let (name, address) = validate_server_input(name, address, port)?;
-
-    let file_path =
-        resolve_external_servers_file(options).context("无法解析 external_servers.txt 路径")?;
-    let mut lines = read_external_server_lines(&file_path)?;
-    let mut updated = None;
-
-    for line in &mut lines {
-        let ExternalServerLine::Parsed { entry, .. } = line else {
-            continue;
-        };
-        if entry.key != key {
-            continue;
+fn server_task_token(task_id: &str) -> String {
+    let mut token = String::with_capacity(task_id.len().min(64));
+    for ch in task_id.chars().take(64) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            token.push(ch);
+        } else {
+            token.push('_');
         }
-
-        entry.name = name.to_string();
-        entry.address = address.to_string();
-        entry.port = port;
-        entry.key = server_key(entry.index, address, port);
-        updated = Some(entry.clone());
-        break;
     }
-
-    let Some(entry) = updated else {
-        bail!("未找到服务器: {key}");
-    };
-
-    write_lines_to_file(&file_path, &lines)?;
-    Ok(entry)
+    if token.is_empty() {
+        "task".to_string()
+    } else {
+        token
+    }
 }
 
-pub fn delete_external_server(options: &GamePathOptions, key: &str) -> Result<()> {
-    let file_path =
-        resolve_external_servers_file(options).context("无法解析 external_servers.txt 路径")?;
-    let mut lines = read_external_server_lines(&file_path)?;
-    let before = lines.len();
-    lines.retain(|line| match line {
-        ExternalServerLine::Parsed { entry, .. } => entry.key != key,
-        ExternalServerLine::Raw(_) => true,
-    });
-    if lines.len() == before {
-        bail!("未找到服务器: {key}");
+fn serialize_external_server_lines(lines: &[ExternalServerLine]) -> String {
+    let mut content = String::new();
+    for line in lines {
+        match line {
+            ExternalServerLine::Parsed { entry, metadata } => {
+                let metadata = if metadata.trim().is_empty() {
+                    "0"
+                } else {
+                    metadata.trim()
+                };
+                content.push_str(&format!(
+                    "{}:{}:{}:{}:{}",
+                    entry.index, entry.name, entry.address, entry.port, metadata
+                ));
+            }
+            ExternalServerLine::Raw(line) => content.push_str(line),
+        }
+        content.push_str("\r\n");
     }
-    write_lines_to_file(&file_path, &lines)
+    content
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("清理服务器事务文件失败 {}: {error}", path.display())),
+    }
+}
+
+fn write_lines_to_file_transactionally(
+    file_path: &Path,
+    lines: &[ExternalServerLine],
+    task_id: &str,
+) -> Result<bool, String> {
+    let parent = file_path
+        .parent()
+        .ok_or_else(|| format!("服务器文件没有父目录: {}", file_path.display()))?;
+    let parent_existed = parent.exists();
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("创建服务器目录失败 {}: {error}", parent.display()))?;
+
+    let token = server_task_token(task_id);
+    let staging = parent.join(format!(".{SERVER_FILE_NAME}.bmcb-staging-{token}"));
+    let backup = parent.join(format!(".{SERVER_FILE_NAME}.bmcb-backup-{token}"));
+    remove_file_if_exists(&staging)?;
+    remove_file_if_exists(&backup)?;
+
+    let content = serialize_external_server_lines(lines);
+    let mut staging_file = fs::File::create(&staging)
+        .map_err(|error| format!("创建服务器 staging 失败: {error}"))?;
+    if let Err(error) = staging_file.write_all(content.as_bytes()) {
+        let _ = remove_file_if_exists(&staging);
+        return Err(format!("写入服务器 staging 失败: {error}"));
+    }
+    if let Err(error) = staging_file.sync_all() {
+        let _ = remove_file_if_exists(&staging);
+        return Err(format!("刷新服务器 staging 失败: {error}"));
+    }
+    drop(staging_file);
+
+    if crate::tasks::task_manager::is_cancelled(task_id) {
+        let _ = remove_file_if_exists(&staging);
+        if !parent_existed {
+            let _ = fs::remove_dir(parent);
+        }
+        return Ok(false);
+    }
+
+    let had_previous = file_path.exists();
+    if had_previous {
+        fs::rename(file_path, &backup).map_err(|error| {
+            let _ = remove_file_if_exists(&staging);
+            format!("备份旧服务器列表失败: {error}")
+        })?;
+    }
+
+    if crate::tasks::task_manager::is_cancelled(task_id) {
+        if had_previous {
+            fs::rename(&backup, file_path)
+                .map_err(|error| format!("取消服务器写入时恢复旧文件失败: {error}"))?;
+        }
+        let _ = remove_file_if_exists(&staging);
+        if !parent_existed {
+            let _ = fs::remove_dir(parent);
+        }
+        return Ok(false);
+    }
+
+    if let Err(error) = fs::rename(&staging, file_path) {
+        let rollback = if had_previous {
+            fs::rename(&backup, file_path)
+                .map_err(|restore_error| format!("提交失败且恢复旧文件失败: {restore_error}"))
+        } else {
+            Ok(())
+        };
+        let _ = remove_file_if_exists(&staging);
+        rollback?;
+        return Err(format!("提交服务器列表失败: {error}"));
+    }
+
+    // Atomic rename above is the commit boundary. Late cancellation must not undo the committed
+    // server list; only cleanup remains.
+    if had_previous {
+        remove_file_if_exists(&backup)?;
+    }
+    Ok(true)
+}
+
+fn apply_server_mutation(
+    options: &GamePathOptions,
+    mutation: ServerMutation,
+    task_id: &str,
+) -> Result<ServerMutationOutcome, String> {
+    if crate::tasks::task_manager::is_cancelled(task_id) {
+        return Ok(ServerMutationOutcome::Cancelled(
+            "服务器操作已取消".to_string(),
+        ));
+    }
+
+    let file_path = resolve_external_servers_file(options)
+        .ok_or_else(|| "无法解析 external_servers.txt 路径".to_string())?;
+    let mut lines = read_external_server_lines(&file_path).map_err(|error| error.to_string())?;
+
+    let message = match mutation {
+        ServerMutation::Add {
+            name,
+            address,
+            port,
+        } => {
+            let (name, address) =
+                validate_server_input(&name, &address, port).map_err(|error| error.to_string())?;
+            let next_index = lines
+                .iter()
+                .filter_map(|line| match line {
+                    ExternalServerLine::Parsed { entry, .. } => Some(entry.index),
+                    ExternalServerLine::Raw(_) => None,
+                })
+                .max()
+                .map_or(0, |index| index + 1);
+            let entry = ExternalServerEntry {
+                key: server_key(next_index, address, port),
+                index: next_index,
+                name: name.to_string(),
+                address: address.to_string(),
+                port,
+                file_path: file_path.to_string_lossy().to_string(),
+                line_number: lines.len() + 1,
+            };
+            lines.push(ExternalServerLine::Parsed {
+                entry,
+                metadata: current_unix_seconds().to_string(),
+            });
+            "服务器已添加".to_string()
+        }
+        ServerMutation::Update {
+            key,
+            name,
+            address,
+            port,
+        } => {
+            let (name, address) =
+                validate_server_input(&name, &address, port).map_err(|error| error.to_string())?;
+            let mut found = false;
+            for line in &mut lines {
+                let ExternalServerLine::Parsed { entry, .. } = line else {
+                    continue;
+                };
+                if entry.key != key {
+                    continue;
+                }
+                entry.name = name.to_string();
+                entry.address = address.to_string();
+                entry.port = port;
+                entry.key = server_key(entry.index, address, port);
+                found = true;
+                break;
+            }
+            if !found {
+                return Err(format!("未找到服务器: {key}"));
+            }
+            "服务器已更新".to_string()
+        }
+        ServerMutation::Delete { key } => {
+            let before = lines.len();
+            lines.retain(|line| match line {
+                ExternalServerLine::Parsed { entry, .. } => entry.key != key,
+                ExternalServerLine::Raw(_) => true,
+            });
+            if lines.len() == before {
+                return Err(format!("未找到服务器: {key}"));
+            }
+            "服务器已删除".to_string()
+        }
+    };
+
+    if write_lines_to_file_transactionally(&file_path, &lines, task_id)? {
+        Ok(ServerMutationOutcome::Completed(message))
+    } else {
+        Ok(ServerMutationOutcome::Cancelled(
+            "服务器操作已取消".to_string(),
+        ))
+    }
+}
+
+fn start_server_mutation_task(
+    options: GamePathOptions,
+    mutation: ServerMutation,
+    title: &'static str,
+    detail: String,
+) -> Result<String, String> {
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        title,
+        Some(detail),
+        "updating_servers",
+        None,
+        false,
+    );
+    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+
+    let worker_task_id = task_id.clone();
+    let blocking_task_id = task_id.clone();
+    let workflow = crate::tasks::runtime::spawn_io(async move {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            apply_server_mutation(&options, mutation, &blocking_task_id)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(ServerMutationOutcome::Completed(message))) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "completed",
+                    Some(message),
+                );
+            }
+            Ok(Ok(ServerMutationOutcome::Cancelled(message))) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
+                    Some(message),
+                );
+            }
+            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error),
+            ),
+        }
+    })
+    .map_err(|error| {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        error
+    })?;
+
+    let monitor_task_id = task_id.clone();
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = workflow.await {
+            crate::tasks::task_manager::finish_task(
+                &monitor_task_id,
+                "error",
+                Some(format!("服务器任务异常结束: {error}")),
+            );
+        }
+    }) {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        return Err(error);
+    }
+
+    Ok(task_id)
+}
+
+pub fn start_add_external_server_task(
+    options: GamePathOptions,
+    name: String,
+    address: String,
+    port: u16,
+) -> Result<String, String> {
+    validate_server_input(&name, &address, port).map_err(|error| error.to_string())?;
+    let detail = format!("{} · {}:{port}", name.trim(), address.trim());
+    start_server_mutation_task(
+        options,
+        ServerMutation::Add {
+            name,
+            address,
+            port,
+        },
+        "添加服务器",
+        detail,
+    )
+}
+
+pub fn start_update_external_server_task(
+    options: GamePathOptions,
+    key: String,
+    name: String,
+    address: String,
+    port: u16,
+) -> Result<String, String> {
+    validate_server_input(&name, &address, port).map_err(|error| error.to_string())?;
+    let detail = format!("{} · {}:{port}", name.trim(), address.trim());
+    start_server_mutation_task(
+        options,
+        ServerMutation::Update {
+            key,
+            name,
+            address,
+            port,
+        },
+        "更新服务器",
+        detail,
+    )
+}
+
+pub fn start_delete_external_server_task(
+    options: GamePathOptions,
+    key: String,
+    detail: String,
+) -> Result<String, String> {
+    start_server_mutation_task(
+        options,
+        ServerMutation::Delete { key },
+        "删除服务器",
+        detail,
+    )
 }
 
 fn read_external_server_lines(file_path: &Path) -> Result<Vec<ExternalServerLine>> {
@@ -228,6 +499,7 @@ fn parse_server_index(value: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+#[cfg(test)]
 fn write_entries_to_file(file_path: &Path, entries: &[ExternalServerEntry]) -> Result<()> {
     let lines = entries
         .iter()
@@ -260,6 +532,7 @@ fn validate_server_input<'a>(
     Ok((name, address))
 }
 
+#[cfg(test)]
 fn write_lines_to_file(file_path: &Path, lines: &[ExternalServerLine]) -> Result<()> {
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent)

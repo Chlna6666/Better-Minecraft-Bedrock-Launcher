@@ -171,50 +171,31 @@ impl ManagePageView {
                 selected_gdk_user,
                 entry,
             } => {
-                let i18n = cx.global::<I18n>().clone();
-                cx.spawn(async move |handle, cx| {
-                    let result = crate::tasks::runtime::run_blocking(
-                        crate::tasks::runtime::BlockingTaskOptions::hidden("Deleting server"),
-                        {
-                            let entry = entry.clone();
-                            move || {
-                                data::delete_external_server(
-                                    &version,
-                                    &config,
-                                    selected_gdk_user.as_ref().map(SharedString::as_ref),
-                                    entry.key.as_ref(),
-                                )
-                            }
-                        },
-                    )
-                    .await;
-                    let _ = handle.update(cx, |this, cx| {
-                        match result {
-                            Ok(()) => {
-                                let message = t!("ManagePage.server_deleted");
-                                toast::success(cx, message);
-                                this.confirm_dialog = None;
-                                this.last_servers_signature = None;
-                                cx.update_global(|state: &mut ManagePageState, _cx| {
-                                    state.servers_loaded = false;
-                                    state.servers_loading = false;
-                                    let mut motd = (*state.server_motd).clone();
-                                    motd.remove(&entry.key);
-                                    state.server_motd = Arc::new(motd);
-                                });
-                            }
-                            Err(error) => {
-                                if let Some(dialog) = this.confirm_dialog.as_mut() {
-                                    dialog.pending = false;
-                                }
-                                toast::error(cx, SharedString::from(error));
-                            }
+                let view_handle = cx.entity().downgrade();
+                match data::start_delete_external_server_task(
+                    &version,
+                    &config,
+                    selected_gdk_user.as_ref().map(SharedString::as_ref),
+                    &entry,
+                ) {
+                    Ok(task_id) => {
+                        self.confirm_dialog = None;
+                        let i18n = cx.global::<I18n>().clone();
+                        watch_server_mutation_task(
+                            task_id,
+                            t!("ManagePage.server_deleted"),
+                            view_handle,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = self.confirm_dialog.as_mut() {
+                            dialog.pending = false;
                         }
-                        cx.notify();
-                    });
-                    Ok::<(), anyhow::Error>(())
-                })
-                .detach();
+                        toast::error(cx, SharedString::from(error));
+                    }
+                }
+                cx.notify();
             }
         }
     }
