@@ -195,7 +195,11 @@ fn start_version_imports(paths: Vec<String>, cx: &mut App) {
 }
 
 fn start_mod_import(version: ManagedVersionEntry, paths: Vec<String>, cx: &mut App) {
-    match data::start_mod_import_task(version.folder.to_string(), paths) {
+    let request = crate::core::native_mods::NativeModImportRequest {
+        version_folder: version.folder.to_string(),
+        paths: paths.into_iter().map(PathBuf::from).collect(),
+    };
+    match crate::core::native_mods::start_import(request) {
         Ok(task_id) => {
             toast::push(cx, t!("Manage.import_task_started"));
             watch_import_task(task_id, cx);

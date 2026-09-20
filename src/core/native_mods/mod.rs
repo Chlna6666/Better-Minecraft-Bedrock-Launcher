@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 mod install;
 
-pub use install::{NativeModInstallRequest, start_install};
+pub use install::{
+    NativeModImportRequest, NativeModInstallRequest, start_import, start_install,
+};
 
 const INDEX_URL: &str = "https://pkg.roundstudio.top/index.json";
 const API_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
