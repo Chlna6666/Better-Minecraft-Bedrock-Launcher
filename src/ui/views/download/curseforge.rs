@@ -3290,10 +3290,6 @@ fn render_curseforge_install_modal(
         .unwrap_or_else(|| t!("CurseForgeInstall.title"));
 
     let stage = state.curseforge_install_stage;
-    let task_snapshot = state
-        .curseforge_install_task_id
-        .as_ref()
-        .and_then(|id| tasks.get(id.as_ref()));
 
     let Some(selected_file) = state.curseforge_install_selected_file_id.and_then(|id| {
         state
@@ -3310,142 +3306,68 @@ fn render_curseforge_install_modal(
         );
     };
 
+    let project_name = mod_name.to_string();
     let header = render_curseforge_install_header(
         colors,
         t!("CurseForgeInstall.title"),
         mod_name,
         Some(selected_file.display_name.clone()),
     );
-    let target_dropdown_enabled = matches!(
-        stage,
-        crate::ui::views::download::state::CurseForgeInstallStage::Idle
-            | crate::ui::views::download::state::CurseForgeInstallStage::Error
-            | crate::ui::views::download::state::CurseForgeInstallStage::Success
-    );
     let target_dropdown = render_install_target_dropdown(
         colors,
         &i18n,
         state,
         local_versions,
-        target_dropdown_enabled,
+        matches!(
+            stage,
+            crate::ui::views::download::state::CurseForgeInstallStage::Idle
+                | crate::ui::views::download::state::CurseForgeInstallStage::Error
+        ),
     );
 
-    let error_line = state.curseforge_install_error.as_ref().map(|e| {
+    let error_line = state.curseforge_install_error.as_ref().map(|error| {
         status_card(
             colors,
-            &t!("CurseForgeInstall.error", error = e),
+            &t!("CurseForgeInstall.error", error = error),
             Some(colors.danger),
         )
         .into_any_element()
     });
 
-    let conflict_line = state
-        .curseforge_install_conflict_message
+    let selected_version = state
+        .curseforge_install_target_folder
         .as_ref()
-        .map(|m| status_card(colors, m.as_ref(), Some(colors.accent)).into_any_element());
-
-    let progress_bar = task_snapshot.map(|snap| {
-        let pct = snap.percent.unwrap_or(0.0).clamp(0.0, 100.0) as f32;
-        div()
-            .w_full()
-            .rounded(px(crate::ui::theme::tokens::radius::SM))
-            .bg(colors.surface)
-            .border_1()
-            .border_color(colors.border)
-            .p(px(12.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(colors.text_secondary)
-                            .child(t!(
-                                "CurseForgeInstall.progress",
-                                stage = snap.stage.as_ref(),
-                                percent = pct.round()
-                            )),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(colors.text_muted)
-                            .child(t!("Tasks.eta_value", value = snap.eta)),
-                    ),
-            )
-            .child(
-                div()
-                    .mt(px(10.))
-                    .h(px(8.))
-                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                    .w_full()
-                    .bg(Hsla {
-                        a: 0.10,
-                        ..colors.text_secondary
-                    })
-                    .child(
-                        div()
-                            .h(px(8.))
-                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                            .bg(colors.accent)
-                            .w(relative(pct / 100.0)),
-                    ),
-            )
-            .into_any_element()
+        .and_then(|selected| {
+            local_versions
+                .versions
+                .iter()
+                .find(|version| version.folder.as_ref() == selected.as_ref())
+        });
+    let install_target = selected_version.map(|version| {
+        crate::core::curseforge::install::CurseForgeInstallTarget {
+            build_type: crate::ui::hooks::use_local_versions::version_build_type(version),
+            edition: crate::ui::hooks::use_local_versions::version_edition(version),
+            version_name: version.folder.to_string(),
+            enable_isolation:
+                crate::ui::hooks::use_local_versions::version_enable_isolation(version),
+            user_id: None,
+            allow_shared_fallback: false,
+        }
     });
 
-    let can_install = state
-        .curseforge_install_selected_file_id
-        .and_then(|id| state.curseforge_install_files.iter().find(|f| f.id == id))
-        .and_then(|f| f.download_url.clone())
-        .is_some()
-        && state.curseforge_install_target_folder.is_some()
+    let can_install = selected_file.download_url.is_some()
+        && install_target.is_some()
         && matches!(
             stage,
             crate::ui::views::download::state::CurseForgeInstallStage::Idle
                 | crate::ui::views::download::state::CurseForgeInstallStage::Error
         );
 
-    let primary_btn_label = match stage {
-        crate::ui::views::download::state::CurseForgeInstallStage::Conflict => {
-            t!("CurseForgeInstall.overwrite")
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::Success => {
-            t!("CurseForgeInstall.done")
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::Downloading => {
-            t!("CurseForgeInstall.downloading")
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => {
-            t!("CurseForgeInstall.inspecting")
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => {
-            t!("CurseForgeInstall.checking_conflict")
-        }
-        crate::ui::views::download::state::CurseForgeInstallStage::Installing => {
-            t!("CurseForgeInstall.installing")
-        }
-        _ => t!("CurseForgeInstall.download_and_install"),
-    };
-
-    let primary_enabled = match stage {
-        crate::ui::views::download::state::CurseForgeInstallStage::Conflict => true,
-        crate::ui::views::download::state::CurseForgeInstallStage::Success => true,
-        crate::ui::views::download::state::CurseForgeInstallStage::Downloading
-        | crate::ui::views::download::state::CurseForgeInstallStage::Inspecting
-        | crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict
-        | crate::ui::views::download::state::CurseForgeInstallStage::Installing => false,
-        _ => can_install,
-    };
-    let i18n_for_action = i18n.clone();
-
     let primary_btn = div()
         .px(px(16.))
         .py(px(10.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(if primary_enabled {
+        .bg(if can_install {
             colors.accent
         } else {
             colors.surface_hover
@@ -3453,7 +3375,7 @@ fn render_curseforge_install_modal(
         .border_1()
         .border_color(colors.border)
         .cursor_pointer()
-        .text_color(if primary_enabled {
+        .text_color(if can_install {
             colors.btn_primary_text
         } else {
             colors.text_muted
@@ -3466,235 +3388,108 @@ fn render_curseforge_install_modal(
                 .child(themed_icon(
                     lucide_gpui::icon!(download),
                     18.0,
-                    if primary_enabled {
+                    if can_install {
                         colors.btn_primary_text
                     } else {
                         colors.text_muted
                     },
                 ))
-                .child(primary_btn_label),
+                .child(t!("CurseForgeInstall.download_and_install")),
         )
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-            if !primary_enabled {
+            if !can_install {
                 return;
             }
 
-            if matches!(
-                stage,
-                crate::ui::views::download::state::CurseForgeInstallStage::Success
-            ) {
-                modals::close_curseforge_install_modal(cx);
-                return;
-            }
-
-            let overwrite = matches!(
-                stage,
-                crate::ui::views::download::state::CurseForgeInstallStage::Conflict
-            );
-
-            let (download_url, file_name, target_folder) =
-                cx.read_global(|s: &DownloadPageState, _cx| {
-                    let file = s
-                        .curseforge_install_selected_file_id
-                        .and_then(|id| s.curseforge_install_files.iter().find(|f| f.id == id));
-                    (
-                        file.and_then(|f| f.download_url.clone())
-                            .map(|u| u.to_string()),
-                        file.map(|f| f.file_name.to_string()),
-                        s.curseforge_install_target_folder
-                            .as_ref()
-                            .map(|f| f.to_string()),
-                    )
-                });
-
-            let Some(download_url) = download_url else {
+            let Some(target) = install_target.clone() else {
                 return;
             };
-            let Some(file_name) = file_name else {
-                return;
-            };
-            let Some(target_folder) = target_folder else {
+            let (download_url, file_name) = cx.read_global(|state: &DownloadPageState, _cx| {
+                let file = state
+                    .curseforge_install_selected_file_id
+                    .and_then(|id| state.curseforge_install_files.iter().find(|file| file.id == id));
+                (
+                    file.and_then(|file| file.download_url.clone())
+                        .map(|url| url.to_string()),
+                    file.map(|file| file.file_name.to_string()),
+                )
+            });
+            let (Some(download_url), Some(file_name)) = (download_url, file_name) else {
                 return;
             };
 
-            cx.update_global(|s: &mut DownloadPageState, _cx| {
-                s.curseforge_install_stage =
-                    crate::ui::views::download::state::CurseForgeInstallStage::Downloading;
-                s.curseforge_install_error = None;
-                s.curseforge_install_task_id = None;
-                s.curseforge_install_downloaded_path = None;
-                s.curseforge_install_conflict_message = None;
+            let request = crate::core::curseforge::install::CurseForgeInstallRequest {
+                project_name: project_name.clone(),
+                file_name,
+                download_url,
+                target,
+            };
+            let task_id = match crate::core::curseforge::install::start_install(request) {
+                Ok(task_id) => task_id,
+                Err(error) => {
+                    cx.update_global(|state: &mut DownloadPageState, _cx| {
+                        state.curseforge_install_stage =
+                            crate::ui::views::download::state::CurseForgeInstallStage::Error;
+                        state.curseforge_install_error = Some(SharedString::from(error));
+                    });
+                    return;
+                }
+            };
+
+            cx.update_global(|state: &mut DownloadPageState, _cx| {
+                state.curseforge_install_task_id = Some(SharedString::from(task_id.clone()));
+                state.curseforge_install_error = None;
+                state.curseforge_install_downloaded_path = None;
+                state.curseforge_install_conflict_message = None;
             });
 
-            let i18n_for_task = i18n_for_action.clone();
+            // Confirmation is the hand-off point. The durable AppRuntime task owns everything
+            // after this line, so the install modal must not stay mounted just to display progress.
+            modals::close_curseforge_install_modal(cx);
+
+            let observed_task_id = task_id.clone();
+            let wait_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+                crate::tasks::task_manager::wait_for_task_terminal(&observed_task_id)
+                    .await
+                    .map_err(anyhow::Error::msg)
+            });
             cx.spawn(async move |cx| {
-                let result = async {
-                    let task_id = crate::downloads::api::download_resource_to_cache(
-                        download_url,
-                        file_name.clone(),
-                        None,
-                        None,
-                    )
-                    .await?;
-
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_task_id = Some(SharedString::from(task_id.clone()));
-                    })
-                    .map_err(|e| e.to_string())?;
-
-                    let snap =
-                        crate::tasks::task_manager::wait_for_task_terminal(&task_id).await;
-                    let snap = snap?;
-                    if snap.status.as_ref() != "completed" {
-                        return Err(format!(
-                            "download {} ({})",
-                            snap.status,
-                            snap.message.clone().unwrap_or_default()
-                        ));
+                let snapshot = wait_task.await?;
+                let finished_task_id = snapshot.id.clone();
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    if state
+                        .curseforge_install_task_id
+                        .as_ref()
+                        .is_some_and(|current| current.as_ref() == finished_task_id.as_ref())
+                    {
+                        state.curseforge_install_task_id = None;
                     }
-                    let path = snap
-                        .message
-                        .clone()
-                        .map(|message| message.to_string())
-                        .ok_or_else(|| "download completed but no path returned".to_string())?;
-
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_downloaded_path =
-                            Some(SharedString::from(path.clone()));
-                        s.curseforge_install_stage =
-                            crate::ui::views::download::state::CurseForgeInstallStage::Inspecting;
-                    })
-                    .map_err(|e| e.to_string())?;
-
-                    let preview =
-                        crate::core::minecraft::assets::inspect_import_file(path.to_string(), None)
-                            .await?;
-                    if !preview.valid {
-                        let msg = preview
-                            .invalid_reason
-                            .unwrap_or_else(|| {
-                                t!("CurseForgeInstall.invalid_package")
-                                    .to_string()
-                            });
-                        cx.update_global(|s: &mut DownloadPageState, _cx| {
-                            s.curseforge_install_stage =
-                                crate::ui::views::download::state::CurseForgeInstallStage::Error;
-                            s.curseforge_install_error = Some(SharedString::from(msg));
-                        })
-                        .map_err(|e| e.to_string())?;
-                        return Ok::<(), String>(());
+                })?;
+                cx.update(|cx| {
+                    let i18n = cx.global::<I18n>();
+                    match snapshot.status.as_ref() {
+                        "completed" => crate::ui::components::toast::success(
+                            cx,
+                            t!("CurseForgeInstall.done"),
+                        ),
+                        "cancelled" => crate::ui::components::toast::push(
+                            cx,
+                            SharedString::from("CurseForge 安装已取消"),
+                        ),
+                        "error" => crate::ui::components::toast::error(
+                            cx,
+                            snapshot
+                                .message
+                                .as_ref()
+                                .map(|message| SharedString::from(message.to_string()))
+                                .unwrap_or_else(|| t!("CurseForgeInstall.invalid_package")),
+                        ),
+                        _ => {}
                     }
-
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_stage =
-                            crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict;
-                    })
-                    .map_err(|e| e.to_string())?;
-
-                    let conflict = crate::core::minecraft::assets::check_import_conflict(
-                        crate::core::minecraft::assets::CheckImportRequest {
-                            build_type: crate::core::minecraft::paths::BuildType::Uwp,
-                            edition: crate::core::minecraft::paths::Edition::Release,
-                            version_name: target_folder.clone(),
-                            enable_isolation: true,
-                            user_id: None,
-                            file_path: path.to_string(),
-                            allow_shared_fallback: false,
-                        },
-                    )
-                    .await?;
-
-                    if conflict.has_conflict && !overwrite {
-                        cx.update_global(|s: &mut DownloadPageState, _cx| {
-                            s.curseforge_install_stage =
-                                crate::ui::views::download::state::CurseForgeInstallStage::Conflict;
-                            s.curseforge_install_conflict_message =
-                                Some(SharedString::from(conflict.message));
-                        })
-                        .map_err(|e| e.to_string())?;
-                        return Ok::<(), String>(());
-                    }
-
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_stage =
-                            crate::ui::views::download::state::CurseForgeInstallStage::Installing;
-                    })
-                    .map_err(|e| e.to_string())?;
-
-                    crate::core::minecraft::assets::import_assets(
-                        crate::core::minecraft::assets::ImportAssetsRequest {
-                            build_type: crate::core::minecraft::paths::BuildType::Uwp,
-                            edition: crate::core::minecraft::paths::Edition::Release,
-                            version_name: target_folder,
-                            enable_isolation: true,
-                            user_id: None,
-                            file_paths: vec![path.to_string()],
-                            overwrite,
-                            allow_shared_fallback: false,
-                        },
-                    )
-                    .await?;
-
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_stage =
-                            crate::ui::views::download::state::CurseForgeInstallStage::Success;
-                    })
-                    .map_err(|e| e.to_string())?;
-
-                    Ok::<(), String>(())
-                }
-                .await;
-
-                if let Err(error) = result {
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_stage =
-                            crate::ui::views::download::state::CurseForgeInstallStage::Error;
-                        s.curseforge_install_error = Some(SharedString::from(error));
-                    })
-                    .map_err(|e| e.to_string())?;
-                }
-
-                Ok::<(), String>(())
+                })?;
+                Ok::<(), anyhow::Error>(())
             })
             .detach_and_log_err(cx);
-        });
-
-    let operation_line = match stage {
-        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => Some(
-            status_card(colors, t!("CurseForgeInstall.inspecting").as_ref(), None)
-                .into_any_element(),
-        ),
-        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => Some(
-            status_card(
-                colors,
-                t!("CurseForgeInstall.checking_conflict").as_ref(),
-                None,
-            )
-            .into_any_element(),
-        ),
-        crate::ui::views::download::state::CurseForgeInstallStage::Installing => Some(
-            status_card(colors, t!("CurseForgeInstall.installing").as_ref(), None)
-                .into_any_element(),
-        ),
-        crate::ui::views::download::state::CurseForgeInstallStage::Success => Some(
-            status_card(
-                colors,
-                t!("CurseForgeInstall.done").as_ref(),
-                Some(colors.accent),
-            )
-            .into_any_element(),
-        ),
-        _ => None,
-    };
-
-    let selected_version = state
-        .curseforge_install_target_folder
-        .as_ref()
-        .and_then(|selected| {
-            local_versions
-                .versions
-                .iter()
-                .find(|version| version.folder.as_ref() == selected.as_ref())
         });
 
     let version_card = div()
@@ -3904,10 +3699,7 @@ fn render_curseforge_install_modal(
                         )
                     },
                 )
-                .when_some(progress_bar, |this, bar| this.child(bar))
-                .when_some(operation_line, |this, status| this.child(status))
-                .when_some(error_line, |this, error| this.child(error))
-                .when_some(conflict_line, |this, conflict| this.child(conflict)),
+                .when_some(error_line, |this, error| this.child(error)),
         );
 
     modal::modal_layer_dismissible(
@@ -3921,13 +3713,13 @@ fn render_curseforge_install_modal(
                 ..colors.border
             },
             px(720.),
-            px(460.),
+            px(410.),
             px(18.),
         )
         .w(relative(0.85))
         .h(relative(0.80))
         .max_w(px(760.))
-        .max_h(px(500.))
+        .max_h(px(450.))
         .min_w(px(460.))
         .min_h(px(300.))
         .child(header)
