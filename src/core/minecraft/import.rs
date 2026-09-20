@@ -1539,58 +1539,62 @@ fn extract_subdir_from_zip(archive: &mut ZipArchive<File>, root: &str, dest: &Pa
 }
 
 fn extract_pack_root(archive: &mut ZipArchive<File>, pack_root: &str, dest: &Path) -> Result<()> {
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let name = file.name()?;
+    let pack_root = Path::new(pack_root);
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index)?;
+        let Some(entry_path) = file.enclosed_name().map(Path::to_path_buf) else {
+            return Err(anyhow::anyhow!(
+                "Unsafe archive entry path at index {}",
+                index
+            ));
+        };
 
-        if name.contains("__MACOSX") {
+        if entry_path.to_string_lossy().contains("__MACOSX") {
             continue;
         }
 
-        // World（root = ""）特殊处理
-        let relative = if pack_root.is_empty() {
-            Path::new(name.as_ref())
-        } else if let Some(stripped) = name.as_ref().strip_prefix(pack_root) {
-            Path::new(stripped)
+        let relative = if pack_root.as_os_str().is_empty() {
+            entry_path.as_path()
+        } else if let Ok(stripped) = entry_path.strip_prefix(pack_root) {
+            stripped
         } else {
             continue;
         };
-
         if relative.as_os_str().is_empty() {
             continue;
         }
 
         let out_path = dest.join(relative);
-        if !out_path.starts_with(dest) {
-            continue;
-        }
-
         if file.is_dir() {
-            std::fs::create_dir_all(&out_path)?;
+            fs::create_dir_all(&out_path)?;
         } else {
-            if let Some(p) = out_path.parent() {
-                std::fs::create_dir_all(p)?;
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
             }
             let mut out = std::io::BufWriter::new(File::create(&out_path)?);
             std::io::copy(&mut file, &mut out)?;
+            out.flush()?;
         }
     }
     Ok(())
 }
 
 fn extract_archive(archive: &mut ZipArchive<File>, dest_root: &Path) -> Result<()> {
-    if !dest_root.exists() {
-        fs::create_dir_all(dest_root)?;
-    }
+    fs::create_dir_all(dest_root)?;
 
     let mut common_root: Option<PathBuf> = None;
     let mut is_first = true;
     let mut has_files_at_root = false;
 
-    // 第一次遍历：检测公共根目录
-    for i in 0..archive.len() {
-        let file = archive.by_index(i)?;
-        let path = PathBuf::from(file.name()?.as_ref());
+    // 第一次遍历：检测公共根目录，同时拒绝绝对路径和 ParentDir 跳转。
+    for index in 0..archive.len() {
+        let file = archive.by_index(index)?;
+        let Some(path) = file.enclosed_name().map(Path::to_path_buf) else {
+            return Err(anyhow::anyhow!(
+                "Unsafe archive entry path at index {}",
+                index
+            ));
+        };
         if path.to_string_lossy().contains("__MACOSX") || file.is_dir() {
             continue;
         }
@@ -1604,11 +1608,11 @@ fn extract_archive(archive: &mut ZipArchive<File>, dest_root: &Path) -> Result<(
                     common_root = Some(PathBuf::from(first_comp.as_os_str()));
                 }
                 is_first = false;
-            } else if let Some(ref root) = common_root {
-                if !path.starts_with(root) {
-                    common_root = None;
-                    has_files_at_root = true;
-                }
+            } else if let Some(ref root) = common_root
+                && !path.starts_with(root)
+            {
+                common_root = None;
+                has_files_at_root = true;
             }
         } else {
             has_files_at_root = true;
@@ -1620,42 +1624,40 @@ fn extract_archive(archive: &mut ZipArchive<File>, dest_root: &Path) -> Result<(
         common_root = None;
     }
 
-    // 第二次遍历：解压
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let original_path = PathBuf::from(file.name()?.as_ref());
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index)?;
+        let Some(original_path) = file.enclosed_name().map(Path::to_path_buf) else {
+            return Err(anyhow::anyhow!(
+                "Unsafe archive entry path at index {}",
+                index
+            ));
+        };
         if original_path.to_string_lossy().contains("__MACOSX") {
             continue;
         }
 
         let relative_path = if let Some(ref root) = common_root {
-            if let Ok(stripped) = original_path.strip_prefix(root) {
-                stripped.to_path_buf()
-            } else {
-                original_path
-            }
+            original_path
+                .strip_prefix(root)
+                .unwrap_or(original_path.as_path())
+                .to_path_buf()
         } else {
             original_path
         };
-
         if relative_path.as_os_str().is_empty() {
             continue;
         }
-        let target_path = dest_root.join(&relative_path);
-        if !target_path.starts_with(dest_root) {
-            continue;
-        }
 
+        let target_path = dest_root.join(&relative_path);
         if file.is_dir() {
             fs::create_dir_all(&target_path)?;
         } else {
-            if let Some(p) = target_path.parent() {
-                if !p.exists() {
-                    fs::create_dir_all(p)?;
-                }
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
             }
             let mut outfile = std::io::BufWriter::new(File::create(&target_path)?);
             std::io::copy(&mut file, &mut outfile)?;
+            outfile.flush()?;
         }
     }
     Ok(())
