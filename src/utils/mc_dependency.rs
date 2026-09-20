@@ -108,6 +108,23 @@ pub enum DependencyEvent {
     AdminRequired(LocalizedText),
 }
 
+fn dependency_task_text(message: &LocalizedText) -> String {
+    match message {
+        LocalizedText::Raw(text) => text.to_string(),
+        LocalizedText::Key(key) => key.as_str().to_string(),
+        LocalizedText::Args { key, args } => {
+            let mut text = key.as_str().to_string();
+            for (name, value) in args.iter() {
+                text.push(' ');
+                text.push_str(name);
+                text.push('=');
+                text.push_str(value);
+            }
+            text
+        }
+    }
+}
+
 fn start_dependency_install_task<F, Fut>(
     title: &'static str,
     detail: Option<String>,
@@ -160,8 +177,7 @@ where
                     );
                     last_percent = percent;
 
-                    let stage_text =
-                        crate::ui::state::i18n::global_i18n().resolve(&event_stage).to_string();
+                    let stage_text = dependency_task_text(&event_stage);
                     let message = target
                         .as_ref()
                         .map(|target| format!("{stage_text} · {target}"))
@@ -182,8 +198,7 @@ where
                     }
                 }
                 DependencyEvent::AdminRequired(message) => {
-                    let message =
-                        crate::ui::state::i18n::global_i18n().resolve(&message).to_string();
+                    let message = dependency_task_text(&message);
                     crate::tasks::task_manager::set_task_message(
                         &progress_task_id,
                         Some(message.clone()),
@@ -191,8 +206,7 @@ where
                     crate::tasks::task_manager::append_task_log(&progress_task_id, message);
                 }
                 DependencyEvent::Log(message) => {
-                    let message =
-                        crate::ui::state::i18n::global_i18n().resolve(&message).to_string();
+                    let message = dependency_task_text(&message);
                     crate::tasks::task_manager::append_task_log(&progress_task_id, message);
                 }
             }
