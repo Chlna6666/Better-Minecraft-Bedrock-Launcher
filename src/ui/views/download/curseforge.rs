@@ -1,4 +1,3 @@
-use crate::tasks::task_manager::{TaskSnapshot, TaskVisibility};
 use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::html_renderer::render_html_document;
@@ -169,73 +168,16 @@ fn curseforge_resource_panel_signature(
 
 #[hook_element]
 pub(crate) struct CurseForgeResourcePanelView {
-    tasks: HashMap<Arc<str>, Arc<TaskSnapshot>>,
     _subscriptions: Vec<Subscription>,
-    task_updates_task: Option<Task<()>>,
     focus_handle: FocusHandle,
     curseforge_sidebar: Entity<CurseForgeSidebarView>,
     curseforge_content: Entity<CurseForgeContentView>,
     detail_image_cache: Entity<BoundedImageCache>,
     initial_tab: crate::ui::views::download::state::DownloadTab,
     last_signature: CurseForgeResourcePanelSignature,
-    active: bool,
 }
 
 impl CurseForgeResourcePanelView {
-    fn apply_task_event(&mut self, event: crate::tasks::task_manager::TaskEvent) {
-        match event {
-            crate::tasks::task_manager::TaskEvent::Updated(snapshot) => {
-                if snapshot.visibility == TaskVisibility::Hidden {
-                    self.tasks.remove(snapshot.id.as_ref());
-                } else {
-                    let is_newer = self
-                        .tasks
-                        .get(snapshot.id.as_ref())
-                        .is_none_or(|current| current.sequence <= snapshot.sequence);
-                    if is_newer {
-                        self.tasks.insert(snapshot.id.clone(), snapshot);
-                    }
-                }
-            }
-            crate::tasks::task_manager::TaskEvent::Removed(task_id) => {
-                self.tasks.remove(task_id.as_ref());
-            }
-        }
-    }
-
-    fn spawn_task_updates(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn_stream(
-            crate::tasks::task_manager::task_event_stream(),
-            |this, delivery, cx| {
-                match delivery {
-                    crate::tasks::task_manager::TaskEventDelivery::Event(event) => {
-                        this.apply_task_event(event);
-                    }
-                    crate::tasks::task_manager::TaskEventDelivery::Batch(events) => {
-                        for event in events {
-                            this.apply_task_event(event);
-                        }
-                    }
-                    crate::tasks::task_manager::TaskEventDelivery::ResyncRequired => {
-                        this.tasks = crate::tasks::task_manager::snapshot_arcs()
-                            .into_iter()
-                            .filter(|snapshot| snapshot.visibility != TaskVisibility::Hidden)
-                            .map(|snapshot| (snapshot.id.clone(), snapshot))
-                            .collect();
-                    }
-                }
-                if !this.active
-                    || !cx
-                        .read_global(|state: &DownloadPageState, _cx| state.curseforge_install_open)
-                {
-                    return;
-                }
-                cx.notify();
-            },
-        );
-        self.task_updates_task = Some(task);
-    }
-
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let cache = BoundedImageCache::new(curseforge_detail_image_cache_config(), cx);
         cx.set_global(GlobalCurseForgeDetailImageCache(cache.clone()));
@@ -274,40 +216,21 @@ impl CurseForgeResourcePanelView {
             }),
         ];
         subscriptions.shrink_to_fit();
-        let mut this = Self {
-            tasks: crate::tasks::task_manager::snapshot_arcs_map(),
+        Self {
             _subscriptions: subscriptions,
-            task_updates_task: None,
             focus_handle: cx.focus_handle().tab_stop(true),
             curseforge_sidebar: cx.new(CurseForgeSidebarView::new),
             curseforge_content: cx.new(CurseForgeContentView::new),
             detail_image_cache: cache,
             initial_tab,
             last_signature: initial_signature,
-            active: true,
             __gpui_hooks: RefCell::new(Vec::new()),
             __gpui_hook_index: Cell::new(0),
             __gpui_hook_count: Cell::new(0),
-        };
-        this.spawn_task_updates(cx);
-        this
-    }
-
-    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
-        if self.active == active {
-            return;
-        }
-
-        self.active = active;
-        if active {
-            self.tasks = crate::tasks::task_manager::snapshot_arcs_map();
-            if self.task_updates_task.is_none() {
-                self.spawn_task_updates(cx);
-            }
-        } else {
-            self.task_updates_task.take();
         }
     }
+
+    pub(crate) fn set_active(&mut self, _active: bool, _cx: &mut Context<Self>) {}
 }
 
 #[hook_render]
@@ -332,7 +255,6 @@ impl Render for CurseForgeResourcePanelView {
             &self.detail_image_cache,
             manage_state.selected_folder.clone(),
             &local_versions,
-            &self.tasks,
         )
         .key_context("Download")
         .track_focus(&self.focus_handle)
@@ -955,7 +877,6 @@ pub(super) fn render_resource_panel(
     detail_image_cache: &Entity<BoundedImageCache>,
     _selected_folder: Option<SharedString>,
     _local_versions: &LocalVersionsSnapshot,
-    _tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
 ) -> Div {
     let body = div()
         .size_full()
@@ -1013,7 +934,6 @@ pub(super) fn render_curseforge_install_overlay(
         },
     );
     let local_versions = read_local_versions_snapshot(cx);
-    let tasks = &state.task_snapshots;
     let i18n = cx.global::<I18n>();
 
     if state.curseforge_install_open {
@@ -1024,7 +944,6 @@ pub(super) fn render_curseforge_install_overlay(
                 state,
                 selected_folder,
                 &local_versions,
-                tasks,
             )
             .into_any_element(),
         );
@@ -1040,7 +959,6 @@ pub(super) fn render_curseforge_install_overlay(
                     &cache_ref.0,
                     selected_folder,
                     &local_versions,
-                    tasks,
                 )
                 .into_any_element(),
             );
@@ -3280,7 +3198,6 @@ fn render_curseforge_install_modal(
     state: &DownloadPageState,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
-    tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
 ) -> AnyElement {
     let i18n = (*i18n).clone();
     let mod_name = state
@@ -3741,7 +3658,6 @@ fn render_curseforge_mod_page_modal(
     detail_image_cache: &Entity<BoundedImageCache>,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
-    _tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
 ) -> AnyElement {
     let toolbar_button = |label: SharedString, icon_path: &'static str, primary: bool| {
         div()
