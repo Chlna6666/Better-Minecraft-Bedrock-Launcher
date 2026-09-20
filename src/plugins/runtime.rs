@@ -4629,13 +4629,9 @@ where
     .detach();
 }
 
-pub fn uninstall_plugin<F>(cx: &mut App, plugin_id: String, on_complete: F)
-where
-    F: FnOnce(&mut App, Result<()>) + 'static,
-{
+pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<String> {
     let Some(manifest) = plugin_manifest_snapshot(cx, &plugin_id) else {
-        on_complete(cx, Err(anyhow!("unknown plugin {plugin_id}")));
-        return;
+        return Err(anyhow!("unknown plugin {plugin_id}"));
     };
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
 
@@ -4688,8 +4684,7 @@ where
         Ok(workflow) => workflow,
         Err(error) => {
             crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
-            on_complete(cx, Err(anyhow!(error)));
-            return;
+            return Err(anyhow!(error));
         }
     };
 
@@ -4706,41 +4701,7 @@ where
             );
         }
     });
-    observe_plugin_file_task(cx, task_id, on_complete);
-}
-
-fn observe_plugin_file_task<F>(cx: &mut App, task_id: String, on_complete: F)
-where
-    F: FnOnce(&mut App, Result<()>) + 'static,
-{
-    let wait_task_id = task_id.clone();
-    let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
-        crate::tasks::task_manager::wait_for_task_terminal(&wait_task_id)
-            .await
-            .map_err(anyhow::Error::msg)
-    });
-    cx.spawn(async move |cx| {
-        let snapshot = terminal.await;
-        cx.update(|cx| {
-            let result = match snapshot {
-                Ok(snapshot) if snapshot.status.as_ref() == "completed" => {
-                    reload_all(cx);
-                    Ok(())
-                }
-                Ok(snapshot) => Err(anyhow!(
-                    "{}",
-                    snapshot
-                        .message
-                        .as_deref()
-                        .unwrap_or(snapshot.status.as_ref())
-                )),
-                Err(error) => Err(error),
-            };
-            on_complete(cx, result);
-        })?;
-        Ok::<(), anyhow::Error>(())
-    })
-    .detach();
+    Ok(task_id)
 }
 
 pub fn reload_plugin(cx: &mut App, plugin_id: String) -> Result<()> {
@@ -4761,10 +4722,7 @@ pub fn reload_plugins(cx: &mut App) {
     start_watcher(cx);
 }
 
-pub fn import_plugin_package<F>(cx: &mut App, source_path: PathBuf, on_complete: F)
-where
-    F: FnOnce(&mut App, Result<()>) + 'static,
-{
+pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<String> {
     ensure_loaded(cx);
 
     let extension = source_path
@@ -4772,25 +4730,17 @@ where
         .and_then(|extension| extension.to_str())
         .unwrap_or_default();
     if !extension.eq_ignore_ascii_case(crate::plugins::manifest::PLUGIN_PACKAGE_EXTENSION) {
-        on_complete(
-            cx,
-            Err(anyhow!(
-                "plugin package must use .{} extension",
-                crate::plugins::manifest::PLUGIN_PACKAGE_EXTENSION
-            )),
-        );
-        return;
+        return Err(anyhow!(
+            "plugin package must use .{} extension",
+            crate::plugins::manifest::PLUGIN_PACKAGE_EXTENSION
+        ));
     }
 
     let Some(file_name) = source_path.file_name().map(ToOwned::to_owned) else {
-        on_complete(
-            cx,
-            Err(anyhow!(
-                "plugin package path has no file name: {}",
-                source_path.display()
-            )),
-        );
-        return;
+        return Err(anyhow!(
+            "plugin package path has no file name: {}",
+            source_path.display()
+        ));
     };
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
     let detail = file_name.to_string_lossy().into_owned();
@@ -4930,8 +4880,7 @@ where
         Ok(workflow) => workflow,
         Err(error) => {
             crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
-            on_complete(cx, Err(anyhow!(error)));
-            return;
+            return Err(anyhow!(error));
         }
     };
 
@@ -4948,7 +4897,7 @@ where
             );
         }
     });
-    observe_plugin_file_task(cx, task_id, on_complete);
+    Ok(task_id)
 }
 
 pub fn dispatch_plugin_action(

@@ -1039,31 +1039,23 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                         .child(
                             small_icon_button(colors, "卸载", lucide_gpui::icon!(trash_2))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                                    crate::plugins::runtime::uninstall_plugin(
+                                    match crate::plugins::runtime::start_uninstall_plugin_task(
                                         cx,
                                         uninstall_id.clone(),
-                                        move |cx, result| match result {
-                                            Ok(()) => {
-                                                cx.update_global(
-                                                    |state: &mut SettingsPageState, _cx| {
-                                                        state.selected_plugin_id = None;
-                                                    },
-                                                );
-                                                toast::success(
-                                                    cx,
-                                                    SharedString::from("插件已卸载"),
-                                                );
-                                            }
-                                            Err(error) => {
-                                                toast::error(
-                                                    cx,
-                                                    SharedString::from(format!(
-                                                        "卸载失败: {error}"
-                                                    )),
-                                                );
-                                            }
-                                        },
-                                    );
+                                    ) {
+                                        Ok(task_id) => observe_plugin_task(
+                                            cx,
+                                            task_id,
+                                            SharedString::from("插件已卸载"),
+                                            SharedString::from("卸载失败"),
+                                            true,
+                                            None,
+                                        ),
+                                        Err(error) => toast::error(
+                                            cx,
+                                            SharedString::from(format!("卸载失败: {error}")),
+                                        ),
+                                    }
                                 }),
                         ),
                 ),
@@ -1727,6 +1719,62 @@ fn icon_only_button(colors: &ThemeColors, icon_path: &'static str, enabled: bool
         .child(themed_icon(icon_path, 14.0, colors.text_secondary))
 }
 
+fn observe_plugin_task(
+    cx: &mut App,
+    task_id: String,
+    success_message: SharedString,
+    failed_message: SharedString,
+    clear_selection: bool,
+    source_for_log: Option<PathBuf>,
+) {
+    let wait_task_id = task_id.clone();
+    let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::tasks::task_manager::wait_for_task_terminal(&wait_task_id)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
+    cx.spawn(async move |cx| {
+        let snapshot = terminal.await;
+        cx.update(|cx| match snapshot {
+            Ok(snapshot) if snapshot.status.as_ref() == "completed" => {
+                crate::plugins::runtime::reload_plugins(cx);
+                if clear_selection {
+                    cx.update_global(|state: &mut SettingsPageState, _cx| {
+                        state.selected_plugin_id = None;
+                    });
+                }
+                toast::success(cx, success_message);
+            }
+            Ok(snapshot) => {
+                let message = snapshot
+                    .message
+                    .as_deref()
+                    .unwrap_or(snapshot.status.as_ref());
+                if let Some(path) = source_for_log.as_ref() {
+                    warn!(
+                        task_id = %task_id,
+                        path = %path.display(),
+                        error = %message,
+                        "plugin task failed"
+                    );
+                }
+                toast::error(
+                    cx,
+                    SharedString::from(format!("{}: {message}", failed_message)),
+                );
+            }
+            Err(error) => {
+                toast::error(
+                    cx,
+                    SharedString::from(format!("{}: {error}", failed_message)),
+                );
+            }
+        })?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
 fn import_plugin_package_from_picker(cx: &mut App) {
     let Some(path) =
         crate::utils::file_picker::pick_file_path_with_filter("BMCBL Plugin", &["bmcblx"])
@@ -1741,22 +1789,27 @@ fn import_plugin_package_from_picker(cx: &mut App) {
     });
     let source = PathBuf::from(path);
     let source_for_log = source.clone();
-    crate::plugins::runtime::import_plugin_package(cx, source, move |cx, result| match result {
-        Ok(()) => {
-            toast::success(cx, success_message);
-        }
+    match crate::plugins::runtime::start_import_plugin_task(cx, source) {
+        Ok(task_id) => observe_plugin_task(
+            cx,
+            task_id,
+            success_message,
+            failed_message,
+            false,
+            Some(source_for_log),
+        ),
         Err(error) => {
             warn!(
                 error = ?error,
                 path = %source_for_log.display(),
-                "plugin import failed"
+                "plugin import task submission failed"
             );
             toast::error(
                 cx,
                 SharedString::from(format!("{}: {error}", failed_message)),
             );
         }
-    });
+    }
 }
 
 fn selected_plugin_id(state: &SettingsPageState, statuses: &[PluginStatus]) -> Option<String> {
