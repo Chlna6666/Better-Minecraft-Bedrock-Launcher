@@ -7,7 +7,7 @@ use gpui::{
     Subscription, Timer,
 };
 use gpui_hooks::hooks::{UseRefHook, UseStateHook};
-use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 use tracing::{debug, info, warn};
 
 #[cfg(target_os = "windows")]
@@ -614,8 +614,7 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
 }
 
 pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
-    let context = read_active_launch_prereq(cx);
-    let Some(context) = context else {
+    let Some(context) = read_active_launch_prereq(cx) else {
         return;
     };
     if context.busy {
@@ -638,84 +637,37 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
             let _ = state.push_log_if_matches(context.request_id, start_log);
         }
     });
-    info!(
-        request_id = context.request_id,
-        version_name = %context.version.name,
-        missing_count = check.missing_uwp_dependencies.len(),
-        dependencies = ?check
-            .missing_uwp_dependencies
-            .iter()
-            .map(|dependency| dependency.name.clone())
-            .collect::<Vec<_>>(),
-        "开始安装缺失的 UWP 依赖"
-    );
 
-    let (sender, receiver) = unbounded_channel();
-    spawn_dependency_event_pump(context.request_id, receiver, cx);
-
-    cx.spawn(async move |cx| {
-        let result = match crate::tasks::runtime::spawn_io(async move {
-            mc_dependency::install_missing_uwp_dependencies(
-                check.missing_uwp_dependencies,
-                Some(sender),
-            )
-            .await
-        }) {
-            Ok(task) => task.await.map_err(|error| error.to_string()),
-            Err(error) => Err(error),
-        };
-
-        match result {
-            Ok(Ok(())) => {
-                info!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    "UWP 依赖安装完成，准备重新检查"
-                );
-                if let Err(error) =
-                    schedule_launch_prereq_check(context.version, context.request_id, cx)
-                {
-                    warn!("schedule UWP dependency recheck failed: {error:?}");
-                }
-            }
-            Ok(Err(error)) => {
-                warn!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    error = %error,
-                    "UWP 依赖安装失败"
-                );
-                apply_launch_prereq_failure(
-                    context.request_id,
-                    "LaunchPrereq.errors.installUwpFailed",
-                    &error.to_string(),
-                    cx,
-                );
-            }
-            Err(error) => {
-                warn!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    error = %error,
-                    "UWP 依赖安装任务执行失败"
-                );
-                apply_launch_prereq_failure(
-                    context.request_id,
-                    "LaunchPrereq.errors.installUwpFailed",
-                    &error.to_string(),
-                    cx,
-                );
-            }
+    match mc_dependency::start_missing_uwp_dependencies_task(check.missing_uwp_dependencies) {
+        Ok(handle) => {
+            info!(
+                request_id = context.request_id,
+                version_name = %context.version.name,
+                task_id = %handle.task_id,
+                "UWP 依赖安装已注册为 BMCBL 任务"
+            );
+            spawn_dependency_event_pump(context.request_id, handle.events, cx);
+            watch_launch_prereq_dependency_task(
+                context,
+                handle.task_id,
+                "LaunchPrereq.errors.installUwpFailed",
+                "UWP 依赖",
+                cx,
+            );
         }
-
-        Ok::<(), Error>(())
-    })
-    .detach();
+        Err(error) => {
+            apply_launch_prereq_failure(
+                context.request_id,
+                "LaunchPrereq.errors.installUwpFailed",
+                &error,
+                cx,
+            );
+        }
+    }
 }
 
 pub fn install_launch_prereq_game_input(cx: &mut App) {
-    let context = read_active_launch_prereq(cx);
-    let Some(context) = context else {
+    let Some(context) = read_active_launch_prereq(cx) else {
         return;
     };
     if context.busy {
@@ -739,76 +691,37 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
             let _ = state.push_log_if_matches(context.request_id, start_log);
         }
     });
-    info!(
-        request_id = context.request_id,
-        version_name = %context.version.name,
-        installer_path = %plan.installer_path.display(),
-        installer_source = ?plan.source,
-        "开始安装 GameInput Runtime"
-    );
 
-    let (sender, receiver) = unbounded_channel();
-    spawn_dependency_event_pump(context.request_id, receiver, cx);
-
-    cx.spawn(async move |cx| {
-        let result = match crate::tasks::runtime::spawn_io(async move {
-            mc_dependency::install_game_input_runtime(plan, Some(sender)).await
-        }) {
-            Ok(task) => task.await.map_err(|error| error.to_string()),
-            Err(error) => Err(error),
-        };
-
-        match result {
-            Ok(Ok(())) => {
-                info!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    "GameInput Runtime 安装完成，准备重新检查"
-                );
-                if let Err(error) =
-                    schedule_launch_prereq_check(context.version, context.request_id, cx)
-                {
-                    warn!("schedule GameInput recheck failed: {error:?}");
-                }
-            }
-            Ok(Err(error)) => {
-                warn!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    error = %error,
-                    "GameInput Runtime 安装失败"
-                );
-                apply_launch_prereq_failure(
-                    context.request_id,
-                    "LaunchPrereq.errors.installGameInputFailed",
-                    &error.to_string(),
-                    cx,
-                );
-            }
-            Err(error) => {
-                warn!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    error = %error,
-                    "GameInput Runtime 安装任务执行失败"
-                );
-                apply_launch_prereq_failure(
-                    context.request_id,
-                    "LaunchPrereq.errors.installGameInputFailed",
-                    &error.to_string(),
-                    cx,
-                );
-            }
+    match mc_dependency::start_game_input_runtime_task(plan) {
+        Ok(handle) => {
+            info!(
+                request_id = context.request_id,
+                version_name = %context.version.name,
+                task_id = %handle.task_id,
+                "GameInput Runtime 安装已注册为 BMCBL 任务"
+            );
+            spawn_dependency_event_pump(context.request_id, handle.events, cx);
+            watch_launch_prereq_dependency_task(
+                context,
+                handle.task_id,
+                "LaunchPrereq.errors.installGameInputFailed",
+                "GameInput Runtime",
+                cx,
+            );
         }
-
-        Ok::<(), Error>(())
-    })
-    .detach();
+        Err(error) => {
+            apply_launch_prereq_failure(
+                context.request_id,
+                "LaunchPrereq.errors.installGameInputFailed",
+                &error,
+                cx,
+            );
+        }
+    }
 }
 
 pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
-    let context = read_active_launch_prereq(cx);
-    let Some(context) = context else {
+    let Some(context) = read_active_launch_prereq(cx) else {
         return;
     };
     if context.busy {
@@ -832,86 +745,34 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
             let _ = state.push_log_if_matches(context.request_id, start_log);
         }
     });
-    info!(
-        request_id = context.request_id,
-        version_name = %context.version.name,
-        installer_path = %plan.installer_path.display(),
-        installer_source = ?plan.source,
-        version = plan.version_label,
-        "开始安装 Windows App SDK Runtime"
-    );
 
-    let (sender, receiver) = unbounded_channel();
-    spawn_dependency_event_pump(context.request_id, receiver, cx);
-
-    cx.spawn(async move |cx| {
-        let result = match crate::tasks::runtime::spawn_io(async move {
-            mc_dependency::install_windows_app_sdk_runtime(plan, Some(sender)).await
-        }) {
-            Ok(task) => task.await.map_err(|error| error.to_string()),
-            Err(error) => Err(error),
-        };
-
-        match result {
-            Ok(Ok(())) => {
-                info!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    "Windows App SDK Runtime 安装完成，准备重新检查"
-                );
-                if let Err(error) =
-                    schedule_launch_prereq_check(context.version, context.request_id, cx)
-                {
-                    warn!("schedule Windows App SDK recheck failed: {error:?}");
-                }
-            }
-            Ok(Err(error)) => {
-                warn!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    error = %error,
-                    "Windows App SDK Runtime 安装失败"
-                );
-                apply_launch_prereq_failure(
-                    context.request_id,
-                    "LaunchPrereq.errors.installWindowsAppSdkFailed",
-                    &error.to_string(),
-                    cx,
-                );
-            }
-            Err(error) => {
-                warn!(
-                    request_id = context.request_id,
-                    version_name = %context.version.name,
-                    error = %error,
-                    "Windows App SDK Runtime 安装任务执行失败"
-                );
-                apply_launch_prereq_failure(
-                    context.request_id,
-                    "LaunchPrereq.errors.installWindowsAppSdkFailed",
-                    &error.to_string(),
-                    cx,
-                );
-            }
+    match mc_dependency::start_windows_app_sdk_runtime_task(plan) {
+        Ok(handle) => {
+            info!(
+                request_id = context.request_id,
+                version_name = %context.version.name,
+                task_id = %handle.task_id,
+                "Windows App SDK Runtime 安装已注册为 BMCBL 任务"
+            );
+            spawn_dependency_event_pump(context.request_id, handle.events, cx);
+            watch_launch_prereq_dependency_task(
+                context,
+                handle.task_id,
+                "LaunchPrereq.errors.installWindowsAppSdkFailed",
+                "Windows App SDK Runtime",
+                cx,
+            );
         }
-
-        Ok::<(), Error>(())
-    })
-    .detach();
-}
-
-pub fn sync_launcher_state(now: std::time::Instant, cx: &mut App) {
-    let should_finish_close = {
-        let state = cx.global::<LauncherState>();
-        state.show_modal && !state.modal_visible && !state.is_modal_animating(now)
-    };
-    if should_finish_close {
-        cx.update_global(|state: &mut LauncherState, _cx| {
-            state.finish_close_if_elapsed(now);
-        });
+        Err(error) => {
+            apply_launch_prereq_failure(
+                context.request_id,
+                "LaunchPrereq.errors.installWindowsAppSdkFailed",
+                &error,
+                cx,
+            );
+        }
     }
 }
-
 fn begin_launch_task(version: LaunchVersionDescriptor, cx: &mut App) -> Arc<str> {
     let request = LaunchRequest::new(
         version.folder.to_string(),
@@ -1124,6 +985,74 @@ fn schedule_launch_prereq_check(
         spawn_launch_prereq_check_for_request(version, request_id, cx);
     })?;
     Ok(())
+}
+
+fn watch_launch_prereq_dependency_task(
+    context: ActiveLaunchPrereq,
+    task_id: String,
+    error_key: &'static str,
+    label: &'static str,
+    cx: &mut App,
+) {
+    let wait_task_id = task_id.clone();
+    let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
+        task_manager::wait_for_task_terminal(&wait_task_id)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
+
+    cx.spawn(async move |cx| {
+        match terminal.await {
+            Ok(snapshot) if snapshot.status.as_ref() == "completed" => {
+                info!(
+                    request_id = context.request_id,
+                    version_name = %context.version.name,
+                    task_id = %task_id,
+                    dependency = label,
+                    "启动依赖安装完成，准备重新检查"
+                );
+                if let Err(error) =
+                    schedule_launch_prereq_check(context.version, context.request_id, cx)
+                {
+                    warn!("schedule dependency recheck failed: {error:?}");
+                }
+            }
+            Ok(snapshot) => {
+                let message = snapshot
+                    .message
+                    .as_deref()
+                    .unwrap_or(snapshot.status.as_ref())
+                    .to_string();
+                warn!(
+                    request_id = context.request_id,
+                    version_name = %context.version.name,
+                    task_id = %task_id,
+                    dependency = label,
+                    error = %message,
+                    "启动依赖 BMCBL 任务未成功完成"
+                );
+                apply_launch_prereq_failure(context.request_id, error_key, &message, cx);
+            }
+            Err(error) => {
+                warn!(
+                    request_id = context.request_id,
+                    version_name = %context.version.name,
+                    task_id = %task_id,
+                    dependency = label,
+                    error = %error,
+                    "等待启动依赖 BMCBL 任务终态失败"
+                );
+                apply_launch_prereq_failure(
+                    context.request_id,
+                    error_key,
+                    &error.to_string(),
+                    cx,
+                );
+            }
+        }
+        Ok::<(), Error>(())
+    })
+    .detach();
 }
 
 fn spawn_dependency_event_pump(

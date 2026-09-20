@@ -1,6 +1,7 @@
 #![cfg(target_os = "windows")]
 use std::cmp::Ordering;
 use std::env;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -9,7 +10,9 @@ use regex::Regex;
 use reqwest::Client;
 use reqwest::header::{CONTENT_LENGTH, HeaderMap};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{
+    UnboundedReceiver, UnboundedSender, unbounded_channel,
+};
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 #[cfg(windows)]
@@ -105,6 +108,155 @@ pub enum DependencyEvent {
         target: Option<String>,
     },
     AdminRequired(LocalizedText),
+}
+
+pub struct DependencyInstallTaskHandle {
+    pub task_id: String,
+    pub events: UnboundedReceiver<DependencyEvent>,
+}
+
+fn start_dependency_install_task<F, Fut>(
+    title: &'static str,
+    detail: Option<String>,
+    stage: &'static str,
+    work: F,
+) -> Result<DependencyInstallTaskHandle, String>
+where
+    F: FnOnce(UnboundedSender<DependencyEvent>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        title,
+        detail,
+        "queued",
+        Some(100),
+        false,
+    );
+    let (worker_sender, mut worker_receiver) = unbounded_channel::<DependencyEvent>();
+    let (ui_sender, ui_receiver) = unbounded_channel::<DependencyEvent>();
+
+    let progress_task_id = task_id.clone();
+    let progress_stage = stage;
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+        let mut last_percent = 0_u64;
+        while let Some(event) = worker_receiver.recv().await {
+            match &event {
+                DependencyEvent::Progress {
+                    percent, target, ..
+                } => {
+                    let percent = u64::from((*percent).min(100));
+                    if percent < last_percent {
+                        crate::tasks::task_manager::reset_progress(
+                            &progress_task_id,
+                            Some(100),
+                            Some(progress_stage),
+                        );
+                        last_percent = 0;
+                    }
+                    crate::tasks::task_manager::update_progress(
+                        &progress_task_id,
+                        percent.saturating_sub(last_percent),
+                        Some(100),
+                        Some(progress_stage),
+                    );
+                    last_percent = percent;
+                    if let Some(target) = target {
+                        crate::tasks::task_manager::set_task_message(
+                            &progress_task_id,
+                            Some(target.clone()),
+                        );
+                    }
+                }
+                DependencyEvent::AdminRequired(_) => {
+                    crate::tasks::task_manager::set_task_message(
+                        &progress_task_id,
+                        Some("安装需要管理员权限".to_string()),
+                    );
+                }
+                DependencyEvent::Log(_) => {}
+            }
+            let _ = ui_sender.send(event);
+        }
+    }) {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        return Err(error);
+    }
+
+    let worker_task_id = task_id.clone();
+    if let Err(error) = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
+        crate::tasks::task_manager::reset_progress(
+            &worker_task_id,
+            Some(100),
+            Some(stage),
+        );
+        let result = work(worker_sender).await;
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            return;
+        }
+        match result {
+            Ok(()) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "completed",
+                Some("安装完成".to_string()),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error.to_string()),
+            ),
+        }
+    }) {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        return Err(error);
+    }
+
+    Ok(DependencyInstallTaskHandle {
+        task_id,
+        events: ui_receiver,
+    })
+}
+
+pub fn start_missing_uwp_dependencies_task(
+    dependencies: Vec<MissingUwpDependency>,
+) -> Result<DependencyInstallTaskHandle, String> {
+    let count = dependencies.len();
+    start_dependency_install_task(
+        "安装 UWP 运行依赖",
+        Some(format!("{count} 个缺失依赖")),
+        "installing_uwp_dependencies",
+        move |sender| async move {
+            install_missing_uwp_dependencies(dependencies, Some(sender)).await
+        },
+    )
+}
+
+pub fn start_game_input_runtime_task(
+    plan: GameInputInstallPlan,
+) -> Result<DependencyInstallTaskHandle, String> {
+    let detail = plan
+        .installer_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string);
+    start_dependency_install_task(
+        "安装 GameInput Runtime",
+        detail,
+        "installing_game_input",
+        move |sender| async move { install_game_input_runtime(plan, Some(sender)).await },
+    )
+}
+
+pub fn start_windows_app_sdk_runtime_task(
+    plan: WindowsAppSdkInstallPlan,
+) -> Result<DependencyInstallTaskHandle, String> {
+    let detail = Some(format!("Windows App SDK {}", plan.version_label));
+    start_dependency_install_task(
+        "安装 Windows App SDK Runtime",
+        detail,
+        "installing_windows_app_sdk",
+        move |sender| async move { install_windows_app_sdk_runtime(plan, Some(sender)).await },
+    )
 }
 
 fn extract_version(input: &str) -> Option<String> {
