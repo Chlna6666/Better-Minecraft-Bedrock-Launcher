@@ -1927,66 +1927,91 @@ fn extract_to_cache_with_nested(
     purpose: &str,
 ) -> Result<(PathBuf, Vec<PathBuf>)> {
     let work_dir = create_bmcbl_cache_workdir(purpose)?;
-    extract_archive(outer, &work_dir)
-        .with_context(|| format!("Failed to extract outer archive to {:?}", work_dir))?;
+    if let Err(error) = extract_archive(outer, &work_dir)
+        .with_context(|| format!("Failed to extract outer archive to {:?}", work_dir))
+    {
+        let _ = fs::remove_dir_all(&work_dir);
+        return Err(error);
+    }
 
-    // BFS 展开嵌套包：最多 2 层（按复合包规范），防 zip 炸弹 / 恶意递归
+    // BFS 展开嵌套包：最多 2 层（按复合包规范），防 zip 炸弹 / 恶意递归。
+    // 复合包的任意子包失败都必须让整个导入失败，不能静默丢掉一个 behavior/resource pack。
     let nested_root = work_dir.join(".nested");
-    fs::create_dir_all(&nested_root)?;
+    if let Err(error) = fs::create_dir_all(&nested_root) {
+        let _ = fs::remove_dir_all(&work_dir);
+        return Err(error.into());
+    }
 
     let mut pack_dirs: Vec<PathBuf> = Vec::new();
     let mut queue: Vec<PathBuf> = Vec::new();
 
-    // 初次收集
     {
-        let mut inner_archives: Vec<PathBuf> = Vec::new();
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        collect_inner_archives_and_dirs(&work_dir, &mut inner_archives, &mut dirs, 2)?;
+        let mut inner_archives = Vec::new();
+        let mut dirs = Vec::new();
+        if let Err(error) =
+            collect_inner_archives_and_dirs(&work_dir, &mut inner_archives, &mut dirs, 2)
+        {
+            let _ = fs::remove_dir_all(&work_dir);
+            return Err(error);
+        }
         pack_dirs.extend(dirs);
         queue.extend(inner_archives);
     }
 
-    // 去掉 work_dir 自己产生的“嵌套缓存目录”，避免自扫描产生循环
-    queue.retain(|p| is_nested_archive_file(p));
+    queue.retain(|path| is_nested_archive_file(path));
 
-    for _depth in 0..2 {
+    for depth in 0..2 {
         if queue.is_empty() {
             break;
         }
 
-        // 本轮要展开的文件
         let current = std::mem::take(&mut queue);
-
-        // 并行展开
-        let extracted_dirs: Vec<PathBuf> = current
+        let extracted_dirs = current
             .par_iter()
-            .filter_map(
-                |p| match extract_one_nested_archive_to_dir(p, &nested_root) {
-                    Ok(d) => Some(d),
-                    Err(e) => {
-                        warn!("Failed to extract nested archive {:?}: {:?}", p, e);
-                        None
-                    }
-                },
-            )
-            .collect();
+            .map(|path| {
+                extract_one_nested_archive_to_dir(path, &nested_root).with_context(|| {
+                    format!(
+                        "Failed to extract nested archive {} at depth {}",
+                        path.display(),
+                        depth + 1
+                    )
+                })
+            })
+            .collect::<Result<Vec<PathBuf>>>();
 
-        // 对展开目录继续收集（可能还有更深层嵌套）
-        for d in extracted_dirs {
-            let mut inner_archives: Vec<PathBuf> = Vec::new();
-            let mut dirs: Vec<PathBuf> = Vec::new();
-            if collect_inner_archives_and_dirs(&d, &mut inner_archives, &mut dirs, 2).is_ok() {
-                pack_dirs.extend(dirs);
-                // 继续递归嵌套
-                inner_archives.retain(|p| is_nested_archive_file(p));
-                queue.extend(inner_archives);
+        let extracted_dirs = match extracted_dirs {
+            Ok(extracted_dirs) => extracted_dirs,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work_dir);
+                return Err(error);
             }
+        };
+
+        for dir in extracted_dirs {
+            let mut inner_archives = Vec::new();
+            let mut dirs = Vec::new();
+            if let Err(error) =
+                collect_inner_archives_and_dirs(&dir, &mut inner_archives, &mut dirs, 2)
+                    .with_context(|| format!("Failed to scan nested package {}", dir.display()))
+            {
+                let _ = fs::remove_dir_all(&work_dir);
+                return Err(error);
+            }
+            pack_dirs.extend(dirs);
+            inner_archives.retain(|path| is_nested_archive_file(path));
+            queue.extend(inner_archives);
         }
     }
 
-    // 去重
     pack_dirs.sort();
     pack_dirs.dedup();
+
+    if pack_dirs.is_empty() {
+        let _ = fs::remove_dir_all(&work_dir);
+        return Err(anyhow::anyhow!(
+            "Compound archive did not contain an importable Bedrock package"
+        ));
+    }
 
     Ok((work_dir, pack_dirs))
 }
