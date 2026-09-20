@@ -124,13 +124,6 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| "import_unknown".to_string());
     let extract_to = versions_root.join(stem);
-    if let Err(error) = fs::create_dir_all(&extract_to) {
-        finish_error(
-            &task_id,
-            format!("创建解压目标目录失败：{} ({})", error, extract_to.display()),
-        );
-        return;
-    }
 
     let extract_to_str = match extract_to.to_str() {
         Some(value) => value.to_string(),
@@ -249,22 +242,10 @@ async fn run_extract_zip_appx_task(
     };
 
     let extract_to: PathBuf = versions_root.join(stem);
-    if extract_to.exists() && force_replace {
-        update_progress(&task_id, 0, None, Some("preparing_files"));
-        remove_dir_all_if_exists(&extract_to, "替换安装目录失败");
-        if extract_to.exists() {
-            finish_error(
-                &task_id,
-                format!("无法替换安装目录：{}", extract_to.display()),
-            );
-            return;
-        }
-    }
-
-    if let Err(error) = fs::create_dir_all(&extract_to) {
+    if extract_to.exists() && !force_replace {
         finish_error(
             &task_id,
-            format!("创建解压目标目录失败：{} ({})", error, extract_to.display()),
+            format!("安装目录已存在，请显式选择覆盖：{}", extract_to.display()),
         );
         return;
     }

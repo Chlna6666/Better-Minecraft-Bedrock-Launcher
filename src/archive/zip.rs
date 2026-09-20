@@ -12,7 +12,7 @@ use std::time::Instant as StdInstant;
 use zip::ZipArchive;
 
 use tokio::task;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
@@ -481,6 +481,163 @@ fn extract_zip_parallel_blocking(
     Ok(())
 }
 
+fn task_path_token(task_id: &str) -> String {
+    let mut token = String::with_capacity(task_id.len().min(64));
+    for ch in task_id.chars().take(64) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            token.push(ch);
+        } else {
+            token.push('_');
+        }
+    }
+    if token.is_empty() {
+        "task".to_string()
+    } else {
+        token
+    }
+}
+
+fn transaction_sibling(destination: &Path, task_id: &str, role: &str) -> Result<PathBuf, String> {
+    let parent = destination.parent().ok_or_else(|| {
+        format!("解压目标没有父目录: {}", destination.display())
+    })?;
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("package");
+    Ok(parent.join(format!(
+        ".{name}.bmcb-{role}-{}-{}",
+        std::process::id(),
+        task_path_token(task_id)
+    )))
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("删除目录失败: {} ({error})", path.display()))
+    } else {
+        fs::remove_file(path)
+            .map_err(|error| format!("删除文件失败: {} ({error})", path.display()))
+    }
+}
+
+fn extract_zip_transactionally_blocking(
+    archive_path: &Path,
+    destination: &Path,
+    force_replace: bool,
+    task_id: &str,
+) -> Result<(), String> {
+    let parent = destination.parent().ok_or_else(|| {
+        format!("解压目标没有父目录: {}", destination.display())
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("创建解压父目录失败: {} ({error})", parent.display()))?;
+
+    if destination.exists() && !force_replace {
+        return Err(format!("目标目录已存在: {}", destination.display()));
+    }
+
+    let staging = transaction_sibling(destination, task_id, "staging")?;
+    let backup = transaction_sibling(destination, task_id, "backup")?;
+    remove_path_if_exists(&staging)?;
+    remove_path_if_exists(&backup)?;
+    fs::create_dir(&staging)
+        .map_err(|error| format!("创建解压 staging 失败: {} ({error})", staging.display()))?;
+
+    let staging_str = staging
+        .to_str()
+        .ok_or_else(|| format!("解压 staging 路径不是 UTF-8: {}", staging.display()))?;
+
+    let extract_result =
+        extract_zip_parallel_blocking(archive_path, staging_str, true, task_id);
+
+    if let Err(error) = extract_result {
+        let cleanup = remove_path_if_exists(&staging);
+        return match cleanup {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!(
+                "{error}; 清理 staging 失败: {cleanup_error}"
+            )),
+        };
+    }
+
+    if is_cancelled(task_id) {
+        if let Err(error) = remove_path_if_exists(&staging) {
+            warn!(
+                task_id,
+                path = %staging.display(),
+                %error,
+                "取消解压后清理 staging 失败"
+            );
+        }
+        return Ok(());
+    }
+
+    let had_previous = destination.exists();
+    if had_previous {
+        fs::rename(destination, &backup).map_err(|error| {
+            let _ = remove_path_if_exists(&staging);
+            format!(
+                "备份旧安装目录失败: {} -> {} ({error})",
+                destination.display(),
+                backup.display()
+            )
+        })?;
+    }
+
+    // Rename is the commit boundary. Cancellation before this point leaves the previous install
+    // untouched; after this point the complete staging tree is already atomically visible.
+    if is_cancelled(task_id) {
+        if had_previous {
+            if let Err(error) = fs::rename(&backup, destination) {
+                return Err(format!(
+                    "取消安装时恢复旧目录失败: {} -> {} ({error})",
+                    backup.display(),
+                    destination.display()
+                ));
+            }
+        }
+        let _ = remove_path_if_exists(&staging);
+        return Ok(());
+    }
+
+    if let Err(error) = fs::rename(&staging, destination) {
+        let rollback = if had_previous {
+            fs::rename(&backup, destination).map_err(|restore_error| {
+                format!(
+                    "提交解压失败: {error}; 回滚旧目录也失败: {restore_error}"
+                )
+            })
+        } else {
+            Ok(())
+        };
+        let _ = remove_path_if_exists(&staging);
+        rollback?;
+        return Err(format!(
+            "提交解压目录失败: {} -> {} ({error})",
+            staging.display(),
+            destination.display()
+        ));
+    }
+
+    if had_previous
+        && let Err(error) = remove_path_if_exists(&backup)
+    {
+        warn!(
+            task_id,
+            path = %backup.display(),
+            %error,
+            "安装已提交，但旧目录备份清理失败"
+        );
+    }
+
+    Ok(())
+}
+
 /// 从磁盘路径解压 zip 到 destination（并行版本）。
 ///
 /// 与 [`extract_zip`] 的任务事件语义一致（开始/完成/失败/取消由调用方与本函数
@@ -492,13 +649,15 @@ pub async fn extract_zip_from_path(
     task_id: String,
 ) -> Result<CoreResult<()>, CoreError> {
     let archive_path = archive_path.as_ref().to_path_buf();
-    let dest_string = destination.to_string();
+    let destination = PathBuf::from(destination);
     let task_id_for_block = task_id.clone();
 
+    // The transaction owns staging/rollback inside the blocking closure itself. Aborting the
+    // outer future therefore cannot bypass cleanup while a ZIP worker is still unwinding.
     let handle = task::spawn_blocking(move || -> Result<(), String> {
-        extract_zip_parallel_blocking(
+        extract_zip_transactionally_blocking(
             &archive_path,
-            &dest_string,
+            &destination,
             force_replace,
             &task_id_for_block,
         )
