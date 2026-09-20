@@ -341,7 +341,13 @@ impl Window {
             range.start.scene_index,
             range.end.scene_index,
             self.rendered_frame.scene.len(),
-        ) && frame_range_is_valid(
+        ) && self
+            .rendered_frame
+            .scene
+            .range_has_balanced_element_blurs(
+                range.start.scene_index..range.end.scene_index,
+            )
+            && frame_range_is_valid(
             range.start.mouse_listeners_index,
             range.end.mouse_listeners_index,
             self.rendered_frame.mouse_listeners.len(),
