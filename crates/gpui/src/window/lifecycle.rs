@@ -423,7 +423,7 @@ impl WindowInvalidator {
         true
     }
 
-    pub(in crate::window) fn register_cached_view_retained_target(
+    pub(crate) fn register_cached_view_retained_target(
         &self,
         entity: EntityId,
         retained_id: &GlobalElementId,
