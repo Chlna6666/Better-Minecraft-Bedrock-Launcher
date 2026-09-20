@@ -195,31 +195,13 @@ fn start_version_imports(paths: Vec<String>, cx: &mut App) {
 }
 
 fn start_mod_import(version: ManagedVersionEntry, paths: Vec<String>, cx: &mut App) {
-    let i18n = cx.global::<I18n>().clone();
-    cx.spawn(async move |cx| {
-        let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-            data::import_mod_files(version.folder.as_ref(), &paths)
-                .await
-                .map(|()| t!("Manage.mods_imported", count = paths.len()))
-                .map_err(anyhow::Error::msg)
-        })
-        .await;
-
-        cx.update(|cx| match result {
-            Ok(message) => {
-                toast::success(cx, message);
-                cx.update_global(|state: &mut ManagePageState, _cx| {
-                    state.selected_asset_keys.clear();
-                    state.assets_loaded = false;
-                    state.assets_loading = false;
-                    state.assets_error = None;
-                });
-            }
-            Err(error) => {
-                toast::error(cx, SharedString::from(error.to_string()));
-            }
-        })?;
-        Ok::<(), anyhow::Error>(())
-    })
-    .detach();
+    match data::start_mod_import_task(version.folder.to_string(), paths) {
+        Ok(task_id) => {
+            toast::push(cx, t!("Manage.import_task_started"));
+            watch_import_task(task_id, cx);
+        }
+        Err(error) => {
+            toast::error(cx, SharedString::from(error));
+        }
+    }
 }

@@ -77,6 +77,12 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
                     let i18n = cx.global::<I18n>();
                     match snapshot_clone.status.as_ref() {
                         "completed" => {
+                            cx.update_global(|state: &mut ManagePageState, _cx| {
+                                state.selected_asset_keys.clear();
+                                state.assets_loaded = false;
+                                state.assets_loading = false;
+                                state.assets_error = None;
+                            });
                             toast::success(cx, t!("ManagePage.import_completed"));
                         }
                         "cancelled" => {

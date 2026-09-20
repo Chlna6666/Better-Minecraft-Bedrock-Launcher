@@ -482,12 +482,96 @@ fn validate_skin_pack_redirect_target(asset: &ManageAssetEntry) -> Result<(), St
     Ok(())
 }
 
+pub fn start_mod_import_task(
+    version_folder: String,
+    paths: Vec<String>,
+) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("没有可导入的 Mod 文件".to_string());
+    }
+
+    let count = paths.len();
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        "导入 Minecraft Mod",
+        Some(format!("{version_folder} · {count} 个文件")),
+        "queued",
+        None,
+        false,
+    );
+    let worker_task_id = task_id.clone();
+    let workflow = match crate::tasks::runtime::spawn_io(async move {
+        crate::tasks::task_manager::reset_progress(
+            &worker_task_id,
+            None,
+            Some("installing_mod"),
+        );
+        let result =
+            import_mod_files_for_task(&version_folder, &paths, Some(worker_task_id.as_str())).await;
+
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            return;
+        }
+        match result {
+            Ok(()) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "completed",
+                Some(format!("已导入 {count} 个 Mod")),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error),
+            ),
+        }
+    }) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            return Err(error);
+        }
+    };
+
+    let monitor_task_id = task_id.clone();
+    let _ = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = workflow.await
+            && !error.is_cancelled()
+            && !crate::tasks::task_manager::is_cancelled(&monitor_task_id)
+        {
+            crate::tasks::task_manager::finish_task(
+                &monitor_task_id,
+                "error",
+                Some(format!("Mod 导入任务异常结束: {error}")),
+            );
+        }
+    });
+
+    Ok(task_id)
+}
+
 pub async fn import_mod_files(version_folder: &str, paths: &[String]) -> Result<(), String> {
+    import_mod_files_for_task(version_folder, paths, None).await
+}
+
+async fn import_mod_files_for_task(
+    version_folder: &str,
+    paths: &[String],
+    task_id: Option<&str>,
+) -> Result<(), String> {
+    let ensure_not_cancelled = || -> Result<(), String> {
+        if task_id.is_some_and(crate::tasks::task_manager::is_cancelled) {
+            Err("Mod 导入已取消".to_string())
+        } else {
+            Ok(())
+        }
+    };
+
     let mods_dir = version_mods_dir(version_folder);
     let mut pending = Vec::with_capacity(paths.len());
     let mut folder_names = HashSet::with_capacity(paths.len());
 
     for path in paths {
+        ensure_not_cancelled()?;
         let source_path = PathBuf::from(path);
         let source_metadata = fs::metadata(&source_path)
             .await
@@ -523,11 +607,13 @@ pub async fn import_mod_files(version_folder: &str, paths: &[String]) -> Result<
         pending.push((source_path, file_name, folder_name, target_dir));
     }
 
+    ensure_not_cancelled()?;
     fs::create_dir_all(&mods_dir)
         .await
         .map_err(|error| format!("创建 mods 目录失败: {error}"))?;
 
     for (source_path, file_name, folder_name, target_dir) in pending {
+        ensure_not_cancelled()?;
         let manifest = ModManifest {
             name: folder_name,
             entry: file_name.clone(),
@@ -551,6 +637,11 @@ pub async fn import_mod_files(version_folder: &str, paths: &[String]) -> Result<
                 }
                 None => format!("复制 Mod 文件失败: {error}"),
             });
+        }
+
+        if let Err(error) = ensure_not_cancelled() {
+            let _ = fs::remove_dir_all(&target_dir).await;
+            return Err(error);
         }
 
         if let Err(error) = fs::write(target_dir.join("manifest.json"), manifest_text).await {
