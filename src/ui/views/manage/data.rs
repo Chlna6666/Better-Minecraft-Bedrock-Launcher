@@ -12,8 +12,8 @@ use tracing::warn;
 use zip::write::SimpleFileOptions;
 
 use crate::core::minecraft::assets::{
-    CheckImportRequest, DeleteAssetPayload, ImportAssetsRequest, ImportAssetsResult,
-    check_import_conflict, delete_game_asset, import_assets, inspect_import_file,
+    CheckImportRequest, DeleteAssetPayload, check_import_conflict, delete_game_asset,
+    inspect_import_file,
 };
 use crate::core::minecraft::import::{ImportCheckResult, PackagePreview};
 use crate::core::minecraft::map::McMapInfo;
@@ -656,37 +656,6 @@ async fn import_mod_files_for_task(
     }
 
     Ok(())
-}
-
-pub async fn import_non_mod_files(
-    version: &ManagedVersionEntry,
-    config: &ManageVersionConfig,
-    tab: ManageTab,
-    pack_subtype: ManagePackSubtype,
-    selected_gdk_user: Option<&str>,
-    file_paths: Vec<String>,
-    allow_shared_fallback: bool,
-    overwrite: bool,
-) -> Result<ImportAssetsResult, String> {
-    let _ = pack_subtype;
-    let build_type = version.build_type();
-    let edition = version.edition();
-
-    import_assets(ImportAssetsRequest {
-        build_type,
-        edition,
-        version_name: version.folder.to_string(),
-        enable_isolation: config.enable_redirection,
-        user_id: if matches!(tab, ManageTab::Map) {
-            selected_gdk_user.map(ToString::to_string)
-        } else {
-            None
-        },
-        file_paths,
-        overwrite,
-        allow_shared_fallback,
-    })
-    .await
 }
 
 pub async fn inspect_import_path(
