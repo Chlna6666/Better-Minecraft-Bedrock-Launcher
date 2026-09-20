@@ -282,13 +282,26 @@ impl AnimationProperty {
     }
 
     fn dirty_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        self.dirty_bounds_with_visual_scale(bounds, 1.0)
+    }
+
+    fn dirty_bounds_with_visual_scale(
+        self,
+        bounds: Bounds<Pixels>,
+        visual_scale: f32,
+    ) -> Bounds<Pixels> {
         match self.property {
             TransitionProperty::Translation => {
                 translated_bounds(bounds, self.from).union(&translated_bounds(bounds, self.to))
             }
             TransitionProperty::Rotation => rotation_bounds(bounds),
             TransitionProperty::Blur => {
-                let radius = self.from[0].abs().max(self.to[0].abs());
+                let visual_scale = if visual_scale.is_finite() {
+                    visual_scale.abs()
+                } else {
+                    1.0
+                };
+                let radius = self.from[0].abs().max(self.to[0].abs()) * visual_scale;
                 if radius.is_finite() && radius > 0.0 {
                     bounds.dilate(crate::px(radius * 3.0 + 0.5))
                 } else {
@@ -840,7 +853,14 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             let retained_id = window
                 .current_retained_element_id()
                 .expect("stable sampled animation must have a retained identity");
-            let dirty_bounds = self.property.dirty_bounds(bounds);
+            let dirty_bounds = if self.property.property == TransitionProperty::Blur {
+                self.property.dirty_bounds_with_visual_scale(
+                    window.visual_bounds(bounds),
+                    window.visual_scale(),
+                )
+            } else {
+                self.property.dirty_bounds(bounds)
+            };
             window.on_next_presentation_frame(move |window, cx| {
                 frame_pending.set(false);
                 window.notify_interactive_region_scoped_for_current_frame(
@@ -987,6 +1007,11 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         // viewport scope; a physical spring can be tightened after paint reveals actual scene bounds.
         let dirty_bounds = if property.property == TransitionProperty::Translation {
             Bounds::new(Point::default(), window.viewport_size())
+        } else if property.property == TransitionProperty::Blur {
+            property.dirty_bounds_with_visual_scale(
+                window.visual_bounds(bounds),
+                window.visual_scale(),
+            )
         } else {
             property.dirty_bounds(bounds)
         };
@@ -1334,6 +1359,20 @@ mod tests {
                 Point::new(crate::px(5.0), crate::px(7.0)),
                 crate::size(crate::px(60.0), crate::px(40.0)),
             )
+        );
+    }
+
+    #[test]
+    fn blur_dirty_bounds_include_outer_visual_scale() {
+        let property = AnimationProperty::blur(crate::px(2.0), crate::px(10.0));
+        let visual_bounds = Bounds::new(
+            Point::new(crate::px(20.0), crate::px(30.0)),
+            crate::size(crate::px(150.0), crate::px(90.0)),
+        );
+
+        assert_eq!(
+            property.dirty_bounds_with_visual_scale(visual_bounds, 1.5),
+            visual_bounds.dilate(crate::px(45.5))
         );
     }
 
