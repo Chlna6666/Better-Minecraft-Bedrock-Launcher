@@ -2,7 +2,9 @@ use crate::config::config::{GithubSource, read_config};
 use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
-use crate::tasks::task_manager::{create_task_with_details, finish_task};
+use crate::tasks::task_manager::{
+    create_task_with_details, finish_task, reset_progress, set_task_message,
+};
 use crate::utils::app_info::{self, BuildChannel};
 use crate::utils::file_ops;
 use anyhow::Result;
@@ -318,8 +320,9 @@ pub async fn download_and_apply_update(
 
     let downloads_dir = file_ops::update_downloads_dir();
     if let Err(e) = fs::create_dir_all(&downloads_dir) {
-        error!("创建下载目录失败：{}", e);
-        return Err(format!("创建下载目录失败：{}", e));
+        let message = format!("创建下载目录失败：{}", e);
+        error!("{message}");
+        return Err(fail_update_task(&task_id, message));
     }
 
     let fname = filename_hint.unwrap_or_else(|| {
@@ -331,10 +334,11 @@ pub async fn download_and_apply_update(
     let target = downloads_dir.join(&fname);
     info!("保存为：{}", target.display());
 
-    let client =
-        get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?;
+    let client = get_client_for_proxy()
+        .map_err(|e| fail_update_task(&task_id, format!("构建 HTTP 客户端失败：{}", e)))?;
     let manager = DownloaderManager::with_client(client);
-    let download_urls = crate::github::configured_download_urls(&url)?;
+    let download_urls = crate::github::configured_download_urls(&url)
+        .map_err(|e| fail_update_task(&task_id, e))?;
     info!(
         source_url = %url,
         candidate_count = download_urls.len(),
@@ -354,10 +358,14 @@ pub async fn download_and_apply_update(
 
     let bytes_len = match res {
         Ok(CoreResult::Success(_)) => {
-            finish_task(&task_id, "completed", None);
-            fs::metadata(&target)
-                .map_err(|e| format!("获取文件大小失败：{}", e))?
-                .len()
+            let bytes_len = fs::metadata(&target)
+                .map_err(|e| {
+                    fail_update_task(&task_id, format!("获取文件大小失败：{}", e))
+                })?
+                .len();
+            reset_progress(&task_id, None, Some("preparing_update"));
+            set_task_message(&task_id, Some("更新包已下载，正在准备更新程序".to_string()));
+            bytes_len
         }
         Ok(CoreResult::Cancelled) => {
             info!("下载任务已取消：{}", task_id);
@@ -383,15 +391,18 @@ pub async fn download_and_apply_update(
     info!("下载完成：{} bytes", bytes_len);
 
     let src = normalize_file_arg(&target.to_string_lossy())
-        .map_err(|e| format!("处理下载路径失败：{}", e))?;
+        .map_err(|e| fail_update_task(&task_id, format!("处理下载路径失败：{}", e)))?;
 
     let dst = if target_exe_path.trim().is_empty() {
-        std::env::current_exe().map_err(|e| format!("获取当前 exe 失败：{}", e))?
+        std::env::current_exe()
+            .map_err(|e| fail_update_task(&task_id, format!("获取当前 exe 失败：{}", e)))?
     } else {
-        normalize_file_arg(&target_exe_path).map_err(|e| format!("处理目标路径失败：{}", e))?
+        normalize_file_arg(&target_exe_path)
+            .map_err(|e| fail_update_task(&task_id, format!("处理目标路径失败：{}", e)))?
     };
 
-    let exe = std::env::current_exe().map_err(|e| format!("获取 current_exe 失败：{}", e))?;
+    let exe = std::env::current_exe()
+        .map_err(|e| fail_update_task(&task_id, format!("获取 current_exe 失败：{}", e)))?;
     let exe_str = exe.to_string_lossy().to_string();
 
     info!(
@@ -409,26 +420,35 @@ pub async fn download_and_apply_update(
     let _ = std::fs::remove_file(&updater_path);
 
     std::fs::copy(&exe, &updater_path).map_err(|e| {
-        format!(
-            "复制 updater 可执行失败：{} -> {} : {}",
-            exe.display(),
-            updater_path.display(),
-            e
+        fail_update_task(
+            &task_id,
+            format!(
+                "复制 updater 可执行失败：{} -> {} : {}",
+                exe.display(),
+                updater_path.display(),
+                e
+            ),
         )
     })?;
 
+    set_task_message(&task_id, Some("正在启动更新程序".to_string()));
     let child = Command::new(updater_path.clone())
         .arg("run-updater")
         .arg(&src.to_string_lossy().to_string())
         .arg(&dst.to_string_lossy().to_string())
         .arg(timeout_secs.to_string())
         .spawn()
-        .map_err(|e| format!("启动更新子进程失败：{}", e))?;
+        .map_err(|e| fail_update_task(&task_id, format!("启动更新子进程失败：{}", e)))?;
 
     info!(
         "已启动更新子进程 pid={} (updater bin: {})",
         child.id(),
         updater_path.display()
+    );
+    finish_task(
+        &task_id,
+        "completed",
+        Some(format!("更新程序已启动 (pid={})", child.id())),
     );
 
     if auto_quit {
@@ -453,6 +473,11 @@ pub async fn download_and_apply_update(
         "dst": dst.to_string_lossy(),
         "task_id": task_id
     }))
+}
+
+fn fail_update_task(task_id: &str, message: String) -> String {
+    finish_task(task_id, "error", Some(message.clone()));
+    message
 }
 
 /// 规范化路径 / file:// 前缀处理
