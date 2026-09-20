@@ -1,6 +1,6 @@
 use crate::core::minecraft::assets::{
     CheckImportRequest, ImportAssetsRequest, ImportAssetsResult, check_import_conflict,
-    import_assets, inspect_import_file,
+    inspect_import_file, start_import_assets_task,
 };
 use crate::core::minecraft::import::{
     ImportCheckResult, PackagePreview, PreviewIconData, PreviewImageFormat, WorldPackReference,
@@ -311,17 +311,41 @@ impl ImportWindowView {
                 return Ok::<(), anyhow::Error>(());
             }
 
-            let result = import_assets(ImportAssetsRequest {
-                build_type,
-                edition,
-                version_name: selected_folder.to_string(),
-                enable_isolation,
-                user_id,
-                file_paths: vec![file_path],
-                overwrite,
-                allow_shared_fallback,
-            })
-            .await;
+            let import_handle = match start_import_assets_task(
+                ImportAssetsRequest {
+                    build_type,
+                    edition,
+                    version_name: selected_folder.to_string(),
+                    enable_isolation,
+                    user_id,
+                    file_paths: vec![file_path],
+                    overwrite,
+                    allow_shared_fallback,
+                },
+                "导入 Minecraft 内容",
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    handle.update(cx, |this, cx| {
+                        this.finish_import(
+                            Err(error),
+                            launch_after_import.then_some(launch_version),
+                            cx,
+                        );
+                    })?;
+                    return Ok::<(), anyhow::Error>(());
+                }
+            };
+
+            debug!(
+                "Import window registered BMCBL task: path={}, task_id={}",
+                file_path_for_log,
+                import_handle.task_id
+            );
+            let result = import_handle
+                .result
+                .await
+                .unwrap_or_else(|_| Err("导入任务结果通道已关闭".to_string()));
 
             handle.update(cx, |this, cx| {
                 if let Ok(result) = &result {
