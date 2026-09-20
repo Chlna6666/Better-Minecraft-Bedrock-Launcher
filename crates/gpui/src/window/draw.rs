@@ -175,6 +175,15 @@ impl Window {
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+        // Cached-view notify targets are valid only while their exact retained identity exists in
+        // the committed frame. This keeps persistent targets safe across parent subtree replay,
+        // while structural moves/removals automatically fall back to generic invalidation.
+        self.invalidator
+            .retain_cached_view_retained_targets(|_, retained_id| {
+                self.rendered_frame
+                    .retained_element_ranges
+                    .contains_key(retained_id)
+            });
         // Keep static image atlas residency aligned with the two-generation retained-scene
         // working set before the previous frame is cleared for scratch reuse.
         self.prune_static_image_atlas_residency();
