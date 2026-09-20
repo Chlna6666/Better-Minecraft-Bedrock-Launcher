@@ -73,7 +73,6 @@ pub(crate) fn check_for_updates_blocking() -> UpdateCheckOutcome {
     let outcome = match crate::utils::updater::check_updates_blocking(
         OWNER.to_string(),
         REPO.to_string(),
-        None,
     ) {
         Ok(value) => update_check_outcome_from_value(value),
         Err(error) => UpdateCheckOutcome::with_error(error),

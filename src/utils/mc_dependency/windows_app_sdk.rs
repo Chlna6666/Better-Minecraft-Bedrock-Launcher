@@ -21,7 +21,7 @@ const WINDOWS_APP_SDK_RUNTIME_VERSION_LABEL: &str = "1.8.260529003";
 const WINDOWS_APP_SDK_X64_MICROSOFT_DIRECT_DOWNLOAD_URL: &str = "https://download.microsoft.com/download/eab8bdb8-8bad-4057-a315-7a88372e689b/WindowsAppRuntimeInstall-x64.exe";
 const WINDOWS_APP_SDK_X64_AKA_MS_DOWNLOAD_URL: &str =
     "https://aka.ms/windowsappsdk/1.8/1.8.260529003/windowsappruntimeinstall-x64.exe";
-const WINDOWS_APP_SDK_X64_GITHUB_ACCELERATED_DOWNLOAD_URL: &str = "https://dl-proxy.bmcbl.com/https://github.com/BE-Community-Dev/AppSDKArchive/releases/download/1.8/WindowsAppRuntimeInstall-x64.exe";
+const WINDOWS_APP_SDK_X64_GITHUB_DOWNLOAD_URL: &str = "https://github.com/BE-Community-Dev/AppSDKArchive/releases/download/1.8/WindowsAppRuntimeInstall-x64.exe";
 const WINDOWS_APP_SDK_X86_DOWNLOAD_URL: &str =
     "https://aka.ms/windowsappsdk/1.8/1.8.260529003/windowsappruntimeinstall-x86.exe";
 const WINDOWS_APP_SDK_ARM64_DOWNLOAD_URL: &str =
@@ -45,8 +45,8 @@ const WINDOWS_APP_SDK_X64_DOWNLOAD_SOURCES: &[WindowsAppSdkDownloadSource] = &[
         url: WINDOWS_APP_SDK_X64_AKA_MS_DOWNLOAD_URL,
     },
     WindowsAppSdkDownloadSource {
-        label: "GitHub accelerated backup",
-        url: WINDOWS_APP_SDK_X64_GITHUB_ACCELERATED_DOWNLOAD_URL,
+        label: "GitHub backup",
+        url: WINDOWS_APP_SDK_X64_GITHUB_DOWNLOAD_URL,
     },
 ];
 const WINDOWS_APP_SDK_X86_DOWNLOAD_SOURCES: &[WindowsAppSdkDownloadSource] =
@@ -197,35 +197,41 @@ async fn download_windows_app_sdk_installer_if_needed(
 
     let mut last_error = None;
     for source in download_sources {
-        let target_label = download_target_label(installer_name, *source);
-        match download_file_with_progress(
-            client,
-            source.url,
-            &plan.installer_path,
-            crate::localized_text!("McDeps.stages.download"),
-            Some(target_label),
-            sender,
-            Some(&request_headers),
-        )
-        .await
-        {
-            Ok(()) => {
-                info!(
-                    download_source = source.label,
-                    download_url = source.url,
-                    "Windows App SDK Runtime 安装器下载完成"
-                );
-                return Ok(());
-            }
-            Err(error) => {
-                warn!(
-                    download_source = source.label,
-                    download_url = source.url,
-                    error = %error,
-                    "Windows App SDK Runtime 安装器下载源失败，尝试下一个源"
-                );
-                last_error = Some(error);
-                remove_partial_installer(&plan.installer_path).await;
+        let candidates = crate::github::configured_download_urls(source.url)
+            .map_err(anyhow::Error::msg)?;
+        for candidate_url in candidates {
+            let target_label = download_target_label(installer_name, *source);
+            match download_file_with_progress(
+                client,
+                &candidate_url,
+                &plan.installer_path,
+                crate::localized_text!("McDeps.stages.download"),
+                Some(target_label.clone()),
+                sender,
+                Some(&request_headers),
+            )
+            .await
+            {
+                Ok(()) => {
+                    info!(
+                        download_source = source.label,
+                        canonical_url = source.url,
+                        selected_url = %candidate_url,
+                        "Windows App SDK Runtime 安装器下载完成"
+                    );
+                    return Ok(());
+                }
+                Err(error) => {
+                    warn!(
+                        download_source = source.label,
+                        canonical_url = source.url,
+                        candidate_url = %candidate_url,
+                        error = %error,
+                        "Windows App SDK Runtime 安装器下载候选失败，尝试下一个候选"
+                    );
+                    last_error = Some(error);
+                    remove_partial_installer(&plan.installer_path).await;
+                }
             }
         }
     }
@@ -356,7 +362,7 @@ async fn install_windows_app_sdk_installer(_installer_path: &Path) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::{
-        WINDOWS_APP_SDK_DOWNLOAD_USER_AGENT, WINDOWS_APP_SDK_X64_GITHUB_ACCELERATED_DOWNLOAD_URL,
+        WINDOWS_APP_SDK_DOWNLOAD_USER_AGENT, WINDOWS_APP_SDK_X64_GITHUB_DOWNLOAD_URL,
         WINDOWS_APP_SDK_X64_MICROSOFT_DIRECT_DOWNLOAD_URL, windows_app_sdk_download_headers,
         windows_app_sdk_installer_download_sources, windows_app_sdk_installer_file_name,
     };
@@ -390,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn x64_download_sources_include_official_direct_and_accelerated_backup() {
+    fn x64_download_sources_include_official_direct_and_github_backup() {
         if !cfg!(target_arch = "x86_64") {
             return;
         }
@@ -405,7 +411,7 @@ mod tests {
         assert!(
             sources
                 .iter()
-                .any(|source| source.url == WINDOWS_APP_SDK_X64_GITHUB_ACCELERATED_DOWNLOAD_URL)
+                .any(|source| source.url == WINDOWS_APP_SDK_X64_GITHUB_DOWNLOAD_URL)
         );
         assert_eq!(sources.len(), 3);
     }

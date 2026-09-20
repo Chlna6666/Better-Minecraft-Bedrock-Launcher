@@ -1,10 +1,9 @@
-use crate::config::config::read_config;
+use crate::config::config::{GithubSource, read_config};
 use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{create_task_with_details, finish_task};
 use crate::utils::app_info::{self, BuildChannel};
-use crate::utils::cloudflare::get_optimized_ip;
 use crate::utils::file_ops;
 use anyhow::Result;
 use regex::Regex;
@@ -13,7 +12,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 #[derive(Deserialize, Debug)]
@@ -103,106 +102,15 @@ fn nightly_update_available(
         && current.pre.is_empty()
 }
 
-/// 使用阻塞式 TCP 连接测试 GitHub 连接质量
-/// 因为在 GPUI 线程池上运行，不能使用 tokio 异步运行时
-fn check_github_is_fast_blocking(max_latency_ms: u64) -> bool {
-    use std::net::{SocketAddr, ToSocketAddrs};
-
-    let host = "api.github.com";
-    let port = 443u16;
-
-    let start = Instant::now();
-
-    // 尝试解析并连接
-    let addr_str = format!("{}:{}", host, port);
-    let addrs: Vec<SocketAddr> = addr_str
-        .to_socket_addrs()
-        .map(|iter| iter.take(1).collect())
-        .unwrap_or_else(|_| Vec::<SocketAddr>::new());
-
-    if addrs.is_empty() {
-        warn!("GitHub DNS 解析失败：{}", host);
-        return false;
-    }
-
-    let target_addr = addrs[0];
-
-    match std::net::TcpStream::connect_timeout(&target_addr, Duration::from_millis(max_latency_ms))
-    {
-        Ok(_stream) => {
-            let elapsed = start.elapsed();
-            if elapsed <= Duration::from_millis(max_latency_ms) {
-                debug!(
-                    "GitHub TCP 连接成功，延迟：{:.2?} (<= {}ms)",
-                    elapsed, max_latency_ms
-                );
-                true
-            } else {
-                debug!(
-                    "GitHub TCP 连接超时：{:.2?} (> {}ms)",
-                    elapsed, max_latency_ms
-                );
-                false
-            }
-        }
-        Err(e) => {
-            warn!("GitHub TCP 连接失败：{} (耗时 {:.2?})", e, start.elapsed());
-            false
-        }
-    }
-}
-
-/// 检测是否应该使用加速通道（阻塞版本）
-fn should_use_acceleration_blocking() -> bool {
-    info!("正在检测 GitHub 连接质量...");
-    let is_fast = check_github_is_fast_blocking(180);
-    if is_fast {
-        info!("GitHub 连接良好 (<180ms)，使用直连。");
-        false
-    } else {
-        warn!("GitHub 连接缓慢 (>180ms) 或不可达，自动切换至加速通道。");
-        true
-    }
-}
-
-async fn should_use_acceleration() -> bool {
-    match crate::tasks::runtime::run_io_blocking(should_use_acceleration_blocking).await {
-        Ok(use_acceleration) => use_acceleration,
-        Err(error) => {
-            warn!("GitHub 连接检测后台任务失败：{error}");
-            false
-        }
-    }
-}
-
-fn accelerate_download_url(url: &str, use_acceleration: bool) -> String {
-    if !use_acceleration {
-        return url.to_string();
-    }
-    let proxy_prefix = "https://dl-proxy.bmcbl.com/";
-
-    if url.starts_with("https://github.com")
-        || url.starts_with("https://objects.githubusercontent.com")
-    {
-        format!("{}{}", proxy_prefix, url)
-    } else {
-        url.to_string()
-    }
-}
+const GITHUB_API_BASE: &str = "https://api.github.com";
 
 pub async fn check_updates(
     owner: String,
     repo: String,
-    api_base: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let use_acceleration = should_use_acceleration().await;
-
-    // The former updater.bmcbl.com proxy is retired. Keep an explicit base useful for
-    // tests/custom deployments, but use GitHub's API directly for normal checks.
-    let final_api_base = api_base.unwrap_or_else(|| "https://api.github.com".to_string());
-
     let config = read_config().map_err(|e| format!("读取配置失败：{}", e))?;
     let update_channel = config.launcher.update_channel;
+    let github_source = config.launcher.download.github.source;
     let channel = match update_channel {
         crate::config::config::UpdateChannel::Nightly => "nightly".to_string(),
         _ => "stable".to_string(),
@@ -210,16 +118,11 @@ pub async fn check_updates(
     let channel = channel.to_lowercase();
 
     info!(
-        "检查更新：{}/{} (api_base={}, channel={:?}, accelerated={})",
-        owner, repo, final_api_base, update_channel, use_acceleration
+        "检查更新：{}/{} (api_base={}, channel={:?}, github_source={:?})",
+        owner, repo, GITHUB_API_BASE, update_channel, github_source
     );
 
-    let url = format!(
-        "{}/repos/{}/{}/releases",
-        final_api_base.trim_end_matches('/'),
-        owner,
-        repo
-    );
+    let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/releases");
     let start_time = std::time::Instant::now();
 
     let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?;
@@ -296,8 +199,9 @@ pub async fn check_updates(
                 || name_l.ends_with(".7z")
             {
                 let size = a.size;
-                let final_url = accelerate_download_url(&a.browser_download_url, use_acceleration);
-                chosen_asset = Some((a.name.clone(), final_url, size));
+                // Release metadata always carries the canonical GitHub URL. Mirror selection
+                // happens only when the file is actually downloaded.
+                chosen_asset = Some((a.name.clone(), a.browser_download_url.clone(), size));
                 break;
             }
         }
@@ -387,7 +291,7 @@ pub async fn check_updates(
         "latest_stable_changelog": latest_stable_changelog,
         "latest_prerelease_changelog": latest_prerelease_changelog,
         "update_available": update_available,
-        "is_accelerated": use_acceleration
+        "is_accelerated": !matches!(github_source, GithubSource::Direct)
     }))
 }
 
@@ -427,28 +331,15 @@ pub async fn download_and_apply_update(
     let target = downloads_dir.join(&fname);
     info!("保存为：{}", target.display());
 
-    // ================== [Client 构建逻辑] ==================
-    let use_acceleration = should_use_acceleration().await;
-
-    let client = if use_acceleration && url.contains("dl-proxy.bmcbl.com") {
-        let optimized_ip = get_optimized_ip().await;
-        if let Some(ip) = optimized_ip {
-            info!("使用优选 IP {} 进行下载", ip);
-            reqwest::Client::builder()
-                .resolve("dl-proxy.bmcbl.com", ip)
-                .resolve("updater.bmcbl.com", ip)
-                .user_agent("BMCBL-Updater")
-                .build()
-                .map_err(|e| format!("构建优选下载客户端失败：{}", e))?
-        } else {
-            get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?
-        }
-    } else {
-        get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?
-    };
-    // ========================================================
-
+    let client =
+        get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?;
     let manager = DownloaderManager::with_client(client);
+    let download_urls = crate::github::configured_download_urls(&url)?;
+    info!(
+        source_url = %url,
+        candidate_count = download_urls.len(),
+        "更新包使用统一 GitHub 下载候选链"
+    );
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", "BMCBL-Updater".parse().unwrap());
@@ -458,7 +349,7 @@ pub async fn download_and_apply_update(
         ..Default::default()
     };
     let res = manager
-        .download_with_options(&task_id, url.clone(), target.clone(), &options)
+        .download_with_url_candidates(&task_id, download_urls, target.clone(), &options)
         .await;
 
     let bytes_len = match res {
@@ -595,9 +486,8 @@ where
 pub fn check_updates_blocking(
     owner: String,
     repo: String,
-    api_base: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    block_on_app_runtime(check_updates(owner, repo, api_base))
+    block_on_app_runtime(check_updates(owner, repo))
 }
 
 /// 阻塞式下载并应用更新函数 - 在 GPUI 线程池中使用

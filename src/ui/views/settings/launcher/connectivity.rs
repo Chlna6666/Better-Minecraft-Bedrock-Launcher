@@ -33,12 +33,8 @@ const CONNECTIVITY_GROUPS: &[ConnectivityGroup] = &[
                 url: "https://api.chlna6666.com/",
             },
             ConnectivityService {
-                name: "Update Proxy",
-                url: "https://dl-proxy.bmcbl.com/",
-            },
-            ConnectivityService {
-                name: "Update Check",
-                url: "https://updater.bmcbl.com/",
+                name: "GitHub API",
+                url: "https://api.github.com/",
             },
         ],
     },
