@@ -1,12 +1,10 @@
 use anyhow::Context as _;
 use gpui::SharedString;
-use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use tracing::warn;
 use zip::write::SimpleFileOptions;
 
@@ -39,18 +37,6 @@ use std::time::{Duration, Instant};
 const SERVER_MOTD_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 const SERVER_MOTD_RETRY_COUNT: usize = 2;
 const SERVER_MOTD_RETRY_DELAY: Duration = Duration::from_millis(120);
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct ModManifest {
-    name: String,
-    entry: String,
-    #[serde(rename = "type")]
-    mod_type: String,
-    #[serde(default)]
-    inject_delay_ms: Option<u64>,
-    #[serde(flatten)]
-    extra: serde_json::Map<String, serde_json::Value>,
-}
 
 pub async fn load_version_config(
     version: &ManagedVersionEntry,
@@ -339,98 +325,6 @@ async fn query_server_motd_with_retries(server: &ManageServerMotdTarget) -> Mana
         last_error = "服务器未响应".to_string();
     }
     ManageServerMotdStatus::Offline(SharedString::from(last_error))
-}
-
-pub async fn set_mod_enabled(
-    version_folder: &str,
-    mod_id: &str,
-    enabled: bool,
-) -> Result<(), String> {
-    let mods_dir = version_mods_dir(version_folder);
-    let mod_dir = mods_dir.join(mod_id);
-    if !mod_dir.exists() {
-        return Err(format!("Mod 目录不存在: {mod_id}"));
-    }
-
-    let enabled_path = mod_dir.join("manifest.json");
-    let disabled_path = mod_dir.join(".manifest.json");
-
-    if enabled {
-        if enabled_path.exists() {
-            return Ok(());
-        }
-        if disabled_path.exists() {
-            fs::rename(disabled_path, enabled_path)
-                .await
-                .map_err(|error| format!("启用 Mod 失败: {error}"))?;
-            return Ok(());
-        }
-        return Err("未找到 .manifest.json，无法启用".to_string());
-    }
-
-    if disabled_path.exists() {
-        if enabled_path.exists() {
-            fs::remove_file(enabled_path)
-                .await
-                .map_err(|error| format!("清理冲突 manifest 失败: {error}"))?;
-        }
-        return Ok(());
-    }
-
-    if enabled_path.exists() {
-        fs::rename(enabled_path, disabled_path)
-            .await
-            .map_err(|error| format!("禁用 Mod 失败: {error}"))?;
-        return Ok(());
-    }
-
-    Err("未找到 manifest.json，无法禁用".to_string())
-}
-
-pub async fn set_mod_type(
-    version_folder: &str,
-    mod_id: &str,
-    mod_type: &str,
-) -> Result<(), String> {
-    let manifest_path = editable_manifest_path(version_folder, mod_id).await?;
-    let content = fs::read_to_string(&manifest_path)
-        .await
-        .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
-    let mut manifest: ModManifest =
-        serde_json::from_str(&content).map_err(|error| format!("Manifest 解析失败: {error}"))?;
-    manifest.mod_type = mod_type.trim().to_string();
-    let formatted = serde_json::to_string_pretty(&manifest)
-        .map_err(|error| format!("Manifest 序列化失败: {error}"))?;
-    let mut file = fs::File::create(manifest_path)
-        .await
-        .map_err(|error| format!("写入 Manifest 失败: {error}"))?;
-    file.write_all(formatted.as_bytes())
-        .await
-        .map_err(|error| format!("写入 Manifest 失败: {error}"))?;
-    Ok(())
-}
-
-pub async fn set_mod_inject_delay(
-    version_folder: &str,
-    mod_id: &str,
-    inject_delay_ms: u64,
-) -> Result<(), String> {
-    let manifest_path = editable_manifest_path(version_folder, mod_id).await?;
-    let content = fs::read_to_string(&manifest_path)
-        .await
-        .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
-    let mut manifest: ModManifest =
-        serde_json::from_str(&content).map_err(|error| format!("Manifest 解析失败: {error}"))?;
-    manifest.inject_delay_ms = Some(inject_delay_ms);
-    let formatted = serde_json::to_string_pretty(&manifest)
-        .map_err(|error| format!("Manifest 序列化失败: {error}"))?;
-    let mut file = fs::File::create(manifest_path)
-        .await
-        .map_err(|error| format!("写入 Manifest 失败: {error}"))?;
-    file.write_all(formatted.as_bytes())
-        .await
-        .map_err(|error| format!("写入 Manifest 失败: {error}"))?;
-    Ok(())
 }
 
 pub async fn set_vanilla_skin_pack_redirect(
@@ -928,23 +822,6 @@ async fn delete_mods(version_folder: &str, mod_ids: &[String]) -> Result<(), Str
             .map_err(|error| format!("删除 Mod 失败: {error}"))?;
     }
     Ok(())
-}
-
-async fn editable_manifest_path(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
-    let mod_dir = version_mods_dir(version_folder).join(mod_id);
-    if !mod_dir.exists() {
-        return Err(format!("Mod 目录不存在: {mod_id}"));
-    }
-
-    let enabled_path = mod_dir.join("manifest.json");
-    if enabled_path.exists() {
-        return Ok(enabled_path);
-    }
-    let disabled_path = mod_dir.join(".manifest.json");
-    if disabled_path.exists() {
-        return Ok(disabled_path);
-    }
-    Err("未找到 manifest.json 或 .manifest.json".to_string())
 }
 
 fn version_mods_dir(version_folder: &str) -> PathBuf {

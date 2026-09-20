@@ -392,41 +392,24 @@ impl ManagePageView {
                         return;
                     }
                 };
-                prompt.pending = true;
-                let version = version.clone();
-                let asset = asset.clone();
-                cx.spawn(async move |handle, cx| {
-                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                        data::set_mod_inject_delay(
-                            version.folder.as_ref(),
-                            asset.folder_name.as_ref(),
-                            delay,
-                        )
-                        .await
-                        .map_err(anyhow::Error::msg)
-                    })
-                    .await;
-                    let _ = handle.update(cx, |this, cx| {
-                        match result {
-                            Ok(()) => {
-                                this.value_prompt = None;
-                                cx.update_global(|state: &mut ManagePageState, _cx| {
-                                    state.assets_loaded = false;
-                                });
-                                toast::success(cx, t!("ManagePage.inject_delay_updated"));
-                            }
-                            Err(error) => {
-                                if let Some(prompt) = this.value_prompt.as_mut() {
-                                    prompt.pending = false;
-                                }
-                                toast::error(cx, SharedString::from(error.to_string()));
-                            }
-                        }
+                match crate::tasks::manage_service::start_set_mod_inject_delay(
+                    version.folder.to_string(),
+                    asset.folder_name.to_string(),
+                    delay,
+                ) {
+                    Ok(task_id) => {
+                        self.value_prompt = None;
+                        watch_manage_asset_mutation_task(
+                            task_id,
+                            t!("ManagePage.inject_delay_updated"),
+                            cx,
+                        );
                         cx.notify();
-                    });
-                    Ok::<(), anyhow::Error>(())
-                })
-                .detach();
+                    }
+                    Err(error) => {
+                        toast::error(cx, SharedString::from(error));
+                    }
+                }
             }
         }
     }
@@ -444,7 +427,6 @@ impl ManagePageView {
         if dialog.pending {
             return;
         }
-        dialog.pending = true;
         let version = dialog.version.clone();
         let asset = dialog.asset.clone();
         let mod_type = dialog.selected_mod_type.to_string();
@@ -452,7 +434,6 @@ impl ManagePageView {
         let delay = match delay.trim().parse::<u64>() {
             Ok(value) => value,
             Err(error) => {
-                dialog.pending = false;
                 toast::error(
                     cx,
                     t!("ManagePage.invalid_input", message = &error.to_string()),
@@ -460,50 +441,27 @@ impl ManagePageView {
                 return;
             }
         };
+        let inject_delay_ms = (mod_type == "hot-inject").then_some(delay);
 
-        cx.spawn(async move |handle, cx| {
-            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                data::set_mod_type(
-                    version.folder.as_ref(),
-                    asset.folder_name.as_ref(),
-                    &mod_type,
-                )
-                .await
-                .map_err(anyhow::Error::msg)?;
-                if mod_type == "hot-inject" {
-                    data::set_mod_inject_delay(
-                        version.folder.as_ref(),
-                        asset.folder_name.as_ref(),
-                        delay,
-                    )
-                    .await
-                    .map_err(anyhow::Error::msg)?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })
-            .await;
-
-            let _ = handle.update(cx, |this, cx| {
-                match result {
-                    Ok(()) => {
-                        this.mod_type_dialog = None;
-                        cx.update_global(|state: &mut ManagePageState, _cx| {
-                            state.assets_loaded = false;
-                        });
-                        toast::success(cx, t!("ManagePage.mod_type_updated"));
-                    }
-                    Err(error) => {
-                        if let Some(dialog) = this.mod_type_dialog.as_mut() {
-                            dialog.pending = false;
-                        }
-                        toast::error(cx, SharedString::from(error.to_string()));
-                    }
-                }
+        match crate::tasks::manage_service::start_update_mod_settings(
+            version.folder.to_string(),
+            asset.folder_name.to_string(),
+            mod_type,
+            inject_delay_ms,
+        ) {
+            Ok(task_id) => {
+                self.mod_type_dialog = None;
+                watch_manage_asset_mutation_task(
+                    task_id,
+                    t!("ManagePage.mod_type_updated"),
+                    cx,
+                );
                 cx.notify();
-            });
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+            }
+            Err(error) => {
+                toast::error(cx, SharedString::from(error));
+            }
+        }
     }
 }
 

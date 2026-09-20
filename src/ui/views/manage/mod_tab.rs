@@ -10,34 +10,23 @@ impl ManagePageView {
             return;
         };
 
-        cx.spawn(async move |_handle, cx| {
-            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                data::set_mod_enabled(
-                    version.folder.as_ref(),
-                    asset.folder_name.as_ref(),
-                    !enabled,
-                )
-                .await
-                .map_err(anyhow::Error::msg)
-            })
-            .await;
-            let _ = cx.update(|cx| match result {
-                Ok(()) => {
-                    let i18n = cx.global::<I18n>();
-                    toast::success(cx, t!("ManagePage.mod_status_updated"));
-                    cx.update_global(|state: &mut ManagePageState, _cx| {
-                        state.assets_loaded = false;
-                        state.assets_loading = false;
-                        state.assets_error = None;
-                    });
-                }
-                Err(error) => {
-                    toast::error(cx, SharedString::from(error.to_string()));
-                }
-            });
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+        match crate::tasks::manage_service::start_set_mod_enabled(
+            version.folder.to_string(),
+            asset.folder_name.to_string(),
+            !enabled,
+        ) {
+            Ok(task_id) => {
+                let i18n = cx.global::<I18n>();
+                watch_manage_asset_mutation_task(
+                    task_id,
+                    t!("ManagePage.mod_status_updated"),
+                    cx,
+                );
+            }
+            Err(error) => {
+                toast::error(cx, SharedString::from(error));
+            }
+        }
     }
 
     pub(super) fn open_mod_type_dialog(

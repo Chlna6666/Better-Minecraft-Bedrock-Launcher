@@ -1,7 +1,8 @@
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::core::minecraft::map::McMapInfo;
@@ -32,7 +33,7 @@ pub struct ManagedModInfo {
     pub inject_delay_ms: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ModManifest {
     name: String,
     entry: String,
@@ -42,6 +43,8 @@ struct ModManifest {
     version: Option<String>,
     #[serde(default)]
     inject_delay_ms: Option<u64>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -203,7 +206,6 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
         .join(version_folder)
         .join("mods");
     if !mods_dir.exists() {
-        fs::create_dir_all(&mods_dir).map_err(|error| format!("创建 mods 目录失败: {error}"))?;
         return Ok(Vec::new());
     }
 
@@ -249,4 +251,352 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
         });
     }
     Ok(mods)
+}
+
+
+fn mod_directory(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
+    if version_folder.trim().is_empty()
+        || mod_id.trim().is_empty()
+        || mod_id.contains("..")
+        || mod_id.contains('/')
+        || mod_id.contains('\\')
+    {
+        return Err("无效的 Mod 标识".to_string());
+    }
+
+    let directory = crate::utils::file_ops::bmcbl_subdir("versions")
+        .join(version_folder)
+        .join("mods")
+        .join(mod_id);
+    if !directory.is_dir() {
+        return Err(format!("Mod 目录不存在: {mod_id}"));
+    }
+    Ok(directory)
+}
+
+fn editable_manifest_path_blocking(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
+    let mod_dir = mod_directory(version_folder, mod_id)?;
+    let enabled = mod_dir.join("manifest.json");
+    if enabled.is_file() {
+        return Ok(enabled);
+    }
+    let disabled = mod_dir.join(".manifest.json");
+    if disabled.is_file() {
+        return Ok(disabled);
+    }
+    Err("未找到 manifest.json 或 .manifest.json".to_string())
+}
+
+fn task_path_token(task_id: &str) -> String {
+    let mut token = String::with_capacity(task_id.len().min(64));
+    for ch in task_id.chars().take(64) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            token.push(ch);
+        } else {
+            token.push('_');
+        }
+    }
+    if token.is_empty() {
+        "task".to_string()
+    } else {
+        token
+    }
+}
+
+fn sibling_transaction_path(path: &Path, task_id: &str, role: &str) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Manifest 没有父目录: {}", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("manifest.json");
+    Ok(parent.join(format!(
+        ".{name}.bmcb-{role}-{}",
+        task_path_token(task_id)
+    )))
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("清理临时文件失败 {}: {error}", path.display())),
+    }
+}
+
+fn ensure_mod_task_active(task_id: &str) -> Result<(), String> {
+    if crate::tasks::task_manager::is_cancelled(task_id) {
+        Err("Mod 操作已取消".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn write_manifest_transactionally(
+    manifest_path: &Path,
+    manifest: &ModManifest,
+    task_id: &str,
+) -> Result<(), String> {
+    let staging = sibling_transaction_path(manifest_path, task_id, "staging")?;
+    let backup = sibling_transaction_path(manifest_path, task_id, "backup")?;
+    remove_file_if_exists(&staging)?;
+    remove_file_if_exists(&backup)?;
+
+    let formatted = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| format!("Manifest 序列化失败: {error}"))?;
+    let mut staging_file = fs::File::create(&staging)
+        .map_err(|error| format!("创建 Manifest staging 失败: {error}"))?;
+    if let Err(error) = staging_file.write_all(&formatted) {
+        let _ = remove_file_if_exists(&staging);
+        return Err(format!("写入 Manifest staging 失败: {error}"));
+    }
+    if let Err(error) = staging_file.sync_all() {
+        let _ = remove_file_if_exists(&staging);
+        return Err(format!("刷新 Manifest staging 失败: {error}"));
+    }
+    drop(staging_file);
+
+    if let Err(error) = ensure_mod_task_active(task_id) {
+        let _ = remove_file_if_exists(&staging);
+        return Err(error);
+    }
+
+    fs::rename(manifest_path, &backup).map_err(|error| {
+        let _ = remove_file_if_exists(&staging);
+        format!("备份旧 Manifest 失败: {error}")
+    })?;
+
+    if let Err(error) = ensure_mod_task_active(task_id) {
+        let restore_result = fs::rename(&backup, manifest_path);
+        let _ = remove_file_if_exists(&staging);
+        return match restore_result {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(format!(
+                "{error}；恢复旧 Manifest 失败: {restore_error}"
+            )),
+        };
+    }
+
+    if let Err(error) = fs::rename(&staging, manifest_path) {
+        let restore_result = fs::rename(&backup, manifest_path);
+        let _ = remove_file_if_exists(&staging);
+        return match restore_result {
+            Ok(()) => Err(format!("提交 Manifest 失败: {error}")),
+            Err(restore_error) => Err(format!(
+                "提交 Manifest 失败: {error}；恢复旧 Manifest 也失败: {restore_error}"
+            )),
+        };
+    }
+
+    // Atomic rename above is the commit boundary. A late cancellation must not roll back the
+    // already complete manifest; only best-effort cleanup remains.
+    if let Err(error) = remove_file_if_exists(&backup) {
+        warn!(
+            path = %backup.display(),
+            %error,
+            "manifest committed but backup cleanup failed"
+        );
+    }
+    Ok(())
+}
+
+fn start_mod_mutation_task<F>(
+    title: &'static str,
+    detail: String,
+    stage: &'static str,
+    operation: F,
+) -> Result<String, String>
+where
+    F: FnOnce(&str) -> Result<String, String> + Send + 'static,
+{
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        title,
+        Some(detail),
+        stage,
+        None,
+        false,
+    );
+    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+
+    let worker_task_id = task_id.clone();
+    let blocking_task_id = task_id.clone();
+    let workflow = crate::tasks::runtime::spawn_io(async move {
+        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some(stage));
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "cancelled",
+                Some("Mod 操作已取消".to_string()),
+            );
+            return;
+        }
+
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            operation(blocking_task_id.as_str())
+        })
+        .await;
+
+        match result {
+            Ok(Ok(message)) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "completed",
+                Some(message),
+            ),
+            Ok(Err(error)) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
+                    Some(error),
+                );
+            }
+            Ok(Err(error)) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
+            }
+            Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
+                    Some(error),
+                );
+            }
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
+            }
+        }
+    })
+    .map_err(|error| {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        error
+    })?;
+
+    let monitor_task_id = task_id.clone();
+    let _ = crate::tasks::runtime::spawn_io(async move {
+        match workflow.await {
+            Ok(()) => {
+                let unfinished = crate::tasks::task_manager::get_snapshot_arc(&monitor_task_id)
+                    .is_some_and(|snapshot| !snapshot.is_terminal());
+                if unfinished {
+                    let status = if crate::tasks::task_manager::is_cancelled(&monitor_task_id) {
+                        "cancelled"
+                    } else {
+                        "error"
+                    };
+                    crate::tasks::task_manager::finish_task(
+                        &monitor_task_id,
+                        status,
+                        Some("Mod 任务未正确收尾".to_string()),
+                    );
+                }
+            }
+            Err(error) => {
+                let status = if crate::tasks::task_manager::is_cancelled(&monitor_task_id) {
+                    "cancelled"
+                } else {
+                    "error"
+                };
+                crate::tasks::task_manager::finish_task(
+                    &monitor_task_id,
+                    status,
+                    Some(format!("Mod 任务异常结束: {error}")),
+                );
+            }
+        }
+    });
+
+    Ok(task_id)
+}
+
+pub fn start_set_mod_enabled(
+    version_folder: String,
+    mod_id: String,
+    enabled: bool,
+) -> Result<String, String> {
+    let detail = format!("{version_folder} · {mod_id}");
+    start_mod_mutation_task(
+        if enabled { "启用 Mod" } else { "禁用 Mod" },
+        detail,
+        "updating_mod_state",
+        move |task_id| {
+            let mod_dir = mod_directory(&version_folder, &mod_id)?;
+            let enabled_path = mod_dir.join("manifest.json");
+            let disabled_path = mod_dir.join(".manifest.json");
+
+            if enabled {
+                if enabled_path.exists() {
+                    return Ok("Mod 已启用".to_string());
+                }
+                if !disabled_path.exists() {
+                    return Err("未找到 .manifest.json，无法启用".to_string());
+                }
+                ensure_mod_task_active(task_id)?;
+                fs::rename(&disabled_path, &enabled_path)
+                    .map_err(|error| format!("启用 Mod 失败: {error}"))?;
+                return Ok("Mod 已启用".to_string());
+            }
+
+            if disabled_path.exists() {
+                if enabled_path.exists() {
+                    ensure_mod_task_active(task_id)?;
+                    let trash = sibling_transaction_path(&enabled_path, task_id, "trash")?;
+                    remove_file_if_exists(&trash)?;
+                    fs::rename(&enabled_path, &trash)
+                        .map_err(|error| format!("提交禁用 Mod 状态失败: {error}"))?;
+                    if let Err(error) = remove_file_if_exists(&trash) {
+                        warn!(path = %trash.display(), %error, "disabled Mod cleanup failed");
+                    }
+                }
+                return Ok("Mod 已禁用".to_string());
+            }
+
+            if !enabled_path.exists() {
+                return Err("未找到 manifest.json，无法禁用".to_string());
+            }
+            ensure_mod_task_active(task_id)?;
+            fs::rename(&enabled_path, &disabled_path)
+                .map_err(|error| format!("禁用 Mod 失败: {error}"))?;
+            Ok("Mod 已禁用".to_string())
+        },
+    )
+}
+
+pub fn start_update_mod_settings(
+    version_folder: String,
+    mod_id: String,
+    mod_type: String,
+    inject_delay_ms: Option<u64>,
+) -> Result<String, String> {
+    let detail = format!("{version_folder} · {mod_id}");
+    start_mod_mutation_task("更新 Mod 配置", detail, "updating_mod_manifest", move |task_id| {
+        let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
+        let content = fs::read_to_string(&manifest_path)
+            .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
+        let mut manifest: ModManifest = serde_json::from_str(&content)
+            .map_err(|error| format!("Manifest 解析失败: {error}"))?;
+        manifest.mod_type = mod_type.trim().to_string();
+        if let Some(inject_delay_ms) = inject_delay_ms {
+            manifest.inject_delay_ms = Some(inject_delay_ms);
+        }
+        write_manifest_transactionally(&manifest_path, &manifest, task_id)?;
+        Ok("Mod 配置已更新".to_string())
+    })
+}
+
+pub fn start_set_mod_inject_delay(
+    version_folder: String,
+    mod_id: String,
+    inject_delay_ms: u64,
+) -> Result<String, String> {
+    let detail = format!("{version_folder} · {mod_id}");
+    start_mod_mutation_task("更新 Mod 注入延迟", detail, "updating_mod_manifest", move |task_id| {
+        let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
+        let content = fs::read_to_string(&manifest_path)
+            .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
+        let mut manifest: ModManifest = serde_json::from_str(&content)
+            .map_err(|error| format!("Manifest 解析失败: {error}"))?;
+        manifest.inject_delay_ms = Some(inject_delay_ms);
+        write_manifest_transactionally(&manifest_path, &manifest, task_id)?;
+        Ok("Mod 注入延迟已更新".to_string())
+    })
 }

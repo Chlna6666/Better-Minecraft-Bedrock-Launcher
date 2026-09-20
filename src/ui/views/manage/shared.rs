@@ -108,6 +108,70 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
     .detach();
 }
 
+pub(super) fn watch_manage_asset_mutation_task(
+    task_id: String,
+    success_message: SharedString,
+    cx: &mut App,
+) {
+    let task_id: Arc<str> = Arc::from(task_id);
+    let mut updates = task_manager::subscribe_task_updates();
+
+    cx.spawn({
+        let task_id = task_id.clone();
+        async move |cx| {
+            let snapshot = loop {
+                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                    && snapshot.is_terminal()
+                {
+                    break snapshot;
+                }
+
+                match updates.recv().await {
+                    Ok(snapshot) if snapshot.id.as_ref() == task_id.as_ref() && snapshot.is_terminal() => {
+                        break snapshot;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, task_id = %task_id, "manage mutation watcher lagged; resyncing");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        warn!(task_id = %task_id, "manage mutation watcher closed");
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                }
+            };
+
+            let _ = cx.update(|cx| {
+                let i18n = cx.global::<I18n>();
+                match snapshot.status.as_ref() {
+                    "completed" => {
+                        cx.update_global(|state: &mut ManagePageState, _cx| {
+                            state.assets_loaded = false;
+                            state.assets_loading = false;
+                            state.assets_error = None;
+                        });
+                        toast::success(cx, success_message);
+                    }
+                    "cancelled" => {
+                        toast::push(cx, t!("Tasks.status.cancelled"));
+                    }
+                    "error" => {
+                        let message = snapshot
+                            .message
+                            .as_ref()
+                            .map(|message| SharedString::from(message.to_string()))
+                            .unwrap_or_else(|| SharedString::from("Mod 操作失败"));
+                        toast::error(cx, message);
+                    }
+                    _ => {}
+                }
+            });
+            Ok::<(), anyhow::Error>(())
+        }
+    })
+    .detach();
+}
+
 pub(super) fn watch_levilamina_install_task(task_id: String, cx: &mut App) {
     let wait_task = gpui_tokio::Tokio::spawn_result(cx, async move {
         task_manager::wait_for_task_terminal(&task_id)
