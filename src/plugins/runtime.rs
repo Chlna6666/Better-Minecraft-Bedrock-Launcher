@@ -4639,24 +4639,105 @@ where
     };
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
 
-    cx.spawn(async move |cx| {
-        let plugin_id_for_io = plugin_id.clone();
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        "卸载 BMCBL 插件",
+        Some(plugin_id.clone()),
+        "queued",
+        None,
+        false,
+    );
+    let worker_task_id = task_id.clone();
+    let plugin_id_for_worker = plugin_id.clone();
+    let workflow = match crate::tasks::runtime::spawn_io(async move {
+        crate::tasks::task_manager::reset_progress(
+            &worker_task_id,
+            None,
+            Some("uninstalling_plugin"),
+        );
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            return;
+        }
+
         let removed = crate::tasks::runtime::run_io_blocking(move || {
-            uninstall_plugin_files(&plugins_dir, &manifest, &plugin_id_for_io)
+            uninstall_plugin_files(&plugins_dir, &manifest, &plugin_id_for_worker)
         })
         .await;
 
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            return;
+        }
+        match removed {
+            Ok(Ok(())) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "completed",
+                Some("插件已卸载".to_string()),
+            ),
+            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(crate::plugins::manifest::format_error_chain(&error)),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error),
+            ),
+        }
+    }) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            on_complete(cx, Err(anyhow!(error)));
+            return;
+        }
+    };
+
+    let monitor_task_id = task_id.clone();
+    let _ = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = workflow.await
+            && !error.is_cancelled()
+            && !crate::tasks::task_manager::is_cancelled(&monitor_task_id)
+        {
+            crate::tasks::task_manager::finish_task(
+                &monitor_task_id,
+                "error",
+                Some(format!("插件卸载任务异常结束: {error}")),
+            );
+        }
+    });
+    observe_plugin_file_task(cx, task_id, on_complete);
+}
+
+fn observe_plugin_file_task<F>(cx: &mut App, task_id: String, on_complete: F)
+where
+    F: FnOnce(&mut App, Result<()>) + 'static,
+{
+    let wait_task_id = task_id.clone();
+    let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::tasks::task_manager::wait_for_task_terminal(&wait_task_id)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
+    cx.spawn(async move |cx| {
+        let snapshot = terminal.await;
         cx.update(|cx| {
-            let result = match removed {
-                Ok(result) => result,
-                Err(error) => Err(anyhow!("{error}")),
+            let result = match snapshot {
+                Ok(snapshot) if snapshot.status.as_ref() == "completed" => {
+                    reload_all(cx);
+                    Ok(())
+                }
+                Ok(snapshot) => Err(anyhow!(
+                    "{}",
+                    snapshot
+                        .message
+                        .as_deref()
+                        .unwrap_or(snapshot.status.as_ref())
+                )),
+                Err(error) => Err(error),
             };
-            if result.is_ok() {
-                reload_all(cx);
-            }
             on_complete(cx, result);
         })?;
-
         Ok::<(), anyhow::Error>(())
     })
     .detach();
@@ -4712,12 +4793,31 @@ where
         return;
     };
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
-
-    cx.spawn(async move |cx| {
+    let detail = file_name.to_string_lossy().into_owned();
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        "导入 BMCBL 插件",
+        Some(detail),
+        "queued",
+        None,
+        false,
+    );
+    let worker_task_id = task_id.clone();
+    let workflow = match crate::tasks::runtime::spawn_io(async move {
+        crate::tasks::task_manager::reset_progress(
+            &worker_task_id,
+            None,
+            Some("installing_plugin"),
+        );
+        let io_task_id = worker_task_id.clone();
         let imported = crate::tasks::runtime::run_io_blocking(move || {
+            if crate::tasks::task_manager::is_cancelled(&io_task_id) {
+                bail!("插件导入已取消");
+            }
+
             std::fs::create_dir_all(&plugins_dir)
                 .with_context(|| format!("create plugin directory {}", plugins_dir.display()))?;
-            let destination = plugins_dir.join(file_name);
+            let destination = plugins_dir.join(&file_name);
             let source = std::fs::canonicalize(&source_path)
                 .with_context(|| format!("canonicalize plugin package {}", source_path.display()))?;
             let destination_matches_source = destination
@@ -4726,33 +4826,129 @@ where
                 .transpose()
                 .with_context(|| format!("canonicalize plugin package {}", destination.display()))?
                 .is_some_and(|destination| destination == source);
-            if !destination_matches_source {
-                std::fs::copy(&source_path, &destination).with_context(|| {
+            if destination_matches_source {
+                return Ok::<(), anyhow::Error>(());
+            }
+
+            let staging = plugins_dir.join(format!(
+                ".{}.{}.importing",
+                destination
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("plugin"),
+                io_task_id
+            ));
+            if staging.exists() {
+                let _ = std::fs::remove_file(&staging);
+            }
+            std::fs::copy(&source_path, &staging).with_context(|| {
+                format!(
+                    "copy plugin package {} to staging {}",
+                    source_path.display(),
+                    staging.display()
+                )
+            })?;
+
+            if crate::tasks::task_manager::is_cancelled(&io_task_id) {
+                let _ = std::fs::remove_file(&staging);
+                bail!("插件导入已取消");
+            }
+
+            let backup = destination.exists().then(|| {
+                plugins_dir.join(format!(
+                    ".{}.{}.backup",
+                    destination
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("plugin"),
+                    io_task_id
+                ))
+            });
+            if let Some(backup) = backup.as_ref() {
+                if backup.exists() {
+                    let _ = std::fs::remove_file(backup);
+                }
+                std::fs::rename(&destination, backup).with_context(|| {
                     format!(
-                        "copy plugin package {} to {}",
-                        source_path.display(),
-                        destination.display()
+                        "move previous plugin package {} to backup {}",
+                        destination.display(),
+                        backup.display()
                     )
                 })?;
+            }
+
+            if let Err(error) = std::fs::rename(&staging, &destination) {
+                if let Some(backup) = backup.as_ref()
+                    && let Err(restore_error) = std::fs::rename(backup, &destination)
+                {
+                    return Err(anyhow!(
+                        "commit plugin package failed: {error}; rollback also failed: {restore_error}"
+                    ));
+                }
+                let _ = std::fs::remove_file(&staging);
+                return Err(anyhow!(
+                    "commit plugin package {} to {} failed: {error}",
+                    staging.display(),
+                    destination.display()
+                ));
+            }
+
+            if let Some(backup) = backup
+                && let Err(error) = std::fs::remove_file(&backup)
+            {
+                warn!(
+                    path = %backup.display(),
+                    %error,
+                    "plugin import committed but stale backup cleanup failed"
+                );
             }
             Ok::<(), anyhow::Error>(())
         })
         .await;
 
-        cx.update(|cx| {
-            let result = match imported {
-                Ok(result) => result,
-                Err(error) => Err(anyhow!("{error}")),
-            };
-            if result.is_ok() {
-                reload_all(cx);
-            }
-            on_complete(cx, result);
-        })?;
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            return;
+        }
+        match imported {
+            Ok(Ok(())) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "completed",
+                Some("插件包已导入".to_string()),
+            ),
+            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(crate::plugins::manifest::format_error_chain(&error)),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error),
+            ),
+        }
+    }) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            on_complete(cx, Err(anyhow!(error)));
+            return;
+        }
+    };
 
-        Ok::<(), anyhow::Error>(())
-    })
-    .detach();
+    let monitor_task_id = task_id.clone();
+    let _ = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = workflow.await
+            && !error.is_cancelled()
+            && !crate::tasks::task_manager::is_cancelled(&monitor_task_id)
+        {
+            crate::tasks::task_manager::finish_task(
+                &monitor_task_id,
+                "error",
+                Some(format!("插件导入任务异常结束: {error}")),
+            );
+        }
+    });
+    observe_plugin_file_task(cx, task_id, on_complete);
 }
 
 pub fn dispatch_plugin_action(
