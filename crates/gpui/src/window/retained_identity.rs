@@ -117,10 +117,21 @@ impl Window {
             return None;
         }
 
-        Some(RetainedSelfSceneRanges {
-            prefix: parent_start..child_start,
-            suffix: child_end..parent_end,
-        })
+        let prefix = parent_start..child_start;
+        let suffix = child_end..parent_end;
+        if !self
+            .rendered_frame
+            .scene
+            .range_has_balanced_element_blurs(prefix.clone())
+            || !self
+                .rendered_frame
+                .scene
+                .range_has_balanced_element_blurs(suffix.clone())
+        {
+            return None;
+        }
+
+        Some(RetainedSelfSceneRanges { prefix, suffix })
     }
 
     /// Replay a validated previous-frame scene span into the current frame without replaying
