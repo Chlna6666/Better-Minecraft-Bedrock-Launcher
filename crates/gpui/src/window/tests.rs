@@ -1,4 +1,5 @@
 use super::*;
+use super::frame_lifecycle::DIRTY_FRAME_BACKPRESSURE_BUDGET;
 use crate::{
     AnimationDriver, AnimationSequence, AnimationSpec, PaintOperation, Primitive, RepeatMode,
     TestAppContext, TransitionProperty, WindowOptions, performance_metrics_snapshot, point, px,
