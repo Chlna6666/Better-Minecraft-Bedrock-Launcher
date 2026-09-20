@@ -199,6 +199,12 @@ struct WindowInvalidatorInner {
     pub active_targeted_elements:
         FxHashMap<(EntityId, GlobalElementId), RetainedInvalidationScope>,
     pub active_generic_dirty_views: FxHashSet<EntityId>,
+    /// Stable retained boundaries for explicitly cached AnyViews in the last committed frame.
+    ///
+    /// Ordinary Context::notify(view) can use these paths as ReconcileSubtree targets instead of
+    /// widening a tiny child update into a generic view invalidation from the root. Targets are
+    /// validated against the committed retained-range table after every successful frame.
+    pub cached_view_retained_targets: FxHashMap<EntityId, Vec<GlobalElementId>>,
 }
 
 #[derive(Clone)]
@@ -223,6 +229,7 @@ impl WindowInvalidator {
                 active_targeted_replay: false,
                 active_targeted_elements: FxHashMap::default(),
                 active_generic_dirty_views: FxHashSet::default(),
+                cached_view_retained_targets: FxHashMap::default(),
             })),
         }
     }
@@ -330,10 +337,27 @@ impl WindowInvalidator {
                 inner.pending_targeted_elements.clear();
                 inner.pending_generic_dirty_views.clear();
             }
+
             if inner.pending_targeted_replay {
-                inner.pending_generic_dirty_views.insert(entity);
+                if let Some(targets) = inner.cached_view_retained_targets.get(&entity).cloned()
+                    && !targets.is_empty()
+                {
+                    for retained_id in targets {
+                        inner
+                            .pending_targeted_elements
+                            .entry((entity, retained_id))
+                            .and_modify(|scope| {
+                                *scope = scope.merged(RetainedInvalidationScope::ReconcileSubtree)
+                            })
+                            .or_insert(RetainedInvalidationScope::ReconcileSubtree);
+                    }
+                } else {
+                    inner.pending_generic_dirty_views.insert(entity);
+                }
             }
             inner.dirty = true;
+            // Retained targeting changes only rendering provenance. Context::notify observers keep
+            // the same semantics and are still dispatched by the normal Notify effect.
             cx.push_effect(Effect::Notify { emitter: entity });
             true
         } else {
@@ -397,6 +421,34 @@ impl WindowInvalidator {
         }
         inner.dirty = true;
         true
+    }
+
+    pub(in crate::window) fn register_cached_view_retained_target(
+        &self,
+        entity: EntityId,
+        retained_id: &GlobalElementId,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        let targets = inner
+            .cached_view_retained_targets
+            .entry(entity)
+            .or_default();
+        if !targets.iter().any(|target| target == retained_id) {
+            targets.push(retained_id.clone());
+        }
+    }
+
+    pub(in crate::window) fn retain_cached_view_retained_targets(
+        &self,
+        mut keep: impl FnMut(EntityId, &GlobalElementId) -> bool,
+    ) {
+        self.inner
+            .borrow_mut()
+            .cached_view_retained_targets
+            .retain(|entity, targets| {
+                targets.retain(|target| keep(*entity, target));
+                !targets.is_empty()
+            });
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -604,6 +656,7 @@ impl WindowInvalidator {
         trim_collection!(pending_layout_animation_deadlines);
         trim_collection!(active_targeted_elements);
         trim_collection!(active_generic_dirty_views);
+        trim_collection!(cached_view_retained_targets);
     }
 
     pub fn not_drawing(&self) -> bool {
