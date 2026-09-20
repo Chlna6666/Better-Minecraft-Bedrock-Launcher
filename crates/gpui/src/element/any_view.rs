@@ -305,6 +305,13 @@ impl Element for AnyView {
         cx: &mut App,
     ) -> Option<AnyElement> {
         window.set_view_id(self.entity_id());
+        if self.cached_style.is_some()
+            && let Some(global_id) = global_id
+        {
+            window
+                .invalidator
+                .register_cached_view_retained_target(self.entity_id(), global_id);
+        }
         window.with_rendered_view(self.entity_id(), |window| {
             let critical = self.critical;
             if let Some(mut element) = element.take() {
