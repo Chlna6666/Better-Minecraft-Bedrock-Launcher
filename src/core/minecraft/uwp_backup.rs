@@ -78,6 +78,113 @@ pub fn export_user_data_backup(
     family_name: &str,
     destination_directory: &Path,
 ) -> Result<ManualUwpBackupResult, String> {
+    export_user_data_backup_inner(family_name, destination_directory, None)
+}
+
+pub fn start_user_data_backup_task(
+    family_name: String,
+    destination_directory: PathBuf,
+) -> Result<String, String> {
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        "导出 Minecraft UWP 备份",
+        Some(destination_directory.display().to_string()),
+        "queued",
+        None,
+        false,
+    );
+    let worker_task_id = task_id.clone();
+    let blocking_task_id = task_id.clone();
+    let workflow = match crate::tasks::runtime::spawn_io(async move {
+        crate::tasks::task_manager::reset_progress(
+            &worker_task_id,
+            None,
+            Some("backing_up_uwp"),
+        );
+        crate::tasks::task_manager::set_task_message(
+            &worker_task_id,
+            Some("正在扫描并压缩 Minecraft UWP 用户数据".to_string()),
+        );
+
+        let result = crate::tasks::runtime::run_archive_blocking(move || {
+            export_user_data_backup_inner(
+                &family_name,
+                &destination_directory,
+                Some(blocking_task_id.as_str()),
+            )
+        })
+        .await;
+
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            return;
+        }
+        match result {
+            Ok(Ok(result)) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "completed",
+                    Some(format!(
+                        "备份已导出：{} · {} 个文件 · {} 字节",
+                        result.archive_path.display(),
+                        result.summary.file_count,
+                        result.summary.total_size
+                    )),
+                );
+            }
+            Ok(Err(error)) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "error",
+                    Some(error),
+                );
+            }
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "error",
+                    Some(error),
+                );
+            }
+        }
+    }) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            return Err(error);
+        }
+    };
+
+    let monitor_task_id = task_id.clone();
+    let _ = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = workflow.await
+            && !error.is_cancelled()
+            && !crate::tasks::task_manager::is_cancelled(&monitor_task_id)
+        {
+            crate::tasks::task_manager::finish_task(
+                &monitor_task_id,
+                "error",
+                Some(format!("UWP 备份任务异常结束: {error}")),
+            );
+        }
+    });
+
+    Ok(task_id)
+}
+
+fn ensure_backup_task_active(task_id: Option<&str>) -> Result<(), String> {
+    if task_id.is_some_and(crate::tasks::task_manager::is_cancelled) {
+        Err("UWP 备份已取消".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn export_user_data_backup_inner(
+    family_name: &str,
+    destination_directory: &Path,
+    task_id: Option<&str>,
+) -> Result<ManualUwpBackupResult, String> {
+    ensure_backup_task_active(task_id)?;
     let summary = summarize_family(family_name);
     let source = user_data_path(&summary);
     if !summary.data_present || !source.is_dir() || summary.file_count == 0 {
@@ -94,6 +201,17 @@ pub fn export_user_data_backup(
     let source_before = walk_stats(&source)?;
     if source_before.0 == 0 {
         return Err("Minecraft UWP 数据目录中没有可备份文件".to_string());
+    }
+    if let Some(task_id) = task_id {
+        crate::tasks::task_manager::reset_progress(
+            task_id,
+            Some(source_before.0.saturating_add(1)),
+            Some("backing_up_uwp"),
+        );
+        crate::tasks::task_manager::set_task_message(
+            task_id,
+            Some(format!("正在备份 {} 个文件", source_before.0)),
+        );
     }
 
     let now = chrono::Local::now();
@@ -119,6 +237,7 @@ pub fn export_user_data_backup(
         let mut buffer = vec![0u8; 128 * 1024];
 
         for entry in WalkDir::new(&source) {
+            ensure_backup_task_active(task_id)?;
             let entry = entry.map_err(|error| format!("遍历 UWP 数据失败: {error}"))?;
             let path = entry.path();
             let relative = path
@@ -152,8 +271,21 @@ pub fn export_user_data_backup(
                 zip.write_all(&buffer[..read])
                     .map_err(|error| format!("写入 ZIP 失败 {archive_name}: {error}"))?;
             }
+            if let Some(task_id) = task_id {
+                crate::tasks::task_manager::update_progress(
+                    task_id,
+                    1,
+                    Some(source_before.0.saturating_add(1)),
+                    Some("backing_up_uwp"),
+                );
+                crate::tasks::task_manager::set_task_message(
+                    task_id,
+                    Some(format!("正在备份 {archive_name}")),
+                );
+            }
         }
 
+        ensure_backup_task_active(task_id)?;
         let created_at_epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -180,7 +312,20 @@ pub fn export_user_data_backup(
             .map_err(|error| format!("写入备份清单失败: {error}"))?;
         zip.finish()
             .map_err(|error| format!("完成 ZIP 备份失败: {error}"))?;
+        if let Some(task_id) = task_id {
+            crate::tasks::task_manager::update_progress(
+                task_id,
+                1,
+                Some(source_before.0.saturating_add(1)),
+                Some("verifying_uwp_backup"),
+            );
+            crate::tasks::task_manager::set_task_message(
+                task_id,
+                Some("正在校验备份一致性".to_string()),
+            );
+        }
 
+        ensure_backup_task_active(task_id)?;
         let source_after = walk_stats(&source)?;
         if source_before != source_after {
             return Err(format!(
@@ -196,6 +341,7 @@ pub fn export_user_data_backup(
             return Err("备份文件为空，已取消导出".to_string());
         }
 
+        ensure_backup_task_active(task_id)?;
         if archive_path.exists() {
             fs::remove_file(&archive_path)
                 .map_err(|error| format!("覆盖旧备份失败 {}: {error}", archive_path.display()))?;

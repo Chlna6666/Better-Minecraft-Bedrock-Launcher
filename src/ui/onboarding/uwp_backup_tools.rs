@@ -5,7 +5,7 @@ use gpui::{AppContext as _, BorrowAppContext as _, *};
 use std::path::{Path, PathBuf};
 
 use crate::core::minecraft::uwp_backup::{
-    ManualUwpBackupResult, export_user_data_backup, migration_backup_root, user_data_path,
+    migration_backup_root, start_user_data_backup_task, user_data_path,
 };
 use crate::core::minecraft::uwp_migration::MinecraftDataSummary;
 use crate::i18n::LocalizedText;
@@ -22,7 +22,7 @@ pub struct UwpBackupToolsState {
     summary: Option<MinecraftDataSummary>,
     user_data_path: Option<PathBuf>,
     error: Option<LocalizedText>,
-    exporting: bool,
+    export_task_id: Option<SharedString>,
     export_status: Option<LocalizedText>,
 }
 
@@ -36,7 +36,7 @@ impl UwpBackupToolsState {
         self.summary = None;
         self.user_data_path = None;
         self.error = None;
-        self.exporting = false;
+        self.export_task_id = None;
         self.export_status = None;
     }
 
@@ -52,7 +52,7 @@ impl UwpBackupToolsState {
         self.summary = None;
         self.user_data_path = None;
         self.error = None;
-        self.exporting = false;
+        self.export_task_id = None;
         self.export_status = None;
         Some((self.request_id, family_name.to_string()))
     }
@@ -195,38 +195,56 @@ fn start_export(window: &mut Window, cx: &mut App) {
         return;
     };
     let destination = PathBuf::from(destination);
+    let task_id = match start_user_data_backup_task(family_name, destination) {
+        Ok(task_id) => task_id,
+        Err(error) => {
+            cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
+                state.export_status =
+                    Some(crate::localized_text!("UwpBackup.export_task_failed", detail = error));
+            });
+            return;
+        }
+    };
+
     cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-        state.exporting = true;
+        state.export_task_id = Some(SharedString::from(task_id.clone()));
         state.export_status = Some(LocalizedText::key(crate::i18n_key!(
             "UwpBackup.exporting_detail"
         )));
     });
 
+    // UI only observes TaskManager terminal feedback. The backup keeps running if this observer
+    // or the onboarding surface is dropped.
+    let wait_task_id = task_id.clone();
+    let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::tasks::task_manager::wait_for_task_terminal(&wait_task_id)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            export_user_data_backup(&family_name, &destination)
-        })
-        .await;
+        let terminal = terminal.await;
         cx.update(|cx| {
             cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-                state.exporting = false;
-                state.export_status = Some(match result {
-                    Ok(Ok(ManualUwpBackupResult {
-                        archive_path,
-                        summary,
-                    })) => crate::localized_text!(
-                        "UwpBackup.export_complete",
-                        path = archive_path.display().to_string(),
-                        files = summary.file_count,
-                        size = format_bytes(summary.total_size),
-                    ),
-                    Ok(Err(error)) => {
-                        crate::localized_text!("UwpBackup.export_failed", detail = error,)
-                    }
-                    Err(error) => {
-                        crate::localized_text!("UwpBackup.export_task_failed", detail = error,)
-                    }
-                });
+                if state
+                    .export_task_id
+                    .as_ref()
+                    .is_some_and(|current| current.as_ref() == task_id.as_str())
+                {
+                    state.export_task_id = None;
+                    state.export_status = Some(match terminal {
+                        Ok(snapshot) => LocalizedText::raw(
+                            snapshot
+                                .message
+                                .as_deref()
+                                .unwrap_or(snapshot.status.as_ref())
+                                .to_string(),
+                        ),
+                        Err(error) => crate::localized_text!(
+                            "UwpBackup.export_task_failed",
+                            detail = error.to_string()
+                        ),
+                    });
+                }
             });
         })?;
         Ok::<(), anyhow::Error>(())
@@ -411,8 +429,13 @@ pub fn render_uwp_backup_tools(
     } else {
         t!("UwpBackup.waiting").to_string()
     };
+    let exporting = state
+        .export_task_id
+        .as_ref()
+        .and_then(|task_id| crate::tasks::task_manager::get_snapshot_arc(task_id.as_ref()))
+        .is_some_and(|snapshot| !snapshot.is_terminal());
     let can_export = !state.scanning
-        && !state.exporting
+        && !exporting
         && state
             .summary
             .as_ref()
@@ -508,7 +531,7 @@ pub fn render_uwp_backup_tools(
         .gap(px(6.0))
         .child(action_button(
             "uwp-manual-backup-export",
-            if state.exporting {
+            if exporting {
                 t!("UwpBackup.exporting")
             } else {
                 t!("UwpBackup.export_backup")
