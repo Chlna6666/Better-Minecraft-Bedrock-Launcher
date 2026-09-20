@@ -1,11 +1,14 @@
 // src-tauri/src/commands/assets.rs
 use crate::core::minecraft::import::{
-    ImportCheckResult, PackagePreview, check_import_file, import_files_batch, inspect_archive,
+    ImportCheckResult, PackagePreview, check_import_file, import_files_batch,
+    import_files_batch_cancellable, inspect_archive,
 };
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve_target_parent};
 use serde::Deserialize;
 use serde_json::json;
-use std::fs; // 引入新模块
+use std::fs;
+use std::sync::Arc;
+use tokio::sync::oneshot;
 use tracing::{debug, error};
 
 #[derive(Debug, Deserialize)]
@@ -101,8 +104,90 @@ pub fn delete_game_asset(payload: DeleteAssetPayload) -> Result<serde_json::Valu
     Ok(json!({ "success": true }))
 }
 
-// [新增] 导入资源命令
+pub struct ImportAssetsTaskHandle {
+    pub task_id: Arc<str>,
+    pub result: oneshot::Receiver<Result<ImportAssetsResult, String>>,
+}
+
+pub fn start_import_assets_task(
+    request: ImportAssetsRequest,
+    title: impl Into<String>,
+) -> Result<ImportAssetsTaskHandle, String> {
+    let detail = Some(format!(
+        "{} · {} 个文件",
+        request.version_name,
+        request.file_paths.len()
+    ));
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        title,
+        detail,
+        "queued",
+        None,
+        false,
+    );
+    let worker_task_id = task_id.clone();
+    let (sender, receiver) = oneshot::channel();
+
+    if let Err(error) = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
+        crate::tasks::task_manager::reset_progress(
+            &worker_task_id,
+            None,
+            Some("installing_assets"),
+        );
+        let result = import_assets_for_task(request, Some(worker_task_id.clone())).await;
+
+        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
+            let _ = sender.send(Err("导入已取消".to_string()));
+            return;
+        }
+
+        match &result {
+            Ok(result) if result.failed_count == 0 && result.imported_count > 0 => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "completed",
+                    Some(format!("已导入 {} 个内容包", result.imported_count)),
+                );
+            }
+            Ok(result) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "error",
+                    Some(format!(
+                        "导入未完整完成：成功 {}，失败 {}",
+                        result.imported_count, result.failed_count
+                    )),
+                );
+            }
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "error",
+                    Some(error.clone()),
+                );
+            }
+        }
+        let _ = sender.send(result);
+    }) {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        return Err(error);
+    }
+
+    Ok(ImportAssetsTaskHandle {
+        task_id: Arc::from(task_id),
+        result: receiver,
+    })
+}
+
 pub async fn import_assets(request: ImportAssetsRequest) -> Result<ImportAssetsResult, String> {
+    import_assets_for_task(request, None).await
+}
+
+async fn import_assets_for_task(
+    request: ImportAssetsRequest,
+    task_id: Option<String>,
+) -> Result<ImportAssetsResult, String> {
     debug!(
         "Import assets request: count={}, build={:?}, edition={:?}, version={}, isolation={}, shared_fallback={}, overwrite={}",
         request.file_paths.len(),
@@ -121,9 +206,18 @@ pub async fn import_assets(request: ImportAssetsRequest) -> Result<ImportAssetsR
         user_id: request.user_id,
         allow_shared_fallback: request.allow_shared_fallback,
     };
+    let overwrite = request.overwrite;
+    let files = request.file_paths;
+    let cancel_task_id = task_id.clone();
 
-    let result = crate::tasks::runtime::run_io_blocking(move || {
-        import_files_batch(request.file_paths, &options, request.overwrite)
+    let result = crate::tasks::runtime::run_archive_blocking(move || {
+        if let Some(task_id) = cancel_task_id {
+            import_files_batch_cancellable(files, &options, overwrite, || {
+                crate::tasks::task_manager::is_cancelled(&task_id)
+            })
+        } else {
+            import_files_batch(files, &options, overwrite)
+        }
     })
     .await
     .map_err(|error| {

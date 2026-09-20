@@ -975,9 +975,17 @@ fn filter_level_roots_excluding_template_internal(
 pub fn import_files_batch(
     files: Vec<String>,
     options: &GamePathOptions,
-    overwrite: bool, // [新增] 覆盖选项
+    overwrite: bool,
 ) -> Result<(usize, usize)> {
-    // (success_count, fail_count)
+    import_files_batch_cancellable(files, options, overwrite, || false)
+}
+
+pub fn import_files_batch_cancellable(
+    files: Vec<String>,
+    options: &GamePathOptions,
+    overwrite: bool,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<(usize, usize)> {
     let mut success = 0;
     let mut fail = 0;
 
@@ -993,6 +1001,10 @@ pub fn import_files_batch(
     );
 
     for file_path in files {
+        if is_cancelled() {
+            return Err(anyhow::anyhow!("导入已取消"));
+        }
+
         let path = PathBuf::from(&file_path);
         if !path.exists() {
             warn!("Import skipped (file not found): {}", file_path);
@@ -1010,6 +1022,12 @@ pub fn import_files_batch(
                 error!("Failed to import {}: {:?}", file_path, e);
                 fail += 1;
             }
+        }
+
+        // A single package commits transactionally. If cancellation arrives while that commit is
+        // in progress, finish the atomic commit/rollback first, then stop before the next package.
+        if is_cancelled() {
+            return Err(anyhow::anyhow!("导入已取消"));
         }
     }
     debug!("Import batch done: success={}, fail={}", success, fail);
