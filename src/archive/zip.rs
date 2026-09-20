@@ -289,7 +289,7 @@ fn extract_zip_parallel_blocking(
     destination: &str,
     force_replace: bool,
     task_id: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut archive = open_archive_for_worker(archive_path)?;
 
     // 1) 预扫描中央目录：收集条目信息并计算总大小
@@ -383,8 +383,7 @@ fn extract_zip_parallel_blocking(
     for dir_path in &dir_paths {
         if cancelled() {
             debug!("解压已被取消（检测到 task cancelled）");
-            finish_task(task_id, "cancelled", Some("user cancelled".into()));
-            return Ok(());
+            return Ok(false);
         }
         if created_dirs.insert(dir_path.clone()) {
             fs::create_dir_all(dir_path)
@@ -394,8 +393,7 @@ fn extract_zip_parallel_blocking(
     for plan in &file_entries {
         if cancelled() {
             debug!("解压已被取消（检测到 task cancelled）");
-            finish_task(task_id, "cancelled", Some("user cancelled".into()));
-            return Ok(());
+            return Ok(false);
         }
         if let Some(parent) = plan.out_path.parent()
             && !created_dirs.contains(parent)
@@ -454,8 +452,7 @@ fn extract_zip_parallel_blocking(
 
     if cancelled() {
         debug!("解压已被取消（检测到 task cancelled）");
-        finish_task(task_id, "cancelled", Some("user cancelled".into()));
-        return Ok(());
+        return Ok(false);
     }
 
     if let Some(error) = context
@@ -478,7 +475,7 @@ fn extract_zip_parallel_blocking(
         worker_total,
         start.elapsed().as_secs_f64()
     );
-    Ok(())
+    Ok(true)
 }
 
 fn task_path_token(task_id: &str) -> String {
@@ -530,7 +527,7 @@ fn extract_zip_transactionally_blocking(
     destination: &Path,
     force_replace: bool,
     task_id: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let parent = destination.parent().ok_or_else(|| {
         format!("解压目标没有父目录: {}", destination.display())
     })?;
@@ -552,17 +549,28 @@ fn extract_zip_transactionally_blocking(
         .to_str()
         .ok_or_else(|| format!("解压 staging 路径不是 UTF-8: {}", staging.display()))?;
 
-    let extract_result =
-        extract_zip_parallel_blocking(archive_path, staging_str, true, task_id);
-
-    if let Err(error) = extract_result {
-        let cleanup = remove_path_if_exists(&staging);
-        return match cleanup {
-            Ok(()) => Err(error),
-            Err(cleanup_error) => Err(format!(
-                "{error}; 清理 staging 失败: {cleanup_error}"
-            )),
-        };
+    match extract_zip_parallel_blocking(archive_path, staging_str, true, task_id) {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Err(error) = remove_path_if_exists(&staging) {
+                warn!(
+                    task_id,
+                    path = %staging.display(),
+                    %error,
+                    "取消解压后清理 staging 失败"
+                );
+            }
+            return Ok(false);
+        }
+        Err(error) => {
+            let cleanup = remove_path_if_exists(&staging);
+            return match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(format!(
+                    "{error}; 清理 staging 失败: {cleanup_error}"
+                )),
+            };
+        }
     }
 
     if is_cancelled(task_id) {
@@ -574,7 +582,7 @@ fn extract_zip_transactionally_blocking(
                 "取消解压后清理 staging 失败"
             );
         }
-        return Ok(());
+        return Ok(false);
     }
 
     let had_previous = destination.exists();
@@ -602,7 +610,7 @@ fn extract_zip_transactionally_blocking(
             }
         }
         let _ = remove_path_if_exists(&staging);
-        return Ok(());
+        return Ok(false);
     }
 
     if let Err(error) = fs::rename(&staging, destination) {
@@ -635,7 +643,7 @@ fn extract_zip_transactionally_blocking(
         );
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// 从磁盘路径解压 zip 到 destination（并行版本）。
@@ -664,12 +672,8 @@ pub async fn extract_zip_from_path(
     });
 
     match handle.await {
-        Ok(Ok(())) => {
-            if is_cancelled(&task_id) {
-                return Ok(CoreResult::Cancelled);
-            }
-            Ok(CoreResult::Success(()))
-        }
+        Ok(Ok(true)) => Ok(CoreResult::Success(())),
+        Ok(Ok(false)) => Ok(CoreResult::Cancelled),
         Ok(Err(error)) => Err(CoreError::Other(error)),
         Err(join_err) => Err(CoreError::Other(format!("join error: {}", join_err))),
     }

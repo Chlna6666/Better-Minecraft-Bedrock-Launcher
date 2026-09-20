@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -30,6 +30,8 @@ static TASK_ABORT_HANDLES: Lazy<Mutex<HashMap<String, AbortHandle>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static TASK_CANCEL_HOOKS: Lazy<Mutex<HashMap<String, TaskCancelHook>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static TASK_COOPERATIVE_CANCEL: Lazy<Mutex<HashSet<String>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
 struct TaskLogBuffer {
     entries: VecDeque<Arc<str>>,
     snapshot: Arc<[Arc<str>]>,
@@ -516,6 +518,22 @@ pub fn register_task_cancel_hook(
         .lock()
         .unwrap()
         .insert(task_id.into(), Box::new(cancel_hook));
+}
+
+/// Register a task whose owner must remain alive until cleanup or rollback completes.
+pub fn register_task_cooperative_cancel(task_id: impl Into<String>) {
+    TASK_COOPERATIVE_CANCEL
+        .lock()
+        .unwrap()
+        .insert(task_id.into());
+}
+
+fn task_uses_cooperative_cancel(task_id: &str) -> bool {
+    TASK_COOPERATIVE_CANCEL.lock().unwrap().contains(task_id)
+}
+
+fn clear_task_cooperative_cancel(task_id: &str) {
+    TASK_COOPERATIVE_CANCEL.lock().unwrap().remove(task_id);
 }
 
 fn register_task_control(task_id: impl Into<String>, control: Arc<TaskControl>) {
@@ -1017,44 +1035,54 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
     if is_terminal_status(status) {
         clear_task_abort_handle(task_id);
         clear_task_cancel_hook(task_id);
+        clear_task_cooperative_cancel(task_id);
     }
 }
 
 pub fn cancel_task(task_id: &str) {
-    run_task_cancel_hook(task_id);
-    let _ = abort_task(task_id);
+    let cooperative = task_uses_cooperative_cancel(task_id);
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
     {
         let mut map = TASKS.lock().unwrap();
-        if let Some(t) = map.get_mut(task_id) {
-            if is_terminal_status(t.status.as_ref()) {
-                return;
-            }
-            t.cancel_requested = true;
-            t.paused = false;
-            t.status = Arc::<str>::from("cancelled");
-            t.message = Some(Arc::<str>::from("user cancelled"));
-            t.speed_ema = 0.0;
-            t.last_done = t.done;
-            t.last_instant = Instant::now();
-            {
-                let visualization = Arc::make_mut(&mut t.visualization);
-                visualization.current_item = Some("正在取消并清理资源".to_string());
-                if visualization.worker_total.is_some() || visualization.worker_active.is_some() {
-                    visualization.worker_active = Some(0);
-                }
-            }
-            t.touch();
-            snapshot_to_emit = Some(t.snapshot());
+        let Some(t) = map.get_mut(task_id) else {
+            return;
+        };
+        if is_terminal_status(t.status.as_ref()) || t.cancel_requested {
+            return;
         }
+
+        t.cancel_requested = true;
+        t.paused = false;
+        t.status = Arc::<str>::from(if cooperative { "cancelling" } else { "cancelled" });
+        t.message = Some(Arc::<str>::from(if cooperative {
+            "正在取消并清理资源"
+        } else {
+            "user cancelled"
+        }));
+        t.speed_ema = 0.0;
+        t.last_done = t.done;
+        t.last_instant = Instant::now();
+        {
+            let visualization = Arc::make_mut(&mut t.visualization);
+            visualization.current_item = Some("正在取消并清理资源".to_string());
+            if visualization.worker_total.is_some() || visualization.worker_active.is_some() {
+                visualization.worker_active = Some(0);
+            }
+        }
+        t.touch();
+        snapshot_to_emit = Some(t.snapshot());
     }
 
     if let Some(snap) = snapshot_to_emit {
         emit_task_update(snap);
     }
-
     if let Some(control) = task_control(task_id) {
         control.cancel();
+    }
+    run_task_cancel_hook(task_id);
+
+    if !cooperative {
+        let _ = abort_task(task_id);
     }
 }
 
@@ -1128,6 +1156,7 @@ pub fn resume_task(task_id: &str) -> bool {
 pub fn remove_task(task_id: &str) -> bool {
     clear_task_abort_handle(task_id);
     clear_task_cancel_hook(task_id);
+    clear_task_cooperative_cancel(task_id);
     let removed_snapshot = TASK_SNAPSHOTS.write().unwrap().remove(task_id);
     TASK_LOGS.lock().unwrap().remove(task_id);
     let _ = TASK_CONTROLS
@@ -1599,6 +1628,37 @@ mod tests {
                 .as_ref(),
             "cancelled"
         );
+        assert!(remove_task(&task_id));
+    }
+
+    #[test]
+    fn cooperative_cancel_stays_active_until_owner_finishes_cleanup() {
+        let task_id = format!(
+            "task-manager-cooperative-cancel-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task_with_details(
+            Some(task_id.clone()),
+            "协作取消测试",
+            None,
+            "running",
+            None,
+            false,
+        );
+        register_task_cooperative_cancel(task_id.clone());
+
+        cancel_task(&task_id);
+
+        let cancelling = get_snapshot_arc(&task_id).expect("cancelling task snapshot");
+        assert_eq!(cancelling.status.as_ref(), "cancelling");
+        assert!(cancelling.cancel_requested);
+        assert!(!cancelling.is_terminal());
+        assert!(is_cancelled(&task_id));
+
+        finish_task(&task_id, "cancelled", Some("cleanup complete".to_string()));
+        let cancelled = get_snapshot_arc(&task_id).expect("cancelled task snapshot");
+        assert_eq!(cancelled.status.as_ref(), "cancelled");
+        assert!(cancelled.is_terminal());
         assert!(remove_task(&task_id));
     }
 

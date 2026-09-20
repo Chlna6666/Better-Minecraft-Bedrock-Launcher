@@ -12,7 +12,8 @@ use tracing::{debug, error, warn};
 
 use super::task_manager::{
     TaskVisibility, create_task_with_details_and_visibility, finish_task, get_snapshot_arc,
-    is_cancelled, refresh_task_telemetry, register_task_abort_handle, remove_task, update_progress,
+    is_cancelled, refresh_task_telemetry, register_task_abort_handle,
+    register_task_cooperative_cancel, remove_task, update_progress,
 };
 
 const DEFAULT_BLOCKING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -250,6 +251,7 @@ pub fn spawn_download_task<F>(task_id: String, future: F) -> Result<AbortHandle,
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    register_task_cooperative_cancel(task_id.clone());
     let runtime = app_runtime()?;
     let task_slots = Arc::clone(&runtime.download_slots);
     let task_id_for_worker = task_id.clone();
@@ -266,23 +268,30 @@ where
             return;
         };
 
-        if !is_cancelled(&task_id_for_worker) {
-            let telemetry_task_id = task_id_for_worker.clone();
-            let telemetry_watchdog = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(250));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    if !refresh_task_telemetry(&telemetry_task_id) {
-                        break;
-                    }
-                }
-            });
-
-            future.await;
-            telemetry_watchdog.abort();
+        if is_cancelled(&task_id_for_worker) {
+            finish_task(
+                &task_id_for_worker,
+                "cancelled",
+                Some("cancelled before start".to_string()),
+            );
+            return;
         }
+
+        let telemetry_task_id = task_id_for_worker.clone();
+        let telemetry_watchdog = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(250));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if !refresh_task_telemetry(&telemetry_task_id) {
+                    break;
+                }
+            }
+        });
+
+        future.await;
+        telemetry_watchdog.abort();
     })?;
 
     let abort_handle = join_handle.abort_handle();
@@ -308,6 +317,7 @@ pub fn spawn_archive_task<F>(task_id: String, future: F) -> Result<(), String>
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    register_task_cooperative_cancel(task_id.clone());
     let runtime = app_runtime()?;
     let task_slots = Arc::clone(&runtime.archive_slots);
     let task_id_for_worker = task_id.clone();
@@ -324,9 +334,15 @@ where
             return;
         };
 
-        if !is_cancelled(&task_id_for_worker) {
-            future.await;
+        if is_cancelled(&task_id_for_worker) {
+            finish_task(
+                &task_id_for_worker,
+                "cancelled",
+                Some("cancelled before start".to_string()),
+            );
+            return;
         }
+        future.await;
     })?;
 
     let _ = runtime.spawn_archive(async move {

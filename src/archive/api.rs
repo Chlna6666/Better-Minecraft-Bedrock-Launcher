@@ -7,9 +7,7 @@ use crate::core::minecraft::appx_utils::{get_manifest_identity, patch_manifest};
 use crate::core::minecraft::key_patcher::{PatchResult, patch_path};
 use crate::result::CoreResult;
 use crate::tasks::runtime::spawn_archive_task;
-use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, is_cancelled, update_progress,
-};
+use crate::tasks::task_manager::{create_task_with_details, finish_task, update_progress};
 use crate::utils::file_ops;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,16 +28,6 @@ fn finish_error(task_id: &str, message: impl Into<String>) {
     finish_task(task_id, "error", Some(message));
 }
 
-fn remove_dir_all_if_exists(path: &Path, context: &str) {
-    if !path.exists() {
-        return;
-    }
-
-    if let Err(error) = fs::remove_dir_all(path) {
-        error!("{context}: {} ({error})", path.display());
-    }
-}
-
 fn remove_file_if_exists(path: &Path, context: &str) -> bool {
     if !path.exists() {
         return true;
@@ -52,10 +40,6 @@ fn remove_file_if_exists(path: &Path, context: &str) -> bool {
             false
         }
     }
-}
-
-fn task_was_cancelled(task_id: &str) -> bool {
-    is_cancelled(task_id)
 }
 
 pub async fn import_appx(source_path: String, file_name: Option<String>) -> Result<String, String> {
@@ -153,17 +137,12 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
             crate::core::version::catalog_events::notify_local_versions_changed();
         }
         Ok(CoreResult::Cancelled) => {
-            remove_dir_all_if_exists(&extract_to, "取消导入时删除解压目录失败");
-            if !task_was_cancelled(&task_id) {
-                finish_task(&task_id, "cancelled", Some("user cancelled".into()));
-            }
+            finish_task(&task_id, "cancelled", Some("user cancelled".into()));
         }
         Ok(CoreResult::Error(error)) => {
-            remove_dir_all_if_exists(&extract_to, "导入失败后删除解压目录失败");
             finish_error(&task_id, format!("extract error: {error}"));
         }
         Err(error) => {
-            remove_dir_all_if_exists(&extract_to, "导入失败后删除解压目录失败");
             finish_error(&task_id, format!("extract failed: {error}"));
         }
     }
@@ -270,11 +249,8 @@ async fn run_extract_zip_appx_task(
     .await
     {
         Ok(CoreResult::Success(())) => {
-            if task_was_cancelled(&task_id) {
-                remove_dir_all_if_exists(&extract_to, "取消安装时删除解压目录失败");
-                return;
-            }
-
+            // ZIP has crossed its atomic rename boundary. Finish post-processing coherently even
+            // if a cancellation request arrives after commit.
             if !finish_appx_install(&task_id, &extract_to, delete_signature).await {
                 return;
             }
@@ -287,17 +263,12 @@ async fn run_extract_zip_appx_task(
             crate::core::version::catalog_events::notify_local_versions_changed();
         }
         Ok(CoreResult::Cancelled) => {
-            remove_dir_all_if_exists(&extract_to, "取消安装时删除解压目录失败");
-            if !task_was_cancelled(&task_id) {
-                finish_task(&task_id, "cancelled", Some("user cancelled".into()));
-            }
+            finish_task(&task_id, "cancelled", Some("user cancelled".into()));
         }
         Ok(CoreResult::Error(error)) => {
-            remove_dir_all_if_exists(&extract_to, "安装失败后删除解压目录失败");
             finish_error(&task_id, format!("extract error: {error}"));
         }
         Err(error) => {
-            remove_dir_all_if_exists(&extract_to, "安装失败后删除解压目录失败");
             finish_error(&task_id, format!("extract failed: {error}"));
         }
     }
@@ -316,10 +287,6 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
 
     if let Err(error) = fs::create_dir_all(extract_to.join("mods")) {
         finish_error(task_id, format!("创建 mods 目录失败：{error}"));
-        return false;
-    }
-
-    if task_was_cancelled(task_id) {
         return false;
     }
 
@@ -353,7 +320,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
     let major = version_parts.next().unwrap_or(0);
     let minor = version_parts.next().unwrap_or(0);
     let needs_patch = (major < 1) || (major == 1 && minor < 21);
-    if !needs_patch || task_was_cancelled(task_id) {
+    if !needs_patch {
         return true;
     }
 
