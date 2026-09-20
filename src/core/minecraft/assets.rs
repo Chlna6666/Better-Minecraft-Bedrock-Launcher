@@ -5,11 +5,11 @@ use crate::core::minecraft::import::{
 };
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve_target_parent};
 use serde::Deserialize;
-use serde_json::json;
 use std::fs;
+use std::path::PathBuf;
 use tracing::{debug, error};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct DeleteAssetPayload {
     pub build_type: BuildType,
     pub edition: Edition,
@@ -60,7 +60,7 @@ fn map_delete_type_to_dir(delete_type: &str) -> Option<&'static str> {
     }
 }
 
-pub fn delete_game_asset(payload: DeleteAssetPayload) -> Result<serde_json::Value, String> {
+fn resolve_delete_asset_path(payload: &DeleteAssetPayload) -> Result<PathBuf, String> {
     if payload.name.is_empty()
         || payload.name.contains("..")
         || payload.name.contains('/')
@@ -73,11 +73,11 @@ pub fn delete_game_asset(payload: DeleteAssetPayload) -> Result<serde_json::Valu
         .ok_or_else(|| "unsupported delete_type".to_string())?;
 
     let options = GamePathOptions {
-        build_type: payload.build_type,
-        edition: payload.edition,
-        version_name: payload.version_name,
+        build_type: payload.build_type.clone(),
+        edition: payload.edition.clone(),
+        version_name: payload.version_name.clone(),
         enable_isolation: payload.enable_isolation,
-        user_id: payload.user_id,
+        user_id: payload.user_id.clone(),
         allow_shared_fallback: false,
     };
 
@@ -85,21 +85,196 @@ pub fn delete_game_asset(payload: DeleteAssetPayload) -> Result<serde_json::Valu
         payload.delete_type.as_str(),
         "resourcePacks" | "behaviorPacks" | "skins"
     );
-
     let parent_dir = resolve_target_parent(&options, dir_name, is_shared_preferred)
         .ok_or_else(|| "Could not resolve target directory".to_string())?;
+    Ok(parent_dir.join(&payload.name))
+}
 
-    let target_path = parent_dir.join(&payload.name);
+fn delete_task_token(task_id: &str) -> String {
+    let mut token = String::with_capacity(task_id.len().min(64));
+    for ch in task_id.chars().take(64) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            token.push(ch);
+        } else {
+            token.push('_');
+        }
+    }
+    if token.is_empty() {
+        "task".to_string()
+    } else {
+        token
+    }
+}
 
-    if !target_path.exists() {
-        return Ok(
-            json!({ "success": false, "message": format!("Path not found: {}", target_path.display()) }),
-        );
+fn rollback_asset_deletions(staged: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for (original, tombstone) in staged.iter().rev() {
+        if !tombstone.exists() {
+            continue;
+        }
+        if original.exists() {
+            errors.push(format!("无法回滚 {}：原路径已重新出现", original.display()));
+            continue;
+        }
+        if let Err(error) = fs::rename(tombstone, original) {
+            errors.push(format!("恢复 {} 失败: {error}", original.display()));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
+enum DeleteAssetsOutcome {
+    Completed(String),
+    Cancelled(String),
+}
+
+fn delete_assets_transactionally(
+    payloads: Vec<DeleteAssetPayload>,
+    task_id: &str,
+) -> Result<DeleteAssetsOutcome, String> {
+    if crate::tasks::task_manager::is_cancelled(task_id) {
+        return Ok(DeleteAssetsOutcome::Cancelled("资源删除已取消".to_string()));
+    }
+    let mut targets = Vec::with_capacity(payloads.len());
+    for payload in &payloads {
+        let target = resolve_delete_asset_path(payload)?;
+        if target.exists() && !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    if targets.is_empty() {
+        return Ok(DeleteAssetsOutcome::Completed("所选资源已不存在".to_string()));
     }
 
-    fs::remove_dir_all(&target_path).map_err(|e| format!("Delete failed: {}", e))?;
+    let token = delete_task_token(task_id);
+    let mut planned = Vec::with_capacity(targets.len());
+    for (index, target) in targets.iter().enumerate() {
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("资源目录没有父目录: {}", target.display()))?;
+        let name = target
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("asset");
+        let tombstone = parent.join(format!(".{name}.bmcb-delete-{token}-{index}"));
+        if tombstone.exists() {
+            return Err(format!("资源删除暂存目录已存在: {}", tombstone.display()));
+        }
+        planned.push((target.clone(), tombstone));
+    }
 
-    Ok(json!({ "success": true }))
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(planned.len());
+    for (target, tombstone) in planned {
+        if crate::tasks::task_manager::is_cancelled(task_id) {
+            let cancelled = "资源删除已取消".to_string();
+            if let Err(rollback_error) = rollback_asset_deletions(&staged) {
+                return Err(format!("{cancelled}；{rollback_error}"));
+            }
+            return Ok(DeleteAssetsOutcome::Cancelled(cancelled));
+        }
+
+        if let Err(error) = fs::rename(&target, &tombstone) {
+            let rollback_error = rollback_asset_deletions(&staged).err();
+            return Err(match rollback_error {
+                Some(rollback_error) => format!(
+                    "暂存资源删除失败 {}: {error}；{rollback_error}",
+                    target.display()
+                ),
+                None => format!("暂存资源删除失败 {}: {error}", target.display()),
+            });
+        }
+        staged.push((target, tombstone));
+    }
+
+    // All selected resources are now atomically absent from their canonical locations.
+    // Complete cleanup even when cancellation arrives after this commit boundary.
+    for (_, tombstone) in &staged {
+        fs::remove_dir_all(tombstone).map_err(|error| {
+            format!("清理资源删除暂存目录失败 {}: {error}", tombstone.display())
+        })?;
+    }
+    Ok(DeleteAssetsOutcome::Completed(format!(
+        "已删除 {} 个资源",
+        staged.len()
+    )))
+}
+
+pub fn start_delete_game_assets_task(
+    payloads: Vec<DeleteAssetPayload>,
+) -> Result<String, String> {
+    if payloads.is_empty() {
+        return Err("没有选择要删除的资源".to_string());
+    }
+    let detail = format!("{} 个资源", payloads.len());
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        "删除游戏资源",
+        Some(detail),
+        "deleting_assets",
+        None,
+        false,
+    );
+    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+
+    let worker_task_id = task_id.clone();
+    let blocking_task_id = task_id.clone();
+    let workflow = crate::tasks::runtime::spawn_io(async move {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            delete_assets_transactionally(payloads, &blocking_task_id)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(DeleteAssetsOutcome::Completed(message))) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "completed",
+                    Some(message),
+                );
+            }
+            Ok(Ok(DeleteAssetsOutcome::Cancelled(message))) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
+                    Some(message),
+                );
+            }
+            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                "error",
+                Some(error),
+            ),
+        }
+    })
+    .map_err(|error| {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        error
+    })?;
+
+    let monitor_task_id = task_id.clone();
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = workflow.await {
+            crate::tasks::task_manager::finish_task(
+                &monitor_task_id,
+                "error",
+                Some(format!("资源删除任务异常结束: {error}")),
+            );
+        }
+    }) {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        return Err(error);
+    }
+
+    Ok(task_id)
 }
 
 pub fn start_import_assets_task(

@@ -234,13 +234,14 @@ pub(super) fn watch_manage_asset_mutation_task(
 
             let _ = cx.update(|cx| {
                 let i18n = cx.global::<I18n>();
+                cx.update_global(|state: &mut ManagePageState, _cx| {
+                    state.selected_asset_keys.clear();
+                    state.assets_loaded = false;
+                    state.assets_loading = false;
+                    state.assets_error = None;
+                });
                 match snapshot.status.as_ref() {
                     "completed" => {
-                        cx.update_global(|state: &mut ManagePageState, _cx| {
-                            state.assets_loaded = false;
-                            state.assets_loading = false;
-                            state.assets_error = None;
-                        });
                         toast::success(cx, success_message);
                     }
                     "cancelled" => {
@@ -251,7 +252,78 @@ pub(super) fn watch_manage_asset_mutation_task(
                             .message
                             .as_ref()
                             .map(|message| SharedString::from(message.to_string()))
-                            .unwrap_or_else(|| SharedString::from("Mod 操作失败"));
+                            .unwrap_or_else(|| SharedString::from("资源操作失败"));
+                        toast::error(cx, message);
+                    }
+                    _ => {}
+                }
+            });
+            Ok::<(), anyhow::Error>(())
+        }
+    })
+    .detach();
+}
+
+pub(super) fn watch_screenshot_mutation_task(
+    task_id: String,
+    success_message: SharedString,
+    view_handle: WeakEntity<ManagePageView>,
+    cx: &mut App,
+) {
+    let task_id: Arc<str> = Arc::from(task_id);
+    let mut updates = task_manager::subscribe_task_updates();
+
+    cx.spawn({
+        let task_id = task_id.clone();
+        async move |cx| {
+            let snapshot = loop {
+                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                    && snapshot.is_terminal()
+                {
+                    break snapshot;
+                }
+
+                match updates.recv().await {
+                    Ok(snapshot)
+                        if snapshot.id.as_ref() == task_id.as_ref() && snapshot.is_terminal() =>
+                    {
+                        break snapshot;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            skipped,
+                            task_id = %task_id,
+                            "screenshot mutation watcher lagged; resyncing"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        warn!(task_id = %task_id, "screenshot mutation watcher closed");
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                }
+            };
+
+            let _ = cx.update(|cx| {
+                let i18n = cx.global::<I18n>();
+                let _ = view_handle.update(cx, |this, cx| {
+                    this.last_screenshots_signature = None;
+                    cx.notify();
+                });
+                cx.update_global(|state: &mut ManagePageState, _cx| {
+                    state.screenshots_loaded = false;
+                    state.screenshots_loading = false;
+                });
+
+                match snapshot.status.as_ref() {
+                    "completed" => toast::success(cx, success_message),
+                    "cancelled" => toast::push(cx, t!("Tasks.status.cancelled")),
+                    "error" => {
+                        let message = snapshot
+                            .message
+                            .as_ref()
+                            .map(|message| SharedString::from(message.to_string()))
+                            .unwrap_or_else(|| SharedString::from("截图操作失败"));
                         toast::error(cx, message);
                     }
                     _ => {}

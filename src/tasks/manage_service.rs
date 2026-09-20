@@ -444,7 +444,10 @@ where
                 "completed",
                 Some(message),
             ),
-            Ok(Err(error)) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+            Ok(Err(error))
+                if crate::tasks::task_manager::is_cancelled(&worker_task_id)
+                    && error.contains("已取消") =>
+            {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
                     "cancelled",
@@ -453,13 +456,6 @@ where
             }
             Ok(Err(error)) => {
                 crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
-            }
-            Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "cancelled",
-                    Some(error),
-                );
             }
             Err(error) => {
                 crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
@@ -598,5 +594,105 @@ pub fn start_set_mod_inject_delay(
         manifest.inject_delay_ms = Some(inject_delay_ms);
         write_manifest_transactionally(&manifest_path, &manifest, task_id)?;
         Ok("Mod 注入延迟已更新".to_string())
+    })
+}
+
+
+fn rollback_staged_mod_directories(staged: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for (original, tombstone) in staged.iter().rev() {
+        if !tombstone.exists() {
+            continue;
+        }
+        if original.exists() {
+            errors.push(format!(
+                "无法回滚 {}：原路径已重新出现",
+                original.display()
+            ));
+            continue;
+        }
+        if let Err(error) = fs::rename(tombstone, original) {
+            errors.push(format!(
+                "恢复 {} 失败: {error}",
+                original.display()
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
+pub fn start_delete_mods_task(
+    version_folder: String,
+    mod_ids: Vec<String>,
+) -> Result<String, String> {
+    if mod_ids.is_empty() {
+        return Err("没有选择要删除的 Mod".to_string());
+    }
+    let detail = format!("{version_folder} · {} 个 Mod", mod_ids.len());
+
+    start_mod_mutation_task("删除 Mod", detail, "deleting_mods", move |task_id| {
+        let mut targets = Vec::with_capacity(mod_ids.len());
+        for mod_id in &mod_ids {
+            let path = mod_directory(&version_folder, mod_id)?;
+            if !targets.contains(&path) {
+                targets.push(path);
+            }
+        }
+
+        let mut planned = Vec::with_capacity(targets.len());
+        for (index, target) in targets.iter().enumerate() {
+            let parent = target
+                .parent()
+                .ok_or_else(|| format!("Mod 目录没有父目录: {}", target.display()))?;
+            let name = target
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("mod");
+            let tombstone = parent.join(format!(
+                ".{name}.bmcb-delete-{}-{index}",
+                task_path_token(task_id)
+            ));
+            if tombstone.exists() {
+                return Err(format!("Mod 删除暂存目录已存在: {}", tombstone.display()));
+            }
+            planned.push((target.clone(), tombstone));
+        }
+
+        let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(planned.len());
+        for (target, tombstone) in planned {
+            if let Err(error) = ensure_mod_task_active(task_id) {
+                if let Err(rollback_error) = rollback_staged_mod_directories(&staged) {
+                    return Err(format!("{error}；{rollback_error}"));
+                }
+                return Err(error);
+            }
+
+            if let Err(error) = fs::rename(&target, &tombstone) {
+                let rollback_error = rollback_staged_mod_directories(&staged).err();
+                return Err(match rollback_error {
+                    Some(rollback_error) => format!(
+                        "暂存 Mod 删除失败 {}: {error}；{rollback_error}",
+                        target.display()
+                    ),
+                    None => format!("暂存 Mod 删除失败 {}: {error}", target.display()),
+                });
+            }
+            staged.push((target, tombstone));
+        }
+
+        // All canonical Mod directories have been atomically removed from view. This is the
+        // commit boundary; ignore late cancellation and finish tombstone cleanup.
+        for (_, tombstone) in &staged {
+            fs::remove_dir_all(tombstone).map_err(|error| {
+                format!("清理 Mod 删除暂存目录失败 {}: {error}", tombstone.display())
+            })?;
+        }
+
+        Ok(format!("已删除 {} 个 Mod", staged.len()))
     })
 }

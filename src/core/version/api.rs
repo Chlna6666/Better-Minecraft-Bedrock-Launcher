@@ -119,7 +119,10 @@ where
                     Some(message),
                 );
             }
-            Ok(Err(error)) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+            Ok(Err(error))
+                if crate::tasks::task_manager::is_cancelled(&worker_task_id)
+                    && error.contains("已取消") =>
+            {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
                     "cancelled",
@@ -134,14 +137,9 @@ where
                 );
             }
             Err(error) => {
-                let status = if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
-                    "cancelled"
-                } else {
-                    "error"
-                };
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    status,
+                    "error",
                     Some(error),
                 );
             }

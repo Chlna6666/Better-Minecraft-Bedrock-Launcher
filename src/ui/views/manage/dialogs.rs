@@ -117,80 +117,53 @@ impl ManagePageView {
                 selected_gdk_user,
                 folder_names,
             } => {
-                let i18n = cx.global::<I18n>().clone();
-                cx.spawn(async move |handle, cx| {
-                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                        data::delete_assets(
-                            &version,
-                            &config,
-                            tab,
-                            pack_subtype,
-                            selected_gdk_user.as_ref().map(SharedString::as_ref),
-                            &folder_names,
-                        )
-                        .await
-                        .map_err(anyhow::Error::msg)
-                    })
-                    .await;
-                    let _ = handle.update(cx, |this, cx| {
-                        match result {
-                            Ok(()) => {
-                                let message = t!("ManagePage.asset_deleted");
-                                toast::success(cx, message);
-                                this.confirm_dialog = None;
-                                cx.update_global(|state: &mut ManagePageState, _cx| {
-                                    state.selected_asset_keys.clear();
-                                    state.assets_loaded = false;
-                                });
-                            }
-                            Err(error) => {
-                                if let Some(dialog) = this.confirm_dialog.as_mut() {
-                                    dialog.pending = false;
-                                }
-                                toast::error(cx, SharedString::from(error.to_string()));
-                            }
+                match data::start_delete_assets_task(
+                    &version,
+                    &config,
+                    tab,
+                    pack_subtype,
+                    selected_gdk_user.as_ref().map(SharedString::as_ref),
+                    folder_names,
+                ) {
+                    Ok(task_id) => {
+                        self.confirm_dialog = None;
+                        let i18n = cx.global::<I18n>().clone();
+                        watch_manage_asset_mutation_task(
+                            task_id,
+                            t!("ManagePage.asset_deleted"),
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = self.confirm_dialog.as_mut() {
+                            dialog.pending = false;
                         }
-                        cx.notify();
-                    });
-                    Ok::<(), anyhow::Error>(())
-                })
-                .detach();
+                        toast::error(cx, SharedString::from(error));
+                    }
+                }
+                cx.notify();
             }
             ConfirmAction::DeleteScreenshot { entry } => {
-                let i18n = cx.global::<I18n>().clone();
-                cx.spawn(async move |handle, cx| {
-                    let result = crate::tasks::runtime::run_blocking(
-                        crate::tasks::runtime::BlockingTaskOptions::hidden("Deleting screenshot"),
-                        {
-                            let entry = entry.clone();
-                            move || data::delete_screenshot(&entry)
-                        },
-                    )
-                    .await;
-                    let _ = handle.update(cx, |this, cx| {
-                        match result {
-                            Ok(()) => {
-                                let message = t!("ManagePage.screenshot_deleted");
-                                toast::success(cx, message);
-                                this.confirm_dialog = None;
-                                this.last_screenshots_signature = None;
-                                cx.update_global(|state: &mut ManagePageState, _cx| {
-                                    state.screenshots_loaded = false;
-                                    state.screenshots_loading = false;
-                                });
-                            }
-                            Err(error) => {
-                                if let Some(dialog) = this.confirm_dialog.as_mut() {
-                                    dialog.pending = false;
-                                }
-                                toast::error(cx, SharedString::from(error));
-                            }
+                let view_handle = cx.entity().downgrade();
+                match data::start_delete_screenshot_task(&entry) {
+                    Ok(task_id) => {
+                        self.confirm_dialog = None;
+                        let i18n = cx.global::<I18n>().clone();
+                        watch_screenshot_mutation_task(
+                            task_id,
+                            t!("ManagePage.screenshot_deleted"),
+                            view_handle,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = self.confirm_dialog.as_mut() {
+                            dialog.pending = false;
                         }
-                        cx.notify();
-                    });
-                    Ok::<(), anyhow::Error>(())
-                })
-                .detach();
+                        toast::error(cx, SharedString::from(error));
+                    }
+                }
+                cx.notify();
             }
             ConfirmAction::DeleteServer {
                 version,

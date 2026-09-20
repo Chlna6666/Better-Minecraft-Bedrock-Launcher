@@ -9,8 +9,8 @@ use tracing::warn;
 use zip::write::SimpleFileOptions;
 
 use crate::core::minecraft::assets::{
-    CheckImportRequest, DeleteAssetPayload, check_import_conflict, delete_game_asset,
-    inspect_import_file,
+    CheckImportRequest, DeleteAssetPayload, check_import_conflict, inspect_import_file,
+    start_delete_game_assets_task,
 };
 use crate::core::minecraft::import::{ImportCheckResult, PackagePreview};
 use crate::core::minecraft::map::McMapInfo;
@@ -120,16 +120,18 @@ pub async fn load_assets(
     }
 }
 
-pub async fn delete_assets(
+pub fn start_delete_assets_task(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     tab: ManageTab,
     pack_subtype: ManagePackSubtype,
     selected_gdk_user: Option<&str>,
-    folder_names: &[String],
-) -> Result<(), String> {
+    folder_names: Vec<String>,
+) -> Result<String, String> {
     match tab {
-        ManageTab::Mod => delete_mods(version.folder.as_ref(), folder_names).await,
+        ManageTab::Mod => {
+            manage_service::start_delete_mods_task(version.folder.to_string(), folder_names)
+        }
         ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
             let build_type = version.build_type();
             let edition = version.edition();
@@ -144,21 +146,23 @@ pub async fn delete_assets(
                 ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => unreachable!(),
             };
 
-            for folder_name in folder_names {
-                let payload = DeleteAssetPayload {
+            let payloads = folder_names
+                .into_iter()
+                .map(|folder_name| DeleteAssetPayload {
                     build_type: build_type.clone(),
                     edition: edition.clone(),
                     version_name: version.folder.to_string(),
                     enable_isolation: config.enable_redirection,
                     user_id: selected_gdk_user.map(ToString::to_string),
                     delete_type: delete_type.to_string(),
-                    name: folder_name.clone(),
-                };
-                delete_game_asset(payload)?;
-            }
-            Ok(())
+                    name: folder_name,
+                })
+                .collect::<Vec<_>>();
+            start_delete_game_assets_task(payloads)
         }
-        ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => Ok(()),
+        ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => {
+            Err("当前标签不支持资源删除".to_string())
+        }
     }
 }
 
@@ -183,7 +187,7 @@ pub async fn load_screenshots(
         .collect())
 }
 
-pub fn delete_screenshot(entry: &ManageScreenshotEntry) -> Result<(), String> {
+pub fn start_delete_screenshot_task(entry: &ManageScreenshotEntry) -> Result<String, String> {
     let image_path = entry.image_path.to_string();
     let folder_path = entry.folder_path.to_string();
     let file_name = entry.file_name.to_string();
@@ -194,8 +198,9 @@ pub fn delete_screenshot(entry: &ManageScreenshotEntry) -> Result<(), String> {
         .unwrap_or("");
     let json_path = PathBuf::from(&folder_path).join(format!("{stem}.json"));
     let mc_path = PathBuf::from(&folder_path).join(format!("{stem}.mc"));
-    crate::core::minecraft::screenshots::delete_screenshot(
-        &crate::core::minecraft::screenshots::McScreenshotInfo {
+
+    crate::core::minecraft::screenshots::start_delete_screenshot_task(
+        crate::core::minecraft::screenshots::McScreenshotInfo {
             key: format!("screenshot:{image_path}"),
             image_path,
             folder_path,
@@ -213,7 +218,6 @@ pub fn delete_screenshot(entry: &ManageScreenshotEntry) -> Result<(), String> {
             gdk_user: None,
         },
     )
-    .map_err(|error| format!("删除截图失败: {error:?}"))
 }
 
 pub async fn load_external_servers(
@@ -808,20 +812,6 @@ fn external_server_options(
         user_id: selected_gdk_user.map(ToString::to_string),
         allow_shared_fallback: false,
     }
-}
-
-async fn delete_mods(version_folder: &str, mod_ids: &[String]) -> Result<(), String> {
-    let mods_dir = version_mods_dir(version_folder);
-    for mod_id in mod_ids {
-        let target_dir = mods_dir.join(mod_id);
-        if !target_dir.exists() {
-            return Err(format!("未找到 Mod 目录: {mod_id}"));
-        }
-        fs::remove_dir_all(&target_dir)
-            .await
-            .map_err(|error| format!("删除 Mod 失败: {error}"))?;
-    }
-    Ok(())
 }
 
 fn version_mods_dir(version_folder: &str) -> PathBuf {
