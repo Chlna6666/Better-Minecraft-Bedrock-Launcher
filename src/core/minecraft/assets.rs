@@ -7,8 +7,6 @@ use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
-use std::sync::Arc;
-use tokio::sync::oneshot;
 use tracing::{debug, error};
 
 #[derive(Debug, Deserialize)]
@@ -104,15 +102,10 @@ pub fn delete_game_asset(payload: DeleteAssetPayload) -> Result<serde_json::Valu
     Ok(json!({ "success": true }))
 }
 
-pub struct ImportAssetsTaskHandle {
-    pub task_id: Arc<str>,
-    pub result: oneshot::Receiver<Result<ImportAssetsResult, String>>,
-}
-
 pub fn start_import_assets_task(
     request: ImportAssetsRequest,
     title: impl Into<String>,
-) -> Result<ImportAssetsTaskHandle, String> {
+) -> Result<String, String> {
     let detail = Some(format!(
         "{} · {} 个文件",
         request.version_name,
@@ -127,9 +120,8 @@ pub fn start_import_assets_task(
         false,
     );
     let worker_task_id = task_id.clone();
-    let (sender, receiver) = oneshot::channel();
 
-    if let Err(error) = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
+    let workflow = match crate::tasks::runtime::spawn_io(async move {
         crate::tasks::task_manager::reset_progress(
             &worker_task_id,
             None,
@@ -138,7 +130,6 @@ pub fn start_import_assets_task(
         let result = import_assets_for_task(request, Some(worker_task_id.clone())).await;
 
         if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
-            let _ = sender.send(Err("导入已取消".to_string()));
             return;
         }
 
@@ -168,16 +159,32 @@ pub fn start_import_assets_task(
                 );
             }
         }
-        let _ = sender.send(result);
+    }) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            return Err(error);
+        }
+    };
+
+    let monitor_task_id = task_id.clone();
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = workflow.await
+            && !error.is_cancelled()
+            && !crate::tasks::task_manager::is_cancelled(&monitor_task_id)
+        {
+            crate::tasks::task_manager::finish_task(
+                &monitor_task_id,
+                "error",
+                Some(format!("资源导入任务异常结束: {error}")),
+            );
+        }
     }) {
         crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
         return Err(error);
     }
 
-    Ok(ImportAssetsTaskHandle {
-        task_id: Arc::from(task_id),
-        result: receiver,
-    })
+    Ok(task_id)
 }
 
 pub async fn import_assets(request: ImportAssetsRequest) -> Result<ImportAssetsResult, String> {

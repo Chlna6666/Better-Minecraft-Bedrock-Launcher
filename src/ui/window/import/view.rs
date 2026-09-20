@@ -1,6 +1,6 @@
 use crate::core::minecraft::assets::{
-    CheckImportRequest, ImportAssetsRequest, ImportAssetsResult, check_import_conflict,
-    inspect_import_file, start_import_assets_task,
+    CheckImportRequest, ImportAssetsRequest, check_import_conflict, inspect_import_file,
+    start_import_assets_task,
 };
 use crate::core::minecraft::import::{
     ImportCheckResult, PackagePreview, PreviewIconData, PreviewImageFormat, WorldPackReference,
@@ -311,7 +311,7 @@ impl ImportWindowView {
                 return Ok::<(), anyhow::Error>(());
             }
 
-            let import_handle = match start_import_assets_task(
+            let task_id = match start_import_assets_task(
                 ImportAssetsRequest {
                     build_type,
                     edition,
@@ -324,10 +324,10 @@ impl ImportWindowView {
                 },
                 "导入 Minecraft 内容",
             ) {
-                Ok(handle) => handle,
+                Ok(task_id) => task_id,
                 Err(error) => {
                     handle.update(cx, |this, cx| {
-                        this.finish_import(
+                        this.finish_import_task(
                             Err(error),
                             launch_after_import.then_some(launch_version),
                             cx,
@@ -340,76 +340,61 @@ impl ImportWindowView {
             debug!(
                 "Import window registered BMCBL task: path={}, task_id={}",
                 file_path_for_log,
-                import_handle.task_id
+                task_id
             );
-            let result = import_handle
-                .result
-                .await
-                .unwrap_or_else(|_| Err("导入任务结果通道已关闭".to_string()));
+            let terminal = crate::tasks::task_manager::wait_for_task_terminal(&task_id).await;
 
             handle.update(cx, |this, cx| {
-                if let Ok(result) = &result {
+                if let Ok(snapshot) = &terminal {
                     debug!(
-                        "Import window action result: imported={}, failed={}, launch_after_import={}",
-                        result.imported_count,
-                        result.failed_count,
+                        "Import window task terminal: task_id={}, status={}, message={:?}, launch_after_import={}",
+                        snapshot.id,
+                        snapshot.status,
+                        snapshot.message,
                         launch_after_import
                     );
-                } else if let Err(error) = &result {
+                } else if let Err(error) = &terminal {
                     warn!(
-                        "Import window action failed: path={}, error={}",
+                        "Import window task wait failed: path={}, error={}",
                         file_path_for_log,
                         error
                     );
                 }
-                this.finish_import(result, launch_after_import.then_some(launch_version), cx);
+                this.finish_import_task(
+                    terminal,
+                    launch_after_import.then_some(launch_version),
+                    cx,
+                );
             })?;
             Ok::<(), anyhow::Error>(())
         })
         .detach();
     }
 
-    fn finish_import(
+    fn finish_import_task(
         &mut self,
-        result: Result<ImportAssetsResult, String>,
+        terminal: Result<std::sync::Arc<crate::tasks::task_manager::TaskSnapshot>, String>,
         launch_version: Option<LaunchVersionDescriptor>,
         cx: &mut Context<Self>,
     ) {
         self.is_importing = false;
         let should_launch_after_import = self.launch_after_import;
         self.launch_after_import = false;
-        match result {
-            Ok(result) => {
-                if result.imported_count > 0
-                    && let Some(version_folder) = self.selected_folder.clone()
-                {
+
+        match terminal {
+            Ok(snapshot) if snapshot.status.as_ref() == "completed" => {
+                if let Some(version_folder) = self.selected_folder.clone() {
                     crate::ui::state::import::publish_import_completion(version_folder, cx);
                 }
-                debug!(
-                    "Import window finish success: imported={}, failed={}, launch_after_import={}",
-                    result.imported_count, result.failed_count, should_launch_after_import
-                );
-                let launch_started = if result.failed_count == 0 {
-                    should_launch_after_import
-                        .then_some(())
-                        .and(launch_version)
-                        .and_then(|version| start_launcher(version, cx))
-                        .is_some()
-                } else {
-                    false
-                };
-                let message = if result.failed_count == 0 && launch_started {
+                let launch_started = should_launch_after_import
+                    .then_some(())
+                    .and(launch_version)
+                    .and_then(|version| start_launcher(version, cx))
+                    .is_some();
+                let message = if launch_started {
                     t!("Import.importSuccessLaunching")
-                } else if result.failed_count == 0 {
-                    t!("Import.auto_close", message = &t!("Import.importSuccess"))
                 } else {
-                    let imported = result.imported_count.to_string();
-                    let failed = result.failed_count.to_string();
-                    t!(
-                        "Import.import_counts",
-                        imported = &imported,
-                        failed = &failed
-                    )
+                    t!("Import.auto_close", message = &t!("Import.importSuccess"))
                 };
                 toast::success(cx, message.clone());
                 self.status = Some((StatusKind::Success, message));
@@ -420,8 +405,25 @@ impl ImportWindowView {
                     self.schedule_auto_close(cx);
                 }
             }
+            Ok(snapshot) => {
+                let error = snapshot
+                    .message
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| snapshot.status.to_string());
+                warn!(
+                    "Import window finish failed: task_id={}, status={}, error={}",
+                    snapshot.id,
+                    snapshot.status,
+                    error
+                );
+                self.close_after_launch_completion = false;
+                self.launch_completion_close_scheduled = false;
+                toast::error(cx, SharedString::from(error.clone()));
+                self.status = Some((StatusKind::Error, SharedString::from(error)));
+            }
             Err(error) => {
-                warn!("Import window finish failed: error={}", error);
+                warn!("Import window task feedback failed: error={}", error);
                 self.close_after_launch_completion = false;
                 self.launch_completion_close_scheduled = false;
                 toast::error(cx, SharedString::from(error.clone()));
