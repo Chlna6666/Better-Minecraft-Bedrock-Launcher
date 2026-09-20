@@ -3,7 +3,8 @@ use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, reset_progress, set_task_message,
+    create_task_with_details, finish_task, is_cancelled, register_task_cooperative_cancel,
+    reset_progress, set_task_message,
 };
 use crate::utils::app_info::{self, BuildChannel};
 use crate::utils::file_ops;
@@ -315,6 +316,7 @@ pub async fn download_and_apply_update(
         None,
         false,
     );
+    register_task_cooperative_cancel(task_id.clone());
 
     info!("开始下载并应用：url={} task_id={}", url, task_id);
 
@@ -369,8 +371,8 @@ pub async fn download_and_apply_update(
         }
         Ok(CoreResult::Cancelled) => {
             info!("下载任务已取消：{}", task_id);
-            finish_task(&task_id, "cancelled", Some("下载已取消".into()));
             let _ = fs::remove_file(&target);
+            finish_task(&task_id, "cancelled", Some("下载已取消".into()));
             return Ok(serde_json::json!({
                 "cancelled": true,
                 "task_id": task_id
@@ -389,6 +391,15 @@ pub async fn download_and_apply_update(
     };
 
     info!("下载完成：{} bytes", bytes_len);
+
+    if is_cancelled(&task_id) {
+        let _ = fs::remove_file(&target);
+        finish_task(&task_id, "cancelled", Some("更新已取消".into()));
+        return Ok(serde_json::json!({
+            "cancelled": true,
+            "task_id": task_id
+        }));
+    }
 
     let src = normalize_file_arg(&target.to_string_lossy())
         .map_err(|e| fail_update_task(&task_id, format!("处理下载路径失败：{}", e)))?;
@@ -430,6 +441,16 @@ pub async fn download_and_apply_update(
             ),
         )
     })?;
+
+    if is_cancelled(&task_id) {
+        let _ = fs::remove_file(&updater_path);
+        let _ = fs::remove_file(&target);
+        finish_task(&task_id, "cancelled", Some("更新已取消".into()));
+        return Ok(serde_json::json!({
+            "cancelled": true,
+            "task_id": task_id
+        }));
+    }
 
     set_task_message(&task_id, Some("正在启动更新程序".to_string()));
     let child = Command::new(updater_path.clone())

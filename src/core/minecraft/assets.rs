@@ -119,6 +119,7 @@ pub fn start_import_assets_task(
         None,
         false,
     );
+    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
 
     let workflow = match crate::tasks::runtime::spawn_io(async move {
@@ -128,10 +129,6 @@ pub fn start_import_assets_task(
             Some("installing_assets"),
         );
         let result = import_assets_for_task(request, Some(worker_task_id.clone())).await;
-
-        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
-            return;
-        }
 
         match &result {
             Ok(result) if result.failed_count == 0 && result.imported_count > 0 => {
@@ -149,6 +146,13 @@ pub fn start_import_assets_task(
                         "导入未完整完成：成功 {}，失败 {}",
                         result.imported_count, result.failed_count
                     )),
+                );
+            }
+            Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
+                    Some(error.clone()),
                 );
             }
             Err(error) => {
@@ -191,7 +195,7 @@ pub async fn import_assets(request: ImportAssetsRequest) -> Result<ImportAssetsR
     import_assets_for_task(request, None).await
 }
 
-async fn import_assets_for_task(
+pub(crate) async fn import_assets_for_task(
     request: ImportAssetsRequest,
     task_id: Option<String>,
 ) -> Result<ImportAssetsResult, String> {

@@ -39,6 +39,7 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
         false,
     );
     task_manager::set_task_message(&operation_id, Some("正在准备安装".to_string()));
+    task_manager::register_task_cooperative_cancel(operation_id.to_string());
 
     let active_child_task = Arc::new(Mutex::new(None::<String>));
     let cancel_child = Arc::clone(&active_child_task);
@@ -56,13 +57,13 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
             run_game_install(&request, &worker_operation_id, &worker_child_task).await;
         match outcome {
             Ok(local_path) => {
-                if !task_manager::is_cancelled(&worker_operation_id) {
-                    task_manager::finish_task(
-                        &worker_operation_id,
-                        "completed",
-                        Some(local_path),
-                    );
-                }
+                // A successful return means every child transaction crossed its commit point.
+                // A late cancellation must not rewrite a fully committed install as incomplete.
+                task_manager::finish_task(
+                    &worker_operation_id,
+                    "completed",
+                    Some(local_path),
+                );
                 info!(
                     operation_id = %worker_operation_id,
                     "game install completed; invalidating local version catalog"
@@ -75,7 +76,13 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
                     %message,
                     "game install workflow failed"
                 );
-                if !task_manager::is_cancelled(&worker_operation_id) {
+                if task_manager::is_cancelled(&worker_operation_id) {
+                    task_manager::finish_task(
+                        &worker_operation_id,
+                        "cancelled",
+                        Some(message),
+                    );
+                } else {
                     task_manager::finish_task(&worker_operation_id, "error", Some(message));
                 }
             }
@@ -87,8 +94,6 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
             return Err(error);
         }
     };
-    task_manager::register_task_abort_handle(operation_id.to_string(), workflow.abort_handle());
-
     let monitor_operation_id = Arc::clone(&operation_id);
     crate::tasks::runtime::spawn_io(async move {
         if let Err(error) = workflow.await

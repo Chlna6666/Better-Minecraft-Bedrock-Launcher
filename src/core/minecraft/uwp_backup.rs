@@ -93,6 +93,7 @@ pub fn start_user_data_backup_task(
         None,
         false,
     );
+    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
@@ -115,9 +116,6 @@ pub fn start_user_data_backup_task(
         })
         .await;
 
-        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
-            return;
-        }
         match result {
             Ok(Ok(result)) => {
                 crate::tasks::task_manager::finish_task(
@@ -131,10 +129,24 @@ pub fn start_user_data_backup_task(
                     )),
                 );
             }
+            Ok(Err(error)) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
+                    Some(error),
+                );
+            }
             Ok(Err(error)) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
                     "error",
+                    Some(error),
+                );
+            }
+            Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
                     Some(error),
                 );
             }

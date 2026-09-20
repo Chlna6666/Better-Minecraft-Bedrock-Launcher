@@ -31,6 +31,7 @@ pub fn start_install(request: NativeModInstallRequest) -> Result<String, String>
         None,
         false,
     );
+    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let active_child_task = Arc::new(Mutex::new(None::<String>));
     let cancel_child = Arc::clone(&active_child_task);
     crate::tasks::task_manager::register_task_cancel_hook(task_id.clone(), move || {
@@ -43,15 +44,19 @@ pub fn start_install(request: NativeModInstallRequest) -> Result<String, String>
     let child_for_workflow = Arc::clone(&active_child_task);
     let workflow = crate::tasks::runtime::spawn_io(async move {
         let result = install(request, &task_id_for_workflow, &child_for_workflow).await;
-        if crate::tasks::task_manager::is_cancelled(&task_id_for_workflow) {
-            return;
-        }
         match result {
             Ok(path) => crate::tasks::task_manager::finish_task(
                 &task_id_for_workflow,
                 "completed",
                 Some(path.to_string_lossy().into_owned()),
             ),
+            Err(error) if crate::tasks::task_manager::is_cancelled(&task_id_for_workflow) => {
+                crate::tasks::task_manager::finish_task(
+                    &task_id_for_workflow,
+                    "cancelled",
+                    Some(error),
+                )
+            }
             Err(error) => {
                 crate::tasks::task_manager::finish_task(&task_id_for_workflow, "error", Some(error))
             }
@@ -92,18 +97,23 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
         Some(count as u64),
         false,
     );
+    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
         let result = import_local_mods(request, &worker_task_id).await;
-        if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
-            return;
-        }
         match result {
             Ok(()) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
                 "completed",
                 Some(format!("已导入 {count} 个 Mod")),
             ),
+            Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    "cancelled",
+                    Some(error),
+                )
+            }
             Err(error) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
                 "error",

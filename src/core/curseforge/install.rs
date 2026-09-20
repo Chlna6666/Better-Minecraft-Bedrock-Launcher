@@ -1,5 +1,5 @@
 use crate::core::minecraft::assets::{
-    CheckImportRequest, ImportAssetsRequest, check_import_conflict, import_assets,
+    CheckImportRequest, ImportAssetsRequest, check_import_conflict, import_assets_for_task,
     inspect_import_file,
 };
 use crate::core::minecraft::paths::{BuildType, Edition};
@@ -47,9 +47,6 @@ pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String
         task_id.clone(),
         async move {
             let result = run_install(&worker_task_id, request).await;
-            if is_cancelled(&worker_task_id) {
-                return;
-            }
             match result {
                 Ok(result) => finish_task(
                     &worker_task_id,
@@ -59,6 +56,9 @@ pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String
                         result.imported_count, result.target_version
                     )),
                 ),
+                Err(error) if is_cancelled(&worker_task_id) => {
+                    finish_task(&worker_task_id, "cancelled", Some(error))
+                }
                 Err(error) => finish_task(&worker_task_id, "error", Some(error)),
             }
         },
@@ -125,16 +125,19 @@ async fn run_install(
 
     ensure_not_cancelled(task_id)?;
     reset_progress(task_id, None, Some("installing"));
-    let result = import_assets(ImportAssetsRequest {
-        build_type: target.build_type,
-        edition: target.edition,
-        version_name: target.version_name.clone(),
-        enable_isolation: target.enable_isolation,
-        user_id: target.user_id,
-        file_paths: vec![downloaded_path],
-        overwrite,
-        allow_shared_fallback: target.allow_shared_fallback,
-    })
+    let result = import_assets_for_task(
+        ImportAssetsRequest {
+            build_type: target.build_type,
+            edition: target.edition,
+            version_name: target.version_name.clone(),
+            enable_isolation: target.enable_isolation,
+            user_id: target.user_id,
+            file_paths: vec![downloaded_path],
+            overwrite,
+            allow_shared_fallback: target.allow_shared_fallback,
+        },
+        Some(task_id.to_string()),
+    )
     .await?;
 
     if result.imported_count == 0 || result.failed_count != 0 {
