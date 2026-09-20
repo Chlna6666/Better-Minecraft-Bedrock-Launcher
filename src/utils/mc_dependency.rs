@@ -10,9 +10,7 @@ use regex::Regex;
 use reqwest::Client;
 use reqwest::header::{CONTENT_LENGTH, HeaderMap};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::{
-    UnboundedReceiver, UnboundedSender, unbounded_channel,
-};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 #[cfg(windows)]
@@ -110,17 +108,12 @@ pub enum DependencyEvent {
     AdminRequired(LocalizedText),
 }
 
-pub struct DependencyInstallTaskHandle {
-    pub task_id: String,
-    pub events: UnboundedReceiver<DependencyEvent>,
-}
-
 fn start_dependency_install_task<F, Fut>(
     title: &'static str,
     detail: Option<String>,
     stage: &'static str,
     work: F,
-) -> Result<DependencyInstallTaskHandle, String>
+) -> Result<String, String>
 where
     F: FnOnce(UnboundedSender<DependencyEvent>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
@@ -133,19 +126,24 @@ where
         Some(100),
         false,
     );
-    let (worker_sender, mut worker_receiver) = unbounded_channel::<DependencyEvent>();
-    let (ui_sender, ui_receiver) = unbounded_channel::<DependencyEvent>();
+    crate::tasks::task_manager::append_task_log(&task_id, format!("{title}：任务已提交"));
 
+    // DependencyEvent is an internal producer protocol only. UI never receives this channel;
+    // the adapter folds all feedback into the single TaskManager source of truth.
+    let (worker_sender, mut worker_receiver) = unbounded_channel::<DependencyEvent>();
     let progress_task_id = task_id.clone();
     let progress_stage = stage;
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let mut last_percent = 0_u64;
+        let mut last_target: Option<String> = None;
         while let Some(event) = worker_receiver.recv().await {
-            match &event {
+            match event {
                 DependencyEvent::Progress {
-                    percent, target, ..
+                    percent,
+                    stage: event_stage,
+                    target,
                 } => {
-                    let percent = u64::from((*percent).min(100));
+                    let percent = u64::from(percent.min(100));
                     if percent < last_percent {
                         crate::tasks::task_manager::reset_progress(
                             &progress_task_id,
@@ -161,22 +159,43 @@ where
                         Some(progress_stage),
                     );
                     last_percent = percent;
-                    if let Some(target) = target {
-                        crate::tasks::task_manager::set_task_message(
-                            &progress_task_id,
-                            Some(target.clone()),
-                        );
-                    }
-                }
-                DependencyEvent::AdminRequired(_) => {
+
+                    let stage_text =
+                        crate::ui::state::i18n::global_i18n().resolve(&event_stage).to_string();
+                    let message = target
+                        .as_ref()
+                        .map(|target| format!("{stage_text} · {target}"))
+                        .unwrap_or(stage_text);
                     crate::tasks::task_manager::set_task_message(
                         &progress_task_id,
-                        Some("安装需要管理员权限".to_string()),
+                        Some(message),
                     );
+
+                    if target != last_target {
+                        if let Some(target) = target.as_ref() {
+                            crate::tasks::task_manager::append_task_log(
+                                &progress_task_id,
+                                format!("处理：{target}"),
+                            );
+                        }
+                        last_target = target;
+                    }
                 }
-                DependencyEvent::Log(_) => {}
+                DependencyEvent::AdminRequired(message) => {
+                    let message =
+                        crate::ui::state::i18n::global_i18n().resolve(&message).to_string();
+                    crate::tasks::task_manager::set_task_message(
+                        &progress_task_id,
+                        Some(message.clone()),
+                    );
+                    crate::tasks::task_manager::append_task_log(&progress_task_id, message);
+                }
+                DependencyEvent::Log(message) => {
+                    let message =
+                        crate::ui::state::i18n::global_i18n().resolve(&message).to_string();
+                    crate::tasks::task_manager::append_task_log(&progress_task_id, message);
+                }
             }
-            let _ = ui_sender.send(event);
         }
     }) {
         crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
@@ -211,15 +230,12 @@ where
         return Err(error);
     }
 
-    Ok(DependencyInstallTaskHandle {
-        task_id,
-        events: ui_receiver,
-    })
+    Ok(task_id)
 }
 
 pub fn start_missing_uwp_dependencies_task(
     dependencies: Vec<MissingUwpDependency>,
-) -> Result<DependencyInstallTaskHandle, String> {
+) -> Result<String, String> {
     let count = dependencies.len();
     start_dependency_install_task(
         "安装 UWP 运行依赖",
@@ -231,9 +247,7 @@ pub fn start_missing_uwp_dependencies_task(
     )
 }
 
-pub fn start_game_input_runtime_task(
-    plan: GameInputInstallPlan,
-) -> Result<DependencyInstallTaskHandle, String> {
+pub fn start_game_input_runtime_task(plan: GameInputInstallPlan) -> Result<String, String> {
     let detail = plan
         .installer_path
         .file_name()
@@ -249,7 +263,7 @@ pub fn start_game_input_runtime_task(
 
 pub fn start_windows_app_sdk_runtime_task(
     plan: WindowsAppSdkInstallPlan,
-) -> Result<DependencyInstallTaskHandle, String> {
+) -> Result<String, String> {
     let detail = Some(format!("Windows App SDK {}", plan.version_label));
     start_dependency_install_task(
         "安装 Windows App SDK Runtime",

@@ -7,7 +7,6 @@ use gpui::{
     Subscription, Timer,
 };
 use gpui_hooks::hooks::{UseRefHook, UseStateHook};
-use tokio::sync::mpsc::{UnboundedReceiver, error::TryRecvError};
 use tracing::{debug, info, warn};
 
 #[cfg(target_os = "windows")]
@@ -17,7 +16,6 @@ use crate::core::minecraft::launcher::preflight::{
 };
 use crate::core::minecraft::launcher::task::embedded_dll_version_string;
 use crate::core::minecraft::launcher::{LaunchRequest, start_launch_task};
-use crate::i18n::LocalizedText;
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
@@ -26,9 +24,7 @@ use crate::ui::state::launch_prereq::{
 };
 use crate::ui::state::launcher::LauncherState;
 use crate::utils::developer_mode::{self, DeveloperModeError};
-use crate::utils::mc_dependency::{self, DependencyEvent};
-
-const DEPENDENCY_EVENT_BATCH_DELAY: Duration = Duration::from_millis(50);
+use crate::utils::mc_dependency;
 
 #[derive(Clone, Debug, Default)]
 pub struct LauncherSnapshot {
@@ -64,66 +60,6 @@ struct ActiveLaunchPrereq {
     version: PendingLaunchVersion,
     check: Option<LaunchPrerequisiteCheck>,
     busy: bool,
-}
-
-#[derive(Default)]
-struct DependencyEventBatch {
-    logs: Vec<LocalizedText>,
-    progress: Option<DependencyProgressUpdate>,
-    admin_notice: Option<LocalizedText>,
-}
-
-struct DependencyProgressUpdate {
-    percent: u32,
-    stage: LocalizedText,
-    target: Option<SharedString>,
-}
-
-impl DependencyEventBatch {
-    fn push(&mut self, event: DependencyEvent) {
-        match event {
-            DependencyEvent::Log(message) => {
-                self.logs.push(message);
-            }
-            DependencyEvent::Progress {
-                percent,
-                stage,
-                target,
-            } => {
-                self.progress = Some(DependencyProgressUpdate {
-                    percent,
-                    stage,
-                    target: target.map(SharedString::from),
-                });
-            }
-            DependencyEvent::AdminRequired(message) => {
-                self.admin_notice = Some(message);
-            }
-        }
-    }
-
-    fn apply(self, request_id: u64, state: &mut LaunchPrereqState, i18n: &I18n) -> bool {
-        let mut changed = false;
-
-        for log in self.logs {
-            changed |= state.push_log_if_matches(request_id, i18n.resolve(&log));
-        }
-
-        if let Some(progress) = self.progress {
-            changed |= state.update_progress_if_matches(
-                request_id,
-                progress.percent,
-                i18n.resolve(&progress.stage),
-                progress.target,
-            );
-        }
-
-        if let Some(admin_notice) = self.admin_notice {
-            changed |= state.set_admin_notice_if_matches(request_id, i18n.resolve(&admin_notice));
-        }
-
-        changed
-    }
 }
 
 pub fn read_launcher_snapshot(now: std::time::Instant, cx: &App) -> LauncherSnapshot {
@@ -639,17 +575,16 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
     });
 
     match mc_dependency::start_missing_uwp_dependencies_task(check.missing_uwp_dependencies) {
-        Ok(handle) => {
+        Ok(task_id) => {
             info!(
                 request_id = context.request_id,
                 version_name = %context.version.name,
-                task_id = %handle.task_id,
+                task_id = %task_id,
                 "UWP 依赖安装已注册为 BMCBL 任务"
             );
-            spawn_dependency_event_pump(context.request_id, handle.events, cx);
             watch_launch_prereq_dependency_task(
                 context,
-                handle.task_id,
+                task_id,
                 "LaunchPrereq.errors.installUwpFailed",
                 "UWP 依赖",
                 cx,
@@ -693,17 +628,16 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
     });
 
     match mc_dependency::start_game_input_runtime_task(plan) {
-        Ok(handle) => {
+        Ok(task_id) => {
             info!(
                 request_id = context.request_id,
                 version_name = %context.version.name,
-                task_id = %handle.task_id,
+                task_id = %task_id,
                 "GameInput Runtime 安装已注册为 BMCBL 任务"
             );
-            spawn_dependency_event_pump(context.request_id, handle.events, cx);
             watch_launch_prereq_dependency_task(
                 context,
-                handle.task_id,
+                task_id,
                 "LaunchPrereq.errors.installGameInputFailed",
                 "GameInput Runtime",
                 cx,
@@ -747,17 +681,16 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
     });
 
     match mc_dependency::start_windows_app_sdk_runtime_task(plan) {
-        Ok(handle) => {
+        Ok(task_id) => {
             info!(
                 request_id = context.request_id,
                 version_name = %context.version.name,
-                task_id = %handle.task_id,
+                task_id = %task_id,
                 "Windows App SDK Runtime 安装已注册为 BMCBL 任务"
             );
-            spawn_dependency_event_pump(context.request_id, handle.events, cx);
             watch_launch_prereq_dependency_task(
                 context,
-                handle.task_id,
+                task_id,
                 "LaunchPrereq.errors.installWindowsAppSdkFailed",
                 "Windows App SDK Runtime",
                 cx,
@@ -1050,48 +983,6 @@ fn watch_launch_prereq_dependency_task(
                 );
             }
         }
-        Ok::<(), Error>(())
-    })
-    .detach();
-}
-
-fn spawn_dependency_event_pump(
-    request_id: u64,
-    mut receiver: UnboundedReceiver<DependencyEvent>,
-    cx: &mut App,
-) {
-    cx.spawn(async move |cx| {
-        while let Some(event) = receiver.recv().await {
-            let mut batch = DependencyEventBatch::default();
-            batch.push(event);
-
-            Timer::after(DEPENDENCY_EVENT_BATCH_DELAY).await;
-
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => batch.push(event),
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                }
-            }
-
-            let log_count = batch.logs.len();
-            let has_progress = batch.progress.is_some();
-            let has_admin_notice = batch.admin_notice.is_some();
-            let applied = cx
-                .update_global(|state: &mut LaunchPrereqState, cx| {
-                    let i18n = cx.global::<I18n>().clone();
-                    batch.apply(request_id, state, &i18n)
-                })
-                .unwrap_or(false);
-
-            if applied {
-                debug!(
-                    request_id,
-                    log_count, has_progress, has_admin_notice, "启动依赖事件批量回灌完成"
-                );
-            }
-        }
-
         Ok::<(), Error>(())
     })
     .detach();
