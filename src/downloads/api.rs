@@ -418,6 +418,45 @@ async fn download_resource_to_dir(
     Ok(task_id)
 }
 
+/// Download a CurseForge package through an already-owned task.
+///
+/// The caller owns task creation and terminal status. This keeps a multi-stage install
+/// (download -> inspect -> import) on one task instead of nesting a second download task.
+pub async fn download_resource_to_cache_in_task(
+    task_id: &str,
+    url: String,
+    file_name: String,
+    md5: Option<String>,
+    download_options: Option<DownloadOptions>,
+) -> Result<PathBuf, String> {
+    let urls = crate::github::configured_download_urls(&url)?;
+    let client =
+        get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+
+    let cache_dir = file_ops::curseforge_downloads_dir();
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    let safe_name = sanitize_filename(&file_name);
+    let dest = cache_dir.join(&safe_name);
+
+    let mut options = download_options.unwrap_or_default();
+    if options.md5_expected.is_none() {
+        options.md5_expected = md5;
+    }
+    let manager = DownloaderManager::with_client(client);
+    match manager
+        .download_with_url_candidates(task_id, urls, dest.clone(), &options)
+        .await
+    {
+        Ok(CoreResult::Success(path)) => Ok(path),
+        Ok(CoreResult::Cancelled) => Err("下载已取消".to_string()),
+        Ok(CoreResult::Error(error)) | Err(error) => {
+            let _ = tokio::fs::remove_file(&dest).await;
+            remove_download_temp(&dest);
+            Err(format!("下载失败: {error:?}"))
+        }
+    }
+}
+
 /// Download a remote file into the categorized CurseForge download cache.
 ///
 /// This mirrors the upstream tauri command `download_resource_to_cache` and integrates with the

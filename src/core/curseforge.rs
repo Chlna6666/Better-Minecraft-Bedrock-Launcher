@@ -1,4 +1,5 @@
 mod cache;
+pub mod install;
 pub mod queries;
 
 use crate::config::config::read_config;
