@@ -20,14 +20,14 @@ impl App {
         &mut self,
         callback: impl FnOnce(&mut App) -> R,
     ) -> (R, FxHashSet<EntityId>) {
-        let accessed_entities_start = self.entities.accessed_entities.borrow().clone();
+        // Isolate this render scope instead of cloning the growing frame-wide set twice.
+        // Restoring the previous set also makes nested scopes contribute to their parent.
+        let previous = std::mem::take(&mut *self.entities.accessed_entities.borrow_mut());
         let result = callback(self);
-        let accessed_entities_end = self.entities.accessed_entities.borrow().clone();
-        let entities_accessed_in_callback = accessed_entities_end
-            .difference(&accessed_entities_start)
-            .copied()
-            .collect::<FxHashSet<EntityId>>();
-        (result, entities_accessed_in_callback)
+        let mut frame_accesses = self.entities.accessed_entities.borrow_mut();
+        let scope_accesses = std::mem::replace(&mut *frame_accesses, previous);
+        frame_accesses.extend(scope_accesses.iter().copied());
+        (result, scope_accesses)
     }
 
     pub(crate) fn record_entities_accessed(
@@ -229,5 +229,34 @@ impl App {
 
         self.window_invalidators_by_entity
             .insert(entity_id, window_invalidators);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn access_scopes_keep_repeated_and_nested_dependencies(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let first = cx.new(|_| 1);
+            let second = cx.new(|_| 2);
+            cx.entities.clear_accessed();
+
+            let _ = first.read(cx);
+            let (_, parent_accesses) = cx.detect_accessed_entities(|cx| {
+                let _ = first.read(cx);
+                let (_, child_accesses) = cx.detect_accessed_entities(|cx| {
+                    let _ = second.read(cx);
+                });
+                assert!(child_accesses.contains(&second.entity_id()));
+            });
+
+            assert!(parent_accesses.contains(&first.entity_id()));
+            assert!(parent_accesses.contains(&second.entity_id()));
+            let frame_accesses = cx.entities.accessed_entities.borrow();
+            assert!(frame_accesses.contains(&first.entity_id()));
+            assert!(frame_accesses.contains(&second.entity_id()));
+        });
     }
 }
