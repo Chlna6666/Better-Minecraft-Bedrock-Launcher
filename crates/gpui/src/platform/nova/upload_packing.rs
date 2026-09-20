@@ -219,6 +219,14 @@ fn pack_mesh_indices_simd<S: Simd>(simd: S, indices: &[u32], uses_u16: bool, out
 /// The old shader recomputed eight exponentials, four paired offsets, and normalization for every
 /// fragment. These values depend only on the blur radius, so compute them once per pass on the CPU.
 pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
+    write_backdrop_blur_pass_with_animation(bytes, radius, 0);
+}
+
+pub(super) fn write_backdrop_blur_pass_with_animation(
+    bytes: &mut Vec<u8>,
+    radius: f32,
+    animation_slot_plus_one: u32,
+) {
     let radius = if radius.is_finite() {
         radius.max(1.0 / 4096.0)
     } else {
@@ -265,8 +273,9 @@ pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
     }
     write_f32_vec(bytes, center_weight * normalization);
     write_f32_vec(bytes, if adjacent_taps { 1.0 } else { 0.0 });
-    write_f32_vec(bytes, 0.0);
-    write_f32_vec(bytes, 0.0);
+    // center_and_pad.z is an ABI-stable padding lane for animation_slot + 1.
+    write_u32_vec(bytes, animation_slot_plus_one);
+    write_u32_vec(bytes, 0);
 }
 
 pub(super) fn write_backdrop_blur(

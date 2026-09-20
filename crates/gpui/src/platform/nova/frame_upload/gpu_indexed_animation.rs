@@ -48,6 +48,7 @@ fn can_promote_element_blur(
                 | AnimationProperty::Transform
                 | AnimationProperty::Translation
                 | AnimationProperty::Scale
+                | AnimationProperty::BlurRadius
                 | AnimationProperty::ClipReveal
         )
     )
@@ -250,6 +251,7 @@ impl FrameUpload {
         }
 
         let sampled_animation_values = &self.sampled_animation_values;
+        let mut promoted_blur_radius = false;
         for primitive in &self.animated_primitives {
             let Some(&slot) = self
                 .gpu_indexed_animation_slots
@@ -259,6 +261,10 @@ impl FrameUpload {
             };
             let slot_plus_one = slot + 1;
             if can_promote_element_blur(sampled_animation_values, primitive) {
+                let property =
+                    composite_animation_property(sampled_animation_values, primitive.animation_id);
+                let is_blur_radius = property == Some(AnimationProperty::BlurRadius);
+                promoted_blur_radius |= is_blur_radius;
                 let offset = primitive.index as usize * PACKED_BACKDROP_BLUR_BYTES;
                 debug_assert!(
                     offset + PAINT_BLUR_COMPOSITE_KIND_OFFSET + 4 <= self.backdrop_blurs.len()
@@ -275,9 +281,10 @@ impl FrameUpload {
                 );
                 self.gpu_indexed_composite_animation_ids
                     .insert(primitive.animation_id);
-                if primitive
-                    .base_paint_blur()
-                    .is_some_and(|blur| blur.content.animation_ids().is_empty())
+                if !is_blur_radius
+                    && primitive
+                        .base_paint_blur()
+                        .is_some_and(|blur| blur.content.animation_ids().is_empty())
                 {
                     self.gpu_indexed_composite_element_blur_animation_ids
                         .insert(primitive.index, primitive.animation_id);
@@ -313,6 +320,11 @@ impl FrameUpload {
                 && !can_promote_element_blur(sampled_animation_values, primitive)
         });
         write_u32(&mut self.globals, INDEXED_ANIMATION_ENABLED_OFFSET, 1);
+
+        if promoted_blur_radius {
+            self.refresh_backdrop_blur_configs();
+            self.rebuild_backdrop_blur_passes_for_current_frame();
+        }
     }
 
     /// GPU-indexed primitives are no longer present in `animated_primitives`, so backdrop source
@@ -466,6 +478,64 @@ mod tests {
                 .gpu_indexed_composite_element_blur_animation_ids
                 .contains_key(&0)
         );
+    }
+
+    #[test]
+    fn blur_radius_animation_promotes_filter_slot_without_composite_only_skip() {
+        let id = crate::SceneAnimationId(23);
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(120.0), crate::ScaledPixels(80.0)),
+        );
+        let blur = crate::PaintBlur {
+            order: 1,
+            animation_id: Some(id),
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(24.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        };
+        let mut blur_bytes = Vec::new();
+        write_paint_blur(
+            &mut blur_bytes,
+            &blur,
+            DrawableSize { width: 640, height: 480 },
+        );
+        let mut upload = FrameUpload {
+            globals: vec![0; GLOBAL_UPLOAD_BYTES],
+            backdrop_blurs: blur_bytes,
+            batches: vec![UploadedBatch::CompositeBlur { index: 0 }],
+            animated_primitives: vec![AnimatedUpload::new(
+                crate::Primitive::Blur(blur),
+                AnimatedPrimitiveKind::BackdropBlur,
+                0,
+            )],
+            sampled_animation_values: vec![crate::SceneAnimationValue {
+                animation_id: id,
+                property: crate::TransitionProperty::Blur,
+                progress: 0.5,
+                from: [4.0, 0.0, 0.0, 0.0],
+                to: [20.0, 0.0, 0.0, 0.0],
+            }],
+            ..Default::default()
+        };
+
+        upload.promote_gpu_indexed_animations();
+
+        assert!(upload.animated_primitives.is_empty());
+        assert_eq!(upload.gpu_indexed_animation_slots.get(&id), Some(&0));
+        assert!(
+            !upload
+                .gpu_indexed_composite_element_blur_animation_ids
+                .contains_key(&0)
+        );
+        assert_eq!(
+            read_u32(&upload.backdrop_blurs, PAINT_BLUR_COMPOSITE_KIND_OFFSET),
+            ELEMENT_COMPOSITE_KIND | (1 << 2)
+        );
+        assert_eq!(upload.backdrop_blur_configs()[0].animation_slot_plus_one(), 1);
+        assert_eq!(read_u32(&upload.backdrop_blur_passes, 40), 1);
     }
 
     #[test]

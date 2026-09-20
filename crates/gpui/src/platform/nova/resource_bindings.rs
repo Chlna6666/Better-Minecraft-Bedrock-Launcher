@@ -49,6 +49,7 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
     source_texture_view: TextureViewId,
     sampler: SamplerId,
     pass_buffer: BufferId,
+    animation_buffer: BufferId,
 ) -> Vec<ResourceBinding> {
     vec![
         ResourceBinding {
@@ -66,8 +67,17 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
             resource: ResourceBindingResource::Buffer(BufferBinding {
                 buffer: pass_buffer,
                 offset: 0,
-                size: (MAX_BACKDROP_BLURS * BACKDROP_BLUR_PASS_BYTES) as u64,
+                size: (MAX_BACKDROP_BLURS * 2 * BACKDROP_BLUR_PASS_BYTES) as u64,
                 stride: Some(BACKDROP_BLUR_PASS_BYTES as u32),
+            }),
+        },
+        ResourceBinding {
+            binding: 17,
+            resource: ResourceBindingResource::Buffer(BufferBinding {
+                buffer: animation_buffer,
+                offset: 0,
+                size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
+                stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
             }),
         },
     ]

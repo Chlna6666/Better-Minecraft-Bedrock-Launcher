@@ -7,6 +7,7 @@
 struct BackdropBlurPass {
     offsets: vec4<f32>,
     weights: vec4<f32>,
+    // x = center weight, y = adjacent-tap flag, z = bitcast(animation_slot + 1), w = reserved.
     center_and_pad: vec4<f32>,
 }
 
@@ -34,10 +35,21 @@ struct BackdropBlur {
 @group(0) @binding(15) var<storage, read> b_backdrop_blur_passes: array<BackdropBlurPass>;
 @group(0) @binding(16) var<storage, read> b_backdrop_blurs: array<BackdropBlur>;
 
+struct GaussianKernel {
+    offsets: vec4<f32>,
+    weights: vec4<f32>,
+    center_weight: f32,
+    adjacent_taps: f32,
+}
+
 struct BackdropBlurPassVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) texture_coords: vec2<f32>,
-    @location(1) @interpolate(flat) instance_id: u32,
+    @location(1) @interpolate(flat) offsets: vec4<f32>,
+    @location(2) @interpolate(flat) weights: vec4<f32>,
+    @location(3) @interpolate(flat) center_weight: f32,
+    @location(4) @interpolate(flat) adjacent_taps: f32,
+    @location(5) @interpolate(flat) instance_id: u32,
 }
 
 struct BackdropBlurVarying {
@@ -54,10 +66,6 @@ struct BackdropBlurVarying {
     @location(9) local_position: vec2<f32>,
 }
 
-// For wide kernels write_backdrop_blur_pass() uses sigma = radius and tap_step = 3 * sigma / 8. The
-// Gaussian ratio between tap n+1 and n depends only on n, not on radius. The first packed pair
-// centroid is likewise a fixed multiple of tap_step. Keeping those constants here lets us recover
-// the exact 17 logical taps without per-fragment exp().
 const GAUSSIAN_PAIR0_CENTROID_IN_TAPS: f32 = 1.4474603;
 const GAUSSIAN_PAIR_RATIOS: array<f32, 4> = array<f32, 4>(
     0.8098247,
@@ -65,6 +73,67 @@ const GAUSSIAN_PAIR_RATIOS: array<f32, 4> = array<f32, 4>(
     0.4614242,
     0.3483013,
 );
+const MIN_BLUR_SIGMA: f32 = 1.0 / 4096.0;
+
+fn gaussian_weight(distance: f32, sigma: f32, support: f32, adjacent_taps: bool) -> f32 {
+    if (adjacent_taps && distance > support) {
+        return 0.0;
+    }
+    return exp(-(distance * distance) / max(2.0 * sigma * sigma, 1e-8));
+}
+
+fn build_gaussian_kernel(radius: f32) -> GaussianKernel {
+    let sigma = max(abs(radius), MIN_BLUR_SIGMA);
+    let support = 3.0 * sigma;
+    let adjacent_taps = support <= 8.0;
+    let tap_step = select(support / 8.0, 1.0, adjacent_taps);
+
+    var offsets = vec4<f32>(0.0);
+    var pair_weights = vec4<f32>(0.0);
+    let center_weight = 1.0;
+    var weight_sum = center_weight;
+    for (var pair: u32 = 0u; pair < 4u; pair = pair + 1u) {
+        let tap0 = f32(pair * 2u + 1u) * tap_step;
+        let tap1 = f32(pair * 2u + 2u) * tap_step;
+        let weight0 = gaussian_weight(tap0, sigma, support, adjacent_taps);
+        let weight1 = gaussian_weight(tap1, sigma, support, adjacent_taps);
+        let pair_weight = weight0 + weight1;
+        offsets[pair] = select(
+            tap0,
+            (tap0 * weight0 + tap1 * weight1) / max(pair_weight, 1e-8),
+            pair_weight > 1e-8,
+        );
+        pair_weights[pair] = pair_weight;
+        weight_sum += pair_weight * 2.0;
+    }
+
+    let normalization = 1.0 / max(weight_sum, 1e-8);
+    var kernel: GaussianKernel;
+    kernel.offsets = offsets;
+    kernel.weights = pair_weights * normalization;
+    kernel.center_weight = center_weight * normalization;
+    kernel.adjacent_taps = select(0.0, 1.0, adjacent_taps);
+    return kernel;
+}
+
+fn resolve_blur_pass_kernel(blur_pass: BackdropBlurPass) -> GaussianKernel {
+    var kernel: GaussianKernel;
+    kernel.offsets = blur_pass.offsets;
+    kernel.weights = blur_pass.weights;
+    kernel.center_weight = blur_pass.center_and_pad.x;
+    kernel.adjacent_taps = blur_pass.center_and_pad.y;
+
+    let animation_slot_plus_one = bitcast<u32>(blur_pass.center_and_pad.z);
+    if (animation_slot_plus_one == 0u) {
+        return kernel;
+    }
+    let value = b_animation_values[animation_slot_plus_one - 1u];
+    if (value.enabled == 0u || value.property != 6u) {
+        return kernel;
+    }
+    let sampled = value.from_value + (value.to_value - value.from_value) * value.progress;
+    return build_gaussian_kernel(max(sampled.x, 0.0));
+}
 
 @vertex
 fn vs_backdrop_blur_pass(
@@ -72,6 +141,8 @@ fn vs_backdrop_blur_pass(
     @builtin(instance_index) instance_id: u32,
 ) -> BackdropBlurPassVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+    let blur_pass = b_backdrop_blur_passes[instance_id];
+    let kernel = resolve_blur_pass_kernel(blur_pass);
     var out = BackdropBlurPassVarying();
     out.position = vec4<f32>(
         unit_vertex * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0),
@@ -79,6 +150,10 @@ fn vs_backdrop_blur_pass(
         1.0,
     );
     out.texture_coords = unit_vertex;
+    out.offsets = kernel.offsets;
+    out.weights = kernel.weights;
+    out.center_weight = kernel.center_weight;
+    out.adjacent_taps = kernel.adjacent_taps;
     out.instance_id = instance_id;
     return out;
 }
@@ -88,19 +163,18 @@ fn sample_backdrop_blur_texture(texture_coords: vec2<f32>) -> vec4<f32> {
 }
 
 fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
-    let blur_pass = b_backdrop_blur_passes[input.instance_id];
     let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0));
     let horizontal = (input.instance_id & 1u) == 0u;
     let axis = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), horizontal);
     let texel_axis = axis / source_size;
-    let tap_step = blur_pass.offsets.x / GAUSSIAN_PAIR0_CENTROID_IN_TAPS;
+    let tap_step = input.offsets.x / GAUSSIAN_PAIR0_CENTROID_IN_TAPS;
 
-    var color = sample_backdrop_blur_texture(input.texture_coords) * blur_pass.center_and_pad.x;
-    if (blur_pass.center_and_pad.y != 0.0) {
+    var color = sample_backdrop_blur_texture(input.texture_coords) * input.center_weight;
+    if (input.adjacent_taps != 0.0) {
         for (var pair: u32 = 0u; pair < 4u; pair = pair + 1u) {
-            let weight = blur_pass.weights[pair];
+            let weight = input.weights[pair];
             if (weight > 0.0) {
-                let delta = texel_axis * blur_pass.offsets[pair];
+                let delta = texel_axis * input.offsets[pair];
                 color += sample_backdrop_blur_texture(input.texture_coords + delta) * weight;
                 color += sample_backdrop_blur_texture(input.texture_coords - delta) * weight;
             }
@@ -111,7 +185,7 @@ fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
         let first_tap = f32(pair * 2u + 1u);
         let second_tap = first_tap + 1.0;
         let ratio = GAUSSIAN_PAIR_RATIOS[pair];
-        let pair_weight = blur_pass.weights[pair];
+        let pair_weight = input.weights[pair];
         let first_weight = pair_weight / (1.0 + ratio);
         let second_weight = pair_weight - first_weight;
         let first_delta = texel_axis * (tap_step * first_tap);
@@ -125,8 +199,6 @@ fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
     return color;
 }
 
-// Entry names stay stable for the backend-neutral pipeline table. The first pass blurs X while the
-// target planner downsamples X only; the second pass blurs Y while downsampling Y to final size.
 @fragment
 fn fs_backdrop_blur_downsample(input: BackdropBlurPassVarying) -> @location(0) vec4<f32> {
     return gaussian_blur(input);

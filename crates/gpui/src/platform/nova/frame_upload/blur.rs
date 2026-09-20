@@ -9,6 +9,7 @@ const BLUR_BOUNDS_Y_OFFSET: usize = 20;
 const BLUR_BOUNDS_WIDTH_OFFSET: usize = 24;
 const BLUR_BOUNDS_HEIGHT_OFFSET: usize = 28;
 const BLUR_RADIUS_OFFSET: usize = 112;
+const BLUR_COMPOSITE_KIND_OFFSET: usize = 132;
 /// Draw-order sentinel used only by renderer-side damage lookup. The packed GPU primitive keeps its
 /// real order; Nova's backdrop shader does not consume this config order. This lets a retained
 /// composite-only animation ignore Scene's conservative self-animation `mark_full` without hiding
@@ -43,6 +44,7 @@ pub(in crate::platform::nova) struct BackdropBlurConfig {
     levels: u8,
     radius_bits: u32,
     bounds_bits: [u32; 4],
+    animation_slot_plus_one: u32,
     recompute_overlap: bool,
 }
 
@@ -79,6 +81,7 @@ impl BackdropBlurConfig {
             levels,
             radius_bits: radius.to_bits(),
             bounds_bits: bounds.map(f32::to_bits),
+            animation_slot_plus_one: 0,
             recompute_overlap,
         }
     }
@@ -103,6 +106,15 @@ impl BackdropBlurConfig {
 
     pub(in crate::platform::nova) fn order_range(self) -> std::ops::RangeInclusive<u32> {
         self.order..=self.order_last
+    }
+
+    pub(in crate::platform::nova) fn animation_slot_plus_one(self) -> u32 {
+        self.animation_slot_plus_one
+    }
+
+    fn with_animation_slot(mut self, animation_slot_plus_one: u32) -> Self {
+        self.animation_slot_plus_one = animation_slot_plus_one;
+        self
     }
 
     pub(in crate::platform::nova) fn reuse_key(self) -> BackdropBlurReuseKey {
@@ -158,6 +170,8 @@ impl BackdropBlurConfig {
             // Separate simultaneously visible filters with different kernels. Radius is excluded
             // only from allocation identity, not from filtered-result reuse.
             && self.radius_bits == other.radius_bits
+            // One Gaussian pass can sample only one renderer animation slot.
+            && self.animation_slot_plus_one == other.animation_slot_plus_one
             && self.reuse_key() == other.reuse_key()
             && self.member_last.saturating_add(1) == other.member_first
             && source_regions_overlap(self, other)
@@ -182,6 +196,7 @@ impl BackdropBlurConfig {
         );
         merged.member_last = other.member_last.max(self.member_last);
         merged.order_last = self.order_last.max(other.order_last);
+        merged.animation_slot_plus_one = self.animation_slot_plus_one;
         merged
     }
 }
@@ -301,24 +316,29 @@ impl FrameUpload {
                 .len()
                 .saturating_mul(BACKDROP_BLUR_PASS_BYTES * 2),
         );
-        let mut cached_radius_bits = None::<u32>;
+        let mut cached_key = None::<(u32, u32)>;
         let mut cached_pass = [0_u8; BACKDROP_BLUR_PASS_BYTES];
         for config in &self.backdrop_blur_configs {
             let radius = config.radius().max(1.0 / 4096.0);
-            let radius_bits = radius.to_bits();
-            if cached_radius_bits == Some(radius_bits) {
+            let animation_slot_plus_one = config.animation_slot_plus_one();
+            let key = (radius.to_bits(), animation_slot_plus_one);
+            if cached_key == Some(key) {
                 self.backdrop_blur_passes.extend_from_slice(&cached_pass);
                 self.backdrop_blur_passes.extend_from_slice(&cached_pass);
                 continue;
             }
 
             let start = self.backdrop_blur_passes.len();
-            write_backdrop_blur_pass(&mut self.backdrop_blur_passes, radius);
+            write_backdrop_blur_pass_with_animation(
+                &mut self.backdrop_blur_passes,
+                radius,
+                animation_slot_plus_one,
+            );
             let end = self.backdrop_blur_passes.len();
             debug_assert_eq!(end.saturating_sub(start), BACKDROP_BLUR_PASS_BYTES);
             if let Some(record) = self.backdrop_blur_passes.get(start..end) {
                 cached_pass.copy_from_slice(record);
-                cached_radius_bits = Some(radius_bits);
+                cached_key = Some(key);
             }
             self.backdrop_blur_passes.extend_from_within(start..end);
         }
@@ -393,24 +413,29 @@ impl FrameUpload {
         let levels = read_u32(record, BLUR_LEVELS_OFFSET)?;
         let recompute_overlap = read_u32(record, BLUR_RECOMPUTE_OVERLAP_OFFSET)? != 0;
         let radius = f32::from_bits(read_u32(record, BLUR_RADIUS_OFFSET)?);
+        let animation_slot_plus_one =
+            read_u32(record, BLUR_COMPOSITE_KIND_OFFSET)? >> 2;
         let bounds = [
             f32::from_bits(read_u32(record, BLUR_BOUNDS_X_OFFSET)?),
             f32::from_bits(read_u32(record, BLUR_BOUNDS_Y_OFFSET)?),
             f32::from_bits(read_u32(record, BLUR_BOUNDS_WIDTH_OFFSET)?),
             f32::from_bits(read_u32(record, BLUR_BOUNDS_HEIGHT_OFFSET)?),
         ];
-        Some(BackdropBlurConfig::new(
-            source_group,
-            primitive_index,
-            order,
-            u8::try_from(downsample).ok()?.max(1),
-            u8::try_from(levels)
-                .ok()?
-                .clamp(1, MAX_BACKDROP_BLUR_LEVELS),
-            radius,
-            bounds,
-            recompute_overlap,
-        ))
+        Some(
+            BackdropBlurConfig::new(
+                source_group,
+                primitive_index,
+                order,
+                u8::try_from(downsample).ok()?.max(1),
+                u8::try_from(levels)
+                    .ok()?
+                    .clamp(1, MAX_BACKDROP_BLUR_LEVELS),
+                radius,
+                bounds,
+                recompute_overlap,
+            )
+            .with_animation_slot(animation_slot_plus_one),
+        )
     }
 }
 
@@ -483,6 +508,32 @@ mod tests {
         }
         upload.backdrop_blurs[start + BLUR_RADIUS_OFFSET..start + BLUR_RADIUS_OFFSET + 4]
             .copy_from_slice(&radius.to_bits().to_ne_bytes());
+    }
+
+    #[test]
+    fn animated_blur_pass_carries_renderer_animation_slot_without_changing_stride() {
+        let mut upload = FrameUpload::default();
+        push_blur_record(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false);
+        let slot_plus_one = 3_u32;
+        upload.backdrop_blurs
+            [BLUR_COMPOSITE_KIND_OFFSET..BLUR_COMPOSITE_KIND_OFFSET + 4]
+            .copy_from_slice(&(1_u32 | (slot_plus_one << 2)).to_ne_bytes());
+        upload
+            .batches
+            .push(UploadedBatch::CompositeBlur { index: 0 });
+
+        upload.refresh_backdrop_blur_configs();
+        assert_eq!(upload.backdrop_blur_configs().len(), 1);
+        assert_eq!(
+            upload.backdrop_blur_configs()[0].animation_slot_plus_one(),
+            slot_plus_one
+        );
+        upload.rebuild_backdrop_blur_passes_for_current_frame();
+        assert_eq!(
+            upload.backdrop_blur_passes.len(),
+            BACKDROP_BLUR_PASS_BYTES * 2
+        );
+        assert_eq!(read_u32(&upload.backdrop_blur_passes, 40), Some(slot_plus_one));
     }
 
     #[test]
