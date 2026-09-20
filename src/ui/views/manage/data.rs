@@ -901,39 +901,3 @@ fn zip_directory(source_dir: &Path, target_file: &Path) -> anyhow::Result<()> {
     zip.finish()?;
     Ok(())
 }
-
-pub async fn rename_version_instance(old_name: &str, new_name: &str) -> Result<(), String> {
-    let old_name = old_name.trim();
-    let new_name = new_name.trim();
-
-    if new_name.is_empty() {
-        return Err("实例名称不能为空".to_string());
-    }
-
-    if new_name == old_name {
-        return Ok(());
-    }
-
-    let invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
-    if new_name.chars().any(|c| invalid_chars.contains(&c)) {
-        return Err("实例名称不能包含字符 \\ / : * ? \" < > |".to_string());
-    }
-
-    let versions_root = crate::utils::file_ops::bmcbl_subdir("versions");
-    let old_dir = versions_root.join(old_name);
-    let new_dir = versions_root.join(new_name);
-
-    if !old_dir.exists() {
-        return Err(format!("原版本目录不存在: {}", old_dir.display()));
-    }
-
-    if new_dir.exists() {
-        return Err(format!("已存在同名的游戏实例: {new_name}"));
-    }
-
-    tokio::fs::rename(&old_dir, &new_dir)
-        .await
-        .map_err(|err| format!("重命名目录失败: {err}"))?;
-
-    Ok(())
-}

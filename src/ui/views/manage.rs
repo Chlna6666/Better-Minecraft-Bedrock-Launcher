@@ -1,7 +1,7 @@
 use crate::core::minecraft::local_package::{
     LOCAL_GAME_PACKAGE_EXTENSIONS, start_local_game_package_import,
 };
-use crate::core::version::api::delete_version;
+use crate::core::version::api::{start_delete_version_task, start_rename_version_task};
 use crate::tasks::task_manager;
 use crate::ui::components::code_editor::{CodeEditorEvent, CodeEditorLanguage};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};

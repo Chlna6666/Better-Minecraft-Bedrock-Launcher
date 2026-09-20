@@ -86,37 +86,28 @@ impl ManagePageView {
         match action {
             ConfirmAction::DeleteVersion { version } => {
                 let folder = version.folder.to_string();
-                self.confirm_dialog = None;
-                let i18n = cx.global::<I18n>().clone();
-                let deleting_message = t!("ManagePage.deleting_version");
-                toast::push(cx, deleting_message);
-                cx.spawn(async move |handle, cx| {
-                    let folder_for_delete = folder.clone();
-                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                        delete_version(&folder_for_delete).await
-                    })
-                    .await
-                    .map_err(|error| error.to_string());
-
-                    let _ = handle.update(cx, |this, cx| {
-                        match result {
-                            Ok(()) => {
-                                remove_local_version(&folder, cx);
-                                this.invalidate_version_dependent_data(cx);
-                                let message = t!("ManagePage.version_deleted");
-                                toast::success(cx, message);
-                                ensure_local_versions_loaded(true, cx);
-                            }
-                            Err(error) => {
-                                toast::error(cx, SharedString::from(error));
-                                ensure_local_versions_loaded(true, cx);
-                            }
+                let view_handle = cx.entity().downgrade();
+                match start_delete_version_task(folder.clone()) {
+                    Ok(task_id) => {
+                        self.confirm_dialog = None;
+                        let i18n = cx.global::<I18n>().clone();
+                        toast::push(cx, t!("ManagePage.deleting_version"));
+                        watch_version_mutation_task(
+                            task_id,
+                            VersionMutationUiCompletion::Deleted { folder },
+                            t!("ManagePage.version_deleted"),
+                            view_handle,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = self.confirm_dialog.as_mut() {
+                            dialog.pending = false;
                         }
-                        cx.notify();
-                    });
-                    Ok::<(), anyhow::Error>(())
-                })
-                .detach();
+                        toast::error(cx, SharedString::from(error));
+                    }
+                }
+                cx.notify();
             }
             ConfirmAction::DeleteAssets {
                 version,
@@ -322,46 +313,27 @@ impl ManagePageView {
                     cx.notify();
                     return;
                 }
-                prompt.pending = true;
-                let old_name_clone = old_name.clone();
-                let new_name_clone = new_name.clone();
-                cx.spawn(async move |handle, cx| {
-                    let old_name_for_rename = old_name_clone.clone();
-                    let new_name_for_rename = new_name_clone.clone();
-                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                        data::rename_version_instance(&old_name_for_rename, &new_name_for_rename)
-                            .await
-                            .map_err(anyhow::Error::msg)
-                    })
-                    .await;
-                    let _ = handle.update(cx, |this, cx| {
-                        match result {
-                            Ok(()) => {
-                                this.value_prompt = None;
-                                cx.update_global(|state: &mut ManagePageState, _cx| {
-                                    state.selected_folder =
-                                        Some(SharedString::from(new_name_clone));
-                                });
-                                crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(
-                                    true, cx,
-                                );
-                                let msg = t!("ManagePage.rename_success");
-                                toast::success(cx, msg);
-                            }
-                            Err(error) => {
-                                if let Some(prompt) = this.value_prompt.as_mut() {
-                                    prompt.pending = false;
-                                }
-                                let msg =
-                                    t!("ManagePage.rename_failed", message = &error.to_string());
-                                toast::error(cx, msg);
-                            }
-                        }
-                        cx.notify();
-                    });
-                    Ok::<(), anyhow::Error>(())
-                })
-                .detach();
+
+                let view_handle = cx.entity().downgrade();
+                match start_rename_version_task(old_name, new_name.clone()) {
+                    Ok(task_id) => {
+                        self.value_prompt = None;
+                        watch_version_mutation_task(
+                            task_id,
+                            VersionMutationUiCompletion::Renamed {
+                                new_name: new_name.clone(),
+                            },
+                            t!("ManagePage.rename_success"),
+                            view_handle,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        let msg = t!("ManagePage.rename_failed", message = &error);
+                        toast::error(cx, msg);
+                    }
+                }
+                cx.notify();
             }
             ValuePromptTarget::LevelDat(field) => {
                 let Some(editor) = self.level_dat_editor.as_mut() else {

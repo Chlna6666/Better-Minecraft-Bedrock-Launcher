@@ -108,6 +108,97 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
     .detach();
 }
 
+#[derive(Clone)]
+pub(super) enum VersionMutationUiCompletion {
+    Deleted { folder: String },
+    Renamed { new_name: String },
+}
+
+pub(super) fn watch_version_mutation_task(
+    task_id: String,
+    completion: VersionMutationUiCompletion,
+    success_message: SharedString,
+    view_handle: WeakEntity<ManagePageView>,
+    cx: &mut App,
+) {
+    let task_id: Arc<str> = Arc::from(task_id);
+    let mut updates = task_manager::subscribe_task_updates();
+
+    cx.spawn({
+        let task_id = task_id.clone();
+        async move |cx| {
+            let snapshot = loop {
+                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                    && snapshot.is_terminal()
+                {
+                    break snapshot;
+                }
+
+                match updates.recv().await {
+                    Ok(snapshot)
+                        if snapshot.id.as_ref() == task_id.as_ref() && snapshot.is_terminal() =>
+                    {
+                        break snapshot;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            skipped,
+                            task_id = %task_id,
+                            "version mutation watcher lagged; resyncing"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        warn!(task_id = %task_id, "version mutation watcher closed");
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                }
+            };
+
+            let _ = cx.update(|cx| {
+                let i18n = cx.global::<I18n>();
+                match snapshot.status.as_ref() {
+                    "completed" => {
+                        match &completion {
+                            VersionMutationUiCompletion::Deleted { folder } => {
+                                remove_local_version(folder, cx);
+                            }
+                            VersionMutationUiCompletion::Renamed { new_name } => {
+                                cx.update_global(|state: &mut ManagePageState, _cx| {
+                                    state.selected_folder =
+                                        Some(SharedString::from(new_name.clone()));
+                                });
+                            }
+                        }
+                        let _ = view_handle.update(cx, |this, cx| {
+                            this.invalidate_version_dependent_data(cx);
+                            cx.notify();
+                        });
+                        ensure_local_versions_loaded(true, cx);
+                        toast::success(cx, success_message);
+                    }
+                    "cancelled" => {
+                        ensure_local_versions_loaded(true, cx);
+                        toast::push(cx, t!("Tasks.status.cancelled"));
+                    }
+                    "error" => {
+                        ensure_local_versions_loaded(true, cx);
+                        let message = snapshot
+                            .message
+                            .as_ref()
+                            .map(|message| SharedString::from(message.to_string()))
+                            .unwrap_or_else(|| SharedString::from("版本操作失败"));
+                        toast::error(cx, message);
+                    }
+                    _ => {}
+                }
+            });
+            Ok::<(), anyhow::Error>(())
+        }
+    })
+    .detach();
+}
+
 pub(super) fn watch_manage_asset_mutation_task(
     task_id: String,
     success_message: SharedString,
