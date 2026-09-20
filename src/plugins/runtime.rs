@@ -851,6 +851,11 @@ impl PluginRegistry {
         pages
     }
 
+    /// Changes when a plugin reload can replace registered navigation pages.
+    pub(crate) fn navigation_revision(&self) -> u64 {
+        self.generation
+    }
+
     pub fn page(&self, plugin_id: &str, page_id: &str) -> Option<PluginPage> {
         self.pages
             .get(&(plugin_id.to_string(), page_id.to_string()))
