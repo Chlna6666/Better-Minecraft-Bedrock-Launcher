@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::watch;
@@ -45,6 +45,9 @@ pub struct GameInstallSnapshot {
 }
 
 pub struct GameInstallHandle {
+    /// Visible BMCBL task that owns the complete install workflow.
+    pub task_id: Arc<str>,
+    /// Domain stage updates used by the download page for local presentation.
     pub updates: watch::Receiver<GameInstallSnapshot>,
 }
 
@@ -53,6 +56,24 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<GameInstallHand
         "game-install-{}",
         NEXT_GAME_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ));
+    task_manager::create_task_with_details(
+        Some(operation_id.to_string()),
+        "安装 Minecraft",
+        Some(request.version_label.clone()),
+        "preparing_game_install",
+        None,
+        false,
+    );
+
+    let active_child_task = Arc::new(Mutex::new(None::<String>));
+    let cancel_child = Arc::clone(&active_child_task);
+    task_manager::register_task_cancel_hook(operation_id.to_string(), move || {
+        let child = cancel_child.lock().ok().and_then(|guard| guard.clone());
+        if let Some(child) = child {
+            task_manager::cancel_task(&child);
+        }
+    });
+
     let initial = GameInstallSnapshot {
         operation_id: Arc::clone(&operation_id),
         package_key: Arc::from(request.package_key.as_str()),
@@ -61,51 +82,92 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<GameInstallHand
     };
     let (updates, receiver) = watch::channel(initial);
     let monitor_updates = updates.clone();
-    let workflow = crate::tasks::runtime::spawn_io(async move {
-        let outcome = run_game_install(&request, &operation_id, &updates).await;
+    let worker_operation_id = Arc::clone(&operation_id);
+    let worker_child_task = Arc::clone(&active_child_task);
+    let workflow = match crate::tasks::runtime::spawn_io(async move {
+        let outcome = run_game_install(
+            &request,
+            &worker_operation_id,
+            &updates,
+            &worker_child_task,
+        )
+        .await;
         match outcome {
             Ok(local_path) => {
                 publish_stage(
                     &updates,
                     GameInstallStage::Completed {
-                        local_path: Arc::from(local_path),
+                        local_path: Arc::from(local_path.clone()),
                     },
                 );
-                info!(%operation_id, "game install completed; invalidating local version catalog");
+                if !task_manager::is_cancelled(&worker_operation_id) {
+                    task_manager::finish_task(
+                        &worker_operation_id,
+                        "completed",
+                        Some(local_path),
+                    );
+                }
+                info!(
+                    operation_id = %worker_operation_id,
+                    "game install completed; invalidating local version catalog"
+                );
                 crate::core::version::catalog_events::notify_local_versions_changed();
             }
             Err(message) => {
-                warn!(%operation_id, %message, "game install workflow failed");
+                warn!(
+                    operation_id = %worker_operation_id,
+                    %message,
+                    "game install workflow failed"
+                );
                 publish_stage(
                     &updates,
                     GameInstallStage::Failed {
-                        message: Arc::from(message),
+                        message: Arc::from(message.clone()),
                     },
                 );
+                if !task_manager::is_cancelled(&worker_operation_id) {
+                    task_manager::finish_task(&worker_operation_id, "error", Some(message));
+                }
             }
         }
-    })?;
+    }) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            task_manager::finish_task(&operation_id, "error", Some(error.clone()));
+            return Err(error);
+        }
+    };
+    task_manager::register_task_abort_handle(operation_id.to_string(), workflow.abort_handle());
 
+    let monitor_operation_id = Arc::clone(&operation_id);
     crate::tasks::runtime::spawn_io(async move {
         if let Err(error) = workflow.await
             && !error.is_cancelled()
         {
+            let message = format!("安装工作流异常结束: {error}");
             publish_stage(
                 &monitor_updates,
                 GameInstallStage::Failed {
-                    message: Arc::from(format!("安装工作流异常结束: {error}")),
+                    message: Arc::from(message.clone()),
                 },
             );
+            if !task_manager::is_cancelled(&monitor_operation_id) {
+                task_manager::finish_task(&monitor_operation_id, "error", Some(message));
+            }
         }
     })?;
 
-    Ok(GameInstallHandle { updates: receiver })
+    Ok(GameInstallHandle {
+        task_id: operation_id,
+        updates: receiver,
+    })
 }
 
 async fn run_game_install(
     request: &GameInstallRequest,
     operation_id: &str,
     updates: &watch::Sender<GameInstallSnapshot>,
+    active_child_task: &Arc<Mutex<Option<String>>>,
 ) -> Result<String, String> {
     info!(
         operation_id,
@@ -122,9 +184,10 @@ async fn run_game_install(
 
     let package_path = match local_path {
         Some(path) => path,
-        None => download_package(request, updates).await?,
+        None => download_package(request, updates, active_child_task).await?,
     };
     let extract_task_id = start_extract(request, &package_path).await?;
+    set_active_child_task(active_child_task, Some(extract_task_id.clone()));
     publish_stage(
         updates,
         GameInstallStage::Extracting {
@@ -133,6 +196,7 @@ async fn run_game_install(
     );
 
     let extract_snapshot = task_manager::wait_for_task_terminal(&extract_task_id).await?;
+    set_active_child_task(active_child_task, None);
     require_completed(&extract_snapshot, "安装")?;
     if let Some(loader_version) = &request.levilamina_version {
         publish_stage(
@@ -143,12 +207,17 @@ async fn run_game_install(
         );
         let game_directory =
             crate::utils::file_ops::bmcbl_subdir("versions").join(&request.install_folder);
-        crate::core::levilamina::install_loader(
-            game_directory,
-            request.version_label.clone(),
-            loader_version.clone(),
-        )
-        .await?;
+        let handle = crate::core::levilamina::start_install(
+            crate::core::levilamina::LeviLaminaInstallRequest::Loader {
+                game_directory,
+                game_version: request.version_label.clone(),
+                loader_version: loader_version.clone(),
+            },
+        )?;
+        set_active_child_task(active_child_task, Some(handle.task_id.to_string()));
+        let loader_snapshot = task_manager::wait_for_task_terminal(handle.task_id.as_ref()).await?;
+        set_active_child_task(active_child_task, None);
+        require_completed(&loader_snapshot, "LeviLamina 安装")?;
     }
     info!(
         operation_id,
@@ -160,6 +229,7 @@ async fn run_game_install(
 async fn download_package(
     request: &GameInstallRequest,
     updates: &watch::Sender<GameInstallSnapshot>,
+    active_child_task: &Arc<Mutex<Option<String>>>,
 ) -> Result<String, String> {
     let task_id = match &request.source {
         GamePackageSource::Appx { package_id } => {
@@ -194,6 +264,7 @@ async fn download_package(
             "download task disappeared before labels were applied"
         );
     }
+    set_active_child_task(active_child_task, Some(task_id.clone()));
     publish_stage(
         updates,
         GameInstallStage::Downloading {
@@ -202,6 +273,7 @@ async fn download_package(
     );
 
     let snapshot = task_manager::wait_for_task_terminal(&task_id).await?;
+    set_active_child_task(active_child_task, None);
     require_completed(&snapshot, "下载")?;
     snapshot
         .message
@@ -230,6 +302,12 @@ async fn start_extract(request: &GameInstallRequest, package_path: &str) -> Resu
     }
 }
 
+fn set_active_child_task(active_child_task: &Arc<Mutex<Option<String>>>, task_id: Option<String>) {
+    if let Ok(mut current) = active_child_task.lock() {
+        *current = task_id;
+    }
+}
+
 fn require_completed(snapshot: &TaskSnapshot, operation: &str) -> Result<(), String> {
     if snapshot.status.as_ref() == "completed" {
         return Ok(());
@@ -242,6 +320,34 @@ fn require_completed(snapshot: &TaskSnapshot, operation: &str) -> Result<(), Str
 }
 
 fn publish_stage(updates: &watch::Sender<GameInstallSnapshot>, stage: GameInstallStage) {
+    let operation_id = updates.borrow().operation_id.clone();
+    match &stage {
+        GameInstallStage::Preparing => {
+            task_manager::update_progress(&operation_id, 0, None, Some("preparing_game_install"));
+            task_manager::set_task_message(&operation_id, Some("正在准备安装".to_string()));
+        }
+        GameInstallStage::Downloading { .. } => {
+            task_manager::update_progress(&operation_id, 0, None, Some("downloading_game"));
+            task_manager::set_task_message(&operation_id, Some("正在下载游戏包".to_string()));
+        }
+        GameInstallStage::Extracting { .. } => {
+            task_manager::update_progress(&operation_id, 0, None, Some("installing_game"));
+            task_manager::set_task_message(&operation_id, Some("正在解压并安装游戏".to_string()));
+        }
+        GameInstallStage::InstallingLeviLamina { version } => {
+            task_manager::update_progress(
+                &operation_id,
+                0,
+                None,
+                Some("installing_levilamina"),
+            );
+            task_manager::set_task_message(
+                &operation_id,
+                Some(format!("正在安装 LeviLamina {version}")),
+            );
+        }
+        GameInstallStage::Completed { .. } | GameInstallStage::Failed { .. } => {}
+    }
     updates.send_modify(|snapshot| {
         snapshot.stage = stage;
     });
