@@ -517,7 +517,9 @@ impl Window {
 
         // Blur is a subtree filter, not a per-primitive property. Capture the subtree once with
         // the largest endpoint sigma so its 3-sigma sampling footprint stays stable for the whole
-        // animation. Per-frame samples then update only the compact blur descriptor/kernel buffers.
+        // animation. Radius sampling is clamped to that endpoint interval; retained frames upload
+        // only the dense animation-value sidecar while the primitive, pass descriptors and targets
+        // remain byte-for-byte stable.
         if property == crate::TransitionProperty::Blur {
             const MIN_SIGMA: f32 = 1.0 / 4096.0;
             let (capture_bounds, max_radius_device) = blur_capture.unwrap_or_else(|| {

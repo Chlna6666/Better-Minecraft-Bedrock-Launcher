@@ -536,6 +536,50 @@ mod tests {
         );
         assert_eq!(upload.backdrop_blur_configs()[0].animation_slot_plus_one(), 1);
         assert_eq!(read_u32(&upload.backdrop_blur_passes, 40), 1);
+
+        write_animation_value(
+            &mut upload.animation_values,
+            id,
+            AnimationProperty::BlurRadius,
+            0.5,
+            [4.0, 0.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0, 0.0],
+        );
+        upload.rebuild_gpu_indexed_animation_values();
+        let first_sidecar = upload.gpu_indexed_animation_values.clone();
+        let static_blur_bytes = upload.backdrop_blurs.clone();
+        let static_pass_bytes = upload.backdrop_blur_passes.clone();
+
+        upload.sampled_animation_values[0].progress = 0.9;
+        upload.animation_values.clear();
+        write_animation_value(
+            &mut upload.animation_values,
+            id,
+            AnimationProperty::BlurRadius,
+            0.9,
+            [4.0, 0.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0, 0.0],
+        );
+        upload.sample_animated_primitives(DrawableSize {
+            width: 640,
+            height: 480,
+        });
+        upload.rebuild_gpu_indexed_animation_values();
+
+        assert_ne!(
+            upload.gpu_indexed_animation_values, first_sidecar,
+            "retained blur frames should update only the dense animation sidecar"
+        );
+        assert_eq!(
+            upload.backdrop_blurs, static_blur_bytes,
+            "BlurRadius promotion must not rebuild the primitive stream"
+        );
+        assert_eq!(
+            upload.backdrop_blur_passes, static_pass_bytes,
+            "BlurRadius promotion must not rebuild Gaussian pass descriptors"
+        );
+        assert!(!upload.has_animated_backdrop_blurs());
+        assert_eq!(upload.animated_upload_bytes(), 0);
     }
 
     #[test]

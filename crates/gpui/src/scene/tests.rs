@@ -110,6 +110,37 @@ fn sampled_animation_value_changes_report_primitive_damage() {
 }
 
 #[test]
+fn element_blur_capture_reserves_full_three_sigma_footprint() {
+    let capture_bounds = bounds(
+        point(ScaledPixels(40.0), ScaledPixels(30.0)),
+        size(ScaledPixels(120.0), ScaledPixels(60.0)),
+    );
+    let radius = ScaledPixels(24.0);
+    let mut scene = Scene::default();
+    scene.begin_blur(BlurCapture {
+        animation_id: Some(SceneAnimationId(17)),
+        bounds: capture_bounds,
+        content_mask: ContentMask::new(capture_bounds),
+        radius,
+        opacity: 1.0,
+    });
+    scene.insert_primitive(Quad {
+        bounds: capture_bounds,
+        content_mask: ContentMask::new(capture_bounds),
+        ..Default::default()
+    });
+    scene.end_blur();
+
+    assert_eq!(scene.blurs.len(), 1);
+    let blur = &scene.blurs[0];
+    assert_eq!(blur.radius, radius);
+    assert_eq!(
+        blur.bounds,
+        capture_bounds.dilate(blur_influence_radius(radius))
+    );
+}
+
+#[test]
 fn backdrop_blur_animation_refreshes_when_source_enters_region() {
     let mut scene = Scene::default();
     let animation_id = scene.allocate_animation_id();

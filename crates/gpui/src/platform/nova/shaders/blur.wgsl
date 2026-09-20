@@ -132,7 +132,13 @@ fn resolve_blur_pass_kernel(blur_pass: BackdropBlurPass) -> GaussianKernel {
         return kernel;
     }
     let sampled = value.from_value + (value.to_value - value.from_value) * value.progress;
-    return build_gaussian_kernel(max(sampled.x, 0.0));
+    // The retained layer was captured with max(from, to). Clamp overshooting easing so the
+    // animated kernel can never grow beyond that fixed sampling footprint.
+    let from_radius = max(value.from_value.x, 0.0);
+    let to_radius = max(value.to_value.x, 0.0);
+    let min_radius = min(from_radius, to_radius);
+    let max_radius = max(from_radius, to_radius);
+    return build_gaussian_kernel(clamp(sampled.x, min_radius, max_radius));
 }
 
 @vertex

@@ -32,11 +32,34 @@ impl ResolvedAnimationValue {
         } else {
             0.0
         };
+        let mut sampled = std::array::from_fn(|index| {
+            value.from[index] + (value.to[index] - value.from[index]) * progress
+        });
+        if value.property == TransitionProperty::Blur {
+            // Blur capture reserves the largest endpoint's 3-sigma footprint once. Keep CPU
+            // fallback sampling inside that same endpoint interval even when easing overshoots,
+            // otherwise an out-of-range sigma could sample beyond the retained target.
+            let from = if value.from[0].is_finite() {
+                value.from[0].max(0.0)
+            } else {
+                0.0
+            };
+            let to = if value.to[0].is_finite() {
+                value.to[0].max(0.0)
+            } else {
+                0.0
+            };
+            let lower = from.min(to);
+            let upper = from.max(to);
+            sampled[0] = if sampled[0].is_finite() {
+                sampled[0].clamp(lower, upper)
+            } else {
+                lower
+            };
+        }
         Self {
             property: value.property,
-            sampled: std::array::from_fn(|index| {
-                value.from[index] + (value.to[index] - value.from[index]) * progress
-            }),
+            sampled,
         }
     }
 }
@@ -948,6 +971,38 @@ mod tests {
         assert_eq!(quad.bounds.origin.x, crate::ScaledPixels(20.0));
         assert_eq!(quad.bounds.origin.y, crate::ScaledPixels(22.0));
         assert_eq!(quad.border_color.a, 0.75);
+    }
+
+    #[test]
+    fn blur_radius_overshoot_stays_inside_reserved_endpoint_footprint() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(100.0), crate::ScaledPixels(80.0)),
+        );
+        let mut primitive = Primitive::Blur(crate::PaintBlur {
+            order: 0,
+            animation_id: Some(crate::SceneAnimationId(3)),
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(20.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        });
+        apply_value(
+            &mut primitive,
+            &SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(3),
+                property: TransitionProperty::Blur,
+                progress: 1.5,
+                from: [4.0, 0.0, 0.0, 0.0],
+                to: [20.0, 0.0, 0.0, 0.0],
+            },
+        );
+        let Primitive::Blur(blur) = primitive else {
+            panic!("blur");
+        };
+        assert_eq!(blur.radius, crate::ScaledPixels(20.0));
+        assert_eq!(blur.bounds, bounds);
     }
 
     #[test]
