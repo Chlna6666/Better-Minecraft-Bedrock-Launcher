@@ -710,21 +710,15 @@ pub(super) fn render_game_panel(
             } else {
                 t!("common.download")
             };
-            let (download_task, extract_task) = state
+            let task_id = state
                 .operations_by_package
                 .get(&row.package_id)
-                .map(|op| (op.download_task_id.clone(), op.extract_task_id.clone()))
-                .unwrap_or((None, None));
-            let active_task_running = download_task.is_some() || extract_task.is_some();
+                .map(|operation| operation.task_id.clone());
+            let active_task_running = task_id.is_some();
             let active_snapshot = if is_heavy_row {
-                download_task
+                task_id
                     .as_ref()
                     .and_then(|id| state.task_snapshots.get(id.as_ref()).cloned())
-                    .or_else(|| {
-                        extract_task
-                            .as_ref()
-                            .and_then(|id| state.task_snapshots.get(id.as_ref()).cloned())
-                    })
             } else {
                 None
             };
@@ -1689,29 +1683,30 @@ fn start_game_operation(
 
     close_game_dialog(cx);
 
+    let task_id = match crate::core::minecraft::install::start_game_install(request) {
+        Ok(task_id) => task_id,
+        Err(error) => {
+            toast::error(cx, SharedString::from(error));
+            return;
+        }
+    };
+    let task_key = SharedString::from(task_id.to_string());
+    let task_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
     cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.operations_by_package.insert(
             package_id.clone(),
             crate::ui::views::download::state::DownloadOperation {
-                package_id: package_id.clone(),
-                file_name: file_name.clone(),
-                download_task_id: None,
-                extract_task_id: None,
+                package_id,
+                file_name,
+                task_id: task_key,
             },
         );
-    });
-
-    let handle = match crate::core::minecraft::install::start_game_install(request) {
-        Ok(handle) => handle,
-        Err(error) => {
-            cx.update_global(|state: &mut DownloadPageState, cx| {
-                state.operations_by_package.remove(&package_id);
-                toast::error(cx, SharedString::from(error));
-            });
-            return;
+        if let Some(task_snapshot) = task_snapshot {
+            state
+                .task_snapshots
+                .insert(task_snapshot.id.clone(), task_snapshot);
         }
-    };
-    consume_game_install_updates(handle.updates, cx);
+    });
 }
 
 fn build_game_install_request(
@@ -1755,123 +1750,6 @@ fn build_game_install_request(
         levilamina_version,
         source,
     })
-}
-
-fn consume_game_install_updates(
-    mut updates: tokio::sync::watch::Receiver<crate::core::minecraft::install::GameInstallSnapshot>,
-    cx: &mut App,
-) {
-    cx.spawn(async move |cx| {
-        loop {
-            let snapshot = updates.borrow_and_update().clone();
-            let terminal = cx.update(|cx| apply_game_install_snapshot(snapshot, cx))?;
-            if terminal || updates.changed().await.is_err() {
-                return Ok::<(), anyhow::Error>(());
-            }
-        }
-    })
-    .detach_and_log_err(cx);
-}
-
-fn apply_game_install_snapshot(
-    snapshot: crate::core::minecraft::install::GameInstallSnapshot,
-    cx: &mut App,
-) -> bool {
-    use crate::core::minecraft::install::GameInstallStage;
-
-    let package_key = SharedString::from(snapshot.package_key.to_string());
-    let file_name = SharedString::from(snapshot.file_name.to_string());
-    match snapshot.stage {
-        GameInstallStage::Preparing => false,
-        GameInstallStage::Downloading { task_id } => {
-            apply_operation_task_snapshot(&package_key, task_id, true, cx);
-            false
-        }
-        GameInstallStage::Extracting { task_id } => {
-            apply_operation_task_snapshot(&package_key, task_id, false, cx);
-            false
-        }
-        GameInstallStage::InstallingLeviLamina { .. } => false,
-        GameInstallStage::Completed { local_path } => {
-            finish_game_install_operation(
-                &package_key,
-                &file_name,
-                Some(SharedString::from(local_path.to_string())),
-                None,
-                cx,
-            );
-            true
-        }
-        GameInstallStage::Failed { message } => {
-            finish_game_install_operation(
-                &package_key,
-                &file_name,
-                None,
-                Some(SharedString::from(message.to_string())),
-                cx,
-            );
-            true
-        }
-    }
-}
-
-fn apply_operation_task_snapshot(
-    package_key: &SharedString,
-    task_id: Arc<str>,
-    is_download: bool,
-    cx: &mut App,
-) {
-    let task_key = SharedString::from(task_id.to_string());
-    let task_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
-    cx.update_global(|state: &mut DownloadPageState, _cx| {
-        if let Some(operation) = state.operations_by_package.get_mut(package_key) {
-            if is_download {
-                operation.download_task_id = Some(task_key.clone());
-            } else {
-                operation.extract_task_id = Some(task_key.clone());
-            }
-        }
-        if let Some(task_snapshot) = task_snapshot {
-            state.task_snapshots.insert(task_id, task_snapshot);
-        }
-    });
-}
-
-fn finish_game_install_operation(
-    package_key: &SharedString,
-    file_name: &SharedString,
-    local_path: Option<SharedString>,
-    error: Option<SharedString>,
-    cx: &mut App,
-) {
-    cx.update_global(|state: &mut DownloadPageState, cx| {
-        if let Some(operation) = state.operations_by_package.remove(package_key) {
-            for task_id in [operation.download_task_id, operation.extract_task_id]
-                .into_iter()
-                .flatten()
-            {
-                state.task_snapshots.remove(task_id.as_ref());
-            }
-        }
-        if let Some(local_path) = local_path {
-            state
-                .local_path_by_package
-                .insert(package_key.clone(), local_path);
-            state.local_files.insert(file_name.clone());
-        }
-        if let Some(error) = error {
-            let file_name_string = file_name.to_string();
-            let error_string = error.to_string();
-            toast::error(
-                cx,
-                t!(
-                    "DownloadPage.operation_failed",
-                    file = &file_name_string,
-                    error = &error_string
-                ),
-            );
-        }
-    });
 }
 
 fn delete_game_local_file(cx: &mut App, dialog: GameDialogState) {

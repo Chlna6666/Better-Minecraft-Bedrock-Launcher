@@ -97,8 +97,7 @@ pub struct DownloadRemoteVersion {
 pub struct DownloadOperation {
     pub package_id: SharedString,
     pub file_name: SharedString,
-    pub download_task_id: Option<SharedString>,
-    pub extract_task_id: Option<SharedString>,
+    pub task_id: SharedString,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

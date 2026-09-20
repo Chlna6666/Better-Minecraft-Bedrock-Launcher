@@ -187,9 +187,21 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
                 if !relevant {
                     return;
                 }
-                cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    apply_task_event_to_download_state(state, event);
+                let failure = cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    apply_task_event_to_download_state(state, event)
                 });
+                if let Some((file_name, error)) = failure {
+                    let file_name_string = file_name.to_string();
+                    let error_string = error.to_string();
+                    toast::error(
+                        cx,
+                        t!(
+                            "DownloadPage.operation_failed",
+                            file = &file_name_string,
+                            error = &error_string
+                        ),
+                    );
+                }
             }
             crate::tasks::task_manager::TaskEventDelivery::Batch(events) => {
                 let any_relevant = cx.read_global(|state: &DownloadPageState, _cx| {
@@ -200,11 +212,24 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
                 if !any_relevant {
                     return;
                 }
-                cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    for event in events {
-                        apply_task_event_to_download_state(state, event);
-                    }
+                let failures = cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    events
+                        .into_iter()
+                        .filter_map(|event| apply_task_event_to_download_state(state, event))
+                        .collect::<Vec<_>>()
                 });
+                for (file_name, error) in failures {
+                    let file_name_string = file_name.to_string();
+                    let error_string = error.to_string();
+                    toast::error(
+                        cx,
+                        t!(
+                            "DownloadPage.operation_failed",
+                            file = &file_name_string,
+                            error = &error_string
+                        ),
+                    );
+                }
             }
             crate::tasks::task_manager::TaskEventDelivery::ResyncRequired => {
                 let (task_ids, has_stale_snapshots) =
@@ -212,13 +237,7 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
                         let task_ids = state
                             .operations_by_package
                             .values()
-                            .flat_map(|operation| {
-                                [
-                                    operation.download_task_id.clone(),
-                                    operation.extract_task_id.clone(),
-                                ]
-                            })
-                            .flatten()
+                            .map(|operation| operation.task_id.clone())
                             .collect::<Vec<_>>();
                         (task_ids, !state.task_snapshots.is_empty())
                     });
@@ -247,16 +266,10 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
 }
 
 fn download_state_tracks_task(state: &DownloadPageState, task_id: &str) -> bool {
-    state.operations_by_package.values().any(|operation| {
-        operation
-            .download_task_id
-            .as_ref()
-            .is_some_and(|tracked| tracked.as_ref() == task_id)
-            || operation
-                .extract_task_id
-                .as_ref()
-                .is_some_and(|tracked| tracked.as_ref() == task_id)
-    })
+    state
+        .operations_by_package
+        .values()
+        .any(|operation| operation.task_id.as_ref() == task_id)
 }
 
 fn task_event_relevant_to_download_state(
@@ -276,15 +289,45 @@ fn task_event_relevant_to_download_state(
 fn apply_task_event_to_download_state(
     state: &mut DownloadPageState,
     event: crate::tasks::task_manager::TaskEvent,
-) {
+) -> Option<(SharedString, SharedString)> {
     match event {
         crate::tasks::task_manager::TaskEvent::Updated(snapshot) => {
-            if !download_state_tracks_task(state, snapshot.id.as_ref()) {
-                return;
+            let operation_entry = state
+                .operations_by_package
+                .iter()
+                .find(|(_, operation)| operation.task_id.as_ref() == snapshot.id.as_ref())
+                .map(|(package_id, operation)| {
+                    (package_id.clone(), operation.file_name.clone())
+                });
+            let Some((package_id, file_name)) = operation_entry else {
+                return None;
+            };
+
+            if snapshot.is_terminal() {
+                state.task_snapshots.remove(snapshot.id.as_ref());
+                state.operations_by_package.remove(&package_id);
+                if snapshot.status.as_ref() == "completed" {
+                    if let Some(local_path) = snapshot.message.as_ref() {
+                        state.local_path_by_package.insert(
+                            package_id,
+                            SharedString::from(local_path.to_string()),
+                        );
+                    }
+                    state.local_files.insert(file_name);
+                    return None;
+                }
+
+                let message = snapshot
+                    .message
+                    .as_ref()
+                    .map(|message| SharedString::from(message.to_string()))
+                    .unwrap_or_else(|| SharedString::from(snapshot.status.to_string()));
+                return Some((file_name, message));
             }
+
             if snapshot.visibility == crate::tasks::task_manager::TaskVisibility::Hidden {
                 state.task_snapshots.remove(snapshot.id.as_ref());
-                return;
+                return None;
             }
             let is_newer = state
                 .task_snapshots
@@ -293,9 +336,11 @@ fn apply_task_event_to_download_state(
             if is_newer {
                 state.task_snapshots.insert(snapshot.id.clone(), snapshot);
             }
+            None
         }
         crate::tasks::task_manager::TaskEvent::Removed(task_id) => {
             state.task_snapshots.remove(task_id.as_ref());
+            None
         }
     }
 }
