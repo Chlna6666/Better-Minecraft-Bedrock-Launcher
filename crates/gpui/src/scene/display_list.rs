@@ -244,6 +244,39 @@ impl Scene {
         &self.prepared_retained_quad_chunks
     }
 
+    /// Returns whether a retained scene span can be replayed independently without opening or
+    /// closing an element-blur capture owned by a surrounding span.
+    ///
+    /// Retained paint ranges are element-local, while element blur is represented by structural
+    /// StartBlur/EndBlur operations. A range that cuts through that pair cannot be replayed on its
+    /// own: doing so leaves Scene::blur_captures unbalanced and later finish() rightfully fails.
+    pub(crate) fn range_has_balanced_element_blurs(&self, range: Range<usize>) -> bool {
+        let Some(operations) = self.paint_operations.get(range) else {
+            return false;
+        };
+
+        let mut depth = 0usize;
+        for operation in operations {
+            match operation {
+                PaintOperation::StartBlur(_) => {
+                    depth = depth.saturating_add(1);
+                }
+                PaintOperation::EndBlur => {
+                    let Some(next_depth) = depth.checked_sub(1) else {
+                        // This range closes a blur that began outside of it.
+                        return false;
+                    };
+                    depth = next_depth;
+                }
+                PaintOperation::Primitive(_)
+                | PaintOperation::StartLayer(_)
+                | PaintOperation::EndLayer => {}
+            }
+        }
+
+        depth == 0
+    }
+
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
         let mut bounds = None::<Bounds<ScaledPixels>>;
         for operation in self.paint_operations.get(range.clone())? {
