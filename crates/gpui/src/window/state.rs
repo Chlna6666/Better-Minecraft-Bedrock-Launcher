@@ -23,12 +23,23 @@ pub(super) struct DirtyFrameDiagnostics {
     pub(super) direct_dirty_views: usize,
     pub(super) traversal_ancestor_views: usize,
     pub(super) rendered_views: usize,
+    pub(super) rendered_view_types: [(&'static str, usize); 8],
+    pub(super) rendered_view_type_count: usize,
+    pub(super) rendered_view_type_overflow: usize,
     pub(super) notify_invalidations: usize,
     pub(super) frame_request_reasons: u16,
     pub(super) first_frame_request: Option<FrameRequestProvenance>,
     pub(super) first_view_dirty_entity: Option<EntityId>,
     pub(super) first_rendered_entity: Option<EntityId>,
     pub(super) first_notify_entity: Option<EntityId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ViewDirtyScope {
+    /// This view received an invalidation and must update its own output.
+    Direct,
+    /// This view is on the route to a dirty descendant.
+    TraversalAncestor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,17 +75,28 @@ impl DirtyFrameDiagnostics {
 
     pub(super) fn record_view_dirty(&mut self, entity_id: EntityId) {
         self.view_dirty = self.view_dirty.saturating_add(1);
-        self.direct_dirty_views = self.direct_dirty_views.saturating_add(1);
         self.first_view_dirty_entity.get_or_insert(entity_id);
     }
 
-    pub(super) fn record_traversal_ancestor(&mut self) {
-        self.traversal_ancestor_views = self.traversal_ancestor_views.saturating_add(1);
+    pub(super) fn record_dirty_scopes(&mut self, direct: usize, ancestors: usize) {
+        self.direct_dirty_views = direct;
+        self.traversal_ancestor_views = ancestors;
     }
 
-    pub(super) fn record_rendered_view(&mut self, entity_id: EntityId) {
+    pub(super) fn record_rendered_view(&mut self, entity_id: EntityId, type_name: &'static str) {
         self.rendered_views = self.rendered_views.saturating_add(1);
         self.first_rendered_entity.get_or_insert(entity_id);
+        if let Some((_, count)) = self.rendered_view_types[..self.rendered_view_type_count]
+            .iter_mut()
+            .find(|(name, _)| *name == type_name)
+        {
+            *count = count.saturating_add(1);
+        } else if self.rendered_view_type_count < self.rendered_view_types.len() {
+            self.rendered_view_types[self.rendered_view_type_count] = (type_name, 1);
+            self.rendered_view_type_count += 1;
+        } else {
+            self.rendered_view_type_overflow = self.rendered_view_type_overflow.saturating_add(1);
+        }
     }
 
     pub(super) fn record_notify_invalidation(&mut self, entity_id: EntityId) {
@@ -229,6 +251,20 @@ mod visual_transform_tests {
     }
 
     #[test]
+    fn rendered_view_counts_group_by_type_without_allocating() {
+        let mut diagnostics = DirtyFrameDiagnostics::default();
+        diagnostics.record_rendered_view(EntityId::from(1), "MainWindowView");
+        diagnostics.record_rendered_view(EntityId::from(2), "ChildView");
+        diagnostics.record_rendered_view(EntityId::from(1), "MainWindowView");
+
+        assert_eq!(diagnostics.rendered_views, 3);
+        assert_eq!(diagnostics.rendered_view_type_count, 2);
+        assert_eq!(diagnostics.rendered_view_types[0], ("MainWindowView", 2));
+        assert_eq!(diagnostics.rendered_view_types[1], ("ChildView", 1));
+        assert_eq!(diagnostics.rendered_view_type_overflow, 0);
+    }
+
+    #[test]
     fn frame_request_reasons_coalesce_and_keep_first_provenance() {
         let mut diagnostics = DirtyFrameDiagnostics::default();
         diagnostics.record_frame_request_reason_at(FrameRequestReason::Input, "input.rs", 7);
@@ -358,6 +394,7 @@ pub struct Window {
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     pub(super) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
+    pub(crate) direct_dirty_views: FxHashSet<EntityId>,
     pub(super) focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
     pub(super) default_prevented: bool,

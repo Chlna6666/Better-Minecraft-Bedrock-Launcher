@@ -808,6 +808,7 @@ impl Window {
         trim_collection!(self.image_paint_tile_cache);
         trim_collection!(self.image_paint_live_tiles_scratch);
         trim_collection!(self.dirty_views);
+        trim_collection!(self.direct_dirty_views);
         trim_collection!(self.focus_retained_targets);
 
         {

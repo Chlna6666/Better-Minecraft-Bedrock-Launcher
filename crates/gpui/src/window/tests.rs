@@ -1,5 +1,5 @@
-use super::*;
 use super::frame_lifecycle::DIRTY_FRAME_BACKPRESSURE_BUDGET;
+use super::*;
 use crate::{
     AnimationDriver, AnimationSequence, AnimationSpec, PaintOperation, Primitive, RepeatMode,
     TestAppContext, TransitionProperty, WindowOptions, performance_metrics_snapshot, point, px,
@@ -15,6 +15,59 @@ impl Render for EmptyTestView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         crate::div()
     }
+}
+
+struct DirtyScopeRootView {
+    child: Entity<EmptyTestView>,
+}
+
+impl Render for DirtyScopeRootView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div().child(self.child.clone())
+    }
+}
+
+#[gpui::test]
+fn child_invalidation_marks_parent_for_traversal_only(cx: &mut TestAppContext) {
+    let (root, child, window) = cx.update(|cx| {
+        let child = cx.new(|_| EmptyTestView);
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| DirtyScopeRootView {
+                    child: child.clone(),
+                })
+            })
+            .unwrap();
+        let root = cx.read_window(&window, |root, _| root).unwrap();
+        (root, child, AnyWindowHandle::from(window))
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+        window.mark_view_dirty(child.entity_id());
+        assert_eq!(
+            window.view_dirty_scope(child.entity_id()),
+            Some(ViewDirtyScope::Direct)
+        );
+        assert_eq!(
+            window.view_dirty_scope(root.entity_id()),
+            Some(ViewDirtyScope::TraversalAncestor)
+        );
+        let diagnostics = window.dirty_frame_diagnostics.borrow();
+        assert_eq!(diagnostics.direct_dirty_views, 1);
+        assert_eq!(diagnostics.traversal_ancestor_views, 1);
+        drop(diagnostics);
+
+        window.mark_view_dirty(root.entity_id());
+        assert_eq!(
+            window.view_dirty_scope(root.entity_id()),
+            Some(ViewDirtyScope::Direct)
+        );
+        let diagnostics = window.dirty_frame_diagnostics.borrow();
+        assert_eq!(diagnostics.direct_dirty_views, 2);
+        assert_eq!(diagnostics.traversal_ancestor_views, 0);
+    })
+    .unwrap();
 }
 
 #[cfg(test)]

@@ -24,6 +24,8 @@ pub(crate) enum ViewCacheDebugStatus {
     MissFingerprint,
     MissRefresh,
     MissDirty,
+    /// The view was rebuilt to reach a dirty descendant, not for its own state.
+    MissTraversalAncestor,
     MissPrepaintRange,
     MissPaintRange,
     ReuseFailed,
@@ -462,7 +464,9 @@ pub(crate) fn paint_layout_bounds(
 fn cache_marker_color(status: ViewCacheDebugStatus) -> (u32, f32) {
     match status {
         ViewCacheDebugStatus::Hit | ViewCacheDebugStatus::SelfSceneReplay => (0x30d158, 0.98),
-        ViewCacheDebugStatus::TraversalOnly => (0x64d2ff, 0.98),
+        ViewCacheDebugStatus::TraversalOnly | ViewCacheDebugStatus::MissTraversalAncestor => {
+            (0x64d2ff, 0.98)
+        }
         ViewCacheDebugStatus::DeferredDirtyReuse => (0x5ac8fa, 0.98),
         ViewCacheDebugStatus::MissBounds => (0xffcc00, 0.98),
         ViewCacheDebugStatus::MissRefresh

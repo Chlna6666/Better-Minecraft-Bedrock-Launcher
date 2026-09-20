@@ -145,7 +145,9 @@ use state::{
     AnimatedImageSlotKey, DirtyFrameDiagnostics, FocusRetainedTarget, FrameGenerationStats,
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
-pub(crate) use state::{DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame};
+pub(crate) use state::{
+    DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame, ViewDirtyScope,
+};
 pub(crate) use tab_stop::*;
 pub use titlebar::TitlebarGesture;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]

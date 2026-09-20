@@ -53,10 +53,10 @@ impl DirtyFrameSchedulingClass {
 }
 
 impl Window {
-    pub(crate) fn record_rendered_view(&self, entity_id: EntityId) {
+    pub(crate) fn record_rendered_view(&self, entity_id: EntityId, type_name: &'static str) {
         self.dirty_frame_diagnostics
             .borrow_mut()
-            .record_rendered_view(entity_id);
+            .record_rendered_view(entity_id, type_name);
     }
 
     #[track_caller]
@@ -89,11 +89,12 @@ impl Window {
     }
 
     pub(super) fn mark_view_dirty(&mut self, view_id: EntityId) {
+        self.direct_dirty_views.insert(view_id);
         self.dirty_frame_diagnostics
             .borrow_mut()
             .record_view_dirty(view_id);
-        // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
-        // should already be dirty.
+        // Keep ancestors in the traversal path. An ancestor already in the path also has all of
+        // its own ancestors recorded; only `direct_dirty_views` represents direct invalidation.
         for view_id in self
             .rendered_frame
             .dispatch_tree
@@ -105,7 +106,26 @@ impl Window {
                 break;
             }
         }
+        self.dirty_views.insert(view_id);
+        self.dirty_frame_diagnostics
+            .borrow_mut()
+            .record_dirty_scopes(
+                self.direct_dirty_views.len(),
+                self.dirty_views
+                    .len()
+                    .saturating_sub(self.direct_dirty_views.len()),
+            );
         self.schedule_dirty_frame();
+    }
+
+    pub(crate) fn view_dirty_scope(&self, view_id: EntityId) -> Option<ViewDirtyScope> {
+        if self.direct_dirty_views.contains(&view_id) {
+            Some(ViewDirtyScope::Direct)
+        } else if self.dirty_views.contains(&view_id) {
+            Some(ViewDirtyScope::TraversalAncestor)
+        } else {
+            None
+        }
     }
 
     /// Mark the window as dirty, scheduling it to be redrawn on the next frame.
@@ -759,7 +779,7 @@ impl Window {
             let first_rendered_entity = dirty_frame_diagnostics.first_rendered_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::warn!(
-                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} view_render_count_by_type={:?} view_render_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 generation_elapsed,
                 warning_budget,
@@ -788,6 +808,9 @@ impl Window {
                 dirty_frame_diagnostics.direct_dirty_views,
                 dirty_frame_diagnostics.traversal_ancestor_views,
                 dirty_frame_diagnostics.rendered_views,
+                &dirty_frame_diagnostics.rendered_view_types
+                    [..dirty_frame_diagnostics.rendered_view_type_count],
+                dirty_frame_diagnostics.rendered_view_type_overflow,
                 dirty_frame_diagnostics.notify_invalidations,
                 dirty_frame_diagnostics.frame_request_reasons,
                 first_frame_request,
@@ -960,7 +983,7 @@ impl Window {
         let dirty_frame_diagnostics =
             std::mem::take(&mut *self.dirty_frame_diagnostics.borrow_mut());
         log::trace!(
-            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_rendered_entity={:?} first_notify_entity={:?}",
+            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} rendered_views={} view_render_count_by_type={:?} view_render_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_rendered_entity={:?} first_notify_entity={:?}",
             self.handle.window_id().as_u64(),
             was_dirty,
             self.refreshing,
@@ -973,6 +996,9 @@ impl Window {
             dirty_frame_diagnostics.direct_dirty_views,
             dirty_frame_diagnostics.traversal_ancestor_views,
             dirty_frame_diagnostics.rendered_views,
+            &dirty_frame_diagnostics.rendered_view_types
+                [..dirty_frame_diagnostics.rendered_view_type_count],
+            dirty_frame_diagnostics.rendered_view_type_overflow,
             dirty_frame_diagnostics.notify_invalidations,
             dirty_frame_diagnostics.frame_request_reasons,
             dirty_frame_diagnostics.first_frame_request,

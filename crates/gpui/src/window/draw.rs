@@ -220,6 +220,7 @@ impl Window {
             self.invalidator.set_dirty(true);
         } else {
             self.dirty_views.clear();
+            self.direct_dirty_views.clear();
             self.animation_dirty_region = DirtyRegion::empty();
         }
         self.finish_debug_visualization_frame(cx);
@@ -327,8 +328,8 @@ impl Window {
             }
             dirty_region.mark_full(viewport);
         } else {
-            // `dirty_views` deliberately contains the full ancestor path so AnyView can invalidate
-            // retained prepaint/paint caches. That is a traversal/cache semantic, not a pixel-damage
+            // `dirty_views` contains the ancestor path needed to reach dirty descendants during
+            // retained reconciliation. That is a traversal/cache semantic, not a pixel-damage
             // semantic: treating every ancestor RetainedSceneSegment as changed makes a dirty root
             // segment turn a local child update into a full-window redraw. Compute damage from the
             // directly invalidated views instead and separately account for layout-induced moves.
@@ -483,14 +484,11 @@ impl Window {
 
     fn invalidate_entities(&mut self) -> SmallVec<[EntityId; 8]> {
         let mut views = self.invalidator.take_views();
-        let mut directly_dirty_views = SmallVec::new();
-        directly_dirty_views.reserve(views.len());
         for entity in views.drain() {
-            directly_dirty_views.push(entity);
             self.mark_view_dirty(entity);
         }
         self.invalidator.replace_views(views);
-        directly_dirty_views
+        self.direct_dirty_views.iter().copied().collect()
     }
 
     #[profiling::function]

@@ -7,6 +7,7 @@ use crate::{
     WeakEntity, div,
 };
 use crate::{Empty, Window};
+use crate::window::ViewDirtyScope;
 use crate::window::debug_visualization::ViewCacheDebugStatus;
 use anyhow::Result;
 use collections::FxHashSet;
@@ -59,6 +60,7 @@ impl<V: Render> Element for Entity<V> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        window.record_rendered_view(self.entity_id(), std::any::type_name::<V>());
         let mut element = self.update(cx, |view, cx| view.render(window, cx).into_any_element());
         let layout_id = window.with_rendered_view(self.entity_id(), |window| {
             element.request_layout(window, cx)
@@ -279,6 +281,10 @@ impl Element for AnyView {
                 _ => {
                     let (layout_id, element) =
                         with_optional_critical_draw(critical, window, |window| {
+                            window.record_rendered_view(
+                                self.entity_id(),
+                                cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                            );
                             let mut element = (self.render)(self, window, cx);
                             let layout_id = element.request_layout(window, cx);
                             (layout_id, element)
@@ -321,7 +327,8 @@ impl Element for AnyView {
                     };
 
                     let cache_fingerprint = self.cache_fingerprint();
-                    let view_dirty = window.dirty_views.contains(&self.entity_id());
+                    let dirty_scope = window.view_dirty_scope(self.entity_id());
+                    let view_dirty = dirty_scope.is_some();
                     let force_refresh = window.force_view_cache_refresh();
                     let targeted_replay = window.retained_replay_is_targeted();
                     // Progressive reuse is appropriate for ordinary/background dirty work, but an
@@ -367,10 +374,14 @@ impl Element for AnyView {
                         Some(state) if state.cache_key.fingerprint != cache_fingerprint => {
                             ViewCacheDebugStatus::MissFingerprint
                         }
-                        Some(_)
-                            if force_refresh && !can_reuse_refresh && !can_defer_dirty_view =>
-                        {
+                        Some(_) if force_refresh && !can_reuse_refresh && !can_defer_dirty_view => {
                             ViewCacheDebugStatus::MissRefresh
+                        }
+                        Some(_)
+                            if dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
+                                && !can_defer_dirty_view =>
+                        {
+                            ViewCacheDebugStatus::MissTraversalAncestor
                         }
                         Some(_) if view_dirty && !can_defer_dirty_view => {
                             ViewCacheDebugStatus::MissDirty
@@ -423,7 +434,10 @@ impl Element for AnyView {
                     }
                     let refreshing = mem::replace(&mut window.refreshing, true);
                     let prepaint_start = window.prepaint_index();
-                    window.record_rendered_view(self.entity_id());
+                    window.record_rendered_view(
+                        self.entity_id(),
+                        cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                    );
                     let (mut element, accessed_entities) = cx.detect_accessed_entities(|cx| {
                         with_optional_critical_draw(critical, window, |window| {
                             let mut element = div()
