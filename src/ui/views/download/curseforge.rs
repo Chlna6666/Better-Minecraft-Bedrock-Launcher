@@ -3344,22 +3344,28 @@ fn render_curseforge_install_modal(
                 cx.update(|cx| {
                     let i18n = cx.global::<I18n>();
                     match snapshot.status.as_ref() {
-                        "completed" => crate::ui::components::toast::success(
-                            cx,
-                            t!("CurseForgeInstall.done"),
-                        ),
-                        "cancelled" => crate::ui::components::toast::push(
-                            cx,
-                            SharedString::from("CurseForge 安装已取消"),
-                        ),
-                        "error" => crate::ui::components::toast::error(
-                            cx,
-                            snapshot
-                                .message
-                                .as_ref()
-                                .map(|message| SharedString::from(message.to_string()))
-                                .unwrap_or_else(|| t!("CurseForgeInstall.invalid_package")),
-                        ),
+                        "completed" => {
+                            crate::ui::components::toast::success(
+                                cx,
+                                t!("CurseForgeInstall.done"),
+                            );
+                        }
+                        "cancelled" => {
+                            crate::ui::components::toast::push(
+                                cx,
+                                SharedString::from("CurseForge 安装已取消"),
+                            );
+                        }
+                        "error" => {
+                            crate::ui::components::toast::error(
+                                cx,
+                                snapshot
+                                    .message
+                                    .as_ref()
+                                    .map(|message| SharedString::from(message.to_string()))
+                                    .unwrap_or_else(|| t!("CurseForgeInstall.invalid_package")),
+                            );
+                        }
                         _ => {}
                     }
                 })?;

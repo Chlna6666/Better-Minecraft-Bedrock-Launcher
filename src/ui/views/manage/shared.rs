@@ -316,8 +316,12 @@ pub(super) fn watch_screenshot_mutation_task(
                 });
 
                 match snapshot.status.as_ref() {
-                    "completed" => toast::success(cx, success_message),
-                    "cancelled" => toast::push(cx, t!("Tasks.status.cancelled")),
+                    "completed" => {
+                        toast::success(cx, success_message);
+                    }
+                    "cancelled" => {
+                        toast::push(cx, t!("Tasks.status.cancelled"));
+                    }
                     "error" => {
                         let message = snapshot
                             .message
@@ -392,8 +396,12 @@ pub(super) fn watch_server_mutation_task(
                 });
 
                 match snapshot.status.as_ref() {
-                    "completed" => toast::success(cx, success_message),
-                    "cancelled" => toast::push(cx, t!("Tasks.status.cancelled")),
+                    "completed" => {
+                        toast::success(cx, success_message);
+                    }
+                    "cancelled" => {
+                        toast::push(cx, t!("Tasks.status.cancelled"));
+                    }
                     "error" => {
                         let message = snapshot
                             .message

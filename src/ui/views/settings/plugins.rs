@@ -1051,10 +1051,12 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                             true,
                                             None,
                                         ),
-                                        Err(error) => toast::error(
-                                            cx,
-                                            SharedString::from(format!("卸载失败: {error}")),
-                                        ),
+                                        Err(error) => {
+                                            toast::error(
+                                                cx,
+                                                SharedString::from(format!("卸载失败: {error}")),
+                                            );
+                                        }
                                     }
                                 }),
                         ),

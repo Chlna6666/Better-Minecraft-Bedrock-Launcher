@@ -662,7 +662,7 @@ pub async fn extract_zip_from_path(
 
     // The transaction owns staging/rollback inside the blocking closure itself. Aborting the
     // outer future therefore cannot bypass cleanup while a ZIP worker is still unwinding.
-    let handle = task::spawn_blocking(move || -> Result<(), String> {
+    let handle = task::spawn_blocking(move || -> Result<bool, String> {
         extract_zip_transactionally_blocking(
             &archive_path,
             &destination,

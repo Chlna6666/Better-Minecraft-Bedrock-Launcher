@@ -1560,7 +1560,7 @@ fn extract_pack_root(archive: &mut ZipArchive<File>, pack_root: &str, dest: &Pat
     let pack_root = Path::new(pack_root);
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
-        let Some(entry_path) = file.enclosed_name().map(Path::to_path_buf) else {
+        let Some(entry_path) = file.enclosed_name() else {
             return Err(anyhow::anyhow!(
                 "Unsafe archive entry path at index {}",
                 index
@@ -1607,7 +1607,7 @@ fn extract_archive(archive: &mut ZipArchive<File>, dest_root: &Path) -> Result<(
     // 第一次遍历：检测公共根目录，同时拒绝绝对路径和 ParentDir 跳转。
     for index in 0..archive.len() {
         let file = archive.by_index(index)?;
-        let Some(path) = file.enclosed_name().map(Path::to_path_buf) else {
+        let Some(path) = file.enclosed_name() else {
             return Err(anyhow::anyhow!(
                 "Unsafe archive entry path at index {}",
                 index
@@ -1644,7 +1644,7 @@ fn extract_archive(archive: &mut ZipArchive<File>, dest_root: &Path) -> Result<(
 
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
-        let Some(original_path) = file.enclosed_name().map(Path::to_path_buf) else {
+        let Some(original_path) = file.enclosed_name() else {
             return Err(anyhow::anyhow!(
                 "Unsafe archive entry path at index {}",
                 index
@@ -1696,7 +1696,7 @@ fn extract_archive_parallel(file_path: &Path, dest_root: &Path) -> Result<()> {
 
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
-        let Some(path) = file.enclosed_name().map(Path::to_path_buf) else {
+        let Some(path) = file.enclosed_name() else {
             return Err(anyhow::anyhow!(
                 "Unsafe archive entry path at index {} in {}",
                 i,

@@ -1,5 +1,6 @@
 use crate::ui::animation::{tab_content_animation_key, tab_content_motion};
 use crate::ui::components::modal;
+use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};

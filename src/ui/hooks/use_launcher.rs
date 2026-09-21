@@ -290,6 +290,18 @@ pub fn copy_launcher_error(cx: &mut App) -> bool {
     false
 }
 
+pub fn sync_launcher_state(now: std::time::Instant, cx: &mut App) {
+    let should_finish_close = {
+        let state = cx.global::<LauncherState>();
+        state.show_modal && !state.modal_visible && !state.is_modal_animating(now)
+    };
+    if should_finish_close {
+        cx.update_global(|state: &mut LauncherState, _cx| {
+            state.finish_close_if_elapsed(now);
+        });
+    }
+}
+
 pub fn dismiss_launch_prereq(cx: &mut App) {
     cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         if state.is_busy() {
@@ -591,12 +603,16 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
             );
         }
         Err(error) => {
-            apply_launch_prereq_failure(
-                context.request_id,
-                "LaunchPrereq.errors.installUwpFailed",
-                &error,
-                cx,
-            );
+            let request_id = context.request_id;
+            cx.spawn(async move |cx| {
+                apply_launch_prereq_failure(
+                    request_id,
+                    "LaunchPrereq.errors.installUwpFailed",
+                    &error,
+                    cx,
+                );
+            })
+            .detach();
         }
     }
 }
@@ -644,12 +660,16 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
             );
         }
         Err(error) => {
-            apply_launch_prereq_failure(
-                context.request_id,
-                "LaunchPrereq.errors.installGameInputFailed",
-                &error,
-                cx,
-            );
+            let request_id = context.request_id;
+            cx.spawn(async move |cx| {
+                apply_launch_prereq_failure(
+                    request_id,
+                    "LaunchPrereq.errors.installGameInputFailed",
+                    &error,
+                    cx,
+                );
+            })
+            .detach();
         }
     }
 }
@@ -697,12 +717,16 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
             );
         }
         Err(error) => {
-            apply_launch_prereq_failure(
-                context.request_id,
-                "LaunchPrereq.errors.installWindowsAppSdkFailed",
-                &error,
-                cx,
-            );
+            let request_id = context.request_id;
+            cx.spawn(async move |cx| {
+                apply_launch_prereq_failure(
+                    request_id,
+                    "LaunchPrereq.errors.installWindowsAppSdkFailed",
+                    &error,
+                    cx,
+                );
+            })
+            .detach();
         }
     }
 }
