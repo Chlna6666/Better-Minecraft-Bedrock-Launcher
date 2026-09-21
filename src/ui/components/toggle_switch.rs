@@ -37,11 +37,16 @@ impl ToggleSwitchView {
         }
     }
 
-    fn sync(&mut self, colors: ThemeColors, enabled: bool, on_toggle: Rc<dyn Fn(&mut App)>) {
+    fn sync(
+        &mut self,
+        colors: ThemeColors,
+        enabled: bool,
+        on_toggle: Rc<dyn Fn(&mut App)>,
+    ) -> bool {
         self.colors = colors;
         self.on_toggle = on_toggle;
         if self.enabled == enabled {
-            return;
+            return false;
         }
 
         self.enabled = enabled;
@@ -50,6 +55,7 @@ impl ToggleSwitchView {
         } else {
             TogglePhase::Closing
         };
+        true
     }
 
     fn render_track(&self) -> Div {
@@ -180,8 +186,15 @@ impl RenderOnce for ToggleSwitch {
         let view = window.use_keyed_state(self.id, cx, |_, _| {
             ToggleSwitchView::new(self.colors, self.enabled, initial_on_toggle)
         });
-        view.update(cx, |view, _cx| {
-            view.sync(self.colors, self.enabled, self.on_toggle);
+        view.update(cx, |view, cx| {
+            // use_keyed_state keeps this view alive across parent renders. Entity::update does not
+            // implicitly invalidate a view, so a state transition must notify GPUI before retained
+            // geometry can be reused. The knob is laid out at its final destination and Nova owns
+            // only the temporary translation; reusing the old layout makes that translation settle
+            // back onto the previous side of the track.
+            if view.sync(self.colors, self.enabled, self.on_toggle) {
+                cx.notify();
+            }
         });
         AnyView::from(view)
     }
@@ -230,13 +243,13 @@ mod tests {
     #[test]
     fn sync_records_only_real_state_transitions() {
         let mut view = test_view(false);
-        view.sync(LightColors::colors(), false, Rc::new(|_| {}));
+        assert!(!view.sync(LightColors::colors(), false, Rc::new(|_| {})));
         assert_eq!(view.phase, TogglePhase::Stable);
 
-        view.sync(LightColors::colors(), true, Rc::new(|_| {}));
+        assert!(view.sync(LightColors::colors(), true, Rc::new(|_| {})));
         assert_eq!(view.phase, TogglePhase::Opening);
 
-        view.sync(LightColors::colors(), false, Rc::new(|_| {}));
+        assert!(view.sync(LightColors::colors(), false, Rc::new(|_| {})));
         assert_eq!(view.phase, TogglePhase::Closing);
     }
 }
