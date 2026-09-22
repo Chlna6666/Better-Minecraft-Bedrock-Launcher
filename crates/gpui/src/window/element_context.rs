@@ -424,6 +424,31 @@ impl Window {
             property,
             text_raster_scale,
             None,
+            None,
+            paint,
+        )
+    }
+
+    pub(crate) fn with_scene_composite_animation<R>(
+        &mut self,
+        animation_id: crate::SceneAnimationId,
+        property: crate::TransitionProperty,
+        text_raster_scale: f32,
+        capture_bounds: Bounds<Pixels>,
+        paint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        debug_assert!(matches!(
+            property,
+            crate::TransitionProperty::Transform
+                | crate::TransitionProperty::Rotation
+                | crate::TransitionProperty::ClipReveal
+        ));
+        self.with_scene_animation_impl(
+            animation_id,
+            property,
+            text_raster_scale,
+            Some(capture_bounds),
+            None,
             paint,
         )
     }
@@ -440,6 +465,7 @@ impl Window {
             animation_id,
             crate::TransitionProperty::Blur,
             text_raster_scale,
+            Some(capture_bounds),
             Some((capture_bounds, max_radius_device)),
             paint,
         )
@@ -450,6 +476,7 @@ impl Window {
         animation_id: crate::SceneAnimationId,
         property: crate::TransitionProperty,
         text_raster_scale: f32,
+        subtree_capture_bounds: Option<Bounds<Pixels>>,
         blur_capture: Option<(Bounds<Pixels>, f32)>,
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
@@ -507,7 +534,8 @@ impl Window {
                     | crate::TransitionProperty::ClipReveal
             )
         }) {
-            let capture_bounds = self.content_mask().bounds;
+            let capture_bounds =
+                subtree_capture_bounds.unwrap_or_else(|| self.content_mask().bounds);
             let result = self.paint_composite_layer(capture_bounds, |window| {
                 window.with_scene_animation(animation_id, property, 1.0, paint)
             });
@@ -549,7 +577,8 @@ impl Window {
                 | crate::TransitionProperty::ClipReveal
         ) {
             let previous_animation = self.scene_animation.replace((animation_id, property));
-            let capture_bounds = self.content_mask().bounds;
+            let capture_bounds =
+                subtree_capture_bounds.unwrap_or_else(|| self.content_mask().bounds);
             let result = self.paint_composite_layer(capture_bounds, paint);
             self.scene_animation = previous_animation;
             self.scene_text_raster_scale = previous_text_raster_scale;

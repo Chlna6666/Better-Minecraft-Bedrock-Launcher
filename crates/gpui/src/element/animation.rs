@@ -389,6 +389,21 @@ fn paint_scene_animation<R>(
             max_radius_device,
             paint,
         )
+    } else if matches!(
+        property.property,
+        TransitionProperty::Transform
+            | TransitionProperty::Rotation
+            | TransitionProperty::ClipReveal
+    ) {
+        // These properties capture a complete retained subtree. Use this animation element's own
+        // stable layout box, not the inherited content mask (which may be the entire viewport).
+        window.with_scene_composite_animation(
+            animation_id,
+            property.property,
+            property.text_raster_scale(),
+            bounds,
+            paint,
+        )
     } else {
         window.with_scene_animation(
             animation_id,
