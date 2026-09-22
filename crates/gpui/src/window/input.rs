@@ -1,5 +1,6 @@
 use super::state::FrameRequestReason;
 use super::*;
+use crate::ExternalPaths;
 
 mod window_control;
 
