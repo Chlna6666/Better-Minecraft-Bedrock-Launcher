@@ -916,7 +916,6 @@ impl Render for ImportWindowView {
                                                         .flex_1()
                                                         .min_w(px(0.))
                                                         .min_h(px(0.))
-                                                        .overflow_y_scrollbar()
                                                         .child(render_preview_card(
                                                             self, &colors, frame_now, cx,
                                                         )),
@@ -1919,40 +1918,52 @@ fn render_batch_preview_cards(
     colors: &ThemeColors,
     cx: &App,
 ) -> AnyElement {
-    let mut list = section_shell(colors)
+    let list_max_height = px(if view.presentation == ImportPresentation::Overlay {
+        320.0
+    } else {
+        460.0
+    });
+
+    let header = div()
+        .flex_none()
         .flex()
-        .flex_col()
+        .items_center()
+        .justify_between()
         .gap(px(10.))
         .child(
             div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(10.))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(colors.text_primary)
-                        .child(t!(
-                            "Import.batch_preview_title",
-                            count = &view.file_paths.len().to_string()
-                        )),
-                )
-                .child(meta_pill(
-                    colors,
-                    t!(
-                        "Import.batch_preview_ready",
-                        count = &view
-                            .batch_previews
-                            .iter()
-                            .filter(|entry| entry.preview.is_some() && entry.error.is_none())
-                            .count()
-                            .to_string()
-                    ),
-                    !view.has_invalid_or_failed_preview(),
+                .text_size(px(13.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(colors.text_primary)
+                .child(t!(
+                    "Import.batch_preview_title",
+                    count = &view.file_paths.len().to_string()
                 )),
-        );
+        )
+        .child(meta_pill(
+            colors,
+            t!(
+                "Import.batch_preview_ready",
+                count = &view
+                    .batch_previews
+                    .iter()
+                    .filter(|entry| entry.preview.is_some() && entry.error.is_none())
+                    .count()
+                    .to_string()
+            ),
+            !view.has_invalid_or_failed_preview(),
+        ));
+
+    let mut rows = div()
+        .id("import-batch-preview-scroll")
+        .w_full()
+        .max_h(list_max_height)
+        .min_h(px(0.))
+        .overflow_y_scrollbar()
+        .pr(px(4.))
+        .flex()
+        .flex_col()
+        .gap(px(10.));
 
     for (index, entry) in view.batch_previews.iter().enumerate() {
         let file_name = entry
@@ -1964,6 +1975,7 @@ fn render_batch_preview_cards(
         let row = div()
             .id(("import-batch-preview", index))
             .w_full()
+            .flex_none()
             .rounded(px(crate::ui::theme::tokens::radius::SM))
             .px(px(12.))
             .py(px(10.))
@@ -2069,10 +2081,17 @@ fn render_batch_preview_cards(
                     ),
             )
         };
-        list = list.child(row);
+        rows = rows.child(row);
     }
 
-    list.into_any_element()
+    section_shell(colors)
+        .min_h(px(0.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(header)
+        .child(rows)
+        .into_any_element()
 }
 
 fn render_versions_card(
