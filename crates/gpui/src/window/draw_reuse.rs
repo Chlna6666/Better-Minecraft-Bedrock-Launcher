@@ -9,6 +9,13 @@ use super::*;
 const RETAINED_REPLAY_SCRATCH_MIN_CAPACITY: usize = 32;
 const RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER: usize = 4;
 
+/// Frame-local state used while a cached ancestor replays the prepaint fragments around one dirty
+/// descendant view.
+pub(crate) struct PrepaintFragmentReplay {
+    node_map: FxHashMap<DispatchNodeId, DispatchNodeId>,
+    restore_parent: DispatchNodeId,
+}
+
 impl Window {
     pub(super) fn prepaint_deferred_draws(
         &mut self,
@@ -321,6 +328,153 @@ impl Window {
                 }),
         );
         true
+    }
+
+    /// Returns whether a prepaint slice can be replayed independently by selective reconciliation.
+    ///
+    /// Deferred draws are excluded for the first conservative implementation because their parent
+    /// node IDs require a second fragment-level rebasing table. Normal subtree replay continues to
+    /// support them unchanged.
+    pub(crate) fn can_reuse_prepaint_fragment(
+        &self,
+        range: &Range<PrepaintStateIndex>,
+    ) -> bool {
+        self.prepaint_range_indices_are_valid(range)
+            && range.start.deferred_draws_index == range.end.deferred_draws_index
+    }
+
+    /// Starts one selective prepaint replay rooted below the currently active cached view node.
+    pub(crate) fn begin_prepaint_fragment_replay(
+        &mut self,
+        source_parent: &Range<PrepaintStateIndex>,
+    ) -> Option<PrepaintFragmentReplay> {
+        if !self.can_reuse_prepaint_fragment(source_parent)
+            || source_parent.start.dispatch_tree_index
+                >= source_parent.end.dispatch_tree_index
+        {
+            return None;
+        }
+
+        let source_parent_node = self
+            .rendered_frame
+            .dispatch_tree
+            .node_parent_at_index(source_parent.start.dispatch_tree_index)?;
+        let restore_parent = self.next_frame.dispatch_tree.active_node_id()?;
+        let mut node_map = FxHashMap::default();
+        node_map.insert(source_parent_node, restore_parent);
+        Some(PrepaintFragmentReplay {
+            node_map,
+            restore_parent,
+        })
+    }
+
+    /// Replays a prefix/suffix of prepaint state without requiring the dispatch range to be a
+    /// closed subtree.
+    pub(crate) fn reuse_prepaint_fragment(
+        &mut self,
+        range: Range<PrepaintStateIndex>,
+        replay: &mut PrepaintFragmentReplay,
+    ) -> bool {
+        if !self.can_reuse_prepaint_fragment(&range) {
+            return false;
+        }
+
+        self.next_frame.hitboxes.extend(
+            self.rendered_frame.hitboxes
+                [range.start.hitboxes_index..range.end.hitboxes_index]
+                .iter()
+                .cloned(),
+        );
+        self.next_frame.tooltip_requests.extend(
+            self.rendered_frame.tooltip_requests
+                [range.start.tooltips_index..range.end.tooltips_index]
+                .iter_mut()
+                .map(|request| request.take()),
+        );
+        self.next_frame.accessed_element_states.extend(
+            self.rendered_frame.accessed_element_states
+                [range.start.accessed_element_states_index
+                    ..range.end.accessed_element_states_index]
+                .iter()
+                .map(|(id, type_id)| (GlobalElementId(id.0.clone()), *type_id)),
+        );
+        self.text_system.reuse_layouts(
+            range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
+        );
+
+        let dispatch_range =
+            range.start.dispatch_tree_index..range.end.dispatch_tree_index;
+        let contains_focus = {
+            let next = &mut self.next_frame.dispatch_tree;
+            let source = &mut self.rendered_frame.dispatch_tree;
+            next.reuse_fragment(
+                dispatch_range,
+                source,
+                self.focus,
+                &mut replay.node_map,
+                replay.restore_parent,
+            )
+        };
+        let Some(contains_focus) = contains_focus else {
+            return false;
+        };
+        if contains_focus {
+            self.next_frame.focus = self.focus;
+        }
+        true
+    }
+
+    /// Recreates the plain AnyView dispatch boundary at the hole between two replayed fragments.
+    ///
+    /// On success the fresh view node remains active so its current prepaint can append descendants.
+    pub(crate) fn begin_fresh_view_dispatch_for_fragment(
+        &mut self,
+        source_target: &Range<PrepaintStateIndex>,
+        view_id: EntityId,
+        replay: &mut PrepaintFragmentReplay,
+    ) -> bool {
+        let source_index = source_target.start.dispatch_tree_index;
+        if source_index >= source_target.end.dispatch_tree_index
+            || !self
+                .rendered_frame
+                .dispatch_tree
+                .node_is_plain_view_boundary(source_index, view_id)
+        {
+            return false;
+        }
+        let Some(old_id) = self
+            .rendered_frame
+            .dispatch_tree
+            .node_id_at_index(source_index)
+        else {
+            return false;
+        };
+        let Some(old_parent) = self
+            .rendered_frame
+            .dispatch_tree
+            .node_parent_at_index(source_index)
+        else {
+            return false;
+        };
+        let Some(new_parent) = replay.node_map.get(&old_parent).copied() else {
+            return false;
+        };
+
+        self.next_frame.dispatch_tree.set_active_node(new_parent);
+        let new_id = self.next_frame.dispatch_tree.push_node();
+        self.next_frame.dispatch_tree.set_view_id(view_id);
+        replay.node_map.insert(old_id, new_id);
+        true
+    }
+
+    /// Restores the cached ancestor's dispatch node after fresh descendant prepaint.
+    pub(crate) fn finish_fresh_view_dispatch_for_fragment(
+        &mut self,
+        replay: &PrepaintFragmentReplay,
+    ) {
+        self.next_frame
+            .dispatch_tree
+            .set_active_node(replay.restore_parent);
     }
 
     pub(crate) fn paint_index(&self) -> PaintIndex {

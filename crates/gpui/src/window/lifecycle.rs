@@ -451,6 +451,29 @@ impl WindowInvalidator {
             });
     }
 
+    /// Returns the only active ReconcileSubtree target strictly below ancestor.
+    ///
+    /// Selective cached-view splicing intentionally starts with a one-target fast path. Generic
+    /// dirty views, multiple targets, subtree invalidation, or a direct hit on the ancestor all
+    /// fall back to normal traversal.
+    pub(in crate::window) fn single_reconcile_target_below(
+        &self,
+        ancestor: &GlobalElementId,
+    ) -> Option<(EntityId, GlobalElementId)> {
+        let inner = self.inner.borrow();
+        if !inner.active_targeted_replay
+            || !inner.active_generic_dirty_views.is_empty()
+            || inner.active_targeted_elements.len() != 1
+        {
+            return None;
+        }
+
+        let ((owner, target), scope) = inner.active_targeted_elements.iter().next()?;
+        (*scope == RetainedInvalidationScope::ReconcileSubtree
+            && global_element_path_is_strict_prefix(ancestor, target))
+        .then(|| (*owner, target.clone()))
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.inner.borrow().dirty
     }
