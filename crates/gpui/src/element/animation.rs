@@ -114,6 +114,20 @@ impl AnimationProperty {
         }
     }
 
+    /// Animate visual translation as fractions of the element's own final bounds.
+    ///
+    /// An X value of 1.0 means one element width and a Y value of 1.0 means one element height.
+    /// Fractions resolve from stable final layout bounds before retained presentation begins, so
+    /// callers do not need pixel dimensions and layout does not change. Values are not clamped.
+    pub fn relative_translation(from: Point<f32>, to: Point<f32>) -> Self {
+        Self {
+            property: TransitionProperty::Translation,
+            // Lane 3 is declaration-only metadata and is cleared before values reach Nova.
+            from: [from.x, from.y, 0.0, 2.0],
+            to: [to.x, to.y, 0.0, 2.0],
+        }
+    }
+
     /// Animate translation and opacity through one renderer-owned slot.
     ///
     /// The fourth lane is a stable marker understood by Nova's Translation resolver; ordinary
@@ -204,8 +218,7 @@ impl AnimationProperty {
                 // Scene primitive bounds are already converted to device-scaled `ScaledPixels`.
                 // Translation is declared in logical `Pixels`, so resolve it into the same device
                 // coordinate space before the GPU adds it to those bounds.
-                let mut from = self.from;
-                let mut to = self.to;
+                let (mut from, mut to) = self.translation_values_for_bounds(bounds);
                 from[0] *= scale_factor;
                 from[1] *= scale_factor;
                 to[0] *= scale_factor;
@@ -277,6 +290,30 @@ impl AnimationProperty {
         }
     }
 
+    fn translation_values_for_bounds(
+        self,
+        bounds: Bounds<Pixels>,
+    ) -> ([f32; 4], [f32; 4]) {
+        if self.property != TransitionProperty::Translation
+            || self.from[3] != 2.0
+            || self.to[3] != 2.0
+        {
+            return (self.from, self.to);
+        }
+
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
+        let mut from = self.from;
+        let mut to = self.to;
+        from[0] *= width;
+        from[1] *= height;
+        to[0] *= width;
+        to[1] *= height;
+        from[3] = 0.0;
+        to[3] = 0.0;
+        (from, to)
+    }
+
     fn text_raster_scale(self) -> f32 {
         crate::animation::scene_text_raster_scale(self.property, self.from, self.to)
     }
@@ -292,7 +329,8 @@ impl AnimationProperty {
     ) -> Bounds<Pixels> {
         match self.property {
             TransitionProperty::Translation => {
-                translated_bounds(bounds, self.from).union(&translated_bounds(bounds, self.to))
+                let (from, to) = self.translation_values_for_bounds(bounds);
+                translated_bounds(bounds, from).union(&translated_bounds(bounds, to))
             }
             TransitionProperty::Rotation => rotation_bounds(bounds),
             TransitionProperty::Blur => {
@@ -316,16 +354,17 @@ impl AnimationProperty {
         if self.property != TransitionProperty::Translation {
             return None;
         }
+        let (from, to) = self.translation_values_for_bounds(bounds);
         let first = translated_bounds_at_progress(
             bounds,
-            self.from,
-            self.to,
+            from,
+            to,
             SPRING_TRANSLATION_PROGRESS_MIN,
         );
         let last = translated_bounds_at_progress(
             bounds,
-            self.from,
-            self.to,
+            from,
+            to,
             SPRING_TRANSLATION_PROGRESS_MAX,
         );
         Some(first.union(&last))
@@ -1266,6 +1305,30 @@ mod tests {
         assert_eq!(
             property.resolved_values(bounds, 2.0, 1.0),
             ([20.0, 10.0, 0.0, 0.0], [80.0, 30.0, 0.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn relative_translation_resolves_against_final_bounds() {
+        let property = AnimationProperty::relative_translation(
+            Point::new(-0.75, 0.25),
+            Point::new(0.0, 0.0),
+        );
+        let bounds = Bounds::new(
+            Point::new(crate::px(10.0), crate::px(20.0)),
+            crate::size(crate::px(200.0), crate::px(40.0)),
+        );
+
+        assert_eq!(
+            property.resolved_values(bounds, 2.0, 1.0),
+            ([-300.0, 20.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0])
+        );
+        assert_eq!(
+            property.dirty_bounds(bounds),
+            Bounds::new(
+                Point::new(crate::px(-140.0), crate::px(20.0)),
+                crate::size(crate::px(350.0), crate::px(50.0)),
+            )
         );
     }
 
