@@ -33,12 +33,6 @@ pub(super) struct ManageDropHoverState {
     pub(super) file_summary: SharedString,
 }
 
-#[derive(Clone)]
-pub(super) struct PendingAssetImport {
-    pub(super) path: PathBuf,
-    pub(super) target: crate::ui::window::import::ImportWindowTarget,
-}
-
 impl ManagePageView {
     pub(super) fn import_version_package(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.defer(cx, move |window, cx| {
@@ -158,7 +152,12 @@ impl ManagePageView {
         if import_context.tab == ManageTab::Mod {
             self.begin_mod_import_confirmation(import_context.version, supported, window, cx);
         } else {
-            self.enqueue_asset_imports(import_context, supported, window, cx);
+            crate::ui::window::import::open_import_overlay_batch(
+                supported,
+                import_context.import_target(),
+                window,
+                cx,
+            );
         }
     }
 
@@ -196,57 +195,6 @@ impl ManagePageView {
 
         self.mod_type_dialog = self.pending_mod_import_dialogs.pop_front();
         cx.notify();
-    }
-
-    fn enqueue_asset_imports(
-        &mut self,
-        import_context: AssetImportContext,
-        paths: Vec<PathBuf>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let target = import_context.import_target();
-        self.pending_asset_imports.extend(paths.into_iter().map(|path| PendingAssetImport {
-            path,
-            target: target.clone(),
-        }));
-        self.maybe_schedule_next_asset_import(window, cx);
-    }
-
-    pub(super) fn maybe_schedule_next_asset_import(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.pending_asset_import_open || self.pending_asset_imports.is_empty() {
-            return;
-        }
-        let overlay_busy = cx
-            .try_global::<crate::ui::state::import::ImportOverlayState>()
-            .is_some_and(|state| state.active.is_some());
-        if overlay_busy {
-            return;
-        }
-
-        self.pending_asset_import_open = true;
-        let view_handle = cx.entity().downgrade();
-        window.defer(cx, move |window, cx| {
-            let next = view_handle
-                .update(cx, |this, _cx| {
-                    this.pending_asset_import_open = false;
-                    this.pending_asset_imports.pop_front()
-                })
-                .ok()
-                .flatten();
-            if let Some(next) = next {
-                crate::ui::window::import::open_import_overlay(
-                    next.path,
-                    next.target,
-                    window,
-                    cx,
-                );
-            }
-        });
     }
 
     pub(super) fn update_drop_hover(
@@ -322,7 +270,7 @@ impl ManagePageView {
                 ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map,
             ) => i18n
                 .lookup("Manage.drop_preview_asset_hint")
-                .unwrap_or_else(|| SharedString::from("Each package will open in the import preview")),
+                .unwrap_or_else(|| SharedString::from("All packages will be parsed in one import preview")),
             ManageDropTarget::Assets(_) => i18n
                 .lookup("Manage.drop_import_not_supported")
                 .unwrap_or_else(|| SharedString::from("This category does not support import")),

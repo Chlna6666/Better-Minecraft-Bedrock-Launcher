@@ -49,14 +49,18 @@ pub fn pick_and_open_import_window(
     target: ImportWindowTarget,
     cx: &mut App,
 ) {
-    let Some(file_path) = crate::utils::file_picker::pick_file_path_with_filter_for_window(
+    let file_paths = crate::utils::file_picker::pick_file_paths_with_filter_for_window(
         window,
         filter_name,
         extensions,
-    ) else {
+    )
+    .into_iter()
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+    if file_paths.is_empty() {
         return;
-    };
-    open_import_overlay(PathBuf::from(file_path), target, window, cx);
+    }
+    open_import_overlay_batch(file_paths, target, window, cx);
 }
 
 pub fn open_dropped_import(
@@ -66,10 +70,12 @@ pub fn open_dropped_import(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let mut supported = paths
+    let supported = paths
         .iter()
-        .filter(|path| has_supported_extension(path, extensions));
-    let Some(file_path) = supported.next().cloned() else {
+        .filter(|path| has_supported_extension(path, extensions))
+        .cloned()
+        .collect::<Vec<_>>();
+    if supported.is_empty() {
         toast::error(
             cx,
             t!(
@@ -78,29 +84,37 @@ pub fn open_dropped_import(
             ),
         );
         return;
-    };
-    if supported.next().is_some() {
-        toast::push(cx, t!("Import.multiple_package"));
     }
-    open_import_overlay(file_path, target, window, cx);
+    open_import_overlay_batch(supported, target, window, cx);
 }
 
 pub fn open_dropped_import_any(paths: &[PathBuf], window: &mut Window, cx: &mut App) {
-    let mut supported = paths.iter().filter(|path| {
-        has_supported_extension(path, IMPORT_ASSET_EXTENSIONS)
-            || has_supported_extension(path, UNAMBIGUOUS_GAME_PACKAGE_EXTENSIONS)
-    });
-    let Some(file_path) = supported.next().cloned() else {
+    let mut asset_paths = Vec::new();
+    let mut game_package_paths = Vec::new();
+
+    for path in paths {
+        if has_supported_extension(path, UNAMBIGUOUS_GAME_PACKAGE_EXTENSIONS) {
+            game_package_paths.push(path.clone());
+        } else if has_supported_extension(path, IMPORT_ASSET_EXTENSIONS) {
+            asset_paths.push(path.clone());
+        }
+    }
+
+    if asset_paths.is_empty() && game_package_paths.is_empty() {
         toast::error(cx, t!("Import.unsupported_file"));
         return;
-    };
-    if supported.next().is_some() {
-        toast::push(cx, t!("Import.multiple_file"));
     }
-    if has_supported_extension(&file_path, UNAMBIGUOUS_GAME_PACKAGE_EXTENSIONS) {
+
+    for file_path in game_package_paths {
         start_game_package_import(file_path, cx);
-    } else {
-        open_import_overlay(file_path, ImportWindowTarget::default(), window, cx);
+    }
+    if !asset_paths.is_empty() {
+        open_import_overlay_batch(
+            asset_paths,
+            ImportWindowTarget::default(),
+            window,
+            cx,
+        );
     }
 }
 
@@ -119,12 +133,16 @@ pub fn open_import_overlay(
     window: &mut Window,
     cx: &mut App,
 ) {
-    crate::ui::state::import::show_import_overlay(
-        ImportLaunchContext { file_path },
-        target,
-        window,
-        cx,
-    );
+    open_import_overlay_batch(vec![file_path], target, window, cx);
+}
+
+pub fn open_import_overlay_batch(
+    file_paths: Vec<PathBuf>,
+    target: ImportWindowTarget,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    crate::ui::state::import::show_import_overlay_batch(file_paths, target, window, cx);
 }
 
 pub fn render_import_overlay(colors: &ThemeColors, cx: &mut App) -> Option<AnyElement> {

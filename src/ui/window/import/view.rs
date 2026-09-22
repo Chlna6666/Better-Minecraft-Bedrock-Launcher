@@ -26,9 +26,11 @@ use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::window::import::ImportWindowTarget;
+use futures_util::future::join_all;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui::{InteractiveElement, ParentElement, Styled};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
@@ -48,15 +50,27 @@ pub enum ImportPresentation {
     Overlay,
 }
 
+#[derive(Clone)]
+struct ImportFilePreview {
+    path: PathBuf,
+    preview: Option<PackagePreview>,
+    error: Option<SharedString>,
+}
+
 pub struct ImportWindowView {
     window_id: Option<u64>,
     presentation: ImportPresentation,
     import_context: ImportLaunchContext,
+    file_paths: Vec<PathBuf>,
+    batch_previews: Vec<ImportFilePreview>,
     target: ImportWindowTarget,
     preview: Option<PackagePreview>,
     selected_folder: Option<SharedString>,
     status: Option<(StatusKind, SharedString)>,
     conflict: Option<ImportCheckResult>,
+    conflict_count: usize,
+    conflict_requires_overwrite: bool,
+    conflict_requires_shared_fallback: bool,
     show_conflict_dialog: bool,
     is_inspecting: bool,
     inspect_started_at: Instant,
@@ -71,6 +85,40 @@ pub struct ImportWindowView {
 impl ImportWindowView {
     pub fn new(
         import_context: ImportLaunchContext,
+        target: ImportWindowTarget,
+        presentation: ImportPresentation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let file_paths = vec![import_context.file_path.clone()];
+        Self::new_with_paths(import_context, file_paths, target, presentation, window, cx)
+    }
+
+    pub fn new_batch(
+        mut file_paths: Vec<PathBuf>,
+        target: ImportWindowTarget,
+        presentation: ImportPresentation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        file_paths.dedup();
+        let primary = file_paths
+            .first()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("unknown-import"));
+        Self::new_with_paths(
+            ImportLaunchContext { file_path: primary },
+            file_paths,
+            target,
+            presentation,
+            window,
+            cx,
+        )
+    }
+
+    fn new_with_paths(
+        import_context: ImportLaunchContext,
+        file_paths: Vec<PathBuf>,
         target: ImportWindowTarget,
         presentation: ImportPresentation,
         window: &mut Window,
@@ -114,11 +162,16 @@ impl ImportWindowView {
             window_id: None,
             presentation,
             import_context,
+            file_paths,
+            batch_previews: Vec::new(),
             selected_folder: target.version_folder.clone(),
             target,
             preview: None,
             status: None,
             conflict: None,
+            conflict_count: 0,
+            conflict_requires_overwrite: false,
+            conflict_requires_shared_fallback: false,
             show_conflict_dialog: false,
             is_inspecting: false,
             inspect_started_at: Instant::now(),
@@ -170,39 +223,100 @@ impl ImportWindowView {
         self.is_inspecting = true;
         self.inspect_started_at = Instant::now();
         self.preview = None;
+        self.batch_previews.clear();
+        self.status = None;
 
-        let file_path = self.import_context.file_path.display().to_string();
+        let file_paths = self.file_paths.clone();
         let locale = cx.global::<I18n>().locale().code().to_string();
         debug!(
-            "Import window inspect start: path={}, locale={}",
-            file_path, locale
+            "Import window inspect start: files={}, locale={}",
+            file_paths.len(),
+            locale
         );
         cx.spawn(async move |handle, cx| {
-            let preview = inspect_import_file(file_path.clone(), Some(locale.clone())).await;
+            let inspections = file_paths.into_iter().map(|path| {
+                let locale = locale.clone();
+                async move {
+                    let path_text = path.display().to_string();
+                    let result = inspect_import_file(path_text.clone(), Some(locale.clone())).await;
+                    (path, path_text, result)
+                }
+            });
+            let results = join_all(inspections).await;
+
             handle.update(cx, |this, cx| {
                 this.is_inspecting = false;
-                match preview {
-                    Ok(preview) => {
-                        debug!(
-                            "Import window inspect success: path={}, name={}, kind={}, valid={}",
-                            file_path, preview.name, preview.kind, preview.valid
-                        );
-                        this.preview = Some(preview);
+                let total = results.len();
+                let mut failed = 0usize;
+                let mut first_preview = None;
+                let mut entries = Vec::with_capacity(total);
+
+                for (path, path_text, result) in results {
+                    match result {
+                        Ok(preview) => {
+                            debug!(
+                                "Import window inspect success: path={}, name={}, kind={}, valid={}",
+                                path_text, preview.name, preview.kind, preview.valid
+                            );
+                            if first_preview.is_none() {
+                                first_preview = Some(preview.clone());
+                            }
+                            entries.push(ImportFilePreview {
+                                path,
+                                preview: Some(preview),
+                                error: None,
+                            });
+                        }
+                        Err(error) => {
+                            failed = failed.saturating_add(1);
+                            warn!(
+                                "Import window inspect failed: path={}, locale={}, error={}",
+                                path_text, locale, error
+                            );
+                            entries.push(ImportFilePreview {
+                                path,
+                                preview: None,
+                                error: Some(SharedString::from(error)),
+                            });
+                        }
                     }
-                    Err(error) => {
-                        warn!(
-                            "Import window inspect failed: path={}, locale={}, error={}",
-                            file_path, locale, error
-                        );
-                        toast::error(cx, SharedString::from(error.clone()));
-                        this.status = Some((StatusKind::Error, SharedString::from(error)));
-                    }
+                }
+
+                this.preview = first_preview;
+                this.batch_previews = entries;
+                if failed > 0 {
+                    let message = if total == 1 {
+                        this.batch_previews
+                            .first()
+                            .and_then(|entry| entry.error.clone())
+                            .unwrap_or_else(|| t!("Import.preview_unavailable"))
+                    } else {
+                        t!(
+                            "Import.batch_inspect_failed",
+                            failed = &failed.to_string(),
+                            total = &total.to_string()
+                        )
+                    };
+                    toast::error(cx, message.clone());
+                    this.status = Some((StatusKind::Error, message));
                 }
                 cx.notify();
             })?;
             Ok::<(), anyhow::Error>(())
         })
         .detach();
+    }
+
+    fn has_invalid_or_failed_preview(&self) -> bool {
+        self.is_inspecting
+            || self.batch_previews.len() != self.file_paths.len()
+            || self.batch_previews.iter().any(|entry| {
+                entry.error.is_some()
+                    || entry
+                        .preview
+                        .as_ref()
+                        .is_none_or(|preview| !preview.valid)
+            })
     }
 
     fn import_now(
@@ -220,15 +334,10 @@ impl ImportWindowView {
         if self.is_importing {
             return;
         }
-        if self.preview.as_ref().is_some_and(|preview| !preview.valid) {
-            let reason = self
-                .preview
-                .as_ref()
-                .and_then(|preview| preview.invalid_reason.clone())
-                .unwrap_or_else(|| t!("Import.errors.missingUuid").to_string());
+        if self.has_invalid_or_failed_preview() {
             self.status = Some((
                 StatusKind::Error,
-                t!("Import.errors.invalidPack", reason = &reason),
+                t!("Import.batch_invalid_or_unreadable"),
             ));
             cx.notify();
             return;
@@ -252,11 +361,15 @@ impl ImportWindowView {
         let enable_isolation = version_enable_isolation(selected_version);
         let user_id = self.target_user_id(&selected_folder);
         let launch_version = launch_version_descriptor(selected_version);
-        let file_path = self.import_context.file_path.display().to_string();
-        let file_path_for_log = file_path.clone();
+        let file_paths = self
+            .file_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        let file_count = file_paths.len();
         debug!(
-            "Import window action start: path={}, version={}, build={:?}, edition={:?}, isolation={}, overwrite={}, shared_fallback={}, launch_after_import={}",
-            file_path,
+            "Import window action start: files={}, version={}, build={:?}, edition={:?}, isolation={}, overwrite={}, shared_fallback={}, launch_after_import={}",
+            file_count,
             selected_folder,
             build_type,
             edition,
@@ -265,64 +378,89 @@ impl ImportWindowView {
             allow_shared_fallback,
             launch_after_import
         );
-        let request = CheckImportRequest {
-            build_type: build_type.clone(),
-            edition: edition.clone(),
-            version_name: selected_folder.to_string(),
-            enable_isolation,
-            user_id: user_id.clone(),
-            file_path: file_path.clone(),
-            allow_shared_fallback,
-        };
 
+        let selected_folder_text = selected_folder.to_string();
         cx.spawn(async move |handle, cx| {
-            let conflict = check_import_conflict(request).await;
-            let conflict = match conflict {
-                Ok(conflict) => conflict,
-                Err(error) => {
-                    warn!(
-                        "Import window conflict check failed: path={}, error={}",
-                        file_path_for_log,
-                        error
-                    );
-                    handle.update(cx, |this, cx| {
-                        this.is_importing = false;
-                        this.status = Some((StatusKind::Error, SharedString::from(error)));
-                        cx.notify();
-                    })?;
-                    return Ok::<(), anyhow::Error>(());
+            let checks = file_paths.iter().cloned().map(|file_path| {
+                let request = CheckImportRequest {
+                    build_type: build_type.clone(),
+                    edition: edition.clone(),
+                    version_name: selected_folder_text.clone(),
+                    enable_isolation,
+                    user_id: user_id.clone(),
+                    file_path: file_path.clone(),
+                    allow_shared_fallback,
+                };
+                async move { (file_path, check_import_conflict(request).await) }
+            });
+            let check_results = join_all(checks).await;
+            let mut conflicts = Vec::new();
+            for (file_path, result) in check_results {
+                match result {
+                    Ok(conflict) => {
+                        debug!(
+                            "Import window conflict check result: path={}, has_conflict={}, target={}",
+                            file_path, conflict.has_conflict, conflict.target_name
+                        );
+                        if conflict.has_conflict {
+                            conflicts.push(conflict);
+                        }
+                    }
+                    Err(error) => {
+                        warn!(
+                            "Import window conflict check failed: path={}, error={}",
+                            file_path, error
+                        );
+                        handle.update(cx, |this, cx| {
+                            this.is_importing = false;
+                            this.status = Some((StatusKind::Error, SharedString::from(error)));
+                            cx.notify();
+                        })?;
+                        return Ok::<(), anyhow::Error>(());
+                    }
                 }
-            };
+            }
 
-            debug!(
-                "Import window conflict check result: path={}, has_conflict={}, target={}",
-                file_path_for_log,
-                conflict.has_conflict,
-                conflict.target_name
-            );
-
-            if conflict.has_conflict && !overwrite {
+            let requires_shared_fallback = conflicts.iter().any(|conflict| {
+                conflict.conflict_type.as_deref() == Some("shared_fallback")
+            });
+            let requires_overwrite = conflicts.iter().any(|conflict| {
+                conflict.conflict_type.as_deref() != Some("shared_fallback")
+            });
+            if (requires_shared_fallback && !allow_shared_fallback)
+                || (requires_overwrite && !overwrite)
+            {
+                let conflict_count = conflicts.len();
+                let first_conflict = conflicts.into_iter().next();
                 handle.update(cx, |this, cx| {
                     this.is_importing = false;
-                    this.conflict = Some(conflict);
+                    this.conflict = first_conflict;
+                    this.conflict_count = conflict_count;
+                    this.conflict_requires_overwrite = requires_overwrite;
+                    this.conflict_requires_shared_fallback = requires_shared_fallback;
                     this.show_conflict_dialog = true;
                     cx.notify();
                 })?;
                 return Ok::<(), anyhow::Error>(());
             }
 
+            let title = if file_count > 1 {
+                format!("导入 Minecraft 内容（{file_count} 个文件）")
+            } else {
+                "导入 Minecraft 内容".to_string()
+            };
             let task_id = match start_import_assets_task(
                 ImportAssetsRequest {
                     build_type,
                     edition,
-                    version_name: selected_folder.to_string(),
+                    version_name: selected_folder_text,
                     enable_isolation,
                     user_id,
-                    file_paths: vec![file_path],
+                    file_paths,
                     overwrite,
                     allow_shared_fallback,
                 },
-                "导入 Minecraft 内容",
+                title,
             ) {
                 Ok(task_id) => task_id,
                 Err(error) => {
@@ -338,9 +476,8 @@ impl ImportWindowView {
             };
 
             debug!(
-                "Import window registered BMCBL task: path={}, task_id={}",
-                file_path_for_log,
-                task_id
+                "Import window registered BMCBL task: files={}, task_id={}",
+                file_count, task_id
             );
             let terminal = crate::tasks::task_manager::wait_for_task_terminal(&task_id).await;
 
@@ -355,9 +492,8 @@ impl ImportWindowView {
                     );
                 } else if let Err(error) = &terminal {
                     warn!(
-                        "Import window task wait failed: path={}, error={}",
-                        file_path_for_log,
-                        error
+                        "Import window task wait failed: files={}, error={}",
+                        file_count, error
                     );
                 }
                 this.finish_import_task(
@@ -743,8 +879,7 @@ impl Render for ImportWindowView {
                         } else {
                             start_import_and_launch_label
                         },
-                        versions.versions.is_empty()
-                            || self.preview.as_ref().is_some_and(|preview| !preview.valid),
+                        versions.versions.is_empty() || self.has_invalid_or_failed_preview(),
                         cx,
                     )),
             );
@@ -910,9 +1045,7 @@ fn render_window_header(
                                     .text_ellipsis()
                                     .text_size(px(10.))
                                     .text_color(colors.text_secondary)
-                                    .child(SharedString::from(
-                                        view.import_context.file_path.display().to_string(),
-                                    )),
+                                    .child(import_file_summary(view)),
                             )
                         }),
                 ),
@@ -1199,6 +1332,10 @@ fn render_preview_card(
                     .child(t!("Import.inspecting")),
             )
             .into_any_element();
+    }
+
+    if this.file_paths.len() > 1 {
+        return render_batch_preview_cards(this, colors, cx);
     }
 
     if let Some(preview) = &this.preview {
@@ -1645,12 +1782,182 @@ fn render_preview_card(
                         .line_height(relative(1.45))
                         .text_color(colors.text_secondary)
                         .text_center()
-                        .child(SharedString::from(
-                            this.import_context.file_path.display().to_string(),
-                        )),
+                        .child(import_file_summary(this)),
                 ),
         )
         .into_any_element()
+}
+
+fn import_file_summary(view: &ImportWindowView) -> SharedString {
+    if view.file_paths.len() <= 1 {
+        return SharedString::from(view.import_context.file_path.display().to_string());
+    }
+
+    t!(
+        "Import.batch_files",
+        count = &view.file_paths.len().to_string()
+    )
+}
+
+fn render_batch_preview_cards(
+    view: &ImportWindowView,
+    colors: &ThemeColors,
+    cx: &App,
+) -> AnyElement {
+    let mut list = section_shell(colors)
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.text_primary)
+                        .child(t!(
+                            "Import.batch_preview_title",
+                            count = &view.file_paths.len().to_string()
+                        )),
+                )
+                .child(meta_pill(
+                    colors,
+                    t!(
+                        "Import.batch_preview_ready",
+                        count = &view
+                            .batch_previews
+                            .iter()
+                            .filter(|entry| entry.preview.is_some() && entry.error.is_none())
+                            .count()
+                            .to_string()
+                    ),
+                    !view.has_invalid_or_failed_preview(),
+                )),
+        );
+
+    for (index, entry) in view.batch_previews.iter().enumerate() {
+        let file_name = entry
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| entry.path.display().to_string());
+        let row = div()
+            .id(("import-batch-preview", index))
+            .w_full()
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
+            .px(px(12.))
+            .py(px(10.))
+            .bg(Hsla {
+                a: 0.36,
+                ..colors.settings_field_bg
+            })
+            .border_1()
+            .border_color(Hsla {
+                a: 0.08,
+                ..colors.border
+            })
+            .flex()
+            .items_center()
+            .gap(px(12.));
+
+        let row = if let Some(preview) = entry.preview.as_ref() {
+            row.child(preview_icon(preview.icon.as_ref(), 42.0, colors))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            MinecraftFormattedText::new(
+                                SharedString::from(preview.name.clone()),
+                                colors,
+                            )
+                            .text_size(px(13.))
+                            .line_height(relative(1.2))
+                            .color(colors.text_primary),
+                        )
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_size(px(10.))
+                                .text_color(colors.text_muted)
+                                .child(SharedString::from(file_name)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(6.))
+                                .child(meta_pill(
+                                    colors,
+                                    ImportWindowView::kind_label(&preview.kind, cx),
+                                    preview.valid,
+                                ))
+                                .when_some(preview.version.as_ref(), |this, version| {
+                                    this.child(meta_pill(
+                                        colors,
+                                        SharedString::from(format!("v{version}")),
+                                        false,
+                                    ))
+                                })
+                                .child(meta_pill(
+                                    colors,
+                                    SharedString::from(format_size(preview.size)),
+                                    false,
+                                )),
+                        ),
+                )
+                .when(!preview.valid, |this| {
+                    this.child(
+                        div()
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(colors.danger)
+                            .child(t!("Import.invalidPackShort")),
+                    )
+                })
+        } else {
+            row.child(preview_icon(None, 42.0, colors)).child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.text_primary)
+                            .child(SharedString::from(file_name)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(colors.danger)
+                            .child(
+                                entry
+                                    .error
+                                    .clone()
+                                    .unwrap_or_else(|| t!("Import.preview_unavailable")),
+                            ),
+                    ),
+            )
+        };
+        list = list.child(row);
+    }
+
+    list.into_any_element()
 }
 
 fn render_versions_card(
@@ -2446,7 +2753,11 @@ fn render_conflict_dialog(
     let existing_preview = conflict.existing_pack_info.as_ref();
     let incoming_preview = view.preview.as_ref();
     let is_shared_fallback = conflict_type.as_deref() == Some("shared_fallback");
-    let primary_label = if is_shared_fallback {
+    let mixed_batch_conflict =
+        view.conflict_requires_overwrite && view.conflict_requires_shared_fallback;
+    let primary_label = if mixed_batch_conflict {
+        t!("Import.conflict.confirmBatch")
+    } else if view.conflict_requires_shared_fallback {
         t!("Import.conflict.importToShared")
     } else {
         t!("Import.conflict.overwriteImport")
@@ -2512,9 +2823,16 @@ fn render_conflict_dialog(
                                                                 .text_size(px(12.))
                                                                 .font_weight(FontWeight::MEDIUM)
                                                                 .text_color(colors.text_muted)
-                                                                .child(SharedString::from(
-                                                                    conflict.target_name.clone(),
-                                                                )),
+                                                                .child(if view.conflict_count > 1 {
+                                                                    t!(
+                                                                        "Import.conflict.batchCount",
+                                                                        count = &view.conflict_count.to_string()
+                                                                    )
+                                                                } else {
+                                                                    SharedString::from(
+                                                                        conflict.target_name.clone(),
+                                                                    )
+                                                                }),
                                                         ),
                                                 ),
                                         )
@@ -2586,15 +2904,33 @@ fn render_conflict_dialog(
                                         ),
                                 );
                             } else {
-                                panel = panel
-                                    .child(render_conflict_compare_panel(
+                                if view.conflict_count <= 1 {
+                                    panel = panel.child(render_conflict_compare_panel(
                                         colors,
                                         existing_preview,
                                         incoming_preview,
                                         view,
                                         cx,
-                                    ))
-                                    .child(
+                                    ));
+                                } else {
+                                    panel = panel.child(
+                                        div()
+                                            .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                            .px(px(12.))
+                                            .py(px(10.))
+                                            .bg(Hsla {
+                                                a: 0.08,
+                                                ..colors.danger
+                                            })
+                                            .text_size(px(12.))
+                                            .text_color(colors.text_secondary)
+                                            .child(t!(
+                                                "Import.conflict.batchSummary",
+                                                count = &view.conflict_count.to_string()
+                                            )),
+                                    );
+                                }
+                                panel = panel.child(
                                         div()
                                             .text_size(px(12.))
                                             .font_weight(FontWeight::MEDIUM)
@@ -2622,11 +2958,9 @@ fn render_conflict_dialog(
                                         primary_button(&colors, primary_label, false).on_mouse_up(
                                             MouseButton::Left,
                                             cx.listener(move |this, _, _, cx| {
-                                                let allow_shared_fallback = conflict_type
-                                                    .as_deref()
-                                                    == Some("shared_fallback");
-                                                let overwrite = conflict_type.as_deref()
-                                                    != Some("shared_fallback");
+                                                let overwrite = this.conflict_requires_overwrite;
+                                                let allow_shared_fallback =
+                                                    this.conflict_requires_shared_fallback;
                                                 let launch_after_import = this.launch_after_import;
                                                 this.import_now(
                                                     overwrite,

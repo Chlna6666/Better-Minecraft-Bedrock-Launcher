@@ -1,4 +1,5 @@
 use gpui::{App, AppContext as _, BorrowAppContext as _, Entity, Global, SharedString, Window};
+use std::path::PathBuf;
 
 use crate::launch::ImportLaunchContext;
 use crate::ui::components::modal::ModalDismissHandle;
@@ -39,9 +40,21 @@ pub fn show_import_overlay(
     window: &mut Window,
     cx: &mut App,
 ) {
+    show_import_overlay_batch(vec![import_context.file_path], target, window, cx);
+}
+
+pub fn show_import_overlay_batch(
+    file_paths: Vec<PathBuf>,
+    target: ImportWindowTarget,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if file_paths.is_empty() {
+        return;
+    }
     let view = cx.new(|cx| {
-        ImportWindowView::new(
-            import_context,
+        ImportWindowView::new_batch(
+            file_paths,
             target,
             ImportPresentation::Overlay,
             window,

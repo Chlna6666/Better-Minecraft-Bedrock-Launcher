@@ -816,11 +816,10 @@ impl RenderOnce for Dropdown {
             });
         }
 
-        let element_offset = window.element_offset();
-        let trigger_bounds = trigger_bounds.map(|bounds| Bounds {
-            origin: bounds.origin + element_offset,
-            size: bounds.size,
-        });
+        // Canvas prepaint bounds are already window-relative: Window::layout_bounds applies
+        // the current element_offset before passing Bounds into Element::prepaint. Do not add
+        // element_offset again here; doing so double-translates dropdowns rendered inside
+        // deferred/modal subtrees and can move the popup outside the visible modal.
         let window_size = window.bounds().size;
         let menu_width =
             desired_dropdown_menu_width(window, width, options.as_ref(), window_size.width);

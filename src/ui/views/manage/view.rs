@@ -22,8 +22,6 @@ pub struct ManagePageView {
     pub(super) drop_hover: Option<ManageDropHoverState>,
     pub(super) pending_mod_import_dialogs: VecDeque<ModTypeDialogState>,
     pub(super) pending_mod_import_items: Vec<crate::core::native_mods::NativeModImportItem>,
-    pub(super) pending_asset_imports: VecDeque<PendingAssetImport>,
-    pub(super) pending_asset_import_open: bool,
     pub(super) server_editor_dialog: Option<ServerEditorDialogState>,
     pub(super) level_dat_editor: Option<level_dat_editor::LevelDatEditorModalState>,
     pub(super) last_selected_instance_revision: ManagedInstanceRevision,
@@ -60,11 +58,6 @@ impl ManagePageView {
             }),
             cx.observe_global::<I18n>(|this, cx| {
                 if this.active {
-                    cx.notify();
-                }
-            }),
-            cx.observe_global::<crate::ui::state::import::ImportOverlayState>(|this, cx| {
-                if this.active && !this.pending_asset_imports.is_empty() {
                     cx.notify();
                 }
             }),
@@ -118,8 +111,6 @@ impl ManagePageView {
             drop_hover: None,
             pending_mod_import_dialogs: VecDeque::new(),
             pending_mod_import_items: Vec::new(),
-            pending_asset_imports: VecDeque::new(),
-            pending_asset_import_open: false,
             server_editor_dialog: None,
             level_dat_editor: None,
             last_selected_instance_revision: initial_selected_instance_revision,
@@ -171,7 +162,6 @@ impl Render for ManagePageView {
         self.ensure_server_search_input(window, cx);
         self.sync_selected_version(cx);
         self.sync_data_requests(cx);
-        self.maybe_schedule_next_asset_import(window, cx);
 
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
