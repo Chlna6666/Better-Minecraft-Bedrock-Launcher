@@ -403,6 +403,7 @@ impl Window {
             animation_frame_pending_entities,
             animation_engine,
             animation_engine_frame_driver: Cell::new(None),
+            inactive_animation_engine_enabled: false,
             next_scene_animation_id: Cell::new(1 << 31),
             image_animation_deadline_pending: Rc::new(RefCell::new(FxHashMap::default())),
             deadline_invalidation_pending,

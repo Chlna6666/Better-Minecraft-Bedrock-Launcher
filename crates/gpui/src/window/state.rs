@@ -440,6 +440,10 @@ pub struct Window {
     pub(super) animation_frame_pending_entities: Rc<RefCell<FxHashSet<EntityId>>>,
     pub(super) animation_engine: Rc<RefCell<AnimationEngine>>,
     pub(super) animation_engine_frame_driver: Cell<Option<AnimationDriver>>,
+    /// Explicit opt-in for visible NOACTIVATE/panel windows whose retained scene animations must
+    /// keep presenting while the OS does not consider the window active. Minimized windows still
+    /// stop animation work regardless of this flag.
+    pub(super) inactive_animation_engine_enabled: bool,
     pub(super) next_scene_animation_id: Cell<u32>,
     pub(super) image_animation_deadline_pending: Rc<RefCell<FxHashMap<EntityId, (Instant, u64)>>>,
     pub(super) deadline_invalidation_pending: Rc<RefCell<FxHashMap<EntityId, (Instant, u64)>>>,

@@ -1720,6 +1720,53 @@ fn inactive_gpu_animation_does_not_request_platform_frames(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn opted_in_inactive_gpu_animation_requests_presentation_frame(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let baseline = test_window.requested_frame_count();
+        window.active.set(false);
+        window.set_inactive_animation_engine_enabled(true);
+        window.request_animation_engine_frame(AnimationDriver::Gpu);
+
+        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+        assert_eq!(
+            test_window.last_requested_frame(),
+            Some(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            })
+        );
+        assert_eq!(
+            window.animation_engine_frame_driver.get(),
+            Some(AnimationDriver::Gpu)
+        );
+    });
+}
+
+#[gpui::test]
+fn enabling_inactive_animation_resumes_pending_engine_frame(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        window.active.set(false);
+        window.request_animation_engine_frame(AnimationDriver::Paint);
+        let baseline = test_window.requested_frame_count();
+
+        window.set_inactive_animation_engine_enabled(true);
+
+        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+        assert_eq!(
+            test_window.last_requested_frame(),
+            Some(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            })
+        );
+    });
+}
+
+#[gpui::test]
 fn layout_animation_engine_frame_uses_view_animation_frame(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {

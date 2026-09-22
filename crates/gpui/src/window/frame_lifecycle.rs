@@ -576,7 +576,9 @@ impl Window {
         let Some(driver) = self.animation_engine_frame_driver.take() else {
             return;
         };
-        if !self.active.get() || self.platform_window.is_minimized() {
+        if self.platform_window.is_minimized()
+            || (!self.active.get() && !self.inactive_animation_engine_enabled)
+        {
             self.animation_engine_frame_driver.set(Some(driver));
             return;
         }
@@ -610,10 +612,12 @@ impl Window {
             viewport.scale(self.scale_factor),
             DIRTY_REGION_FULL_REDRAW_RATIO,
         );
-        if tick.active_visual_count > 0 && tick.has_gpu_or_paint {
-            if self.active.get() && !self.platform_window.is_minimized() {
-                self.request_animation_engine_frame(driver);
-            }
+        if tick.active_visual_count > 0
+            && tick.has_gpu_or_paint
+            && !self.platform_window.is_minimized()
+            && (self.active.get() || self.inactive_animation_engine_enabled)
+        {
+            self.request_animation_engine_frame(driver);
         }
         if tick.has_layout {
             self.request_animation_frame();

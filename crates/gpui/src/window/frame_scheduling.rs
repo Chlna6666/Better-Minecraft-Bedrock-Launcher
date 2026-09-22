@@ -234,6 +234,33 @@ impl Window {
     /// tries to capture the retained element path that is currently being built. Component-local
     /// layout animations therefore become targeted retained invalidations automatically. Only
     /// callers outside an element lifecycle fall back to [`Window::request_animation_frame`].
+    /// Opt a window into retained paint/GPU animation while it is visible but inactive.
+    ///
+    /// This is intended for NOACTIVATE panels such as desktop lyrics or HUD windows. The default is
+    /// disabled, so ordinary inactive windows retain the existing power-saving behavior. Minimized
+    /// windows never advance animation-engine frames even when this option is enabled.
+    pub fn set_inactive_animation_engine_enabled(&mut self, enabled: bool) {
+        if self.inactive_animation_engine_enabled == enabled {
+            return;
+        }
+        self.inactive_animation_engine_enabled = enabled;
+
+        // An animation may already have armed the engine while the inactive policy was disabled.
+        // Enabling the policy resumes that pending retained timeline without notifying or rebuilding
+        // the owning view.
+        if enabled
+            && !self.active.get()
+            && !self.platform_window.is_minimized()
+            && self.animation_engine_frame_driver.get().is_some()
+        {
+            self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
+            self.request_platform_frame(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            });
+        }
+    }
+
     #[track_caller]
     pub fn request_animation_engine_frame(&self, driver: AnimationDriver) {
         if matches!(driver, AnimationDriver::Layout) {
@@ -255,7 +282,9 @@ impl Window {
                 self.animation_engine_frame_driver.get(),
                 driver,
             )));
-        if !self.active.get() || self.platform_window.is_minimized() {
+        if self.platform_window.is_minimized()
+            || (!self.active.get() && !self.inactive_animation_engine_enabled)
+        {
             return;
         }
         self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
