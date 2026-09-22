@@ -198,6 +198,11 @@ where
     Ok(app_runtime()?.spawn_io(future))
 }
 
+/// Returns the process-owned concurrency budget for independent archive inspections.
+pub(crate) fn archive_inspection_parallelism() -> usize {
+    logical_thread_count().saturating_sub(1).clamp(2, 6)
+}
+
 pub fn spawn_download_blocking<T, F>(operation: F) -> Result<JoinHandle<T>, String>
 where
     T: Send + 'static,

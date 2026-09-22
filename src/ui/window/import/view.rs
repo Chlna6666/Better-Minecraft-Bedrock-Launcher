@@ -1,6 +1,7 @@
 use crate::core::minecraft::assets::{
-    CheckImportRequest, ImportAssetsRequest, check_import_conflict, inspect_import_file,
-    start_import_assets_task,
+    CheckImportRequest, ImportAssetsRequest, check_import_conflict,
+    discard_import_inspection_result, start_import_assets_task, start_import_inspection_task,
+    take_import_inspection_result,
 };
 use crate::core::minecraft::import::{
     ImportCheckResult, PackagePreview, PreviewIconData, PreviewImageFormat, WorldPackReference,
@@ -88,7 +89,7 @@ pub struct ImportWindowView {
     show_conflict_dialog: bool,
     is_inspecting: bool,
     inspect_started_at: Instant,
-    inspect_generation: u64,
+    inspect_task_id: Option<String>,
     is_importing: bool,
     launch_after_import: bool,
     close_after_launch_completion: bool,
@@ -192,7 +193,7 @@ impl ImportWindowView {
             show_conflict_dialog: false,
             is_inspecting: false,
             inspect_started_at: Instant::now(),
-            inspect_generation: 0,
+            inspect_task_id: None,
             is_importing: false,
             launch_after_import: false,
             close_after_launch_completion: false,
@@ -235,8 +236,10 @@ impl ImportWindowView {
     }
 
     fn inspect_file(&mut self, cx: &mut Context<Self>) {
-        self.inspect_generation = self.inspect_generation.wrapping_add(1).max(1);
-        let generation = self.inspect_generation;
+        if let Some(previous_task_id) = self.inspect_task_id.take() {
+            crate::tasks::task_manager::cancel_task(&previous_task_id);
+        }
+
         self.is_inspecting = true;
         self.inspect_started_at = Instant::now();
         self.preview = None;
@@ -245,38 +248,86 @@ impl ImportWindowView {
 
         let file_paths = self.file_paths.clone();
         let locale = cx.global::<I18n>().locale().code().to_string();
-        debug!(
-            "Import window inspect start: files={}, locale={}",
-            file_paths.len(),
-            locale
-        );
-        cx.spawn(async move |handle, cx| {
-            let inspections = file_paths.into_iter().map(|path| {
-                let locale = locale.clone();
-                async move {
-                    let path_text = path.display().to_string();
-                    let result = inspect_import_file(path_text.clone(), Some(locale.clone())).await;
-                    (path, path_text, result)
-                }
-            });
-            let results = join_all(inspections).await;
+        let file_count = file_paths.len();
+        let task_id = match start_import_inspection_task(file_paths, Some(locale.clone())) {
+            Ok(task_id) => task_id,
+            Err(error) => {
+                self.is_inspecting = false;
+                let message = SharedString::from(error);
+                toast::error(cx, message.clone());
+                self.status = Some((StatusKind::Error, message));
+                cx.notify();
+                return;
+            }
+        };
 
+        debug!(
+            "Import window registered inspection task: files={}, locale={}, task_id={}",
+            file_count, locale, task_id
+        );
+        self.inspect_task_id = Some(task_id.clone());
+
+        let observed_task_id = task_id.clone();
+        let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
+            crate::tasks::task_manager::wait_for_task_terminal(&observed_task_id)
+                .await
+                .map_err(anyhow::Error::msg)
+        });
+
+        cx.spawn(async move |handle, cx| {
+            let terminal = terminal.await;
             handle.update(cx, |this, cx| {
-                if this.inspect_generation != generation {
-                    debug!(
-                        "Import window inspect stale result ignored: generation={}, current={}",
-                        generation, this.inspect_generation
-                    );
+                if this.inspect_task_id.as_deref() != Some(task_id.as_str()) {
+                    discard_import_inspection_result(&task_id);
                     return;
                 }
+
+                this.inspect_task_id = None;
                 this.is_inspecting = false;
+
+                let snapshot = match terminal {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        let message = SharedString::from(format!("解析任务异常结束：{error}"));
+                        toast::error(cx, message.clone());
+                        this.status = Some((StatusKind::Error, message));
+                        cx.notify();
+                        return;
+                    }
+                };
+
+                if snapshot.status.as_ref() != "completed" {
+                    discard_import_inspection_result(&task_id);
+                    let message = snapshot
+                        .message
+                        .as_ref()
+                        .map(|message| SharedString::from(message.to_string()))
+                        .unwrap_or_else(|| t!("Import.preview_unavailable"));
+                    if snapshot.status.as_ref() != "cancelled" {
+                        toast::error(cx, message.clone());
+                    }
+                    this.status = Some((StatusKind::Error, message));
+                    cx.notify();
+                    return;
+                }
+
+                let Some(results) = take_import_inspection_result(&task_id) else {
+                    let message = t!("Import.preview_unavailable");
+                    toast::error(cx, message.clone());
+                    this.status = Some((StatusKind::Error, message));
+                    cx.notify();
+                    return;
+                };
+
                 let total = results.len();
                 let mut failed = 0usize;
                 let mut first_preview = None;
                 let mut entries = Vec::with_capacity(total);
 
-                for (path, path_text, result) in results {
-                    match result {
+                for inspection in results {
+                    let path = inspection.path;
+                    let path_text = path.display().to_string();
+                    match inspection.result {
                         Ok(preview) => {
                             debug!(
                                 "Import window inspect success: path={}, name={}, kind={}, valid={}",
@@ -765,6 +816,22 @@ impl ImportWindowView {
 
     fn finish_titlebar_drag(&mut self, _cx: &mut Context<Self>) {
         self.titlebar_gesture.handle_mouse_up();
+    }
+}
+
+impl Drop for ImportWindowView {
+    fn drop(&mut self) {
+        let Some(task_id) = self.inspect_task_id.take() else {
+            return;
+        };
+
+        if crate::tasks::task_manager::get_snapshot_arc(&task_id)
+            .is_some_and(|snapshot| snapshot.is_terminal())
+        {
+            discard_import_inspection_result(&task_id);
+        } else {
+            crate::tasks::task_manager::cancel_task(&task_id);
+        }
     }
 }
 

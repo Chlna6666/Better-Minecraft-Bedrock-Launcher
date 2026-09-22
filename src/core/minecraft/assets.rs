@@ -4,9 +4,14 @@ use crate::core::minecraft::import::{
     import_files_batch_cancellable, inspect_archive,
 };
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve_target_parent};
+use futures_util::stream::{self, StreamExt as _};
+use once_cell::sync::Lazy;
 use serde::Deserialize;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Instant;
 use tracing::{debug, error};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -423,25 +428,59 @@ pub(crate) async fn import_assets_for_task(
     })
 }
 
-pub async fn inspect_import_file(
-    file_path: String,
+#[derive(Debug)]
+pub(crate) struct ImportFileInspection {
+    pub(crate) path: PathBuf,
+    pub(crate) result: Result<PackagePreview, String>,
+}
+
+#[derive(Default)]
+struct ImportInspectionResultStore {
+    order: VecDeque<String>,
+    results: HashMap<String, Vec<ImportFileInspection>>,
+}
+
+const IMPORT_INSPECTION_RESULT_LIMIT: usize = 16;
+
+static IMPORT_INSPECTION_RESULTS: Lazy<Mutex<ImportInspectionResultStore>> =
+    Lazy::new(|| Mutex::new(ImportInspectionResultStore::default()));
+
+fn store_import_inspection_result(task_id: String, result: Vec<ImportFileInspection>) {
+    let evicted = {
+        let mut store = IMPORT_INSPECTION_RESULTS.lock().unwrap();
+        store.order.retain(|existing| existing != &task_id);
+        store.order.push_back(task_id.clone());
+        store.results.insert(task_id, result);
+
+        let mut evicted = Vec::new();
+        while store.order.len() > IMPORT_INSPECTION_RESULT_LIMIT {
+            if let Some(oldest) = store.order.pop_front() {
+                store.results.remove(&oldest);
+                evicted.push(oldest);
+            }
+        }
+        evicted
+    };
+
+    for task_id in evicted {
+        let _ = crate::tasks::task_manager::remove_task(&task_id);
+    }
+}
+
+async fn inspect_import_path(
+    path: PathBuf,
     lang: Option<String>,
 ) -> Result<PackagePreview, String> {
-    let path = std::path::PathBuf::from(file_path);
-    if !path.exists() {
-        return Err("文件不存在".to_string());
-    }
-
-    debug!(
-        "Inspect import file request: path={}, lang={}",
-        path.display(),
-        lang.as_deref().unwrap_or("default")
-    );
     let path_for_log = path.display().to_string();
+    let started_at = Instant::now();
 
-    // 在 blocking thread 中执行，因为涉及 ZIP 解压读取
-    crate::tasks::runtime::run_io_blocking(move || {
-        inspect_archive(&path, lang.as_deref()).map_err(|e| e.to_string())
+    // ZIP directory traversal, manifest/icon reads and compound fallback extraction are
+    // archive work. Keep them off the general IO pool and GPUI foreground executor.
+    let result = crate::tasks::runtime::run_archive_blocking(move || {
+        if !path.exists() {
+            return Err("文件不存在".to_string());
+        }
+        inspect_archive(&path, lang.as_deref()).map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| {
@@ -449,8 +488,249 @@ pub async fn inspect_import_file(
             "Inspect import file task failed: path={}, error={error:?}",
             path_for_log
         );
-        format!("Task failed: {:?}", error)
-    })?
+        format!("Task failed: {error:?}")
+    })?;
+
+    debug!(
+        "Inspect import file completed: path={}, elapsed_ms={}",
+        path_for_log,
+        started_at.elapsed().as_millis()
+    );
+    result
+}
+
+pub async fn inspect_import_file(
+    file_path: String,
+    lang: Option<String>,
+) -> Result<PackagePreview, String> {
+    let path = PathBuf::from(file_path);
+    debug!(
+        "Inspect import file request: path={}, lang={}",
+        path.display(),
+        lang.as_deref().unwrap_or("default")
+    );
+    inspect_import_path(path, lang).await
+}
+
+/// Starts one TaskManager-owned batch inspection for Bedrock import archives.
+///
+/// The returned task id is the only lifecycle handle required by UI. ZIP work runs on the
+/// application archive blocking pool with bounded file-level concurrency. TaskManager owns
+/// cancellation, progress, logs and terminal state. Completed structured results are retrieved
+/// exactly once with take_import_inspection_result.
+pub(crate) fn start_import_inspection_task(
+    file_paths: Vec<PathBuf>,
+    lang: Option<String>,
+) -> Result<String, String> {
+    if file_paths.is_empty() {
+        return Err("没有可解析的导入文件".to_string());
+    }
+
+    let total = file_paths.len();
+    let task_id = crate::tasks::task_manager::create_task_with_details(
+        None,
+        "解析导入文件",
+        Some(format!("{total} 个文件")),
+        "queued",
+        None,
+        false,
+    );
+    let worker_task_id = task_id.clone();
+
+    let spawn_result = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
+        use crate::tasks::task_manager as task_manager;
+
+        let paths_for_metadata = file_paths.clone();
+        let sizes = match crate::tasks::runtime::run_io_blocking(move || {
+            paths_for_metadata
+                .iter()
+                .map(|path| std::fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0))
+                .collect::<Vec<_>>()
+        })
+        .await
+        {
+            Ok(sizes) => sizes,
+            Err(error) => {
+                task_manager::finish_task(
+                    &worker_task_id,
+                    "error",
+                    Some(format!("读取导入文件大小失败：{error}")),
+                );
+                return;
+            }
+        };
+        let total_bytes = sizes.iter().copied().fold(0u64, u64::saturating_add);
+
+        task_manager::reset_progress(
+            &worker_task_id,
+            (total_bytes > 0).then_some(total_bytes),
+            Some("inspecting_imports"),
+        );
+        task_manager::append_task_log(
+            &worker_task_id,
+            format!("开始并发解析 {total} 个导入文件"),
+        );
+
+        let concurrency = crate::tasks::runtime::archive_inspection_parallelism()
+            .min(total)
+            .max(1);
+        task_manager::set_task_message(
+            &worker_task_id,
+            Some(format!("并发解析线程：{concurrency}")),
+        );
+        task_manager::set_task_visualization(
+            &worker_task_id,
+            Some(crate::tasks::task_manager::TaskVisualization {
+                worker_total: u32::try_from(concurrency).ok(),
+                unit_label: Some("files".to_string()),
+                unit_total: u64::try_from(total).ok(),
+                ..Default::default()
+            }),
+        );
+
+        let mut inspections = stream::iter(file_paths.into_iter().enumerate())
+            .map(|(index, path)| {
+                let lang = lang.clone();
+                let size = sizes.get(index).copied().unwrap_or(0);
+                async move {
+                    let result = inspect_import_path(path.clone(), lang).await;
+                    (index, path, size, result)
+                }
+            })
+            .buffer_unordered(concurrency);
+
+        let cancel_control = task_manager::task_control(&worker_task_id);
+        let mut completed = Vec::with_capacity(total);
+        let mut failed = 0usize;
+        let mut completed_files = 0usize;
+
+        loop {
+            let next = if let Some(control) = cancel_control.as_ref() {
+                tokio::select! {
+                    _ = control.wait_cancelled() => {
+                        task_manager::finish_task(
+                            &worker_task_id,
+                            "cancelled",
+                            Some("导入包解析已取消".to_string()),
+                        );
+                        return;
+                    }
+                    next = inspections.next() => next,
+                }
+            } else {
+                inspections.next().await
+            };
+
+            let Some((index, path, size, result)) = next else {
+                break;
+            };
+            completed_files = completed_files.saturating_add(1);
+
+            if result.is_err() {
+                failed = failed.saturating_add(1);
+                task_manager::append_task_log(
+                    &worker_task_id,
+                    format!("解析失败：{}", path.display()),
+                );
+            } else {
+                task_manager::append_task_log(
+                    &worker_task_id,
+                    format!("解析完成：{}", path.display()),
+                );
+            }
+
+            completed.push((
+                index,
+                ImportFileInspection {
+                    path,
+                    result,
+                },
+            ));
+            task_manager::update_progress(
+                &worker_task_id,
+                size,
+                (total_bytes > 0).then_some(total_bytes),
+                Some("inspecting_imports"),
+            );
+            task_manager::set_task_message(
+                &worker_task_id,
+                Some(format!(
+                    "已解析 {completed_files}/{total}，失败 {failed}"
+                )),
+            );
+            task_manager::set_task_visualization(
+                &worker_task_id,
+                Some(crate::tasks::task_manager::TaskVisualization {
+                    worker_total: u32::try_from(concurrency).ok(),
+                    unit_label: Some("files".to_string()),
+                    unit_total: u64::try_from(total).ok(),
+                    unit_done: u64::try_from(completed_files).ok(),
+                    ..Default::default()
+                }),
+            );
+        }
+
+        if task_manager::is_cancelled(&worker_task_id) {
+            task_manager::finish_task(
+                &worker_task_id,
+                "cancelled",
+                Some("导入包解析已取消".to_string()),
+            );
+            return;
+        }
+
+        completed.sort_unstable_by_key(|(index, _)| *index);
+        let result = completed
+            .into_iter()
+            .map(|(_, inspection)| inspection)
+            .collect::<Vec<_>>();
+        store_import_inspection_result(worker_task_id.clone(), result);
+
+        task_manager::finish_task(
+            &worker_task_id,
+            "completed",
+            Some(format!("解析完成：{total} 个文件，{failed} 个失败")),
+        );
+    });
+
+    if let Err(error) = spawn_result {
+        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        return Err(error);
+    }
+
+    Ok(task_id)
+}
+
+/// Takes the completed structured result for an import-inspection task.
+///
+/// Results are single-consumer and removed from the bounded core-side store after this call.
+/// The corresponding finished TaskManager entry is removed as part of the handoff.
+pub(crate) fn take_import_inspection_result(
+    task_id: &str,
+) -> Option<Vec<ImportFileInspection>> {
+    let result = {
+        let mut store = IMPORT_INSPECTION_RESULTS.lock().unwrap();
+        store.order.retain(|existing| existing != task_id);
+        store.results.remove(task_id)
+    };
+    let _ = crate::tasks::task_manager::remove_task(task_id);
+    result
+}
+
+/// Discards a stored result for a stale terminal import-inspection task.
+pub(crate) fn discard_import_inspection_result(task_id: &str) {
+    let is_terminal = crate::tasks::task_manager::get_snapshot_arc(task_id)
+        .is_some_and(|snapshot| snapshot.is_terminal());
+    if !is_terminal {
+        return;
+    }
+
+    {
+        let mut store = IMPORT_INSPECTION_RESULTS.lock().unwrap();
+        store.order.retain(|existing| existing != task_id);
+        store.results.remove(task_id);
+    }
+    let _ = crate::tasks::task_manager::remove_task(task_id);
 }
 
 // [新增] 检查导入冲突命令
