@@ -52,6 +52,12 @@ pub fn show_import_overlay_batch(
     if file_paths.is_empty() {
         return;
     }
+    // A dropdown from the page underneath must not survive into a newly opened Import modal.
+    cx.update_global(
+        |overlay: &mut crate::ui::components::dropdown::DropdownOverlayState, _cx| {
+            overlay.clear();
+        },
+    );
     let view = cx.new(|cx| {
         ImportWindowView::new_batch(
             file_paths,
@@ -81,6 +87,11 @@ pub fn dismiss_import_overlay(cx: &mut App) {
 }
 
 pub fn clear_import_overlay(cx: &mut App) {
+    cx.update_global(
+        |overlay: &mut crate::ui::components::dropdown::DropdownOverlayState, _cx| {
+            overlay.clear();
+        },
+    );
     cx.update_global(|state: &mut ImportOverlayState, cx| {
         state.active = None;
         cx.refresh_windows();

@@ -765,16 +765,6 @@ impl MainWindowView {
             ));
         }
 
-        if model.dropdown_visible {
-            let dropdown_state =
-                cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
-            root = root.child(crate::ui::components::dropdown::render_overlay(
-                window,
-                model.now,
-                dropdown_state,
-            ));
-        }
-
         if model.toast_breadcrumb_visible {
             let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
             root = root.child(crate::ui::components::toast::render_breadcrumb_overlay(
@@ -1784,6 +1774,21 @@ impl Render for MainWindowView {
         {
             auth_blocked = true;
             root.child(import_overlay)
+        } else {
+            root
+        };
+
+        // Dropdown menus are a window-level overlay surface. Render them after every modal,
+        // including the Import overlay, so a trigger inside a modal cannot paint its menu below
+        // the modal backdrop/card or be clipped by the modal's scrolling content.
+        let root = if model.dropdown_visible {
+            let dropdown_state =
+                cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
+            root.child(crate::ui::components::dropdown::render_overlay(
+                window,
+                model.now,
+                dropdown_state,
+            ))
         } else {
             root
         };

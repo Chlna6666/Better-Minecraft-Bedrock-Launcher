@@ -275,7 +275,19 @@ impl Window {
             PlatformInput::FileDrop(file_drop) => match file_drop {
                 FileDropEvent::Entered { position, paths } => {
                     self.mouse_position = position;
-                    if cx.active_drag.is_none() {
+                    if let Some(active_drag) = cx.active_drag.as_mut() {
+                        // Platform file-drop backends may refine the same logical drag payload as
+                        // additional files are discovered. Keep ExternalPaths latest-wins so
+                        // DragMoveEvent::drag() and the eventual on_drop handler see the complete
+                        // batch instead of the first path that entered the window.
+                        if active_drag
+                            .value
+                            .downcast_ref::<ExternalPaths>()
+                            .is_some()
+                        {
+                            active_drag.value = Arc::new(paths);
+                        }
+                    } else {
                         cx.active_drag = Some(AnyDrag {
                             value: Arc::new(paths.clone()),
                             view: cx.new(|_| paths).into(),

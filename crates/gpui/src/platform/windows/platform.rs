@@ -128,6 +128,32 @@ pub(crate) struct WindowsPlatformInner {
 #[derive(Default)]
 struct PendingFileDrop {
     paths: SmallVec<[PathBuf; 2]>,
+    dropped_paths: SmallVec<[PathBuf; 2]>,
+}
+
+impl PendingFileDrop {
+    fn push_hovered(&mut self, path: PathBuf) {
+        if !self.paths.iter().any(|existing| existing == &path) {
+            self.paths.push(path);
+        }
+    }
+
+    fn mark_dropped(&mut self, path: PathBuf) -> bool {
+        self.push_hovered(path.clone());
+        if !self
+            .dropped_paths
+            .iter()
+            .any(|existing| existing == &path)
+        {
+            self.dropped_paths.push(path);
+        }
+
+        !self.paths.is_empty() && self.dropped_paths.len() >= self.paths.len()
+    }
+
+    fn external_paths(&self) -> ExternalPaths {
+        ExternalPaths(self.paths.clone())
+    }
 }
 
 pub(crate) struct WindowsPlatformState {
@@ -934,6 +960,36 @@ struct WindowsApplication {
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
 }
 
+#[cfg(test)]
+mod pending_file_drop_tests {
+    use super::*;
+
+    #[test]
+    fn multi_file_drop_submits_only_after_every_hovered_path_arrives() {
+        let mut pending = PendingFileDrop::default();
+        pending.push_hovered(PathBuf::from("a.mcpack"));
+        pending.push_hovered(PathBuf::from("b.mcpack"));
+        pending.push_hovered(PathBuf::from("c.mcpack"));
+
+        assert!(!pending.mark_dropped(PathBuf::from("a.mcpack")));
+        assert!(!pending.mark_dropped(PathBuf::from("b.mcpack")));
+        assert!(pending.mark_dropped(PathBuf::from("c.mcpack")));
+        assert_eq!(pending.external_paths().paths().len(), 3);
+    }
+
+    #[test]
+    fn repeated_hover_and_drop_events_do_not_duplicate_paths() {
+        let mut pending = PendingFileDrop::default();
+        pending.push_hovered(PathBuf::from("a.mcpack"));
+        pending.push_hovered(PathBuf::from("a.mcpack"));
+
+        assert!(pending.mark_dropped(PathBuf::from("a.mcpack")));
+        assert!(pending.mark_dropped(PathBuf::from("a.mcpack")));
+        assert_eq!(pending.external_paths().paths().len(), 1);
+        assert_eq!(pending.dropped_paths.len(), 1);
+    }
+}
+
 impl WindowsApplication {
     fn run_foreground_tasks(&self, event_loop: &ActiveEventLoop) {
         let control_flow = if self.inner.run_foreground_tasks() {
@@ -1207,8 +1263,8 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::HoveredFile(path) => {
                 let position = window.0.state.borrow().mouse_position.get();
                 let entry = self.pending_file_drops.entry(window_id).or_default();
-                entry.paths.push(path);
-                let paths = ExternalPaths(entry.paths.clone());
+                entry.push_hovered(path);
+                let paths = entry.external_paths();
                 let mut state = window.0.state.borrow_mut();
                 let input_callback = state.callbacks.input.take();
                 drop(state);
@@ -1223,20 +1279,26 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::DroppedFile(path) => {
                 let position = window.0.state.borrow().mouse_position.get();
                 let entry = self.pending_file_drops.entry(window_id).or_default();
-                if !entry.paths.iter().any(|existing| existing == &path) {
-                    entry.paths.push(path);
+                let batch_complete = entry.mark_dropped(path);
+                let paths = entry.external_paths();
+                if batch_complete {
+                    self.pending_file_drops.remove(&window_id);
                 }
-                let paths = ExternalPaths(entry.paths.clone());
-                self.pending_file_drops.remove(&window_id);
                 let mut state = window.0.state.borrow_mut();
                 let input_callback = state.callbacks.input.take();
                 drop(state);
                 if let Some(mut callback) = input_callback {
+                    // Refresh the external drag payload before dispatching MouseUp. Windows/winit
+                    // reports a multi-selection as multiple file events, but GPUI exposes one
+                    // logical ExternalPaths drop to application code.
                     let _ = callback(PlatformInput::FileDrop(FileDropEvent::Entered {
                         position,
                         paths,
                     }));
-                    let _ = callback(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+                    if batch_complete {
+                        let _ =
+                            callback(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+                    }
                     window.0.state.borrow_mut().callbacks.input = Some(callback);
                 }
             }
