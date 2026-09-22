@@ -3,7 +3,7 @@ use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::*;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TRACK_WIDTH: f32 = 44.0;
 const TRACK_HEIGHT: f32 = 26.0;
@@ -16,8 +16,8 @@ const ANIMATION_DURATION: Duration = Duration::from_millis(160);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TogglePhase {
     Stable,
-    Opening,
-    Closing,
+    Opening { at: Instant },
+    Closing { at: Instant },
 }
 
 struct ToggleSwitchView {
@@ -42,6 +42,7 @@ impl ToggleSwitchView {
         colors: ThemeColors,
         enabled: bool,
         on_toggle: Rc<dyn Fn(&mut App)>,
+        now: Instant,
     ) -> bool {
         self.colors = colors;
         self.on_toggle = on_toggle;
@@ -51,11 +52,33 @@ impl ToggleSwitchView {
 
         self.enabled = enabled;
         self.phase = if enabled {
-            TogglePhase::Opening
+            TogglePhase::Opening { at: now }
         } else {
-            TogglePhase::Closing
+            TogglePhase::Closing { at: now }
         };
         true
+    }
+
+    fn settle_completed_phase(&mut self, now: Instant) -> bool {
+        let started_at = match self.phase {
+            TogglePhase::Stable => return false,
+            TogglePhase::Opening { at } | TogglePhase::Closing { at } => at,
+        };
+        if now.saturating_duration_since(started_at) < ANIMATION_DURATION {
+            return false;
+        }
+
+        self.phase = TogglePhase::Stable;
+        true
+    }
+
+    fn phase_deadline(&self) -> Option<Instant> {
+        match self.phase {
+            TogglePhase::Stable => None,
+            TogglePhase::Opening { at } | TogglePhase::Closing { at } => {
+                Some(at + ANIMATION_DURATION)
+            }
+        }
     }
 
     fn render_track(&self) -> Div {
@@ -72,7 +95,7 @@ impl ToggleSwitchView {
                 ..self.colors.accent
             });
         let accent = match self.phase {
-            TogglePhase::Opening => accent
+            TogglePhase::Opening { .. } => accent
                 .with_animation(
                     "toggle-switch-accent",
                     ease_out_cubic_motion(ANIMATION_DURATION)
@@ -80,7 +103,7 @@ impl ToggleSwitchView {
                     |this, _progress| this,
                 )
                 .into_any_element(),
-            TogglePhase::Closing => accent
+            TogglePhase::Closing { .. } => accent
                 .with_animation(
                     "toggle-switch-accent",
                     ease_out_cubic_motion(ANIMATION_DURATION)
@@ -106,7 +129,7 @@ impl ToggleSwitchView {
             .bg(self.colors.btn_primary_text)
             .shadow(knob_shadow());
         let knob = match self.phase {
-            TogglePhase::Opening => knob
+            TogglePhase::Opening { .. } => knob
                 .with_animation(
                     "toggle-switch-knob",
                     ease_out_cubic_motion(ANIMATION_DURATION).with_property(
@@ -118,7 +141,7 @@ impl ToggleSwitchView {
                     |this, _progress| this,
                 )
                 .into_any_element(),
-            TogglePhase::Closing => knob
+            TogglePhase::Closing { .. } => knob
                 .with_animation(
                     "toggle-switch-knob",
                     ease_out_cubic_motion(ANIMATION_DURATION).with_property(
@@ -151,7 +174,18 @@ impl ToggleSwitchView {
 }
 
 impl Render for ToggleSwitchView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let now = window.animation_time();
+        self.settle_completed_phase(now);
+
+        // Renderer-owned animations invalidate their retained element at completion, but the
+        // component also owns logical phase state. Arm one cheap deadline wake-up so Closing is
+        // guaranteed to collapse to Stable even if the surrounding retained tree is otherwise
+        // completely idle. This is one wake-up per transition, not a per-frame layout animation.
+        if let Some(deadline) = self.phase_deadline() {
+            window.request_invalidation_at(deadline + Duration::from_millis(1), cx);
+        }
+
         self.render_track()
     }
 }
@@ -186,13 +220,12 @@ impl RenderOnce for ToggleSwitch {
         let view = window.use_keyed_state(self.id, cx, |_, _| {
             ToggleSwitchView::new(self.colors, self.enabled, initial_on_toggle)
         });
+        let now = window.animation_time();
         view.update(cx, |view, cx| {
             // use_keyed_state keeps this view alive across parent renders. Entity::update does not
-            // implicitly invalidate a view, so a state transition must notify GPUI before retained
-            // geometry can be reused. The knob is laid out at its final destination and Nova owns
-            // only the temporary translation; reusing the old layout makes that translation settle
-            // back onto the previous side of the track.
-            if view.sync(self.colors, self.enabled, self.on_toggle) {
+            // implicitly invalidate a view, so a real state transition must notify the retained
+            // subtree and start a fresh logical phase at the same presentation timestamp.
+            if view.sync(self.colors, self.enabled, self.on_toggle, now) {
                 cx.notify();
             }
         });
@@ -226,9 +259,10 @@ fn knob_shadow() -> Vec<BoxShadow> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TogglePhase, ToggleSwitchView};
+    use super::{ANIMATION_DURATION, TogglePhase, ToggleSwitchView};
     use crate::ui::theme::colors::LightColors;
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
 
     fn test_view(enabled: bool) -> ToggleSwitchView {
         ToggleSwitchView::new(LightColors::colors(), enabled, Rc::new(|_| {}))
@@ -242,14 +276,39 @@ mod tests {
 
     #[test]
     fn sync_records_only_real_state_transitions() {
+        let now = Instant::now();
         let mut view = test_view(false);
-        assert!(!view.sync(LightColors::colors(), false, Rc::new(|_| {})));
+        assert!(!view.sync(LightColors::colors(), false, Rc::new(|_| {}), now));
         assert_eq!(view.phase, TogglePhase::Stable);
 
-        assert!(view.sync(LightColors::colors(), true, Rc::new(|_| {})));
-        assert_eq!(view.phase, TogglePhase::Opening);
+        assert!(view.sync(LightColors::colors(), true, Rc::new(|_| {}), now));
+        assert_eq!(view.phase, TogglePhase::Opening { at: now });
 
-        assert!(view.sync(LightColors::colors(), false, Rc::new(|_| {})));
-        assert_eq!(view.phase, TogglePhase::Closing);
+        let later = now + Duration::from_millis(20);
+        assert!(view.sync(LightColors::colors(), false, Rc::new(|_| {}), later));
+        assert_eq!(view.phase, TogglePhase::Closing { at: later });
+    }
+
+    #[test]
+    fn completed_closing_phase_settles_to_static_off_state() {
+        let started_at = Instant::now();
+        let mut view = test_view(true);
+        assert!(view.sync(
+            LightColors::colors(),
+            false,
+            Rc::new(|_| {}),
+            started_at,
+        ));
+        assert!(!view.settle_completed_phase(
+            started_at + ANIMATION_DURATION - Duration::from_millis(1)
+        ));
+        assert!(matches!(view.phase, TogglePhase::Closing { .. }));
+
+        assert!(view.settle_completed_phase(
+            started_at + ANIMATION_DURATION + Duration::from_millis(1)
+        ));
+        assert_eq!(view.phase, TogglePhase::Stable);
+        assert!(!view.enabled);
+        assert_eq!(view.phase_deadline(), None);
     }
 }
