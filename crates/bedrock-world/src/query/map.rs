@@ -18,9 +18,9 @@ use crate::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use xxhash_rust::xxh3::Xxh3;
+use xxhash_rust::xxh3::{Xxh3, Xxh3DefaultBuilder};
 
 const MT_N: usize = 624;
 const MT_M: usize = 397;
@@ -28,6 +28,9 @@ const MT_MATRIX_A: u32 = 0x9908_b0df;
 const MT_UPPER_MASK: u32 = 0x8000_0000;
 const MT_LOWER_MASK: u32 = 0x7fff_ffff;
 const WRITE_CONFIRM_TOKEN: &str = "CONFIRMED";
+
+type SlimeCoordinateSet = HashSet<(i32, i32), Xxh3DefaultBuilder>;
+type SlimeComponentLookup = HashMap<(i32, i32), usize, Xxh3DefaultBuilder>;
 
 /// Exact chunk record categories for batched queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -723,8 +726,12 @@ fn check_slime_farm_cancelled(cancel: Option<&CancelFlag>) -> Result<()> {
 fn slime_chunk_coordinate_set(
     bounds: SlimeChunkBounds,
     cancel: Option<&CancelFlag>,
-) -> Result<BTreeSet<(i32, i32)>> {
-    let mut slime_chunks = BTreeSet::new();
+) -> Result<SlimeCoordinateSet> {
+    let estimated_capacity = (bounds.chunk_count() / 8).clamp(16, 65_536);
+    let mut slime_chunks = HashSet::with_capacity_and_hasher(
+        estimated_capacity,
+        Xxh3DefaultBuilder::new(),
+    );
     for chunk_z in bounds.min_chunk_z..=bounds.max_chunk_z {
         check_slime_farm_cancelled(cancel)?;
         for chunk_x in bounds.min_chunk_x..=bounds.max_chunk_x {
@@ -738,10 +745,13 @@ fn slime_chunk_coordinate_set(
 
 fn slime_connected_components(
     bounds: SlimeChunkBounds,
-    slime_chunks: &BTreeSet<(i32, i32)>,
+    slime_chunks: &SlimeCoordinateSet,
     cancel: Option<&CancelFlag>,
 ) -> Result<Vec<SlimeConnectedComponent>> {
-    let mut visited = HashSet::with_capacity(slime_chunks.len());
+    let mut visited = HashSet::with_capacity_and_hasher(
+        slime_chunks.len(),
+        Xxh3DefaultBuilder::new(),
+    );
     let mut components = Vec::new();
 
     for &start in slime_chunks {
@@ -818,8 +828,14 @@ fn slime_connected_components(
 fn slime_component_lookup(
     components: &[SlimeConnectedComponent],
     cancel: Option<&CancelFlag>,
-) -> Result<BTreeMap<(i32, i32), usize>> {
-    let mut lookup = BTreeMap::new();
+) -> Result<SlimeComponentLookup> {
+    let capacity = components.iter().fold(0usize, |total, component| {
+        total.saturating_add(component.chunks.len())
+    });
+    let mut lookup = HashMap::with_capacity_and_hasher(
+        capacity,
+        Xxh3DefaultBuilder::new(),
+    );
     for (component_index, component) in components.iter().enumerate() {
         check_slime_farm_cancelled(cancel)?;
         for chunk in &component.chunks {
@@ -844,9 +860,9 @@ fn slime_component_candidate(component: &SlimeConnectedComponent) -> SlimeFarmCa
 
 fn slime_quad_candidates(
     bounds: SlimeChunkBounds,
-    slime_chunks: &BTreeSet<(i32, i32)>,
+    slime_chunks: &SlimeCoordinateSet,
     components: &[SlimeConnectedComponent],
-    component_by_chunk: &BTreeMap<(i32, i32), usize>,
+    component_by_chunk: &SlimeComponentLookup,
     cancel: Option<&CancelFlag>,
 ) -> Result<Vec<SlimeFarmCandidate>> {
     let mut candidates = Vec::new();
@@ -2114,6 +2130,28 @@ mod tests {
             assert_eq!(candidate.chunks.len(), 4);
             assert!(candidate.connected_chunk_count >= 4);
             assert!(candidate.chunks.iter().all(|chunk| is_slime_chunk(*chunk)));
+        }
+    }
+
+    #[test]
+    fn slime_farm_hash_queries_keep_deterministic_candidate_order() {
+        let bounds = SlimeChunkBounds {
+            dimension: Dimension::Overworld,
+            min_chunk_x: -160,
+            max_chunk_x: 160,
+            min_chunk_z: -160,
+            max_chunk_z: 160,
+        };
+
+        for mode in [
+            SlimeFarmQueryMode::LargestConnected,
+            SlimeFarmQueryMode::Quad2x2,
+        ] {
+            let first =
+                query_slime_farm_candidates(bounds, mode, 32).expect("first slime query");
+            let second =
+                query_slime_farm_candidates(bounds, mode, 32).expect("second slime query");
+            assert_eq!(first, second);
         }
     }
 
