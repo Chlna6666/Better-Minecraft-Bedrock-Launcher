@@ -227,13 +227,6 @@ impl Window {
         .detach();
     }
 
-    /// Schedule a frame for the window animation engine without unnecessarily invalidating an
-    /// entire view.
-    ///
-    /// Paint and GPU drivers advance retained visual state without relayout. A layout driver first
-    /// tries to capture the retained element path that is currently being built. Component-local
-    /// layout animations therefore become targeted retained invalidations automatically. Only
-    /// callers outside an element lifecycle fall back to [`Window::request_animation_frame`].
     /// Opt a window into retained paint/GPU animation while it is visible but inactive.
     ///
     /// This is intended for NOACTIVATE panels such as desktop lyrics or HUD windows. The default is
@@ -261,6 +254,13 @@ impl Window {
         }
     }
 
+    /// Schedule a frame for the window animation engine without unnecessarily invalidating an
+    /// entire view.
+    ///
+    /// Paint and GPU drivers advance retained visual state without relayout. A layout driver first
+    /// tries to capture the retained element path that is currently being built. Component-local
+    /// layout animations therefore become targeted retained invalidations automatically. Only
+    /// callers outside an element lifecycle fall back to [`Window::request_animation_frame`].
     #[track_caller]
     pub fn request_animation_engine_frame(&self, driver: AnimationDriver) {
         if matches!(driver, AnimationDriver::Layout) {
