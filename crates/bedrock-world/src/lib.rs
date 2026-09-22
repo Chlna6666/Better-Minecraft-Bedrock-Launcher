@@ -101,7 +101,8 @@ pub use player::{PlayerData, PlayerId};
 pub use query::{
     ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeFarmCandidate,
     SlimeFarmQueryMode, SlimeWindowSize, WriteGuard, exact_selection_stats,
-    query_slime_farm_candidates, rasterize_chunk_line,
+    query_slime_farm_candidates, query_slime_farm_candidates_with_cancel,
+    rasterize_chunk_line,
 };
 pub use storage::*;
 pub use world::*;

@@ -416,6 +416,64 @@ impl Default for SlimeFarmScopeMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SlimeFarmAdvancedScanPreset {
+    Nearby,
+    Regional,
+    Comprehensive,
+}
+
+impl SlimeFarmAdvancedScanPreset {
+    pub(super) const fn radius_chunks(self) -> i32 {
+        match self {
+            Self::Nearby => 64,
+            Self::Regional => 128,
+            Self::Comprehensive => 256,
+        }
+    }
+
+    pub(super) const fn radius_blocks(self) -> i32 {
+        self.radius_chunks().saturating_mul(16)
+    }
+
+    pub(super) const fn max_results(self) -> usize {
+        match self {
+            Self::Nearby => 12,
+            Self::Regional => 24,
+            Self::Comprehensive => 48,
+        }
+    }
+
+    pub(super) const fn query_chunk_count(self) -> usize {
+        let edge = self.radius_chunks().saturating_mul(2).saturating_add(1) as usize;
+        edge.saturating_mul(edge)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SlimeFarmAdvancedScanAnchor {
+    ViewportCenter,
+    SelectionCenter,
+    SelectedPlayer,
+    WorldOrigin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SlimeFarmAdvancedScanRequest {
+    pub(super) bounds: SlimeChunkBounds,
+    pub(super) preset: SlimeFarmAdvancedScanPreset,
+    pub(super) anchor: SlimeFarmAdvancedScanAnchor,
+    pub(super) max_results: usize,
+}
+
+#[derive(Clone)]
+pub(super) struct SlimeFarmAdvancedScanDialogState {
+    pub(super) anchor: SlimeFarmAdvancedScanAnchor,
+    pub(super) preset: SlimeFarmAdvancedScanPreset,
+    pub(super) mode: SlimeFarmSearchMode,
+    pub(super) dismiss: crate::ui::components::modal::ModalDismissHandle,
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum ProfessionalDetail {
     BlockTip {
@@ -1115,6 +1173,7 @@ pub(super) struct ProfessionalQueryState {
     pub(super) slime_farm_candidates_cancel: Option<CancelFlag>,
     pub(super) slime_farm_candidates_request_bounds: Option<SlimeChunkBounds>,
     pub(super) slime_farm_candidates_request_mode: Option<SlimeFarmSearchMode>,
+    pub(super) slime_farm_candidates_request_max_results: Option<usize>,
     pub(super) selection: Option<ChunkSelection>,
     pub(super) highlighted_slime_candidate: Option<SlimeFarmCandidate>,
     pub(super) selection_stats: Option<SelectionStats>,
@@ -1537,6 +1596,7 @@ impl SlimeOverlayRunCache {
 pub(super) struct SlimeFarmCandidateCache {
     pub(super) bounds: SlimeChunkBounds,
     pub(super) mode: SlimeFarmSearchMode,
+    pub(super) max_results: usize,
     pub(super) candidates: Vec<SlimeFarmCandidate>,
 }
 
@@ -1705,6 +1765,8 @@ pub struct MapViewerWindowView {
     pub(super) overlay_options: OverlayOptions,
     pub(super) slime_farm_search_mode: SlimeFarmSearchMode,
     pub(super) slime_farm_scope_mode: SlimeFarmScopeMode,
+    pub(super) slime_farm_advanced_scan: Option<SlimeFarmAdvancedScanRequest>,
+    pub(super) slime_farm_advanced_scan_dialog: Option<SlimeFarmAdvancedScanDialogState>,
     pub(super) professional: ProfessionalQueryState,
     pub(super) history: MapHistoryState,
     pub(super) players: PlayerPanelState,

@@ -86,6 +86,8 @@ impl MapViewerWindowView {
         }
         self.dimension = dimension;
         self.context_menu = None;
+        self.slime_farm_advanced_scan = None;
+        self.slime_farm_advanced_scan_dialog = None;
         self.cancel_professional_overlay_query();
         self.cancel_slime_farm_candidate_query();
         self.professional.reset_for_dimension_change();
@@ -3573,10 +3575,11 @@ impl MapViewerWindowView {
         mode: SlimeFarmScopeMode,
         cx: &mut Context<Self>,
     ) {
-        if self.slime_farm_scope_mode == mode {
+        if self.slime_farm_scope_mode == mode && self.slime_farm_advanced_scan.is_none() {
             return;
         }
         self.slime_farm_scope_mode = mode;
+        self.slime_farm_advanced_scan = None;
         self.cancel_slime_farm_candidate_query();
         self.professional.slime_farm_candidates = None;
         self.professional.highlighted_slime_candidate = None;

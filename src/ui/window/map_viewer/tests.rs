@@ -12,6 +12,7 @@ use super::panels::*;
 use super::players::*;
 use super::prelude::*;
 use super::query_cache::*;
+use super::slime_scan_dialog::*;
 use super::tile_cache::*;
 use super::tile_occupancy::*;
 use super::tile_plan::*;
@@ -1581,6 +1582,45 @@ fn slime_farm_player_scope_is_bounded_and_uses_floor_for_negative_coordinates() 
     assert_eq!(bounds.max_chunk_z, 64);
     assert_eq!(bounds.chunk_count(), 16_641);
     assert!(slime_farm_player_bounds([f64::NAN, 64.0, 0.0]).is_none());
+}
+
+#[::core::prelude::v1::test]
+fn slime_farm_advanced_scan_presets_are_bounded() {
+    assert_eq!(SlimeFarmAdvancedScanPreset::Nearby.radius_blocks(), 1_024);
+    assert_eq!(
+        SlimeFarmAdvancedScanPreset::Nearby.query_chunk_count(),
+        16_641
+    );
+    assert_eq!(
+        SlimeFarmAdvancedScanPreset::Regional.query_chunk_count(),
+        66_049
+    );
+    assert_eq!(
+        SlimeFarmAdvancedScanPreset::Comprehensive.radius_blocks(),
+        4_096
+    );
+    assert_eq!(
+        SlimeFarmAdvancedScanPreset::Comprehensive.query_chunk_count(),
+        263_169
+    );
+    assert_eq!(
+        SlimeFarmAdvancedScanPreset::Comprehensive.max_results(),
+        48
+    );
+}
+
+#[::core::prelude::v1::test]
+fn slime_farm_advanced_scan_bounds_keep_exact_center() {
+    let bounds =
+        advanced_slime_scan_bounds((-17, 23), SlimeFarmAdvancedScanPreset::Regional);
+
+    assert_eq!(bounds.dimension, Dimension::Overworld);
+    assert_eq!(bounds.center(), (-17, 23));
+    assert_eq!(bounds.min_chunk_x, -145);
+    assert_eq!(bounds.max_chunk_x, 111);
+    assert_eq!(bounds.min_chunk_z, -105);
+    assert_eq!(bounds.max_chunk_z, 151);
+    assert_eq!(bounds.chunk_count(), 66_049);
 }
 
 #[::core::prelude::v1::test]

@@ -210,6 +210,8 @@ impl Render for MapViewerWindowView {
         if !self.viewport_interaction_active() {
             self.sync_canvas_snapshot(colors, cx);
         }
+        let slime_advanced_scan_modal =
+            self.render_slime_farm_advanced_scan_modal(&colors, cx);
 
         let mut root = div()
             .relative()
@@ -346,7 +348,8 @@ impl Render for MapViewerWindowView {
                 this.child(self.render_dock_drag_overlay(cx))
             })
             .child(self.render_menu_overlay(&colors, cx))
-            .child(self.render_external_file_drop_target(cx));
+            .child(self.render_external_file_drop_target(cx))
+            .when_some(slime_advanced_scan_modal, |this, modal| this.child(modal));
 
         root
     }

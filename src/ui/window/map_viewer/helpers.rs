@@ -508,6 +508,7 @@ pub(super) fn slime_farm_search_mode_buttons(
 
 pub(super) fn slime_farm_scope_mode_buttons(
     active: SlimeFarmScopeMode,
+    advanced_active: bool,
     colors: &ThemeColors,
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<AnyElement> {
@@ -528,7 +529,7 @@ pub(super) fn slime_farm_scope_mode_buttons(
     ]
     .into_iter()
     .map(|(mode, label)| {
-        mode_button(colors, label, active == mode)
+        mode_button(colors, label, !advanced_active && active == mode)
             .min_w(px(92.0))
             .justify_center()
             .on_mouse_down(

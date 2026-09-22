@@ -469,18 +469,22 @@ impl MapViewerWindowView {
             .as_ref()
             .map_or(0, |cache| cache.candidates.len());
         let scope = self.slime_farm_search_scope();
-        let selection_scope_unavailable = self.dimension == Dimension::Overworld
+        let advanced_scan = self.slime_farm_advanced_scan;
+        let selection_scope_unavailable = advanced_scan.is_none()
+            && self.dimension == Dimension::Overworld
             && self.slime_farm_scope_mode == SlimeFarmScopeMode::Selection
             && self.professional.selection.is_none();
-        let player_scope_unavailable = self.dimension == Dimension::Overworld
+        let player_scope_unavailable = advanced_scan.is_none()
+            && self.dimension == Dimension::Overworld
             && self.slime_farm_scope_mode == SlimeFarmScopeMode::SelectedPlayer
             && self.selected_player_slime_bounds().is_none();
-        let requested_scope_available = match self.slime_farm_scope_mode {
-            SlimeFarmScopeMode::Auto => self.professional_query_bounds().is_some(),
-            SlimeFarmScopeMode::Viewport => self.visible_slime_bounds().is_some(),
-            SlimeFarmScopeMode::Selection => self.professional.selection.is_some(),
-            SlimeFarmScopeMode::SelectedPlayer => self.selected_player_slime_bounds().is_some(),
-        };
+        let requested_scope_available = advanced_scan.is_some()
+            || match self.slime_farm_scope_mode {
+                SlimeFarmScopeMode::Auto => self.professional_query_bounds().is_some(),
+                SlimeFarmScopeMode::Viewport => self.visible_slime_bounds().is_some(),
+                SlimeFarmScopeMode::Selection => self.professional.selection.is_some(),
+                SlimeFarmScopeMode::SelectedPlayer => self.selected_player_slime_bounds().is_some(),
+            };
 
         panel_section_body(colors)
             .child(panel_section_header(
@@ -508,9 +512,24 @@ impl MapViewerWindowView {
                     .gap(px(6.0))
                     .children(slime_farm_scope_mode_buttons(
                         self.slime_farm_scope_mode,
+                        advanced_scan.is_some(),
                         colors,
                         cx,
                     )),
+            )
+            .child(
+                mode_button(
+                    colors,
+                    t!("MapViewer.slime_advanced_button"),
+                    advanced_scan.is_some(),
+                )
+                .w_full()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.open_slime_farm_advanced_scan_dialog(cx)
+                    }),
+                ),
             )
             .child(panel_field_label(colors, t!("MapViewer.slime_search_mode")))
             .child(
@@ -532,6 +551,19 @@ impl MapViewerWindowView {
                         t!("MapViewer.slime_scope_selection")
                     }
                     SlimeFarmSearchScopeSource::Player => t!("MapViewer.slime_scope_player"),
+                    SlimeFarmSearchScopeSource::Advanced => {
+                        if let Some(scan) = advanced_scan {
+                            let radius = scan.preset.radius_blocks().to_string();
+                            let results = scan.max_results.to_string();
+                            t!(
+                                "MapViewer.slime_scope_advanced",
+                                radius = &radius,
+                                results = &results
+                            )
+                        } else {
+                            t!("MapViewer.slime_advanced_button")
+                        }
+                    }
                 };
                 this.child(status_badge(colors, scope_label))
                     .when(scope.precision_degraded, |this| {
@@ -649,6 +681,7 @@ impl MapViewerWindowView {
             return Vec::new();
         };
         if cache.mode != self.slime_farm_search_mode
+            || cache.max_results != self.slime_farm_candidate_result_limit()
             || self.slime_farm_search_scope().map(|scope| scope.bounds) != Some(cache.bounds)
         {
             return Vec::new();

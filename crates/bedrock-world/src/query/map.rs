@@ -18,7 +18,7 @@ use crate::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -628,7 +628,7 @@ pub fn query_slime_chunk_windows(
 
 /// Query survival-oriented slime-farm candidates.
 ///
-/// Unlike `query_slime_chunk_windows`, this query reasons about actual adjacency. This
+/// Unlike the legacy density-window query, this query reasons about actual adjacency. This
 /// avoids ranking scattered slime chunks inside an arbitrary density window above a compact
 /// farmable formation.
 pub fn query_slime_farm_candidates(
@@ -636,27 +636,53 @@ pub fn query_slime_farm_candidates(
     mode: SlimeFarmQueryMode,
     max_results: usize,
 ) -> Result<Vec<SlimeFarmCandidate>> {
+    query_slime_farm_candidates_with_cancel(bounds, mode, max_results, None)
+}
+
+/// Query survival-oriented slime-farm candidates with cooperative cancellation.
+///
+/// This is the cancellable variant of query_slime_farm_candidates. Long-running scans
+/// observe the cancel flag while enumerating slime chunks, building connected components
+/// and discovering 2x2 candidates so callers can stop large bounded scans promptly.
+pub fn query_slime_farm_candidates_with_cancel(
+    bounds: SlimeChunkBounds,
+    mode: SlimeFarmQueryMode,
+    max_results: usize,
+    cancel: Option<&CancelFlag>,
+) -> Result<Vec<SlimeFarmCandidate>> {
     bounds.validate()?;
+    check_slime_farm_cancelled(cancel)?;
     if bounds.dimension != Dimension::Overworld || max_results == 0 {
         return Ok(Vec::new());
     }
 
-    let slime_chunks = slime_chunk_coordinate_set(bounds);
+    let slime_chunks = slime_chunk_coordinate_set(bounds, cancel)?;
     if slime_chunks.is_empty() {
         return Ok(Vec::new());
     }
-    let components = slime_connected_components(bounds, &slime_chunks);
-    let component_by_chunk = slime_component_lookup(&components);
+    let components = slime_connected_components(bounds, &slime_chunks, cancel)?;
+    let component_by_chunk = slime_component_lookup(&components, cancel)?;
     let mut candidates = match mode {
-        SlimeFarmQueryMode::LargestConnected => components
-            .iter()
-            .map(|component| slime_component_candidate(component))
-            .collect::<Vec<_>>(),
+        SlimeFarmQueryMode::LargestConnected => {
+            let mut candidates = Vec::with_capacity(components.len());
+            for component in &components {
+                check_slime_farm_cancelled(cancel)?;
+                candidates.push(slime_component_candidate(component));
+            }
+            candidates
+        }
         SlimeFarmQueryMode::Quad2x2 => {
-            slime_quad_candidates(bounds, &slime_chunks, &components, &component_by_chunk)
+            slime_quad_candidates(
+                bounds,
+                &slime_chunks,
+                &components,
+                &component_by_chunk,
+                cancel,
+            )?
         }
     };
 
+    check_slime_farm_cancelled(cancel)?;
     let query_center_x2 =
         i64::from(bounds.min_chunk_x).saturating_add(i64::from(bounds.max_chunk_x));
     let query_center_z2 =
@@ -680,35 +706,54 @@ pub fn query_slime_farm_candidates(
             candidate.min_chunk_x,
         )
     });
+    check_slime_farm_cancelled(cancel)?;
     candidates.truncate(max_results);
     Ok(candidates)
 }
 
-fn slime_chunk_coordinate_set(bounds: SlimeChunkBounds) -> BTreeSet<(i32, i32)> {
+fn check_slime_farm_cancelled(cancel: Option<&CancelFlag>) -> Result<()> {
+    if cancel.is_some_and(CancelFlag::is_cancelled) {
+        return Err(BedrockWorldError::Cancelled {
+            operation: "slime farm candidate query",
+        });
+    }
+    Ok(())
+}
+
+fn slime_chunk_coordinate_set(
+    bounds: SlimeChunkBounds,
+    cancel: Option<&CancelFlag>,
+) -> Result<BTreeSet<(i32, i32)>> {
     let mut slime_chunks = BTreeSet::new();
     for chunk_z in bounds.min_chunk_z..=bounds.max_chunk_z {
+        check_slime_farm_cancelled(cancel)?;
         for chunk_x in bounds.min_chunk_x..=bounds.max_chunk_x {
             if is_bedrock_slime_chunk(chunk_x, chunk_z) {
                 slime_chunks.insert((chunk_x, chunk_z));
             }
         }
     }
-    slime_chunks
+    Ok(slime_chunks)
 }
 
 fn slime_connected_components(
     bounds: SlimeChunkBounds,
     slime_chunks: &BTreeSet<(i32, i32)>,
-) -> Vec<SlimeConnectedComponent> {
-    let mut remaining = slime_chunks.clone();
+    cancel: Option<&CancelFlag>,
+) -> Result<Vec<SlimeConnectedComponent>> {
+    let mut visited = HashSet::with_capacity(slime_chunks.len());
     let mut components = Vec::new();
 
-    while let Some(start) = remaining.iter().next().copied() {
-        remaining.remove(&start);
+    for &start in slime_chunks {
+        check_slime_farm_cancelled(cancel)?;
+        if !visited.insert(start) {
+            continue;
+        }
         let mut queue = VecDeque::from([start]);
         let mut coordinates = Vec::new();
 
         while let Some((chunk_x, chunk_z)) = queue.pop_front() {
+            check_slime_farm_cancelled(cancel)?;
             coordinates.push((chunk_x, chunk_z));
             for neighbor in [
                 (chunk_x.saturating_sub(1), chunk_z),
@@ -716,7 +761,7 @@ fn slime_connected_components(
                 (chunk_x, chunk_z.saturating_sub(1)),
                 (chunk_x, chunk_z.saturating_add(1)),
             ] {
-                if remaining.remove(&neighbor) {
+                if slime_chunks.contains(&neighbor) && visited.insert(neighbor) {
                     queue.push_back(neighbor);
                 }
             }
@@ -767,19 +812,21 @@ fn slime_connected_components(
         });
     }
 
-    components
+    Ok(components)
 }
 
 fn slime_component_lookup(
     components: &[SlimeConnectedComponent],
-) -> BTreeMap<(i32, i32), usize> {
+    cancel: Option<&CancelFlag>,
+) -> Result<BTreeMap<(i32, i32), usize>> {
     let mut lookup = BTreeMap::new();
     for (component_index, component) in components.iter().enumerate() {
+        check_slime_farm_cancelled(cancel)?;
         for chunk in &component.chunks {
             lookup.insert((chunk.x, chunk.z), component_index);
         }
     }
-    lookup
+    Ok(lookup)
 }
 
 fn slime_component_candidate(component: &SlimeConnectedComponent) -> SlimeFarmCandidate {
@@ -800,9 +847,11 @@ fn slime_quad_candidates(
     slime_chunks: &BTreeSet<(i32, i32)>,
     components: &[SlimeConnectedComponent],
     component_by_chunk: &BTreeMap<(i32, i32), usize>,
-) -> Vec<SlimeFarmCandidate> {
+    cancel: Option<&CancelFlag>,
+) -> Result<Vec<SlimeFarmCandidate>> {
     let mut candidates = Vec::new();
     for &(chunk_x, chunk_z) in slime_chunks {
+        check_slime_farm_cancelled(cancel)?;
         let Some(next_x) = chunk_x.checked_add(1) else {
             continue;
         };
@@ -855,7 +904,7 @@ fn slime_quad_candidates(
             touches_query_edge: component.touches_query_edge,
         });
     }
-    candidates
+    Ok(candidates)
 }
 
 /// Query block tip.
@@ -2066,6 +2115,34 @@ mod tests {
             assert!(candidate.connected_chunk_count >= 4);
             assert!(candidate.chunks.iter().all(|chunk| is_slime_chunk(*chunk)));
         }
+    }
+
+    #[test]
+    fn slime_farm_candidate_query_observes_pre_cancelled_flag() {
+        let bounds = SlimeChunkBounds {
+            dimension: Dimension::Overworld,
+            min_chunk_x: -256,
+            max_chunk_x: 256,
+            min_chunk_z: -256,
+            max_chunk_z: 256,
+        };
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+
+        let error = query_slime_farm_candidates_with_cancel(
+            bounds,
+            SlimeFarmQueryMode::LargestConnected,
+            8,
+            Some(&cancel),
+        )
+        .expect_err("pre-cancelled slime scan must stop");
+
+        assert!(matches!(
+            error,
+            BedrockWorldError::Cancelled {
+                operation: "slime farm candidate query"
+            }
+        ));
     }
 
     #[test]

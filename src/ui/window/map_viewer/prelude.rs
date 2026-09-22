@@ -99,7 +99,7 @@ pub(super) use ::bedrock_world::{
         ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
         SlimeChunkBounds, SlimeFarmCandidate, SlimeFarmQueryMode, VillageOverlay,
         VillageOverlayIndex, WriteGuard, delete_chunks, is_slime_chunk, block_tip, chunk_detail,
-        query_slime_farm_candidates, region_overlays, selection_stats,
+        query_slime_farm_candidates_with_cancel, region_overlays, selection_stats,
     },
     surface::CancelFlag,
     world::World,

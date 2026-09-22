@@ -411,6 +411,8 @@ impl MapViewerWindowView {
             overlay_options: OverlayOptions::default(),
             slime_farm_search_mode: SlimeFarmSearchMode::default(),
             slime_farm_scope_mode: SlimeFarmScopeMode::default(),
+            slime_farm_advanced_scan: None,
+            slime_farm_advanced_scan_dialog: None,
             professional: ProfessionalQueryState::default(),
             history: MapHistoryState::default(),
             players: PlayerPanelState::default(),

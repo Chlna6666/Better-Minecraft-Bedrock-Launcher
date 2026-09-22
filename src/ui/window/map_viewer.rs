@@ -133,6 +133,7 @@ mod query_cache;
 mod region_package;
 mod right_panel;
 mod selection;
+mod slime_scan_dialog;
 mod state;
 mod status_bar;
 #[cfg(test)]
