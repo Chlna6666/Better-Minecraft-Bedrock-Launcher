@@ -382,18 +382,28 @@ impl MapViewerWindowView {
         }
     }
 
-    pub(super) fn highlight_slime_window(
+    pub(super) fn highlight_slime_farm_candidate(
         &mut self,
-        window: SlimeChunkWindow,
+        candidate: SlimeFarmCandidate,
         cx: &mut Context<Self>,
     ) {
         self.invalidate_professional_overlay_for_viewport_change();
+        let min_block_x = candidate.min_chunk_x.saturating_mul(16);
+        let max_block_x = candidate
+            .max_chunk_x
+            .saturating_add(1)
+            .saturating_mul(16);
+        let min_block_z = candidate.min_chunk_z.saturating_mul(16);
+        let max_block_z = candidate
+            .max_chunk_z
+            .saturating_add(1)
+            .saturating_mul(16);
         self.viewport.center_on_block(
-            window.center.x * 16 + 8,
-            window.center.z * 16 + 8,
+            i32::midpoint(min_block_x, max_block_x),
+            i32::midpoint(min_block_z, max_block_z),
             self.active_layout,
         );
-        self.professional.highlighted_window = Some(window);
+        self.professional.highlighted_slime_candidate = Some(candidate);
         self.ensure_visible_tiles(cx);
         self.refresh_professional_render_caches(cx);
         self.refresh_professional_overlays(cx);

@@ -481,26 +481,24 @@ pub(super) fn dimension_buttons(
     .collect()
 }
 
-pub(super) fn slime_query_window_buttons(
-    active: SlimeQueryWindowSize,
+pub(super) fn slime_farm_search_mode_buttons(
+    active: SlimeFarmSearchMode,
     colors: &ThemeColors,
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<AnyElement> {
     [
-        SlimeQueryWindowSize::Three,
-        SlimeQueryWindowSize::Five,
-        SlimeQueryWindowSize::Seven,
+        (SlimeFarmSearchMode::LargestConnected, t!("MapViewer.slime_mode_largest")),
+        (SlimeFarmSearchMode::Quad2x2, t!("MapViewer.slime_mode_quad")),
     ]
     .into_iter()
-    .map(|size| {
-        let value = size.value();
-        mode_button(colors, format!("{value} × {value}"), active == size)
-            .w(px(80.0))
+    .map(|(mode, label)| {
+        mode_button(colors, label, active == mode)
+            .min_w(px(108.0))
             .justify_center()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
-                    this.set_slime_query_window_size(size, cx)
+                    this.set_slime_farm_search_mode(mode, cx)
                 }),
             )
             .into_any_element()

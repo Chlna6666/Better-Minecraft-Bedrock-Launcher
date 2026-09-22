@@ -464,9 +464,11 @@ impl MapViewerWindowView {
         let i18n = cx.global::<I18n>().clone();
         let candidate_count = self
             .professional
-            .slime_window_candidates
+            .slime_farm_candidates
             .as_ref()
-            .map_or(0, |cache| cache.windows.len());
+            .map_or(0, |cache| cache.candidates.len());
+        let scope = self.slime_farm_search_scope();
+
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
@@ -484,19 +486,54 @@ impl MapViewerWindowView {
                     cx.listener(|this, _event, _window, cx| this.toggle_slime_overlay(cx)),
                 ),
             )
-            .child(panel_field_label(colors, t!("MapViewer.slime_window_size")))
+            .child(panel_field_label(colors, t!("MapViewer.slime_search_mode")))
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(px(6.0))
-                    .children(slime_query_window_buttons(
-                        self.slime_query_window_size,
+                    .children(slime_farm_search_mode_buttons(
+                        self.slime_farm_search_mode,
                         colors,
                         cx,
                     )),
             )
-            .when(self.professional.slime_window_candidates_loading, |this| {
+            .when_some(scope, |this, scope| {
+                let scope_label = if scope.selection_scoped {
+                    t!("MapViewer.slime_scope_selection")
+                } else {
+                    t!("MapViewer.slime_scope_viewport")
+                };
+                this.child(status_badge(colors, scope_label))
+                    .when(scope.precision_degraded, |this| {
+                        this.child(status_badge(
+                            colors,
+                            t!("MapViewer.slime_scope_precision_warning"),
+                        ))
+                    })
+                    .when(scope.clipped_for_precision, |this| {
+                        this.child(status_badge(
+                            colors,
+                            t!("MapViewer.slime_scope_clipped"),
+                        ))
+                    })
+            })
+            .when(self.dimension != Dimension::Overworld, |this| {
+                this.child(status_badge(colors, t!("MapViewer.slime_overworld_only")))
+            })
+            .when(
+                self.dimension == Dimension::Overworld
+                    && self.professional_query_bounds().is_some()
+                    && scope.is_none(),
+                |this| {
+                    this.child(status_badge(
+                        colors,
+                        t!("MapViewer.slime_scope_outside_practical"),
+                    ))
+                },
+            )
+            .when(self.professional.slime_farm_candidates_loading, |this| {
                 this.child(status_badge(colors, t!("MapViewer.calculating_candidates")))
             })
             .when(candidate_count > 0, |this| {
@@ -508,7 +545,13 @@ impl MapViewerWindowView {
                     ),
                 ))
             })
-            .children(self.slime_window_candidate_buttons(colors, cx))
+            .when(
+                !self.professional.slime_farm_candidates_loading
+                    && candidate_count == 0
+                    && scope.is_some(),
+                |this| this.child(status_badge(colors, t!("MapViewer.slime_no_candidates"))),
+            )
+            .children(self.slime_farm_candidate_buttons(colors, cx))
     }
 
     fn render_selection_tools(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
@@ -554,45 +597,105 @@ impl MapViewerWindowView {
             )
     }
 
-    pub(super) fn slime_window_candidate_buttons(
+    pub(super) fn slime_farm_candidate_buttons(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let i18n = cx.global::<I18n>().clone();
-        let Some(cache) = self.professional.slime_window_candidates.as_ref() else {
+        let Some(cache) = self.professional.slime_farm_candidates.as_ref() else {
             return Vec::new();
         };
-        if cache.size != self.slime_query_window_size
-            || self.professional_query_bounds() != Some(cache.bounds)
+        if cache.mode != self.slime_farm_search_mode
+            || self.slime_farm_search_scope().map(|scope| scope.bounds) != Some(cache.bounds)
         {
             return Vec::new();
         }
+
+        let query_center_block_x = i64::from(cache.bounds.min_chunk_x)
+            .saturating_add(i64::from(cache.bounds.max_chunk_x))
+            .saturating_add(1)
+            .saturating_mul(8);
+        let query_center_block_z = i64::from(cache.bounds.min_chunk_z)
+            .saturating_add(i64::from(cache.bounds.max_chunk_z))
+            .saturating_add(1)
+            .saturating_mul(8);
         cache
-            .windows
+            .candidates
             .clone()
             .into_iter()
             .enumerate()
-            .map(|(index, window)| {
-                let index = (index + 1).to_string();
-                let slime_count = window.slime_count.to_string();
-                let total_count = window.total_count.to_string();
-                let center_x = window.center.x.to_string();
-                let center_z = window.center.z.to_string();
-                let label = t!(
-                    "MapViewer.candidate_window",
-                    index = &index,
-                    slime = &slime_count,
-                    total = &total_count,
-                    x = &center_x,
-                    z = &center_z
-                );
+            .map(|(index, candidate)| {
+                let rank = (index + 1).to_string();
+                let connected = candidate.connected_chunk_count.to_string();
+                let quad_count = candidate.quad_2x2_count.to_string();
+                let width = candidate.width().to_string();
+                let depth = candidate.depth().to_string();
+                let min_x = candidate.min_chunk_x.to_string();
+                let min_z = candidate.min_chunk_z.to_string();
+                let max_x = candidate.max_chunk_x.to_string();
+                let max_z = candidate.max_chunk_z.to_string();
+                let candidate_center_block_x = i64::from(candidate.min_chunk_x)
+                    .saturating_add(i64::from(candidate.max_chunk_x))
+                    .saturating_add(1)
+                    .saturating_mul(8);
+                let candidate_center_block_z = i64::from(candidate.min_chunk_z)
+                    .saturating_add(i64::from(candidate.max_chunk_z))
+                    .saturating_add(1)
+                    .saturating_mul(8);
+                let dx_blocks = candidate_center_block_x.saturating_sub(query_center_block_x);
+                let dz_blocks = candidate_center_block_z.saturating_sub(query_center_block_z);
+                let distance = (((dx_blocks as f64) * (dx_blocks as f64)
+                    + (dz_blocks as f64) * (dz_blocks as f64))
+                    .sqrt()
+                    .round() as u64)
+                    .to_string();
+                let label = match self.slime_farm_search_mode {
+                    SlimeFarmSearchMode::LargestConnected => t!(
+                        "MapViewer.slime_candidate_connected",
+                        index = &rank,
+                        connected = &connected,
+                        width = &width,
+                        depth = &depth,
+                        quads = &quad_count,
+                        distance = &distance,
+                        min_x = &min_x,
+                        min_z = &min_z,
+                        max_x = &max_x,
+                        max_z = &max_z
+                    ),
+                    SlimeFarmSearchMode::Quad2x2 => t!(
+                        "MapViewer.slime_candidate_quad",
+                        index = &rank,
+                        connected = &connected,
+                        quads = &quad_count,
+                        distance = &distance,
+                        x = &min_x,
+                        z = &min_z
+                    ),
+                };
+                let edge_label = candidate
+                    .touches_query_edge
+                    .then(|| t!("MapViewer.slime_candidate_edge"));
                 toolbar_button(colors, label)
                     .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(px(2.0))
+                    .when_some(edge_label, |this, edge_label| {
+                        this.child(
+                            div()
+                                .ml(px(6.0))
+                                .text_size(px(10.0))
+                                .text_color(colors.text_muted)
+                                .child(edge_label),
+                        )
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
-                            this.highlight_slime_window(window.clone(), cx)
+                            this.highlight_slime_farm_candidate(candidate.clone(), cx)
                         }),
                     )
                     .into_any_element()

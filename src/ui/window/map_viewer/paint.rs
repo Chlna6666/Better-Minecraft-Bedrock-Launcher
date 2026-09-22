@@ -584,7 +584,7 @@ pub(super) fn draw_professional_overlay_canvas(
     selection: Option<ChunkSelection>,
     paste_preview: Option<&PastePreview>,
     paste_preview_images: &[PastePreviewImage],
-    highlighted_window: Option<&SlimeChunkWindow>,
+    highlighted_slime_candidate: Option<&SlimeFarmCandidate>,
     colors: ThemeColors,
     window: &mut Window,
 ) {
@@ -741,25 +741,109 @@ pub(super) fn draw_professional_overlay_canvas(
         }
     }
 
-    if let Some(window_candidate) = highlighted_window {
+    if let Some(candidate) = highlighted_slime_candidate {
+        paint_slime_farm_candidate(bounds, viewport, layout, dimension, candidate, window);
+    }
+}
+
+fn paint_slime_farm_candidate(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    dimension: Dimension,
+    candidate: &SlimeFarmCandidate,
+    window: &mut Window,
+) {
+    let selected = candidate
+        .chunks
+        .iter()
+        .copied()
+        .filter(|chunk| chunk.dimension == dimension)
+        .collect::<HashSet<_>>();
+    if selected.is_empty() {
+        return;
+    }
+
+    let fill_color = Hsla {
+        a: 0.16,
+        ..rgb(0x9ef01a).into()
+    };
+    let stroke = Hsla {
+        a: 0.96,
+        ..rgb(0x9ef01a).into()
+    };
+    for chunk in &selected {
         paint_chunk_rect(
             bounds,
             viewport,
             layout,
-            window_candidate.min_chunk_x,
-            window_candidate.min_chunk_z,
-            window_candidate.max_chunk_x,
-            window_candidate.max_chunk_z,
-            Hsla {
-                a: 0.14,
-                ..rgb(0x9ef01a).into()
-            },
-            Some(Hsla {
-                a: 0.95,
-                ..rgb(0x9ef01a).into()
-            }),
+            chunk.x,
+            chunk.z,
+            chunk.x,
+            chunk.z,
+            fill_color,
+            None,
             window,
         );
+    }
+
+    for chunk in &selected {
+        let left = screen_x_for_block(bounds, viewport, layout, chunk.x.saturating_mul(16));
+        let right = screen_x_for_block(
+            bounds,
+            viewport,
+            layout,
+            chunk.x.saturating_add(1).saturating_mul(16),
+        );
+        let top = screen_y_for_block(bounds, viewport, layout, chunk.z.saturating_mul(16));
+        let bottom = screen_y_for_block(
+            bounds,
+            viewport,
+            layout,
+            chunk.z.saturating_add(1).saturating_mul(16),
+        );
+        if right <= left || bottom <= top {
+            continue;
+        }
+        let edge_width = (right - left).min(bottom - top).clamp(0.9, 2.4);
+        let thickness = px(edge_width);
+        let rect_left = px(left.floor());
+        let rect_top = px(top.floor());
+        let rect_right = px(right.ceil());
+        let rect_bottom = px(bottom.ceil());
+        let rect_width = rect_right - rect_left;
+        let rect_height = rect_bottom - rect_top;
+
+        if !selected_chunk_neighbor(&selected, *chunk, 0, -1) {
+            window.paint_quad(fill(
+                Bounds::new(point(rect_left, rect_top), size(rect_width, thickness)),
+                stroke,
+            ));
+        }
+        if !selected_chunk_neighbor(&selected, *chunk, 1, 0) {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(rect_right - thickness, rect_top),
+                    size(thickness, rect_height),
+                ),
+                stroke,
+            ));
+        }
+        if !selected_chunk_neighbor(&selected, *chunk, 0, 1) {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(rect_left, rect_bottom - thickness),
+                    size(rect_width, thickness),
+                ),
+                stroke,
+            ));
+        }
+        if !selected_chunk_neighbor(&selected, *chunk, -1, 0) {
+            window.paint_quad(fill(
+                Bounds::new(point(rect_left, rect_top), size(thickness, rect_height)),
+                stroke,
+            ));
+        }
     }
 }
 

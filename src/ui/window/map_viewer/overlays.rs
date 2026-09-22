@@ -434,24 +434,24 @@ impl MapViewerWindowView {
             .next_generation(MapQueryKind::VillageIndex);
     }
 
-    pub(super) fn cancel_slime_window_candidate_query(&mut self) {
-        if let Some(cancel) = self.professional.slime_window_candidates_cancel.take() {
+    pub(super) fn cancel_slime_farm_candidate_query(&mut self) {
+        if let Some(cancel) = self.professional.slime_farm_candidates_cancel.take() {
             cancel.cancel();
         }
-        self.professional.slime_window_candidates_generation = self
+        self.professional.slime_farm_candidates_generation = self
             .professional
-            .slime_window_candidates_generation
+            .slime_farm_candidates_generation
             .saturating_add(1);
-        self.professional.slime_window_candidates_loading = false;
-        self.professional.slime_window_candidates_request_bounds = None;
-        self.professional.slime_window_candidates_request_size = None;
+        self.professional.slime_farm_candidates_loading = false;
+        self.professional.slime_farm_candidates_request_bounds = None;
+        self.professional.slime_farm_candidates_request_mode = None;
         self.map_query_budget
-            .next_generation(MapQueryKind::SlimeCandidates);
+            .next_generation(MapQueryKind::SlimeFarmCandidates);
     }
 
     pub(super) fn invalidate_professional_overlay_for_viewport_change(&mut self) {
-        self.cancel_slime_window_candidate_query();
-        self.professional.slime_window_candidates = None;
+        self.cancel_slime_farm_candidate_query();
+        self.professional.slime_farm_candidates = None;
 
         // Entity/map-info data is demand-paged by the current viewport. An indexed world
         // must therefore invalidate its query scope too; the previous early return made a
@@ -553,7 +553,7 @@ impl MapViewerWindowView {
 
     pub(super) fn refresh_professional_render_caches(&mut self, cx: &mut Context<Self>) {
         self.refresh_slime_overlay_run_cache(cx);
-        self.refresh_slime_window_candidate_cache(cx);
+        self.refresh_slime_farm_candidate_cache(cx);
     }
 
     pub(super) fn refresh_slime_overlay_run_cache(&mut self, cx: &mut Context<Self>) {
@@ -673,41 +673,41 @@ impl MapViewerWindowView {
             .next_generation(MapQueryKind::SlimeRuns);
     }
 
-    pub(super) fn refresh_slime_window_candidate_cache(&mut self, cx: &mut Context<Self>) {
-        let Some(bounds) = self.professional_query_bounds() else {
-            self.cancel_slime_window_candidate_query();
-            self.professional.slime_window_candidates = None;
+    pub(super) fn refresh_slime_farm_candidate_cache(&mut self, cx: &mut Context<Self>) {
+        let Some(scope) = self.slime_farm_search_scope() else {
+            self.cancel_slime_farm_candidate_query();
+            self.professional.slime_farm_candidates = None;
             return;
         };
-        if bounds.dimension != Dimension::Overworld || bounds.chunk_count() > 20_000 {
-            self.cancel_slime_window_candidate_query();
-            self.professional.slime_window_candidates = None;
+        let bounds = scope.bounds;
+        if bounds.chunk_count() > SLIME_FARM_MAX_QUERY_CHUNKS {
+            self.cancel_slime_farm_candidate_query();
+            self.professional.slime_farm_candidates = None;
+            self.status = SharedString::from(t!("MapViewer.slime_scope_too_large"));
+            cx.notify();
             return;
         }
-        let requested_size = self.slime_query_window_size;
+
+        let requested_mode = self.slime_farm_search_mode;
         if self
             .professional
-            .slime_window_candidates
+            .slime_farm_candidates
             .as_ref()
-            .is_some_and(|cache| cache.bounds == bounds && cache.size == requested_size)
+            .is_some_and(|cache| cache.bounds == bounds && cache.mode == requested_mode)
         {
             return;
         }
-        if self.professional.slime_window_candidates_loading {
-            if self.professional.slime_window_candidates_request_bounds == Some(bounds)
-                && self.professional.slime_window_candidates_request_size == Some(requested_size)
+        if self.professional.slime_farm_candidates_loading {
+            if self.professional.slime_farm_candidates_request_bounds == Some(bounds)
+                && self.professional.slime_farm_candidates_request_mode == Some(requested_mode)
             {
                 return;
             }
-            self.cancel_slime_window_candidate_query();
+            self.cancel_slime_farm_candidate_query();
         }
-        let Some(size) = SlimeWindowSize::new(requested_size.value()).ok() else {
-            self.cancel_slime_window_candidate_query();
-            self.professional.slime_window_candidates = None;
-            return;
-        };
+
         let cache_key = MapQueryCacheKey::new(
-            MapQueryKind::SlimeCandidates,
+            MapQueryKind::SlimeFarmCandidates,
             &self.world_path,
             bounds.dimension.id(),
             (
@@ -716,52 +716,59 @@ impl MapViewerWindowView {
                 bounds.min_chunk_z,
                 bounds.max_chunk_z,
             ),
-            requested_size.value() as u64,
+            requested_mode.cache_tag(),
         );
         if let Some(cached) = self
             .map_query_budget
-            .cached::<SlimeWindowCandidateCache>(cache_key)
+            .cached::<SlimeFarmCandidateCache>(cache_key)
         {
-            if self.professional.slime_window_candidates_loading {
-                self.cancel_slime_window_candidate_query();
+            if self.professional.slime_farm_candidates_loading {
+                self.cancel_slime_farm_candidate_query();
             }
-            let changed = self.professional.slime_window_candidates.as_ref() != Some(&*cached);
-            self.professional.slime_window_candidates = Some((*cached).clone());
-            self.professional.slime_window_candidates_loading = false;
-            self.professional.slime_window_candidates_cancel = None;
-            self.professional.slime_window_candidates_request_bounds = None;
-            self.professional.slime_window_candidates_request_size = None;
+            let changed = self.professional.slime_farm_candidates.as_ref() != Some(&*cached);
+            self.professional.slime_farm_candidates = Some((*cached).clone());
+            self.professional.slime_farm_candidates_loading = false;
+            self.professional.slime_farm_candidates_cancel = None;
+            self.professional.slime_farm_candidates_request_bounds = None;
+            self.professional.slime_farm_candidates_request_mode = None;
             if changed {
                 self.sync_professional_render_snapshot(cx);
             }
             return;
         }
-        self.cancel_slime_window_candidate_query();
-        self.professional.slime_window_candidates = None;
+
+        self.cancel_slime_farm_candidate_query();
+        self.professional.slime_farm_candidates = None;
         let generation = self
             .professional
-            .slime_window_candidates_generation
+            .slime_farm_candidates_generation
             .saturating_add(1);
-        self.professional.slime_window_candidates_generation = generation;
+        self.professional.slime_farm_candidates_generation = generation;
         let query_generation = self
             .map_query_budget
-            .next_generation(MapQueryKind::SlimeCandidates);
+            .next_generation(MapQueryKind::SlimeFarmCandidates);
         let cancel = CancelFlag::new();
-        self.professional.slime_window_candidates_cancel = Some(cancel.clone());
-        self.professional.slime_window_candidates_loading = true;
-        self.professional.slime_window_candidates_request_bounds = Some(bounds);
-        self.professional.slime_window_candidates_request_size = Some(requested_size);
+        self.professional.slime_farm_candidates_cancel = Some(cancel.clone());
+        self.professional.slime_farm_candidates_loading = true;
+        self.professional.slime_farm_candidates_request_bounds = Some(bounds);
+        self.professional.slime_farm_candidates_request_mode = Some(requested_mode);
         let metadata_generation = self.metadata_generation;
         let cancel_for_task = cancel.clone();
         let query_budget = self.map_query_budget.clone();
+
         cx.spawn(async move |handle, cx| {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
                     if cancel_for_task.is_cancelled() {
-                        return Err("slime window query cancelled".to_string());
+                        return Err("slime farm candidate query cancelled".to_string());
                     }
-                    query_slime_chunk_windows(bounds, size, 3).map_err(|error| error.to_string())
+                    query_slime_farm_candidates(
+                        bounds,
+                        requested_mode.query_mode(),
+                        SLIME_FARM_MAX_RESULTS,
+                    )
+                    .map_err(|error| error.to_string())
                 })
                 .await;
             let Some(view) = handle.upgrade() else {
@@ -770,38 +777,40 @@ impl MapViewerWindowView {
             view.update(cx, move |this, cx| {
                 if !this
                     .map_query_budget
-                    .is_current(MapQueryKind::SlimeCandidates, query_generation)
+                    .is_current(MapQueryKind::SlimeFarmCandidates, query_generation)
                 {
                     return;
                 }
-                if !accept_slime_window_candidate_result(
+                if !accept_slime_farm_candidate_result(
                     this.metadata_generation,
-                    this.professional.slime_window_candidates_generation,
-                    this.professional_query_bounds(),
-                    this.slime_query_window_size,
+                    this.professional.slime_farm_candidates_generation,
+                    this.slime_farm_search_scope().map(|scope| scope.bounds),
+                    this.slime_farm_search_mode,
                     metadata_generation,
                     generation,
                     bounds,
-                    requested_size,
+                    requested_mode,
                 ) {
                     return;
                 }
-                this.professional.slime_window_candidates_loading = false;
-                this.professional.slime_window_candidates_cancel = None;
-                this.professional.slime_window_candidates_request_bounds = None;
-                this.professional.slime_window_candidates_request_size = None;
+                this.professional.slime_farm_candidates_loading = false;
+                this.professional.slime_farm_candidates_cancel = None;
+                this.professional.slime_farm_candidates_request_bounds = None;
+                this.professional.slime_farm_candidates_request_mode = None;
                 match result {
-                    Ok(windows) => {
-                        let cache = Arc::new(SlimeWindowCandidateCache {
+                    Ok(candidates) => {
+                        let cache = Arc::new(SlimeFarmCandidateCache {
                             bounds,
-                            size: requested_size,
-                            windows,
+                            mode: requested_mode,
+                            candidates,
                         });
                         this.map_query_budget.cache(cache_key, Arc::clone(&cache));
-                        this.professional.slime_window_candidates = Some((*cache).clone());
+                        this.professional.slime_farm_candidates = Some((*cache).clone());
                     }
                     Err(error) => {
-                        this.status = SharedString::from(error);
+                        if !error.contains("cancel") {
+                            this.status = SharedString::from(error);
+                        }
                     }
                 }
                 cx.notify();
@@ -809,6 +818,29 @@ impl MapViewerWindowView {
             Ok::<(), anyhow::Error>(())
         })
         .detach();
+    }
+
+    pub(super) fn slime_farm_search_scope(&self) -> Option<SlimeFarmSearchScope> {
+        if self.dimension != Dimension::Overworld {
+            return None;
+        }
+        let selection_scoped = self.professional.selection.is_some();
+        let mut requested = self.professional_query_bounds()?;
+        if !selection_scoped {
+            requested.min_chunk_x = requested
+                .min_chunk_x
+                .saturating_sub(SLIME_FARM_VIEWPORT_MARGIN_CHUNKS);
+            requested.max_chunk_x = requested
+                .max_chunk_x
+                .saturating_add(SLIME_FARM_VIEWPORT_MARGIN_CHUNKS);
+            requested.min_chunk_z = requested
+                .min_chunk_z
+                .saturating_sub(SLIME_FARM_VIEWPORT_MARGIN_CHUNKS);
+            requested.max_chunk_z = requested
+                .max_chunk_z
+                .saturating_add(SLIME_FARM_VIEWPORT_MARGIN_CHUNKS);
+        }
+        practical_slime_farm_scope(requested, selection_scoped)
     }
 
     pub(super) fn visible_slime_bounds(&self) -> Option<SlimeChunkBounds> {
@@ -828,6 +860,62 @@ impl MapViewerWindowView {
             .map(ChunkSelection::bounds)
             .or_else(|| self.visible_slime_bounds())
     }
+}
+
+const SLIME_FARM_RECOMMENDED_BLOCK_LIMIT: i32 = 524_287;
+const SLIME_FARM_PRACTICAL_BLOCK_LIMIT: i32 = 1_048_575;
+const SLIME_FARM_RECOMMENDED_CHUNK_LIMIT: i32 = SLIME_FARM_RECOMMENDED_BLOCK_LIMIT / 16;
+const SLIME_FARM_PRACTICAL_CHUNK_LIMIT: i32 = SLIME_FARM_PRACTICAL_BLOCK_LIMIT / 16;
+const SLIME_FARM_VIEWPORT_MARGIN_CHUNKS: i32 = 8;
+const SLIME_FARM_MAX_QUERY_CHUNKS: usize = 20_000;
+const SLIME_FARM_MAX_RESULTS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SlimeFarmSearchScope {
+    pub(super) requested: SlimeChunkBounds,
+    pub(super) bounds: SlimeChunkBounds,
+    pub(super) clipped_for_precision: bool,
+    pub(super) precision_degraded: bool,
+    pub(super) selection_scoped: bool,
+}
+
+pub(super) fn practical_slime_farm_scope(
+    requested: SlimeChunkBounds,
+    selection_scoped: bool,
+) -> Option<SlimeFarmSearchScope> {
+    if requested.dimension != Dimension::Overworld {
+        return None;
+    }
+    let bounds = SlimeChunkBounds {
+        dimension: requested.dimension,
+        min_chunk_x: requested
+            .min_chunk_x
+            .max(-SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+        max_chunk_x: requested
+            .max_chunk_x
+            .min(SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+        min_chunk_z: requested
+            .min_chunk_z
+            .max(-SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+        max_chunk_z: requested
+            .max_chunk_z
+            .min(SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+    };
+    if bounds.min_chunk_x > bounds.max_chunk_x || bounds.min_chunk_z > bounds.max_chunk_z {
+        return None;
+    }
+    let clipped_for_precision = bounds != requested;
+    let precision_degraded = bounds.min_chunk_x < -SLIME_FARM_RECOMMENDED_CHUNK_LIMIT
+        || bounds.max_chunk_x > SLIME_FARM_RECOMMENDED_CHUNK_LIMIT
+        || bounds.min_chunk_z < -SLIME_FARM_RECOMMENDED_CHUNK_LIMIT
+        || bounds.max_chunk_z > SLIME_FARM_RECOMMENDED_CHUNK_LIMIT;
+    Some(SlimeFarmSearchScope {
+        requested,
+        bounds,
+        clipped_for_precision,
+        precision_degraded,
+        selection_scoped,
+    })
 }
 
 fn tile_bound_map_info_requested(options: RegionOverlayQueryOptions) -> bool {
@@ -998,18 +1086,18 @@ pub(super) fn accept_overlay_result(
         && current_options == Some(result_options)
 }
 
-pub(super) fn accept_slime_window_candidate_result(
+pub(super) fn accept_slime_farm_candidate_result(
     current_metadata_generation: u64,
     current_generation: u64,
     current_bounds: Option<SlimeChunkBounds>,
-    current_size: SlimeQueryWindowSize,
+    current_mode: SlimeFarmSearchMode,
     result_metadata_generation: u64,
     result_generation: u64,
     result_bounds: SlimeChunkBounds,
-    result_size: SlimeQueryWindowSize,
+    result_mode: SlimeFarmSearchMode,
 ) -> bool {
     current_metadata_generation == result_metadata_generation
         && current_generation == result_generation
         && current_bounds == Some(result_bounds)
-        && current_size == result_size
+        && current_mode == result_mode
 }

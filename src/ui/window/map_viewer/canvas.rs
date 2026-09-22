@@ -35,7 +35,7 @@ const SCREEN_IMAGE_VIEWPORT_EPSILON: f32 = 0.01;
 const MAP_TILE_INTERACTION_NEW_IMAGE_BUDGET_PER_FRAME: usize = 16;
 const MAP_TILE_IDLE_NEW_IMAGE_BUDGET_PER_FRAME: usize = 8;
 const HISTORY_VISUAL_COLUMN_SIDE: usize = 16;
-use bedrock_world::{Dimension, SlimeChunkWindow};
+use bedrock_world::{Dimension, SlimeFarmCandidate};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::sync::Arc;
@@ -97,7 +97,7 @@ pub(super) struct MapCanvasSnapshot {
     pub(super) paste_preview: Option<PastePreview>,
     pub(super) paste_preview_images: Arc<Vec<PastePreviewImage>>,
     pub(super) paste_preview_images_generation: u64,
-    pub(super) highlighted_window: Option<SlimeChunkWindow>,
+    pub(super) highlighted_slime_candidate: Option<SlimeFarmCandidate>,
     pub(super) history_visualization: Arc<MapHistoryVisualization>,
     pub(super) history_visualization_enabled: bool,
     pub(super) history_visualization_filter: MapHistoryVisualFilter,
@@ -516,7 +516,7 @@ struct OverlayLayerSnapshot {
     paste_preview: Option<PastePreview>,
     paste_preview_images: Arc<Vec<PastePreviewImage>>,
     paste_preview_images_generation: u64,
-    highlighted_window: Option<SlimeChunkWindow>,
+    highlighted_slime_candidate: Option<SlimeFarmCandidate>,
     history_visualization: Arc<MapHistoryVisualization>,
     history_visualization_enabled: bool,
     history_visualization_filter: MapHistoryVisualFilter,
@@ -541,7 +541,7 @@ impl OverlayLayerSnapshot {
             paste_preview: snapshot.paste_preview.clone(),
             paste_preview_images: snapshot.paste_preview_images.clone(),
             paste_preview_images_generation: snapshot.paste_preview_images_generation,
-            highlighted_window: snapshot.highlighted_window.clone(),
+            highlighted_slime_candidate: snapshot.highlighted_slime_candidate.clone(),
             history_visualization: snapshot.history_visualization.clone(),
             history_visualization_enabled: snapshot.history_visualization_enabled,
             history_visualization_filter: snapshot.history_visualization_filter,
@@ -561,7 +561,7 @@ impl OverlayLayerSnapshot {
             && self.selection == other.selection
             && self.paste_preview == other.paste_preview
             && self.paste_preview_images_generation == other.paste_preview_images_generation
-            && self.highlighted_window == other.highlighted_window
+            && self.highlighted_slime_candidate == other.highlighted_slime_candidate
             && self.history_visualization_enabled == other.history_visualization_enabled
             && self.history_visualization_filter == other.history_visualization_filter
             && self.history_visualization_ptr == other.history_visualization_ptr
@@ -1409,7 +1409,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     let selection = snapshot.selection;
     let paste_preview = snapshot.paste_preview.clone();
     let paste_preview_images = snapshot.paste_preview_images.clone();
-    let highlighted_window = snapshot.highlighted_window.clone();
+    let highlighted_slime_candidate = snapshot.highlighted_slime_candidate.clone();
     let history_visualization = snapshot.history_visualization.clone();
     let history_visualization_enabled = snapshot.history_visualization_enabled;
     let history_visualization_filter = snapshot.history_visualization_filter;
@@ -1430,7 +1430,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                     selection,
                     paste_preview.as_ref(),
                     &paste_preview_images,
-                    highlighted_window.as_ref(),
+                    highlighted_slime_candidate.as_ref(),
                     colors,
                     window,
                 );

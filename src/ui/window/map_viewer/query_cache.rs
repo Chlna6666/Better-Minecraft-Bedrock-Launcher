@@ -14,7 +14,7 @@ pub(super) enum MapQueryKind {
     Overlay,
     VillageIndex,
     SlimeRuns,
-    SlimeCandidates,
+    SlimeFarmCandidates,
     Selection,
     Detail,
     History,

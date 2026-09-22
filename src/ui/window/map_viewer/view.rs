@@ -38,7 +38,7 @@ impl Drop for MapViewerWindowView {
         self.cancel_metadata_scan();
         self.cancel_active_render();
         self.cancel_professional_overlay_query();
-        self.cancel_slime_window_candidate_query();
+        self.cancel_slime_farm_candidate_query();
         self.preview_3d.clear_resources(true);
         self.session_generation = self.session_generation.saturating_add(1);
         self.metadata_generation = self.metadata_generation.saturating_add(1);
@@ -58,7 +58,7 @@ impl MapViewerWindowView {
         self.cancel_metadata_scan();
         self.cancel_active_render();
         self.cancel_professional_overlay_query();
-        self.cancel_slime_window_candidate_query();
+        self.cancel_slime_farm_candidate_query();
         self.preview_3d.clear_resources(true);
 
         // Stored tasks are window-scoped. Dropping their handles prevents delayed refreshes

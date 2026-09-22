@@ -409,7 +409,7 @@ impl MapViewerWindowView {
             render_backend: default_interactive_render_backend(),
             render_gpu_backend: default_interactive_render_gpu_backend(),
             overlay_options: OverlayOptions::default(),
-            slime_query_window_size: SlimeQueryWindowSize::default(),
+            slime_farm_search_mode: SlimeFarmSearchMode::default(),
             professional: ProfessionalQueryState::default(),
             history: MapHistoryState::default(),
             players: PlayerPanelState::default(),
@@ -1049,7 +1049,7 @@ impl MapViewerWindowView {
             paste_preview: self.professional.paste_preview.clone(),
             paste_preview_images: self.paste_preview_images.clone(),
             paste_preview_images_generation: self.paste_preview_images_generation,
-            highlighted_window: self.professional.highlighted_window.clone(),
+            highlighted_slime_candidate: self.professional.highlighted_slime_candidate.clone(),
             history_visualization: self.history.visualization.clone(),
             history_visualization_enabled: self.history.visualization_enabled,
             history_visualization_filter: self.history.visualization_filter,
@@ -1086,7 +1086,7 @@ impl MapViewerWindowView {
             selection: self.professional.selection,
             paste_preview: self.professional.paste_preview.clone(),
             paste_preview_images_generation: self.paste_preview_images_generation,
-            highlighted_window: self.professional.highlighted_window.clone(),
+            highlighted_slime_candidate: self.professional.highlighted_slime_candidate.clone(),
             markers_generation: self.markers_generation,
         }
     }
@@ -1639,13 +1639,13 @@ impl MapViewerWindowView {
     pub(super) fn refresh_metadata(&mut self, cx: &mut Context<Self>) {
         self.cancel_metadata_scan();
         self.cancel_professional_overlay_query();
-        self.cancel_slime_window_candidate_query();
+        self.cancel_slime_farm_candidate_query();
         self.professional.village_index = None;
         self.professional.overlay_bounds = None;
         self.professional.overlays = None;
         self.professional.overlay_paint = None;
         self.professional.pending_overlay_refresh = true;
-        self.professional.slime_window_candidates = None;
+        self.professional.slime_farm_candidates = None;
         self.metadata_generation = self.metadata_generation.saturating_add(1);
         self.render_generation = self.render_generation.saturating_add(1);
         self.cancel_active_render();

@@ -1515,11 +1515,55 @@ fn preview_pointer_release_only_clears_preview_drag() {
 }
 
 #[::core::prelude::v1::test]
-fn slime_query_window_sizes_are_supported_ui_modes() {
-    assert_eq!(SlimeQueryWindowSize::Three.value(), 3);
-    assert_eq!(SlimeQueryWindowSize::Five.value(), 5);
-    assert_eq!(SlimeQueryWindowSize::Seven.value(), 7);
-    assert!(SlimeWindowSize::new(SlimeQueryWindowSize::Seven.value()).is_ok());
+fn slime_farm_search_modes_map_to_core_queries() {
+    assert_eq!(
+        SlimeFarmSearchMode::LargestConnected.query_mode(),
+        SlimeFarmQueryMode::LargestConnected
+    );
+    assert_eq!(
+        SlimeFarmSearchMode::Quad2x2.query_mode(),
+        SlimeFarmQueryMode::Quad2x2
+    );
+    assert_ne!(
+        SlimeFarmSearchMode::LargestConnected.cache_tag(),
+        SlimeFarmSearchMode::Quad2x2.cache_tag()
+    );
+}
+
+#[::core::prelude::v1::test]
+fn slime_farm_scope_clamps_bedrock_precision_waste() {
+    let requested = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: -100_000,
+        max_chunk_x: 100_000,
+        min_chunk_z: -80_000,
+        max_chunk_z: 80_000,
+    };
+    let scope = practical_slime_farm_scope(requested, true).expect("clamped overworld scope");
+
+    assert_eq!(scope.bounds.min_chunk_x, -65_535);
+    assert_eq!(scope.bounds.max_chunk_x, 65_535);
+    assert_eq!(scope.bounds.min_chunk_z, -65_535);
+    assert_eq!(scope.bounds.max_chunk_z, 65_535);
+    assert!(scope.clipped_for_precision);
+    assert!(scope.precision_degraded);
+    assert!(scope.selection_scoped);
+}
+
+#[::core::prelude::v1::test]
+fn slime_farm_scope_marks_precision_degraded_before_hard_cutoff() {
+    let requested = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: 32_760,
+        max_chunk_x: 32_780,
+        min_chunk_z: 0,
+        max_chunk_z: 10,
+    };
+    let scope = practical_slime_farm_scope(requested, false).expect("degraded scope");
+
+    assert!(!scope.clipped_for_precision);
+    assert!(scope.precision_degraded);
+    assert!(!scope.selection_scoped);
 }
 
 #[::core::prelude::v1::test]
@@ -1695,7 +1739,7 @@ fn map_query_coordinator_reuses_typed_memory_snapshots_and_generations() {
 }
 
 #[::core::prelude::v1::test]
-fn slime_window_candidate_result_acceptance_rejects_stale_viewport_queries() {
+fn slime_farm_candidate_result_acceptance_rejects_stale_viewport_queries() {
     let bounds = SlimeChunkBounds {
         dimension: Dimension::Overworld,
         min_chunk_x: -1,
@@ -1704,35 +1748,35 @@ fn slime_window_candidate_result_acceptance_rejects_stale_viewport_queries() {
         max_chunk_z: 1,
     };
 
-    assert!(accept_slime_window_candidate_result(
+    assert!(accept_slime_farm_candidate_result(
         7,
         11,
         Some(bounds),
-        SlimeQueryWindowSize::Five,
+        SlimeFarmSearchMode::LargestConnected,
         7,
         11,
         bounds,
-        SlimeQueryWindowSize::Five,
+        SlimeFarmSearchMode::LargestConnected,
     ));
-    assert!(!accept_slime_window_candidate_result(
+    assert!(!accept_slime_farm_candidate_result(
         7,
         12,
         Some(bounds),
-        SlimeQueryWindowSize::Five,
+        SlimeFarmSearchMode::LargestConnected,
         7,
         11,
         bounds,
-        SlimeQueryWindowSize::Five,
+        SlimeFarmSearchMode::LargestConnected,
     ));
-    assert!(!accept_slime_window_candidate_result(
+    assert!(!accept_slime_farm_candidate_result(
         7,
         11,
         Some(bounds),
-        SlimeQueryWindowSize::Three,
+        SlimeFarmSearchMode::Quad2x2,
         7,
         11,
         bounds,
-        SlimeQueryWindowSize::Five,
+        SlimeFarmSearchMode::LargestConnected,
     ));
 }
 

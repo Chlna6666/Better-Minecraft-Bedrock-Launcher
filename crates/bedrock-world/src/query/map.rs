@@ -18,7 +18,7 @@ use crate::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -191,6 +191,81 @@ pub struct SlimeChunkWindow {
     pub slime_count: usize,
     /// Total number of chunks inside the window.
     pub total_count: usize,
+}
+
+/// Query mode for survival-oriented slime-farm candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SlimeFarmQueryMode {
+    /// Rank whole 4-neighbor connected components by practical build value.
+    LargestConnected,
+    /// Find exact 2x2 all-slime squares ("quad slime chunks").
+    Quad2x2,
+}
+
+/// Survival-oriented slime-farm candidate.
+///
+/// `chunks` contains the exact chunks that should be highlighted for the candidate.
+/// For `LargestConnected` it is the full connected component; for `Quad2x2` it is
+/// exactly the four chunks forming the square. `connected_chunk_count` describes the
+/// full connected component containing that candidate, so a 2x2 result can still show
+/// that it belongs to a larger 5/6/7-chunk formation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlimeFarmCandidate {
+    /// Exact slime chunks represented by this candidate.
+    pub chunks: Vec<ChunkPos>,
+    /// Inclusive minimum chunk X coordinate of the highlighted chunks.
+    pub min_chunk_x: i32,
+    /// Inclusive maximum chunk X coordinate of the highlighted chunks.
+    pub max_chunk_x: i32,
+    /// Inclusive minimum chunk Z coordinate of the highlighted chunks.
+    pub min_chunk_z: i32,
+    /// Inclusive maximum chunk Z coordinate of the highlighted chunks.
+    pub max_chunk_z: i32,
+    /// Number of chunks in the full 4-neighbor connected component.
+    pub connected_chunk_count: usize,
+    /// Number of complete 2x2 slime squares inside the full connected component.
+    pub quad_2x2_count: usize,
+    /// Whether the full component touches the requested query boundary.
+    ///
+    /// When true, the connected component may continue outside the searched area.
+    pub touches_query_edge: bool,
+}
+
+impl SlimeFarmCandidate {
+    #[must_use]
+    /// Width of the highlighted candidate in chunks.
+    pub const fn width(&self) -> i32 {
+        self.max_chunk_x
+            .saturating_sub(self.min_chunk_x)
+            .saturating_add(1)
+    }
+
+    #[must_use]
+    /// Depth of the highlighted candidate in chunks.
+    pub const fn depth(&self) -> i32 {
+        self.max_chunk_z
+            .saturating_sub(self.min_chunk_z)
+            .saturating_add(1)
+    }
+
+    #[must_use]
+    /// Number of chunks inside the highlighted bounding rectangle.
+    pub fn bounding_chunk_count(&self) -> usize {
+        let width = usize::try_from(self.width()).unwrap_or(usize::MAX);
+        let depth = usize::try_from(self.depth()).unwrap_or(usize::MAX);
+        width.saturating_mul(depth)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SlimeConnectedComponent {
+    chunks: Vec<ChunkPos>,
+    min_chunk_x: i32,
+    max_chunk_x: i32,
+    min_chunk_z: i32,
+    max_chunk_z: i32,
+    quad_2x2_count: usize,
+    touches_query_edge: bool,
 }
 
 /// One raw chunk record exposed through the query API.
@@ -549,6 +624,238 @@ pub fn query_slime_chunk_windows(
     });
     windows.truncate(max_results);
     Ok(windows)
+}
+
+/// Query survival-oriented slime-farm candidates.
+///
+/// Unlike `query_slime_chunk_windows`, this query reasons about actual adjacency. This
+/// avoids ranking scattered slime chunks inside an arbitrary density window above a compact
+/// farmable formation.
+pub fn query_slime_farm_candidates(
+    bounds: SlimeChunkBounds,
+    mode: SlimeFarmQueryMode,
+    max_results: usize,
+) -> Result<Vec<SlimeFarmCandidate>> {
+    bounds.validate()?;
+    if bounds.dimension != Dimension::Overworld || max_results == 0 {
+        return Ok(Vec::new());
+    }
+
+    let slime_chunks = slime_chunk_coordinate_set(bounds);
+    if slime_chunks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let components = slime_connected_components(bounds, &slime_chunks);
+    let component_by_chunk = slime_component_lookup(&components);
+    let mut candidates = match mode {
+        SlimeFarmQueryMode::LargestConnected => components
+            .iter()
+            .map(|component| slime_component_candidate(component))
+            .collect::<Vec<_>>(),
+        SlimeFarmQueryMode::Quad2x2 => {
+            slime_quad_candidates(bounds, &slime_chunks, &components, &component_by_chunk)
+        }
+    };
+
+    let query_center_x2 =
+        i64::from(bounds.min_chunk_x).saturating_add(i64::from(bounds.max_chunk_x));
+    let query_center_z2 =
+        i64::from(bounds.min_chunk_z).saturating_add(i64::from(bounds.max_chunk_z));
+    candidates.sort_by_key(|candidate| {
+        let center_x2 = i64::from(candidate.min_chunk_x)
+            .saturating_add(i64::from(candidate.max_chunk_x));
+        let center_z2 = i64::from(candidate.min_chunk_z)
+            .saturating_add(i64::from(candidate.max_chunk_z));
+        let dx = i128::from(center_x2.saturating_sub(query_center_x2));
+        let dz = i128::from(center_z2.saturating_sub(query_center_z2));
+        let distance2 = dx
+            .saturating_mul(dx)
+            .saturating_add(dz.saturating_mul(dz));
+        (
+            Reverse(candidate.connected_chunk_count),
+            Reverse(candidate.quad_2x2_count),
+            candidate.bounding_chunk_count(),
+            distance2,
+            candidate.min_chunk_z,
+            candidate.min_chunk_x,
+        )
+    });
+    candidates.truncate(max_results);
+    Ok(candidates)
+}
+
+fn slime_chunk_coordinate_set(bounds: SlimeChunkBounds) -> BTreeSet<(i32, i32)> {
+    let mut slime_chunks = BTreeSet::new();
+    for chunk_z in bounds.min_chunk_z..=bounds.max_chunk_z {
+        for chunk_x in bounds.min_chunk_x..=bounds.max_chunk_x {
+            if is_bedrock_slime_chunk(chunk_x, chunk_z) {
+                slime_chunks.insert((chunk_x, chunk_z));
+            }
+        }
+    }
+    slime_chunks
+}
+
+fn slime_connected_components(
+    bounds: SlimeChunkBounds,
+    slime_chunks: &BTreeSet<(i32, i32)>,
+) -> Vec<SlimeConnectedComponent> {
+    let mut remaining = slime_chunks.clone();
+    let mut components = Vec::new();
+
+    while let Some(start) = remaining.iter().next().copied() {
+        remaining.remove(&start);
+        let mut queue = VecDeque::from([start]);
+        let mut coordinates = Vec::new();
+
+        while let Some((chunk_x, chunk_z)) = queue.pop_front() {
+            coordinates.push((chunk_x, chunk_z));
+            for neighbor in [
+                (chunk_x.saturating_sub(1), chunk_z),
+                (chunk_x.saturating_add(1), chunk_z),
+                (chunk_x, chunk_z.saturating_sub(1)),
+                (chunk_x, chunk_z.saturating_add(1)),
+            ] {
+                if remaining.remove(&neighbor) {
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        coordinates.sort_unstable_by_key(|(x, z)| (*z, *x));
+        let min_chunk_x = coordinates.iter().map(|(x, _)| *x).min().unwrap_or(start.0);
+        let max_chunk_x = coordinates.iter().map(|(x, _)| *x).max().unwrap_or(start.0);
+        let min_chunk_z = coordinates.iter().map(|(_, z)| *z).min().unwrap_or(start.1);
+        let max_chunk_z = coordinates.iter().map(|(_, z)| *z).max().unwrap_or(start.1);
+        let quad_2x2_count = coordinates
+            .iter()
+            .filter(|(x, z)| {
+                let Some(next_x) = x.checked_add(1) else {
+                    return false;
+                };
+                let Some(next_z) = z.checked_add(1) else {
+                    return false;
+                };
+                slime_chunks.contains(&(next_x, *z))
+                    && slime_chunks.contains(&(*x, next_z))
+                    && slime_chunks.contains(&(next_x, next_z))
+            })
+            .count();
+        let touches_query_edge = coordinates.iter().any(|(x, z)| {
+            *x == bounds.min_chunk_x
+                || *x == bounds.max_chunk_x
+                || *z == bounds.min_chunk_z
+                || *z == bounds.max_chunk_z
+        });
+        let chunks = coordinates
+            .into_iter()
+            .map(|(x, z)| ChunkPos {
+                x,
+                z,
+                dimension: bounds.dimension,
+            })
+            .collect();
+
+        components.push(SlimeConnectedComponent {
+            chunks,
+            min_chunk_x,
+            max_chunk_x,
+            min_chunk_z,
+            max_chunk_z,
+            quad_2x2_count,
+            touches_query_edge,
+        });
+    }
+
+    components
+}
+
+fn slime_component_lookup(
+    components: &[SlimeConnectedComponent],
+) -> BTreeMap<(i32, i32), usize> {
+    let mut lookup = BTreeMap::new();
+    for (component_index, component) in components.iter().enumerate() {
+        for chunk in &component.chunks {
+            lookup.insert((chunk.x, chunk.z), component_index);
+        }
+    }
+    lookup
+}
+
+fn slime_component_candidate(component: &SlimeConnectedComponent) -> SlimeFarmCandidate {
+    SlimeFarmCandidate {
+        chunks: component.chunks.clone(),
+        min_chunk_x: component.min_chunk_x,
+        max_chunk_x: component.max_chunk_x,
+        min_chunk_z: component.min_chunk_z,
+        max_chunk_z: component.max_chunk_z,
+        connected_chunk_count: component.chunks.len(),
+        quad_2x2_count: component.quad_2x2_count,
+        touches_query_edge: component.touches_query_edge,
+    }
+}
+
+fn slime_quad_candidates(
+    bounds: SlimeChunkBounds,
+    slime_chunks: &BTreeSet<(i32, i32)>,
+    components: &[SlimeConnectedComponent],
+    component_by_chunk: &BTreeMap<(i32, i32), usize>,
+) -> Vec<SlimeFarmCandidate> {
+    let mut candidates = Vec::new();
+    for &(chunk_x, chunk_z) in slime_chunks {
+        let Some(next_x) = chunk_x.checked_add(1) else {
+            continue;
+        };
+        let Some(next_z) = chunk_z.checked_add(1) else {
+            continue;
+        };
+        if next_x > bounds.max_chunk_x
+            || next_z > bounds.max_chunk_z
+            || !slime_chunks.contains(&(next_x, chunk_z))
+            || !slime_chunks.contains(&(chunk_x, next_z))
+            || !slime_chunks.contains(&(next_x, next_z))
+        {
+            continue;
+        }
+        let Some(component_index) = component_by_chunk.get(&(chunk_x, chunk_z)).copied() else {
+            continue;
+        };
+        let Some(component) = components.get(component_index) else {
+            continue;
+        };
+        candidates.push(SlimeFarmCandidate {
+            chunks: vec![
+                ChunkPos {
+                    x: chunk_x,
+                    z: chunk_z,
+                    dimension: bounds.dimension,
+                },
+                ChunkPos {
+                    x: next_x,
+                    z: chunk_z,
+                    dimension: bounds.dimension,
+                },
+                ChunkPos {
+                    x: chunk_x,
+                    z: next_z,
+                    dimension: bounds.dimension,
+                },
+                ChunkPos {
+                    x: next_x,
+                    z: next_z,
+                    dimension: bounds.dimension,
+                },
+            ],
+            min_chunk_x: chunk_x,
+            max_chunk_x: next_x,
+            min_chunk_z: chunk_z,
+            max_chunk_z: next_z,
+            connected_chunk_count: component.chunks.len(),
+            quad_2x2_count: component.quad_2x2_count,
+            touches_query_edge: component.touches_query_edge,
+        });
+    }
+    candidates
 }
 
 /// Query block tip.
@@ -1684,6 +1991,81 @@ mod tests {
             .expect("fingerprint second value");
 
         assert_ne!(first[0].value, second[0].value);
+    }
+
+    #[test]
+    fn slime_farm_largest_connected_ranks_real_adjacent_components() {
+        let bounds = SlimeChunkBounds {
+            dimension: Dimension::Overworld,
+            min_chunk_x: -100,
+            max_chunk_x: 100,
+            min_chunk_z: -100,
+            max_chunk_z: 100,
+        };
+        let candidates = query_slime_farm_candidates(
+            bounds,
+            SlimeFarmQueryMode::LargestConnected,
+            5,
+        )
+        .expect("query connected slime clusters");
+
+        assert!(!candidates.is_empty());
+        assert_eq!(candidates[0].connected_chunk_count, 9);
+        assert_eq!(candidates[0].chunks.len(), 9);
+        for candidate in &candidates {
+            let members = candidate
+                .chunks
+                .iter()
+                .map(|chunk| (chunk.x, chunk.z))
+                .collect::<BTreeSet<_>>();
+            let mut visited = BTreeSet::new();
+            let mut queue = VecDeque::from([
+                candidate
+                    .chunks
+                    .first()
+                    .map(|chunk| (chunk.x, chunk.z))
+                    .expect("candidate has chunks"),
+            ]);
+            while let Some((x, z)) = queue.pop_front() {
+                if !visited.insert((x, z)) {
+                    continue;
+                }
+                for neighbor in [
+                    (x.saturating_sub(1), z),
+                    (x.saturating_add(1), z),
+                    (x, z.saturating_sub(1)),
+                    (x, z.saturating_add(1)),
+                ] {
+                    if members.contains(&neighbor) && !visited.contains(&neighbor) {
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+            assert_eq!(visited, members);
+        }
+    }
+
+    #[test]
+    fn slime_farm_quad_query_returns_exact_two_by_two_candidates() {
+        let bounds = SlimeChunkBounds {
+            dimension: Dimension::Overworld,
+            min_chunk_x: -100,
+            max_chunk_x: 100,
+            min_chunk_z: -100,
+            max_chunk_z: 100,
+        };
+        let candidates =
+            query_slime_farm_candidates(bounds, SlimeFarmQueryMode::Quad2x2, 16)
+                .expect("query quad slime chunks");
+
+        assert_eq!(candidates.len(), 4);
+        for candidate in candidates {
+            assert_eq!(candidate.width(), 2);
+            assert_eq!(candidate.depth(), 2);
+            assert_eq!(candidate.chunks.len(), 4);
+            assert!(candidate.connected_chunk_count >= 4);
+            assert!(candidate.chunks.iter().all(|chunk| is_slime_chunk(*chunk)));
+        }
     }
 
     #[test]

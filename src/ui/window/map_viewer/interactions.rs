@@ -87,7 +87,7 @@ impl MapViewerWindowView {
         self.dimension = dimension;
         self.context_menu = None;
         self.cancel_professional_overlay_query();
-        self.cancel_slime_window_candidate_query();
+        self.cancel_slime_farm_candidate_query();
         self.professional.reset_for_dimension_change();
         self.replace_paste_preview_images(Vec::new(), cx);
         self.set_professional_detail(None, cx);
@@ -849,8 +849,8 @@ impl MapViewerWindowView {
     ) {
         self.professional.selection = Some(drag.selection());
         self.professional.detail_generation = self.professional.detail_generation.saturating_add(1);
-        self.cancel_slime_window_candidate_query();
-        self.professional.slime_window_candidates = None;
+        self.cancel_slime_farm_candidate_query();
+        self.professional.slime_farm_candidates = None;
         self.professional.selection_stats = None;
         self.clear_paste_preview_state(cx);
         self.invalidate_preview_3d_mesh();
@@ -3554,13 +3554,16 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    pub(super) fn set_slime_query_window_size(
+    pub(super) fn set_slime_farm_search_mode(
         &mut self,
-        size: SlimeQueryWindowSize,
+        mode: SlimeFarmSearchMode,
         cx: &mut Context<Self>,
     ) {
-        self.slime_query_window_size = size;
-        self.professional.highlighted_window = None;
+        if self.slime_farm_search_mode == mode {
+            return;
+        }
+        self.slime_farm_search_mode = mode;
+        self.professional.highlighted_slime_candidate = None;
         self.refresh_professional_render_caches(cx);
         cx.notify();
     }
@@ -3608,9 +3611,9 @@ impl MapViewerWindowView {
     pub(super) fn clear_professional_selection(&mut self, cx: &mut Context<Self>) {
         self.professional.selection = None;
         self.professional.detail_generation = self.professional.detail_generation.saturating_add(1);
-        self.cancel_slime_window_candidate_query();
-        self.professional.slime_window_candidates = None;
-        self.professional.highlighted_window = None;
+        self.cancel_slime_farm_candidate_query();
+        self.professional.slime_farm_candidates = None;
+        self.professional.highlighted_slime_candidate = None;
         self.professional.selection_stats = None;
         self.professional.pending_edit_confirmation = None;
         self.clear_paste_preview_state(cx);

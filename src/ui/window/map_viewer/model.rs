@@ -375,32 +375,29 @@ impl Default for OverlayOptions {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SlimeQueryWindowSize {
-    Three,
-    Five,
-    Seven,
+pub(super) enum SlimeFarmSearchMode {
+    LargestConnected,
+    Quad2x2,
 }
 
-impl Default for SlimeQueryWindowSize {
+impl Default for SlimeFarmSearchMode {
     fn default() -> Self {
-        Self::Three
+        Self::LargestConnected
     }
 }
 
-impl SlimeQueryWindowSize {
-    pub(super) const fn value(self) -> u8 {
+impl SlimeFarmSearchMode {
+    pub(super) const fn query_mode(self) -> SlimeFarmQueryMode {
         match self {
-            Self::Three => 3,
-            Self::Five => 5,
-            Self::Seven => 7,
+            Self::LargestConnected => SlimeFarmQueryMode::LargestConnected,
+            Self::Quad2x2 => SlimeFarmQueryMode::Quad2x2,
         }
     }
 
-    pub(super) const fn label(self) -> &'static str {
+    pub(super) const fn cache_tag(self) -> u64 {
         match self {
-            Self::Three => "3x3",
-            Self::Five => "5x5",
-            Self::Seven => "7x7",
+            Self::LargestConnected => 1,
+            Self::Quad2x2 => 2,
         }
     }
 }
@@ -1098,14 +1095,14 @@ pub(super) struct ProfessionalQueryState {
     pub(super) slime_overlay_runs_generation: u64,
     pub(super) slime_overlay_runs_cancel: Option<CancelFlag>,
     pub(super) slime_overlay_runs_request_bounds: Option<SlimeChunkBounds>,
-    pub(super) slime_window_candidates: Option<SlimeWindowCandidateCache>,
-    pub(super) slime_window_candidates_loading: bool,
-    pub(super) slime_window_candidates_generation: u64,
-    pub(super) slime_window_candidates_cancel: Option<CancelFlag>,
-    pub(super) slime_window_candidates_request_bounds: Option<SlimeChunkBounds>,
-    pub(super) slime_window_candidates_request_size: Option<SlimeQueryWindowSize>,
+    pub(super) slime_farm_candidates: Option<SlimeFarmCandidateCache>,
+    pub(super) slime_farm_candidates_loading: bool,
+    pub(super) slime_farm_candidates_generation: u64,
+    pub(super) slime_farm_candidates_cancel: Option<CancelFlag>,
+    pub(super) slime_farm_candidates_request_bounds: Option<SlimeChunkBounds>,
+    pub(super) slime_farm_candidates_request_mode: Option<SlimeFarmSearchMode>,
     pub(super) selection: Option<ChunkSelection>,
-    pub(super) highlighted_window: Option<SlimeChunkWindow>,
+    pub(super) highlighted_slime_candidate: Option<SlimeFarmCandidate>,
     pub(super) selection_stats: Option<SelectionStats>,
     pub(super) detail: Option<ProfessionalDetail>,
     pub(super) detail_generation: u64,
@@ -1523,10 +1520,10 @@ impl SlimeOverlayRunCache {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct SlimeWindowCandidateCache {
+pub(super) struct SlimeFarmCandidateCache {
     pub(super) bounds: SlimeChunkBounds,
-    pub(super) size: SlimeQueryWindowSize,
-    pub(super) windows: Vec<SlimeChunkWindow>,
+    pub(super) mode: SlimeFarmSearchMode,
+    pub(super) candidates: Vec<SlimeFarmCandidate>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1661,7 +1658,7 @@ pub(super) struct MapCanvasSnapshotKey {
     pub(super) selection: Option<ChunkSelection>,
     pub(super) paste_preview: Option<PastePreview>,
     pub(super) paste_preview_images_generation: u64,
-    pub(super) highlighted_window: Option<SlimeChunkWindow>,
+    pub(super) highlighted_slime_candidate: Option<SlimeFarmCandidate>,
     pub(super) markers_generation: u64,
 }
 
@@ -1692,7 +1689,7 @@ pub struct MapViewerWindowView {
     pub(super) render_backend: RenderBackend,
     pub(super) render_gpu_backend: RenderGpuBackend,
     pub(super) overlay_options: OverlayOptions,
-    pub(super) slime_query_window_size: SlimeQueryWindowSize,
+    pub(super) slime_farm_search_mode: SlimeFarmSearchMode,
     pub(super) professional: ProfessionalQueryState,
     pub(super) history: MapHistoryState,
     pub(super) players: PlayerPanelState,
