@@ -323,6 +323,28 @@ pub(crate) struct ViewBoundsFrame {
     pub(crate) bounds: Option<Bounds<ScaledPixels>>,
 }
 
+/// Inherited Window state captured at one cached view boundary.
+///
+/// A selective ancestor traversal restores this snapshot before rebuilding the dirty child so
+/// skipping intermediate Render calls cannot change text inheritance, clipping, transforms,
+/// retained identity namespaces, element offsets, or image-cache ownership.
+#[derive(Clone)]
+pub(crate) struct CachedViewTraversalContext {
+    element_id_stack: SmallVec<[ElementId; 32]>,
+    retained_element_id_stack: SmallVec<[ElementId; 32]>,
+    retained_child_slot_stack: SmallVec<[u32; 32]>,
+    text_style_stack: Vec<TextStyleRefinement>,
+    rem_size_override_stack: SmallVec<[Pixels; 8]>,
+    element_offset_stack: Vec<Point<Pixels>>,
+    element_opacity: f32,
+    scene_animation: Option<(crate::SceneAnimationId, crate::TransitionProperty)>,
+    scene_text_raster_scale: f32,
+    element_visual_transform: ElementVisualTransform,
+    content_mask_stack: Vec<ContentMask<Pixels>>,
+    visual_content_mask_stack: Vec<ContentMask<Pixels>>,
+    image_cache_stack: Vec<AnyImageCache>,
+}
+
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
@@ -468,6 +490,69 @@ pub struct Window {
 }
 
 impl Window {
+    pub(crate) fn capture_cached_view_traversal_context(&self) -> CachedViewTraversalContext {
+        CachedViewTraversalContext {
+            element_id_stack: self.element_id_stack.clone(),
+            retained_element_id_stack: self.retained_element_id_stack.clone(),
+            retained_child_slot_stack: self.retained_child_slot_stack.clone(),
+            text_style_stack: self.text_style_stack.clone(),
+            rem_size_override_stack: self.rem_size_override_stack.clone(),
+            element_offset_stack: self.element_offset_stack.clone(),
+            element_opacity: self.element_opacity,
+            scene_animation: self.scene_animation,
+            scene_text_raster_scale: self.scene_text_raster_scale,
+            element_visual_transform: self.element_visual_transform,
+            content_mask_stack: self.content_mask_stack.clone(),
+            visual_content_mask_stack: self.visual_content_mask_stack.clone(),
+            image_cache_stack: self.image_cache_stack.clone(),
+        }
+    }
+
+    pub(crate) fn with_cached_view_traversal_context<R>(
+        &mut self,
+        context: &CachedViewTraversalContext,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.capture_cached_view_traversal_context();
+
+        self.element_id_stack.clone_from(&context.element_id_stack);
+        self.retained_element_id_stack
+            .clone_from(&context.retained_element_id_stack);
+        self.retained_child_slot_stack
+            .clone_from(&context.retained_child_slot_stack);
+        self.text_style_stack.clone_from(&context.text_style_stack);
+        self.rem_size_override_stack
+            .clone_from(&context.rem_size_override_stack);
+        self.element_offset_stack
+            .clone_from(&context.element_offset_stack);
+        self.element_opacity = context.element_opacity;
+        self.scene_animation = context.scene_animation;
+        self.scene_text_raster_scale = context.scene_text_raster_scale;
+        self.element_visual_transform = context.element_visual_transform;
+        self.content_mask_stack.clone_from(&context.content_mask_stack);
+        self.visual_content_mask_stack
+            .clone_from(&context.visual_content_mask_stack);
+        self.image_cache_stack.clone_from(&context.image_cache_stack);
+
+        let result = f(self);
+
+        self.element_id_stack = previous.element_id_stack;
+        self.retained_element_id_stack = previous.retained_element_id_stack;
+        self.retained_child_slot_stack = previous.retained_child_slot_stack;
+        self.text_style_stack = previous.text_style_stack;
+        self.rem_size_override_stack = previous.rem_size_override_stack;
+        self.element_offset_stack = previous.element_offset_stack;
+        self.element_opacity = previous.element_opacity;
+        self.scene_animation = previous.scene_animation;
+        self.scene_text_raster_scale = previous.scene_text_raster_scale;
+        self.element_visual_transform = previous.element_visual_transform;
+        self.content_mask_stack = previous.content_mask_stack;
+        self.visual_content_mask_stack = previous.visual_content_mask_stack;
+        self.image_cache_stack = previous.image_cache_stack;
+
+        result
+    }
+
     pub(crate) fn record_list_measured_items(&mut self, count: usize) {
         self.pending_list_measured_items = self.pending_list_measured_items.saturating_add(count);
     }

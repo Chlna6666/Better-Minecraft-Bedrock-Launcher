@@ -1025,6 +1025,170 @@ impl Window {
         self.next_frame.retained_replay_scratch = moved;
         true
     }
+
+    /// Replays only complete retained subtrees fully contained in one paint/prepaint fragment.
+    ///
+    /// Post-order ancestor records whose metadata spans cross the fragment boundary are skipped.
+    /// This is the required behavior around a selectively rebuilt child: stable siblings survive,
+    /// while ancestors that semantically cover the dirty hole are conservatively retired.
+    pub(crate) fn replay_retained_element_metadata_fragment(
+        &mut self,
+        source_prepaint: &Range<PrepaintStateIndex>,
+        source_paint: &Range<PaintIndex>,
+        source_metadata: &Range<usize>,
+        target_prepaint: &Range<PrepaintStateIndex>,
+        target_paint: &Range<PaintIndex>,
+    ) -> bool {
+        if !retained_metadata_range_is_valid(
+            source_metadata,
+            self.rendered_frame.retained_element_order.len(),
+        ) {
+            return false;
+        }
+
+        let count = source_metadata.end - source_metadata.start;
+        if count == 0 {
+            return true;
+        }
+
+        let mut included = vec![false; count];
+        for (offset, source_index) in source_metadata.clone().enumerate() {
+            let key = &self.rendered_frame.retained_element_order[source_index];
+            let Some(source_range) = self.rendered_frame.retained_element_ranges.get(key) else {
+                return false;
+            };
+
+            // An ancestor of the selective hole starts before this fragment. Do not carry that
+            // proof forward; only complete sibling/descendant subtrees are independently valid.
+            if source_range.metadata_range.start < source_metadata.start
+                || source_range.metadata_range.end > source_metadata.end
+            {
+                continue;
+            }
+
+            if rebase_prepaint_range(
+                &source_range.prepaint_range,
+                source_prepaint,
+                target_prepaint,
+            )
+            .is_none()
+                || rebase_paint_range(
+                    &source_range.paint_range,
+                    source_paint,
+                    target_paint,
+                )
+                .is_none()
+                || source_range
+                    .div_self_scene
+                    .as_ref()
+                    .is_some_and(|self_scene| {
+                        rebase_scene_range(
+                            &self_scene.child_scene_range,
+                            source_paint,
+                            target_paint,
+                        )
+                        .is_none()
+                    })
+            {
+                return false;
+            }
+            included[offset] = true;
+        }
+
+        let mut included_prefix = Vec::with_capacity(count + 1);
+        included_prefix.push(0usize);
+        for include in &included {
+            let next = included_prefix
+                .last()
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(usize::from(*include));
+            included_prefix.push(next);
+        }
+
+        // A retained record admitted as complete must contain only other admitted records. This
+        // catches malformed/non-contiguous metadata before any payload is moved out of the source.
+        for (offset, source_index) in source_metadata.clone().enumerate() {
+            if !included[offset] {
+                continue;
+            }
+            let key = &self.rendered_frame.retained_element_order[source_index];
+            let source_range = self
+                .rendered_frame
+                .retained_element_ranges
+                .get(key)
+                .expect("retained metadata presence was validated above");
+            let start = source_range.metadata_range.start - source_metadata.start;
+            let end = source_range.metadata_range.end - source_metadata.start;
+            if included_prefix[end] - included_prefix[start] != end - start {
+                return false;
+            }
+        }
+
+        let target_metadata_start = self.next_frame.retained_element_order.len();
+        let replayed_count = included_prefix[count];
+        let mut moved = std::mem::take(&mut self.next_frame.retained_replay_scratch);
+        moved.clear();
+        if moved.capacity() < replayed_count {
+            moved.reserve(replayed_count);
+        }
+
+        for (offset, source_index) in source_metadata.clone().enumerate() {
+            if !included[offset] {
+                continue;
+            }
+            let key = self.rendered_frame.retained_element_order[source_index].clone();
+            let Some(range) = self.rendered_frame.retained_element_ranges.remove(&key) else {
+                for (key, range) in moved.drain(..) {
+                    self.rendered_frame.retained_element_ranges.insert(key, range);
+                }
+                self.next_frame.retained_replay_scratch = moved;
+                return false;
+            };
+            moved.push((key, range));
+        }
+
+        for (key, mut range) in moved.drain(..) {
+            range.prepaint_range = rebase_prepaint_range(
+                &range.prepaint_range,
+                source_prepaint,
+                target_prepaint,
+            )
+            .expect("fragment retained prepaint range was validated before transfer");
+            range.paint_range = rebase_paint_range(
+                &range.paint_range,
+                source_paint,
+                target_paint,
+            )
+            .expect("fragment retained paint range was validated before transfer");
+            if let Some(self_scene) = range.div_self_scene.as_mut() {
+                self_scene.child_scene_range = rebase_scene_range(
+                    &self_scene.child_scene_range,
+                    source_paint,
+                    target_paint,
+                )
+                .expect("fragment retained div scene range was validated before transfer");
+            }
+
+            let source_start = range.metadata_range.start - source_metadata.start;
+            let source_end = range.metadata_range.end - source_metadata.start;
+            range.metadata_range =
+                target_metadata_start + included_prefix[source_start]
+                    ..target_metadata_start + included_prefix[source_end];
+
+            self.next_frame.retained_element_order.push(key.clone());
+            self.next_frame.retained_element_ranges.insert(key, range);
+        }
+
+        let target = RETAINED_REPLAY_SCRATCH_MIN_CAPACITY.max(replayed_count);
+        if moved.capacity()
+            > target.saturating_mul(RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER)
+        {
+            moved.shrink_to(target);
+        }
+        self.next_frame.retained_replay_scratch = moved;
+        true
+    }
 }
 
 fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {

@@ -122,7 +122,10 @@ pub use focus::{
 use frame::{
     DIRTY_REGION_FULL_REDRAW_RATIO, WINDOW_LIGHT_TRIM_IDLE_FRAMES, WINDOW_STRONG_TRIM_IDLE_FRAMES,
 };
-pub(crate) use frame::{DeferredDraw, Frame, PaintIndex, PrepaintStateIndex, RetainedSceneSegment};
+pub(crate) use frame::{
+    DeferredDraw, Frame, PaintIndex, PrepaintStateIndex, RetainedElementRange,
+    RetainedSceneSegment,
+};
 #[cfg(test)]
 use frame_lifecycle::FrameCompletion;
 use frame_lifecycle::{FrameWatchdog, WindowFrameThrottle};
@@ -147,7 +150,8 @@ use state::{
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
 pub(crate) use state::{
-    DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame, ViewDirtyScope,
+    CachedViewTraversalContext, DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame,
+    ViewDirtyScope,
 };
 pub(crate) use tab_stop::*;
 pub use titlebar::TitlebarGesture;
