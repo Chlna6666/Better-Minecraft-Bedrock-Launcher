@@ -112,35 +112,32 @@ fn selective_any_view_target(
         return None;
     }
 
-    let state_type = TypeId::of::<AnyViewState>();
-    for ((state_global_id, type_id), boxed) in &window.rendered_frame.element_states {
-        if *type_id != state_type {
-            continue;
-        }
-        let Some(state) = boxed
-            .inner
-            .downcast_ref::<Option<AnyViewState>>()
-            .and_then(Option::as_ref)
-        else {
-            continue;
-        };
-        if state.owner_id != owner_id || state.retained_id != retained_id {
-            continue;
-        }
-
-        let view = state.weak_view.upgrade()?;
-        if view.cached_style.is_none() {
-            return None;
-        }
-        return Some(SelectiveAnyViewTarget {
-            view,
-            state_global_id: GlobalElementId(state_global_id.0.clone()),
-            retained_id,
-            traversal_context: state.traversal_context.clone(),
-            source_outer,
-        });
+    let state_global_id = window
+        .invalidator
+        .cached_view_state_global_id(owner_id, &retained_id)?;
+    let boxed = window
+        .rendered_frame
+        .element_states
+        .get(&(state_global_id.clone(), TypeId::of::<AnyViewState>()))?;
+    let state = boxed
+        .inner
+        .downcast_ref::<Option<AnyViewState>>()?
+        .as_ref()?;
+    if state.owner_id != owner_id || state.retained_id != retained_id {
+        return None;
     }
-    None
+
+    let view = state.weak_view.upgrade()?;
+    if view.cached_style.is_none() {
+        return None;
+    }
+    Some(SelectiveAnyViewTarget {
+        view,
+        state_global_id,
+        retained_id,
+        traversal_context: state.traversal_context.clone(),
+        source_outer,
+    })
 }
 
 fn try_selective_any_view_prepaint(
@@ -524,10 +521,13 @@ impl Element for AnyView {
         let traversal_context = window.capture_cached_view_traversal_context();
         if self.cached_style.is_some()
             && let Some(retained_id) = retained_id.as_ref()
+            && let Some(state_global_id) = global_id
         {
-            window
-                .invalidator
-                .register_cached_view_retained_target(self.entity_id(), retained_id);
+            window.invalidator.register_cached_view_retained_target(
+                self.entity_id(),
+                retained_id,
+                state_global_id,
+            );
         }
         window.with_rendered_view(self.entity_id(), |window| {
             let critical = self.critical;

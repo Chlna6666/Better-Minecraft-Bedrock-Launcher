@@ -171,6 +171,12 @@ impl Window {
     }
 }
 
+#[derive(Clone)]
+struct CachedViewRetainedTarget {
+    retained_id: GlobalElementId,
+    state_global_id: GlobalElementId,
+}
+
 struct WindowInvalidatorInner {
     pub dirty: bool,
     pub draw_phase: DrawPhase,
@@ -204,7 +210,7 @@ struct WindowInvalidatorInner {
     /// Ordinary Context::notify(view) can use these paths as ReconcileSubtree targets instead of
     /// widening a tiny child update into a generic view invalidation from the root. Targets are
     /// validated against the committed retained-range table after every successful frame.
-    pub cached_view_retained_targets: FxHashMap<EntityId, Vec<GlobalElementId>>,
+    pub cached_view_retained_targets: FxHashMap<EntityId, Vec<CachedViewRetainedTarget>>,
 }
 
 #[derive(Clone)]
@@ -342,10 +348,10 @@ impl WindowInvalidator {
                 if let Some(targets) = inner.cached_view_retained_targets.get(&entity).cloned()
                     && !targets.is_empty()
                 {
-                    for retained_id in targets {
+                    for target in targets {
                         inner
                             .pending_targeted_elements
-                            .entry((entity, retained_id))
+                            .entry((entity, target.retained_id))
                             .and_modify(|scope| {
                                 *scope = scope.merged(RetainedInvalidationScope::ReconcileSubtree)
                             })
@@ -427,15 +433,38 @@ impl WindowInvalidator {
         &self,
         entity: EntityId,
         retained_id: &GlobalElementId,
+        state_global_id: &GlobalElementId,
     ) {
         let mut inner = self.inner.borrow_mut();
         let targets = inner
             .cached_view_retained_targets
             .entry(entity)
             .or_default();
-        if !targets.iter().any(|target| target == retained_id) {
-            targets.push(retained_id.clone());
+        if let Some(target) = targets
+            .iter_mut()
+            .find(|target| target.retained_id == *retained_id)
+        {
+            target.state_global_id = state_global_id.clone();
+        } else {
+            targets.push(CachedViewRetainedTarget {
+                retained_id: retained_id.clone(),
+                state_global_id: state_global_id.clone(),
+            });
         }
+    }
+
+    pub(crate) fn cached_view_state_global_id(
+        &self,
+        entity: EntityId,
+        retained_id: &GlobalElementId,
+    ) -> Option<GlobalElementId> {
+        self.inner
+            .borrow()
+            .cached_view_retained_targets
+            .get(&entity)?
+            .iter()
+            .find(|target| target.retained_id == *retained_id)
+            .map(|target| target.state_global_id.clone())
     }
 
     pub(in crate::window) fn retain_cached_view_retained_targets(
@@ -446,7 +475,7 @@ impl WindowInvalidator {
             .borrow_mut()
             .cached_view_retained_targets
             .retain(|entity, targets| {
-                targets.retain(|target| keep(*entity, target));
+                targets.retain(|target| keep(*entity, &target.retained_id));
                 !targets.is_empty()
             });
     }

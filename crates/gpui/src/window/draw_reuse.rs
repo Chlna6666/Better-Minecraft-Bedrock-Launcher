@@ -1168,7 +1168,8 @@ impl Window {
             return true;
         }
 
-        let mut included = vec![false; count];
+        let mut included = SmallVec::<[bool; 64]>::with_capacity(count);
+        included.resize(count, false);
         for (offset, source_index) in source_metadata.clone().enumerate() {
             let key = &self.rendered_frame.retained_element_order[source_index];
             let Some(source_range) = self.rendered_frame.retained_element_ranges.get(key) else {
@@ -1212,7 +1213,7 @@ impl Window {
             included[offset] = true;
         }
 
-        let mut included_prefix = Vec::with_capacity(count + 1);
+        let mut included_prefix = SmallVec::<[usize; 65]>::with_capacity(count + 1);
         included_prefix.push(0usize);
         for include in &included {
             let next = included_prefix
