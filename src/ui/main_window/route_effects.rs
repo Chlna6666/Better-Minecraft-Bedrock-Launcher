@@ -31,9 +31,10 @@ impl MainWindowView {
             );
         }
 
+        let window_id = self.window_id;
         cx.update_global(
             |state: &mut crate::ui::components::dropdown::DropdownOverlayState, _cx| {
-                state.clear();
+                state.clear_for_window(window_id);
             },
         );
         let recent_target = self.recent_page_target.clone();

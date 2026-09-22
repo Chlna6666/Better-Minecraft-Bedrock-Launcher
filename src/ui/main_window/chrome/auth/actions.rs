@@ -25,6 +25,17 @@ pub(super) fn button(
     colors: &ThemeColors,
     enabled: bool,
 ) -> Stateful<Div> {
+    button_with_disabled_opacity(id, action, state, colors, enabled, 0.45)
+}
+
+pub(super) fn button_with_disabled_opacity(
+    id: impl Into<ElementId>,
+    action: Action,
+    state: &RenderState,
+    colors: &ThemeColors,
+    enabled: bool,
+    disabled_opacity: f32,
+) -> Stateful<Div> {
     let hover = colors.text_primary.opacity(0.06);
     let accent = colors.accent;
     let reduced_motion = state.reduced_motion;
@@ -39,7 +50,7 @@ pub(super) fn button(
         .text_size(px(12.))
         .text_color(colors.text_primary);
     if !enabled {
-        return button.opacity(0.45);
+        return button.opacity(disabled_opacity.clamp(0.0, 1.0));
     }
     button
         .cursor_pointer()

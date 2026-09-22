@@ -244,12 +244,9 @@ impl MainWindowView {
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::components::dropdown::DropdownOverlayState>(
                 |_this, cx| {
-                    let now = Instant::now();
-                    let state =
-                        cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
-                    if crate::ui::components::dropdown::has_visible_overlay(now, state) {
-                        cx.notify();
-                    }
+                    // Dropdown state is scoped by window id. This global reactor has no Window,
+                    // so wake the main view and let build_render_model filter the owner window.
+                    cx.notify();
                 },
             ),
         );
@@ -647,6 +644,7 @@ impl MainWindowView {
         });
 
         let mut this = Self {
+            window_id: window.window_handle().window_id().as_u64(),
             background_view,
             chrome_view: None,
             home_page_view: None,

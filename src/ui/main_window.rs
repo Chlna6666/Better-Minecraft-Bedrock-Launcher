@@ -181,6 +181,7 @@ struct ThemeColorCache {
 }
 
 pub struct MainWindowView {
+    window_id: u64,
     background_view: Entity<background::AppBackgroundView>,
     chrome_view: Option<Entity<chrome_view::AppChromeView>>,
     // 页面视图懒加载：首次进入路由时才创建，离开时可按需释放
@@ -387,7 +388,7 @@ impl MainWindowView {
         let dropdown_visible = {
             let dropdown_state =
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
-            crate::ui::components::dropdown::has_visible_overlay(now, dropdown_state)
+            crate::ui::components::dropdown::has_visible_overlay(window, now, dropdown_state)
         };
         let route_transition_direction = cx
             .global::<crate::ui::state::navigation::NavState>()

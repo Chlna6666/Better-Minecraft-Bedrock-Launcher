@@ -57,6 +57,20 @@ struct ImportFilePreview {
     error: Option<SharedString>,
 }
 
+fn extend_unique_import_paths(
+    paths: &mut Vec<PathBuf>,
+    incoming: impl IntoIterator<Item = PathBuf>,
+) -> bool {
+    let mut changed = false;
+    for path in incoming {
+        if !paths.iter().any(|existing| existing == &path) {
+            paths.push(path);
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub struct ImportWindowView {
     window_id: Option<u64>,
     presentation: ImportPresentation,
@@ -74,6 +88,7 @@ pub struct ImportWindowView {
     show_conflict_dialog: bool,
     is_inspecting: bool,
     inspect_started_at: Instant,
+    inspect_generation: u64,
     is_importing: bool,
     launch_after_import: bool,
     close_after_launch_completion: bool,
@@ -95,13 +110,15 @@ impl ImportWindowView {
     }
 
     pub fn new_batch(
-        mut file_paths: Vec<PathBuf>,
+        file_paths: Vec<PathBuf>,
         target: ImportWindowTarget,
         presentation: ImportPresentation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        file_paths.dedup();
+        let mut unique_paths = Vec::with_capacity(file_paths.len());
+        extend_unique_import_paths(&mut unique_paths, file_paths);
+        let file_paths = unique_paths;
         let primary = file_paths
             .first()
             .cloned()
@@ -175,6 +192,7 @@ impl ImportWindowView {
             show_conflict_dialog: false,
             is_inspecting: false,
             inspect_started_at: Instant::now(),
+            inspect_generation: 0,
             is_importing: false,
             launch_after_import: false,
             close_after_launch_completion: false,
@@ -217,9 +235,8 @@ impl ImportWindowView {
     }
 
     fn inspect_file(&mut self, cx: &mut Context<Self>) {
-        if self.is_inspecting {
-            return;
-        }
+        self.inspect_generation = self.inspect_generation.wrapping_add(1).max(1);
+        let generation = self.inspect_generation;
         self.is_inspecting = true;
         self.inspect_started_at = Instant::now();
         self.preview = None;
@@ -245,6 +262,13 @@ impl ImportWindowView {
             let results = join_all(inspections).await;
 
             handle.update(cx, |this, cx| {
+                if this.inspect_generation != generation {
+                    debug!(
+                        "Import window inspect stale result ignored: generation={}, current={}",
+                        generation, this.inspect_generation
+                    );
+                    return;
+                }
                 this.is_inspecting = false;
                 let total = results.len();
                 let mut failed = 0usize;
@@ -305,6 +329,30 @@ impl ImportWindowView {
             Ok::<(), anyhow::Error>(())
         })
         .detach();
+    }
+
+    pub(crate) fn append_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_importing || paths.is_empty() {
+            return;
+        }
+
+        if !extend_unique_import_paths(&mut self.file_paths, paths) {
+            return;
+        }
+
+        if let Some(primary) = self.file_paths.first().cloned() {
+            self.import_context.file_path = primary;
+        }
+        debug!(
+            "Import window merged additional drop paths: files={}",
+            self.file_paths.len()
+        );
+        self.inspect_file(cx);
+        cx.notify();
     }
 
     fn has_invalid_or_failed_preview(&self) -> bool {
@@ -942,7 +990,7 @@ impl Render for ImportWindowView {
 
         let dropdown_state = cx.global::<dropdown::DropdownOverlayState>();
         if self.presentation == ImportPresentation::Window
-            && dropdown::has_visible_overlay(frame_now, dropdown_state)
+            && dropdown::has_visible_overlay(window, frame_now, dropdown_state)
         {
             root = root.child(dropdown::render_overlay(window, frame_now, dropdown_state));
         }
@@ -3274,4 +3322,36 @@ fn format_size(bytes: u64) -> String {
         unit_index += 1;
     }
     format!("{value:.2} {}", UNITS[unit_index])
+}
+
+#[cfg(test)]
+mod batch_path_tests {
+    use super::extend_unique_import_paths;
+    use std::path::PathBuf;
+
+    #[test]
+    fn import_batch_keeps_every_unique_path_across_split_drops() {
+        let mut paths = Vec::new();
+        assert!(extend_unique_import_paths(
+            &mut paths,
+            [
+                PathBuf::from("a.mcpack"),
+                PathBuf::from("b.mcpack"),
+                PathBuf::from("a.mcpack"),
+            ],
+        ));
+        assert!(extend_unique_import_paths(
+            &mut paths,
+            [PathBuf::from("c.mcpack"), PathBuf::from("b.mcpack")],
+        ));
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("a.mcpack"),
+                PathBuf::from("b.mcpack"),
+                PathBuf::from("c.mcpack"),
+            ]
+        );
+    }
 }

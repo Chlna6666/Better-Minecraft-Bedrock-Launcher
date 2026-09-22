@@ -128,7 +128,7 @@ pub(crate) struct WindowsPlatformInner {
 #[derive(Default)]
 struct PendingFileDrop {
     paths: SmallVec<[PathBuf; 2]>,
-    dropped_paths: SmallVec<[PathBuf; 2]>,
+    submit_position: Option<Point<Pixels>>,
 }
 
 impl PendingFileDrop {
@@ -138,17 +138,13 @@ impl PendingFileDrop {
         }
     }
 
-    fn mark_dropped(&mut self, path: PathBuf) -> bool {
-        self.push_hovered(path.clone());
-        if !self
-            .dropped_paths
-            .iter()
-            .any(|existing| existing == &path)
-        {
-            self.dropped_paths.push(path);
-        }
+    fn mark_dropped(&mut self, path: PathBuf, position: Point<Pixels>) {
+        self.push_hovered(path);
+        self.submit_position = Some(position);
+    }
 
-        !self.paths.is_empty() && self.dropped_paths.len() >= self.paths.len()
+    fn is_ready_to_submit(&self) -> bool {
+        self.submit_position.is_some() && !self.paths.is_empty()
     }
 
     fn external_paths(&self) -> ExternalPaths {
@@ -1059,6 +1055,42 @@ impl WindowsApplication {
         }
     }
 
+    fn flush_pending_file_drops(&mut self) {
+        let ready = self
+            .pending_file_drops
+            .iter()
+            .filter_map(|(window_id, pending)| pending.is_ready_to_submit().then_some(*window_id))
+            .collect::<Vec<_>>();
+
+        for window_id in ready {
+            let Some(pending) = self.pending_file_drops.remove(&window_id) else {
+                continue;
+            };
+            let Some(position) = pending.submit_position else {
+                continue;
+            };
+            let Some(window) = self.windows.get(&window_id).cloned() else {
+                continue;
+            };
+
+            let paths = ExternalPaths(pending.paths);
+            let mut state = window.0.state.borrow_mut();
+            let input_callback = state.callbacks.input.take();
+            drop(state);
+            if let Some(mut callback) = input_callback {
+                // Winit emits one DroppedFile event per path. Waiting until AboutToWait
+                // preserves the entire native event burst as one logical ExternalPaths drop,
+                // without guessing completion from HoveredFile coverage.
+                let _ = callback(PlatformInput::FileDrop(FileDropEvent::Entered {
+                    position,
+                    paths,
+                }));
+                let _ = callback(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+                window.0.state.borrow_mut().callbacks.input = Some(callback);
+            }
+        }
+    }
+
     fn focused_window_hwnd(&self) -> Option<HWND> {
         self.focused_window_id
             .and_then(|window_id| self.windows.get(&window_id))
@@ -1101,6 +1133,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
         });
+        self.flush_pending_file_drops();
         self.run_foreground_tasks(event_loop);
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = None;
@@ -1279,26 +1312,20 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::DroppedFile(path) => {
                 let position = window.0.state.borrow().mouse_position.get();
                 let entry = self.pending_file_drops.entry(window_id).or_default();
-                let batch_complete = entry.mark_dropped(path);
+                entry.mark_dropped(path, position);
+
+                // Keep the active drag payload current for hover previews, but defer MouseUp
+                // until AboutToWait so every DroppedFile from this native event burst joins the
+                // same logical drop.
                 let paths = entry.external_paths();
-                if batch_complete {
-                    self.pending_file_drops.remove(&window_id);
-                }
                 let mut state = window.0.state.borrow_mut();
                 let input_callback = state.callbacks.input.take();
                 drop(state);
                 if let Some(mut callback) = input_callback {
-                    // Refresh the external drag payload before dispatching MouseUp. Windows/winit
-                    // reports a multi-selection as multiple file events, but GPUI exposes one
-                    // logical ExternalPaths drop to application code.
                     let _ = callback(PlatformInput::FileDrop(FileDropEvent::Entered {
                         position,
                         paths,
                     }));
-                    if batch_complete {
-                        let _ =
-                            callback(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
-                    }
                     window.0.state.borrow_mut().callbacks.input = Some(callback);
                 }
             }
@@ -1772,5 +1799,32 @@ mod tests {
         assert!(!inner.run_foreground_tasks());
         assert!(task_ran.get());
         assert!(!inner.main_thread_wakeup_pending.load(Ordering::Acquire));
+    }
+}
+
+#[cfg(test)]
+mod file_drop_batch_tests {
+    use super::*;
+
+    #[test]
+    fn pending_file_drop_keeps_complete_unique_batch() {
+        let mut pending = PendingFileDrop::default();
+        pending.push_hovered(PathBuf::from("a.mcpack"));
+        pending.push_hovered(PathBuf::from("b.mcpack"));
+        pending.push_hovered(PathBuf::from("a.mcpack"));
+        pending.mark_dropped(
+            PathBuf::from("c.mcpack"),
+            point(px(10.0), px(20.0)),
+        );
+
+        assert!(pending.is_ready_to_submit());
+        assert_eq!(
+            pending.paths.as_slice(),
+            &[
+                PathBuf::from("a.mcpack"),
+                PathBuf::from("b.mcpack"),
+                PathBuf::from("c.mcpack"),
+            ]
+        );
     }
 }

@@ -344,19 +344,19 @@ impl AuthChromeView {
         }
     }
 
-    fn set_blocked(&mut self, blocked: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_blocked(&mut self, blocked: bool, _window: &mut Window, cx: &mut Context<Self>) {
         if self.blocked == blocked {
             return;
         }
         self.blocked = blocked;
-        if blocked
-            && (self.panel_focus.contains_focused(window, cx)
-                || self.trigger_focus.is_focused(window))
-        {
-            window.blur();
-        } else if !blocked && cx.global::<BedrockAuthState>().dialog_open {
-            window.focus(&self.panel_focus);
+
+        if blocked && cx.global::<BedrockAuthState>().dialog_open {
+            // A modal should close the auth popover, not blur the entire GPUI window. Keeping
+            // window focus intact avoids stale hover/focus/material state on the account chip.
+            cx.update_global(|state: &mut BedrockAuthState, _| state.close_dialog());
+            self.was_open = false;
         }
+
         cx.notify();
     }
 }

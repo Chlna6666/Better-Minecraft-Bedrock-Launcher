@@ -3,6 +3,7 @@ use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -53,12 +54,14 @@ type DropdownTriggerBuilder =
     Rc<dyn Fn(&ThemeColors, Pixels, Pixels, bool, f32, &SharedString) -> AnyElement>;
 
 pub struct DropdownOverlayState {
-    active: Option<DropdownOverlaySnapshot>,
+    active_by_window: HashMap<u64, DropdownOverlaySnapshot>,
 }
 
 impl Default for DropdownOverlayState {
     fn default() -> Self {
-        Self { active: None }
+        Self {
+            active_by_window: HashMap::new(),
+        }
     }
 }
 
@@ -91,6 +94,7 @@ struct DropdownOptionContext {
     state: WeakEntity<DropdownState>,
     on_select: Rc<dyn Fn(usize, &mut Window, &mut App)>,
     parent_view_id: EntityId,
+    owner_window_id: u64,
     overlay_id: ElementId,
 }
 
@@ -112,17 +116,25 @@ impl DropdownPhase {
 }
 
 impl DropdownOverlayState {
-    fn set_active(&mut self, snapshot: DropdownOverlaySnapshot) {
-        self.active = Some(snapshot);
+    fn set_active(&mut self, owner_window_id: u64, snapshot: DropdownOverlaySnapshot) {
+        self.active_by_window.insert(owner_window_id, snapshot);
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.active = None;
+    pub(crate) fn clear_for_window(&mut self, owner_window_id: u64) {
+        self.active_by_window.remove(&owner_window_id);
     }
 
-    fn clear_if_matches(&mut self, id: &ElementId) {
-        if self.active.as_ref().is_some_and(|active| &active.id == id) {
-            self.active = None;
+    fn active_for_window(&self, owner_window_id: u64) -> Option<&DropdownOverlaySnapshot> {
+        self.active_by_window.get(&owner_window_id)
+    }
+
+    fn clear_if_matches(&mut self, owner_window_id: u64, id: &ElementId) {
+        if self
+            .active_by_window
+            .get(&owner_window_id)
+            .is_some_and(|active| &active.id == id)
+        {
+            self.active_by_window.remove(&owner_window_id);
         }
     }
 }
@@ -320,6 +332,7 @@ fn dropdown_option_row(context: &DropdownOptionContext, index: usize) -> AnyElem
     let state = context.state.clone();
     let on_select = context.on_select.clone();
     let parent_view_id = context.parent_view_id;
+    let owner_window_id = context.owner_window_id;
     let overlay_id = context.overlay_id.clone();
 
     div()
@@ -371,7 +384,7 @@ fn dropdown_option_row(context: &DropdownOptionContext, index: usize) -> AnyElem
                         state.phase = begin_dropdown_close(state.phase, now);
                     }) {
                         cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
-                            overlay.clear_if_matches(&overlay_id);
+                            overlay.clear_if_matches(owner_window_id, &overlay_id);
                         });
                         tracing::debug!("dropdown close after selection skipped: {error:?}");
                     } else {
@@ -387,7 +400,8 @@ pub fn render_overlay(
     now: Instant,
     state: &DropdownOverlayState,
 ) -> AnyElement {
-    let Some(active) = state.active.as_ref() else {
+    let owner_window_id = window.window_handle().window_id().as_u64();
+    let Some(active) = state.active_for_window(owner_window_id) else {
         return div().into_any_element();
     };
 
@@ -424,6 +438,7 @@ pub fn render_overlay(
         state: active.state.clone(),
         on_select: active.on_select.clone(),
         parent_view_id: active.parent_view_id,
+        owner_window_id,
         overlay_id: active.id.clone(),
     };
     let option_count = options.len();
@@ -537,7 +552,7 @@ pub fn render_overlay(
                     }
                     Err(err) => {
                         cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
-                            overlay.clear_if_matches(&overlay_id);
+                            overlay.clear_if_matches(owner_window_id, &overlay_id);
                         });
                         tracing::debug!("dropdown overlay click skipped: {err:?}");
                     }
@@ -548,8 +563,13 @@ pub fn render_overlay(
         .into_any_element()
 }
 
-pub fn has_visible_overlay(now: Instant, state: &DropdownOverlayState) -> bool {
-    let Some(active) = state.active.as_ref() else {
+pub fn has_visible_overlay(
+    window: &Window,
+    now: Instant,
+    state: &DropdownOverlayState,
+) -> bool {
+    let owner_window_id = window.window_handle().window_id().as_u64();
+    let Some(active) = state.active_for_window(owner_window_id) else {
         return false;
     };
 
@@ -673,6 +693,7 @@ impl RenderOnce for Dropdown {
         });
 
         let parent_view_id = window.current_view();
+        let owner_window_id = window.window_handle().window_id().as_u64();
         let scroll_id: SharedString = SharedString::from(format!("dropdown-scroll-{:?}", id));
 
         let snapshot = state.read(cx);
@@ -885,7 +906,10 @@ impl RenderOnce for Dropdown {
         };
 
         let should_update_overlay = cx.read_global(|overlay: &DropdownOverlayState, _cx| {
-            match (phase_after_cleanup.is_visible(), overlay.active.as_ref()) {
+            match (
+                phase_after_cleanup.is_visible(),
+                overlay.active_for_window(owner_window_id),
+            ) {
                 (false, Some(active)) => active.id == id,
                 (false, None) => false,
                 (true, Some(active)) => {
@@ -904,9 +928,9 @@ impl RenderOnce for Dropdown {
         if should_update_overlay {
             cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
                 if phase_after_cleanup.is_visible() {
-                    overlay.set_active(overlay_snapshot);
+                    overlay.set_active(owner_window_id, overlay_snapshot);
                 } else {
-                    overlay.clear_if_matches(&id);
+                    overlay.clear_if_matches(owner_window_id, &id);
                 }
             });
         }
