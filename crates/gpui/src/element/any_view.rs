@@ -20,6 +20,10 @@ use std::{any::TypeId, fmt, ops::Range};
 struct AnyViewState {
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
+    metadata_range: Range<usize>,
+    replay_source_prepaint_range: Option<Range<PrepaintStateIndex>>,
+    replay_source_paint_range: Option<Range<PaintIndex>>,
+    replay_source_metadata_range: Option<Range<usize>>,
     cache_key: ViewCacheKey,
     accessed_entities: FxHashSet<EntityId>,
 }
@@ -420,8 +424,11 @@ impl Element for AnyView {
                         if can_defer_dirty_view {
                             window.degrade_current_draw();
                         }
+                        let source_prepaint_range = element_state.prepaint_range.clone();
+                        let source_paint_range = element_state.paint_range.clone();
+                        let source_metadata_range = element_state.metadata_range.clone();
                         let prepaint_start = window.prepaint_index();
-                        if !window.reuse_prepaint(element_state.prepaint_range.clone()) {
+                        if !window.reuse_prepaint(source_prepaint_range.clone()) {
                             window.record_debug_view_cache_status(
                                 bounds,
                                 ViewCacheDebugStatus::ReuseFailed,
@@ -435,6 +442,11 @@ impl Element for AnyView {
                         let prepaint_end = window.prepaint_index();
                         if !window.draw_was_degraded() {
                             element_state.prepaint_range = prepaint_start..prepaint_end;
+                            element_state.replay_source_prepaint_range =
+                                Some(source_prepaint_range);
+                            element_state.replay_source_paint_range = Some(source_paint_range);
+                            element_state.replay_source_metadata_range =
+                                Some(source_metadata_range);
                         }
 
                         return (None, element_state);
@@ -467,6 +479,10 @@ impl Element for AnyView {
                             accessed_entities,
                             prepaint_range: prepaint_start..prepaint_end,
                             paint_range: PaintIndex::default()..PaintIndex::default(),
+                            metadata_range: 0..0,
+                            replay_source_prepaint_range: None,
+                            replay_source_paint_range: None,
+                            replay_source_metadata_range: None,
                             cache_key: ViewCacheKey {
                                 bounds,
                                 content_mask,
@@ -500,6 +516,7 @@ impl Element for AnyView {
                     |element_state, window| {
                         let mut element_state = element_state.unwrap();
 
+                        let metadata_start = window.retained_element_metadata_len();
                         let paint_start = window.paint_index();
 
                         if let Some(element) = element {
@@ -514,20 +531,58 @@ impl Element for AnyView {
                         } else {
                             // Full cached subtree replay: replace Drawable's provisional red marker
                             // with a retained-green marker before copying the previous paint range.
+                            // The descendant retained metadata must be rebased together with the
+                            // frame-local prepaint/paint arrays; otherwise a clean parent cache hit
+                            // silently erases the exact child targets needed by a later notify().
                             window.record_debug_element_self_scene_replay(bounds, cx);
-                            if !window.reuse_paint(element_state.paint_range.clone()) {
+                            let source_prepaint = element_state
+                                .replay_source_prepaint_range
+                                .take()
+                                .unwrap_or_else(|| element_state.prepaint_range.clone());
+                            let source_paint = element_state
+                                .replay_source_paint_range
+                                .take()
+                                .unwrap_or_else(|| element_state.paint_range.clone());
+                            let source_metadata = element_state
+                                .replay_source_metadata_range
+                                .take()
+                                .unwrap_or_else(|| element_state.metadata_range.clone());
+                            if !window.reuse_paint(source_paint.clone()) {
                                 window.record_debug_view_cache_status(
                                     bounds,
                                     ViewCacheDebugStatus::ReuseFailed,
                                     cx,
                                 );
                                 window.degrade_current_draw();
+                            } else {
+                                let target_paint = paint_start.clone()..window.paint_index();
+                                if !source_metadata.is_empty()
+                                    && !window.replay_retained_element_metadata(
+                                        &source_prepaint,
+                                        &source_paint,
+                                        &source_metadata,
+                                        &element_state.prepaint_range,
+                                        &target_paint,
+                                    )
+                                {
+                                    window.record_debug_view_cache_status(
+                                        bounds,
+                                        ViewCacheDebugStatus::ReuseFailed,
+                                        cx,
+                                    );
+                                    window.degrade_current_draw();
+                                }
                             }
                         }
 
                         let paint_end = window.paint_index();
                         if !window.draw_was_degraded() {
                             element_state.paint_range = paint_start..paint_end;
+                            element_state.metadata_range =
+                                metadata_start..window.retained_element_metadata_len();
+                            element_state.replay_source_prepaint_range = None;
+                            element_state.replay_source_paint_range = None;
+                            element_state.replay_source_metadata_range = None;
                         }
 
                         ((), element_state)
