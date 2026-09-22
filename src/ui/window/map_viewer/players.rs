@@ -461,6 +461,11 @@ impl MapViewerWindowView {
     pub(super) fn load_player_detail(&mut self, id: PlayerId, cx: &mut Context<Self>) {
         self.players.generation = self.players.generation.saturating_add(1);
         self.players.selected = Some(id.clone());
+        if self.slime_farm_scope_mode == SlimeFarmScopeMode::SelectedPlayer {
+            self.cancel_slime_farm_candidate_query();
+            self.professional.slime_farm_candidates = None;
+            self.professional.highlighted_slime_candidate = None;
+        }
         self.players.loading = true;
         self.players.error = None;
         self.players.pending_save_confirmation = None;
@@ -507,6 +512,9 @@ impl MapViewerWindowView {
                         this.players.error = Some(SharedString::from(error.clone()));
                         this.status = SharedString::from(error);
                     }
+                }
+                if this.slime_farm_scope_mode == SlimeFarmScopeMode::SelectedPlayer {
+                    this.refresh_professional_render_caches(cx);
                 }
                 cx.notify();
             })?;
@@ -797,6 +805,12 @@ impl MapViewerWindowView {
                         this.status = player_record_written.clone();
                         let colors = this.theme_colors(cx);
                         this.sync_canvas_snapshot(colors, cx);
+                        if this.slime_farm_scope_mode == SlimeFarmScopeMode::SelectedPlayer {
+                            this.cancel_slime_farm_candidate_query();
+                            this.professional.slime_farm_candidates = None;
+                            this.professional.highlighted_slime_candidate = None;
+                            this.refresh_professional_render_caches(cx);
+                        }
                     }
                     Err(error) => {
                         this.players.error = Some(SharedString::from(error.clone()));

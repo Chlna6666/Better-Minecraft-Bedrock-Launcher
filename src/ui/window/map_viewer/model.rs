@@ -402,6 +402,20 @@ impl SlimeFarmSearchMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SlimeFarmScopeMode {
+    Auto,
+    Viewport,
+    Selection,
+    SelectedPlayer,
+}
+
+impl Default for SlimeFarmScopeMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum ProfessionalDetail {
     BlockTip {
@@ -1690,6 +1704,7 @@ pub struct MapViewerWindowView {
     pub(super) render_gpu_backend: RenderGpuBackend,
     pub(super) overlay_options: OverlayOptions,
     pub(super) slime_farm_search_mode: SlimeFarmSearchMode,
+    pub(super) slime_farm_scope_mode: SlimeFarmScopeMode,
     pub(super) professional: ProfessionalQueryState,
     pub(super) history: MapHistoryState,
     pub(super) players: PlayerPanelState,

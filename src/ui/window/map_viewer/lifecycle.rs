@@ -410,6 +410,7 @@ impl MapViewerWindowView {
             render_gpu_backend: default_interactive_render_gpu_backend(),
             overlay_options: OverlayOptions::default(),
             slime_farm_search_mode: SlimeFarmSearchMode::default(),
+            slime_farm_scope_mode: SlimeFarmScopeMode::default(),
             professional: ProfessionalQueryState::default(),
             history: MapHistoryState::default(),
             players: PlayerPanelState::default(),

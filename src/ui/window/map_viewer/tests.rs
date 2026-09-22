@@ -1539,7 +1539,8 @@ fn slime_farm_scope_clamps_bedrock_precision_waste() {
         min_chunk_z: -80_000,
         max_chunk_z: 80_000,
     };
-    let scope = practical_slime_farm_scope(requested, true).expect("clamped overworld scope");
+    let scope = practical_slime_farm_scope(requested, SlimeFarmSearchScopeSource::Selection)
+        .expect("clamped overworld scope");
 
     assert_eq!(scope.bounds.min_chunk_x, -65_535);
     assert_eq!(scope.bounds.max_chunk_x, 65_535);
@@ -1547,7 +1548,7 @@ fn slime_farm_scope_clamps_bedrock_precision_waste() {
     assert_eq!(scope.bounds.max_chunk_z, 65_535);
     assert!(scope.clipped_for_precision);
     assert!(scope.precision_degraded);
-    assert!(scope.selection_scoped);
+    assert_eq!(scope.source, SlimeFarmSearchScopeSource::Selection);
 }
 
 #[::core::prelude::v1::test]
@@ -1559,11 +1560,27 @@ fn slime_farm_scope_marks_precision_degraded_before_hard_cutoff() {
         min_chunk_z: 0,
         max_chunk_z: 10,
     };
-    let scope = practical_slime_farm_scope(requested, false).expect("degraded scope");
+    let scope = practical_slime_farm_scope(requested, SlimeFarmSearchScopeSource::Viewport)
+        .expect("degraded scope");
 
     assert!(!scope.clipped_for_precision);
     assert!(scope.precision_degraded);
-    assert!(!scope.selection_scoped);
+    assert_eq!(scope.source, SlimeFarmSearchScopeSource::Viewport);
+}
+
+#[::core::prelude::v1::test]
+fn slime_farm_player_scope_is_bounded_and_uses_floor_for_negative_coordinates() {
+    let bounds =
+        slime_farm_player_bounds([-0.5, 64.0, 15.9]).expect("finite player position");
+
+    assert_eq!(bounds.dimension, Dimension::Overworld);
+    assert_eq!(bounds.center(), (-1, 0));
+    assert_eq!(bounds.min_chunk_x, -65);
+    assert_eq!(bounds.max_chunk_x, 63);
+    assert_eq!(bounds.min_chunk_z, -64);
+    assert_eq!(bounds.max_chunk_z, 64);
+    assert_eq!(bounds.chunk_count(), 16_641);
+    assert!(slime_farm_player_bounds([f64::NAN, 64.0, 0.0]).is_none());
 }
 
 #[::core::prelude::v1::test]

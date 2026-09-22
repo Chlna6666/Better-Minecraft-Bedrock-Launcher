@@ -824,9 +824,33 @@ impl MapViewerWindowView {
         if self.dimension != Dimension::Overworld {
             return None;
         }
-        let selection_scoped = self.professional.selection.is_some();
-        let mut requested = self.professional_query_bounds()?;
-        if !selection_scoped {
+
+        let (mut requested, source) = match self.slime_farm_scope_mode {
+            SlimeFarmScopeMode::Auto => {
+                if let Some(selection) = self.professional.selection {
+                    (selection.bounds(), SlimeFarmSearchScopeSource::Selection)
+                } else {
+                    (
+                        self.visible_slime_bounds()?,
+                        SlimeFarmSearchScopeSource::Viewport,
+                    )
+                }
+            }
+            SlimeFarmScopeMode::Viewport => (
+                self.visible_slime_bounds()?,
+                SlimeFarmSearchScopeSource::Viewport,
+            ),
+            SlimeFarmScopeMode::Selection => (
+                self.professional.selection?.bounds(),
+                SlimeFarmSearchScopeSource::Selection,
+            ),
+            SlimeFarmScopeMode::SelectedPlayer => (
+                self.selected_player_slime_bounds()?,
+                SlimeFarmSearchScopeSource::Player,
+            ),
+        };
+
+        if source == SlimeFarmSearchScopeSource::Viewport {
             requested.min_chunk_x = requested
                 .min_chunk_x
                 .saturating_sub(SLIME_FARM_VIEWPORT_MARGIN_CHUNKS);
@@ -840,7 +864,18 @@ impl MapViewerWindowView {
                 .max_chunk_z
                 .saturating_add(SLIME_FARM_VIEWPORT_MARGIN_CHUNKS);
         }
-        practical_slime_farm_scope(requested, selection_scoped)
+        practical_slime_farm_scope(requested, source)
+    }
+
+    pub(super) fn selected_player_slime_bounds(&self) -> Option<SlimeChunkBounds> {
+        let selected = self.players.selected.as_ref()?;
+        let detail = self.players.detail.as_ref()?;
+        if &detail.id != selected
+            || Dimension::from_id(detail.dimension_id?) != Dimension::Overworld
+        {
+            return None;
+        }
+        slime_farm_player_bounds(detail.position?)
     }
 
     pub(super) fn visible_slime_bounds(&self) -> Option<SlimeChunkBounds> {
@@ -867,8 +902,16 @@ const SLIME_FARM_PRACTICAL_BLOCK_LIMIT: i32 = 1_048_575;
 const SLIME_FARM_RECOMMENDED_CHUNK_LIMIT: i32 = SLIME_FARM_RECOMMENDED_BLOCK_LIMIT / 16;
 const SLIME_FARM_PRACTICAL_CHUNK_LIMIT: i32 = SLIME_FARM_PRACTICAL_BLOCK_LIMIT / 16;
 const SLIME_FARM_VIEWPORT_MARGIN_CHUNKS: i32 = 8;
+const SLIME_FARM_PLAYER_RADIUS_CHUNKS: i32 = 64;
 const SLIME_FARM_MAX_QUERY_CHUNKS: usize = 20_000;
 const SLIME_FARM_MAX_RESULTS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SlimeFarmSearchScopeSource {
+    Viewport,
+    Selection,
+    Player,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SlimeFarmSearchScope {
@@ -876,12 +919,35 @@ pub(super) struct SlimeFarmSearchScope {
     pub(super) bounds: SlimeChunkBounds,
     pub(super) clipped_for_precision: bool,
     pub(super) precision_degraded: bool,
-    pub(super) selection_scoped: bool,
+    pub(super) source: SlimeFarmSearchScopeSource,
+}
+
+pub(super) fn slime_farm_player_bounds(position: [f64; 3]) -> Option<SlimeChunkBounds> {
+    let center_chunk_x = slime_farm_chunk_coordinate(position[0])?;
+    let center_chunk_z = slime_farm_chunk_coordinate(position[2])?;
+    Some(SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: center_chunk_x.saturating_sub(SLIME_FARM_PLAYER_RADIUS_CHUNKS),
+        max_chunk_x: center_chunk_x.saturating_add(SLIME_FARM_PLAYER_RADIUS_CHUNKS),
+        min_chunk_z: center_chunk_z.saturating_sub(SLIME_FARM_PLAYER_RADIUS_CHUNKS),
+        max_chunk_z: center_chunk_z.saturating_add(SLIME_FARM_PLAYER_RADIUS_CHUNKS),
+    })
+}
+
+fn slime_farm_chunk_coordinate(block: f64) -> Option<i32> {
+    if !block.is_finite() {
+        return None;
+    }
+    let chunk = (block / 16.0).floor();
+    if chunk < f64::from(i32::MIN) || chunk > f64::from(i32::MAX) {
+        return None;
+    }
+    Some(chunk as i32)
 }
 
 pub(super) fn practical_slime_farm_scope(
     requested: SlimeChunkBounds,
-    selection_scoped: bool,
+    source: SlimeFarmSearchScopeSource,
 ) -> Option<SlimeFarmSearchScope> {
     if requested.dimension != Dimension::Overworld {
         return None;
@@ -914,7 +980,7 @@ pub(super) fn practical_slime_farm_scope(
         bounds,
         clipped_for_precision,
         precision_degraded,
-        selection_scoped,
+        source,
     })
 }
 

@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::model::*;
+use super::overlays::SlimeFarmSearchScopeSource;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
 
@@ -468,6 +469,18 @@ impl MapViewerWindowView {
             .as_ref()
             .map_or(0, |cache| cache.candidates.len());
         let scope = self.slime_farm_search_scope();
+        let selection_scope_unavailable = self.dimension == Dimension::Overworld
+            && self.slime_farm_scope_mode == SlimeFarmScopeMode::Selection
+            && self.professional.selection.is_none();
+        let player_scope_unavailable = self.dimension == Dimension::Overworld
+            && self.slime_farm_scope_mode == SlimeFarmScopeMode::SelectedPlayer
+            && self.selected_player_slime_bounds().is_none();
+        let requested_scope_available = match self.slime_farm_scope_mode {
+            SlimeFarmScopeMode::Auto => self.professional_query_bounds().is_some(),
+            SlimeFarmScopeMode::Viewport => self.visible_slime_bounds().is_some(),
+            SlimeFarmScopeMode::Selection => self.professional.selection.is_some(),
+            SlimeFarmScopeMode::SelectedPlayer => self.selected_player_slime_bounds().is_some(),
+        };
 
         panel_section_body(colors)
             .child(panel_section_header(
@@ -486,6 +499,19 @@ impl MapViewerWindowView {
                     cx.listener(|this, _event, _window, cx| this.toggle_slime_overlay(cx)),
                 ),
             )
+            .child(panel_field_label(colors, t!("MapViewer.slime_scope_mode")))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.0))
+                    .children(slime_farm_scope_mode_buttons(
+                        self.slime_farm_scope_mode,
+                        colors,
+                        cx,
+                    )),
+            )
             .child(panel_field_label(colors, t!("MapViewer.slime_search_mode")))
             .child(
                 div()
@@ -500,10 +526,12 @@ impl MapViewerWindowView {
                     )),
             )
             .when_some(scope, |this, scope| {
-                let scope_label = if scope.selection_scoped {
-                    t!("MapViewer.slime_scope_selection")
-                } else {
-                    t!("MapViewer.slime_scope_viewport")
+                let scope_label = match scope.source {
+                    SlimeFarmSearchScopeSource::Viewport => t!("MapViewer.slime_scope_viewport"),
+                    SlimeFarmSearchScopeSource::Selection => {
+                        t!("MapViewer.slime_scope_selection")
+                    }
+                    SlimeFarmSearchScopeSource::Player => t!("MapViewer.slime_scope_player"),
                 };
                 this.child(status_badge(colors, scope_label))
                     .when(scope.precision_degraded, |this| {
@@ -522,9 +550,23 @@ impl MapViewerWindowView {
             .when(self.dimension != Dimension::Overworld, |this| {
                 this.child(status_badge(colors, t!("MapViewer.slime_overworld_only")))
             })
+            .when(selection_scope_unavailable, |this| {
+                this.child(status_badge(
+                    colors,
+                    t!("MapViewer.slime_scope_selection_unavailable"),
+                ))
+            })
+            .when(player_scope_unavailable, |this| {
+                this.child(status_badge(
+                    colors,
+                    t!("MapViewer.slime_scope_player_unavailable"),
+                ))
+            })
             .when(
                 self.dimension == Dimension::Overworld
-                    && self.professional_query_bounds().is_some()
+                    && requested_scope_available
+                    && !selection_scope_unavailable
+                    && !player_scope_unavailable
                     && scope.is_none(),
                 |this| {
                     this.child(status_badge(

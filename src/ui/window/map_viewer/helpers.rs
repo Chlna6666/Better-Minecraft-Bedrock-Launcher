@@ -506,6 +506,42 @@ pub(super) fn slime_farm_search_mode_buttons(
     .collect()
 }
 
+pub(super) fn slime_farm_scope_mode_buttons(
+    active: SlimeFarmScopeMode,
+    colors: &ThemeColors,
+    cx: &mut Context<MapViewerWindowView>,
+) -> Vec<AnyElement> {
+    [
+        (SlimeFarmScopeMode::Auto, t!("MapViewer.slime_scope_mode_auto")),
+        (
+            SlimeFarmScopeMode::Viewport,
+            t!("MapViewer.slime_scope_mode_viewport"),
+        ),
+        (
+            SlimeFarmScopeMode::Selection,
+            t!("MapViewer.slime_scope_mode_selection"),
+        ),
+        (
+            SlimeFarmScopeMode::SelectedPlayer,
+            t!("MapViewer.slime_scope_mode_player"),
+        ),
+    ]
+    .into_iter()
+    .map(|(mode, label)| {
+        mode_button(colors, label, active == mode)
+            .min_w(px(92.0))
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.set_slime_farm_scope_mode(mode, cx)
+                }),
+            )
+            .into_any_element()
+    })
+    .collect()
+}
+
 pub(super) fn context_menu_chunk(menu: ContextMenuState, dimension: Dimension) -> ChunkPos {
     chunk_from_block(menu.block_x, menu.block_z, dimension)
 }

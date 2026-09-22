@@ -3568,6 +3568,32 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
+    pub(super) fn set_slime_farm_scope_mode(
+        &mut self,
+        mode: SlimeFarmScopeMode,
+        cx: &mut Context<Self>,
+    ) {
+        if self.slime_farm_scope_mode == mode {
+            return;
+        }
+        self.slime_farm_scope_mode = mode;
+        self.cancel_slime_farm_candidate_query();
+        self.professional.slime_farm_candidates = None;
+        self.professional.highlighted_slime_candidate = None;
+
+        if mode == SlimeFarmScopeMode::SelectedPlayer
+            && self.selected_player_slime_bounds().is_none()
+        {
+            if let Some(id) = self.players.selected.clone() {
+                self.load_player_detail(id, cx);
+                return;
+            }
+        }
+
+        self.refresh_professional_render_caches(cx);
+        cx.notify();
+    }
+
     pub(super) fn set_context_selection_start(&mut self, cx: &mut Context<Self>) {
         let Some(menu) = self.context_menu else {
             return;
