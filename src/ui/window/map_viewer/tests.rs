@@ -1517,18 +1517,35 @@ fn preview_pointer_release_only_clears_preview_drag() {
 
 #[::core::prelude::v1::test]
 fn slime_farm_search_modes_map_to_core_queries() {
-    assert_eq!(
-        SlimeFarmSearchMode::LargestConnected.query_mode(),
-        SlimeFarmQueryMode::LargestConnected
-    );
+    assert_eq!(SlimeFarmSearchMode::default(), SlimeFarmSearchMode::Quad2x2);
     assert_eq!(
         SlimeFarmSearchMode::Quad2x2.query_mode(),
         SlimeFarmQueryMode::Quad2x2
     );
-    assert_ne!(
-        SlimeFarmSearchMode::LargestConnected.cache_tag(),
-        SlimeFarmSearchMode::Quad2x2.cache_tag()
+    assert_eq!(
+        SlimeFarmSearchMode::Rectangle2x3.query_mode(),
+        SlimeFarmQueryMode::Rectangle2x3
     );
+    assert_eq!(
+        SlimeFarmSearchMode::Square3x3.query_mode(),
+        SlimeFarmQueryMode::Square3x3
+    );
+    assert_eq!(
+        SlimeFarmSearchMode::LargestConnected.query_mode(),
+        SlimeFarmQueryMode::LargestConnected
+    );
+
+    let tags = [
+        SlimeFarmSearchMode::Quad2x2.cache_tag(),
+        SlimeFarmSearchMode::Rectangle2x3.cache_tag(),
+        SlimeFarmSearchMode::Square3x3.cache_tag(),
+        SlimeFarmSearchMode::LargestConnected.cache_tag(),
+    ];
+    assert_eq!(tags.into_iter().collect::<BTreeSet<_>>().len(), tags.len());
+    assert!(SlimeFarmSearchMode::Quad2x2.is_exact_template());
+    assert!(SlimeFarmSearchMode::Rectangle2x3.is_exact_template());
+    assert!(SlimeFarmSearchMode::Square3x3.is_exact_template());
+    assert!(!SlimeFarmSearchMode::LargestConnected.is_exact_template());
 }
 
 #[::core::prelude::v1::test]

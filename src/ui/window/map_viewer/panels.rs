@@ -544,6 +544,15 @@ impl MapViewerWindowView {
                         cx,
                     )),
             )
+            .when(self.slime_farm_search_mode.is_exact_template(), |this| {
+                this.child(status_badge(
+                    colors,
+                    t!("MapViewer.slime_pattern_isolation_hint"),
+                ))
+            })
+            .when(self.slime_farm_search_mode == SlimeFarmSearchMode::Square3x3, |this| {
+                this.child(status_badge(colors, t!("MapViewer.slime_3x3_rare")))
+            })
             .when_some(scope, |this, scope| {
                 let scope_label = match scope.source {
                     SlimeFarmSearchScopeSource::Viewport => t!("MapViewer.slime_scope_viewport"),
@@ -739,14 +748,19 @@ impl MapViewerWindowView {
                         max_x = &max_x,
                         max_z = &max_z
                     ),
-                    SlimeFarmSearchMode::Quad2x2 => t!(
-                        "MapViewer.slime_candidate_quad",
+                    SlimeFarmSearchMode::Quad2x2
+                    | SlimeFarmSearchMode::Rectangle2x3
+                    | SlimeFarmSearchMode::Square3x3 => t!(
+                        "MapViewer.slime_candidate_template",
                         index = &rank,
-                        connected = &connected,
-                        quads = &quad_count,
+                        width = &width,
+                        depth = &depth,
+                        chunks = &connected,
                         distance = &distance,
-                        x = &min_x,
-                        z = &min_z
+                        min_x = &min_x,
+                        min_z = &min_z,
+                        max_x = &max_x,
+                        max_z = &max_z
                     ),
                 };
                 let edge_label = candidate

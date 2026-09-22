@@ -487,8 +487,19 @@ pub(super) fn slime_farm_search_mode_buttons(
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<AnyElement> {
     [
-        (SlimeFarmSearchMode::LargestConnected, t!("MapViewer.slime_mode_largest")),
         (SlimeFarmSearchMode::Quad2x2, t!("MapViewer.slime_mode_quad")),
+        (
+            SlimeFarmSearchMode::Rectangle2x3,
+            t!("MapViewer.slime_mode_rect_six"),
+        ),
+        (
+            SlimeFarmSearchMode::Square3x3,
+            t!("MapViewer.slime_mode_square_nine"),
+        ),
+        (
+            SlimeFarmSearchMode::LargestConnected,
+            t!("MapViewer.slime_mode_largest"),
+        ),
     ]
     .into_iter()
     .map(|(mode, label)| {

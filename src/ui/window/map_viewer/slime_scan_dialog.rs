@@ -235,12 +235,20 @@ impl MapViewerWindowView {
 
         let mode_buttons = [
             (
-                SlimeFarmSearchMode::LargestConnected,
-                t!("MapViewer.slime_mode_largest"),
-            ),
-            (
                 SlimeFarmSearchMode::Quad2x2,
                 t!("MapViewer.slime_mode_quad"),
+            ),
+            (
+                SlimeFarmSearchMode::Rectangle2x3,
+                t!("MapViewer.slime_mode_rect_six"),
+            ),
+            (
+                SlimeFarmSearchMode::Square3x3,
+                t!("MapViewer.slime_mode_square_nine"),
+            ),
+            (
+                SlimeFarmSearchMode::LargestConnected,
+                t!("MapViewer.slime_mode_largest"),
             ),
         ]
         .into_iter()
@@ -320,6 +328,15 @@ impl MapViewerWindowView {
                     .gap(px(7.0))
                     .children(mode_buttons),
             )
+            .when(dialog_state.mode.is_exact_template(), |this| {
+                this.child(status_badge(
+                    colors,
+                    t!("MapViewer.slime_pattern_isolation_hint"),
+                ))
+            })
+            .when(dialog_state.mode == SlimeFarmSearchMode::Square3x3, |this| {
+                this.child(status_badge(colors, t!("MapViewer.slime_3x3_rare")))
+            })
             .child(status_badge(colors, summary))
             .when(!anchor_ready, |this| {
                 this.child(status_badge(

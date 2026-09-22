@@ -376,29 +376,39 @@ impl Default for OverlayOptions {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SlimeFarmSearchMode {
-    LargestConnected,
     Quad2x2,
+    Rectangle2x3,
+    Square3x3,
+    LargestConnected,
 }
 
 impl Default for SlimeFarmSearchMode {
     fn default() -> Self {
-        Self::LargestConnected
+        Self::Quad2x2
     }
 }
 
 impl SlimeFarmSearchMode {
     pub(super) const fn query_mode(self) -> SlimeFarmQueryMode {
         match self {
-            Self::LargestConnected => SlimeFarmQueryMode::LargestConnected,
             Self::Quad2x2 => SlimeFarmQueryMode::Quad2x2,
+            Self::Rectangle2x3 => SlimeFarmQueryMode::Rectangle2x3,
+            Self::Square3x3 => SlimeFarmQueryMode::Square3x3,
+            Self::LargestConnected => SlimeFarmQueryMode::LargestConnected,
         }
     }
 
     pub(super) const fn cache_tag(self) -> u64 {
         match self {
-            Self::LargestConnected => 1,
-            Self::Quad2x2 => 2,
+            Self::Quad2x2 => 11,
+            Self::Rectangle2x3 => 12,
+            Self::Square3x3 => 13,
+            Self::LargestConnected => 14,
         }
+    }
+
+    pub(super) const fn is_exact_template(self) -> bool {
+        !matches!(self, Self::LargestConnected)
     }
 }
 
