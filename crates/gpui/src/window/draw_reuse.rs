@@ -1219,7 +1219,7 @@ impl Window {
                 .last()
                 .copied()
                 .unwrap_or(0)
-                .saturating_add(usize::from(*include));
+                .saturating_add(if *include { 1 } else { 0 });
             included_prefix.push(next);
         }
 

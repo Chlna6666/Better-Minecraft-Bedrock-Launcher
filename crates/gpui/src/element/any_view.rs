@@ -49,7 +49,11 @@ struct ViewCacheKey {
     fingerprint: Option<u64>,
 }
 
-enum AnyViewPrepaintState {
+/// Opaque paint handoff used internally by cached AnyView reconciliation.
+#[doc(hidden)]
+pub struct AnyViewPrepaintState(AnyViewPrepaintStateKind);
+
+enum AnyViewPrepaintStateKind {
     Fresh(AnyElement),
     Replay,
     Selective(Box<SelectiveAnyViewPatch>),
@@ -514,7 +518,7 @@ impl Element for AnyView {
         element: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) -> Option<AnyElement> {
+    ) -> Self::PrepaintState {
         window.set_view_id(self.entity_id());
         let retained_id = window.current_retained_element_id();
         let traversal_context = window.capture_cached_view_traversal_context();
@@ -531,7 +535,7 @@ impl Element for AnyView {
                 with_optional_critical_draw(critical, window, |window| {
                     element.prepaint(window, cx);
                 });
-                return AnyViewPrepaintState::Fresh(element);
+                return AnyViewPrepaintState(AnyViewPrepaintStateKind::Fresh(element));
             }
 
             window.with_element_state::<AnyViewState, _>(
@@ -621,7 +625,7 @@ impl Element for AnyView {
                         state.replay_source_paint_range = None;
                         state.replay_source_metadata_range = None;
                         return (
-                            AnyViewPrepaintState::Selective(Box::new(patch)),
+                            AnyViewPrepaintState(AnyViewPrepaintStateKind::Selective(Box::new(patch))),
                             state,
                         );
                     }
@@ -693,7 +697,7 @@ impl Element for AnyView {
                                 cx,
                             );
                             window.degrade_current_draw();
-                            return (AnyViewPrepaintState::Replay, element_state);
+                            return (AnyViewPrepaintState(AnyViewPrepaintStateKind::Replay), element_state);
                         }
                         cx.entities
                             .extend_accessed(&element_state.accessed_entities);
@@ -707,7 +711,7 @@ impl Element for AnyView {
                                 Some(source_metadata_range);
                         }
 
-                        return (AnyViewPrepaintState::Replay, element_state);
+                        return (AnyViewPrepaintState(AnyViewPrepaintStateKind::Replay), element_state);
                     }
                     let refreshing = mem::replace(&mut window.refreshing, true);
                     let prepaint_start = window.prepaint_index();
@@ -732,7 +736,7 @@ impl Element for AnyView {
                     window.refreshing = refreshing;
 
                     (
-                        AnyViewPrepaintState::Fresh(element),
+                        AnyViewPrepaintState(AnyViewPrepaintStateKind::Fresh(element)),
                         AnyViewState {
                             owner_id: self.entity_id(),
                             retained_id,
@@ -781,8 +785,8 @@ impl Element for AnyView {
                         let metadata_start = window.retained_element_metadata_len();
                         let paint_start = window.paint_index();
 
-                        match element {
-                            AnyViewPrepaintState::Fresh(element) => {
+                        match &mut element.0 {
+                            AnyViewPrepaintStateKind::Fresh(element) => {
                                 // Cached view missed and is forwarding current work to its rendered
                                 // child. The AnyView wrapper itself owns no scene primitives.
                                 window.record_debug_element_traversal_only(bounds, cx);
@@ -792,7 +796,7 @@ impl Element for AnyView {
                                 });
                                 window.refreshing = refreshing;
                             }
-                            AnyViewPrepaintState::Replay => {
+                            AnyViewPrepaintStateKind::Replay => {
                                 // Full cached subtree replay: replace Drawable's provisional red
                                 // marker with a retained-green marker before copying prior ranges.
                                 window.record_debug_element_self_scene_replay(bounds, cx);
@@ -835,7 +839,7 @@ impl Element for AnyView {
                                     }
                                 }
                             }
-                            AnyViewPrepaintState::Selective(patch) => {
+                            AnyViewPrepaintStateKind::Selective(patch) => {
                                 window.record_debug_element_traversal_only(bounds, cx);
 
                                 let prefix_paint_start = window.paint_index();
@@ -926,9 +930,10 @@ impl Element for AnyView {
             } else {
                 window.record_debug_element_traversal_only(bounds, cx);
                 with_optional_critical_draw(critical, window, |window| {
-                    match element {
-                        AnyViewPrepaintState::Fresh(element) => element.paint(window, cx),
-                        AnyViewPrepaintState::Replay | AnyViewPrepaintState::Selective(_) => {
+                    match &mut element.0 {
+                        AnyViewPrepaintStateKind::Fresh(element) => element.paint(window, cx),
+                        AnyViewPrepaintStateKind::Replay
+                        | AnyViewPrepaintStateKind::Selective(_) => {
                             unreachable!("uncached AnyView must carry fresh prepaint state")
                         }
                     }
