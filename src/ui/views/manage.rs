@@ -37,7 +37,7 @@ use crate::utils::file_picker::{
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -69,6 +69,7 @@ mod view;
 
 use assets_tab::*;
 use dialogs::*;
+use imports::*;
 use layout::*;
 use level_dat_bridge::*;
 use lifecycle::*;

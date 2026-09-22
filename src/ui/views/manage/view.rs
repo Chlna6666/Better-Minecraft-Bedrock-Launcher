@@ -19,6 +19,11 @@ pub struct ManagePageView {
     pub(super) confirm_dialog: Option<ConfirmDialogState>,
     pub(super) value_prompt: Option<ValuePromptDialogState>,
     pub(super) mod_type_dialog: Option<ModTypeDialogState>,
+    pub(super) drop_hover: Option<ManageDropHoverState>,
+    pub(super) pending_mod_import_dialogs: VecDeque<ModTypeDialogState>,
+    pub(super) pending_mod_import_items: Vec<crate::core::native_mods::NativeModImportItem>,
+    pub(super) pending_asset_imports: VecDeque<PendingAssetImport>,
+    pub(super) pending_asset_import_open: bool,
     pub(super) server_editor_dialog: Option<ServerEditorDialogState>,
     pub(super) level_dat_editor: Option<level_dat_editor::LevelDatEditorModalState>,
     pub(super) last_selected_instance_revision: ManagedInstanceRevision,
@@ -55,6 +60,11 @@ impl ManagePageView {
             }),
             cx.observe_global::<I18n>(|this, cx| {
                 if this.active {
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<crate::ui::state::import::ImportOverlayState>(|this, cx| {
+                if this.active && !this.pending_asset_imports.is_empty() {
                     cx.notify();
                 }
             }),
@@ -105,6 +115,11 @@ impl ManagePageView {
             confirm_dialog: None,
             value_prompt: None,
             mod_type_dialog: None,
+            drop_hover: None,
+            pending_mod_import_dialogs: VecDeque::new(),
+            pending_mod_import_items: Vec::new(),
+            pending_asset_imports: VecDeque::new(),
+            pending_asset_import_open: false,
             server_editor_dialog: None,
             level_dat_editor: None,
             last_selected_instance_revision: initial_selected_instance_revision,
@@ -148,11 +163,15 @@ impl ManagePageView {
 
 impl Render for ManagePageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.drop_hover = None;
+        }
         self.ensure_asset_search_input(window, cx);
         self.ensure_screenshot_search_input(window, cx);
         self.ensure_server_search_input(window, cx);
         self.sync_selected_version(cx);
         self.sync_data_requests(cx);
+        self.maybe_schedule_next_asset_import(window, cx);
 
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
@@ -189,10 +208,19 @@ impl ManagePageView {
                 .child(self.render_main(window, colors, state, now, cx));
         }
 
-        crate::ui::components::page_shell::split_page(
+        let page = crate::ui::components::page_shell::split_page(
             self.render_sidebar(colors, state, cx),
             self.render_main(window, colors, state, now, cx),
         )
+        .relative();
+        if let Some(target) = self.drop_hover.as_ref().map(|preview| preview.target) {
+            page.when_some(
+                self.render_drop_hover_overlay(target, colors, cx),
+                |this, overlay| this.child(overlay),
+            )
+        } else {
+            page
+        }
     }
 
     fn render_sidebar(
@@ -230,9 +258,16 @@ impl ManagePageView {
             .flex()
             .flex_col()
             .gap(px(8.))
+            .on_drag_move::<ExternalPaths>(cx.listener(
+                |this, event: &DragMoveEvent<ExternalPaths>, _window, cx| {
+                    let paths = event.drag(cx).paths().to_vec();
+                    this.update_drop_hover(ManageDropTarget::Versions, &paths, cx);
+                },
+            ))
             .on_drop(cx.listener(
                 |this, paths: &ExternalPaths, _window, cx| {
                     this.import_dropped_versions(paths.paths(), cx);
+                    cx.stop_propagation();
                 },
             ))
             .child(state.search_input.as_ref().map_or_else(
@@ -619,7 +654,18 @@ impl ManagePageView {
         }
 
         let Some(version) = self.selected_version(state) else {
+            let drop_tab = state.tab;
             return crate::ui::components::page_shell::split_content_panel(colors)
+                .on_drag_move::<ExternalPaths>(cx.listener(
+                    move |this, event: &DragMoveEvent<ExternalPaths>, _window, cx| {
+                        let paths = event.drag(cx).paths().to_vec();
+                        this.update_drop_hover(ManageDropTarget::Assets(drop_tab), &paths, cx);
+                    },
+                ))
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                    this.import_dropped_assets(paths.paths(), window, cx);
+                    cx.stop_propagation();
+                }))
                 .child(empty_state(
                     colors,
                     "images/manage/empty.svg",
@@ -652,9 +698,17 @@ impl ManagePageView {
         };
         let active_count_string = active_count.to_string();
 
+        let drop_tab = state.tab;
         let main_panel = crate::ui::components::page_shell::split_content_panel(colors)
+            .on_drag_move::<ExternalPaths>(cx.listener(
+                move |this, event: &DragMoveEvent<ExternalPaths>, _window, cx| {
+                    let paths = event.drag(cx).paths().to_vec();
+                    this.update_drop_hover(ManageDropTarget::Assets(drop_tab), &paths, cx);
+                },
+            ))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.import_dropped_assets(paths.paths(), window, cx);
+                cx.stop_propagation();
             }))
             .child(
                 div()

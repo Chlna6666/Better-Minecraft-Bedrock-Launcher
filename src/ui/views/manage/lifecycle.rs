@@ -286,6 +286,11 @@ impl ManagePageView {
         self.confirm_dialog = None;
         self.value_prompt = None;
         self.mod_type_dialog = None;
+        self.drop_hover = None;
+        self.pending_mod_import_dialogs.clear();
+        self.pending_mod_import_items.clear();
+        self.pending_asset_imports.clear();
+        self.pending_asset_import_open = false;
         self.server_editor_dialog = None;
         self.level_dat_editor = None;
         self.last_version_config_signature = None;

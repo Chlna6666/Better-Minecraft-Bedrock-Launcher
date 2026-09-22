@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 mod install;
 
 pub use install::{
-    NativeModImportRequest, NativeModInstallRequest, start_import, start_install,
+    NativeModImportItem, NativeModImportRequest, NativeModInstallRequest, start_import, start_install,
 };
 
 const INDEX_URL: &str = "https://pkg.roundstudio.top/index.json";

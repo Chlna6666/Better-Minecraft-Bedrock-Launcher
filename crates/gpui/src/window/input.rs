@@ -309,6 +309,10 @@ impl Window {
                 }
                 FileDropEvent::Exited => {
                     cx.active_drag.take();
+                    // External drag leave has no following MouseMove/MouseUp event. Force one
+                    // refreshed frame so drag previews, drag-over styles and view-owned hover
+                    // affordances disappear immediately instead of waiting for unrelated UI work.
+                    self.refresh();
                     PlatformInput::FileDrop(FileDropEvent::Exited)
                 }
             },

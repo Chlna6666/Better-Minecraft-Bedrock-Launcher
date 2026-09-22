@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::components::{dialog, scroll::ScrollableElement};
+use std::path::PathBuf;
 
 #[derive(Clone)]
 pub(super) enum ConfirmAction {
@@ -22,6 +23,9 @@ pub(super) enum ConfirmAction {
         config: ManageVersionConfig,
         selected_gdk_user: Option<SharedString>,
         entry: ManageServerEntry,
+    },
+    ImportVersions {
+        paths: Vec<String>,
     },
 }
 
@@ -59,9 +63,22 @@ pub(super) struct ValuePromptDialogState {
 }
 
 #[derive(Clone)]
+pub(super) enum ModTypeDialogTarget {
+    ExistingAsset {
+        asset: ManageAssetEntry,
+    },
+    ImportFile {
+        path: PathBuf,
+        display_name: SharedString,
+        current: usize,
+        total: usize,
+    },
+}
+
+#[derive(Clone)]
 pub(super) struct ModTypeDialogState {
     pub(super) version: ManagedVersionEntry,
-    pub(super) asset: ManageAssetEntry,
+    pub(super) target: ModTypeDialogTarget,
     pub(super) selected_mod_type: SharedString,
     pub(super) delay_input: Entity<InputState>,
     pub(super) pending: bool,
@@ -195,6 +212,11 @@ impl ManagePageView {
                         toast::error(cx, SharedString::from(error));
                     }
                 }
+                cx.notify();
+            }
+            ConfirmAction::ImportVersions { paths } => {
+                self.confirm_dialog = None;
+                start_version_imports(paths, cx);
                 cx.notify();
             }
         }
@@ -341,23 +363,32 @@ impl ManagePageView {
     }
 
     pub(super) fn close_mod_type_dialog(&mut self, cx: &mut Context<Self>) {
+        let importing = self
+            .mod_type_dialog
+            .as_ref()
+            .is_some_and(|dialog| matches!(&dialog.target, ModTypeDialogTarget::ImportFile { .. }));
         self.mod_type_dialog = None;
+        if importing {
+            self.pending_mod_import_dialogs.clear();
+            self.pending_mod_import_items.clear();
+        }
         cx.notify();
     }
 
     pub(super) fn save_mod_type_dialog(&mut self, cx: &mut Context<Self>) {
         let i18n = cx.global::<I18n>().clone();
-        let Some(dialog) = self.mod_type_dialog.as_mut() else {
+        let Some(dialog) = self.mod_type_dialog.as_ref() else {
             return;
         };
         if dialog.pending {
             return;
         }
+
         let version = dialog.version.clone();
-        let asset = dialog.asset.clone();
+        let target = dialog.target.clone();
         let mod_type = dialog.selected_mod_type.to_string();
-        let delay = dialog.delay_input.read(cx).value().to_string();
-        let delay = match delay.trim().parse::<u64>() {
+        let delay_text = dialog.delay_input.read(cx).value().to_string();
+        let delay = match delay_text.trim().parse::<u64>() {
             Ok(value) => value,
             Err(error) => {
                 toast::error(
@@ -367,25 +398,49 @@ impl ManagePageView {
                 return;
             }
         };
-        let inject_delay_ms = (mod_type == "hot-inject").then_some(delay);
+        let is_hot_inject = mod_type == "hot-inject";
+        let inject_delay_ms = if is_hot_inject { delay } else { 0 };
 
-        match crate::tasks::manage_service::start_update_mod_settings(
-            version.folder.to_string(),
-            asset.folder_name.to_string(),
-            mod_type,
-            inject_delay_ms,
-        ) {
-            Ok(task_id) => {
-                self.mod_type_dialog = None;
-                watch_manage_asset_mutation_task(
-                    task_id,
-                    t!("ManagePage.mod_type_updated"),
-                    cx,
-                );
-                cx.notify();
+        match target {
+            ModTypeDialogTarget::ExistingAsset { asset } => {
+                match crate::tasks::manage_service::start_update_mod_settings(
+                    version.folder.to_string(),
+                    asset.folder_name.to_string(),
+                    mod_type,
+                    is_hot_inject.then_some(inject_delay_ms),
+                ) {
+                    Ok(task_id) => {
+                        self.mod_type_dialog = None;
+                        watch_manage_asset_mutation_task(
+                            task_id,
+                            t!("ManagePage.mod_type_updated"),
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        toast::error(cx, SharedString::from(error));
+                    }
+                }
             }
-            Err(error) => {
-                toast::error(cx, SharedString::from(error));
+            ModTypeDialogTarget::ImportFile { path, .. } => {
+                self.pending_mod_import_items
+                    .push(crate::core::native_mods::NativeModImportItem {
+                        path,
+                        mod_type,
+                        inject_delay_ms,
+                    });
+
+                if let Some(next) = self.pending_mod_import_dialogs.pop_front() {
+                    self.mod_type_dialog = Some(next);
+                    cx.notify();
+                    return;
+                }
+
+                self.mod_type_dialog = None;
+                let items = std::mem::take(&mut self.pending_mod_import_items);
+                start_mod_import(version, items, cx);
+                cx.notify();
             }
         }
     }
@@ -478,6 +533,37 @@ pub(super) fn render_mod_type_dialog(
     i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
+    let (title, display_name, progress, import_mode) = match &dialog.target {
+        ModTypeDialogTarget::ExistingAsset { asset } => (
+            t!("ManagePage.mod_settings"),
+            asset.display_name.clone(),
+            None,
+            false,
+        ),
+        ModTypeDialogTarget::ImportFile {
+            display_name,
+            current,
+            total,
+            ..
+        } => (
+            t!("Manage.mod_import_settings_title"),
+            display_name.clone(),
+            Some(t!(
+                "Manage.mod_import_progress",
+                current = &current.to_string(),
+                total = &total.to_string()
+            )),
+            true,
+        ),
+    };
+    let confirm_label = match &dialog.target {
+        ModTypeDialogTarget::ImportFile { current, total, .. } if current < total => {
+            t!("Manage.mod_import_continue")
+        }
+        ModTypeDialogTarget::ImportFile { .. } => t!("Manage.mod_import_start"),
+        ModTypeDialogTarget::ExistingAsset { .. } => t!("ManagePage.save_mod_settings"),
+    };
+
     let options = vec![
         (
             SharedString::from("preload-native"),
@@ -567,14 +653,38 @@ pub(super) fn render_mod_type_dialog(
                         .text_size(px(18.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .child(t!("ManagePage.mod_settings")),
+                        .child(title),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.text_secondary)
-                        .child(dialog.asset.display_name.clone()),
+                        .child(display_name),
                 )
+                .when_some(progress, |this, progress| {
+                    this.child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.accent)
+                            .child(progress),
+                    )
+                })
+                .when(import_mode, |this| {
+                    this.child(
+                        div()
+                            .px(px(10.))
+                            .py(px(8.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
+                            .bg(Hsla {
+                                a: 0.08,
+                                ..colors.accent
+                            })
+                            .text_size(px(11.))
+                            .text_color(colors.text_secondary)
+                            .child(t!("Manage.mod_import_batch_hint")),
+                    )
+                })
                 .child(
                     div()
                         .flex()
@@ -631,7 +741,7 @@ pub(super) fn render_mod_type_dialog(
                 if dialog.pending {
                     t!("common.saving")
                 } else {
-                    t!("ManagePage.save_mod_settings")
+                    confirm_label
                 },
             )
             .opacity(if dialog.pending { 0.72 } else { 1.0 })

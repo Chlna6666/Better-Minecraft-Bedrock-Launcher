@@ -14,9 +14,16 @@ pub struct NativeModInstallRequest {
 }
 
 #[derive(Clone, Debug)]
+pub struct NativeModImportItem {
+    pub path: PathBuf,
+    pub mod_type: String,
+    pub inject_delay_ms: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct NativeModImportRequest {
     pub version_folder: String,
-    pub paths: Vec<PathBuf>,
+    pub items: Vec<NativeModImportItem>,
 }
 
 pub fn start_install(request: NativeModInstallRequest) -> Result<String, String> {
@@ -84,11 +91,11 @@ pub fn start_install(request: NativeModInstallRequest) -> Result<String, String>
 }
 
 pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
-    if request.paths.is_empty() {
+    if request.items.is_empty() {
         return Err("没有可导入的 Mod 文件".to_string());
     }
 
-    let count = request.paths.len();
+    let count = request.items.len();
     let task_id = crate::tasks::task_manager::create_task_with_details(
         None,
         "导入 Minecraft Mod",
@@ -283,11 +290,14 @@ async fn import_local_mods(
     let mods_dir = crate::utils::file_ops::bmcbl_subdir("versions")
         .join(&request.version_folder)
         .join("mods");
-    let mut names = HashSet::with_capacity(request.paths.len());
-    let mut plans = Vec::with_capacity(request.paths.len());
+    let total = request.items.len();
+    let mut names = HashSet::with_capacity(total);
+    let mut plans = Vec::with_capacity(total);
 
-    for source_path in &request.paths {
+    for item in &request.items {
         ensure_task_active(task_id)?;
+        validate_import_mod_type(&item.mod_type)?;
+        let source_path = &item.path;
         let metadata = tokio::fs::metadata(source_path)
             .await
             .map_err(|error| format!("无法读取 Mod 文件“{}”: {error}", source_path.display()))?;
@@ -316,7 +326,18 @@ async fn import_local_mods(
                 "Mod“{folder_name}”已存在，请先在 Mod 列表中删除后再导入，避免覆盖现有配置"
             ));
         }
-        plans.push((source_path.clone(), file_name, folder_name, target_dir));
+        plans.push((
+            source_path.clone(),
+            file_name,
+            folder_name,
+            target_dir,
+            item.mod_type.clone(),
+            if item.mod_type == "hot-inject" {
+                item.inject_delay_ms
+            } else {
+                0
+            },
+        ));
     }
 
     tokio::fs::create_dir_all(&mods_dir)
@@ -325,7 +346,7 @@ async fn import_local_mods(
 
     let task_token = sanitize_component(task_id);
     let mut staged = Vec::with_capacity(plans.len());
-    for (source_path, file_name, folder_name, target_dir) in plans {
+    for (source_path, file_name, folder_name, target_dir, mod_type, inject_delay_ms) in plans {
         ensure_task_active(task_id)?;
         let staging = mods_dir.join(format!(".{folder_name}.bmcb-import-{task_token}"));
         if tokio::fs::try_exists(&staging).await.unwrap_or(false) {
@@ -338,8 +359,8 @@ async fn import_local_mods(
         let manifest = json!({
             "name": folder_name,
             "entry": file_name.clone(),
-            "type": "preload-native",
-            "inject_delay_ms": 0
+            "type": mod_type,
+            "inject_delay_ms": inject_delay_ms
         });
         let manifest_text = serde_json::to_string_pretty(&manifest)
             .map_err(|error| format!("Manifest 序列化失败: {error}"))?;
@@ -388,11 +409,18 @@ async fn import_local_mods(
         crate::tasks::task_manager::update_progress(
             task_id,
             1,
-            Some(request.paths.len() as u64),
+            Some(total as u64),
             Some("installing_mod"),
         );
     }
     Ok(())
+}
+
+fn validate_import_mod_type(mod_type: &str) -> Result<(), String> {
+    match mod_type.trim() {
+        "preload-native" | "hot-inject" | "native" | "lse-quickjs" => Ok(()),
+        other => Err(format!("不支持的 Mod 类型: {other}")),
+    }
 }
 
 fn ensure_task_active(task_id: &str) -> Result<(), String> {

@@ -56,7 +56,7 @@ impl ManagePageView {
         };
         self.mod_type_dialog = Some(ModTypeDialogState {
             version,
-            asset,
+            target: ModTypeDialogTarget::ExistingAsset { asset },
             selected_mod_type,
             delay_input,
             pending: false,
