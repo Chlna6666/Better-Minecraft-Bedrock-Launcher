@@ -115,7 +115,7 @@ impl RenderState {
     }
 
     pub(in crate::ui::main_window) fn visible(&self) -> bool {
-        self.open || self.progress > 0.001
+        popover_should_render(self.open, self.progress, self.dialog_animating)
     }
 
     fn interactive(&self) -> bool {
@@ -125,6 +125,14 @@ impl RenderState {
                 AuthPhase::SignedOut | AuthPhase::SignedIn | AuthPhase::Error
             )
     }
+}
+
+
+fn popover_should_render(open: bool, progress: f32, dialog_animating: bool) -> bool {
+    // Keep the popover mounted until the spring has fully settled. A damped close can
+    // overshoot below zero before bouncing back; unmounting on that intermediate sample would
+    // remove and recreate the backdrop-blur primitive across adjacent frames.
+    open || dialog_animating || progress > 0.001
 }
 
 fn icon(path: &'static str, color: Hsla, size: f32) -> Svg {
@@ -331,26 +339,76 @@ pub(in crate::ui::main_window) fn panel(
         ((bounds.center().x - (viewport.width - px(16.) - width)) / width).clamp(0.0, 1.0)
     });
     let progress = state.progress;
+    let material_progress = progress.clamp(0.0, 1.0);
+    let content_progress = progress.max(0.0);
+
+    // Backdrop filters must keep stable sampling geometry while a popover spring is running.
+    // Animate only the material opacity; the text/content subtree may still use the intentional
+    // spring scale overshoot. This avoids turning every overshoot sample into a different blur
+    // capture region and prevents stale blur rectangles when the close spring crosses below zero.
+    let material = div()
+        .absolute()
+        .inset_0()
+        .rounded(px(16.))
+        .bg(colors
+            .surface
+            .opacity(if glass_effect_enabled { 0.92 } else { 1.0 }))
+        .when(glass_effect_enabled, |material| {
+            material.backdrop_blur(glass_backdrop_blur_style())
+        })
+        .border_1()
+        .border_color(colors.border.opacity(0.65))
+        .shadow_lg()
+        .with_stable_sampled_animation(
+            "xbox-auth-panel-material-opacity",
+            AnimationProperty::opacity(0.0, 1.0),
+            material_progress,
+            state.dialog_animating,
+        );
+
+    let content = div()
+        .relative()
+        .w_full()
+        .max_h((viewport.height - px(82.)).max(px(0.)))
+        .p(px(16.))
+        .rounded(px(16.))
+        .overflow_y_scrollbar()
+        .text_color(colors.text_primary)
+        .child(header(state, colors))
+        .when(!state.rows.is_empty(), |panel| {
+            panel.child(accounts::list(state, colors))
+        })
+        .child(login::body(state, colors))
+        .when_some(state.feedback.as_ref(), |panel, message| {
+            panel.child(
+                div()
+                    .mt(px(12.))
+                    .text_size(px(12.))
+                    .text_color(rgb(0xdc2626))
+                    .child(message.clone()),
+            )
+        })
+        .with_stable_sampled_animation(
+            "xbox-auth-panel-content-motion",
+            AnimationProperty::scale_opacity(
+                motion::POPOVER_SCALE,
+                1.0,
+                0.0,
+                1.0,
+                TransformOrigin::new(origin, 0.0),
+            ),
+            content_progress,
+            state.dialog_animating,
+        );
+
     div()
         .absolute()
         .top(px(66.))
         .right(px(16.))
         .w(width)
         .max_h((viewport.height - px(82.)).max(px(0.)))
-        .p(px(16.))
-        .rounded(px(16.))
-        .bg(colors
-            .surface
-            .opacity(if glass_effect_enabled { 0.92 } else { 1.0 }))
-        .when(glass_effect_enabled, |panel| {
-            panel.backdrop_blur(glass_backdrop_blur_style())
-        })
         .id("xbox-auth-panel")
-        .overflow_y_scrollbar()
-        .text_color(colors.text_primary)
-        .border_1()
-        .border_color(colors.border.opacity(0.65))
-        .shadow_lg()
+        .rounded(px(16.))
         .occlude()
         .tab_group()
         .track_focus(&state.panel_focus)
@@ -373,31 +431,19 @@ pub(in crate::ui::main_window) fn panel(
                 window.focus(&close_focus);
             }
         })
-        .child(header(state, colors))
-        .when(!state.rows.is_empty(), |panel| {
-            panel.child(accounts::list(state, colors))
-        })
-        .child(login::body(state, colors))
-        .when_some(state.feedback.as_ref(), |panel, message| {
-            panel.child(
-                div()
-                    .mt(px(12.))
-                    .text_size(px(12.))
-                    .text_color(rgb(0xdc2626))
-                    .child(message.clone()),
-            )
-        })
-        .with_stable_sampled_animation(
-            "xbox-auth-panel-motion",
-            AnimationProperty::scale_opacity(
-                motion::POPOVER_SCALE,
-                1.0,
-                0.0,
-                1.0,
-                TransformOrigin::new(origin, 0.0),
-            ),
-            progress,
-            state.dialog_animating,
-        )
+        .child(material)
+        .child(content)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod panel_state_tests {
+    use super::popover_should_render;
+
+    #[test]
+    fn closing_popover_remains_mounted_during_negative_spring_overshoot() {
+        assert!(popover_should_render(false, -0.08, true));
+        assert!(popover_should_render(false, 0.25, true));
+        assert!(!popover_should_render(false, 0.0, false));
+    }
 }
