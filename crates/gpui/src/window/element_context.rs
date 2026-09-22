@@ -537,7 +537,35 @@ impl Window {
             let capture_bounds =
                 subtree_capture_bounds.unwrap_or_else(|| self.content_mask().bounds);
             let result = self.paint_composite_layer(capture_bounds, |window| {
-                window.with_scene_animation(animation_id, property, 1.0, paint)
+                // paint_composite_layer temporarily removes the promoted parent animation while
+                // capturing. Re-enter through the property-specific path so child bounds/blur
+                // metadata are not lost merely because this animation is nested.
+                if property == crate::TransitionProperty::Blur
+                    && let Some((blur_bounds, max_radius_device)) = blur_capture
+                {
+                    window.with_scene_blur_animation(
+                        animation_id,
+                        1.0,
+                        blur_bounds,
+                        max_radius_device,
+                        paint,
+                    )
+                } else if matches!(
+                    property,
+                    crate::TransitionProperty::Transform
+                        | crate::TransitionProperty::Rotation
+                        | crate::TransitionProperty::ClipReveal
+                ) {
+                    window.with_scene_composite_animation(
+                        animation_id,
+                        property,
+                        1.0,
+                        capture_bounds,
+                        paint,
+                    )
+                } else {
+                    window.with_scene_animation(animation_id, property, 1.0, paint)
+                }
             });
             self.scene_text_raster_scale = previous_text_raster_scale;
             return result;
