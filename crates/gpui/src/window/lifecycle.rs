@@ -456,7 +456,7 @@ impl WindowInvalidator {
     /// Selective cached-view splicing intentionally starts with a one-target fast path. Generic
     /// dirty views, multiple targets, subtree invalidation, or a direct hit on the ancestor all
     /// fall back to normal traversal.
-    pub(in crate::window) fn single_reconcile_target_below(
+    pub(crate) fn single_reconcile_target_below(
         &self,
         ancestor: &GlobalElementId,
     ) -> Option<(EntityId, GlobalElementId)> {

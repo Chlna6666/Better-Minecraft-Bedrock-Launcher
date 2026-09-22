@@ -477,6 +477,64 @@ impl Window {
             .set_active_node(replay.restore_parent);
     }
 
+    /// Checks that the target's old plain view boundary will have a mapped parent after the prefix
+    /// fragment is replayed.
+    pub(crate) fn can_splice_plain_view_target(
+        &self,
+        source_parent: &Range<PrepaintStateIndex>,
+        source_target: &Range<PrepaintStateIndex>,
+        view_id: EntityId,
+    ) -> bool {
+        if !self.can_reuse_prepaint_fragment(source_parent)
+            || !self.can_reuse_prepaint_fragment(
+                &(source_parent.start.clone()..source_target.start.clone()),
+            )
+            || !self.can_reuse_prepaint_fragment(
+                &(source_target.end.clone()..source_parent.end.clone()),
+            )
+        {
+            return false;
+        }
+
+        let parent_start = source_parent.start.dispatch_tree_index;
+        let target_start = source_target.start.dispatch_tree_index;
+        if parent_start >= source_parent.end.dispatch_tree_index
+            || target_start >= source_target.end.dispatch_tree_index
+            || !self
+                .rendered_frame
+                .dispatch_tree
+                .node_is_plain_view_boundary(target_start, view_id)
+        {
+            return false;
+        }
+
+        let Some(seed_parent) = self
+            .rendered_frame
+            .dispatch_tree
+            .node_parent_at_index(parent_start)
+        else {
+            return false;
+        };
+        let Some(target_parent) = self
+            .rendered_frame
+            .dispatch_tree
+            .node_parent_at_index(target_start)
+        else {
+            return false;
+        };
+
+        target_parent == seed_parent
+            || (target_parent.0 >= parent_start && target_parent.0 < target_start)
+    }
+
+    pub(crate) fn activate_reconciled_view_dispatch(&mut self, view_id: EntityId) -> bool {
+        let Some(node_id) = self.next_frame.dispatch_tree.view_node_id(view_id) else {
+            return false;
+        };
+        self.next_frame.dispatch_tree.set_active_node(node_id);
+        true
+    }
+
     pub(crate) fn paint_index(&self) -> PaintIndex {
         PaintIndex {
             scene_index: self.next_frame.scene.len(),
@@ -880,6 +938,65 @@ impl Window {
                 .retained_unstable_identity_count
                 .saturating_add(1);
         }
+    }
+
+    /// Recreates the retained lifecycle boundary for a selectively rebuilt cached AnyView.
+    ///
+    /// The view's inner paint has already emitted fresh descendant metadata. The outer AnyView
+    /// boundary owns no scene primitive or semantic proof itself, but it must stay addressable so a
+    /// later Context::notify can target the same retained path again.
+    pub(crate) fn record_reconciled_cached_view_boundary(
+        &mut self,
+        retained_id: GlobalElementId,
+        source: &RetainedElementRange,
+        bounds: Bounds<Pixels>,
+        prepaint_range: Range<PrepaintStateIndex>,
+        paint_range: Range<PaintIndex>,
+        metadata_start: usize,
+    ) -> bool {
+        if !source.identity_stable
+            || source.div_self_scene.is_some()
+            || source.plain_text_key.is_some()
+            || source.bounds != bounds
+            || source.paint_context != self.current_retained_paint_context()
+            || metadata_start > self.next_frame.retained_element_order.len()
+        {
+            return false;
+        }
+
+        let key = ReconcileKey::from(retained_id);
+        if self.next_frame.retained_element_ranges.contains_key(&key) {
+            return false;
+        }
+
+        self.next_frame.retained_element_order.push(key.clone());
+        let metadata_end = self.next_frame.retained_element_order.len();
+        self.next_frame.retained_element_ranges.insert(
+            key,
+            RetainedElementRange {
+                bounds,
+                layout_fingerprint: source.layout_fingerprint,
+                // The dirty child has produced fresh content, so an old semantic generation must
+                // never be advertised as proof for the new subtree.
+                semantic_descriptor: None,
+                semantic_generation: None,
+                prepaint_range,
+                paint_range,
+                metadata_range: metadata_start..metadata_end,
+                paint_context: self.current_retained_paint_context(),
+                div_self_scene: None,
+                plain_text_key: None,
+                identity_stable: true,
+                // AnyView intentionally owns a frame-local cache boundary; ancestors must not
+                // generic-replay across it.
+                subtree_stable: false,
+            },
+        );
+        self.next_frame.retained_unstable_identity_count = self
+            .next_frame
+            .retained_unstable_identity_count
+            .saturating_add(1);
+        true
     }
 
     /// Carries every descendant reconciliation record of a replayed subtree into the current

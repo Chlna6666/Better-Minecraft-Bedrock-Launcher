@@ -181,6 +181,105 @@ impl Render for DeferredCachedRootView {
     }
 }
 
+struct SelectiveLeafView {
+    renders: Rc<std::cell::Cell<usize>>,
+    revision: usize,
+}
+
+impl Render for SelectiveLeafView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        crate::div()
+            .w(px(120.))
+            .h(px(32.))
+            .child(format!("leaf-{}", self.revision))
+    }
+}
+
+struct SelectiveParentView {
+    renders: Rc<std::cell::Cell<usize>>,
+    leaf: Entity<SelectiveLeafView>,
+}
+
+impl Render for SelectiveParentView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        crate::div().child(
+            AnyView::from(self.leaf.clone()).cached(
+                StyleRefinement::default().w(px(120.)).h(px(32.)),
+            ),
+        )
+    }
+}
+
+struct SelectiveRootView {
+    parent: Entity<SelectiveParentView>,
+}
+
+impl Render for SelectiveRootView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div().child(
+            AnyView::from(self.parent.clone()).cached(
+                StyleRefinement::default().w(px(120.)).h(px(32.)),
+            ),
+        )
+    }
+}
+
+#[gpui::test]
+fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
+    cx: &mut TestAppContext,
+) {
+    let parent_renders = Rc::new(std::cell::Cell::new(0));
+    let leaf_renders = Rc::new(std::cell::Cell::new(0));
+    let (leaf, window) = cx.update(|cx| {
+        let leaf = cx.new(|_| SelectiveLeafView {
+            renders: leaf_renders.clone(),
+            revision: 0,
+        });
+        let parent = cx.new(|_| SelectiveParentView {
+            renders: parent_renders.clone(),
+            leaf: leaf.clone(),
+        });
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| SelectiveRootView { parent })
+            })
+            .unwrap();
+        (leaf, AnyWindowHandle::from(window))
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+    })
+    .unwrap();
+    let parent_baseline = parent_renders.get();
+    let leaf_baseline = leaf_renders.get();
+    assert!(parent_baseline > 0 && leaf_baseline > 0);
+
+    for revision in 1..=2 {
+        leaf.update(cx, |leaf, cx| {
+            leaf.revision = revision;
+            cx.notify();
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear();
+        })
+        .unwrap();
+
+        assert_eq!(
+            parent_renders.get(),
+            parent_baseline,
+            "TraversalAncestor must not call the clean cached parent Render"
+        );
+        assert_eq!(
+            leaf_renders.get(),
+            leaf_baseline + revision,
+            "the direct dirty child must still rebuild on every notify"
+        );
+    }
+}
+
 #[gpui::test]
 fn cached_view_infers_stable_fingerprint(cx: &mut TestAppContext) {
     let view = cx.update(|cx| cx.new(|_| EmptyView));

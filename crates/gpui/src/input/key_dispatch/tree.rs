@@ -14,7 +14,7 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct DispatchNodeId(pub(super) usize);
+pub(crate) struct DispatchNodeId(pub(crate) usize);
 
 pub(crate) struct DispatchTree {
     pub(super) node_stack: Vec<DispatchNodeId>,
@@ -483,5 +483,9 @@ impl DispatchTree {
 
     pub fn active_node_id(&self) -> Option<DispatchNodeId> {
         self.node_stack.last().copied()
+    }
+
+    pub(crate) fn view_node_id(&self, view_id: EntityId) -> Option<DispatchNodeId> {
+        self.view_node_ids.get(&view_id).copied()
     }
 }

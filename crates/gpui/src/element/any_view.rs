@@ -7,7 +7,7 @@ use crate::{
     WeakEntity, div,
 };
 use crate::{Empty, Window};
-use crate::window::ViewDirtyScope;
+use crate::window::{CachedViewTraversalContext, RetainedElementRange, ViewDirtyScope};
 use crate::window::debug_visualization::ViewCacheDebugStatus;
 use anyhow::Result;
 use collections::FxHashSet;
@@ -18,6 +18,10 @@ use std::rc::Rc;
 use std::{any::TypeId, fmt, ops::Range};
 
 struct AnyViewState {
+    owner_id: EntityId,
+    retained_id: GlobalElementId,
+    weak_view: AnyWeakView,
+    traversal_context: CachedViewTraversalContext,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     metadata_range: Range<usize>,
@@ -43,6 +47,209 @@ struct ViewCacheKey {
     text_style: TextStyle,
     paint_context: ViewPaintContext,
     fingerprint: Option<u64>,
+}
+
+enum AnyViewPrepaintState {
+    Fresh(AnyElement),
+    Replay,
+    Selective(Box<SelectiveAnyViewPatch>),
+}
+
+struct SelectiveAnyViewTarget {
+    view: AnyView,
+    state_global_id: GlobalElementId,
+    retained_id: GlobalElementId,
+    traversal_context: CachedViewTraversalContext,
+    source_outer: RetainedElementRange,
+}
+
+struct SelectiveAnyViewPatch {
+    target_view: AnyView,
+    target_global_id: GlobalElementId,
+    target_retained_id: GlobalElementId,
+    target_context: CachedViewTraversalContext,
+    target_bounds: Bounds<Pixels>,
+    target_request_layout: Option<AnyElement>,
+    target_prepaint: Box<AnyViewPrepaintState>,
+    source_target: RetainedElementRange,
+    source_prepaint_prefix: Range<PrepaintStateIndex>,
+    source_prepaint_suffix: Range<PrepaintStateIndex>,
+    source_paint_prefix: Range<PaintIndex>,
+    source_paint_suffix: Range<PaintIndex>,
+    source_metadata_prefix: Range<usize>,
+    source_metadata_suffix: Range<usize>,
+    target_prepaint_range: Range<PrepaintStateIndex>,
+    target_prepaint_prefix: Range<PrepaintStateIndex>,
+    target_prepaint_suffix: Range<PrepaintStateIndex>,
+    parent_prepaint_range: Range<PrepaintStateIndex>,
+}
+
+fn selective_any_view_target(
+    window: &Window,
+    ancestor_retained_id: &GlobalElementId,
+    parent_state: &AnyViewState,
+) -> Option<SelectiveAnyViewTarget> {
+    let (owner_id, retained_id) = window
+        .invalidator
+        .single_reconcile_target_below(ancestor_retained_id)?;
+    if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
+        return None;
+    }
+
+    let source_outer = window
+        .rendered_frame
+        .retained_element_ranges
+        .get(&retained_id)?
+        .clone();
+    if !source_outer.identity_stable
+        || source_outer.metadata_range.start < parent_state.metadata_range.start
+        || source_outer.metadata_range.end > parent_state.metadata_range.end
+    {
+        return None;
+    }
+
+    let state_type = TypeId::of::<AnyViewState>();
+    for ((state_global_id, type_id), boxed) in &window.rendered_frame.element_states {
+        if *type_id != state_type {
+            continue;
+        }
+        let Some(state) = boxed
+            .inner
+            .downcast_ref::<Option<AnyViewState>>()
+            .and_then(Option::as_ref)
+        else {
+            continue;
+        };
+        if state.owner_id != owner_id || state.retained_id != retained_id {
+            continue;
+        }
+
+        let view = state.weak_view.upgrade()?;
+        if view.cached_style.is_none() {
+            return None;
+        }
+        return Some(SelectiveAnyViewTarget {
+            view,
+            state_global_id: GlobalElementId(state_global_id.0.clone()),
+            retained_id,
+            traversal_context: state.traversal_context.clone(),
+            source_outer,
+        });
+    }
+    None
+}
+
+fn try_selective_any_view_prepaint(
+    ancestor_retained_id: &GlobalElementId,
+    parent_state: &AnyViewState,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<SelectiveAnyViewPatch> {
+    let target = selective_any_view_target(window, ancestor_retained_id, parent_state)?;
+    let source_target = target.source_outer.clone();
+
+    let source_prepaint_prefix =
+        parent_state.prepaint_range.start.clone()..source_target.prepaint_range.start.clone();
+    let source_prepaint_suffix =
+        source_target.prepaint_range.end.clone()..parent_state.prepaint_range.end.clone();
+    let source_paint_prefix =
+        parent_state.paint_range.start.clone()..source_target.paint_range.start.clone();
+    let source_paint_suffix =
+        source_target.paint_range.end.clone()..parent_state.paint_range.end.clone();
+    let source_metadata_prefix =
+        parent_state.metadata_range.start..source_target.metadata_range.start;
+    let source_metadata_suffix =
+        source_target.metadata_range.end..parent_state.metadata_range.end;
+
+    if !window.can_splice_plain_view_target(
+        &parent_state.prepaint_range,
+        &source_target.prepaint_range,
+        target.view.entity_id(),
+    )
+        || !window.can_reuse_prepaint_fragment(&source_prepaint_prefix)
+        || !window.can_reuse_prepaint_fragment(&source_prepaint_suffix)
+        || !window.can_reuse_paint(&source_paint_prefix)
+        || !window.can_reuse_paint(&source_paint_suffix)
+    {
+        return None;
+    }
+
+    let context_matches = window.with_cached_view_traversal_context(
+        &target.traversal_context,
+        |window| {
+            window.current_retained_element_id().as_ref() == Some(&target.retained_id)
+                && window.current_retained_paint_context() == source_target.paint_context
+        },
+    );
+    if !context_matches {
+        return None;
+    }
+
+    let parent_prepaint_start = window.prepaint_index();
+    let mut replay = window.begin_prepaint_fragment_replay(&parent_state.prepaint_range)?;
+    if !window.reuse_prepaint_fragment(source_prepaint_prefix.clone(), &mut replay) {
+        return None;
+    }
+    let prefix_end = window.prepaint_index();
+    let target_prepaint_start = prefix_end.clone();
+
+    if !window.begin_fresh_view_dispatch_for_fragment(
+        &source_target.prepaint_range,
+        target.view.entity_id(),
+        &mut replay,
+    ) {
+        window.degrade_current_draw();
+        return None;
+    }
+
+    let mut target_view = target.view;
+    let mut target_request_layout = None;
+    let target_bounds = source_target.bounds;
+    let target_prepaint = window.with_cached_view_traversal_context(
+        &target.traversal_context,
+        |window| {
+            target_view.prepaint(
+                Some(&target.state_global_id),
+                None,
+                target_bounds,
+                &mut target_request_layout,
+                window,
+                cx,
+            )
+        },
+    );
+    let target_prepaint_end = window.prepaint_index();
+    window.finish_fresh_view_dispatch_for_fragment(&replay);
+
+    let suffix_start = target_prepaint_end.clone();
+    if !window.reuse_prepaint_fragment(source_prepaint_suffix.clone(), &mut replay) {
+        window.degrade_current_draw();
+        return None;
+    }
+    let parent_prepaint_end = window.prepaint_index();
+
+    cx.entities.extend_accessed(&parent_state.accessed_entities);
+
+    Some(SelectiveAnyViewPatch {
+        target_view,
+        target_global_id: target.state_global_id,
+        target_retained_id: target.retained_id,
+        target_context: target.traversal_context,
+        target_bounds,
+        target_request_layout,
+        target_prepaint: Box::new(target_prepaint),
+        source_target,
+        source_prepaint_prefix,
+        source_prepaint_suffix,
+        source_paint_prefix,
+        source_paint_suffix,
+        source_metadata_prefix,
+        source_metadata_suffix,
+        target_prepaint_range: target_prepaint_start..target_prepaint_end,
+        target_prepaint_prefix: parent_prepaint_start.clone()..prefix_end,
+        target_prepaint_suffix: suffix_start..parent_prepaint_end.clone(),
+        parent_prepaint_range: parent_prepaint_start..parent_prepaint_end,
+    })
 }
 
 impl<V: Render> Element for Entity<V> {
@@ -252,7 +459,7 @@ impl Eq for AnyView {}
 
 impl Element for AnyView {
     type RequestLayoutState = Option<AnyElement>;
-    type PrepaintState = Option<AnyElement>;
+    type PrepaintState = AnyViewPrepaintState;
     const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
         crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
 
@@ -309,12 +516,14 @@ impl Element for AnyView {
         cx: &mut App,
     ) -> Option<AnyElement> {
         window.set_view_id(self.entity_id());
+        let retained_id = window.current_retained_element_id();
+        let traversal_context = window.capture_cached_view_traversal_context();
         if self.cached_style.is_some()
-            && let Some(global_id) = global_id
+            && let Some(retained_id) = retained_id.as_ref()
         {
             window
                 .invalidator
-                .register_cached_view_retained_target(self.entity_id(), global_id);
+                .register_cached_view_retained_target(self.entity_id(), retained_id);
         }
         window.with_rendered_view(self.entity_id(), |window| {
             let critical = self.critical;
@@ -322,12 +531,23 @@ impl Element for AnyView {
                 with_optional_critical_draw(critical, window, |window| {
                     element.prepaint(window, cx);
                 });
-                return Some(element);
+                return AnyViewPrepaintState::Fresh(element);
             }
 
             window.with_element_state::<AnyViewState, _>(
                 global_id.unwrap(),
-                |element_state, window| {
+                |mut element_state, window| {
+                    let retained_id = retained_id
+                        .clone()
+                        .expect("cached AnyView must have a retained identity");
+                    let traversal_context = traversal_context.clone();
+                    if let Some(state) = element_state.as_mut() {
+                        state.owner_id = self.entity_id();
+                        state.retained_id = retained_id.clone();
+                        state.weak_view = self.downgrade();
+                        state.traversal_context = traversal_context.clone();
+                    }
+
                     let content_mask = window.content_mask();
                     let text_style = window.text_style();
                     let paint_context = ViewPaintContext {
@@ -367,6 +587,44 @@ impl Element for AnyView {
                     let can_reuse_paint = element_state
                         .as_ref()
                         .is_some_and(|state| window.can_reuse_paint(&state.paint_range));
+
+                    let stable_cache_key = element_state.as_ref().is_some_and(|state| {
+                        state.cache_key.bounds == bounds
+                            && state.cache_key.content_mask == content_mask
+                            && state.cache_key.paint_context == paint_context
+                            && state.cache_key.text_style == text_style
+                            && state.cache_key.fingerprint == cache_fingerprint
+                    });
+                    if dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
+                        && stable_cache_key
+                        && !force_refresh
+                        && !window.recovering_degraded_draw()
+                        && !window.draw_budget_exhausted()
+                        && let Some(state) = element_state.as_ref()
+                        && let Some(patch) = try_selective_any_view_prepaint(
+                            &retained_id,
+                            state,
+                            window,
+                            cx,
+                        )
+                    {
+                        window.record_debug_view_cache_status(
+                            bounds,
+                            ViewCacheDebugStatus::Hit,
+                            cx,
+                        );
+                        let mut state = element_state
+                            .take()
+                            .expect("selective traversal requires an existing cache state");
+                        state.prepaint_range = patch.parent_prepaint_range.clone();
+                        state.replay_source_prepaint_range = None;
+                        state.replay_source_paint_range = None;
+                        state.replay_source_metadata_range = None;
+                        return (
+                            AnyViewPrepaintState::Selective(Box::new(patch)),
+                            state,
+                        );
+                    }
 
                     let cache_debug_status = match element_state.as_ref() {
                         None => ViewCacheDebugStatus::MissCold,
@@ -435,7 +693,7 @@ impl Element for AnyView {
                                 cx,
                             );
                             window.degrade_current_draw();
-                            return (None, element_state);
+                            return (AnyViewPrepaintState::Replay, element_state);
                         }
                         cx.entities
                             .extend_accessed(&element_state.accessed_entities);
@@ -449,7 +707,7 @@ impl Element for AnyView {
                                 Some(source_metadata_range);
                         }
 
-                        return (None, element_state);
+                        return (AnyViewPrepaintState::Replay, element_state);
                     }
                     let refreshing = mem::replace(&mut window.refreshing, true);
                     let prepaint_start = window.prepaint_index();
@@ -474,8 +732,12 @@ impl Element for AnyView {
                     window.refreshing = refreshing;
 
                     (
-                        Some(element),
+                        AnyViewPrepaintState::Fresh(element),
                         AnyViewState {
+                            owner_id: self.entity_id(),
+                            retained_id,
+                            weak_view: self.downgrade(),
+                            traversal_context,
                             accessed_entities,
                             prepaint_range: prepaint_start..prepaint_end,
                             paint_range: PaintIndex::default()..PaintIndex::default(),
@@ -519,57 +781,130 @@ impl Element for AnyView {
                         let metadata_start = window.retained_element_metadata_len();
                         let paint_start = window.paint_index();
 
-                        if let Some(element) = element {
-                            // Cached view missed and is forwarding current work to its rendered
-                            // child. The AnyView wrapper itself owns no scene primitives.
-                            window.record_debug_element_traversal_only(bounds, cx);
-                            let refreshing = mem::replace(&mut window.refreshing, true);
-                            with_optional_critical_draw(critical, window, |window| {
-                                element.paint(window, cx);
-                            });
-                            window.refreshing = refreshing;
-                        } else {
-                            // Full cached subtree replay: replace Drawable's provisional red marker
-                            // with a retained-green marker before copying the previous paint range.
-                            // The descendant retained metadata must be rebased together with the
-                            // frame-local prepaint/paint arrays; otherwise a clean parent cache hit
-                            // silently erases the exact child targets needed by a later notify().
-                            window.record_debug_element_self_scene_replay(bounds, cx);
-                            let source_prepaint = element_state
-                                .replay_source_prepaint_range
-                                .take()
-                                .unwrap_or_else(|| element_state.prepaint_range.clone());
-                            let source_paint = element_state
-                                .replay_source_paint_range
-                                .take()
-                                .unwrap_or_else(|| element_state.paint_range.clone());
-                            let source_metadata = element_state
-                                .replay_source_metadata_range
-                                .take()
-                                .unwrap_or_else(|| element_state.metadata_range.clone());
-                            if !window.reuse_paint(source_paint.clone()) {
-                                window.record_debug_view_cache_status(
-                                    bounds,
-                                    ViewCacheDebugStatus::ReuseFailed,
-                                    cx,
-                                );
-                                window.degrade_current_draw();
-                            } else {
-                                let target_paint = paint_start.clone()..window.paint_index();
-                                if !source_metadata.is_empty()
-                                    && !window.replay_retained_element_metadata(
-                                        &source_prepaint,
-                                        &source_paint,
-                                        &source_metadata,
-                                        &element_state.prepaint_range,
-                                        &target_paint,
-                                    )
-                                {
+                        match element {
+                            AnyViewPrepaintState::Fresh(element) => {
+                                // Cached view missed and is forwarding current work to its rendered
+                                // child. The AnyView wrapper itself owns no scene primitives.
+                                window.record_debug_element_traversal_only(bounds, cx);
+                                let refreshing = mem::replace(&mut window.refreshing, true);
+                                with_optional_critical_draw(critical, window, |window| {
+                                    element.paint(window, cx);
+                                });
+                                window.refreshing = refreshing;
+                            }
+                            AnyViewPrepaintState::Replay => {
+                                // Full cached subtree replay: replace Drawable's provisional red
+                                // marker with a retained-green marker before copying prior ranges.
+                                window.record_debug_element_self_scene_replay(bounds, cx);
+                                let source_prepaint = element_state
+                                    .replay_source_prepaint_range
+                                    .take()
+                                    .unwrap_or_else(|| element_state.prepaint_range.clone());
+                                let source_paint = element_state
+                                    .replay_source_paint_range
+                                    .take()
+                                    .unwrap_or_else(|| element_state.paint_range.clone());
+                                let source_metadata = element_state
+                                    .replay_source_metadata_range
+                                    .take()
+                                    .unwrap_or_else(|| element_state.metadata_range.clone());
+                                if !window.reuse_paint(source_paint.clone()) {
                                     window.record_debug_view_cache_status(
                                         bounds,
                                         ViewCacheDebugStatus::ReuseFailed,
                                         cx,
                                     );
+                                    window.degrade_current_draw();
+                                } else {
+                                    let target_paint = paint_start.clone()..window.paint_index();
+                                    if !source_metadata.is_empty()
+                                        && !window.replay_retained_element_metadata(
+                                            &source_prepaint,
+                                            &source_paint,
+                                            &source_metadata,
+                                            &element_state.prepaint_range,
+                                            &target_paint,
+                                        )
+                                    {
+                                        window.record_debug_view_cache_status(
+                                            bounds,
+                                            ViewCacheDebugStatus::ReuseFailed,
+                                            cx,
+                                        );
+                                        window.degrade_current_draw();
+                                    }
+                                }
+                            }
+                            AnyViewPrepaintState::Selective(patch) => {
+                                window.record_debug_element_traversal_only(bounds, cx);
+
+                                let prefix_paint_start = window.paint_index();
+                                if !window.reuse_paint(patch.source_paint_prefix.clone()) {
+                                    window.degrade_current_draw();
+                                }
+                                let prefix_paint_end = window.paint_index();
+                                let target_paint_prefix =
+                                    prefix_paint_start..prefix_paint_end.clone();
+                                if !window.replay_retained_element_metadata_fragment(
+                                    &patch.source_prepaint_prefix,
+                                    &patch.source_paint_prefix,
+                                    &patch.source_metadata_prefix,
+                                    &patch.target_prepaint_prefix,
+                                    &target_paint_prefix,
+                                ) {
+                                    window.degrade_current_draw();
+                                }
+
+                                let target_paint_start = prefix_paint_end;
+                                let target_metadata_start =
+                                    window.retained_element_metadata_len();
+                                if !window.activate_reconciled_view_dispatch(
+                                    patch.target_view.entity_id(),
+                                ) {
+                                    window.degrade_current_draw();
+                                }
+                                let retained_ok = window.with_cached_view_traversal_context(
+                                    &patch.target_context,
+                                    |window| {
+                                        patch.target_view.paint(
+                                            Some(&patch.target_global_id),
+                                            None,
+                                            patch.target_bounds,
+                                            &mut patch.target_request_layout,
+                                            patch.target_prepaint.as_mut(),
+                                            window,
+                                            cx,
+                                        );
+                                        let target_paint_end = window.paint_index();
+                                        window.record_reconciled_cached_view_boundary(
+                                            patch.target_retained_id.clone(),
+                                            &patch.source_target,
+                                            patch.target_bounds,
+                                            patch.target_prepaint_range.clone(),
+                                            target_paint_start.clone()..target_paint_end,
+                                            target_metadata_start,
+                                        )
+                                    },
+                                );
+                                if !retained_ok {
+                                    window.degrade_current_draw();
+                                }
+
+                                let target_paint_end = window.paint_index();
+                                let suffix_paint_start = target_paint_end.clone();
+                                if !window.reuse_paint(patch.source_paint_suffix.clone()) {
+                                    window.degrade_current_draw();
+                                }
+                                let suffix_paint_end = window.paint_index();
+                                let target_paint_suffix =
+                                    suffix_paint_start..suffix_paint_end;
+                                if !window.replay_retained_element_metadata_fragment(
+                                    &patch.source_prepaint_suffix,
+                                    &patch.source_paint_suffix,
+                                    &patch.source_metadata_suffix,
+                                    &patch.target_prepaint_suffix,
+                                    &target_paint_suffix,
+                                ) {
                                     window.degrade_current_draw();
                                 }
                             }
@@ -591,7 +926,12 @@ impl Element for AnyView {
             } else {
                 window.record_debug_element_traversal_only(bounds, cx);
                 with_optional_critical_draw(critical, window, |window| {
-                    element.as_mut().unwrap().paint(window, cx);
+                    match element {
+                        AnyViewPrepaintState::Fresh(element) => element.paint(window, cx),
+                        AnyViewPrepaintState::Replay | AnyViewPrepaintState::Selective(_) => {
+                            unreachable!("uncached AnyView must carry fresh prepaint state")
+                        }
+                    }
                 });
             }
         });
@@ -615,6 +955,7 @@ impl IntoElement for AnyView {
 }
 
 /// A weak, dynamically-typed handle to a view that does not prevent the view from being released.
+#[derive(Clone)]
 pub struct AnyWeakView {
     entity: AnyWeakEntity,
     render: fn(&AnyView, &mut Window, &mut App) -> AnyElement,
