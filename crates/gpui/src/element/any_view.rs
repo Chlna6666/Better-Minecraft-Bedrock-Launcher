@@ -599,11 +599,16 @@ impl Element for AnyView {
                             && state.cache_key.text_style == text_style
                             && state.cache_key.fingerprint == cache_fingerprint
                     });
-                    if dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
-                        && stable_cache_key
-                        && !force_refresh
-                        && !window.recovering_degraded_draw()
-                        && !window.draw_budget_exhausted()
+                    let selective_candidate =
+                        dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
+                            && stable_cache_key
+                            && !force_refresh
+                            && !window.recovering_degraded_draw()
+                            && !window.draw_budget_exhausted();
+                    if selective_candidate {
+                        window.record_selective_splice_attempt();
+                    }
+                    if selective_candidate
                         && let Some(state) = element_state.as_ref()
                         && let Some(patch) = try_selective_any_view_prepaint(
                             &retained_id,
@@ -612,6 +617,7 @@ impl Element for AnyView {
                             cx,
                         )
                     {
+                        window.record_selective_splice_hit();
                         window.record_debug_view_cache_status(
                             bounds,
                             ViewCacheDebugStatus::Hit,

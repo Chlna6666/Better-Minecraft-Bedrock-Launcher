@@ -25,6 +25,8 @@ pub(super) struct DirtyFrameDiagnostics {
     pub(super) view_dirty: usize,
     pub(super) direct_dirty_views: usize,
     pub(super) traversal_ancestor_views: usize,
+    pub(super) selective_splice_attempts: usize,
+    pub(super) selective_splice_hits: usize,
     pub(super) rendered_views: usize,
     pub(super) rendered_view_types: [(&'static str, usize); 8],
     pub(super) rendered_view_type_count: usize,
@@ -84,6 +86,14 @@ impl DirtyFrameDiagnostics {
     pub(super) fn record_dirty_scopes(&mut self, direct: usize, ancestors: usize) {
         self.direct_dirty_views = direct;
         self.traversal_ancestor_views = ancestors;
+    }
+
+    pub(super) fn record_selective_splice_attempt(&mut self) {
+        self.selective_splice_attempts = self.selective_splice_attempts.saturating_add(1);
+    }
+
+    pub(super) fn record_selective_splice_hit(&mut self) {
+        self.selective_splice_hits = self.selective_splice_hits.saturating_add(1);
     }
 
     pub(super) fn record_rendered_view(&mut self, entity_id: EntityId, type_name: &'static str) {
