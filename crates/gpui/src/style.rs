@@ -11,4 +11,3 @@ pub use paint::*;
 pub use styled_trait::*;
 pub use text::*;
 pub use values::*;
-pub(crate) use text_cache::*;

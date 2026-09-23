@@ -739,6 +739,7 @@ impl RetainedLayoutCache {
             .saturating_mul(LINE_LAYOUT_CACHE_WORKING_SET_MULTIPLIER)
     }
 
+    #[cfg(test)]
     fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
         let entry = FrameLayoutEntry {
             estimated_bytes: estimate_line_entry_bytes(&key, &layout),
@@ -774,6 +775,7 @@ impl RetainedLayoutCache {
         self.compact_recency_if_needed();
     }
 
+    #[cfg(test)]
     fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
         let entry = FrameLayoutEntry {
             estimated_bytes: estimate_wrapped_line_entry_bytes(&key, &layout),

@@ -18,7 +18,7 @@ pub use allocator::AllocatorBucketMetricsSnapshot;
 pub use animation::AnimationMetricsSnapshot;
 pub(crate) use animation::{
     record_animation_loop_restart, record_animation_queue_backpressure,
-    record_animation_stale_frame_count, record_animation_worker_pool_wake,
+    record_animation_stale_frame_count,
 };
 pub use collect::performance_metrics_snapshot;
 pub use frame::*;

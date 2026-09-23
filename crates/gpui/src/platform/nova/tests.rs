@@ -2019,7 +2019,6 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
         dirty_region: &dirty_region,
         backdrop_blur_damage_plan: &backdrop_blur_damage_plan,
         partial_present_mode: PartialPresentMode::Partial,
-        trim_policy: Default::default(),
         force_full_backdrop_blur_refresh: false,
     };
 

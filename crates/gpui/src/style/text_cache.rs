@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::text::TextStyle;
 
 /// Returns whether two text styles have the same shaping/layout identity.
@@ -5,6 +6,7 @@ use super::text::TextStyle;
 /// Paint-only decorations are intentionally excluded. This predicate is the boundary used by
 /// retained caches to decide whether previously measured/shaped text geometry can stay valid even
 /// when the visual decoration must be repainted.
+#[cfg(test)]
 pub(crate) fn text_layout_style_eq(left: &TextStyle, right: &TextStyle) -> bool {
     left.font_family == right.font_family
         && left.font_features == right.font_features
@@ -24,6 +26,7 @@ pub(crate) fn text_layout_style_eq(left: &TextStyle, right: &TextStyle) -> bool 
 /// These fields can change the emitted paint primitives without changing glyph shaping or text
 /// measurement. A retained cache must not replay an old paint range when this predicate is false,
 /// but it may still reuse layout when [`text_layout_style_eq`] is true.
+#[cfg(test)]
 pub(crate) fn text_paint_style_eq(left: &TextStyle, right: &TextStyle) -> bool {
     left.color == right.color
         && left.background_color == right.background_color
@@ -39,6 +42,7 @@ pub(crate) fn text_paint_style_eq(left: &TextStyle, right: &TextStyle) -> bool {
 /// decorations also emit paint primitives and therefore still require an ordinary repaint. Cached
 /// views use this predicate only together with per-glyph provenance proving that their retained
 /// scene range is safe to recolor.
+#[cfg(test)]
 pub(crate) fn text_foreground_only_change(left: &TextStyle, right: &TextStyle) -> bool {
     left.color != right.color
         && text_layout_style_eq(left, right)

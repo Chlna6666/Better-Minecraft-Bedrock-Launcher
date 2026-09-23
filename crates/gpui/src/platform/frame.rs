@@ -209,7 +209,6 @@ pub(crate) struct FrameRenderPlan<'a> {
     pub(crate) dirty_region: &'a DirtyRegion,
     pub(crate) backdrop_blur_damage_plan: &'a BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
-    pub(crate) trim_policy: RetainedResourceTrimPolicy,
     pub(crate) force_full_backdrop_blur_refresh: bool,
 }
 
@@ -225,15 +224,7 @@ impl<'a> FrameRenderPlan<'a> {
             dirty_region,
             backdrop_blur_damage_plan,
             partial_present_mode: PartialPresentMode::FullRedraw,
-            trim_policy: RetainedResourceTrimPolicy::None,
             force_full_backdrop_blur_refresh: true,
-        }
-    }
-
-    pub(crate) fn surface_requires_full_redraw(self) -> Self {
-        Self {
-            partial_present_mode: PartialPresentMode::FullRedraw,
-            ..self
         }
     }
 }

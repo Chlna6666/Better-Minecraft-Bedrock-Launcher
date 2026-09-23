@@ -162,7 +162,7 @@ fn upload_animated_buffer_kind<D: BackendResources>(
         }
 
         match range_start {
-            Some(start_of_range) if start == range_end => {
+            Some(_start_of_range) if start == range_end => {
                 range_end = end;
             }
             Some(start_of_range) => {

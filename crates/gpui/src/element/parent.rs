@@ -1,4 +1,4 @@
-use super::{AnyElement, Element, IntoElement};
+use super::{AnyElement, IntoElement};
 
 /// This is a helper trait to provide a uniform interface for constructing elements that
 /// can accept any number of any kind of child elements

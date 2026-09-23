@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use gfx_core::ShaderModuleId;
 
 use super::super::*;

@@ -56,6 +56,7 @@ const fn build_alpha_divisor_lut() -> [f32; 256] {
 
 // Match the historical scalar denominator exactly. A reciprocal or algebraic rewrite changes a
 // small number of 8-bit results by one LSB, so the safe SIMD kernel still uses the exact table.
+#[cfg(test)]
 const ALPHA_NORM_LUT: [f32; 256] = build_alpha_norm_lut();
 const ALPHA_DIVISOR_LUT: [f32; 256] = build_alpha_divisor_lut();
 

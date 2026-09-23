@@ -6,6 +6,7 @@ const SIMD_MESH_INDEX_MIN_BYTES: usize = 256;
 
 static MESH_INDEX_SIMD_LEVEL: LazyLock<Level> = LazyLock::new(Level::new);
 
+#[cfg(test)]
 pub(super) fn write_animation_binding(
     bytes: &mut Vec<u8>,
     animation_id: crate::SceneAnimationId,
@@ -218,6 +219,7 @@ fn pack_mesh_indices_simd<S: Simd>(simd: S, indices: &[u32], uses_u16: bool, out
 ///
 /// The old shader recomputed eight exponentials, four paired offsets, and normalization for every
 /// fragment. These values depend only on the blur radius, so compute them once per pass on the CPU.
+#[cfg(test)]
 pub(super) fn write_backdrop_blur_pass(bytes: &mut Vec<u8>, radius: f32) {
     write_backdrop_blur_pass_with_animation(bytes, radius, 0);
 }

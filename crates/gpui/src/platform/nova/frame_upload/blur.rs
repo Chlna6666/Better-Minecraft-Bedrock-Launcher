@@ -90,10 +90,6 @@ impl BackdropBlurConfig {
         self.downsample
     }
 
-    pub(in crate::platform::nova) fn levels(self) -> usize {
-        usize::from(self.levels)
-    }
-
     /// Blur radius in source/device pixels. It is intentionally not quantized; 0.1px stays 0.1px.
     pub(in crate::platform::nova) fn radius(self) -> f32 {
         f32::from_bits(self.radius_bits)

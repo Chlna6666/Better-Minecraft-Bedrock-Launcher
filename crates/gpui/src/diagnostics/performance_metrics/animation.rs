@@ -85,6 +85,7 @@ pub(crate) fn record_animation_stale_frame_count(count: usize) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn record_animation_worker_pool_wake() {
     shared_metrics()
         .animation_worker_pool_wake_count

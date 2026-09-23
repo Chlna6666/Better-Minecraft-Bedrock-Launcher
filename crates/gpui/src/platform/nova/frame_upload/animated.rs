@@ -4,6 +4,7 @@ use smallvec::SmallVec;
 
 const BLUR_SOURCE_BOUNDS_OFFSET: usize = 16;
 const BLUR_ROTATION_METADATA_OFFSET: usize = 80;
+#[cfg(test)]
 const BLUR_DISPLAY_BOUNDS_OFFSET: usize = 96;
 const BLUR_COMPOSITE_KIND_OFFSET: usize = 132;
 const ROTATED_COMPOSITE_KIND: u32 = 2;
@@ -181,10 +182,6 @@ impl AnimatedByteMetadata {
         self.len
     }
 
-    #[inline]
-    pub(in crate::platform::nova) const fn capacity(self) -> usize {
-        0
-    }
 }
 
 /// A retained primitive and its small, independently uploadable animated range.
@@ -576,6 +573,7 @@ fn write_rotation_composite_metadata(bytes: &mut [u8], value: ResolvedAnimationV
         .copy_from_slice(&ROTATED_COMPOSITE_KIND.to_ne_bytes());
 }
 
+#[cfg(test)]
 fn read_packed_bounds_at(bytes: &[u8], offset: usize) -> [f32; 4] {
     std::array::from_fn(|index| {
         let start = offset + index * 4;
@@ -642,6 +640,7 @@ fn rotated_bounds(
     )
 }
 
+#[cfg(test)]
 fn apply_value(primitive: &mut Primitive, value: &SceneAnimationValue) {
     apply_resolved_value(primitive, ResolvedAnimationValue::new(value));
 }

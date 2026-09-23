@@ -30,6 +30,7 @@ pub(super) const PACKED_MONO_SPRITE_BYTES: usize = 144;
 pub(super) const PACKED_POLY_SPRITE_BYTES: usize = 128;
 pub(super) const PACKED_UNDERLINE_BYTES: usize = 96;
 pub(super) const PACKED_BACKDROP_BLUR_BYTES: usize = 136;
+#[cfg(test)]
 pub(super) const PACKED_ANIMATION_BINDING_BYTES: usize = 16;
 pub(super) const PACKED_ANIMATION_VALUE_BYTES: usize = 64;
 pub(super) const PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES: usize = 96;

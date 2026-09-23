@@ -1,6 +1,6 @@
-use super::{
-    line_layout::ShapedGlyph, primitives::RenderGlyphParams, script::TextClusterProperties,
-};
+#[cfg(test)]
+use super::script::TextClusterProperties;
+use super::{line_layout::ShapedGlyph, primitives::RenderGlyphParams};
 
 /// Raster-bounds policy selected after shaping and before glyph atlas lookup.
 ///
@@ -22,6 +22,7 @@ impl GlyphRasterPolicy {
     /// Emoji keep their exact bitmap/color-glyph bounds even when they are adjacent to a dense
     /// square script. This keeps script classification and atlas normalization as separate concerns.
     #[inline]
+    #[cfg(test)]
     pub(crate) fn for_cluster(properties: TextClusterProperties, is_emoji: bool) -> Self {
         if !is_emoji && properties.uses_stable_vertical_raster_frame() {
             Self::StableVerticalFrame
@@ -70,6 +71,7 @@ impl RenderGlyphParams {
 
     /// Whether rasterization should normalize this glyph to a stable vertical frame.
     #[inline]
+    #[cfg(test)]
     pub(crate) fn uses_stable_vertical_raster_frame(&self) -> bool {
         self.raster_policy().uses_stable_vertical_frame()
     }

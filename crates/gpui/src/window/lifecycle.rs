@@ -647,6 +647,7 @@ impl WindowInvalidator {
     /// The ancestor still routes traversal to the changed child, but its own stable
     /// background/shadow/border primitives can be replayed. A direct hit on this path, or an
     /// ancestor invalidation whose scope damages/reconciles descendants, disables self-scene reuse.
+    #[cfg(test)]
     pub(in crate::window) fn retained_path_is_descendant_only(
         &self,
         global_id: &GlobalElementId,

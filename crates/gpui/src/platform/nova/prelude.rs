@@ -16,7 +16,7 @@ pub(super) use crate::{
 };
 
 pub(super) use gfx_core::{
-    AddressMode, BackendAsyncCapabilities, BackendDiagnostics, BackendPipelines,
+    AddressMode, BackendAsyncCapabilities, BackendPipelines,
     BackendPresentationCompat, BackendQueue, BackendResources, BackendSurface, BlendMode,
     BufferBinding, BufferDescriptor, BufferId, BufferUsage, ClearColor, ColorAttachmentDescriptor,
     CompositeAlphaMode, DepthAttachmentDescriptor, DepthState, DeviceDescriptor,

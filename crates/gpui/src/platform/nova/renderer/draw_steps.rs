@@ -785,6 +785,7 @@ fn clip_scissor(previous: Option<ScissorRect>, scissor: ScissorRect) -> ScissorR
     })
 }
 
+#[cfg(test)]
 fn scissor_intersects_dirty_region(scissor: ScissorRect, dirty_region: &DirtyRegion) -> bool {
     if dirty_region.is_full() {
         return true;

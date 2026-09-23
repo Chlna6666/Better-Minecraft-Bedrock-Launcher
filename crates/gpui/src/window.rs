@@ -75,7 +75,6 @@ mod dirty_region_tests;
 mod dispatch;
 mod draw;
 mod draw_reuse;
-pub(crate) use draw_reuse::PrepaintFragmentReplay;
 mod element_context;
 mod element_id;
 mod elements;

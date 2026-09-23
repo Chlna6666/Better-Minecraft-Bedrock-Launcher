@@ -23,4 +23,4 @@ pub(crate) use rgba::swap_rgba_to_bgra_rows_scalar;
 #[cfg(feature = "bench")]
 pub(crate) use rgba::swap_rgba_to_bgra_rows_simd;
 pub use rgba::{Rgba, rgb, rgba};
-pub(crate) use rgba::{swap_rgba_pa_to_bgra, swap_rgba_to_bgra_rows};
+pub(crate) use rgba::swap_rgba_to_bgra_rows;

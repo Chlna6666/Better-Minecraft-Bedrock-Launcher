@@ -14,20 +14,6 @@ fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
 }
 
 impl FrameUpload {
-    pub(in crate::platform::nova) fn refresh_animation_values(
-        &mut self,
-        scene: &crate::Scene,
-        summary: &mut FrameUploadSummary,
-    ) {
-        self.animation_values.clear();
-        self.sampled_animation_values.clear();
-        summary.animation_value_count = 0;
-        for value in &scene.animation_values {
-            write_scene_animation_value(self, summary, value);
-        }
-        self.rebuild_custom_mesh_3d_animations();
-    }
-
     pub(in crate::platform::nova) fn encode(
         &mut self,
         scene: &crate::Scene,

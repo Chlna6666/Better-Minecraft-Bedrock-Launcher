@@ -911,10 +911,6 @@ impl Window {
         self.draw_was_degraded
     }
 
-    pub(crate) fn draw_budget_exhausted_for_optional_work(&self) -> bool {
-        self.critical_draw_depth == 0 && self.draw_budget_exhausted()
-    }
-
     fn allows_progressive_frame_degradation(&self) -> bool {
         let diagnostics = self.dirty_frame_diagnostics.borrow();
         self.has_completed_rendered_frame

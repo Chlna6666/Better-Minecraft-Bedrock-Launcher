@@ -526,7 +526,6 @@ impl Window {
             dirty_region: &self.render_dirty_region,
             backdrop_blur_damage_plan: &self.backdrop_blur_damage_plan,
             partial_present_mode: self.render_present_mode,
-            trim_policy: self.render_trim_policy,
             force_full_backdrop_blur_refresh: false,
         }
     }

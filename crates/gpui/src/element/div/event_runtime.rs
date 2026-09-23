@@ -16,7 +16,7 @@ use super::{
 impl Interactivity {
     pub(crate) fn paint_mouse_listeners(
         &mut self,
-        global_id: Option<&GlobalElementId>,
+        _global_id: Option<&GlobalElementId>,
         hitbox: &Hitbox,
         element_state: Option<&mut InteractiveElementState>,
         window: &mut Window,

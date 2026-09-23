@@ -45,7 +45,6 @@ use atlas::*;
 use atlas_resources::*;
 use backend::*;
 use blur_damage::*;
-use composite_target::*;
 use diagnostics::*;
 use draw::*;
 use frame_upload::*;

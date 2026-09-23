@@ -1329,13 +1329,6 @@ impl WindowsWindow {
         self.sync_size(physical_size, scale_factor);
     }
 
-    pub(crate) fn is_in_native_size_move_loop(&self) -> bool {
-        let Some(hwnd) = self.native_hwnd() else {
-            return false;
-        };
-        WINDOWS_IN_SIZE_MOVE_LOOP.with(|windows| windows.borrow().contains(&(hwnd.0 as isize)))
-    }
-
     pub(crate) fn dispatch_pending_update(&self) {
         // A frame callback may synchronously pump another native message. Leave any newly queued
         // resize/frame request in its latest-wins slot for the next timer or redraw instead of
