@@ -455,7 +455,7 @@ fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
 }
 
 #[test]
-fn retained_range_rejects_partial_element_blur_capture() {
+fn retained_range_distinguishes_balanced_from_standalone_blur_fragments() {
     let child_bounds = Bounds::new(
         point(ScaledPixels(12.0), ScaledPixels(12.0)),
         size(ScaledPixels(8.0), ScaledPixels(8.0)),
@@ -463,10 +463,20 @@ fn retained_range_rejects_partial_element_blur_capture() {
     let scene = element_blur_scene(child_bounds);
     assert!(scene.len() >= 3);
 
+    // Local balance only answers whether the selected operations open/close their own capture.
+    // The inner primitive contains no structural marker, so it is balanced in isolation.
     assert!(scene.range_has_balanced_element_blurs(0..scene.len()));
     assert!(!scene.range_has_balanced_element_blurs(0..1));
     assert!(scene.range_has_balanced_element_blurs(1..2));
     assert!(!scene.range_has_balanced_element_blurs(scene.len() - 1..scene.len()));
+
+    // Retained splice/replay requires the stronger proof: the range must not inherit an outer
+    // StartBlur/StartLayer context. Replaying 1..2 by itself would detach the quad from the nested
+    // blur/compositor scene even though the range is locally balanced.
+    assert!(scene.range_is_independently_replayable(0..scene.len()));
+    assert!(!scene.range_is_independently_replayable(0..1));
+    assert!(!scene.range_is_independently_replayable(1..2));
+    assert!(!scene.range_is_independently_replayable(scene.len() - 1..scene.len()));
 }
 
 #[test]
