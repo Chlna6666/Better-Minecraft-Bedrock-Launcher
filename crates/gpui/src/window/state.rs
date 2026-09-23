@@ -472,6 +472,9 @@ pub struct Window {
     pub(super) animation_frame_pending_entities: Rc<RefCell<FxHashSet<EntityId>>>,
     pub(super) animation_engine: Rc<RefCell<AnimationEngine>>,
     pub(super) animation_engine_frame_driver: Cell<Option<AnimationDriver>>,
+    pub(super) animation_engine_frame_deadline:
+        Rc<Cell<Option<(Instant, u64, AnimationDriver)>>>,
+    pub(super) animation_engine_frame_deadline_generation: Rc<Cell<u64>>,
     /// Explicit opt-in for visible NOACTIVATE/panel windows whose retained scene animations must
     /// keep presenting while the OS does not consider the window active. Minimized windows still
     /// stop animation work regardless of this flag.

@@ -9,7 +9,7 @@ use super::{
 use crate::{Bounds, GlobalElementId, Pixels, SceneAnimationId, SceneAnimationValue};
 use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
-use std::{fmt, rc::Rc, time::Instant};
+use std::{fmt, rc::Rc, time::{Duration, Instant}};
 
 const MIN_COMPLETED_SCENE_TEXT_RASTER_SCALE: f32 = 1.0 / 4096.0;
 const SCENE_TEXT_RASTER_SCALE_EPSILON: f32 = 0.0001;
@@ -312,6 +312,34 @@ impl AnimationEngine {
             self.timelines.remove(&key);
             self.remove_driver_index(&key);
         }
+    }
+
+    /// Returns the fastest presentation interval requested by active visual timelines.
+    ///
+    /// None means no visual timeline is active. A zero duration means at least one active visual
+    /// timeline requests the raw platform cadence. Visual groups remain uncapped.
+    pub(crate) fn visual_presentation_interval(
+        &self,
+        driver: AnimationDriver,
+    ) -> Option<Duration> {
+        if matches!(driver, AnimationDriver::Layout) {
+            return None;
+        }
+        if !self.visual_group_ids.is_empty() {
+            return Some(Duration::ZERO);
+        }
+
+        let mut fastest = None::<Duration>;
+        for key in &self.visual_timeline_keys {
+            let Some(timeline) = self.timelines.get(key) else {
+                continue;
+            };
+            let Some(interval) = timeline.spec.presentation_interval else {
+                return Some(Duration::ZERO);
+            };
+            fastest = Some(fastest.map_or(interval, |current| current.min(interval)));
+        }
+        fastest
     }
 
     /// Number of active timelines.

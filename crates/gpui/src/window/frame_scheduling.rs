@@ -272,6 +272,15 @@ impl Window {
             return;
         }
 
+        let mut driver = driver;
+        if let Some((_, _, delayed_driver)) =
+            self.animation_engine_frame_deadline.replace(None)
+        {
+            self.animation_engine_frame_deadline_generation
+                .set(self.animation_engine_frame_deadline_generation.get().wrapping_add(1));
+            driver = merge_requested_drivers(Some(delayed_driver), driver);
+        }
+
         if !self.animation_engine.borrow_mut().mark_frame_pending() {
             record_coalesced_refresh();
             return;
@@ -292,6 +301,61 @@ impl Window {
             require_presentation: true,
             force_render: false,
         });
+    }
+
+    pub(crate) fn request_animation_engine_frame_at(
+        &self,
+        driver: AnimationDriver,
+        deadline: Instant,
+    ) {
+        if matches!(driver, AnimationDriver::Layout) || deadline <= Instant::now() {
+            self.request_animation_engine_frame(driver);
+            return;
+        }
+
+        if let Some((existing_deadline, generation, existing_driver)) =
+            self.animation_engine_frame_deadline.get()
+        {
+            let merged_driver = merge_requested_drivers(Some(existing_driver), driver);
+            if existing_deadline <= deadline {
+                self.animation_engine_frame_deadline
+                    .set(Some((existing_deadline, generation, merged_driver)));
+                return;
+            }
+        }
+
+        let generation = self
+            .animation_engine_frame_deadline_generation
+            .get()
+            .wrapping_add(1);
+        self.animation_engine_frame_deadline_generation.set(generation);
+        self.animation_engine_frame_deadline
+            .set(Some((deadline, generation, driver)));
+
+        let handle = self.handle;
+        let deadline_state = self.animation_engine_frame_deadline.clone();
+        let mut cx = self.async_app.clone();
+        let executor = cx.foreground_executor().clone();
+        executor
+            .spawn(async move {
+                let now = Instant::now();
+                if deadline > now {
+                    cx.background_executor().timer(deadline - now).await;
+                }
+                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, _cx| {
+                    let Some((armed_deadline, armed_generation, armed_driver)) =
+                        deadline_state.get()
+                    else {
+                        return;
+                    };
+                    if armed_deadline != deadline || armed_generation != generation {
+                        return;
+                    }
+                    deadline_state.set(None);
+                    window.request_animation_engine_frame(armed_driver);
+                }));
+            })
+            .detach();
     }
 
     /// Start an engine-owned sequence timeline and schedule its first frame.

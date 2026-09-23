@@ -98,6 +98,11 @@ pub struct AnimationSpec {
     pub easing: Easing,
     /// Preferred driver.
     pub driver: AnimationDriver,
+    /// Optional minimum time between renderer-owned visual presentation samples.
+    ///
+    /// This is a cadence ceiling, not a duration modifier. Layout timelines ignore it. When
+    /// multiple visual timelines are active, the fastest requested cadence wins.
+    pub presentation_interval: Option<Duration>,
 }
 
 impl AnimationSpec {
@@ -111,6 +116,7 @@ impl AnimationSpec {
             fill_mode: FillMode::Forwards,
             easing: Easing::Linear,
             driver: AnimationDriver::Auto,
+            presentation_interval: None,
         }
     }
 
@@ -147,6 +153,14 @@ impl AnimationSpec {
     /// Set preferred driver.
     pub fn driver(mut self, driver: AnimationDriver) -> Self {
         self.driver = driver;
+        self
+    }
+
+    /// Set a minimum interval between renderer-owned visual presentation samples.
+    ///
+    /// A zero interval clears the ceiling and follows the platform presentation cadence.
+    pub fn presentation_interval(mut self, interval: Duration) -> Self {
+        self.presentation_interval = (!interval.is_zero()).then_some(interval);
         self
     }
 

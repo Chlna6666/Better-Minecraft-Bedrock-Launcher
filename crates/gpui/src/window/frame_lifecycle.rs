@@ -629,7 +629,19 @@ impl Window {
             && !self.platform_window.is_minimized()
             && (self.active.get() || self.inactive_animation_engine_enabled)
         {
-            self.request_animation_engine_frame(driver);
+            let interval = self
+                .animation_engine
+                .borrow()
+                .visual_presentation_interval(driver)
+                .unwrap_or(Duration::ZERO);
+            if interval.is_zero() {
+                self.request_animation_engine_frame(driver);
+            } else {
+                self.request_animation_engine_frame_at(
+                    driver,
+                    self.animation_time() + interval,
+                );
+            }
         }
         if tick.has_layout {
             self.request_animation_frame();
