@@ -108,24 +108,31 @@ fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::R
     }
 }
 
-unsafe fn read_struct_at<T: Copy>(buffer: &[u8], offset: usize) -> Result<T, String> {
+fn read_struct_at<T: bytemuck::Pod>(buffer: &[u8], offset: usize) -> Result<T, String> {
     let size = std::mem::size_of::<T>();
-    if offset + size > buffer.len() {
-        return Err(format!(
+    let end = offset.checked_add(size).ok_or_else(|| {
+        format!(
             "读取越界: 需要 {} 字节，偏移 {}，总长 {}",
             size,
             offset,
             buffer.len()
-        ));
-    }
-    Ok(std::ptr::read_unaligned(
-        buffer.as_ptr().add(offset) as *const T
-    ))
+        )
+    })?;
+    let bytes = buffer.get(offset..end).ok_or_else(|| {
+        format!(
+            "读取越界: 需要 {} 字节，偏移 {}，总长 {}",
+            size,
+            offset,
+            buffer.len()
+        )
+    })?;
+    Ok(bytemuck::pod_read_unaligned(bytes))
 }
 
 pub struct MsiXVDStream {
     file: File,
     header: MsiXVDHeader,
+    kind: MsiXVDKind,
     is_encrypted: bool,
     segments: Vec<SegmentsAbout>,
     segment_paths: Vec<String>,
@@ -193,7 +200,11 @@ impl MsiXVDStream {
         let mut file = File::open(file_path).map_err(|e| format!("无法打开文件: {}", e))?;
 
         let header = Self::parse_file_header(&mut file)?;
-        let volume_flags = header.volumes as u32;
+        let raw_kind = header.kind;
+        let kind = header
+            .kind()
+            .ok_or_else(|| format!("Unsupported XVD kind: {raw_kind}"))?;
+        let volume_flags = header.volumes;
         let is_encrypted =
             (volume_flags & (MsiXVDVolumeAttributes::EncryptionDisabled as u32)) == 0;
         let resiliency = (volume_flags & (MsiXVDVolumeAttributes::ResiliencyEnabled as u32)) != 0;
@@ -215,6 +226,7 @@ impl MsiXVDStream {
         let mut stream = Self {
             file,
             header,
+            kind,
             is_encrypted,
             segments: Vec::new(),
             segment_paths: Vec::new(),
@@ -380,7 +392,7 @@ impl MsiXVDStream {
 
         let file_ref = &self.file;
         let hash_tree_params = HashTreeParams {
-            kind: self.header.kind,
+            kind: self.kind,
             levels: self.hash_tree_levels,
             total_hashed_pages: self.header.number_of_hashed_pages(),
             resiliency: self.resiliency,
@@ -639,7 +651,7 @@ impl MsiXVDStream {
             .map_err(|e| e.to_string())?;
         file.read_exact(&mut header_bytes)
             .map_err(|e| e.to_string())?;
-        unsafe { read_struct_at(&header_bytes, 0) }
+        read_struct_at(&header_bytes, 0)
     }
 
     fn parse_user_data(&mut self) -> Result<(), String> {
@@ -651,23 +663,21 @@ impl MsiXVDStream {
             .read_exact(&mut user_data_buffer)
             .map_err(|e| e.to_string())?;
 
-        let user_data_header: UserDataHeader = unsafe { read_struct_at(&user_data_buffer, 0)? };
+        let user_data_header: UserDataHeader = read_struct_at(&user_data_buffer, 0)?;
 
         let data_type = user_data_header.data_type;
 
-        if data_type == UserDataType::PackageFiles {
+        if data_type == UserDataType::PackageFiles as u32 {
             let files_header: UserDataPackageFilesHeader =
-                unsafe { read_struct_at(&user_data_buffer, user_data_header.length as usize)? };
+                read_struct_at(&user_data_buffer, user_data_header.length as usize)?;
             let entries_offset = user_data_header.length as usize
                 + std::mem::size_of::<UserDataPackageFilesHeader>();
 
             for i in 0..files_header.file_count as usize {
-                let entry: UserDataPackageFileEntry = unsafe {
-                    read_struct_at(
-                        &user_data_buffer,
-                        entries_offset + i * std::mem::size_of::<UserDataPackageFileEntry>(),
-                    )?
-                };
+                let entry: UserDataPackageFileEntry = read_struct_at(
+                    &user_data_buffer,
+                    entries_offset + i * std::mem::size_of::<UserDataPackageFileEntry>(),
+                )?;
 
                 let raw_path = entry.file_path;
 
@@ -698,7 +708,7 @@ impl MsiXVDStream {
         let mut buf = vec![0u8; self.header.xvc_data_length as usize];
         self.file.read_exact(&mut buf).map_err(|e| e.to_string())?;
 
-        let info: XvcInfo = unsafe { read_struct_at(&buf, 0)? };
+        let info: XvcInfo = read_struct_at(&buf, 0)?;
 
         for key_id_struct in info.encryption_key_ids.iter() {
             let uuid = key_id_struct.as_uuid();
@@ -711,22 +721,22 @@ impl MsiXVDStream {
 
         for _ in 0..info.region_count {
             self.xvc_regions
-                .push(unsafe { read_struct_at(&buf, curr)? });
+                .push(read_struct_at(&buf, curr)?);
             curr += std::mem::size_of::<XvcRegionHeader>();
         }
         for _ in 0..info.update_segment_count {
             self.xvc_update_segments
-                .push(unsafe { read_struct_at(&buf, curr)? });
+                .push(read_struct_at(&buf, curr)?);
             curr += std::mem::size_of::<XvcUpdateSegment>();
         }
         Ok(())
     }
 
     fn parse_segment_metadata(&mut self, data: &[u8]) -> Result<(), String> {
-        let header: SegmentMetadataHeader = unsafe { read_struct_at(data, 0)? };
+        let header: SegmentMetadataHeader = read_struct_at(data, 0)?;
         let mut curr = std::mem::size_of::<SegmentMetadataHeader>();
         for _ in 0..header.segment_count {
-            self.segments.push(unsafe { read_struct_at(data, curr)? });
+            self.segments.push(read_struct_at(data, curr)?);
             curr += std::mem::size_of::<SegmentsAbout>();
         }
 

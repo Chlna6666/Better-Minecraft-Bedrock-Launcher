@@ -9,16 +9,16 @@ pub enum UserDataType {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct UserDataHeader {
     pub length: u32,
     pub version: u32,
-    pub data_type: UserDataType,
+    pub data_type: u32,
     pub unknown: u32,
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct UserDataPackageFilesHeader {
     pub version: u32,
     pub package_full_name: [u16; 260],
@@ -26,7 +26,7 @@ pub struct UserDataPackageFilesHeader {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct UserDataPackageFileEntry {
     pub file_path: [u16; 260],
     pub size: u32,
@@ -36,7 +36,7 @@ pub struct UserDataPackageFileEntry {
 // --- Segment Metadata ---
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SegmentMetadataHeader {
     pub magic: u32,
     pub version0: u32,
@@ -49,7 +49,7 @@ pub struct SegmentMetadataHeader {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SegmentsAbout {
     pub flags: u16,
     pub path_length: u16,
@@ -60,7 +60,7 @@ pub struct SegmentsAbout {
 // --- XVC Info ---
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct XvcEncryptionKeyId {
     pub key_id: [u8; 16],
 }
@@ -74,7 +74,7 @@ impl XvcEncryptionKeyId {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct XvcInfo {
     pub content_id: [u8; 0x10],
     // 对应 C# [MarshalAs(UnmanagedType.ByValArray, SizeConst = 0xC0)]
@@ -100,7 +100,7 @@ pub struct XvcInfo {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct XvcRegionHeader {
     pub id: u32,
     pub key_id: u16,
@@ -117,14 +117,14 @@ pub struct XvcRegionHeader {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct XvcUpdateSegment {
     pub page_num: u32,
     pub hash: u64,
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct XvcRegionSpecifier {
     pub region_id: u32,
     pub padding4: u32,

@@ -1,14 +1,13 @@
 //! 此文件包含从 C# GdkDecode 库转换而来的所有数据结构。
 // 修复 v13: 修正 MsiXVDHeader 结构体，将 magic 和 sandbox_id 字段的类型从 [u8; N] 改为 [i8; N]，以正确匹配 C# 中的 char[] 类型。
 
-use uuid::Uuid;
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MsiXVDHeader {
     pub signature: [u8; 0x200],
     pub magic: [i8; 8],
-    pub volumes: MsiXVDVolumeAttributes,
+    pub volumes: u32,
     pub format_version: u32,
     pub file_time_created: i64,
     pub drive_size: u64,
@@ -16,8 +15,8 @@ pub struct MsiXVDHeader {
     pub ud_uid: [u8; 0x10],
     pub top_hash_block_hash: [u8; 0x20],
     pub original_xvc_data_hash: [u8; 0x20],
-    pub kind: MsiXVDKind,
-    pub category: MsiXVDContentCategory,
+    pub kind: u32,
+    pub category: u32,
     pub embedded_xvd_length: u32,
     pub user_data_length: u32,
     pub xvc_data_length: u32,
@@ -51,13 +50,21 @@ pub struct MsiXVDHeader {
     pub unknown2: u16,
     pub unknown3: u16,
     pub unknown4: u16,
-    pub odk_keyslot_id: MsiXVDOdkIndex,
+    pub odk_keyslot_id: u32,
     pub reserved2a0: [u8; 0xB54],
     pub resilient_data_offset: u64,
     pub resilient_data_length: u32,
 }
 
 impl MsiXVDHeader {
+    pub fn kind(&self) -> Option<MsiXVDKind> {
+        match self.kind {
+            0 => Some(MsiXVDKind::Fixed),
+            1 => Some(MsiXVDKind::Dynamic),
+            _ => None,
+        }
+    }
+
     pub fn mutable_data_length(&self) -> u64 {
         (self.mutable_data_page_count as u64) << 12
     }
@@ -95,7 +102,7 @@ impl MsiXVDHeader {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ExtEntry {
     pub code: u32,
     pub length: u32,
