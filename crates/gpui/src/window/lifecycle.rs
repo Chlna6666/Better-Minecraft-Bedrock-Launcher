@@ -560,9 +560,22 @@ impl WindowInvalidator {
     pub(crate) fn reconcile_targets_below(
         &self,
         ancestor: &GlobalElementId,
+        ancestor_owner: EntityId,
+        dispatch_tree: &DispatchTree,
     ) -> Option<SmallVec<[(EntityId, GlobalElementId); 4]>> {
         let inner = self.inner.borrow();
-        if !inner.active_targeted_replay || !inner.active_generic_dirty_views.is_empty() {
+        if !inner.active_targeted_replay {
+            return None;
+        }
+
+        // Generic dirtiness is only a barrier when it belongs to this ancestor's view route.
+        // A prompt, drag overlay, inspector, or another retained root must not poison selective
+        // reconciliation of the application root. Views missing from the committed dispatch tree
+        // are outside this retained route and are conservatively handled by their own root.
+        if inner.active_generic_dirty_views.iter().any(|dirty_view| {
+            *dirty_view == ancestor_owner
+                || dispatch_tree.view_path(*dirty_view).contains(&ancestor_owner)
+        }) {
             return None;
         }
 
