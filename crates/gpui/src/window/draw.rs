@@ -209,6 +209,8 @@ impl Window {
                     .retained_element_ranges
                     .contains_key(retained_id)
             });
+        self.invalidator
+            .rebuild_cached_view_fallback_boundaries(&self.rendered_frame.dispatch_tree);
         // Keep static image atlas residency aligned with the two-generation retained-scene
         // working set before the previous frame is cleared for scratch reuse.
         self.prune_static_image_atlas_residency();
