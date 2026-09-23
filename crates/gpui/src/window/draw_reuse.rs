@@ -556,7 +556,7 @@ impl Window {
         ) && self
             .rendered_frame
             .scene
-            .range_has_balanced_element_blurs(
+            .range_is_independently_replayable(
                 range.start.scene_index..range.end.scene_index,
             )
             && frame_range_is_valid(
