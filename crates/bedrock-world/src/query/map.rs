@@ -18,7 +18,7 @@ use crate::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
 use xxhash_rust::xxh3::{Xxh3, Xxh3DefaultBuilder};
 

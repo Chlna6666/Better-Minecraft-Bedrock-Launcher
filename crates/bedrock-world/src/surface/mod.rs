@@ -9,10 +9,10 @@ use crate::*;
 use crate::scan::*;
 use crate::storage::*;
 use bytes::Bytes;
-use rayon::{ThreadPoolBuilder, prelude::*};
+use rayon::ThreadPoolBuilder;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
 
 pub(crate) use chunk::*;

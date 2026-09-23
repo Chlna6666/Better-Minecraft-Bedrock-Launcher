@@ -33,17 +33,4 @@ pub use version::{
 // concrete target-version data. Third-party BlockEntity tooling can instead implement
 // `BlockEntityRewriter`, whose contract requires explicit caller evidence and preservation of fields it
 // does not own.
-pub(crate) use block_entity::{
-    VanillaBlockEntityRewriter, rewrite_block_entity_sign_text,
-};
-pub(crate) use state::{
-    BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator, BlockStateUpgradeResult,
-    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
-};
-pub(crate) use version::{
-    PINNED_BLOCK_MIGRATION_CORPUS_FILES, PINNED_LEGACY_BLOCK_ID_MAP_FILE,
-    PINNED_LEGACY_ID_META_1_9_TABLE_FILE, PINNED_LEGACY_ID_META_1_12_TABLE_FILE,
-    PinnedBlockMigrationBundle, PinnedCorpusFileSpec,
-    load_pinned_block_migration_bundle_for_target_from_dir,
-    load_pinned_block_migration_bundle_from_dir, verify_pinned_block_migration_corpus,
-};
+pub(crate) use state::BlockStateMigrator;

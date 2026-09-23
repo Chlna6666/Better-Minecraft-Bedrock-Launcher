@@ -8,7 +8,6 @@ use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use crate::player::PlayerData;
 use crate::player::inventory::integer_tag;
-use indexmap::IndexMap;
 
 impl PlayerData {
     /// Returns the persisted Actor `Air` value when present.

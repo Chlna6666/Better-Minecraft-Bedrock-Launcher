@@ -6,15 +6,13 @@ use crate::manifest::{Manifest, TableFileMeta};
 use crate::native_table_writer::{NativeTableWriter, WrittenNativeTable};
 use crate::obsolete;
 use crate::options::{
-    CachePolicy, ChecksumMode, CompressionPolicy, LevelDbOpenOptions, ReadOptions, ReadStrategy,
-    ScanMode, ScanOutcome, VisitorControl, WriteOptions,
+    CachePolicy, ChecksumMode, CompressionPolicy, LevelDbOpenOptions, ReadOptions, ReadStrategy, ScanOutcome, VisitorControl, WriteOptions,
 };
 use crate::table;
 use crate::version::{ImmutableMemTable, MemTableEntries, ReadVersion};
 use crate::wal;
 use bytes::Bytes;
 use std::cell::RefCell;
-use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -400,35 +398,6 @@ impl Db {
         }
     }
 
-    #[cfg(feature = "async")]
-    /// Opens a database on a blocking Tokio task.
-    pub async fn open_async(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        tokio::task::spawn_blocking(move || Self::open(path, options))
-            .await
-            .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
-    #[cfg(feature = "async")]
-    /// Reads a key on a blocking Tokio task.
-    pub async fn get_async(self: Arc<Self>, key: Bytes) -> Result<Option<Bytes>> {
-        tokio::task::spawn_blocking(move || self.get(&key))
-            .await
-            .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
-    #[cfg(feature = "async")]
-    /// Reads a key with explicit options on a blocking Tokio task.
-    pub async fn get_with_async(
-        self: Arc<Self>,
-        key: Bytes,
-        options: ReadOptions,
-    ) -> Result<Option<Bytes>> {
-        tokio::task::spawn_blocking(move || self.get_with(&key, options))
-            .await
-            .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
     /// Reads one key using default options.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         self.get_owned(key)
@@ -599,18 +568,6 @@ impl Db {
         Ok(results)
     }
 
-    #[cfg(feature = "async")]
-    /// Reads many exact keys on a blocking Tokio task.
-    pub async fn get_many_owned_async(
-        self: Arc<Self>,
-        keys: Vec<Bytes>,
-        options: ReadOptions,
-    ) -> Result<Vec<Option<Bytes>>> {
-        tokio::task::spawn_blocking(move || self.get_many_owned(keys, options))
-            .await
-            .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
     /// Appends one put operation to the WAL-backed active memtable.
     pub fn put(
         &self,
@@ -681,6 +638,7 @@ impl Db {
         Ok(())
     }
 
+    #[cfg(test)]
     /// Visits visible keys. This compatibility surface no longer keeps the DB
     /// metadata lock during table I/O; the table scan implementation will be
     /// replaced by the batch cursor in the next storage-scan stage.
@@ -699,20 +657,6 @@ impl Db {
         self.scan_visible(None, &options, &mut visitor)
     }
 
-    /// Visits visible entries as borrowed-first entry views.
-    pub fn for_each_entry_ref<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
-    where
-        F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
-    {
-        let strategy = options.read_strategy;
-        self.for_each_entry(options, |key, value| {
-            visitor(EntryRef {
-                key: KeyRef::new(key),
-                value: ValueRef::from_shared(value.clone(), strategy),
-            })
-        })
-    }
-
     /// Visits visible key/value entries beginning with `prefix`.
     pub fn for_each_prefix<F>(
         &self,
@@ -724,159 +668,6 @@ impl Db {
         F: FnMut(&[u8], &Bytes) -> Result<VisitorControl> + Send,
     {
         self.scan_visible(Some(prefix), &options, &mut visitor)
-    }
-
-    /// Visits visible prefix entries as borrowed-first entry views.
-    pub fn for_each_prefix_ref<F>(
-        &self,
-        prefix: &[u8],
-        options: ReadOptions,
-        mut visitor: F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(EntryRef<'_>) -> Result<VisitorControl> + Send,
-    {
-        let strategy = options.read_strategy;
-        self.for_each_prefix(prefix, options, |key, value| {
-            visitor(EntryRef {
-                key: KeyRef::new(key),
-                value: ValueRef::from_shared(value.clone(), strategy),
-            })
-        })
-    }
-
-    /// Visits visible keys beginning with `prefix`.
-    pub fn for_each_prefix_key<F>(
-        &self,
-        prefix: &[u8],
-        options: ReadOptions,
-        mut visitor: F,
-    ) -> Result<ScanOutcome>
-    where
-        F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
-    {
-        self.for_each_prefix(prefix, options, |key, _value| visitor(key))
-    }
-
-    /// Collects visible keys.
-    pub fn collect_keys_owned(&self, options: ReadOptions) -> Result<Vec<Bytes>> {
-        let mut keys = Vec::new();
-        self.for_each_key(options, |key| {
-            keys.push(Bytes::copy_from_slice(key));
-            Ok(VisitorControl::Continue)
-        })?;
-        Ok(keys)
-    }
-
-    /// Collects visible prefix keys.
-    pub fn collect_prefix_keys_owned(
-        &self,
-        prefix: &[u8],
-        options: ReadOptions,
-    ) -> Result<Vec<Bytes>> {
-        let mut keys = Vec::new();
-        self.for_each_prefix_key(prefix, options, |key| {
-            keys.push(Bytes::copy_from_slice(key));
-            Ok(VisitorControl::Continue)
-        })?;
-        Ok(keys)
-    }
-
-    /// Collects visible prefix entries.
-    pub fn collect_prefix_owned(
-        &self,
-        prefix: &[u8],
-        options: ReadOptions,
-    ) -> Result<Vec<(Bytes, Bytes)>> {
-        let mut entries = Vec::new();
-        self.for_each_prefix(prefix, options, |key, value| {
-            entries.push((Bytes::copy_from_slice(key), value.clone()));
-            Ok(VisitorControl::Continue)
-        })?;
-        Ok(entries)
-    }
-
-    #[cfg(feature = "async")]
-    /// Collects visible keys on a blocking Tokio task.
-    pub async fn collect_keys_owned_async(
-        self: Arc<Self>,
-        options: ReadOptions,
-    ) -> Result<Vec<Bytes>> {
-        tokio::task::spawn_blocking(move || self.collect_keys_owned(options))
-            .await
-            .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
-    #[cfg(feature = "async")]
-    /// Collects visible prefix keys on a blocking Tokio task.
-    pub async fn collect_prefix_keys_owned_async(
-        self: Arc<Self>,
-        prefix: Bytes,
-        options: ReadOptions,
-    ) -> Result<Vec<Bytes>> {
-        tokio::task::spawn_blocking(move || self.collect_prefix_keys_owned(&prefix, options))
-            .await
-            .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
-    #[cfg(feature = "async")]
-    /// Collects visible prefix entries on a blocking Tokio task.
-    pub async fn collect_prefix_owned_async(
-        self: Arc<Self>,
-        prefix: Bytes,
-        options: ReadOptions,
-    ) -> Result<Vec<(Bytes, Bytes)>> {
-        tokio::task::spawn_blocking(move || self.collect_prefix_owned(&prefix, options))
-            .await
-            .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
-    #[cfg(feature = "async")]
-    /// Compatibility alias for prefix-key collection.
-    pub async fn prefix_keys_async(
-        self: Arc<Self>,
-        prefix: Bytes,
-        options: ReadOptions,
-    ) -> Result<Vec<Bytes>> {
-        self.collect_prefix_keys_owned_async(prefix, options).await
-    }
-
-    /// Runs a key reduction. The current implementation preserves exact
-    /// visibility semantics with one reduction partition; table-parallel cursor
-    /// reduction is intentionally kept out of the metadata-lock path.
-    pub fn scan_keys_partitioned<T, I, F>(
-        &self,
-        options: ReadOptions,
-        init: I,
-        visitor: F,
-    ) -> Result<(ScanOutcome, Vec<T>)>
-    where
-        T: Send,
-        I: Fn() -> T + Send + Sync,
-        F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
-    {
-        let mut partition = init();
-        let outcome = self.for_each_key(options, |key| visitor(&mut partition, key))?;
-        Ok((outcome, vec![partition]))
-    }
-
-    /// Runs an entry reduction with one visibility-correct partition.
-    pub fn scan_entries_partitioned<T, I, F>(
-        &self,
-        options: ReadOptions,
-        init: I,
-        visitor: F,
-    ) -> Result<(ScanOutcome, Vec<T>)>
-    where
-        T: Send,
-        I: Fn() -> T + Send + Sync,
-        F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
-    {
-        let mut partition = init();
-        let outcome = self.for_each_entry(options, |key, value| {
-            visitor(&mut partition, key, value)
-        })?;
-        Ok((outcome, vec![partition]))
     }
 
     /// Materializes all visible entries into an iterator.
@@ -975,23 +766,6 @@ impl Db {
             log_number: inner.manifest.log_number,
             approximate_bytes: inner.active_bytes.saturating_add(immutable_bytes),
         })
-    }
-
-    /// Materializes visible entries to compute full statistics.
-    pub fn stats_full(&self) -> Result<DbStats> {
-        let entries = self.collect_visible_entries(&ReadOptions::default())?;
-        let inner = read_lock(&self.shared.inner, "reading full database stats metadata")?;
-        Ok(DbStats {
-            entries: entries.len(),
-            tables: inner.version.tables().len(),
-            log_number: inner.manifest.log_number,
-            approximate_bytes: approximate_entries_size(&entries),
-        })
-    }
-
-    /// Alias for [`Db::stats_full`].
-    pub fn stats(&self) -> Result<DbStats> {
-        self.stats_full()
     }
 
     fn background(&self) -> Result<&Background> {
@@ -1937,13 +1711,6 @@ fn read_cache<'a>(
         CachePolicy::Use => Some(cache),
         CachePolicy::Bypass => None,
     }
-}
-
-fn approximate_entries_size(values: &BTreeMap<Vec<u8>, Bytes>) -> usize {
-    values
-        .iter()
-        .map(|(key, value)| key.len().saturating_add(value.len()))
-        .sum()
 }
 
 fn parse_file_number(path: &Path) -> Option<u64> {

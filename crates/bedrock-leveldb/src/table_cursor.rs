@@ -3,7 +3,7 @@ use crate::compression::{COMPRESSION_NONE, decompress_into, decompress_owned};
 use crate::error::{LevelDbError, Result};
 use bytes::Bytes;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 

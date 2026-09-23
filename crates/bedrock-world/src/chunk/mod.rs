@@ -48,8 +48,7 @@ pub use subchunk::{
     SubChunkUpgradeWriteReport, SubChunkVersion, VisibleBlockStatesAt,
 };
 pub(crate) use subchunk::{
-    stage_numeric_subchunk_upgrade, stage_subchunk_downgrade, stage_subchunks_as_version,
-    stage_subchunks_for_exact_downgrade,
+    stage_numeric_subchunk_upgrade, stage_subchunk_downgrade,
 };
 
 #[cfg(test)]

@@ -11,9 +11,6 @@ pub use crate::scan::{
     encode_actor_ids, decode_actor_ids,
 };
 pub use actor_storage::{ActorStorageRewriteReport, ActorUidRepairReport};
-pub(crate) use actor_storage::{
-    stage_actor_uid_repair, stage_world_digp_actorprefix_to_entity,
-    stage_world_entity_to_digp_actorprefix,
-};
+pub(crate) use actor_storage::stage_actor_uid_repair;
 pub use digp::{ActorRecordWriteReport, write_digp_from_entity, write_entity_from_digp};
 pub use ownership::ActorOwnershipIndex;

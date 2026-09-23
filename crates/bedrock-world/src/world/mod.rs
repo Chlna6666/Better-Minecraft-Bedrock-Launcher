@@ -13,39 +13,35 @@ mod migration;
 use crate::pocket::PocketWorldStorage;
 
 use crate::chunk::{
-    ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPos, BlockState,
-    BlockStatePaletteEntry, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
+    ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
     GlobalRecordKind, LegacyBiomeSample, LegacyTerrain, MapItemId, SubChunk, SubChunkDecodeMode,
-    LevelChunk, block_storage_index,
+    LevelChunk,
 };
 use crate::entity::{ActorOwnershipIndex, ActorUidRepairReport, stage_actor_uid_repair};
 use crate::error::{BedrockWorldError, Result};
 use crate::level_dat::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt};
 use crate::scan::{
-    ActorRecord, ActorSource, Biome3d, BlockEntityRecord, HeightMap2d, ItemStack, BiomeData,
+    ActorRecord, ActorSource, Biome3d, BlockEntityRecord, HeightMap2d, ItemStack,
     BiomeStorage, BlockEntity,
     Actor, Global, HardcodedSpawnArea,
     WorldScan, collect_item_stacks, encode_actor_ids, encode_consecutive_roots,
     encode_global, encode_hardcoded_spawn_areas, encode_map_item,
-    decode_actor_ids, parse_block_entities_from_value,
-    parse_data2d_legacy, parse_data3d, parse_entities_from_value,
-    decode_global, decode_hardcoded_spawn_areas,
-    parse_legacy_data2d, decode_map_item, scan_storage,
+    decode_actor_ids, parse_block_entities_from_value, parse_entities_from_value,
+    decode_global, decode_hardcoded_spawn_areas, decode_map_item, scan_storage,
 };
 use crate::map_item::SavedData;
 use crate::player::{PlayerData, PlayerId};
 use crate::village::Entry;
 use crate::storage::backend::BedrockLevelDbStorage;
 use crate::storage::{
-    StorageBatch, StorageCachePolicy, StorageCancelFlag, StorageOp, StorageProgressSink,
-    StorageReadOptions, StorageScanMode, StorageThreadingOptions, StorageVisitorControl,
+    StorageBatch, StorageOp,
+    StorageReadOptions, StorageVisitorControl,
     WorldStorage,
 };
 use crate::surface::*;
 use bytes::Bytes;
-use rayon::{ThreadPoolBuilder, prelude::*};
-use std::borrow::Cow;
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Instant;
@@ -53,7 +49,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::Ordering,
         mpsc,
     },
 };

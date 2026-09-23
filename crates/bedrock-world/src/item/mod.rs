@@ -45,12 +45,3 @@ pub use version_target::{SavedItemVersionMatch, SavedItemVersionTable, SavedItem
 
 // The historical forward rule executor remains crate-private while public APIs are expressed through
 // concrete saved-item representations and explicit upgrade/reverse checks.
-pub(crate) use saved_item::{
-    AuthoritativeItemMigrationCatalog, BlockItemMigrationContext, ItemIdentity,
-    ItemMigrationPolicy, ItemMigrationStatus, ItemNbtMigrationOutcome, ItemNbtMigrationReport,
-    ItemSchemaSource, ItemStackMigrationOutcome, LegacyBlockItemResolver,
-    PINNED_ITEM_MIGRATION_CORPUS_FILES, PINNED_ITEM_SCHEMA_FILES,
-    PINNED_ITEM_UPGRADE_SCHEMA_COMMIT, PINNED_ITEM_UPGRADE_SCHEMA_TREE, PinnedItemCorpusFileSpec,
-    load_pinned_item_migration_catalog, load_pinned_item_migration_catalog_from_dir,
-    migrate_item_stack_nbt, migrate_item_stacks_in_nbt, verify_pinned_item_migration_corpus,
-};

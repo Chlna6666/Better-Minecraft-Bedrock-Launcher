@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::material::BlockFace;
 use crate::model_family::shape::{
-    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv,
+    ModelCuboid, ModelShape, detail_cuboid_with_local_uv,
 };
 use crate::{
     BlockModelError, BlockStateQuery, BlockStateValue, ModelFamily, Result,

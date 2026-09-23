@@ -76,15 +76,6 @@ mod zlib {
         })
     }
 
-    pub(super) fn decompress_into(
-        payload: &[u8],
-        zlib_header: bool,
-        output: &mut Vec<u8>,
-    ) -> Result<()> {
-        output.clear();
-        decompress_append(payload, zlib_header, output)
-    }
-
     pub(super) fn decompress_append(
         payload: &[u8],
         zlib_header: bool,

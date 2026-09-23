@@ -30,7 +30,6 @@ pub(crate) use numeric_downgrade::stage_subchunk_downgrade;
 pub use numeric_upgrade::NumericSubChunkUpgradeReport;
 pub(crate) use numeric_upgrade::stage_numeric_subchunk_upgrade;
 pub use storage::{SubChunkDowngradeWriteReport, SubChunkStorageWriteReport};
-pub(crate) use storage::{stage_subchunks_as_version, stage_subchunks_for_exact_downgrade};
 pub use palette_upgrade::SubChunkUpgradeWriteReport;
 pub(crate) use palette_upgrade::stage_paletted_subchunks_for_upgrade;
 pub use upgrade::SubChunkUpgradeReport;

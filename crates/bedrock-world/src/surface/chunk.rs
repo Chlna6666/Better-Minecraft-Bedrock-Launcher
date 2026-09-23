@@ -3,7 +3,6 @@
 //! Chunk render-load planning and decoded terrain assembly.
 
 use super::*;
-use crate::surface::{is_air_block_name, is_water_block_name};
 use crate::chunk::{BlockStatePaletteEntry, LegacyTerrain};
 
 pub(crate) fn check_cancelled(options: &WorldScanOptions) -> Result<()> {

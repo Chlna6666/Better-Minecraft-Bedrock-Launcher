@@ -66,7 +66,7 @@ struct BlockRun {
 struct NativeTablePlan {
     rank: usize,
     path: PathBuf,
-    file: Arc<File>,
+    _file: Arc<File>,
     blocks: Vec<BlockHandle>,
     runs: Vec<BlockRun>,
     lower: Option<Vec<u8>>,
@@ -129,7 +129,7 @@ impl NativeTablePlan {
         Ok(PlanOpen::Native(Self {
             rank,
             path,
-            file: Arc::new(file),
+            _file: Arc::new(file),
             blocks,
             runs,
             lower: lower.map(<[u8]>::to_vec),
@@ -1505,7 +1505,7 @@ fn read_planned_run(plan: &NativeTablePlan, buffer: &mut [u8], offset: u64) -> s
 
 #[cfg(not(windows))]
 fn read_planned_run(plan: &NativeTablePlan, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
-    read_exact_at(&plan.file, buffer, offset)
+    read_exact_at(&plan._file, buffer, offset)
 }
 
 fn read_footer(file: &File, path: &Path) -> Result<[u8; LEVELDB_FOOTER_LEN]> {

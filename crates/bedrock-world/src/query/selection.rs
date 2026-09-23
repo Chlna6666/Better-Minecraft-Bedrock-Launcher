@@ -1,13 +1,13 @@
 //! Exact non-rectangular chunk selection primitives and queries.
 
 use crate::chunk::{ChunkPos, Dimension};
-use crate::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+use crate::error::{BedrockWorldError, Result};
 use crate::query::{
     ChunkRecordQuery, ChunkValue, RegionOverlayQueryOptions, SelectionStats,
     SlimeChunkBounds, VillageOverlayIndex, is_slime_chunk, load_chunks,
 };
-use crate::storage::{CancelFlag, MemoryStorage, WorldStorage};
-use crate::world::{OpenOptions, World, StorageBackend};
+use crate::storage::CancelFlag;
+use crate::world::{World, StorageBackend};
 use std::collections::BTreeSet;
 
 /// A validated, non-empty, exact set of chunks from one Bedrock dimension.

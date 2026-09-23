@@ -27,8 +27,6 @@ const SECTOR_BYTES: usize = 4096;
 #[derive(Debug, Clone)]
 pub(crate) struct PocketChunksDatStorage {
     values: Arc<BTreeMap<Vec<u8>, Bytes>>,
-    origin_chunk_x: i32,
-    origin_chunk_z: i32,
 }
 
 impl PocketChunksDatStorage {
@@ -47,19 +45,7 @@ impl PocketChunksDatStorage {
         );
         Ok(Self {
             values: Arc::new(values),
-            origin_chunk_x,
-            origin_chunk_z,
         })
-    }
-
-    #[must_use]
-    pub(crate) const fn origin_chunk_x(&self) -> i32 {
-        self.origin_chunk_x
-    }
-
-    #[must_use]
-    pub(crate) const fn origin_chunk_z(&self) -> i32 {
-        self.origin_chunk_z
     }
 }
 

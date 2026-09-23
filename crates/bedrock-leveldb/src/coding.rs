@@ -105,6 +105,7 @@ pub(crate) const fn mask_crc(crc: u32) -> u32 {
     crc.rotate_right(15).wrapping_add(0xa282_ead8)
 }
 
+#[cfg(test)]
 pub(crate) const fn unmask_crc(masked: u32) -> u32 {
     masked.wrapping_sub(0xa282_ead8).rotate_left(15)
 }

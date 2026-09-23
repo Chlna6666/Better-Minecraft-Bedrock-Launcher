@@ -95,11 +95,6 @@ impl NativeTableWriter {
     }
 
     #[must_use]
-    pub(crate) const fn entry_count(&self) -> usize {
-        self.entry_count
-    }
-
-    #[must_use]
     pub(crate) fn estimated_size(&self) -> u64 {
         self.file_offset
             .saturating_add(self.data_block.estimated_finished_size() as u64)

@@ -10,11 +10,7 @@ use crate::block::BlockState;
 use crate::block::version::AuthoritativeBlockStateCatalog;
 use crate::error::{BedrockWorldError, Result};
 
-pub use migration::{BlockStateMigrationGraph, BlockStateMigrationStep};
-pub use upgrade::{
-    BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
-    BlockStateValueRewrite,
-};
+pub use migration::BlockStateMigrationGraph;
 pub use nbt::read_block_state_nbt;
 pub use properties::{
     BlockFace, DoorBlockStates, HorizontalDirection, RedstoneBlockStates, SlabBlockStates,

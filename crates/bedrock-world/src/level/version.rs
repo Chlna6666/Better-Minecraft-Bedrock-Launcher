@@ -5,11 +5,10 @@
 //! on-disk evidence instead of deriving one synthetic world format version.
 
 use crate::chunk::{BedrockDbKey, ChunkRecordTag, SubChunkVersion};
-use crate::error::{BedrockWorldError, Result};
-use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::error::Result;
+use crate::storage::{StorageReadOptions, StorageVisitorControl};
 use crate::version::{GameVersion, LevelVersion};
 use crate::world::{World, WorldFormat, StorageBackend};
-use std::path::Path;
 
 /// Count for one actual SubChunk version observed in a world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
