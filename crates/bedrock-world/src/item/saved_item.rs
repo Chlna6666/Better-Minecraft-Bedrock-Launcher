@@ -224,7 +224,10 @@ pub const PINNED_ITEM_MIGRATION_CORPUS_FILES: &[PinnedItemCorpusFileSpec] = &[
     ),
 ];
 
-/// Borrowed authoritative item ID/meta schema source.
+/// Borrowed JSON source for one authoritative Bedrock item ID/meta migration schema.
+///
+/// `name` must be the upstream filename, including its numeric priority prefix. Sources are sorted
+/// by that prefix during catalogue construction so callers may provide them in any order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemSchemaSource<'a> {
     /// Schema filename, including its numeric priority prefix.
@@ -258,7 +261,10 @@ pub struct ItemIdentity {
     pub meta: i32,
 }
 
-/// Parsed authoritative item migration data.
+/// Parsed authoritative data for migrating historical Bedrock saved-item identifiers and metadata.
+///
+/// The catalogue is in-memory only. It does not read or write player, actor, BlockEntity, or world
+/// storage; callers pass its output to their own transaction or persistence boundary.
 #[derive(Debug, Clone)]
 pub struct AuthoritativeItemMigrationCatalog {
     legacy_numeric_ids: BTreeMap<i32, String>,
@@ -268,6 +274,16 @@ pub struct AuthoritativeItemMigrationCatalog {
 
 impl AuthoritativeItemMigrationCatalog {
     /// Builds an item migration catalogue from immutable resource documents.
+    ///
+    /// The JSON inputs are PocketMine's pinned legacy ID map, 1.12 block-item map, and the ordered
+    /// schema documents. This parses mapping data only; it does not modify any saved-item NBT or world
+    /// storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BedrockWorldError::Validation`] when JSON is invalid, a numeric mapping is
+    /// contradictory, a schema filename has an invalid or duplicate priority, or a metadata key is
+    /// not an `i32`.
     pub fn from_sources(
         legacy_item_id_map_json: &str,
         item_to_block_1_12_json: &str,
@@ -379,7 +395,7 @@ impl AuthoritativeItemMigrationCatalog {
     }
 }
 
-/// Behaviour when an item cannot be authoritatively migrated.
+/// Behavior when a saved item cannot be migrated from authoritative Bedrock data.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ItemMigrationPolicy {
     /// Preserve the complete item NBT unchanged.
@@ -467,7 +483,19 @@ pub struct ItemNbtMigrationOutcome {
     pub report: ItemNbtMigrationReport,
 }
 
-/// Migrates one Bedrock saved-item compound while retaining unrelated stack fields.
+/// Migrates one Bedrock saved-item NBT compound while retaining fields outside the recognized identity
+/// and block-state payload.
+///
+/// The input is not modified and no world storage is accessed. Unknown items are returned with their
+/// NBT structure unchanged under [`ItemMigrationPolicy::PreserveUnknown`], or rejected under
+/// [`ItemMigrationPolicy::RefuseUnknown`]. Block items require an explicit block-state context and
+/// must resolve to the requested target BlockState version and palette. Saved-item schemas do not
+/// supply a universal game-version marker, so the caller chooses the applicable migration catalogue.
+///
+/// # Errors
+///
+/// Returns an error for malformed item fields, refused unknown data, resolver or BlockState migration
+/// failures, an unexpected target version, or a state absent from the authoritative target palette.
 pub fn migrate_item_stack_nbt(
     nbt: &NbtTag,
     catalog: &AuthoritativeItemMigrationCatalog,
@@ -585,6 +613,15 @@ pub fn migrate_item_stack_nbt(
 /// An item reported as `Preserved` or `Air` is not traversed further, preventing this generic walker
 /// from interpreting unknown future item-private data. Recognised current/upgraded items may contain
 /// nested saved items in their custom tag payloads, so their child compounds are visited.
+///
+/// The returned NBT tree is a new in-memory value; no player, actor, BlockEntity, or LevelDB record is
+/// written. Unrecognized NBT fields and item-private data are retained. The caller must persist the
+/// result through the relevant Bedrock storage transaction.
+///
+/// # Errors
+///
+/// Returns an error from [`migrate_item_stack_nbt`] for malformed recognized fields, refused unknown
+/// items, resolver failures, or block-state migration/target-palette validation failures.
 pub fn migrate_item_stacks_in_nbt(
     nbt: &NbtTag,
     catalog: &AuthoritativeItemMigrationCatalog,
@@ -655,6 +692,17 @@ fn migrate_tree(
 }
 
 /// Loads a strict pinned catalogue from already supplied resource strings.
+///
+/// The schema source names and ordering must match [`PINNED_ITEM_SCHEMA_FILES`]. This validates the
+/// pinned catalogue contract before parsing; callers that load files from disk should prefer
+/// [`load_pinned_item_migration_catalog_from_dir`], which also verifies each file's pinned identity.
+///
+/// # Errors
+///
+/// Returns [`BedrockWorldError::Validation`] when the source-name set differs from the pinned schema
+/// list or when mapping/schema JSON is invalid. This in-memory loader validates filenames and schema
+/// structure, but not file hashes; use [`load_pinned_item_migration_catalog_from_dir`] to verify the
+/// pinned file identities as well.
 pub fn load_pinned_item_migration_catalog(
     legacy_item_id_map_json: &str,
     item_to_block_1_12_json: &str,
@@ -668,13 +716,28 @@ pub fn load_pinned_item_migration_catalog(
     )
 }
 
-/// Verifies every file in a pinned item migration resource directory.
+/// Verifies every file in a pinned item migration resource directory without parsing schema content.
+///
+/// This is a read-only check against the pinned filenames, lengths, and Git blob identities.
+///
+/// # Errors
+///
+/// Returns an error when a required file is missing, a file's bytes differ from the pinned corpus, or
+/// the directory cannot be read.
 pub fn verify_pinned_item_migration_corpus(root: impl AsRef<Path>) -> Result<()> {
     let _ = read_verified_corpus(root.as_ref())?;
     Ok(())
 }
 
 /// Verifies and loads the complete pinned item migration corpus from a directory.
+///
+/// Reads the legacy numeric item map, 1.12 item-to-block map, and each ordered ID/meta schema. No world
+/// data is read or written.
+///
+/// # Errors
+///
+/// Returns an error when a resource is missing or differs from its pinned identity, or when any
+/// resource fails UTF-8, JSON, or catalogue validation.
 pub fn load_pinned_item_migration_catalog_from_dir(
     root: impl AsRef<Path>,
 ) -> Result<AuthoritativeItemMigrationCatalog> {

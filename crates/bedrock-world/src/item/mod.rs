@@ -39,9 +39,16 @@ pub use saved_item_history::{
     NamedSavedItemId, SavedItemBlockStates, SavedItemHistory, SavedItemUpgradeSource,
     load_pinned_saved_item_history_from_dir,
 };
+pub use saved_item::{
+    AuthoritativeItemMigrationCatalog, BlockItemMigrationContext, ItemIdentity,
+    ItemMigrationPolicy, ItemMigrationStatus, ItemNbtMigrationOutcome, ItemNbtMigrationReport,
+    ItemSchemaSource, ItemStackMigrationOutcome, LegacyBlockItemResolver,
+    PINNED_ITEM_MIGRATION_CORPUS_FILES, PINNED_ITEM_SCHEMA_FILES,
+    PINNED_ITEM_UPGRADE_SCHEMA_COMMIT, PINNED_ITEM_UPGRADE_SCHEMA_TREE,
+    PinnedItemCorpusFileSpec, load_pinned_item_migration_catalog,
+    load_pinned_item_migration_catalog_from_dir, migrate_item_stack_nbt,
+    migrate_item_stacks_in_nbt, verify_pinned_item_migration_corpus,
+};
 pub use vanilla_saved_item_block_map::{VanillaSavedItemBlockMap, VanillaSavedItemBlockMatch};
 pub use vanilla_saved_item_palette::{VanillaSavedItemEntry, VanillaSavedItemPalette};
 pub use version_target::{SavedItemVersionMatch, SavedItemVersionTable, SavedItemVersionTarget};
-
-// The historical forward rule executor remains crate-private while public APIs are expressed through
-// concrete saved-item representations and explicit upgrade/reverse checks.
