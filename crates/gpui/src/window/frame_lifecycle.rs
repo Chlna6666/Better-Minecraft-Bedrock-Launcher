@@ -1010,7 +1010,7 @@ impl Window {
         let dirty_frame_diagnostics =
             std::mem::take(&mut *self.dirty_frame_diagnostics.borrow_mut());
         log::trace!(
-            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} rendered_views={} view_render_count_by_type={:?} view_render_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_rendered_entity={:?} first_notify_entity={:?}",
+            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} rendered_views={} rendered_view_types={:?} rendered_view_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_rendered_entity={:?} first_notify_entity={:?}",
             self.handle.window_id().as_u64(),
             was_dirty,
             self.refreshing,
