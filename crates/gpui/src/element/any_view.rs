@@ -954,8 +954,6 @@ impl Element for AnyView {
                             }
                         }
 
-                        let paint_end = window.paint_index();                        }
-
                         let paint_end = window.paint_index();
                         if !window.draw_was_degraded() {
                             element_state.paint_range = paint_start..paint_end;
