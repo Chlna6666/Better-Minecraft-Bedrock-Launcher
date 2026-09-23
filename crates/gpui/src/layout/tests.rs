@@ -4,6 +4,59 @@ use crate::{AppContext as _, Style, TestAppContext, WindowOptions, px, size};
 use std::{cell::Cell, rc::Rc};
 
 #[gpui::test]
+fn taffy_014_leaf_layout_applies_fixed_size_without_measure_context(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+
+    let bounds = window
+        .update(cx, |_, window, cx| {
+            let mut engine = TaffyLayoutEngine::new();
+            let mut style = Style::default();
+            style.size.width = px(80.).into();
+            style.size.height = px(30.).into();
+
+            let root = engine.request_layout(style, px(16.), 1.0, &[]);
+            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+            engine.layout_bounds(root, 1.0)
+        })
+        .unwrap();
+
+    assert_eq!(bounds.size, size(px(80.), px(30.)));
+}
+
+#[gpui::test]
+fn taffy_014_measured_leaf_keeps_style_constraints(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+
+    let bounds = window
+        .update(cx, |_, window, cx| {
+            let mut engine = TaffyLayoutEngine::new();
+            let mut style = Style::default();
+            style.size.width = px(80.).into();
+            style.min_size.height = px(30.).into();
+
+            let root = engine.request_measured_layout(
+                style,
+                px(16.),
+                1.0,
+                |_, _, _, _| size(px(20.), px(12.)),
+            );
+            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+            engine.layout_bounds(root, 1.0)
+        })
+        .unwrap();
+
+    assert_eq!(bounds.size, size(px(80.), px(30.)));
+}
+
+#[gpui::test]
 fn retained_layout_cache_reuses_clean_style_tree(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
