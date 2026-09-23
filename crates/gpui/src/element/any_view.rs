@@ -193,6 +193,15 @@ fn selective_any_view_targets(
         parent_state.owner_id,
         &window.rendered_frame.dispatch_tree,
     )?;
+
+    // Temporarily keep selective splice single-target only. Multi-target scene surgery was added
+    // after the last known-good rendering baseline and is much harder to prove correct across
+    // blur/composite/image capture boundaries. Multiple dirty targets fall back to ordinary fresh
+    // ancestor rendering; single-target retained reconciliation remains enabled.
+    if raw_targets.len() != 1 {
+        return None;
+    }
+
     let mut targets = SmallVec::<[SelectiveAnyViewTarget; 4]>::new();
 
     for (owner_id, retained_id) in raw_targets {
