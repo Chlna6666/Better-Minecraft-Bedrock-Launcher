@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use super::*;
-use crate::element::{ParentElement, StatefulInteractiveElement};
+use crate::element::{CompositeLayerExt, ParentElement, StatefulInteractiveElement};
 use crate::{
     AnyWindowHandle, AppContext, InteractiveElement, TestAppContext, WindowOptions, point, px,
 };
@@ -305,6 +305,22 @@ impl Render for SelectiveMultiRootView {
     }
 }
 
+struct SelectiveCompositeRootView {
+    renders: Rc<std::cell::Cell<usize>>,
+    parent: Entity<SelectiveParentView>,
+}
+
+impl Render for SelectiveCompositeRootView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        crate::div().child(
+            AnyView::from(self.parent.clone())
+                .cached(StyleRefinement::default().w(px(120.)).h(px(32.)))
+                .composite_layer(),
+        )
+    }
+}
+
 #[gpui::test]
 fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
     cx: &mut TestAppContext,
@@ -557,6 +573,67 @@ fn traversal_ancestor_splices_two_dirty_cached_siblings_without_root_render(
         assert_eq!(left_renders.get(), left_baseline + revision);
         assert_eq!(right_renders.get(), right_baseline + revision);
     }
+}
+
+#[gpui::test]
+fn selective_splice_falls_back_when_dirty_view_is_inside_composite_capture(
+    cx: &mut TestAppContext,
+) {
+    let root_renders = Rc::new(std::cell::Cell::new(0));
+    let parent_renders = Rc::new(std::cell::Cell::new(0));
+    let leaf_renders = Rc::new(std::cell::Cell::new(0));
+    let (leaf, window) = cx.update(|cx| {
+        let leaf = cx.new(|_| SelectiveLeafView {
+            renders: leaf_renders.clone(),
+            revision: 0,
+        });
+        let parent = cx.new(|_| SelectiveParentView {
+            renders: parent_renders.clone(),
+            leaf: leaf.clone(),
+        });
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| SelectiveCompositeRootView {
+                    renders: root_renders.clone(),
+                    parent,
+                })
+            })
+            .unwrap();
+        (leaf, AnyWindowHandle::from(window))
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+    })
+    .unwrap();
+
+    let root_baseline = root_renders.get();
+    let parent_baseline = parent_renders.get();
+    let leaf_baseline = leaf_renders.get();
+    assert!(root_baseline > 0 && parent_baseline > 0 && leaf_baseline > 0);
+
+    leaf.update(cx, |leaf, cx| {
+        leaf.revision = 1;
+        cx.notify();
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+    })
+    .unwrap();
+
+    assert!(
+        root_renders.get() > root_baseline,
+        "window-root selective splice must fall back when the dirty route crosses a composite capture"
+    );
+    assert!(
+        parent_renders.get() > parent_baseline,
+        "a cached ancestor inside a composite capture must rebuild instead of detached scene replay"
+    );
+    assert_eq!(
+        leaf_renders.get(),
+        leaf_baseline + 1,
+        "the direct dirty leaf must still rebuild"
+    );
 }
 
 #[gpui::test]
