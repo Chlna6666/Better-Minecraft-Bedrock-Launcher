@@ -188,9 +188,11 @@ fn selective_any_view_targets(
     ancestor_retained_id: &GlobalElementId,
     parent_state: &AnyViewState,
 ) -> Option<SmallVec<[SelectiveAnyViewTarget; 4]>> {
-    let raw_targets = window
-        .invalidator
-        .reconcile_targets_below(ancestor_retained_id)?;
+    let raw_targets = window.invalidator.reconcile_targets_below(
+        ancestor_retained_id,
+        parent_state.owner_id,
+        &window.rendered_frame.dispatch_tree,
+    )?;
     let mut targets = SmallVec::<[SelectiveAnyViewTarget; 4]>::new();
 
     for (owner_id, retained_id) in raw_targets {
