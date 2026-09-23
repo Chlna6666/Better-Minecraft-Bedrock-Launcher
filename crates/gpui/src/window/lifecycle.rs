@@ -544,11 +544,11 @@ impl WindowInvalidator {
         }
     }
 
-    pub(in crate::window) fn active_generic_dirty_view_count(&self) -> usize {
+    pub(crate) fn active_generic_dirty_view_count(&self) -> usize {
         self.inner.borrow().active_generic_dirty_views.len()
     }
 
-    pub(in crate::window) fn active_targeted_element_count(&self) -> usize {
+    pub(crate) fn active_targeted_element_count(&self) -> usize {
         self.inner.borrow().active_targeted_elements.len()
     }
 
