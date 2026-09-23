@@ -2,7 +2,54 @@ mod rpc;
 
 use crate::rpc::ServiceGenerator;
 use cfg_aliases::cfg_aliases;
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+fn git_output(manifest_dir: &Path, arguments: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(manifest_dir)
+        .args(arguments)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_path(manifest_dir: &Path, path: &str) -> Option<PathBuf> {
+    git_output(
+        manifest_dir,
+        &["rev-parse", "--path-format=absolute", "--git-path", path],
+    )
+    .map(PathBuf::from)
+}
+
+fn emit_easytier_version(manifest_dir: &Path) {
+    for path in ["HEAD", "packed-refs", "refs/tags"] {
+        if let Some(path) = git_path(manifest_dir, path) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+    if let Some(reference) = git_output(manifest_dir, &["symbolic-ref", "--quiet", "HEAD"])
+        && let Some(path) = git_path(manifest_dir, &reference)
+    {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+
+    let package_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string());
+    let version = git_output(manifest_dir, &["describe", "--abbrev=8", "--always"])
+        .filter(|version| !version.is_empty())
+        .map_or_else(
+            || package_version.clone(),
+            |revision| format!("{package_version}-{revision}"),
+        );
+    println!("cargo:rustc-env=EASYTIER_VERSION={version}");
+}
 
 fn workdir() -> Option<String> {
     if let Ok(cargo_manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
@@ -44,6 +91,10 @@ fn check_locale() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR")?);
+    emit_easytier_version(&manifest_dir);
+
     cfg_aliases! {
         mobile: {
             any(
