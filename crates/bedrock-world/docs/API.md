@@ -71,6 +71,24 @@ let future_state = block_state.state("minecraft:future_state");
 permutation 的状态；缺失必需字段或数值越界会报错。调用方不应通过方块名称猜测
 朝向，也不应把门、活板门和楼梯的不同数字方向编码混用。
 
+### 显式 BlockState 版本迁移
+
+旧游戏 BlockState 的 schema 转换作为 `block` 域 API 提供：
+
+```rust
+use bedrock_world::block::{
+    BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator,
+    BlockStateUpgradeRule,
+};
+```
+
+`BlockStateMigrationGraph` 只在显式添加的版本边上迁移单个内存 `BlockState`；没有规则、
+版本路径不明或目标 palette 不接受结果时返回错误，不会猜测或只改写版本号。它不直接写
+世界数据，实际 SubChunk 修改仍须通过相应的 world transaction。权威历史资源通过
+`block::{load_pinned_block_migration_bundle_from_dir,
+load_pinned_block_migration_bundle_for_target_from_dir}` 读取；
+`verify_pinned_block_migration_corpus` 可只校验外置资源的 pinned 文件身份。
+
 ## Biome
 
 磁盘层始终保留真实数值 ID：
@@ -134,6 +152,24 @@ actorprefix<Actor storage id>
 
 转换要求 actor 顺序和 NBT 一致。mixed storage 同时存在时，两边必须表示同一批 actor；库不会把两套额外实体合并成第三份状态。
 
+## SavedItem 版本迁移
+
+显式的历史 numeric ID/meta 与命名物品迁移入口位于 `bedrock_world::item`：
+
+```rust
+use bedrock_world::item::{
+    load_pinned_item_migration_catalog_from_dir, migrate_item_stack_nbt,
+    migrate_item_stacks_in_nbt, ItemMigrationPolicy,
+};
+```
+
+迁移函数处理调用方提供的 NBT 值，不读写世界存储。未知物品可选择完整保留或拒绝；
+BlockItem 必须另外提供历史 BlockState resolver、迁移器和精确目标 palette 校验。遍历 API
+只处理识别为 item stack 的 compound，并保留无法安全迁移的未知/未来数据及无关字段。调用方
+负责在领域 transaction 中持久化迁移结果。`load_pinned_item_migration_catalog_from_dir`
+校验并读取固定上游语料；需要自行分发资源时可先使用
+`verify_pinned_item_migration_corpus`。
+
 ## Player
 
 Player 物理记录保持区分：
@@ -146,9 +182,18 @@ Player 物理记录保持区分：
 
 普通读写不自动执行玩家存储位置迁移，也不把“只转换 inventory”伪装成整个 Player/世界的目标版本转换。
 
+`move_level_dat_player_to_local_player` 与 `move_local_player_to_level_dat` 提供两个方向的显式
+物理位置迁移。它们保留 Player NBT 原样，不升级物品或其它字段。目标先写、来源后删；两个
+存储无法组成共同原子事务，冲突副本会被拒绝。调用方须串行化同一世界的写入；库不能锁住
+Minecraft 或其它进程。
+
 ## BlockEntity
 
-BlockEntity 没有统一的全局 schema version。公共 `BlockEntityRewriter` 用于由调用者根据明确版本证据实现具体规则；未绑定 target version 的便利转换不作为版本兼容保证。
+BlockEntity 没有统一的全局 schema version。公共 `BlockEntityRewriter` 可供调用者按明确版本
+证据实现具体规则；`rewrite_block_entity_sign_text` 仅转换已知旧 Sign 文本字段到
+`FrontText`/`BackText`，不代表通用 BlockEntity 版本升级。未知 ID 和不识别的 NBT 布局保留
+原始字节。写入以单个 LevelDB `StorageBatch` 提交；该调用本身不对抗其它进程同时写同一
+chunk。
 
 ## pre-LevelDB Pocket 世界
 

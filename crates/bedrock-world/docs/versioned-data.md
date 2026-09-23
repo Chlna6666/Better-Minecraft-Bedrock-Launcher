@@ -17,8 +17,11 @@ Examples:
 - BlockState persisted `version`;
 - classic numeric saved-item ID/meta and named saved items.
 
-There is no public `migration`, `conversion`, `transcode`, `codec`, `adapter`, `schema`, `format` or
-`storage` bucket that owns unrelated Bedrock data.
+There is no generic public `migration`, `conversion`, `transcode`, `codec`, `adapter`, `schema`,
+`format` or `storage` bucket that owns unrelated Bedrock data. Explicit version migrations are public
+through their Bedrock domain modules: BlockState rules and pinned catalogs under `block`, saved-item
+migration under `item`, and local-player record relocation under `player`. These APIs operate only on
+the data their names identify and do not imply an automatic whole-world version conversion.
 
 ## Reading
 
