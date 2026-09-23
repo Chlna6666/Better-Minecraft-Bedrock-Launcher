@@ -596,7 +596,17 @@ impl Window {
             }
         };
 
-        let mut root_element = self.root.as_ref().unwrap().clone().into_any();
+        // The root participates in retained reconciliation too. Without this boundary every
+        // entity-local child notify makes the root a TraversalAncestor but still calls its Render,
+        // so a 60 Hz local visual (for example a shader background) rebuilds the entire application
+        // shell before nested caches can help.
+        let mut root_element = self
+            .root
+            .as_ref()
+            .unwrap()
+            .clone()
+            .cached_as_window_root()
+            .into_any();
         self.with_critical_draw(|window| {
             root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
         });

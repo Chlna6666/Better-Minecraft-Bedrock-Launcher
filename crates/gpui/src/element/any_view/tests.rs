@@ -213,11 +213,13 @@ impl Render for SelectiveParentView {
 }
 
 struct SelectiveRootView {
+    renders: Rc<std::cell::Cell<usize>>,
     parent: Entity<SelectiveParentView>,
 }
 
 impl Render for SelectiveRootView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
         crate::div().child(
             AnyView::from(self.parent.clone()).cached(
                 StyleRefinement::default().w(px(120.)).h(px(32.)),
@@ -230,6 +232,7 @@ impl Render for SelectiveRootView {
 fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
     cx: &mut TestAppContext,
 ) {
+    let root_renders = Rc::new(std::cell::Cell::new(0));
     let parent_renders = Rc::new(std::cell::Cell::new(0));
     let leaf_renders = Rc::new(std::cell::Cell::new(0));
     let (leaf, window) = cx.update(|cx| {
@@ -243,7 +246,10 @@ fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
         });
         let window = cx
             .open_window(WindowOptions::default(), |_, cx| {
-                cx.new(|_| SelectiveRootView { parent })
+                cx.new(|_| SelectiveRootView {
+                    renders: root_renders.clone(),
+                    parent,
+                })
             })
             .unwrap();
         (leaf, AnyWindowHandle::from(window))
@@ -253,9 +259,10 @@ fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
         window.draw(cx).clear();
     })
     .unwrap();
+    let root_baseline = root_renders.get();
     let parent_baseline = parent_renders.get();
     let leaf_baseline = leaf_renders.get();
-    assert!(parent_baseline > 0 && leaf_baseline > 0);
+    assert!(root_baseline > 0 && parent_baseline > 0 && leaf_baseline > 0);
 
     for revision in 1..=2 {
         leaf.update(cx, |leaf, cx| {
@@ -267,6 +274,11 @@ fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
         })
         .unwrap();
 
+        assert_eq!(
+            root_renders.get(),
+            root_baseline,
+            "TraversalAncestor must not call the window root Render"
+        );
         assert_eq!(
             parent_renders.get(),
             parent_baseline,
