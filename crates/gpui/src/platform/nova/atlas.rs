@@ -176,13 +176,44 @@ impl NovaAtlas {
         self.pending_removals_flag.load(AtomicOrdering::Acquire)
     }
 
-    pub(super) fn apply_pending_removals(&self) {
+    /// Returns whether at least one queued atlas retirement is no longer referenced by the Scene
+    /// that is about to be submitted.
+    pub(super) fn has_retirable_pending_removals(
+        &self,
+        live_tiles: &FxHashSet<(AtlasTextureId, u32)>,
+    ) -> bool {
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        state.pending_removals.iter().any(|pending| {
+            !live_tiles.contains(&(pending.tile.texture_id, pending.tile.tile_id.0))
+        })
+    }
+
+    /// Applies queued atlas retirements except for allocations referenced by the Scene that is
+    /// about to be submitted.
+    ///
+    /// remove/remove_image remove keys from the CPU lookup immediately, but the retained Scene
+    /// stores AtlasTile identities directly. Deallocating such a tile before encoding that Scene
+    /// would make a valid PolychromeSprite sample freed or reused atlas memory. Protected removals
+    /// stay queued and can either be resurrected by ensure_tile_with or retired once a later Scene
+    /// no longer references them.
+    pub(super) fn apply_pending_removals_except(
+        &self,
+        live_tiles: &FxHashSet<(AtlasTextureId, u32)>,
+    ) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         let pending_removals = std::mem::take(&mut state.pending_removals);
         for pending in pending_removals {
-            state.deallocate_tile(pending.tile);
+            if live_tiles.contains(&(pending.tile.texture_id, pending.tile.tile_id.0)) {
+                state.pending_removals.push(pending);
+            } else {
+                state.deallocate_tile(pending.tile);
+            }
         }
         self.publish_state_flags(&state);
+    }
+
+    pub(super) fn apply_pending_removals(&self) {
+        self.apply_pending_removals_except(&FxHashSet::default());
     }
 }
 
@@ -820,6 +851,56 @@ mod tests {
 
         assert_ne!(first_tile.bounds, second_tile.bounds);
         atlas.apply_pending_removals();
+        assert!(!atlas.has_pending_removals());
+    }
+
+    #[test]
+    fn scene_live_tile_blocks_pending_retirement_until_no_longer_referenced() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(29),
+            frame_slot: 0,
+            pixel_format: ImagePixelFormat::Rgba8,
+        });
+        let tile = atlas
+            .ensure_tile_with(&key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(1), DevicePixels(1)),
+                    Cow::Borrowed(&[1, 2, 3, 4]),
+                )))
+            })
+            .expect("test image should allocate")
+            .expect("test image should have a tile");
+
+        atlas.remove(&key);
+        assert!(atlas.has_pending_removals());
+
+        let mut live_tiles = FxHashSet::default();
+        live_tiles.insert((tile.texture_id, tile.tile_id.0));
+        assert!(!atlas.has_retirable_pending_removals(&live_tiles));
+        atlas.apply_pending_removals_except(&live_tiles);
+        assert!(atlas.has_pending_removals());
+
+        let build_called = std::cell::Cell::new(false);
+        let restored = atlas
+            .ensure_tile_with(&key, &mut || {
+                build_called.set(true);
+                Ok(Some((
+                    size(DevicePixels(1), DevicePixels(1)),
+                    Cow::Borrowed(&[5, 6, 7, 8]),
+                )))
+            })
+            .expect("scene-live pending image should be restorable")
+            .expect("scene-live pending image should keep its tile");
+        assert_eq!(restored, tile);
+        assert!(!build_called.get());
+        assert!(!atlas.has_pending_removals());
+
+        atlas.remove(&key);
+        live_tiles.clear();
+        assert!(atlas.has_retirable_pending_removals(&live_tiles));
+        atlas.apply_pending_removals_except(&live_tiles);
         assert!(!atlas.has_pending_removals());
     }
 
