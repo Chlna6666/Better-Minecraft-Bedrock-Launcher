@@ -473,19 +473,6 @@ impl AnyView {
         self
     }
 
-    /// Promote the window root into the same retained cache machinery used by nested AnyViews.
-    ///
-    /// A window root is always laid out against the viewport. Giving it an explicit full-size
-    /// wrapper lets a TraversalAncestor frame splice a directly dirty cached descendant without
-    /// calling the root view's Render implementation. Direct root invalidation still rebuilds
-    /// normally, and Window::refresh remains a hard cache-refresh boundary.
-    pub(crate) fn cached_as_window_root(mut self) -> Self {
-        if self.cached_style.is_none() {
-            self.cached_style = Some(StyleRefinement::default().size_full().into());
-        }
-        self
-    }
-
     /// Attach a stable subtree fingerprint used by the framework cache to reuse prepaint/paint.
     pub fn cached_with_fingerprint(mut self, style: StyleRefinement, fingerprint: u64) -> Self {
         self.cached_style = Some(style.into());
