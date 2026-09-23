@@ -480,27 +480,31 @@ impl WindowInvalidator {
             });
     }
 
-    /// Returns the only active ReconcileSubtree target strictly below ancestor.
+    /// Returns every active ReconcileSubtree target strictly below ancestor.
     ///
-    /// Selective cached-view splicing intentionally starts with a one-target fast path. Generic
-    /// dirty views, multiple targets, subtree invalidation, or a direct hit on the ancestor all
-    /// fall back to normal traversal.
-    pub(crate) fn single_reconcile_target_below(
+    /// Targets outside this ancestor belong to a different retained root (for example a prompt or
+    /// overlay) and do not block local reconciliation here. Generic dirty views or an unsupported
+    /// invalidation scope remain conservative and fall back to normal traversal.
+    pub(crate) fn reconcile_targets_below(
         &self,
         ancestor: &GlobalElementId,
-    ) -> Option<(EntityId, GlobalElementId)> {
+    ) -> Option<SmallVec<[(EntityId, GlobalElementId); 4]>> {
         let inner = self.inner.borrow();
-        if !inner.active_targeted_replay
-            || !inner.active_generic_dirty_views.is_empty()
-            || inner.active_targeted_elements.len() != 1
-        {
+        if !inner.active_targeted_replay || !inner.active_generic_dirty_views.is_empty() {
             return None;
         }
 
-        let ((owner, target), scope) = inner.active_targeted_elements.iter().next()?;
-        (*scope == RetainedInvalidationScope::ReconcileSubtree
-            && global_element_path_is_strict_prefix(ancestor, target))
-        .then(|| (*owner, target.clone()))
+        let mut targets = SmallVec::new();
+        for ((owner, target), scope) in &inner.active_targeted_elements {
+            if !global_element_path_is_strict_prefix(ancestor, target) {
+                continue;
+            }
+            if *scope != RetainedInvalidationScope::ReconcileSubtree {
+                return None;
+            }
+            targets.push((*owner, target.clone()));
+        }
+        (!targets.is_empty()).then_some(targets)
     }
 
     pub fn is_dirty(&self) -> bool {

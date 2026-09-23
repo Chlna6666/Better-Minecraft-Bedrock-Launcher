@@ -12,6 +12,7 @@ use crate::window::debug_visualization::ViewCacheDebugStatus;
 use anyhow::Result;
 use collections::FxHashSet;
 use refineable::Refineable;
+use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem;
 use std::rc::Rc;
@@ -67,7 +68,7 @@ struct SelectiveAnyViewTarget {
     source_outer: RetainedElementRange,
 }
 
-struct SelectiveAnyViewPatch {
+struct SelectiveAnyViewTargetPatch {
     target_view: AnyView,
     target_global_id: GlobalElementId,
     target_retained_id: GlobalElementId,
@@ -76,68 +77,114 @@ struct SelectiveAnyViewPatch {
     target_request_layout: Option<AnyElement>,
     target_prepaint: Box<AnyViewPrepaintState>,
     source_target: RetainedElementRange,
-    source_prepaint_prefix: Range<PrepaintStateIndex>,
-    source_prepaint_suffix: Range<PrepaintStateIndex>,
-    source_paint_prefix: Range<PaintIndex>,
-    source_paint_suffix: Range<PaintIndex>,
-    source_metadata_prefix: Range<usize>,
-    source_metadata_suffix: Range<usize>,
+    source_prepaint_before: Range<PrepaintStateIndex>,
+    source_paint_before: Range<PaintIndex>,
+    source_metadata_before: Range<usize>,
+    target_prepaint_before: Range<PrepaintStateIndex>,
     target_prepaint_range: Range<PrepaintStateIndex>,
-    target_prepaint_prefix: Range<PrepaintStateIndex>,
-    target_prepaint_suffix: Range<PrepaintStateIndex>,
+}
+
+struct SelectiveAnyViewPatch {
+    targets: SmallVec<[SelectiveAnyViewTargetPatch; 4]>,
+    source_prepaint_tail: Range<PrepaintStateIndex>,
+    source_paint_tail: Range<PaintIndex>,
+    source_metadata_tail: Range<usize>,
+    target_prepaint_tail: Range<PrepaintStateIndex>,
     parent_prepaint_range: Range<PrepaintStateIndex>,
 }
 
-fn selective_any_view_target(
+fn selective_any_view_targets(
     window: &Window,
     ancestor_retained_id: &GlobalElementId,
     parent_state: &AnyViewState,
-) -> Option<SelectiveAnyViewTarget> {
-    let (owner_id, retained_id) = window
+) -> Option<SmallVec<[SelectiveAnyViewTarget; 4]>> {
+    let raw_targets = window
         .invalidator
-        .single_reconcile_target_below(ancestor_retained_id)?;
-    if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
-        return None;
+        .reconcile_targets_below(ancestor_retained_id)?;
+    let mut targets = SmallVec::<[SelectiveAnyViewTarget; 4]>::new();
+
+    for (owner_id, retained_id) in raw_targets {
+        if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
+            return None;
+        }
+
+        let source_outer = window
+            .rendered_frame
+            .retained_element_ranges
+            .get(&retained_id)?
+            .clone();
+        if !source_outer.identity_stable
+            || source_outer.metadata_range.start < parent_state.metadata_range.start
+            || source_outer.metadata_range.end > parent_state.metadata_range.end
+        {
+            return None;
+        }
+
+        let state_global_id = window
+            .invalidator
+            .cached_view_state_global_id(owner_id, &retained_id)?;
+        let boxed = window
+            .rendered_frame
+            .element_states
+            .get(&(state_global_id.clone(), TypeId::of::<AnyViewState>()))?;
+        let state = boxed
+            .inner
+            .downcast_ref::<Option<AnyViewState>>()?
+            .as_ref()?;
+        if state.owner_id != owner_id || state.retained_id != retained_id {
+            return None;
+        }
+
+        let view = state.weak_view.upgrade()?;
+        if view.cached_style.is_none() {
+            return None;
+        }
+        targets.push(SelectiveAnyViewTarget {
+            view,
+            state_global_id,
+            retained_id,
+            traversal_context: state.traversal_context.clone(),
+            source_outer,
+        });
     }
 
-    let source_outer = window
-        .rendered_frame
-        .retained_element_ranges
-        .get(&retained_id)?
-        .clone();
-    if !source_outer.identity_stable
-        || source_outer.metadata_range.start < parent_state.metadata_range.start
-        || source_outer.metadata_range.end > parent_state.metadata_range.end
-    {
-        return None;
+    // Retained metadata is post-order and every subtree owns one contiguous interval. Sort outer
+    // ranges before descendants that share a start, then collapse nested direct-dirty targets: a
+    // fresh outer View render will naturally rebuild any directly dirty cached descendant inside it.
+    targets.sort_by(|left, right| {
+        left.source_outer
+            .metadata_range
+            .start
+            .cmp(&right.source_outer.metadata_range.start)
+            .then_with(|| {
+                right
+                    .source_outer
+                    .metadata_range
+                    .end
+                    .cmp(&left.source_outer.metadata_range.end)
+            })
+    });
+
+    let mut disjoint = SmallVec::<[SelectiveAnyViewTarget; 4]>::new();
+    for target in targets {
+        if let Some(previous) = disjoint.last() {
+            let previous_range = &previous.source_outer.metadata_range;
+            let target_range = &target.source_outer.metadata_range;
+            if target_range.start >= previous_range.start
+                && target_range.end <= previous_range.end
+            {
+                continue;
+            }
+            if target_range.start < previous_range.end {
+                // Retained subtree intervals should be nested or disjoint. Partial overlap means
+                // provenance is inconsistent, so do not risk replaying stale frame-local state.
+                return None;
+            }
+        }
+        disjoint.push(target);
     }
 
-    let state_global_id = window
-        .invalidator
-        .cached_view_state_global_id(owner_id, &retained_id)?;
-    let boxed = window
-        .rendered_frame
-        .element_states
-        .get(&(state_global_id.clone(), TypeId::of::<AnyViewState>()))?;
-    let state = boxed
-        .inner
-        .downcast_ref::<Option<AnyViewState>>()?
-        .as_ref()?;
-    if state.owner_id != owner_id || state.retained_id != retained_id {
-        return None;
-    }
-
-    let view = state.weak_view.upgrade()?;
-    if view.cached_style.is_none() {
-        return None;
-    }
-    Some(SelectiveAnyViewTarget {
-        view,
-        state_global_id,
-        retained_id,
-        traversal_context: state.traversal_context.clone(),
-        source_outer,
-    })
+    (!disjoint.is_empty()).then_some(disjoint)
 }
 
 fn try_selective_any_view_prepaint(
@@ -146,201 +193,174 @@ fn try_selective_any_view_prepaint(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<SelectiveAnyViewPatch> {
-    let target = selective_any_view_target(window, ancestor_retained_id, parent_state)?;
-    let source_target = target.source_outer.clone();
+    let targets = selective_any_view_targets(window, ancestor_retained_id, parent_state)?;
 
-    let source_prepaint_prefix =
-        parent_state.prepaint_range.start.clone()..source_target.prepaint_range.start.clone();
-    let source_prepaint_suffix =
-        source_target.prepaint_range.end.clone()..parent_state.prepaint_range.end.clone();
-    let source_paint_prefix =
-        parent_state.paint_range.start.clone()..source_target.paint_range.start.clone();
-    let source_paint_suffix =
-        source_target.paint_range.end.clone()..parent_state.paint_range.end.clone();
-    let source_metadata_prefix =
-        parent_state.metadata_range.start..source_target.metadata_range.start;
-    let source_metadata_suffix =
-        source_target.metadata_range.end..parent_state.metadata_range.end;
+    // Validate the entire splice plan before moving any frame-local listeners/state out of the
+    // committed frame. Each source gap must be independently replayable and every fresh target
+    // must preserve the paint/traversal context captured when it was originally mounted.
+    let mut source_prepaint_cursor = parent_state.prepaint_range.start.clone();
+    let mut source_paint_cursor = parent_state.paint_range.start.clone();
+    let mut source_metadata_cursor = parent_state.metadata_range.start;
+    for target in &targets {
+        let source = &target.source_outer;
+        if source_metadata_cursor > source.metadata_range.start {
+            return None;
+        }
+        let source_prepaint_before =
+            source_prepaint_cursor.clone()..source.prepaint_range.start.clone();
+        let source_paint_before =
+            source_paint_cursor.clone()..source.paint_range.start.clone();
 
-    if !window.can_splice_plain_view_target(
-        &parent_state.prepaint_range,
-        &source_target.prepaint_range,
-        target.view.entity_id(),
-    )
-        || !window.can_reuse_prepaint_fragment(&source_prepaint_prefix)
-        || !window.can_reuse_prepaint_fragment(&source_prepaint_suffix)
-        || !window.can_reuse_paint(&source_paint_prefix)
-        || !window.can_reuse_paint(&source_paint_suffix)
-    {
-        return None;
+        if !window.can_splice_plain_view_target(
+            &parent_state.prepaint_range,
+            &source.prepaint_range,
+            target.view.entity_id(),
+        )
+            || !window.can_reuse_prepaint_fragment(&source_prepaint_before)
+            || !window.can_reuse_paint(&source_paint_before)
+        {
+            return None;
+        }
+
+        let context_matches = window.with_cached_view_traversal_context(
+            &target.traversal_context,
+            |window| {
+                window.current_retained_element_id().as_ref() == Some(&target.retained_id)
+                    && window.current_retained_paint_context() == source.paint_context
+            },
+        );
+        if !context_matches {
+            return None;
+        }
+
+        source_prepaint_cursor = source.prepaint_range.end.clone();
+        source_paint_cursor = source.paint_range.end.clone();
+        source_metadata_cursor = source.metadata_range.end;
     }
 
-    let context_matches = window.with_cached_view_traversal_context(
-        &target.traversal_context,
-        |window| {
-            window.current_retained_element_id().as_ref() == Some(&target.retained_id)
-                && window.current_retained_paint_context() == source_target.paint_context
-        },
-    );
-    if !context_matches {
+    let source_prepaint_tail =
+        source_prepaint_cursor.clone()..parent_state.prepaint_range.end.clone();
+    let source_paint_tail =
+        source_paint_cursor.clone()..parent_state.paint_range.end.clone();
+    if source_metadata_cursor > parent_state.metadata_range.end
+        || !window.can_reuse_prepaint_fragment(&source_prepaint_tail)
+        || !window.can_reuse_paint(&source_paint_tail)
+    {
         return None;
     }
 
     let parent_prepaint_start = window.prepaint_index();
     let mut replay = window.begin_prepaint_fragment_replay(&parent_state.prepaint_range)?;
-    if !window.reuse_prepaint_fragment(source_prepaint_prefix.clone(), &mut replay) {
-        return None;
-    }
-    let prefix_end = window.prepaint_index();
-    let target_prepaint_start = prefix_end.clone();
+    let mut patches = SmallVec::<[SelectiveAnyViewTargetPatch; 4]>::new();
+    source_prepaint_cursor = parent_state.prepaint_range.start.clone();
+    source_paint_cursor = parent_state.paint_range.start.clone();
+    source_metadata_cursor = parent_state.metadata_range.start;
 
-    if !window.begin_fresh_view_dispatch_for_fragment(
-        &source_target.prepaint_range,
-        target.view.entity_id(),
-        &mut replay,
-    ) {
+    for target in targets {
+        let source_target = target.source_outer.clone();
+        let source_prepaint_before =
+            source_prepaint_cursor.clone()..source_target.prepaint_range.start.clone();
+        let source_paint_before =
+            source_paint_cursor.clone()..source_target.paint_range.start.clone();
+        let source_metadata_before =
+            source_metadata_cursor..source_target.metadata_range.start;
+
+        let target_prepaint_before_start = window.prepaint_index();
+        if !window.reuse_prepaint_fragment(source_prepaint_before.clone(), &mut replay) {
+            window.degrade_current_draw();
+            return None;
+        }
+        let target_prepaint_before_end = window.prepaint_index();
+
+        if !window.begin_fresh_view_dispatch_for_fragment(
+            &source_target.prepaint_range,
+            target.view.entity_id(),
+            &mut replay,
+        ) {
+            window.degrade_current_draw();
+            return None;
+        }
+
+        let mut target_view = target.view;
+        let mut target_request_layout = None;
+        let target_bounds = source_target.bounds;
+        let target_prepaint_start = window.prepaint_index();
+        let target_prepaint = window.with_cached_view_traversal_context(
+            &target.traversal_context,
+            |window| {
+                target_view.prepaint(
+                    Some(&target.state_global_id),
+                    None,
+                    target_bounds,
+                    &mut target_request_layout,
+                    window,
+                    cx,
+                )
+            },
+        );
+        let target_prepaint_end = window.prepaint_index();
+        window.finish_fresh_view_dispatch_for_fragment(&replay);
+
+        patches.push(SelectiveAnyViewTargetPatch {
+            target_view,
+            target_global_id: target.state_global_id,
+            target_retained_id: target.retained_id,
+            target_context: target.traversal_context,
+            target_bounds,
+            target_request_layout,
+            target_prepaint: Box::new(target_prepaint),
+            source_target,
+            source_prepaint_before,
+            source_paint_before,
+            source_metadata_before,
+            target_prepaint_before: target_prepaint_before_start..target_prepaint_before_end,
+            target_prepaint_range: target_prepaint_start..target_prepaint_end,
+        });
+
+        source_prepaint_cursor = patches
+            .last()
+            .expect("selective target patch was just appended")
+            .source_target
+            .prepaint_range
+            .end
+            .clone();
+        source_paint_cursor = patches
+            .last()
+            .expect("selective target patch was just appended")
+            .source_target
+            .paint_range
+            .end
+            .clone();
+        source_metadata_cursor = patches
+            .last()
+            .expect("selective target patch was just appended")
+            .source_target
+            .metadata_range
+            .end;
+    }
+
+    let source_prepaint_tail =
+        source_prepaint_cursor..parent_state.prepaint_range.end.clone();
+    let source_paint_tail = source_paint_cursor..parent_state.paint_range.end.clone();
+    let source_metadata_tail = source_metadata_cursor..parent_state.metadata_range.end;
+    let target_prepaint_tail_start = window.prepaint_index();
+    if !window.reuse_prepaint_fragment(source_prepaint_tail.clone(), &mut replay) {
         window.degrade_current_draw();
         return None;
     }
-
-    let mut target_view = target.view;
-    let mut target_request_layout = None;
-    let target_bounds = source_target.bounds;
-    let target_prepaint = window.with_cached_view_traversal_context(
-        &target.traversal_context,
-        |window| {
-            target_view.prepaint(
-                Some(&target.state_global_id),
-                None,
-                target_bounds,
-                &mut target_request_layout,
-                window,
-                cx,
-            )
-        },
-    );
-    let target_prepaint_end = window.prepaint_index();
-    window.finish_fresh_view_dispatch_for_fragment(&replay);
-
-    let suffix_start = target_prepaint_end.clone();
-    if !window.reuse_prepaint_fragment(source_prepaint_suffix.clone(), &mut replay) {
-        window.degrade_current_draw();
-        return None;
-    }
-    let parent_prepaint_end = window.prepaint_index();
+    let target_prepaint_tail_end = window.prepaint_index();
+    let parent_prepaint_end = target_prepaint_tail_end.clone();
 
     cx.entities.extend_accessed(&parent_state.accessed_entities);
 
     Some(SelectiveAnyViewPatch {
-        target_view,
-        target_global_id: target.state_global_id,
-        target_retained_id: target.retained_id,
-        target_context: target.traversal_context,
-        target_bounds,
-        target_request_layout,
-        target_prepaint: Box::new(target_prepaint),
-        source_target,
-        source_prepaint_prefix,
-        source_prepaint_suffix,
-        source_paint_prefix,
-        source_paint_suffix,
-        source_metadata_prefix,
-        source_metadata_suffix,
-        target_prepaint_range: target_prepaint_start..target_prepaint_end,
-        target_prepaint_prefix: parent_prepaint_start.clone()..prefix_end,
-        target_prepaint_suffix: suffix_start..parent_prepaint_end.clone(),
+        targets: patches,
+        source_prepaint_tail,
+        source_paint_tail,
+        source_metadata_tail,
+        target_prepaint_tail: target_prepaint_tail_start..target_prepaint_tail_end,
         parent_prepaint_range: parent_prepaint_start..parent_prepaint_end,
     })
-}
-
-impl<V: Render> Element for Entity<V> {
-    type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        Some(ElementId::View(self.entity_id()))
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        window.record_rendered_view(self.entity_id(), std::any::type_name::<V>());
-        let mut element = self.update(cx, |view, cx| view.render(window, cx).into_any_element());
-        let layout_id = window.with_rendered_view(self.entity_id(), |window| {
-            element.request_layout(window, cx)
-        });
-        (layout_id, element)
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        window.set_view_id(self.entity_id());
-        window.with_rendered_view(self.entity_id(), |window| element.prepaint(window, cx));
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        // Entity is a lifecycle proxy. Its rendered element owns all actual scene primitives.
-        window.record_debug_element_traversal_only(bounds, cx);
-        window.with_rendered_view(self.entity_id(), |window| element.paint(window, cx));
-    }
-}
-
-/// A dynamically-typed handle to a view, which can be downcast to a [Entity] for a specific type.
-#[derive(Clone, Debug)]
-pub struct AnyView {
-    entity: AnyEntity,
-    render: fn(&AnyView, &mut Window, &mut App) -> AnyElement,
-    cached_style: Option<Rc<StyleRefinement>>,
-    cache_fingerprint: Option<u64>,
-    progressive: bool,
-    critical: bool,
-    reuse_on_window_refresh: bool,
-}
-
-impl<V: Render> From<Entity<V>> for AnyView {
-    fn from(value: Entity<V>) -> Self {
-        AnyView {
-            entity: value.into_any(),
-            render: any_view::render::<V>,
-            cached_style: None,
-            cache_fingerprint: None,
-            progressive: false,
-            critical: false,
-            reuse_on_window_refresh: false,
-        }
-    }
-}
-
-fn with_optional_critical_draw<R>(
-    _critical: bool,
-    window: &mut Window,
-    f: impl FnOnce(&mut Window) -> R,
-) -> R {
-    f(window)
 }
 
 impl AnyView {
@@ -861,77 +881,80 @@ impl Element for AnyView {
                             AnyViewPrepaintStateKind::Selective(patch) => {
                                 window.record_debug_element_traversal_only(bounds, cx);
 
-                                let prefix_paint_start = window.paint_index();
-                                if !window.reuse_paint(patch.source_paint_prefix.clone()) {
-                                    window.degrade_current_draw();
-                                }
-                                let prefix_paint_end = window.paint_index();
-                                let target_paint_prefix =
-                                    prefix_paint_start..prefix_paint_end.clone();
-                                if !window.replay_retained_element_metadata_fragment(
-                                    &patch.source_prepaint_prefix,
-                                    &patch.source_paint_prefix,
-                                    &patch.source_metadata_prefix,
-                                    &patch.target_prepaint_prefix,
-                                    &target_paint_prefix,
-                                ) {
-                                    window.degrade_current_draw();
+                                for target in &mut patch.targets {
+                                    let before_paint_start = window.paint_index();
+                                    if !window.reuse_paint(target.source_paint_before.clone()) {
+                                        window.degrade_current_draw();
+                                    }
+                                    let before_paint_end = window.paint_index();
+                                    let target_paint_before =
+                                        before_paint_start..before_paint_end.clone();
+                                    if !window.replay_retained_element_metadata_fragment(
+                                        &target.source_prepaint_before,
+                                        &target.source_paint_before,
+                                        &target.source_metadata_before,
+                                        &target.target_prepaint_before,
+                                        &target_paint_before,
+                                    ) {
+                                        window.degrade_current_draw();
+                                    }
+
+                                    let target_paint_start = before_paint_end;
+                                    let target_metadata_start =
+                                        window.retained_element_metadata_len();
+                                    if !window.activate_reconciled_view_dispatch(
+                                        target.target_view.entity_id(),
+                                    ) {
+                                        window.degrade_current_draw();
+                                    }
+                                    let retained_ok = window.with_cached_view_traversal_context(
+                                        &target.target_context,
+                                        |window| {
+                                            target.target_view.paint(
+                                                Some(&target.target_global_id),
+                                                None,
+                                                target.target_bounds,
+                                                &mut target.target_request_layout,
+                                                target.target_prepaint.as_mut(),
+                                                window,
+                                                cx,
+                                            );
+                                            let target_paint_end = window.paint_index();
+                                            window.record_reconciled_cached_view_boundary(
+                                                target.target_retained_id.clone(),
+                                                &target.source_target,
+                                                target.target_bounds,
+                                                target.target_prepaint_range.clone(),
+                                                target_paint_start.clone()..target_paint_end,
+                                                target_metadata_start,
+                                            )
+                                        },
+                                    );
+                                    if !retained_ok {
+                                        window.degrade_current_draw();
+                                    }
                                 }
 
-                                let target_paint_start = prefix_paint_end;
-                                let target_metadata_start =
-                                    window.retained_element_metadata_len();
-                                if !window.activate_reconciled_view_dispatch(
-                                    patch.target_view.entity_id(),
-                                ) {
+                                let tail_paint_start = window.paint_index();
+                                if !window.reuse_paint(patch.source_paint_tail.clone()) {
                                     window.degrade_current_draw();
                                 }
-                                let retained_ok = window.with_cached_view_traversal_context(
-                                    &patch.target_context,
-                                    |window| {
-                                        patch.target_view.paint(
-                                            Some(&patch.target_global_id),
-                                            None,
-                                            patch.target_bounds,
-                                            &mut patch.target_request_layout,
-                                            patch.target_prepaint.as_mut(),
-                                            window,
-                                            cx,
-                                        );
-                                        let target_paint_end = window.paint_index();
-                                        window.record_reconciled_cached_view_boundary(
-                                            patch.target_retained_id.clone(),
-                                            &patch.source_target,
-                                            patch.target_bounds,
-                                            patch.target_prepaint_range.clone(),
-                                            target_paint_start.clone()..target_paint_end,
-                                            target_metadata_start,
-                                        )
-                                    },
-                                );
-                                if !retained_ok {
-                                    window.degrade_current_draw();
-                                }
-
-                                let target_paint_end = window.paint_index();
-                                let suffix_paint_start = target_paint_end.clone();
-                                if !window.reuse_paint(patch.source_paint_suffix.clone()) {
-                                    window.degrade_current_draw();
-                                }
-                                let suffix_paint_end = window.paint_index();
-                                let target_paint_suffix =
-                                    suffix_paint_start..suffix_paint_end;
+                                let tail_paint_end = window.paint_index();
+                                let target_paint_tail =
+                                    tail_paint_start..tail_paint_end;
                                 if !window.replay_retained_element_metadata_fragment(
-                                    &patch.source_prepaint_suffix,
-                                    &patch.source_paint_suffix,
-                                    &patch.source_metadata_suffix,
-                                    &patch.target_prepaint_suffix,
-                                    &target_paint_suffix,
+                                    &patch.source_prepaint_tail,
+                                    &patch.source_paint_tail,
+                                    &patch.source_metadata_tail,
+                                    &patch.target_prepaint_tail,
+                                    &target_paint_tail,
                                 ) {
                                     window.degrade_current_draw();
                                 }
                             }
                         }
+
+                        let paint_end = window.paint_index();                        }
 
                         let paint_end = window.paint_index();
                         if !window.draw_was_degraded() {

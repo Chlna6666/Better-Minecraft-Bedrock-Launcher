@@ -228,6 +228,31 @@ impl Render for SelectiveRootView {
     }
 }
 
+
+struct SelectiveMultiRootView {
+    renders: Rc<std::cell::Cell<usize>>,
+    left: Entity<SelectiveLeafView>,
+    right: Entity<SelectiveLeafView>,
+}
+
+impl Render for SelectiveMultiRootView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        crate::div()
+            .flex()
+            .child(
+                AnyView::from(self.left.clone()).cached(
+                    StyleRefinement::default().w(px(120.)).h(px(32.)),
+                ),
+            )
+            .child(
+                AnyView::from(self.right.clone()).cached(
+                    StyleRefinement::default().w(px(120.)).h(px(32.)),
+                ),
+            )
+    }
+}
+
 #[gpui::test]
 fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
     cx: &mut TestAppContext,
@@ -289,6 +314,67 @@ fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
             leaf_baseline + revision,
             "the direct dirty child must still rebuild on every notify"
         );
+    }
+}
+
+#[gpui::test]
+fn traversal_ancestor_splices_two_dirty_cached_siblings_without_root_render(
+    cx: &mut TestAppContext,
+) {
+    let root_renders = Rc::new(std::cell::Cell::new(0));
+    let left_renders = Rc::new(std::cell::Cell::new(0));
+    let right_renders = Rc::new(std::cell::Cell::new(0));
+    let (left, right, window) = cx.update(|cx| {
+        let left = cx.new(|_| SelectiveLeafView {
+            renders: left_renders.clone(),
+            revision: 0,
+        });
+        let right = cx.new(|_| SelectiveLeafView {
+            renders: right_renders.clone(),
+            revision: 0,
+        });
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| SelectiveMultiRootView {
+                    renders: root_renders.clone(),
+                    left: left.clone(),
+                    right: right.clone(),
+                })
+            })
+            .unwrap();
+        (left, right, AnyWindowHandle::from(window))
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+    })
+    .unwrap();
+    let root_baseline = root_renders.get();
+    let left_baseline = left_renders.get();
+    let right_baseline = right_renders.get();
+    assert!(root_baseline > 0 && left_baseline > 0 && right_baseline > 0);
+
+    for revision in 1..=2 {
+        left.update(cx, |leaf, cx| {
+            leaf.revision = revision;
+            cx.notify();
+        });
+        right.update(cx, |leaf, cx| {
+            leaf.revision = revision;
+            cx.notify();
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear();
+        })
+        .unwrap();
+
+        assert_eq!(
+            root_renders.get(),
+            root_baseline,
+            "two independent DirectDirty children must not rerender the window root"
+        );
+        assert_eq!(left_renders.get(), left_baseline + revision);
+        assert_eq!(right_renders.get(), right_baseline + revision);
     }
 }
 
