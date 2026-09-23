@@ -628,32 +628,77 @@ impl Window {
         });
     }
 
-    /// Drops this window's decoded-image lookup state and retires its atlas residency.
+    /// Drops this window's decoded-image ownership and retires atlas residency once no retained
+    /// Scene still references it.
     ///
-    /// The atlas backend defers physical deallocation until a GPU-safe point. A retained Scene can
-    /// still reference the old [`AtlasTile`] after the decoded-image cache releases its strong
-    /// image handle, so the next platform frame is forced through a real view rebuild before Nova
-    /// applies pending atlas removals. If the image is still visible, its paint path calls
-    /// `ensure_tile_with` during that CPU draw and cancels the pending retirement; if it has left
-    /// the UI, the removal remains pending and is safely applied before presentation.
+    /// Nova applies pending atlas removals at the start of submission, before drawing the Scene
+    /// supplied for that submission. Retiring a static image tile while either the current or
+    /// in-progress retained Scene still contains a PolychromeSprite for that tile would therefore
+    /// leave the Scene sampling an allocation that Nova has already deallocated. Keep those live
+    /// static tiles resident; the normal two-generation scene-liveness prune retires them after a
+    /// fresh frame has actually stopped referencing them.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         let image_id = data.id;
-        let animated_slots_before = self.animated_image_slots.len();
+        let had_animated_residency = self
+            .animated_image_slots
+            .keys()
+            .any(|slot_key| slot_key.image_id == image_id);
         self.animated_image_slots
             .retain(|slot_key, _| slot_key.image_id != image_id);
-        let image_tiles_before = self.image_paint_tile_cache.len();
-        self.image_paint_tile_cache
-            .retain(|cache_key, _| cache_key.image_id != image_id);
-        let had_window_residency = self.animated_image_slots.len() != animated_slots_before
-            || self.image_paint_tile_cache.len() != image_tiles_before;
-        self.sprite_atlas.remove_image(image_id);
+
+        let had_static_residency = self
+            .image_paint_tile_cache
+            .keys()
+            .any(|cache_key| cache_key.image_id == image_id);
+
+        let mut live_tiles = std::mem::take(&mut self.image_paint_live_tiles_scratch);
+        live_tiles.clear();
+        self.rendered_frame
+            .scene
+            .collect_polychrome_tile_ids_into(&mut live_tiles);
+        self.next_frame
+            .scene
+            .collect_polychrome_tile_ids_into(&mut live_tiles);
+
+        let has_live_static_residency = self.image_paint_tile_cache.iter().any(|(key, tile)| {
+            key.image_id == image_id
+                && live_tiles.contains(&(tile.texture_id, tile.tile_id.0))
+        });
+
+        if has_live_static_residency {
+            // Retire only stale slots for this image. Live slots remain in the lookup so a retained
+            // Scene can continue sampling them until a committed replacement frame removes them.
+            let atlas = self.sprite_atlas.clone();
+            self.image_paint_tile_cache.retain(|key, tile| {
+                if key.image_id != image_id {
+                    return true;
+                }
+                if live_tiles.contains(&(tile.texture_id, tile.tile_id.0)) {
+                    return true;
+                }
+
+                atlas.remove(&crate::AtlasKey::from(RenderImageParams {
+                    image_id: key.image_id,
+                    frame_slot: key.frame_slot,
+                    pixel_format: key.pixel_format,
+                }));
+                false
+            });
+        } else {
+            self.image_paint_tile_cache
+                .retain(|cache_key, _| cache_key.image_id != image_id);
+            self.sprite_atlas.remove_image(image_id);
+        }
+
+        live_tiles.clear();
+        self.image_paint_live_tiles_scratch = live_tiles;
+
+        let had_window_residency = had_animated_residency || had_static_residency;
         record_image_drop(1);
 
         if had_window_residency {
-            // Do not call `refresh()` synchronously here. Image-cache eviction can happen while an
-            // element is already painting; `finish_completed_draw` would then clear the one-shot
-            // force-view-cache flag before the recovery frame. Running the refresh as a frame
-            // callback guarantees it is installed immediately before the next draw decision.
+            // Install the recovery refresh immediately before the next draw decision. The current
+            // submission is allowed to finish using any scene-live static tile retained above.
             self.on_next_frame(|window, _cx| {
                 window.force_full_redraw.set(true);
                 window.refresh();
