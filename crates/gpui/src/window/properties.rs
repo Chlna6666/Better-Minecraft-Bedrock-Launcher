@@ -73,6 +73,14 @@ impl Window {
         self.animation_time.get()
     }
 
+    /// Returns seconds on GPUI's renderer presentation clock at this frame's stable timestamp.
+    ///
+    /// Retained custom GPU effects can store an offset against this clock and continue advancing on
+    /// presentation-only frames without invalidating their owning View.
+    pub fn presentation_time_seconds(&self) -> f32 {
+        crate::animation::presentation_clock_seconds_at(self.animation_time())
+    }
+
     /// Sets the size of an em for the base font of the application. Adjusting this value allows the
     /// UI to scale, just like zooming a web page.
     pub fn set_rem_size(&mut self, rem_size: impl Into<Pixels>) {

@@ -106,6 +106,12 @@ impl FrameUpload {
             write_f32_vec(&mut self.globals, drawable_size.height as f32);
             write_u32_vec(&mut self.globals, u32::from(premultiplied_alpha));
             write_u32_vec(&mut self.globals, 0);
+            // Offsets 16..24 are updated again immediately before every GPU submission, including
+            // retained framebuffer-only presents. Keep the packed static snapshot ABI-complete so
+            // a full static upload can never overwrite the live clock with a shorter buffer.
+            write_f32_vec(&mut self.globals, 0.0);
+            write_u32_vec(&mut self.globals, 0);
+            debug_assert_eq!(self.globals.len(), GLOBAL_UPLOAD_BYTES);
             for value in rendering_parameters.gamma_ratios {
                 write_f32_vec(&mut self.text_raster_params, value);
             }

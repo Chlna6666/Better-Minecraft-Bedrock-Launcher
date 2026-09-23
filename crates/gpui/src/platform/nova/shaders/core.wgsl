@@ -3,6 +3,8 @@ struct GlobalParams {
     viewport_size: vec2<f32>,
     premultiplied_alpha: u32,
     pad: u32,
+    presentation_time_seconds: f32,
+    presentation_tick_60hz: u32,
 }
 
 

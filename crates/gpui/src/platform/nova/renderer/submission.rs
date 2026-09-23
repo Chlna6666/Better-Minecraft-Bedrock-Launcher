@@ -13,6 +13,7 @@ impl NovaRenderer {
                 );
             }
             self.activate_frame_resources(0)?;
+            self.upload_presentation_clock()?;
             self.upload_gpu_indexed_animation_values()?;
             self.upload_custom_mesh_3d_animation_sidecar()?;
             return Ok(());
@@ -23,8 +24,62 @@ impl NovaRenderer {
         }
         let frame_resource_index = self.next_available_frame_resource_index()?;
         self.activate_frame_resources(frame_resource_index)?;
+        self.upload_presentation_clock()?;
         self.upload_gpu_indexed_animation_values()?;
         self.upload_custom_mesh_3d_animation_sidecar()?;
+        Ok(())
+    }
+
+    /// Upload the renderer presentation clock into the currently active frame-resource slot.
+    ///
+    /// The first 16 bytes of GlobalParams remain static scene state. Only the final 8 bytes change
+    /// on presentation-only frames, so custom retained GPU effects can advance without rebuilding
+    /// scene primitives, layout, or View state.
+    fn upload_presentation_clock(&mut self) -> Result<()> {
+        const CLOCK_OFFSET: usize = 16;
+        const CLOCK_BYTES: usize = 8;
+
+        let seconds = crate::animation::presentation_clock_seconds_now();
+        let tick_60hz =
+            ((seconds as f64 * 60.0).floor() as u64 & u64::from(u32::MAX)) as u32;
+        let mut bytes = [0_u8; CLOCK_BYTES];
+        bytes[..4].copy_from_slice(&seconds.to_ne_bytes());
+        bytes[4..].copy_from_slice(&tick_60hz.to_ne_bytes());
+
+        if self.frame_upload.globals.len() >= CLOCK_OFFSET + CLOCK_BYTES {
+            self.frame_upload.globals[CLOCK_OFFSET..CLOCK_OFFSET + CLOCK_BYTES]
+                .copy_from_slice(&bytes);
+        }
+
+        let buffer = self.global_buffer;
+        match &mut self.backend {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => {
+                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
+            }
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => {
+                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
+            }
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => {
+                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
+            }
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {
+                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+            }
+        }
         Ok(())
     }
 

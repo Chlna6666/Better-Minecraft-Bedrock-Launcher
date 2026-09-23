@@ -1,5 +1,21 @@
 //! Animation primitives shared by GPUI elements, styles, and window scheduling.
 
+use std::{
+    sync::OnceLock,
+    time::Instant,
+};
+
+static PRESENTATION_CLOCK_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+pub(crate) fn presentation_clock_seconds_at(now: Instant) -> f32 {
+    let epoch = *PRESENTATION_CLOCK_EPOCH.get_or_init(|| now);
+    now.saturating_duration_since(epoch).as_secs_f32()
+}
+
+pub(crate) fn presentation_clock_seconds_now() -> f32 {
+    presentation_clock_seconds_at(Instant::now())
+}
+
 mod animatable;
 mod easing;
 mod engine;
