@@ -722,12 +722,36 @@ impl Element for AnyView {
                             && state.cache_key.text_style == text_style
                             && state.cache_key.fingerprint == cache_fingerprint
                     });
+                    // Selective splice is a workload-reduction path, not optional progressive
+                    // work. Do not disable it merely because the generation deadline has already
+                    // elapsed: falling back to rendering the traversal ancestor is strictly broader
+                    // work and creates a deadline-miss -> full-render -> deadline-miss feedback loop.
+                    // Recovery/forced refresh remain hard barriers because their retained ranges may
+                    // no longer be trustworthy.
                     let selective_candidate =
                         dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
                             && stable_cache_key
                             && !force_refresh
-                            && !window.recovering_degraded_draw()
-                            && !window.draw_budget_exhausted();
+                            && !window.recovering_degraded_draw();
+
+                    if dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
+                        && !selective_candidate
+                        && log::log_enabled!(log::Level::Trace)
+                    {
+                        log::trace!(
+                            "gpui selective splice blocked: view={} type={} stable_cache_key={} force_refresh={} recovering_degraded={} budget_exhausted={} targeted_replay={} active_targets={} generic_dirty_views={}",
+                            self.entity_id().as_u64(),
+                            cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                            stable_cache_key,
+                            force_refresh,
+                            window.recovering_degraded_draw(),
+                            window.draw_budget_exhausted(),
+                            targeted_replay,
+                            window.invalidator.active_targeted_element_count(),
+                            window.invalidator.active_generic_dirty_view_count()
+                        );
+                    }
+
                     if selective_candidate {
                         window.record_selective_splice_attempt();
                     }
@@ -756,6 +780,18 @@ impl Element for AnyView {
                         return (
                             AnyViewPrepaintState(AnyViewPrepaintStateKind::Selective(Box::new(patch))),
                             state,
+                        );
+                    }
+                    if selective_candidate && log::log_enabled!(log::Level::Trace) {
+                        log::trace!(
+                            "gpui selective splice plan miss: view={} type={} retained_id={} budget_exhausted={} targeted_replay={} active_targets={} generic_dirty_views={}",
+                            self.entity_id().as_u64(),
+                            cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                            retained_id,
+                            window.draw_budget_exhausted(),
+                            targeted_replay,
+                            window.invalidator.active_targeted_element_count(),
+                            window.invalidator.active_generic_dirty_view_count()
                         );
                     }
 
