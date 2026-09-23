@@ -691,10 +691,9 @@ impl Window {
         if log::log_enabled!(log::Level::Trace) {
             let dirty_frame_diagnostics = *self.dirty_frame_diagnostics.borrow();
             let first_view_dirty_entity = dirty_frame_diagnostics.first_view_dirty_entity;
-            let first_rendered_entity = dirty_frame_diagnostics.first_rendered_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::trace!(
-                "gpui frame request: window={} request_id={} dirty={} force_render={} require_presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} rendered_views={} rendered_view_types={:?} rendered_view_type_overflow={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame request: window={} request_id={} dirty={} force_render={} require_presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 0,
                 decision.activity.dirty,
@@ -711,17 +710,9 @@ impl Window {
                 dirty_frame_diagnostics.view_dirty,
                 dirty_frame_diagnostics.direct_dirty_views,
                 dirty_frame_diagnostics.traversal_ancestor_views,
-                dirty_frame_diagnostics.selective_splice_attempts,
-                dirty_frame_diagnostics.selective_splice_hits,
-                dirty_frame_diagnostics.rendered_views,
-                &dirty_frame_diagnostics.rendered_view_types
-                    [..dirty_frame_diagnostics.rendered_view_type_count],
-                dirty_frame_diagnostics.rendered_view_type_overflow,
                 dirty_frame_diagnostics.notify_invalidations,
                 first_view_dirty_entity.map(EntityId::as_u64),
                 first_view_dirty_entity.map(|entity_id| cx.entity_type_name(entity_id)),
-                first_rendered_entity.map(EntityId::as_u64),
-                first_rendered_entity.map(|entity_id| cx.entity_type_name(entity_id)),
                 first_notify_entity.map(EntityId::as_u64),
                 first_notify_entity.map(|entity_id| cx.entity_type_name(entity_id))
             );
@@ -812,7 +803,7 @@ impl Window {
             let first_rendered_entity = dirty_frame_diagnostics.first_rendered_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::warn!(
-                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} degraded_count={} recovery_full_redraw_count={} deadline_remaining_at_prepaint_start_us={:?} deadline_remaining_at_layout_start_us={:?} deadline_remaining_at_paint_start_us={:?} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} rendered_views={} view_render_count_by_type={:?} view_render_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} degraded_count={} recovery_full_redraw_count={} deadline_remaining_at_prepaint_start_us={:?} deadline_remaining_at_layout_start_us={:?} deadline_remaining_at_paint_start_us={:?} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} rendered_views={} rendered_view_types={:?} rendered_view_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 generation_elapsed,
                 warning_budget,
