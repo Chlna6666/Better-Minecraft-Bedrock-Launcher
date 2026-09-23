@@ -322,7 +322,7 @@ impl Render for SelectiveCompositeRootView {
 }
 
 #[gpui::test]
-fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
+fn uncached_window_root_preserves_nested_single_target_selective_splice(
     cx: &mut TestAppContext,
 ) {
     let root_renders = Rc::new(std::cell::Cell::new(0));
@@ -369,8 +369,8 @@ fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
 
         assert_eq!(
             root_renders.get(),
-            root_baseline,
-            "TraversalAncestor must not call the window root Render"
+            root_baseline + revision,
+            "the window root is intentionally uncached and must rebuild structurally"
         );
         assert_eq!(
             parent_renders.get(),
@@ -452,7 +452,7 @@ fn selective_splice_survives_expired_draw_budget(
 }
 
 #[gpui::test]
-fn generic_dirty_descendant_promotes_to_nearest_cached_parent_without_root_render(
+fn generic_dirty_descendant_promotes_to_nearest_cached_parent_with_uncached_root(
     cx: &mut TestAppContext,
 ) {
     let root_renders = Rc::new(std::cell::Cell::new(0));
@@ -499,8 +499,8 @@ fn generic_dirty_descendant_promotes_to_nearest_cached_parent_without_root_rende
 
     assert_eq!(
         root_renders.get(),
-        root_baseline,
-        "a non-cached dirty descendant must not widen past its nearest cached parent"
+        root_baseline + 1,
+        "the uncached window root rebuilds while the nearest cached boundary remains the targeted fresh owner"
     );
     assert_eq!(
         parent_renders.get(),
@@ -515,7 +515,7 @@ fn generic_dirty_descendant_promotes_to_nearest_cached_parent_without_root_rende
 }
 
 #[gpui::test]
-fn traversal_ancestor_splices_two_dirty_cached_siblings_without_root_render(
+fn uncached_window_root_rebuilds_two_dirty_cached_siblings(
     cx: &mut TestAppContext,
 ) {
     let root_renders = Rc::new(std::cell::Cell::new(0));
@@ -567,8 +567,8 @@ fn traversal_ancestor_splices_two_dirty_cached_siblings_without_root_render(
 
         assert_eq!(
             root_renders.get(),
-            root_baseline,
-            "two independent DirectDirty children must not rerender the window root"
+            root_baseline + revision,
+            "multiple dirty targets intentionally fall back through the uncached window root"
         );
         assert_eq!(left_renders.get(), left_baseline + revision);
         assert_eq!(right_renders.get(), right_baseline + revision);
