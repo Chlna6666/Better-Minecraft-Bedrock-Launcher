@@ -211,6 +211,12 @@ struct WindowInvalidatorInner {
     /// widening a tiny child update into a generic view invalidation from the root. Targets are
     /// validated against the committed retained-range table after every successful frame.
     pub cached_view_retained_targets: FxHashMap<EntityId, Vec<CachedViewRetainedTarget>>,
+    /// Non-cached descendant view -> nearest cached ancestor from the last committed frame.
+    ///
+    /// A generic child notify can be promoted to this boundary instead of poisoning selective
+    /// replay all the way to the window root. The boundary itself is also marked DirectDirty, so
+    /// fresh rendering it preserves ordinary invalidation semantics.
+    pub cached_view_fallback_boundaries: FxHashMap<EntityId, EntityId>,
 }
 
 #[derive(Clone)]
@@ -236,6 +242,7 @@ impl WindowInvalidator {
                 active_targeted_elements: FxHashMap::default(),
                 active_generic_dirty_views: FxHashSet::default(),
                 cached_view_retained_targets: FxHashMap::default(),
+                cached_view_fallback_boundaries: FxHashMap::default(),
             })),
         }
     }
@@ -345,13 +352,36 @@ impl WindowInvalidator {
             }
 
             if inner.pending_targeted_replay {
-                if let Some(targets) = inner.cached_view_retained_targets.get(&entity).cloned()
+                let target_owner = inner
+                    .cached_view_retained_targets
+                    .get(&entity)
+                    .filter(|targets| !targets.is_empty())
+                    .map(|_| entity)
+                    .or_else(|| inner.cached_view_fallback_boundaries.get(&entity).copied());
+
+                if let Some(target_owner) = target_owner
+                    && let Some(targets) =
+                        inner.cached_view_retained_targets.get(&target_owner).cloned()
                     && !targets.is_empty()
                 {
+                    // A non-cached dirty child is rebuilt by freshly rendering the nearest cached
+                    // ancestor. Mark the promoted owner direct as well so selective splice treats
+                    // that boundary as the fresh target rather than as a traversal-only ancestor.
+                    if target_owner != entity {
+                        inner.dirty_views.insert(target_owner);
+                        if log::log_enabled!(log::Level::Trace) {
+                            log::trace!(
+                                "gpui retained dirty promoted: dirty_view={} cached_boundary={}",
+                                entity.as_u64(),
+                                target_owner.as_u64()
+                            );
+                        }
+                    }
+
                     for target in targets {
                         inner
                             .pending_targeted_elements
-                            .entry((entity, target.retained_id))
+                            .entry((target_owner, target.retained_id))
                             .and_modify(|scope| {
                                 *scope = scope.merged(RetainedInvalidationScope::ReconcileSubtree)
                             })
@@ -478,6 +508,48 @@ impl WindowInvalidator {
                 targets.retain(|target| keep(*entity, &target.retained_id));
                 !targets.is_empty()
             });
+    }
+
+    /// Rebuilds the conservative fallback map used when a dirty view is not itself a cached
+    /// AnyView. The nearest cached ancestor is a correctness-preserving fresh-render boundary:
+    /// rendering that ancestor necessarily rebuilds the dirty descendant while allowing ancestors
+    /// above the boundary to stay retained.
+    pub(in crate::window) fn rebuild_cached_view_fallback_boundaries(
+        &self,
+        dispatch_tree: &DispatchTree,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        inner.cached_view_fallback_boundaries.clear();
+        if inner.cached_view_retained_targets.is_empty() {
+            return;
+        }
+
+        let cached_views: FxHashSet<EntityId> =
+            inner.cached_view_retained_targets.keys().copied().collect();
+        for view_id in dispatch_tree.view_ids() {
+            if cached_views.contains(&view_id) {
+                continue;
+            }
+
+            if let Some(boundary) = dispatch_tree
+                .view_path(view_id)
+                .into_iter()
+                .rev()
+                .find(|ancestor| cached_views.contains(ancestor))
+            {
+                inner
+                    .cached_view_fallback_boundaries
+                    .insert(view_id, boundary);
+            }
+        }
+    }
+
+    pub(in crate::window) fn active_generic_dirty_view_count(&self) -> usize {
+        self.inner.borrow().active_generic_dirty_views.len()
+    }
+
+    pub(in crate::window) fn active_targeted_element_count(&self) -> usize {
+        self.inner.borrow().active_targeted_elements.len()
     }
 
     /// Returns every active ReconcileSubtree target strictly below ancestor.
@@ -714,6 +786,7 @@ impl WindowInvalidator {
         trim_collection!(active_targeted_elements);
         trim_collection!(active_generic_dirty_views);
         trim_collection!(cached_view_retained_targets);
+        trim_collection!(cached_view_fallback_boundaries);
     }
 
     pub fn not_drawing(&self) -> bool {
