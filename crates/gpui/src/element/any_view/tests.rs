@@ -229,6 +229,37 @@ impl Render for SelectiveRootView {
 }
 
 
+struct SelectiveFallbackParentView {
+    renders: Rc<std::cell::Cell<usize>>,
+    leaf: Entity<SelectiveLeafView>,
+}
+
+impl Render for SelectiveFallbackParentView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        // Intentionally leave the leaf uncached. A leaf notify must be promoted to this cached
+        // parent boundary instead of forcing the window root to render.
+        crate::div().child(self.leaf.clone())
+    }
+}
+
+struct SelectiveFallbackRootView {
+    renders: Rc<std::cell::Cell<usize>>,
+    parent: Entity<SelectiveFallbackParentView>,
+}
+
+impl Render for SelectiveFallbackRootView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        crate::div().child(
+            AnyView::from(self.parent.clone()).cached(
+                StyleRefinement::default().w(px(120.)).h(px(32.)),
+            ),
+        )
+    }
+}
+
+
 struct SelectiveMultiRootView {
     renders: Rc<std::cell::Cell<usize>>,
     left: Entity<SelectiveLeafView>,
@@ -315,6 +346,69 @@ fn traversal_ancestor_splices_one_dirty_cached_descendant_without_parent_render(
             "the direct dirty child must still rebuild on every notify"
         );
     }
+}
+
+#[gpui::test]
+fn generic_dirty_descendant_promotes_to_nearest_cached_parent_without_root_render(
+    cx: &mut TestAppContext,
+) {
+    let root_renders = Rc::new(std::cell::Cell::new(0));
+    let parent_renders = Rc::new(std::cell::Cell::new(0));
+    let leaf_renders = Rc::new(std::cell::Cell::new(0));
+    let (leaf, window) = cx.update(|cx| {
+        let leaf = cx.new(|_| SelectiveLeafView {
+            renders: leaf_renders.clone(),
+            revision: 0,
+        });
+        let parent = cx.new(|_| SelectiveFallbackParentView {
+            renders: parent_renders.clone(),
+            leaf: leaf.clone(),
+        });
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| SelectiveFallbackRootView {
+                    renders: root_renders.clone(),
+                    parent,
+                })
+            })
+            .unwrap();
+        (leaf, AnyWindowHandle::from(window))
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+    })
+    .unwrap();
+
+    let root_baseline = root_renders.get();
+    let parent_baseline = parent_renders.get();
+    let leaf_baseline = leaf_renders.get();
+    assert!(root_baseline > 0 && parent_baseline > 0 && leaf_baseline > 0);
+
+    leaf.update(cx, |leaf, cx| {
+        leaf.revision = 1;
+        cx.notify();
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+    })
+    .unwrap();
+
+    assert_eq!(
+        root_renders.get(),
+        root_baseline,
+        "a non-cached dirty descendant must not widen past its nearest cached parent"
+    );
+    assert_eq!(
+        parent_renders.get(),
+        parent_baseline + 1,
+        "the promoted cached boundary must render fresh"
+    );
+    assert_eq!(
+        leaf_renders.get(),
+        leaf_baseline + 1,
+        "fresh parent rendering must rebuild the original dirty child"
+    );
 }
 
 #[gpui::test]
