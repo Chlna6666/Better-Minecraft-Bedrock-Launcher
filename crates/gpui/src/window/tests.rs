@@ -336,8 +336,10 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
                 pixel_format: ImagePixelFormat::Rgba8,
             });
             window.drop_image(image).unwrap();
-            assert!(window.image_paint_tile_cache.is_empty());
 
+            // The Scene built above still references this tile. Dropping the decoded-image owner
+            // must not retire GPU residency before Nova submits that Scene.
+            assert_eq!(window.image_paint_tile_cache.len(), 1);
             let build_called = Cell::new(false);
             window
                 .sprite_atlas
@@ -350,6 +352,13 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
                 })
                 .unwrap();
             assert!(!build_called.get());
+
+            // Once neither committed generation references the sprite, the ordinary liveness prune
+            // owns retirement and removes the stale static-image lookup.
+            window.next_frame.scene.clear();
+            window.rendered_frame.scene.clear();
+            window.prune_static_image_atlas_residency();
+            assert!(window.image_paint_tile_cache.is_empty());
             window.invalidator.set_phase(DrawPhase::None);
         })
         .unwrap();
@@ -460,6 +469,14 @@ fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
             assert_eq!(window.image_paint_tile_cache.len(), 1);
 
             window.drop_image(image).unwrap();
+            assert_eq!(
+                window.image_paint_tile_cache.len(),
+                1,
+                "scene-live static image residency must survive owner drop until scene replacement"
+            );
+            window.next_frame.scene.clear();
+            window.rendered_frame.scene.clear();
+            window.prune_static_image_atlas_residency();
             assert!(window.image_paint_tile_cache.is_empty());
             window.invalidator.set_phase(DrawPhase::None);
         })
