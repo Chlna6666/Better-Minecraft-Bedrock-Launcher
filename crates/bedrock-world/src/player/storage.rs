@@ -13,6 +13,9 @@ use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use bytes::Bytes;
 
 /// Explicit physical storage target for the Bedrock local player.
+///
+/// These variants name the historical locations `level.dat.Player` and `~local_player`; selecting a
+/// storage target does not migrate or rewrite the player's NBT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalPlayerStorage {
     /// Historical player compound embedded at `level.dat.Player`.
@@ -94,6 +97,13 @@ pub(crate) fn classify_local_player_records(
 }
 
 /// Inspects player storage without modifying `level.dat` or LevelDB.
+///
+/// The overview reports `level.dat.Player`, `~local_player`, and raw `player_` keys. It preserves the
+/// raw key bytes and distinguishes matching duplicate local-player records from conflicting records.
+///
+/// # Errors
+///
+/// Returns an error when LevelDB cannot scan player keys or when player data cannot be decoded.
 pub fn inspect_player_storage(
     storage: &dyn WorldStorage,
     level: &LevelDatDocument,

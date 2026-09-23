@@ -78,6 +78,17 @@ pub fn delete_local_player(storage: &dyn WorldStorage) -> Result<()> {
 /// The destination is written first. If replacing `level.dat` then fails, both copies remain and a
 /// retry completes the source removal. Matching duplicate records are therefore a recoverable state.
 /// Conflicting `level.dat.Player` and `~local_player` NBT is rejected before any write.
+///
+/// This is a physical storage migration only: the parsed player NBT, including unknown/future fields,
+/// is carried forward without game-version conversion. `level.dat` and LevelDB cannot share one atomic
+/// transaction; the LevelDB record is written before `level.dat.Player` is removed. Callers must
+/// serialize writes to this world while the move is in progress; this operation does not coordinate
+/// with Minecraft or another process editing the same files.
+///
+/// # Errors
+///
+/// Returns an error when `level.dat` or LevelDB data cannot be read or written, the player NBT cannot
+/// be parsed/serialized, the destination conflicts with the source, or the destination write fails.
 pub fn move_level_dat_player_to_local_player(
     world_path: &Path,
     storage: &dyn WorldStorage,
@@ -123,6 +134,16 @@ pub fn move_level_dat_player_to_local_player(
 /// is preserved as-is. `level.dat` is atomically replaced before `~local_player` is deleted, so an
 /// interruption can leave two identical copies but does not intentionally lose the player. Matching
 /// duplicates are safely resumed; conflicting copies are rejected before any write.
+///
+/// The two backing stores do not participate in one transaction. Callers must serialize writes to this
+/// world while the move is in progress; this operation does not coordinate with Minecraft or another
+/// process editing the same files.
+///
+/// # Errors
+///
+/// Returns an error when either storage representation cannot be read, `level.dat` cannot be replaced,
+/// LevelDB cannot delete `~local_player`, the player NBT cannot be parsed/serialized, or the two
+/// existing records conflict.
 pub fn move_local_player_to_level_dat(
     world_path: &Path,
     storage: &dyn WorldStorage,
