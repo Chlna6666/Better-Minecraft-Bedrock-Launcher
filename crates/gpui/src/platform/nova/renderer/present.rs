@@ -588,8 +588,21 @@ impl NovaRenderer {
     ) -> Result<()> {
         self.prepare_for_frame_submission()?;
         if self.atlas.has_pending_removals() {
-            self.wait_for_pending_submissions()?;
-            self.atlas.apply_pending_removals();
+            // A retained Scene stores AtlasTile identities directly. Asset/cache eviction can queue
+            // a removal after that Scene was built but before this submission starts, so never
+            // deallocate a tile that the Scene about to be encoded still samples.
+            let mut live_scene_tiles = FxHashSet::default();
+            render_plan
+                .scene
+                .collect_polychrome_tile_ids_into(&mut live_scene_tiles);
+            if self
+                .atlas
+                .has_retirable_pending_removals(&live_scene_tiles)
+            {
+                self.wait_for_pending_submissions()?;
+                self.atlas
+                    .apply_pending_removals_except(&live_scene_tiles);
+            }
         }
         self.sync_atlas_textures_for_current_backend()?;
         self.ensure_custom_mesh_3d_cache_for_current_backend()?;
