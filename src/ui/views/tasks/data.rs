@@ -42,7 +42,7 @@ impl TasksPageView {
                     .t_key(crate::i18n_key!("Tasks.this_task"))
                     .to_string()
             });
-        let i18n = cx.global::<I18n>();
+        let _i18n = cx.global::<I18n>();
         self.open_confirm(
             task_id,
             t!("Tasks.cancel_title"),
@@ -123,7 +123,7 @@ impl TasksPageView {
         this
     }
 
-    pub(crate) fn open_confirm(
+    pub(super) fn open_confirm(
         &mut self,
         task_id: Arc<str>,
         title: impl Into<SharedString>,
@@ -160,7 +160,7 @@ impl TasksPageView {
         cx.notify();
     }
 
-    pub(crate) fn perform_confirm_action(
+    pub(super) fn perform_confirm_action(
         &mut self,
         task_id: Arc<str>,
         action: TaskConfirmAction,
@@ -212,7 +212,7 @@ impl TasksPageView {
                         }
                         Err(error) => {
                             let message = cx
-                                .read_global(|i18n: &I18n, _cx| {
+                                .read_global(|_i18n: &I18n, _cx| {
                                     t!("Tasks.download_delete_failed", error = error)
                                 })
                                 .unwrap_or_else(|_| {

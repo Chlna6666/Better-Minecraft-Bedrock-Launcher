@@ -78,7 +78,7 @@ const CONNECTIVITY_GROUPS: &[ConnectivityGroup] = &[
 
 pub(super) fn launcher_connectivity_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     busy: bool,
 ) -> impl IntoElement {
     let can_open = !busy;
@@ -105,7 +105,7 @@ pub(super) fn launcher_connectivity_row(
                 })
             })
             .on_click(move |_, _, cx| {
-                cx.update_global(|settings: &mut SettingsPageState, cx| {
+                cx.update_global(|settings: &mut SettingsPageState, _cx| {
                     settings.launcher_connectivity_open = true;
                 });
                 spawn_run_connectivity_tests(cx);
@@ -414,7 +414,7 @@ fn connectivity_initial_items() -> Vec<LauncherConnectivityItem> {
 }
 
 fn spawn_run_connectivity_tests(cx: &mut App) {
-    let req_id = match cx.update_global(|settings: &mut SettingsPageState, cx| -> Option<u64> {
+    let req_id = match cx.update_global(|settings: &mut SettingsPageState, _cx| -> Option<u64> {
         if settings.launcher_connectivity_running || settings.launcher_connectivity_task.is_some() {
             return None;
         }
@@ -436,13 +436,13 @@ fn spawn_run_connectivity_tests(cx: &mut App) {
     }
 
     let clear_task = |cx: &mut AsyncApp| {
-        if let Err(err) = cx.update_global(|_settings: &mut SettingsPageState, cx| {}) {
+        if let Err(err) = cx.update_global(|_settings: &mut SettingsPageState, _cx| {}) {
             warn!("connectivity clear task failed: {err:?}");
         }
     };
 
     let task = cx.spawn(async move |cx| {
-        if let Err(err) = cx.update_global(|settings: &mut SettingsPageState, cx| {
+        if let Err(err) = cx.update_global(|settings: &mut SettingsPageState, _cx| {
             if settings.launcher_connectivity_req_id != req_id {
                 return;
             }
@@ -469,7 +469,7 @@ fn spawn_run_connectivity_tests(cx: &mut App) {
             let Some(result) = result else {
                 break;
             };
-            if let Err(err) = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            if let Err(err) = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 if settings.launcher_connectivity_req_id != req_id {
                     return;
                 }
@@ -498,7 +498,7 @@ fn spawn_run_connectivity_tests(cx: &mut App) {
             }
         }
 
-        if let Err(err) = cx.update_global(|settings: &mut SettingsPageState, cx| {
+        if let Err(err) = cx.update_global(|settings: &mut SettingsPageState, _cx| {
             if settings.launcher_connectivity_req_id != req_id {
                 return;
             }
@@ -511,19 +511,19 @@ fn spawn_run_connectivity_tests(cx: &mut App) {
     });
     task.detach();
 
-    cx.update_global(|settings: &mut SettingsPageState, cx| {
+    cx.update_global(|settings: &mut SettingsPageState, _cx| {
         settings.launcher_connectivity_task = None;
     });
 }
 
 fn release_launcher_connectivity_state(cx: &mut App) {
-    cx.update_global(|settings: &mut SettingsPageState, cx| {
+    cx.update_global(|settings: &mut SettingsPageState, _cx| {
         settings.release_launcher_connectivity_state();
     });
 }
 
 fn close_launcher_connectivity_window(cx: &mut App) {
-    cx.update_global(|settings: &mut SettingsPageState, cx| {
+    cx.update_global(|settings: &mut SettingsPageState, _cx| {
         settings.launcher_connectivity_open = false;
     });
 }
@@ -612,7 +612,7 @@ fn render_connectivity_list(
 
 fn connectivity_item_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     service: &ConnectivityService,
     item: Option<&LauncherConnectivityItem>,
 ) -> Div {

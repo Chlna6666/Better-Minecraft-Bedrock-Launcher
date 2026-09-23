@@ -210,7 +210,7 @@ fn system_font_row(
                     }
 
                     if selected == custom_option_label.as_ref() {
-                        let (local_font_path, local_font_family) =
+                        let (local_font_path, _local_font_family) =
                             cx.read_global(|state: &SettingsPageState, _cx| {
                                 (
                                     state.local_font_path.to_string(),
@@ -266,7 +266,7 @@ fn persist_font_settings_and_apply(
     );
 }
 
-fn custom_font_option_label(i18n: &I18n, state: &SettingsPageState) -> SharedString {
+fn custom_font_option_label(_i18n: &I18n, state: &SettingsPageState) -> SharedString {
     let family = state.local_font_family.as_ref().trim();
     if family.is_empty() {
         t!("CustomizationSettings.local_font")
@@ -327,7 +327,7 @@ fn font_dropdown_label(font_names: &[String], selected_index: usize) -> SharedSt
         })
 }
 
-fn current_font_label(i18n: &I18n, state: &SettingsPageState) -> SharedString {
+fn current_font_label(_i18n: &I18n, state: &SettingsPageState) -> SharedString {
     match state.font_source.as_ref() {
         crate::config::config::FONT_SOURCE_LOCAL => {
             let family = state.local_font_family.as_ref().trim();
@@ -357,7 +357,7 @@ fn current_font_label(i18n: &I18n, state: &SettingsPageState) -> SharedString {
     }
 }
 
-fn local_font_display(i18n: &I18n, state: &SettingsPageState) -> SharedString {
+fn local_font_display(_i18n: &I18n, state: &SettingsPageState) -> SharedString {
     let path = state.local_font_path.as_ref().trim();
     if path.is_empty() {
         return t!("CustomizationSettings.no_font");

@@ -57,7 +57,7 @@ pub fn launch_version_icon_path(custom_icon_path: Option<&str>, name: &str) -> L
 
 pub fn game_info_summary(
     info: &crate::core::version::game_info::GameInfo,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> SharedString {
     let duration = if info.total_play_time >= 3_600 {
         let hours = format!("{:.1}", info.total_play_time as f64 / 3_600.0);
@@ -420,7 +420,7 @@ pub fn version_edition(version: &LaunchVersionEntry) -> Edition {
     }
 }
 
-pub fn version_channel_label(i18n: &I18n, name: &str) -> SharedString {
+pub fn version_channel_label(_i18n: &I18n, name: &str) -> SharedString {
     if name.contains("Beta") {
         t!("common.beta")
     } else if name.contains("Preview") {
@@ -491,7 +491,7 @@ pub fn version_target_root_path(version: &LaunchVersionEntry) -> Option<SharedSt
     get_game_root(&options).map(|path| SharedString::from(path.to_string_lossy().to_string()))
 }
 
-pub fn version_isolation_label(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
+pub fn version_isolation_label(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
     if version_enable_isolation(version) {
         t!("LocalVersions.isolated")
     } else {
@@ -499,7 +499,7 @@ pub fn version_isolation_label(version: &LaunchVersionEntry, i18n: &I18n) -> Sha
     }
 }
 
-pub fn version_type_summary_label(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
+pub fn version_type_summary_label(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
     let platform = if version.kind.eq_ignore_ascii_case("gdk") {
         t!("common.gdk")
     } else {
@@ -527,7 +527,7 @@ pub fn launch_version_display_name(version: &LaunchVersionEntry) -> SharedString
     }
 }
 
-pub fn launch_version_display_type(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
+pub fn launch_version_display_type(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
     if version.name.contains("Preview")
         || version.name.contains("Beta")
         || version.folder.contains("Preview")

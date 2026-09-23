@@ -2154,8 +2154,12 @@ fn apply_user_agent_style(tag: &str, style: &mut CssComputedStyle) {
         "h4" => apply_heading_defaults(style, 18.0),
         "h5" => apply_heading_defaults(style, 16.0),
         "h6" => apply_heading_defaults(style, 14.0),
-        "p" | "address" | "figcaption" | "summary" | "dt" | "dd" => {
+        "p" | "address" | "figcaption" | "dt" | "dd" => {
             style.block.margin.bottom = DEFAULT_PARAGRAPH_GAP;
+        }
+        "summary" => {
+            style.block.margin.bottom = DEFAULT_PARAGRAPH_GAP;
+            style.inline.bold = true;
         }
         "ul" | "ol" | "dl" => {
             style.block.margin.bottom = DEFAULT_PARAGRAPH_GAP;
@@ -2171,7 +2175,6 @@ fn apply_user_agent_style(tag: &str, style: &mut CssComputedStyle) {
         "code" | "kbd" | "samp" => style.inline.code = true,
         "small" => style.inline.font_size = Some(12.0),
         "mark" => style.inline.background_color = parse_css_color("#fff59d"),
-        "summary" => style.inline.bold = true,
         _ => {}
     }
 }
@@ -2934,7 +2937,7 @@ fn render_video_block(
     provider: &SharedString,
     style: &HtmlBlockStyle,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> AnyElement {
     let provider_label = match provider.as_ref() {
         "direct" => t!("Html.direct_video"),

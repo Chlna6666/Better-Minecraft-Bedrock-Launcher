@@ -49,7 +49,7 @@ impl ManagePageView {
         let Some(version) = self.selected_version(state).cloned() else {
             return;
         };
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         self.confirm_dialog = Some(ConfirmDialogState {
             title: t!("ManagePage.server_delete"),
             description: t!(
@@ -170,7 +170,7 @@ impl ManagePageView {
     }
 
     pub(super) fn save_server_editor_dialog(&mut self, cx: &mut Context<Self>) {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let Some(dialog) = self.server_editor_dialog.as_mut() else {
             return;
         };
@@ -428,7 +428,7 @@ pub(super) fn render_server_row(
     motd_status: Option<&ManageServerMotdStatus>,
     cx: &mut Context<ManagePageView>,
 ) -> Stateful<Div> {
-    let i18n = cx.global::<I18n>();
+    let _i18n = cx.global::<I18n>();
     let key = entry.key.clone();
     let mut badges = div()
         .flex()
@@ -616,7 +616,7 @@ pub(super) fn render_server_row(
 pub(super) fn render_server_editor_dialog(
     dialog: &ServerEditorDialogState,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let editing = dialog.editing_key.is_some();

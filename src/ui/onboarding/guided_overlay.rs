@@ -597,7 +597,7 @@ fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I
     }
 }
 
-fn render_welcome(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_welcome(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -625,7 +625,7 @@ fn render_welcome(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_download_navigation(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_download_navigation(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -655,7 +655,7 @@ fn render_download_navigation(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_game_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_game_download(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -683,7 +683,7 @@ fn render_game_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_resource_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_resource_download(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -710,7 +710,7 @@ fn render_resource_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_mod_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_mod_download(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -737,7 +737,7 @@ fn render_mod_download(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_import(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_import(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -754,7 +754,7 @@ fn render_import(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_tasks_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_tasks_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -782,7 +782,7 @@ fn render_tasks_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_manage_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_manage_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -804,7 +804,7 @@ fn render_manage_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_manage_content(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_manage_content(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -831,7 +831,7 @@ fn render_manage_content(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_settings_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_settings_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -858,7 +858,7 @@ fn render_settings_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_tools_overview(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_tools_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -948,7 +948,7 @@ fn render_platform(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18
     body.into_any_element()
 }
 
-fn render_finish(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_finish(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -1001,7 +1001,7 @@ fn render_finish(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn render_footer(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_footer(state: &OnboardingTourState, colors: &ThemeColors, _i18n: &I18n) -> Div {
     let scene = state.scene;
     let left_label = if scene == OnboardingScene::Welcome {
         t!("Onboarding.skip")
@@ -1045,7 +1045,7 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n)
         .child(next)
 }
 
-fn scene_header(scene: OnboardingScene, i18n: &I18n) -> (&'static str, SharedString, SharedString) {
+fn scene_header(scene: OnboardingScene, _i18n: &I18n) -> (&'static str, SharedString, SharedString) {
     match scene {
         OnboardingScene::Welcome => (
             lucide_gpui::icon!(route),
@@ -1132,7 +1132,7 @@ fn render_tasks_demo_layer(
     width: f32,
     height: f32,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> AnyElement {
     let page_x = crate::ui::components::page_shell::PAGE_INSET_X / px(1.0);
     let page_y = crate::ui::components::page_shell::PAGE_INSET_TOP / px(1.0);
@@ -1424,7 +1424,7 @@ fn demo_version(
         )
 }
 
-fn render_demo_tabs(colors: &ThemeColors, i18n: &I18n, resource_active: bool) -> Div {
+fn render_demo_tabs(colors: &ThemeColors, _i18n: &I18n, resource_active: bool) -> Div {
     let tabs = [
         t!("Onboarding.demo.tab_stats"),
         t!("Onboarding.common.mods"),
@@ -1475,7 +1475,7 @@ fn render_demo_tabs(colors: &ThemeColors, i18n: &I18n, resource_active: bool) ->
         }))
 }
 
-fn render_demo_statistics(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_demo_statistics(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .flex_1()
         .min_h(px(0.0))
@@ -1548,7 +1548,7 @@ fn demo_stat(
         )
 }
 
-fn render_demo_resource_list(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_demo_resource_list(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .flex_1()
         .min_h(px(0.0))

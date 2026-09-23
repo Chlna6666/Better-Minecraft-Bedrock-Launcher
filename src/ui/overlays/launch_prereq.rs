@@ -504,7 +504,7 @@ fn render_issue_sections(
     sections.into_any_element()
 }
 
-fn render_logs_section(state: &LaunchPrereqState, colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_logs_section(state: &LaunchPrereqState, colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     let logs = state.log_lines();
     div()
         .rounded(px(crate::ui::theme::tokens::radius::MD))
@@ -892,7 +892,7 @@ fn render_uwp_dependency_issue_row(
 
 fn format_uwp_dependency_issue_reason(
     dependency: &crate::utils::mc_dependency::MissingUwpDependency,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> SharedString {
     match &dependency.issue_kind {
         crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => {
@@ -1047,7 +1047,7 @@ fn secondary_button(colors: &ThemeColors, label: SharedString, enabled: bool) ->
         .child(label)
 }
 
-fn operation_label(operation: LaunchPrereqOperation, i18n: &I18n) -> SharedString {
+fn operation_label(operation: LaunchPrereqOperation, _i18n: &I18n) -> SharedString {
     match operation {
         LaunchPrereqOperation::Checking => t!("LaunchPrereq.operation.checking"),
         LaunchPrereqOperation::OpeningDeveloperSettings => {

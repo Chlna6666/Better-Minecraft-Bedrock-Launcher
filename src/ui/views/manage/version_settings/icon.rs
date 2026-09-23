@@ -10,7 +10,7 @@ use std::path::Path;
 pub(super) fn render_icon_card(
     state: &VersionSettingsModalState,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> Div {
     let preview_icon = preview_icon_path(

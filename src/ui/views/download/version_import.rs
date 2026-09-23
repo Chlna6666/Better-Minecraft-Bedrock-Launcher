@@ -4,7 +4,6 @@ use crate::core::minecraft::local_package::{
     LOCAL_GAME_PACKAGE_EXTENSIONS, start_local_game_package_import,
 };
 use crate::ui::components::toast;
-use crate::ui::state::i18n::I18n;
 use crate::utils::file_picker::pick_file_path_with_filter_for_window;
 
 pub(super) fn pick_and_import_local_version(window: &Window, cx: &mut App) {

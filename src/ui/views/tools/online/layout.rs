@@ -79,7 +79,7 @@ fn render_activity_card(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageStat
         })
 }
 
-fn render_activity_header(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_activity_header(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .flex()
         .items_center()
@@ -119,7 +119,7 @@ fn render_error_banner(colors: &ThemeColors, error: SharedString) -> Div {
         .child(error)
 }
 
-fn render_activity_hint(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_activity_hint(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .text_size(px(12.))
         .line_height(px(19.))

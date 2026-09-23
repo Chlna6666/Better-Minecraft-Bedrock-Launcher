@@ -1,7 +1,7 @@
 #![cfg(target_os = "windows")]
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AppContext as _, BorrowAppContext as _, *};
+use gpui::{BorrowAppContext as _, *};
 use std::path::{Path, PathBuf};
 
 use crate::core::minecraft::uwp_backup::{

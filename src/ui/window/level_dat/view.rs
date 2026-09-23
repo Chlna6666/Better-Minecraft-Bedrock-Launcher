@@ -192,7 +192,7 @@ impl LevelDatCodeWindowView {
         self.saving = true;
         self.status = None;
         self.validation = level_dat_editor::validate_document_json(saved_text.as_ref());
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let history_capture_label = t!("LevelDat.history_capture").to_string();
         let history_saved_label = t!("LevelDat.history_saved").to_string();
         let history_capture_failed = t!("LevelDat.history_capture_failed");
@@ -464,7 +464,7 @@ fn info_badge(colors: &ThemeColors, label: SharedString) -> Div {
         .child(label)
 }
 
-fn status_badge(colors: &ThemeColors, label: SharedString, accent: Hsla) -> Div {
+fn status_badge(_colors: &ThemeColors, label: SharedString, accent: Hsla) -> Div {
     div()
         .px(px(10.))
         .py(px(4.))

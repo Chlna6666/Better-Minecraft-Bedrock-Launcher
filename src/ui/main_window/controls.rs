@@ -76,7 +76,7 @@ impl MainWindowView {
             return;
         }
         self.tools_controls_initialized = true;
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
 
         let (room_input, bootstrap_input, player_input, game_ports_input) = cx.update_global(
             |s: &mut crate::ui::views::tools::state::ToolsPageState, cx| {

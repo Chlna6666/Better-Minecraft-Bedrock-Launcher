@@ -91,7 +91,7 @@ pub(super) fn spawn_persist_settings_with_success(
     on_success: Option<Rc<dyn Fn(&mut App)>>,
     cx: &mut App,
 ) {
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
     let settings_loaded = cx.read_global(|state: &SettingsPageState, _cx| state.loaded);
     if !settings_loaded {
         warn!("skip persisting settings before settings page finishes loading");

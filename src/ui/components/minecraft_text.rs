@@ -398,8 +398,6 @@ fn parse_minecraft_formatted_text(input: &str) -> ParsedMinecraftText {
                 | 'h'
                 | 'i'
                 | 'j'
-                | 'm'
-                | 'n'
                 | 'p'
                 | 'q'
                 | 's'

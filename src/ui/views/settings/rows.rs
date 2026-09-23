@@ -53,7 +53,7 @@ pub(super) fn section_placeholder(
 
 pub(super) fn setting_dropdown_row(
     colors: &ThemeColors,
-    section: SharedString,
+    _section: SharedString,
     title: SharedString,
     desc: SharedString,
     id: &'static str,
@@ -64,7 +64,7 @@ pub(super) fn setting_dropdown_row(
     enabled: bool,
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let option_labels: Vec<SharedString> = options.iter().map(|opt| opt.label.clone()).collect();
+    let _option_labels: Vec<SharedString> = options.iter().map(|opt| opt.label.clone()).collect();
     settings_inline_card(colors, id)
         .child(settings_card_text(colors, title.clone(), desc))
         .child(div().flex_shrink_0().pt(px(2.)).child(Dropdown::new(
@@ -84,7 +84,7 @@ pub(super) fn setting_dropdown_row(
 
 pub(super) fn setting_flat_dropdown_row(
     colors: &ThemeColors,
-    section: SharedString,
+    _section: SharedString,
     title: SharedString,
     desc: SharedString,
     id: &'static str,
@@ -95,7 +95,7 @@ pub(super) fn setting_flat_dropdown_row(
     enabled: bool,
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let option_labels: Vec<SharedString> = options.iter().map(|opt| opt.label.clone()).collect();
+    let _option_labels: Vec<SharedString> = options.iter().map(|opt| opt.label.clone()).collect();
     settings_flat_inline_card(colors, id)
         .child(settings_card_text(colors, title.clone(), desc))
         .child(div().flex_shrink_0().pt(px(2.)).child(Dropdown::new(
@@ -114,7 +114,7 @@ pub(super) fn setting_flat_dropdown_row(
 
 pub(super) fn setting_toggle_row(
     colors: &ThemeColors,
-    section: SharedString,
+    _section: SharedString,
     title: SharedString,
     desc: SharedString,
     enabled: bool,
@@ -128,8 +128,8 @@ pub(super) fn setting_toggle_row(
             colors,
             enabled,
             move |cx| {
-                let next_enabled = !enabled;
-                let snapshot = cx.update_global(|s: &mut SettingsPageState, cx| {
+                let _next_enabled = !enabled;
+                let snapshot = cx.update_global(|s: &mut SettingsPageState, _cx| {
                     on_toggle(s);
                     snapshot_from_state(s)
                 });

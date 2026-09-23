@@ -25,7 +25,7 @@ fn snap_background_blur(value: f32) -> f32 {
 
 pub(super) fn render_background_card(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let options = vec![
@@ -129,7 +129,7 @@ fn background_source_row(
                         2 => "network",
                         _ => "default",
                     };
-                    let snapshot = cx.update_global(|state: &mut SettingsPageState, cx| {
+                    let snapshot = cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.commit_background_blur_preview();
                         state.background_option = SharedString::from(option);
                         if option != "network" {
@@ -277,7 +277,7 @@ fn local_picker_row(
                                     };
 
                                     let blur = match cx.update_global(
-                                        |state: &mut SettingsPageState, cx| {
+                                        |state: &mut SettingsPageState, _cx| {
                                             state.commit_background_blur_preview();
                                             state.local_image_path =
                                                 SharedString::from(path.clone());

@@ -10,7 +10,7 @@ use gpui::*;
 type NativeModPanelRenderSignature = (usize, usize, SharedString, usize, usize);
 
 #[derive(Default)]
-pub(super) struct NativeModPanelRenderCache {
+pub(in crate::ui::views) struct NativeModPanelRenderCache {
     last_signature: Option<NativeModPanelRenderSignature>,
     total_mods: usize,
     total_pages: usize,

@@ -74,7 +74,7 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
                 let snapshot_clone = snapshot.clone();
                 let _ = cx.update(|cx| {
                     ensure_local_versions_loaded(true, cx);
-                    let i18n = cx.global::<I18n>();
+                    let _i18n = cx.global::<I18n>();
                     match snapshot_clone.status.as_ref() {
                         "completed" => {
                             cx.update_global(|state: &mut ManagePageState, _cx| {
@@ -156,7 +156,7 @@ pub(super) fn watch_version_mutation_task(
             };
 
             let _ = cx.update(|cx| {
-                let i18n = cx.global::<I18n>();
+                let _i18n = cx.global::<I18n>();
                 match snapshot.status.as_ref() {
                     "completed" => {
                         match &completion {
@@ -233,7 +233,7 @@ pub(super) fn watch_manage_asset_mutation_task(
             };
 
             let _ = cx.update(|cx| {
-                let i18n = cx.global::<I18n>();
+                let _i18n = cx.global::<I18n>();
                 cx.update_global(|state: &mut ManagePageState, _cx| {
                     state.selected_asset_keys.clear();
                     state.assets_loaded = false;
@@ -305,7 +305,7 @@ pub(super) fn watch_screenshot_mutation_task(
             };
 
             let _ = cx.update(|cx| {
-                let i18n = cx.global::<I18n>();
+                let _i18n = cx.global::<I18n>();
                 let _ = view_handle.update(cx, |this, cx| {
                     this.last_screenshots_signature = None;
                     cx.notify();
@@ -380,7 +380,7 @@ pub(super) fn watch_server_mutation_task(
             };
 
             let _ = cx.update(|cx| {
-                let i18n = cx.global::<I18n>();
+                let _i18n = cx.global::<I18n>();
                 let _ = view_handle.update(cx, |this, cx| {
                     this.last_servers_signature = None;
                     cx.notify();

@@ -9,7 +9,7 @@ pub fn render_tasks_overlay(
     view: &Entity<TasksPageView>,
     cx: &App,
 ) -> Option<AnyElement> {
-    let i18n = cx.global::<I18n>();
+    let _i18n = cx.global::<I18n>();
     let (error_dialog, confirm_dialog) = view.read_with(cx, |this, _| {
         (this.error_dialog.clone(), this.confirm_dialog.clone())
     });

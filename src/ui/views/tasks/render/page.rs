@@ -1,13 +1,11 @@
 use super::*;
 use crate::ui::components::icon::themed_icon;
-use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::views::tasks::{
     TaskCardMotionKind, TaskCardViewModel, TasksPageRenderModel, TasksPageView,
 };
-use gpui::prelude::FluentBuilder as _;
 
-fn loading_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn loading_state(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .size_full()
         .flex()
@@ -23,7 +21,7 @@ fn loading_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         .into_any_element()
 }
 
-fn empty_state(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn empty_state(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     div()
         .size_full()
         .flex()

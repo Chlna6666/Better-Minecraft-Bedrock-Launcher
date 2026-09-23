@@ -2,7 +2,7 @@ use crate::ui::views::download::state::DownloadPageState;
 use gpui::*;
 use std::time::Duration;
 
-pub(crate) fn invalidate_results_in_state(state: &mut DownloadPageState, cx: &mut App) {
+pub(crate) fn invalidate_results_in_state(state: &mut DownloadPageState, _cx: &mut App) {
     state.curseforge_page_commit_task.take();
     state.curseforge_pending_page_index = None;
     if let Some(handle) = state.curseforge_results_abort_handle.take() {
@@ -34,7 +34,7 @@ pub(crate) fn invalidate_results_now_in_state(state: &mut DownloadPageState, cx:
     invalidate_results_in_state(state, cx);
 }
 
-pub(crate) fn begin_page_results_transition_in_state(state: &mut DownloadPageState, cx: &mut App) {
+pub(crate) fn begin_page_results_transition_in_state(state: &mut DownloadPageState, _cx: &mut App) {
     if let Some(handle) = state.curseforge_results_abort_handle.take() {
         handle.abort();
     }
@@ -115,7 +115,7 @@ fn ensure_results_loaded_impl(
         is_loading,
         last_key,
         key,
-        current_mod_count,
+        _current_mod_count,
         page_index,
         class_id,
         category_id,
@@ -283,7 +283,7 @@ fn ensure_results_loaded_impl(
 
         match result {
             Ok(Ok((mods, total_count, has_more))) => {
-                match cx.update_global(|state: &mut DownloadPageState, cx| {
+                match cx.update_global(|state: &mut DownloadPageState, _cx| {
                     if state.curseforge_view_epoch != curseforge_view_epoch {
                         return false;
                     }

@@ -78,7 +78,7 @@ fn render_settings_card(
         .child(render_settings_footer(colors, i18n))
 }
 
-fn render_settings_header(colors: &ThemeColors, i18n: &I18n, close: DismissAction) -> Div {
+fn render_settings_header(colors: &ThemeColors, _i18n: &I18n, close: DismissAction) -> Div {
     div()
         .w_full()
         .px(px(20.))
@@ -141,7 +141,7 @@ fn render_settings_body(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageStat
         ))
 }
 
-fn render_settings_footer(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_settings_footer(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .w_full()
         .px(px(20.))
@@ -207,7 +207,7 @@ fn render_bootstrap_field(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSt
         )
 }
 
-fn render_bootstrap_input(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> AnyElement {
+fn render_bootstrap_input(colors: &ThemeColors, _i18n: &I18n, state: &ToolsPageState) -> AnyElement {
     state.bootstrap_peers_input.as_ref().map_or_else(
         || {
             div()

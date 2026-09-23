@@ -14,7 +14,7 @@ const SPONSOR_CARD_WIDTH: f32 = 210.0;
 const SPONSOR_MODAL_RADIUS: f32 = crate::ui::theme::tokens::radius::MD;
 
 pub(super) fn open_sponsors_modal(cx: &mut App) {
-    let should_load = cx.update_global(|state: &mut SettingsPageState, cx| {
+    let should_load = cx.update_global(|state: &mut SettingsPageState, _cx| {
         state.about_sponsors_open = true;
         state.about_sponsors_page = 0;
         state.about_sponsors_page_size = 60;
@@ -140,7 +140,7 @@ pub(super) fn render_sponsors_modal(
 }
 
 fn close_sponsors_modal(cx: &mut App) {
-    let _ = cx.update_global(|state: &mut SettingsPageState, cx| {
+    let _ = cx.update_global(|state: &mut SettingsPageState, _cx| {
         state.about_sponsors_req_id = state.about_sponsors_req_id.saturating_add(1);
         state.about_sponsors_open = false;
         state.about_sponsors_loading = false;
@@ -152,7 +152,7 @@ fn close_sponsors_modal(cx: &mut App) {
 }
 
 fn spawn_load_sponsors(cx: &mut App) {
-    let request_id = cx.update_global(|state: &mut SettingsPageState, cx| {
+    let request_id = cx.update_global(|state: &mut SettingsPageState, _cx| {
         state.about_sponsors_req_id = state.about_sponsors_req_id.saturating_add(1);
         state.about_sponsors_loading = true;
         state.about_sponsors_skeleton_phase = 0;
@@ -170,7 +170,7 @@ fn spawn_load_sponsors(cx: &mut App) {
                     .await;
 
                 let should_continue = cx
-                    .update_global(|state: &mut SettingsPageState, cx| {
+                    .update_global(|state: &mut SettingsPageState, _cx| {
                         if state.about_sponsors_req_id != request_id
                             || !state.about_sponsors_loading
                         {
@@ -207,7 +207,7 @@ fn spawn_load_sponsors(cx: &mut App) {
             Err(error) => (Vec::new(), Some(SharedString::from(error.to_string()))),
         };
 
-        let _ = cx.update_global(|state: &mut SettingsPageState, cx| {
+        let _ = cx.update_global(|state: &mut SettingsPageState, _cx| {
             if state.about_sponsors_req_id != request_id {
                 return;
             }
@@ -245,7 +245,7 @@ fn sponsor_records_to_state(
 
 fn render_sponsors_body(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     settings: &SettingsPageState,
 ) -> impl IntoElement {
     let total = settings.about_sponsors.len();
@@ -347,13 +347,13 @@ fn render_sponsors_body(
 
 fn sponsor_pager(colors: &ThemeColors, page: usize, max_page: usize) -> Div {
     let previous = Rc::new(move |cx: &mut App| {
-        cx.update_global(|state: &mut SettingsPageState, cx| {
+        cx.update_global(|state: &mut SettingsPageState, _cx| {
             state.about_sponsors_page = state.about_sponsors_page.saturating_sub(1);
         });
     });
 
     let next = Rc::new(move |cx: &mut App| {
-        cx.update_global(|state: &mut SettingsPageState, cx| {
+        cx.update_global(|state: &mut SettingsPageState, _cx| {
             state.about_sponsors_page = (state.about_sponsors_page + 1).min(
                 state.about_sponsors.len().saturating_sub(1)
                     / state.about_sponsors_page_size.max(1),

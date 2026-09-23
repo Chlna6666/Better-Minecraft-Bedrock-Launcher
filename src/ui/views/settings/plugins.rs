@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 #[derive(Clone)]
-pub(super) struct PluginSettingsModel {
+pub(in crate::ui::views) struct PluginSettingsModel {
     statuses: Vec<PluginStatus>,
     selected_id: Option<String>,
     readme: Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
@@ -590,12 +590,12 @@ fn small_icon_button(colors: &ThemeColors, label: &'static str, icon_path: &'sta
 
 fn plugin_list(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     statuses: &[PluginStatus],
     selected_id: Option<&str>,
     compact: bool,
 ) -> Stateful<Div> {
-    let mut list = settings_card(colors, "settings-plugins-list")
+    let list = settings_card(colors, "settings-plugins-list")
         .when(compact, |this| this.w_full().h(px(190.)))
         .when(!compact, |this| this.w(px(250.)).h_full())
         .flex_shrink_0()
@@ -819,7 +819,7 @@ fn plugin_detail(
         )
 }
 
-fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) -> Div {
+fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus) -> Div {
     let plugin_id = status.id.clone();
     let enabled = status.enabled;
     let reload_id = status.id.clone();
@@ -1081,7 +1081,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
 
 fn plugin_sub_tabs(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     plugin_id: &str,
     active: PluginSettingsSubTab,
 ) -> impl IntoElement {
@@ -1156,7 +1156,7 @@ fn plugin_sub_tabs(
 
 fn plugin_readme_panel(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     model: &PluginSettingsModel,
 ) -> AnyElement {
     let Some(document) = model.readme.as_ref() else {
@@ -1583,7 +1583,7 @@ fn render_input_control(
     settings_control_box(colors, true, px(260.), control).into_any_element()
 }
 
-fn raw_config_panel(colors: &ThemeColors, i18n: &I18n, content: &str) -> AnyElement {
+fn raw_config_panel(colors: &ThemeColors, _i18n: &I18n, content: &str) -> AnyElement {
     div()
         .w_full()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -1614,7 +1614,7 @@ fn raw_config_panel(colors: &ThemeColors, i18n: &I18n, content: &str) -> AnyElem
         .into_any_element()
 }
 
-fn plugin_logs_panel(colors: &ThemeColors, i18n: &I18n, model: &PluginSettingsModel) -> AnyElement {
+fn plugin_logs_panel(colors: &ThemeColors, _i18n: &I18n, model: &PluginSettingsModel) -> AnyElement {
     if model.logs.is_empty() {
         return empty_panel(colors, t!("PluginSettings.logs_empty"));
     }
@@ -1783,7 +1783,7 @@ fn import_plugin_package_from_picker(cx: &mut App) {
     else {
         return;
     };
-    let (success_message, failed_message) = cx.read_global(|i18n: &I18n, _cx| {
+    let (success_message, failed_message) = cx.read_global(|_i18n: &I18n, _cx| {
         (
             t!("PluginSettings.import_success"),
             t!("PluginSettings.import_failed"),
@@ -1934,7 +1934,7 @@ fn localized_field_label(
 
 fn localized_field_description(
     translations: &BTreeMap<String, String>,
-    i18n: &I18n,
+    _i18n: &I18n,
     field: &PluginConfigField,
 ) -> SharedString {
     let description = localized_plugin_text(

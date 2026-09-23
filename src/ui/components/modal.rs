@@ -251,7 +251,7 @@ impl ModalDismissHandle {
         cx.refresh_windows();
     }
 
-    pub(crate) fn control(&self) -> Rc<Cell<ModalAnimationControl>> {
+    fn control(&self) -> Rc<Cell<ModalAnimationControl>> {
         self.control.clone()
     }
 }

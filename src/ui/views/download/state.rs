@@ -518,7 +518,7 @@ impl DownloadPageState {
         self.game_rows_scroll.set_offset(point(px(0.), px(0.)));
     }
 
-    pub fn release_curseforge_tab_state(&mut self, cx: &mut App) {
+    pub fn release_curseforge_tab_state(&mut self, _cx: &mut App) {
         if let Some(handle) = self.curseforge_results_abort_handle.take() {
             handle.abort();
         }

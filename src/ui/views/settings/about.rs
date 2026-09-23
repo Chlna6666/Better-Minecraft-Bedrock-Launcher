@@ -352,7 +352,7 @@ struct ThanksItem {
     is_small: bool,
 }
 
-fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, i18n: &I18n) -> Div {
+fn render_thanks_grid(colors: &ThemeColors, window_width: Pixels, _i18n: &I18n) -> Div {
     let open_sponsors = Rc::new(sponsors::open_sponsors_modal as fn(&mut App));
 
     let items: Vec<ThanksItem> = vec![
@@ -591,10 +591,10 @@ fn thanks_card(
     card
 }
 
-fn render_legal_cards(colors: &ThemeColors, i18n: &I18n, _settings: &SettingsPageState) -> Div {
+fn render_legal_cards(colors: &ThemeColors, _i18n: &I18n, _settings: &SettingsPageState) -> Div {
     let license = SharedString::from(app_info::get_license());
     let open_agreement = Rc::new(|cx: &mut App| {
-        cx.update_global(|state: &mut SettingsPageState, cx| {
+        cx.update_global(|state: &mut SettingsPageState, _cx| {
             state.about_agreement_open = true;
             state.about_agreement_scroll_handle = ScrollHandle::new();
         });
@@ -631,7 +631,7 @@ fn render_legal_cards(colors: &ThemeColors, i18n: &I18n, _settings: &SettingsPag
     )
 }
 
-fn render_dependencies_card(colors: &ThemeColors, i18n: &I18n) -> Stateful<Div> {
+fn render_dependencies_card(colors: &ThemeColors, _i18n: &I18n) -> Stateful<Div> {
     let open_dependencies = Rc::new(dependencies::open_dependencies_modal as fn(&mut App));
 
     base_card(colors, "about-dependencies-card")

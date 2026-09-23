@@ -1,7 +1,7 @@
 #![cfg(target_os = "windows")]
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AppContext as _, BorrowAppContext as _, *};
+use gpui::{BorrowAppContext as _, *};
 
 use crate::core::minecraft::uwp_registration::{MinecraftUwpChannel, SystemUwpRegistration};
 use crate::ui::components::scroll::ScrollableElement as _;
@@ -546,7 +546,7 @@ pub fn render_uwp_safety_guide(
         .child(card)
 }
 
-fn render_checking_body(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_checking_body(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .size_full()
         .p(px(20.0))
@@ -594,7 +594,7 @@ fn render_safety_body(
     trigger: UwpSafetyGuideTrigger,
     registration: Option<&SystemUwpRegistration>,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> Div {
     let context = match trigger {
         UwpSafetyGuideTrigger::DownloadRelease | UwpSafetyGuideTrigger::DownloadPreview => {

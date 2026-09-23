@@ -15,7 +15,7 @@ const THEME_COLOR_PERSIST_DEBOUNCE_MS: u64 = 260;
 
 pub(super) fn render_theme_color_card(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     settings_card(colors, "settings-theme-color").child(

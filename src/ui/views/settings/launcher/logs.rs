@@ -75,7 +75,7 @@ pub(super) fn render(
 
 fn storage_summary(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let oldest = if state.log_oldest_archive.is_empty() {
@@ -228,7 +228,7 @@ fn total_size_row(
 
 fn compression_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let values = [1_i32, 3, 5, 7, 9];
@@ -303,7 +303,7 @@ fn log_setting_dropdown(
 
 fn advanced_toggle_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     settings_sub_row(

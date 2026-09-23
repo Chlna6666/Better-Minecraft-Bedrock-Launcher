@@ -417,19 +417,19 @@ fn target_window(cx: &App) -> Option<WindowId> {
 }
 
 pub fn set_placement(cx: &mut App, placement: ToastPlacement) {
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.placement = placement;
     });
 }
 
 pub fn set_stack_direction(cx: &mut App, direction: ToastStackDirection) {
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.stack_direction = direction;
     });
 }
 
 pub fn set_slide_direction(cx: &mut App, direction: ToastSlideDirection) {
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.slide_direction = direction;
     });
 }
@@ -439,7 +439,7 @@ pub fn set_margin(cx: &mut App, margin: Pixels) {
 }
 
 pub fn set_insets(cx: &mut App, insets: ToastInsets) {
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.insets = insets;
     });
 }
@@ -472,7 +472,7 @@ pub fn push_kind_duration(
 ) -> ToastId {
     let now = Instant::now();
     let target_window = target_window(cx);
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         let id = state.push(target_window, kind, message, duration, now);
         id
@@ -481,7 +481,7 @@ pub fn push_kind_duration(
 
 pub fn resolve(cx: &mut App, id: ToastId, kind: ToastKind, message: SharedString) {
     let now = Instant::now();
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         state.resolve(id, kind, message, now);
     });
@@ -489,7 +489,7 @@ pub fn resolve(cx: &mut App, id: ToastId, kind: ToastKind, message: SharedString
 
 pub fn dismiss(cx: &mut App, id: ToastId) {
     let now = Instant::now();
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         state.dismiss(id, now);
     });
@@ -513,7 +513,7 @@ pub fn push_breadcrumb(cx: &mut App, parts: &[SharedString]) -> ToastId {
 
     let now = Instant::now();
     let target_window = target_window(cx);
-    cx.update_global(|state: &mut ToastState, cx| {
+    cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         let id = state.push_breadcrumb(target_window, SharedString::from(message), now);
         id
@@ -526,7 +526,7 @@ pub fn push_async(cx: &mut AsyncApp, kind: ToastKind, message: SharedString) -> 
         .read_global::<ToastState, _>(|_, cx| target_window(cx))
         .ok()
         .flatten();
-    match cx.update_global(|state: &mut ToastState, cx| {
+    match cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         let id = state.push(target_window, kind, message, DEFAULT_DURATION, now);
         id
@@ -545,7 +545,7 @@ pub fn pending_async(cx: &mut AsyncApp, message: SharedString) -> ToastId {
         .read_global::<ToastState, _>(|_, cx| target_window(cx))
         .ok()
         .flatten();
-    match cx.update_global(|state: &mut ToastState, cx| {
+    match cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         let id = state.push(
             target_window,
@@ -566,7 +566,7 @@ pub fn pending_async(cx: &mut AsyncApp, message: SharedString) -> ToastId {
 
 pub fn resolve_async(cx: &mut AsyncApp, id: ToastId, kind: ToastKind, message: SharedString) {
     let now = Instant::now();
-    if let Err(err) = cx.update_global(|state: &mut ToastState, cx| {
+    if let Err(err) = cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         state.resolve(id, kind, message, now);
     }) {
@@ -594,7 +594,7 @@ pub fn push_breadcrumb_async(cx: &mut AsyncApp, parts: &[SharedString]) -> Toast
         .read_global::<ToastState, _>(|_, cx| target_window(cx))
         .ok()
         .flatten();
-    match cx.update_global(|state: &mut ToastState, cx| {
+    match cx.update_global(|state: &mut ToastState, _cx| {
         state.prune_expired(now);
         let id = state.push_breadcrumb(target_window, SharedString::from(message), now);
         id
@@ -743,7 +743,7 @@ pub fn render_overlay_with_options(
             .w(toast_width)
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                cx.update_global(|state: &mut ToastState, cx| {
+                cx.update_global(|state: &mut ToastState, _cx| {
                     let now = Instant::now();
                     state.prune_expired(now);
                     state.dismiss(toast_id, now);

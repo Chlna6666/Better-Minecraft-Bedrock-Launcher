@@ -206,7 +206,7 @@ pub fn render_user_agreement_modal(
             .text_color(colors.btn_primary_text)
             .child(accept_label)
             .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                cx.update_global(|agreement: &mut AgreementState, cx| {
+                cx.update_global(|agreement: &mut AgreementState, _cx| {
                     agreement.accept();
                 });
 

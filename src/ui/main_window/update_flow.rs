@@ -27,11 +27,11 @@ fn download_snapshot_meaningfully_changed(
 }
 
 impl MainWindowView {
-    fn spawn_update_markdown_cache(release: ReleaseSummary, now: Instant, cx: &mut Context<Self>) {
+    fn spawn_update_markdown_cache(release: ReleaseSummary, _now: Instant, cx: &mut Context<Self>) {
         let release_tag = release.tag.clone();
         let release_body = release.body.clone().unwrap_or_default();
 
-        cx.spawn(async move |handle, cx| {
+        cx.spawn(async move |_handle, cx| {
             tracing::debug!("update markdown cache task started release_tag={release_tag}");
             let parsed = crate::tasks::runtime::run_io_blocking(move || {
                 crate::ui::components::markdown_renderer::warm_highlighter_assets();

@@ -6,7 +6,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 use super::super::common::{
-    settings_card, settings_card_header, settings_sub_input_row, settings_sub_row,
+    settings_card, settings_card_header, settings_sub_input_row,
     snapshot_from_state, spawn_persist_settings,
 };
 use super::super::rows::setting_dropdown_row;
@@ -33,7 +33,7 @@ pub(super) fn render_download_settings(
 
 fn launcher_github_source_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let values = vec![
@@ -67,7 +67,7 @@ fn launcher_github_source_row(
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| SharedString::from("auto"));
-            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.download_github_source = selected;
                 snapshot_from_state(settings)
             });
@@ -94,7 +94,7 @@ fn launcher_github_source_row(
         })
 }
 
-fn download_section_title(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement {
+fn download_section_title(colors: &ThemeColors, _i18n: &I18n) -> impl IntoElement {
     div()
         .w_full()
         .pt(px(12.))
@@ -112,7 +112,7 @@ fn download_section_title(colors: &ThemeColors, i18n: &I18n) -> impl IntoElement
 
 fn launcher_multi_thread_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let section = t!("Settings.tabs.launcher");
@@ -134,7 +134,7 @@ fn launcher_multi_thread_row(
 
 fn launcher_auto_thread_count_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let section = t!("Settings.tabs.launcher");
@@ -156,7 +156,7 @@ fn launcher_auto_thread_count_row(
 
 fn launcher_max_threads_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let section = t!("Settings.tabs.launcher");
@@ -182,7 +182,7 @@ fn launcher_max_threads_row(
         state.download_multi_thread,
         move |index, _window, cx| {
             let value = thread_values.get(index).copied().unwrap_or(8);
-            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.download_max_threads = value;
                 snapshot_from_state(settings)
             });
@@ -193,7 +193,7 @@ fn launcher_max_threads_row(
 
 fn launcher_proxy_mode_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let values = vec![
@@ -229,7 +229,7 @@ fn launcher_proxy_mode_row(
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| SharedString::from("none"));
-            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.download_proxy_type = selected.clone();
                 snapshot_from_state(settings)
             });
@@ -266,7 +266,7 @@ fn launcher_proxy_mode_row(
 
 fn launcher_curseforge_source_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let values = vec![
@@ -302,7 +302,7 @@ fn launcher_curseforge_source_row(
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| SharedString::from("mirror"));
-            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.download_curseforge_api_source = selected.clone();
                 snapshot_from_state(settings)
             });

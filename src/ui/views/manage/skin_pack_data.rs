@@ -39,7 +39,7 @@ impl ManagePageView {
             let Some(asset) = resolve_asset_by_key(state, &asset_key)
                 .filter(|asset| asset.kind == state::ManageAssetKind::SkinPack)
             else {
-                let i18n = cx.global::<I18n>().clone();
+                let _i18n = cx.global::<I18n>().clone();
                 toast::error(cx, t!("ManagePage.skin_pack_missing"));
                 return;
             };
@@ -56,7 +56,7 @@ impl ManagePageView {
             let _ = handle.update(cx, |_this, cx| {
                 match result {
                     Ok(next_config) => {
-                        let i18n = cx.global::<I18n>().clone();
+                        let _i18n = cx.global::<I18n>().clone();
                         cx.update_global(|state: &mut ManagePageState, _cx| {
                             state.version_config = next_config;
                             state.version_config_error = None;
@@ -93,7 +93,7 @@ impl ManagePageView {
             let _ = handle.update(cx, |_this, cx| {
                 match result {
                     Ok(next_config) => {
-                        let i18n = cx.global::<I18n>().clone();
+                        let _i18n = cx.global::<I18n>().clone();
                         cx.update_global(|state: &mut ManagePageState, _cx| {
                             state.version_config = next_config;
                             state.version_config_error = None;

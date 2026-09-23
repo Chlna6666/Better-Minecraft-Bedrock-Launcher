@@ -4,8 +4,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs;
-use tracing::warn;
 use zip::write::SimpleFileOptions;
 
 use crate::core::minecraft::assets::{

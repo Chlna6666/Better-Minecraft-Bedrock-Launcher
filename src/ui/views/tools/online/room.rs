@@ -56,7 +56,7 @@ pub(super) fn render_room_card(colors: &ThemeColors, i18n: &I18n, state: &ToolsP
 
 fn render_abandoned_nodes(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     nodes: &[SharedString],
 ) -> impl IntoElement {
     let node_list = nodes
@@ -135,7 +135,7 @@ fn render_abandoned_nodes(
 
 fn render_blocking_issue(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &ToolsPageState,
     issue: OnlineBlockingIssue,
 ) -> impl IntoElement {
@@ -438,7 +438,7 @@ fn render_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> D
         )
 }
 
-fn render_quick_action(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Stateful<Div> {
+fn render_quick_action(colors: &ThemeColors, _i18n: &I18n, state: &ToolsPageState) -> Stateful<Div> {
     let stopping =
         state.online_operation == crate::ui::views::tools::state::OnlineOperation::Stopping;
     let (id, label, icon) = if state.easytier_running {
@@ -516,7 +516,7 @@ fn render_connecting_state(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageS
         )
 }
 
-fn render_connected_state(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
+fn render_connected_state(colors: &ThemeColors, _i18n: &I18n, state: &ToolsPageState) -> Div {
     div()
         .w_full()
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -570,7 +570,7 @@ fn render_create_action(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> Di
         .child(render_create_button(colors, i18n, disabled))
 }
 
-fn render_create_description(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_create_description(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .min_w(px(0.))
         .flex()
@@ -611,7 +611,7 @@ fn render_create_description(colors: &ThemeColors, i18n: &I18n) -> Div {
         )
 }
 
-fn render_create_button(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> Stateful<Div> {
+fn render_create_button(colors: &ThemeColors, _i18n: &I18n, disabled: bool) -> Stateful<Div> {
     action_button(
         colors,
         "online-create-room",
@@ -685,7 +685,7 @@ fn render_join_controls(
         .child(render_join_button(colors, i18n, disabled))
 }
 
-fn render_join_button(colors: &ThemeColors, i18n: &I18n, disabled: bool) -> Stateful<Div> {
+fn render_join_button(colors: &ThemeColors, _i18n: &I18n, disabled: bool) -> Stateful<Div> {
     action_button(
         colors,
         "online-join-room",
@@ -778,7 +778,7 @@ fn render_host_room_code(colors: &ThemeColors, i18n: &I18n, room_code: SharedStr
         )
 }
 
-fn render_host_room_code_text(colors: &ThemeColors, i18n: &I18n, room_code: SharedString) -> Div {
+fn render_host_room_code_text(colors: &ThemeColors, _i18n: &I18n, room_code: SharedString) -> Div {
     div()
         .min_w(px(0.))
         .flex()

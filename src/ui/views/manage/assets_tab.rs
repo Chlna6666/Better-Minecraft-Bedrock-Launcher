@@ -131,7 +131,7 @@ impl ManagePageView {
         if folder_names.is_empty() {
             return;
         }
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let count = folder_names.len().to_string();
         self.confirm_dialog = Some(ConfirmDialogState {
             title: t!("AssetManager.delete_title_bulk"),

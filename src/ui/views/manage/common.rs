@@ -105,7 +105,7 @@ pub fn primary_button(
         )
 }
 
-pub fn tonal_badge(colors: &ThemeColors, label: impl Into<SharedString>, accent: Hsla) -> Div {
+pub fn tonal_badge(_colors: &ThemeColors, label: impl Into<SharedString>, accent: Hsla) -> Div {
     div()
         .px(px(10.))
         .py(px(3.))

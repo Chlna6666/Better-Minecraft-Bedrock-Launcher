@@ -144,7 +144,7 @@ fn render_surface(
 fn render_header(
     state: &LevelDatEditorModalState,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     dirty: bool,
     line_count: usize,
     char_count: usize,
@@ -739,7 +739,7 @@ fn compact_primary_button(
 
 fn render_visual_section(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     section: LevelDatFieldSection,
     state: &LevelDatEditorModalState,
     view_handle: WeakEntity<ManagePageView>,

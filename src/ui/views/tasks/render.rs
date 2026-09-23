@@ -20,7 +20,7 @@ pub use overlay::render_tasks_overlay;
 use page::render_tasks_page;
 pub(crate) use progress::progress_panel;
 pub(crate) use shell::{
-    TaskVisualKind, page_shell, task_border_color, task_card_bg, task_card_hover_bg,
+    TaskVisualKind, page_shell, task_border_color, task_card_hover_bg,
     task_icon_button, task_status_accent, task_text_main, task_text_secondary, task_text_tertiary,
     task_visual_accent, task_visual_icon, task_visual_kind, task_warning_color,
 };

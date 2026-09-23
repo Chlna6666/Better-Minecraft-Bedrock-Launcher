@@ -1,5 +1,4 @@
 use super::*;
-use crate::ui::components::scroll::ScrollableElement as _;
 use chrono::{Days, Utc};
 
 pub(super) fn render_statistics_tab(
@@ -215,7 +214,7 @@ fn chart_card(
         )
 }
 
-fn format_duration(i18n: &I18n, seconds: u64) -> SharedString {
+fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {
     if seconds >= 3_600 {
         t!(
             "ManagePage.stats_hours",

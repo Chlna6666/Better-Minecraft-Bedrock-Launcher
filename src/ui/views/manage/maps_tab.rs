@@ -13,7 +13,7 @@ impl ManagePageView {
 
             let _ = cx.update(|cx| match result {
                 Ok(path) => {
-                    let i18n = cx.global::<I18n>();
+                    let _i18n = cx.global::<I18n>();
                     toast::success(cx, t!("ManagePage.map_backup_created", path = path));
                 }
                 Err(error) => {
@@ -49,7 +49,7 @@ impl ManagePageView {
 
                 cx.update(|cx| match result {
                     Ok(()) => {
-                        let i18n = cx.global::<I18n>();
+                        let _i18n = cx.global::<I18n>();
                         toast::success(cx, t!("ManagePage.map_exported"));
                     }
                     Err(error) => {

@@ -8,7 +8,6 @@ use gpui::*;
 
 use crate::launch::ImportLaunchContext;
 use crate::ui::components::{modal, toast};
-use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 
 pub use view::ImportWindowView;

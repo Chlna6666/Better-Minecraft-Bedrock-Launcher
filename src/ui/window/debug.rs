@@ -331,7 +331,7 @@ struct VisualDebugCopy {
 }
 
 impl VisualDebugCopy {
-    fn from_i18n(i18n: &I18n) -> Self {
+    fn from_i18n(_i18n: &I18n) -> Self {
         Self {
             title: t!("Debug.visual_title"),
             subtitle: t!("Debug.visual_subtitle"),

@@ -219,7 +219,7 @@ impl ManagePageView {
         state: &ManagePageState,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         if matches!(
             self.version_list_cache.refresh(state),
             VersionListRefresh::QueryChanged

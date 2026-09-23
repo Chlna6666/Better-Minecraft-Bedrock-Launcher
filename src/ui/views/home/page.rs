@@ -47,7 +47,7 @@ fn icon_path(path: &'static str) -> Svg {
     svg().path(path)
 }
 
-fn kind_label(i18n: &I18n, kind: &str) -> SharedString {
+fn kind_label(_i18n: &I18n, kind: &str) -> SharedString {
     match kind.to_ascii_uppercase().as_str() {
         "GDK" => t!("common.gdk"),
         "UWP" => t!("common.uwp"),

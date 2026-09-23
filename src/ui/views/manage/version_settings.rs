@@ -200,7 +200,7 @@ pub fn render(
 fn render_header(
     state: &VersionSettingsModalState,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> impl IntoElement {
     div()
         .px(px(22.))
@@ -273,7 +273,7 @@ fn render_toggle_card(
 fn render_mouse_lock_card(
     state: &VersionSettingsModalState,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> Div {
     let hotkey_group = div()

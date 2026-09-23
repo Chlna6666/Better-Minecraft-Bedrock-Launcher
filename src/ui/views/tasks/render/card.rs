@@ -7,7 +7,6 @@ use crate::ui::views::tasks::TaskCardMotionKind;
 use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageView};
 use gpui::AnimationExt;
 use gpui::render_fingerprint;
-use std::sync::Arc;
 
 // 与 tasks.rs 的 TASK_CARD_EXIT_ANIMATION_MS 对齐：过渡卡片会在该时刻被移除，
 // 弹簧窗口不能超过清理时限，否则卡片会在动画中途消失。
@@ -53,7 +52,7 @@ fn meta_separator(colors: &ThemeColors) -> Div {
         })
 }
 
-fn task_amount_text(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
+fn task_amount_text(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
     let done = crate::utils::format_bytes::format_bytes_compact(model.done);
     match model.total {
         Some(total) => SharedString::from(format!(
@@ -66,7 +65,7 @@ fn task_amount_text(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
 }
 
 fn thread_label_text(
-    i18n: &I18n,
+    _i18n: &I18n,
     worker_active: Option<u32>,
     worker_total: Option<u32>,
 ) -> Option<SharedString> {
@@ -78,7 +77,7 @@ fn thread_label_text(
     })
 }
 
-fn status_label(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
+fn status_label(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
     match model.status.as_ref() {
         "paused" => t!("Tasks.status.paused"),
         "cancelling" => t!("Tasks.status.cancelling"),

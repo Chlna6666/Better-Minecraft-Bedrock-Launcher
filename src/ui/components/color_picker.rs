@@ -554,7 +554,7 @@ pub fn color_picker_control(
         .gap(px(8.0))
         .on_mouse_down_out(|_event, _window, cx| {
             cx.stop_propagation();
-            cx.update_global(|state: &mut SettingsPageState, cx| {
+            cx.update_global(|state: &mut SettingsPageState, _cx| {
                 state.theme_color_picker_popup_open = false;
                 state.theme_color_picker_drag_target = SharedString::from("");
             });
@@ -584,7 +584,7 @@ pub fn color_picker_control(
                 .on_mouse_down(MouseButton::Left, {
                     move |event, _window, cx| {
                         cx.stop_propagation();
-                        cx.update_global(|state: &mut SettingsPageState, cx| {
+                        cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.theme_color_picker_popup_open = true;
                             state.theme_color_picker_drag_target = SharedString::from("sv");
                             state.theme_color_picker_drag_origin_x = to_number(event.position.x);
@@ -611,12 +611,12 @@ pub fn color_picker_control(
                     }
                 })
                 .on_mouse_up(MouseButton::Left, |_event, _window, cx| {
-                    cx.update_global(|state: &mut SettingsPageState, cx| {
+                    cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.theme_color_picker_drag_target = SharedString::from("");
                     });
                 })
                 .on_mouse_up_out(MouseButton::Left, |_event, _window, cx| {
-                    cx.update_global(|state: &mut SettingsPageState, cx| {
+                    cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.theme_color_picker_drag_target = SharedString::from("");
                     });
                 })
@@ -647,7 +647,7 @@ pub fn color_picker_control(
                 .on_mouse_down(MouseButton::Left, {
                     move |event, _window, cx| {
                         cx.stop_propagation();
-                        cx.update_global(|state: &mut SettingsPageState, cx| {
+                        cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.theme_color_picker_popup_open = true;
                             state.theme_color_picker_drag_target = SharedString::from("hue");
                             state.theme_color_picker_drag_origin_x = to_number(event.position.x);
@@ -676,12 +676,12 @@ pub fn color_picker_control(
                     }
                 })
                 .on_mouse_up(MouseButton::Left, |_event, _window, cx| {
-                    cx.update_global(|state: &mut SettingsPageState, cx| {
+                    cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.theme_color_picker_drag_target = SharedString::from("");
                     });
                 })
                 .on_mouse_up_out(MouseButton::Left, |_event, _window, cx| {
-                    cx.update_global(|state: &mut SettingsPageState, cx| {
+                    cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.theme_color_picker_drag_target = SharedString::from("");
                     });
                 })
@@ -728,7 +728,7 @@ pub fn color_picker_control(
                 .on_mouse_down(MouseButton::Left, {
                     move |event, _window, cx| {
                         cx.stop_propagation();
-                        cx.update_global(|state: &mut SettingsPageState, cx| {
+                        cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.theme_color_picker_popup_open = true;
                             state.theme_color_picker_drag_target = SharedString::from("alpha");
                             state.theme_color_picker_drag_origin_x = to_number(event.position.x);
@@ -757,12 +757,12 @@ pub fn color_picker_control(
                     }
                 })
                 .on_mouse_up(MouseButton::Left, |_event, _window, cx| {
-                    cx.update_global(|state: &mut SettingsPageState, cx| {
+                    cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.theme_color_picker_drag_target = SharedString::from("");
                     });
                 })
                 .on_mouse_up_out(MouseButton::Left, |_event, _window, cx| {
-                    cx.update_global(|state: &mut SettingsPageState, cx| {
+                    cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.theme_color_picker_drag_target = SharedString::from("");
                     });
                 })
@@ -836,7 +836,7 @@ pub fn color_picker_control(
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, |event, _window, cx| {
             cx.stop_propagation();
-            cx.update_global(|state: &mut SettingsPageState, cx| {
+            cx.update_global(|state: &mut SettingsPageState, _cx| {
                 state.theme_color_picker_popup_open = !state.theme_color_picker_popup_open;
                 state.theme_color_picker_popup_anchor_x = to_number(event.position.x);
                 state.theme_color_picker_popup_anchor_y = to_number(event.position.y);

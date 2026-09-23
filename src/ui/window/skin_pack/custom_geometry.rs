@@ -19,7 +19,7 @@ use super::custom_geometry_animation::{
 };
 use super::custom_geometry_json::{array3, first_number};
 use super::custom_geometry_math::{
-    bedrock_to_preview, clamp_image_index, normalize, rotate_point_around, rotate_vector, sub3,
+    bedrock_to_preview, clamp_image_index, normalize, rotate_point_around, rotate_vector,
 };
 
 const CUSTOM_PREVIEW_MAX_TEXTURE_SCALE: u32 = 2;

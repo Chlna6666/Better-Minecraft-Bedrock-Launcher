@@ -2,7 +2,7 @@ use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::html_renderer::render_html_document;
 use crate::ui::components::icon::themed_icon;
-use crate::ui::components::input::{Input, InputState, Paste};
+use crate::ui::components::input::{Input, Paste};
 use crate::ui::components::modal;
 use crate::ui::hooks::use_local_versions::{
     LocalVersionsSnapshot, read_local_versions_snapshot, use_local_versions,
@@ -10,7 +10,6 @@ use crate::ui::hooks::use_local_versions::{
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
-use anyhow::Result;
 use gpui::AnimationExt;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -18,7 +17,6 @@ use gpui_hooks::{hook_element, hook_render};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::common::{
@@ -583,7 +581,7 @@ fn localize_curseforge_tag(i18n: &I18n, name: &str, slug: Option<&str>) -> Share
 
 fn curseforge_file_version_label(
     file: &crate::ui::views::download::state::CurseForgeFileEntry,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> SharedString {
     file.game_versions
         .iter()
@@ -865,10 +863,10 @@ fn render_curseforge_detail_description_panel(
 
 pub(super) fn render_resource_panel(
     _colors: &ThemeColors,
-    state: &DownloadPageState,
+    _state: &DownloadPageState,
     curseforge_sidebar: &Entity<CurseForgeSidebarView>,
     curseforge_content: &Entity<CurseForgeContentView>,
-    detail_image_cache: &Entity<BoundedImageCache>,
+    _detail_image_cache: &Entity<BoundedImageCache>,
     _selected_folder: Option<SharedString>,
     _local_versions: &LocalVersionsSnapshot,
 ) -> Div {
@@ -996,7 +994,7 @@ fn render_curseforge_sidebar(
         themed_icon(lucide_gpui::icon!(package), 16.0, fg).into_any_element()
     };
 
-    let sidebar_category_icon = |icon_url: Option<SharedString>, active: bool| -> AnyElement {
+    let sidebar_category_icon = |icon_url: Option<SharedString>, _active: bool| -> AnyElement {
         match icon_url {
             Some(url) => {
                 if should_mount_curseforge_sidebar_images() {
@@ -1386,7 +1384,7 @@ fn render_curseforge_content(
             .into_any_element()
     };
 
-    let skeleton_card = || {
+    let _skeleton_card = || {
         div()
             .w_full()
             .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -1749,11 +1747,11 @@ fn render_curseforge_content(
         });
 
     let page_size = state.curseforge_page_size.max(1) as usize;
-    let total_items = state
+    let _total_items = state
         .curseforge_total_count
         .map(|v| v as usize)
         .unwrap_or_else(|| state.curseforge_mods.len());
-    let total_pages = state
+    let _total_pages = state
         .curseforge_total_count
         .map(|tot| ((tot as usize) + page_size - 1) / page_size)
         .unwrap_or_else(|| {
@@ -2031,7 +2029,7 @@ fn default_install_target_for_results(cx: &App) -> Option<SharedString> {
 
 fn render_curseforge_result_card(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     props: &CurseForgeResultCardProps,
     result_logo_cache: &Entity<BoundedImageCache>,
     default_install_target: Option<SharedString>,
@@ -2314,7 +2312,7 @@ fn render_curseforge_result_card(
 
 fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
     let state = cx.global::<DownloadPageState>();
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
 
     let page_index = state.curseforge_page_index;
     let results_loading = state.curseforge_results_loading
@@ -3342,7 +3340,7 @@ fn render_curseforge_install_modal(
             cx.spawn(async move |cx| {
                 let snapshot = wait_task.await?;
                 cx.update(|cx| {
-                    let i18n = cx.global::<I18n>();
+                    let _i18n = cx.global::<I18n>();
                     match snapshot.status.as_ref() {
                         "completed" => {
                             crate::ui::components::toast::success(

@@ -336,7 +336,7 @@ impl SkinPreviewWindowView {
         now: Instant,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         match &self.mesh {
             Some(Ok(mesh)) => {
                 let mesh = mesh.clone();

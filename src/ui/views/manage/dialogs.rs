@@ -107,7 +107,7 @@ impl ManagePageView {
                 match start_delete_version_task(folder.clone()) {
                     Ok(task_id) => {
                         self.confirm_dialog = None;
-                        let i18n = cx.global::<I18n>().clone();
+                        let _i18n = cx.global::<I18n>().clone();
                         toast::push(cx, t!("ManagePage.deleting_version"));
                         watch_version_mutation_task(
                             task_id,
@@ -144,7 +144,7 @@ impl ManagePageView {
                 ) {
                     Ok(task_id) => {
                         self.confirm_dialog = None;
-                        let i18n = cx.global::<I18n>().clone();
+                        let _i18n = cx.global::<I18n>().clone();
                         watch_manage_asset_mutation_task(
                             task_id,
                             t!("ManagePage.asset_deleted"),
@@ -165,7 +165,7 @@ impl ManagePageView {
                 match data::start_delete_screenshot_task(&entry) {
                     Ok(task_id) => {
                         self.confirm_dialog = None;
-                        let i18n = cx.global::<I18n>().clone();
+                        let _i18n = cx.global::<I18n>().clone();
                         watch_screenshot_mutation_task(
                             task_id,
                             t!("ManagePage.screenshot_deleted"),
@@ -197,7 +197,7 @@ impl ManagePageView {
                 ) {
                     Ok(task_id) => {
                         self.confirm_dialog = None;
-                        let i18n = cx.global::<I18n>().clone();
+                        let _i18n = cx.global::<I18n>().clone();
                         watch_server_mutation_task(
                             task_id,
                             t!("ManagePage.server_deleted"),
@@ -236,7 +236,7 @@ impl ManagePageView {
             input_state.set_value(version.folder.clone(), window, cx);
             input_state
         });
-        let i18n = cx.global::<I18n>();
+        let _i18n = cx.global::<I18n>();
         self.value_prompt = Some(ValuePromptDialogState {
             title: t!("ManagePage.rename_title"),
             description: t!("ManagePage.rename_desc"),
@@ -254,7 +254,7 @@ impl ManagePageView {
     }
 
     pub(super) fn save_value_prompt(&mut self, cx: &mut Context<Self>) {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let Some(prompt) = self.value_prompt.as_mut() else {
             return;
         };
@@ -376,7 +376,7 @@ impl ManagePageView {
     }
 
     pub(super) fn save_mod_type_dialog(&mut self, cx: &mut Context<Self>) {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let Some(dialog) = self.mod_type_dialog.as_ref() else {
             return;
         };
@@ -530,7 +530,7 @@ pub(super) fn render_value_prompt(
 pub(super) fn render_mod_type_dialog(
     dialog: &ModTypeDialogState,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let (title, display_name, progress, import_mode) = match &dialog.target {

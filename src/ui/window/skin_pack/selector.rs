@@ -204,7 +204,7 @@ fn render_selector_summary(
     page_index: usize,
     page_count: usize,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> Div {
     let selected_name = skins
         .get(selected_index)

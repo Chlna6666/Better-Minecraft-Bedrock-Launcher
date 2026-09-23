@@ -2,7 +2,6 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub(super) fn refresh_gpu_adapters_if_needed(cx: &mut App) {
@@ -34,7 +33,7 @@ pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mu
         .await
         .unwrap_or_default();
 
-        let _ = cx.update_global(|state: &mut SettingsPageState, cx| {
+        let _ = cx.update_global(|state: &mut SettingsPageState, _cx| {
             let current_renderer_backend =
                 crate::config::config::normalize_renderer_backend(state.renderer_backend.as_ref());
             if current_renderer_backend != requested_renderer_backend {
@@ -48,7 +47,7 @@ pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mu
 
 pub(super) fn render_tabs(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     active: SettingsTab,
 ) -> impl IntoElement {
     let tab = |id: &'static str,

@@ -196,7 +196,7 @@ impl Render for SettingsPageView {
     }
 }
 
-pub fn render_settings_page(
+pub(super) fn render_settings_page(
     colors: ThemeColors,
     window_width: Pixels,
     window_height: Pixels,
@@ -306,7 +306,7 @@ pub fn render_settings_overlay(
     None
 }
 
-fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
+fn render_font_restart_modal(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     let dismiss = Rc::new(|cx: &mut App| {
         cx.update_global(|state: &mut SettingsPageState, _cx| {
             state.close_font_restart_confirm();

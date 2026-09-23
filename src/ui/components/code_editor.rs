@@ -1927,13 +1927,13 @@ impl gpui::RenderOnce for CodeEditor {
             .on_action({
                 let state = self.state.clone();
                 move |_: &EditorSave, _window, cx| {
-                    state.update(cx, |editor, cx| cx.emit(CodeEditorEvent::SaveRequested));
+                    state.update(cx, |_editor, cx| cx.emit(CodeEditorEvent::SaveRequested));
                 }
             })
             .on_action({
                 let state = self.state.clone();
                 move |_: &EditorFormat, _window, cx| {
-                    state.update(cx, |editor, cx| cx.emit(CodeEditorEvent::FormatRequested));
+                    state.update(cx, |_editor, cx| cx.emit(CodeEditorEvent::FormatRequested));
                 }
             })
             .text_size(px(12.5))

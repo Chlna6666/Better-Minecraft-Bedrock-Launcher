@@ -9,7 +9,6 @@ use crate::ui::views::download::state::{
     DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, DownloadTab,
 };
 use gpui::AnimationExt as _;
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 const CONTROL_HEIGHT: f32 = 38.0;
@@ -51,7 +50,7 @@ pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, i1
 fn render_toolbar_search(
     colors: &ThemeColors,
     state: &DownloadPageState,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> AnyElement {
     let placeholder = match state.tab {
         DownloadTab::Game => t!("DownloadPage.search_game"),
@@ -117,7 +116,7 @@ fn render_toolbar_search(
     }
 }
 
-fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {
+fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) -> Div {
     let active = state.tab;
     let from = state.tab_anim_from;
     let transition_seq = state.tab_anim_seq;
@@ -315,7 +314,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> 
         ))
 }
 
-fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {
+fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) -> Div {
     let tab = state.tab;
     let refresh_disabled = match tab {
         DownloadTab::Game => state.loading || state.force_refresh_next,
@@ -330,7 +329,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
         DownloadTab::Mod => false,
     };
 
-    let icon_btn = |id: &'static str, icon_path: &'static str, disabled: bool| {
+    let _icon_btn = |id: &'static str, icon_path: &'static str, disabled: bool| {
         IconButton::new(id, icon_path)
             .icon_size(16.0)
             .icon_color(colors.text_secondary)
@@ -373,7 +372,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, i18n
                     3 => DownloadChannelFilter::Preview,
                     _ => DownloadChannelFilter::All,
                 };
-                cx.update_global(|s: &mut DownloadPageState, cx| {
+                cx.update_global(|s: &mut DownloadPageState, _cx| {
                     if s.channel_filter == filter {
                         return;
                     }

@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, trace, warn};
+use tracing::{info, trace, warn};
 
 mod background;
 mod background_support;
@@ -1207,7 +1207,7 @@ impl MainWindowView {
             match result {
                 Ok((entries, version_entries)) => {
                     match cx.update_global(
-                        |s: &mut crate::ui::views::download::state::DownloadPageState, cx| {
+                        |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
                             if s.curseforge_view_epoch != curseforge_view_epoch
                                 || s.curseforge_metadata_request_id != request_id
                             {

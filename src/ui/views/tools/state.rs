@@ -19,7 +19,7 @@ pub enum OnlineOperation {
 }
 
 impl OnlineOperation {
-    pub(crate) fn localized_label(self, i18n: &I18n) -> SharedString {
+    pub(crate) fn localized_label(self, _i18n: &I18n) -> SharedString {
         match self {
             Self::Idle => SharedString::from(""),
             Self::CreatingRoom => t!("Online.creating_room"),

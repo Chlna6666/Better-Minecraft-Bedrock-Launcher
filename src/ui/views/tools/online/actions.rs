@@ -562,7 +562,7 @@ pub(super) fn stop_session(cx: &mut App) {
         match applied {
             Ok(true) => {
                 if let Err(update_error) = cx.update(|cx| {
-                    let i18n = cx.global::<I18n>().clone();
+                    let _i18n = cx.global::<I18n>().clone();
                     match result {
                         Ok(()) => {
                             append_online_log("已断开联机", cx);

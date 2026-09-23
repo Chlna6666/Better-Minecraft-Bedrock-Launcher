@@ -2,7 +2,6 @@ use crate::ui::components::icon::themed_icon;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 use super::online_state_text;
@@ -180,7 +179,7 @@ fn render_session_details(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSt
         ))
 }
 
-fn nat_type_label(i18n: &I18n, value: i32) -> SharedString {
+fn nat_type_label(_i18n: &I18n, value: i32) -> SharedString {
     match value {
         0 => t!("Online.nat_checking"),
         1 => t!("Online.nat_types.open_internet"),

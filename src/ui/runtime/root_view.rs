@@ -1,5 +1,5 @@
 use gpui::{
-    AnyView, BorrowAppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement,
+    AnyView, Context, InteractiveElement as _, IntoElement, ParentElement,
     Render, Styled, Subscription, Window, div,
 };
 

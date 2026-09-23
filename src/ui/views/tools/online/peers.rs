@@ -1,5 +1,4 @@
 use crate::ui::components::icon::themed_icon;
-use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::tools::state::{
@@ -30,7 +29,7 @@ pub(super) fn render_room_members_card(
 
 fn render_room_members_header(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &ToolsPageState,
     disabled: bool,
 ) -> Div {
@@ -151,7 +150,7 @@ pub(super) fn render_network_nodes_card(
 
 fn render_network_nodes_header(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &ToolsPageState,
     disabled: bool,
     expanded: bool,
@@ -240,7 +239,7 @@ fn render_network_nodes_header(
         )
 }
 
-fn render_collapsed_hint(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> Div {
+fn render_collapsed_hint(colors: &ThemeColors, _i18n: &I18n, state: &ToolsPageState) -> Div {
     let peer_count = state.peers.len();
     crate::ui::components::page_shell::inner_well(colors)
         .w_full()
@@ -388,7 +387,7 @@ fn render_peer_row(
 
 fn render_player_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     player: &OnlinePlayerEntry,
 ) -> Stateful<Div> {
     let is_host = player.is_room_host;
@@ -471,7 +470,7 @@ fn render_player_row(
         )
 }
 
-fn connection_detail(i18n: &I18n, peer: &OnlinePeerEntry) -> SharedString {
+fn connection_detail(_i18n: &I18n, peer: &OnlinePeerEntry) -> SharedString {
     use crate::core::online::EasyTierConnectionKind;
 
     let mut details = vec![match peer.connection_kind {
@@ -499,7 +498,7 @@ fn connection_detail(i18n: &I18n, peer: &OnlinePeerEntry) -> SharedString {
     SharedString::from(details.join(" · "))
 }
 
-fn peer_address(i18n: &I18n, peer: &OnlinePeerEntry) -> SharedString {
+fn peer_address(_i18n: &I18n, peer: &OnlinePeerEntry) -> SharedString {
     peer.ipv4
         .clone()
         .or_else(|| peer.remote_endpoint.clone())

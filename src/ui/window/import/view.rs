@@ -6,7 +6,7 @@ use crate::core::minecraft::assets::{
 use crate::core::minecraft::import::{
     ImportCheckResult, PackagePreview, PreviewIconData, PreviewImageFormat, WorldPackReference,
 };
-use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
+use crate::core::minecraft::paths::{BuildType, Edition};
 use crate::core::version::launch_versions::version_folder_matches;
 use crate::launch::ImportLaunchContext;
 use crate::ui::components::dropdown::{self, Dropdown, DropdownOption};
@@ -1423,7 +1423,7 @@ fn render_preview_card(
     now: Instant,
     cx: &App,
 ) -> AnyElement {
-    let i18n = cx.global::<I18n>();
+    let _i18n = cx.global::<I18n>();
     if this.is_inspecting {
         return section_shell(colors)
             .flex()
@@ -2303,12 +2303,12 @@ fn preview_info_row(
 
 fn render_embedded_pack_list(
     sub_packs: &[PackagePreview],
-    view: &ImportWindowView,
+    _view: &ImportWindowView,
     colors: &ThemeColors,
     cx: &App,
     title: SharedString,
 ) -> AnyElement {
-    let i18n = cx.global::<I18n>();
+    let _i18n = cx.global::<I18n>();
     let mut list = div().w_full().flex().flex_col().gap(px(8.)).child(
         div()
             .flex()
@@ -2392,7 +2392,7 @@ fn render_world_pack_reference_list(
     colors: &ThemeColors,
     cx: &App,
 ) -> AnyElement {
-    let i18n = cx.global::<I18n>();
+    let _i18n = cx.global::<I18n>();
     let count = references.len().to_string();
     let matched_count = references
         .iter()
@@ -2882,7 +2882,7 @@ fn render_conflict_dialog(
     colors: &ThemeColors,
     cx: &mut Context<ImportWindowView>,
 ) -> AnyElement {
-    let i18n = cx.global::<I18n>();
+    let _i18n = cx.global::<I18n>();
     let conflict_type = conflict.conflict_type.clone();
     let existing_preview = conflict.existing_pack_info.as_ref();
     let incoming_preview = view.preview.as_ref();
@@ -3188,7 +3188,7 @@ fn render_conflict_pack_card(
     title: SharedString,
     preview: Option<&PackagePreview>,
     emphasize: bool,
-    view: &ImportWindowView,
+    _view: &ImportWindowView,
     cx: &App,
 ) -> AnyElement {
     let version_text = preview

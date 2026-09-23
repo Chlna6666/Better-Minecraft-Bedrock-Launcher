@@ -197,7 +197,7 @@ pub struct SettingsPageState {
         Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
     >,
     pub plugin_config_cache: BTreeMap<PluginResourceCacheKey, Option<String>>,
-    pub plugin_config_schema_cache:
+    pub(super) plugin_config_schema_cache:
         BTreeMap<PluginResourceCacheKey, Option<Arc<super::plugins::PluginConfigSchema>>>,
     pub loaded: bool,
 }

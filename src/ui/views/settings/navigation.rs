@@ -6,7 +6,7 @@ use gpui::*;
 
 pub(super) fn render_tabs(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     active: SettingsTab,
     layout: &SettingsLayout,
 ) -> Div {

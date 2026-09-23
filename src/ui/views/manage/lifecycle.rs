@@ -152,7 +152,7 @@ impl ManagePageView {
             return;
         }
 
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let input = cx.update_global(|state: &mut ManagePageState, cx| {
             let initial = state.asset_search_query.to_string();
             cx.new(|cx| {
@@ -193,7 +193,7 @@ impl ManagePageView {
             return;
         }
 
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let input = cx.update_global(|state: &mut ManagePageState, cx| {
             let initial = state.screenshot_search_query.to_string();
             cx.new(|cx| {
@@ -234,7 +234,7 @@ impl ManagePageView {
             return;
         }
 
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let input = cx.update_global(|state: &mut ManagePageState, cx| {
             let initial = state.server_search_query.to_string();
             cx.new(|cx| {

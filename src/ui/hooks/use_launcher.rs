@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Error;
 use gpui::{
     App, AppContext, AsyncApp, BorrowAppContext, ClipboardItem, Context, SharedString,
-    Subscription, Timer,
+    Subscription,
 };
 use gpui_hooks::hooks::{UseRefHook, UseStateHook};
 use tracing::{debug, info, warn};

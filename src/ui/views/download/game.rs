@@ -21,7 +21,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::warn;
 
 use super::common::status_card;
 
@@ -212,7 +212,7 @@ impl Render for DownloadGamePanelView {
 }
 
 #[derive(Default)]
-struct GamePanelRenderCache {
+pub(super) struct GamePanelRenderCache {
     last_signature: Option<GamePanelRenderSignature>,
     filtered_total: usize,
     total_pages: usize,
@@ -621,7 +621,7 @@ pub(super) fn render_game_panel(
     }
 
     let state = cx.global::<DownloadPageState>();
-    let mut panel = div()
+    let panel = div()
         .size_full()
         .flex()
         .flex_col()
@@ -648,7 +648,7 @@ pub(super) fn render_game_panel(
         )));
     }
 
-    let (filtered_total, total_pages, page_index, page_rows) = (
+    let (filtered_total, _total_pages, _page_index, page_rows) = (
         cache.filtered_total,
         cache.total_pages,
         cache.page_index,
@@ -843,7 +843,7 @@ fn render_pager(
     showing: usize,
     total: usize,
 ) -> Div {
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
     let state = cx.global::<DownloadPageState>();
     let page_index = state.page_index;
     let page_size = state.page_size;
@@ -904,7 +904,7 @@ fn render_pager(
                 if !enabled {
                     return;
                 }
-                cx.update_global(|s: &mut DownloadPageState, cx| {
+                cx.update_global(|s: &mut DownloadPageState, _cx| {
                     on_click(s);
                     s.game_rows_scroll.set_offset(point(px(0.), px(0.)));
                 });
@@ -951,7 +951,7 @@ fn render_pager(
                 }
             })
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                cx.update_global(|s: &mut DownloadPageState, cx| {
+                cx.update_global(|s: &mut DownloadPageState, _cx| {
                     s.page_index = page;
                     s.game_rows_scroll.set_offset(point(px(0.), px(0.)));
                 });
@@ -1084,7 +1084,7 @@ fn render_pager(
 
 fn render_version_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     version: SharedString,
     channel: SharedString,
     is_preview: bool,
@@ -1297,7 +1297,7 @@ fn render_version_row(
             let package_id = package_id.clone();
             let file_name = file_name.clone();
             let version = version.clone();
-            let md5_string_outer = md5.clone().map(|s| s.to_string());
+            let _md5_string_outer = md5.clone().map(|s| s.to_string());
             let active_task = active_task.clone();
             let active_task_running = active_task_running || active_task.is_some();
             let local_path = local_path.clone();
@@ -1632,7 +1632,7 @@ pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
     .detach();
 }
 
-fn channel_label(i18n: &I18n, version_type: i32) -> SharedString {
+fn channel_label(_i18n: &I18n, version_type: i32) -> SharedString {
     match version_type {
         0 => t!("common.release"),
         1 => SharedString::from("Beta"),

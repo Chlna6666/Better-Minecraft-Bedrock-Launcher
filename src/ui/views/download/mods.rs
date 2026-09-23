@@ -20,7 +20,7 @@ type ModPanelRenderSignature = (
 );
 
 #[derive(Default)]
-pub(super) struct ModPanelRenderCache {
+pub(in crate::ui::views) struct ModPanelRenderCache {
     last_signature: Option<ModPanelRenderSignature>,
     total_mods: usize,
     total_pages: usize,
@@ -175,7 +175,7 @@ pub(super) fn render_mod_panel(
         .child(pagination)
 }
 
-fn render_loading_state(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_loading_state(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .size_full()
         .flex()
@@ -217,7 +217,7 @@ fn render_loading_state(colors: &ThemeColors, i18n: &I18n) -> Div {
         )
 }
 
-fn render_error_state(colors: &ThemeColors, err: &SharedString, i18n: &I18n) -> Div {
+fn render_error_state(colors: &ThemeColors, err: &SharedString, _i18n: &I18n) -> Div {
     let err_str = err.to_string();
     div()
         .size_full()
@@ -274,7 +274,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString, i18n: &I18n) -> 
         )
 }
 
-fn render_empty_state(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_empty_state(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .size_full()
         .flex()
@@ -352,7 +352,7 @@ fn render_mod_card(
     colors: &ThemeColors,
     mod_entry: &LeviLaminaModEntry,
     idx: usize,
-    i18n: &I18n,
+    _i18n: &I18n,
     image_cache: &Entity<BoundedImageCache>,
 ) -> AnyElement {
     let mod_clone = (*mod_entry).clone();
@@ -594,7 +594,7 @@ fn render_pagination(
     page_index: usize,
     total_pages: usize,
     _total_mods: usize,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> Div {
     if total_pages <= 1 {
         return div();
@@ -1049,7 +1049,7 @@ pub(super) fn render_detail_modal_content(
 }
 
 fn start_mod_install(cx: &mut App, package_id: String, version: String) {
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
     if version.trim().is_empty() {
         cx.update_global(|state: &mut DownloadPageState, _cx| {
             state.levilauncher_install_error = Some(t!("LeviLaminaMods.no_version"));
@@ -1098,7 +1098,7 @@ fn start_mod_install(cx: &mut App, package_id: String, version: String) {
 fn render_dependencies_list(
     colors: &ThemeColors,
     deps: &std::collections::HashMap<String, String>,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> AnyElement {
     if deps.is_empty() {
         return div()

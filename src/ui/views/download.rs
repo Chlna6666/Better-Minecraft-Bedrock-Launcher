@@ -8,7 +8,6 @@ use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use gpui::*;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 use tracing::warn;
 
 mod common;
@@ -460,7 +459,7 @@ impl DownloadPageView {
         if let Some(input) = page_jump_input {
             let sub = cx.subscribe(
                 &input,
-                |this, input, ev: &crate::ui::components::input::InputEvent, cx| {
+                |_this, input, ev: &crate::ui::components::input::InputEvent, cx| {
                     if matches!(
                         ev,
                         crate::ui::components::input::InputEvent::PressEnter { .. }
@@ -654,8 +653,8 @@ impl Render for DownloadPageView {
     }
 }
 
-pub fn render_download_page(
-    window: &mut Window,
+pub(super) fn render_download_page(
+    _window: &mut Window,
     cx: &mut Context<DownloadPageView>,
     colors: ThemeColors,
     _window_width: Pixels,

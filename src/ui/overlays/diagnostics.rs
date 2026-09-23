@@ -14,7 +14,7 @@ pub fn render_diagnostics_overlay(
     colors: &ThemeColors,
     window_width: Pixels,
     window_height: Pixels,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &DiagnosticsState,
     auto_sentry_enabled: bool,
 ) -> Option<AnyElement> {

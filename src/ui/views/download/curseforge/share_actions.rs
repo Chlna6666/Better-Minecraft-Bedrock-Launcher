@@ -1,5 +1,4 @@
 use crate::ui::components::toast;
-use crate::ui::state::i18n::I18n;
 use crate::ui::views::download::common::{format_count, format_date_ymd};
 use crate::ui::views::download::state::CurseForgeModEntry;
 use gpui::*;

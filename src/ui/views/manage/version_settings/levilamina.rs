@@ -14,7 +14,7 @@ use tracing::warn;
 pub(super) fn render_card(
     state: &VersionSettingsModalState,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
     let installed_version = state.levilamina_installation.loader_version.clone();

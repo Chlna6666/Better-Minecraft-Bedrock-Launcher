@@ -34,7 +34,7 @@ pub fn render_launcher_overlay(
     let smooth = (factor * factor * (3.0 - 2.0 * factor)).clamp(0.0, 1.0);
     let now = window.animation_time();
     let theme_state = cx.global::<ThemeState>();
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
     let colors = lerp_theme_colors(
         &LightColors::colors(),
         &DarkColors::colors(),

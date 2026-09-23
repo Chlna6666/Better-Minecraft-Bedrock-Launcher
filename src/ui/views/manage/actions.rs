@@ -78,7 +78,7 @@ impl ManagePageView {
         let version = modal_state.version.clone();
         let config = modal_state.config.clone();
         let icon_source_path = modal_state.icon_source_path.clone();
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         cx.spawn(async move |handle, cx| {
             let version_for_save = version.clone();
             let config_for_save = config.clone();
@@ -274,7 +274,7 @@ impl ManagePageView {
         let Some(version) = self.selected_version(state).cloned() else {
             return;
         };
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let version_name = version.display_name().to_string();
         self.confirm_dialog = Some(ConfirmDialogState {
             title: t!("ManagePage.delete_version_title"),
@@ -312,7 +312,7 @@ impl ManagePageView {
             return;
         };
         let folder = version.folder.to_string();
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         match crate::utils::shortcut::create_desktop_shortcut(&folder, &folder) {
             Ok(path) => {
                 let message = t!(

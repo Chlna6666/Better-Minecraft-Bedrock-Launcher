@@ -220,7 +220,7 @@ fn welcome_size(width: f32, height: f32) -> (f32, f32) {
     (ideal_w.min(max_w), ideal_h.min(max_h))
 }
 
-fn render_welcome_header(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_welcome_header(state: &OnboardingTourState, colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .w_full()
         .px(px(22.0))
@@ -379,7 +379,7 @@ fn animated_welcome_feature(
     .into_any_element()
 }
 
-fn render_welcome_footer(colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_welcome_footer(colors: &ThemeColors, _i18n: &I18n) -> Div {
     div()
         .w_full()
         .px(px(22.0))

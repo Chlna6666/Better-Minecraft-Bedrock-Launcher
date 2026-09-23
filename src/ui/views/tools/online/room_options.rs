@@ -45,7 +45,7 @@ pub(super) fn render_advanced_section(
 
 fn render_advanced_panel(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &ToolsPageState,
 ) -> impl IntoElement {
     crate::ui::components::page_shell::inner_well(colors)

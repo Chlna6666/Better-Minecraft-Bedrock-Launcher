@@ -271,7 +271,7 @@ fn scroll_event_delta_y(event: &ScrollWheelEvent) -> Pixels {
     }
 }
 
-fn render_font_info(colors: &ThemeColors, i18n: &I18n, font_family: SharedString) -> Div {
+fn render_font_info(colors: &ThemeColors, _i18n: &I18n, font_family: SharedString) -> Div {
     div()
         .flex_none()
         .rounded(px(crate::ui::theme::tokens::radius::MD))
@@ -450,7 +450,7 @@ fn metadata_chip(
     colors: &ThemeColors,
     label: SharedString,
     value: SharedString,
-    i18n: &I18n,
+    _i18n: &I18n,
 ) -> Div {
     let value = if value.as_ref().trim().is_empty() {
         t!("AboutSection.dependencies.unknown")
@@ -525,7 +525,7 @@ fn dependency_source_button(
         })
 }
 
-fn source_kind_label(i18n: &I18n, source_kind: &str) -> SharedString {
+fn source_kind_label(_i18n: &I18n, source_kind: &str) -> SharedString {
     match source_kind {
         "registry" => t!("AboutSection.dependencies.source_registry"),
         "git" => t!("AboutSection.dependencies.source_git"),

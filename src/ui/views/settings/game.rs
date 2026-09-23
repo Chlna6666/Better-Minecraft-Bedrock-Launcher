@@ -7,7 +7,7 @@ use super::common::{snapshot_from_state, spawn_persist_settings};
 use super::rows::{setting_dropdown_row, setting_toggle_row, tab_title};
 use crate::ui::components::dropdown::DropdownOption;
 
-pub(super) fn render_game_tab(colors: &ThemeColors, i18n: &I18n, state: &SettingsPageState) -> Div {
+pub(super) fn render_game_tab(colors: &ThemeColors, _i18n: &I18n, state: &SettingsPageState) -> Div {
     let section = t!("Settings.tabs.game");
 
     let display_mode_options = vec![
@@ -44,7 +44,7 @@ pub(super) fn render_game_tab(colors: &ThemeColors, i18n: &I18n, state: &Setting
                     1 => LauncherDisplayMode::CloseOnLaunch,
                     _ => LauncherDisplayMode::KeepVisible,
                 };
-                let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+                let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                     if settings.launcher_display_mode == mode {
                         return snapshot_from_state(settings);
                     }

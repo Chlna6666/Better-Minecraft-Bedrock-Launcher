@@ -30,7 +30,7 @@ impl ManagePageView {
         entry: ManageScreenshotEntry,
         cx: &mut Context<Self>,
     ) {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         self.confirm_dialog = Some(ConfirmDialogState {
             title: t!("ManagePage.delete_screenshot_title"),
             description: t!(
@@ -121,7 +121,7 @@ pub(super) fn build_filtered_screenshot_indices(
 }
 pub(super) fn render_screenshot_list(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     version: &ManagedVersionEntry,
     state: &ManagePageState,
     filtered_indices: &[usize],

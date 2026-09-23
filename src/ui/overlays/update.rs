@@ -1,7 +1,7 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::adaptive::{
-    AdaptiveModalSpec, AdaptiveSizeClass, WindowMetrics, adaptive_modal_size,
+    AdaptiveModalSpec, WindowMetrics, adaptive_modal_size,
 };
 use crate::ui::components::markdown_renderer::{
     MarkdownDocument, MarkdownItem, render_markdown_item,
@@ -15,7 +15,7 @@ use crate::utils::updater::ReleaseSummary;
 use gpui::list;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui::{AnimationExt, StatefulInteractiveElement as _};
+use gpui::AnimationExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -137,7 +137,7 @@ fn render_markdown_view(view: Entity<UpdateMarkdownView>) -> AnyElement {
     view.into_any_element()
 }
 
-fn format_date(iso: Option<String>, i18n: &I18n) -> SharedString {
+fn format_date(iso: Option<String>, _i18n: &I18n) -> SharedString {
     let Some(s) = iso else {
         return t!("UpdateModal.date.unknown");
     };
@@ -340,7 +340,7 @@ pub fn render_update_modal(
                         .hover(|s| s.bg(colors.surface).text_color(colors.text_primary))
                         .on_mouse_down(MouseButton::Left, |_, _window, cx| {
                             let now = Instant::now();
-                            cx.update_global(|u: &mut UpdateState, cx| {
+                            cx.update_global(|u: &mut UpdateState, _cx| {
                                 u.set_show_modal(false, now);
                             });
                         })
@@ -438,7 +438,7 @@ pub fn render_update_modal(
                         }
                     }
                     let now = Instant::now();
-                    cx.update_global(|u: &mut UpdateState, cx| {
+                    cx.update_global(|u: &mut UpdateState, _cx| {
                         u.cancel_download();
                         u.set_show_modal(false, now);
                     });
@@ -637,7 +637,7 @@ pub fn render_update_modal(
         .hover(|this| this.bg(colors.surface).text_color(colors.text_primary))
         .on_mouse_down(MouseButton::Left, |_, _window, cx| {
             let now = Instant::now();
-            cx.update_global(|u: &mut UpdateState, cx| {
+            cx.update_global(|u: &mut UpdateState, _cx| {
                 u.set_show_modal(false, now);
             });
         })

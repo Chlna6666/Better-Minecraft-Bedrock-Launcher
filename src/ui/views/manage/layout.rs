@@ -6,7 +6,7 @@ pub(super) fn render_version_header(
     state: &ManagePageState,
     cx: &mut Context<ManagePageView>,
 ) -> Div {
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
     let version_title = {
         let display_name = version.display_name();
         if display_name.as_ref().trim().is_empty() {
@@ -157,7 +157,7 @@ pub(super) fn render_tab_bar(
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let view_handle = cx.entity().downgrade();
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
 
     UnderlineTabs::new(
         colors,
@@ -269,7 +269,7 @@ pub(super) fn render_pack_subtype_switch(
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let view_handle = cx.entity().downgrade();
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
 
     AnimatedSegmentTabs::new(
         "manage-pack-subtype-tabs",
@@ -365,7 +365,7 @@ pub(super) fn render_gdk_dropdown(
     state: &ManagePageState,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
     let options: Vec<_> = state
         .gdk_users
         .iter()

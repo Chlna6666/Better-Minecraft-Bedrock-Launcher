@@ -51,12 +51,12 @@ impl ManagePageView {
         self.clear_drop_hover(cx);
         let paths = supported_paths(paths, LOCAL_GAME_PACKAGE_EXTENSIONS);
         if paths.is_empty() {
-            let i18n = cx.global::<I18n>().clone();
+            let _i18n = cx.global::<I18n>().clone();
             toast::error(cx, t!("Manage.drop_version_package"));
             return;
         }
 
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let files = summarize_string_paths(&paths);
         self.confirm_dialog = Some(ConfirmDialogState {
             title: t!("Manage.drop_version_confirm_title"),
@@ -75,12 +75,12 @@ impl ManagePageView {
 
     pub(super) fn import_assets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(import_context) = self.asset_import_context(cx) else {
-            let i18n = cx.global::<I18n>().clone();
+            let _i18n = cx.global::<I18n>().clone();
             toast::error(cx, t!("Manage.select_import_version"));
             return;
         };
         let Some(picker) = asset_picker_spec(import_context.tab) else {
-            let i18n = cx.global::<I18n>().clone();
+            let _i18n = cx.global::<I18n>().clone();
             toast::error(cx, t!("Manage.import_not_supported"));
             return;
         };
@@ -120,12 +120,12 @@ impl ManagePageView {
     ) {
         self.clear_drop_hover(cx);
         let Some(import_context) = self.asset_import_context(cx) else {
-            let i18n = cx.global::<I18n>().clone();
+            let _i18n = cx.global::<I18n>().clone();
             toast::error(cx, t!("Manage.select_import_version"));
             return;
         };
         let Some(picker) = asset_picker_spec(import_context.tab) else {
-            let i18n = cx.global::<I18n>().clone();
+            let _i18n = cx.global::<I18n>().clone();
             toast::error(cx, t!("Manage.drop_import_not_supported"));
             return;
         };
@@ -136,7 +136,7 @@ impl ManagePageView {
             .cloned()
             .collect::<Vec<_>>();
         if supported.is_empty() {
-            let i18n = cx.global::<I18n>().clone();
+            let _i18n = cx.global::<I18n>().clone();
             let message = if import_context.tab == ManageTab::Mod {
                 t!("Manage.drop_mod_file")
             } else {
@@ -473,7 +473,7 @@ fn drop_target_label(target: ManageDropTarget, i18n: &I18n) -> SharedString {
 }
 
 pub(super) fn start_version_imports(paths: Vec<String>, cx: &mut App) {
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
     cx.spawn(async move |cx| {
         for path in paths {
             let task_id = start_local_game_package_import(path).await;
@@ -504,7 +504,7 @@ pub(super) fn start_mod_import(
     };
     match crate::core::native_mods::start_import(request) {
         Ok(task_id) => {
-            let i18n = cx.global::<I18n>().clone();
+            let _i18n = cx.global::<I18n>().clone();
             toast::push(cx, t!("Manage.import_task_started"));
             watch_import_task(task_id, cx);
         }

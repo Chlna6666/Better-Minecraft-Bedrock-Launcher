@@ -57,7 +57,7 @@ pub fn dialog_header(
 
 /// Action buttons footer for standard dialogs.
 pub fn dialog_actions(
-    colors: &ThemeColors,
+    _colors: &ThemeColors,
     cancel_button: impl IntoElement,
     confirm_button: impl IntoElement,
 ) -> Div {

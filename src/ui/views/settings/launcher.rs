@@ -93,7 +93,7 @@ pub(super) fn render_connectivity_modal(
 
 fn launcher_sentry_test_row(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let enabled = state.error_report_sentry_enabled;
@@ -238,7 +238,7 @@ fn submit_language(request: LanguageRequest, cx: &mut App) {
                 }
                 let error = error_text.unwrap_or_else(|| "unknown error".to_string());
                 let message = cx
-                    .read_global(|i18n: &I18n, _cx| {
+                    .read_global(|_i18n: &I18n, _cx| {
                         t!("LauncherSettings.language_save_failed", error = error)
                     })
                     .unwrap_or_else(|_| SharedString::from("Language save failed"));
@@ -270,7 +270,7 @@ fn launcher_language_row(
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    fn language_label(i18n: &I18n, code: &str) -> SharedString {
+    fn language_label(_i18n: &I18n, code: &str) -> SharedString {
         let code = code.trim();
         if code.eq_ignore_ascii_case("auto") {
             return t!("LauncherSettings.lang_options.auto");
@@ -334,7 +334,7 @@ fn launcher_language_row(
             } else {
                 LanguagePreference::Explicit(resolved)
             };
-            cx.update_global(|settings: &mut SettingsPageState, cx| {
+            cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.language = SharedString::from(new_code.clone());
             });
             submit_language(
@@ -348,7 +348,7 @@ fn launcher_language_row(
     )
 }
 
-fn render_engine_label(i18n: &I18n, renderer_backend: &SharedString) -> SharedString {
+fn render_engine_label(_i18n: &I18n, renderer_backend: &SharedString) -> SharedString {
     match crate::config::config::normalize_renderer_backend(renderer_backend.as_ref()).as_str() {
         "vulkan" => t!("LauncherSettings.render_engine.vulkan"),
         "dx12" => t!("LauncherSettings.render_engine.dx12"),
@@ -406,7 +406,7 @@ fn launcher_render_engine_row(
                 .unwrap_or_else(|| SharedString::from("auto"))
                 .to_string();
             let selected_renderer_backend = renderer_backend.clone();
-            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.renderer_backend = SharedString::from(renderer_backend);
                 settings.gpu_adapter_name =
                     SharedString::from(crate::config::config::default_gpu_adapter_name());
@@ -448,7 +448,7 @@ fn gpu_adapter_options(state: &SettingsPageState) -> Vec<SharedString> {
     values
 }
 
-fn gpu_adapter_label(i18n: &I18n, adapter_name: &SharedString) -> SharedString {
+fn gpu_adapter_label(_i18n: &I18n, adapter_name: &SharedString) -> SharedString {
     if adapter_name.as_ref().eq_ignore_ascii_case("auto") {
         t!("LauncherSettings.gpu_adapter.auto")
     } else {
@@ -496,7 +496,7 @@ fn launcher_gpu_adapter_row(
                 .cloned()
                 .unwrap_or_else(|| SharedString::from("auto"))
                 .to_string();
-            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.gpu_adapter_name = SharedString::from(gpu_adapter_name);
                 snapshot_from_state(settings)
             });
@@ -507,7 +507,7 @@ fn launcher_gpu_adapter_row(
 
 fn launcher_update_channel_dropdown(
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let options = vec![
@@ -531,7 +531,7 @@ fn launcher_update_channel_dropdown(
         true,
         move |index, _window, cx| {
             let nightly = index == 1;
-            let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.update_channel_nightly = nightly;
                 snapshot_from_state(settings)
             });
@@ -557,7 +557,7 @@ fn launcher_auto_update_group(
                 colors,
                 state.auto_check_updates,
                 move |cx| {
-                    let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
+                    let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                         settings.auto_check_updates = !settings.auto_check_updates;
                         snapshot_from_state(settings)
                     });
