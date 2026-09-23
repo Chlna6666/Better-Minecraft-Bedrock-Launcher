@@ -272,6 +272,7 @@ fn try_selective_any_view_prepaint(
         }
         let target_prepaint_before_end = window.prepaint_index();
 
+        let target_prepaint_start = window.prepaint_index();
         if !window.begin_fresh_view_dispatch_for_fragment(
             &source_target.prepaint_range,
             target.view.entity_id(),
@@ -284,7 +285,6 @@ fn try_selective_any_view_prepaint(
         let mut target_view = target.view;
         let mut target_request_layout = None;
         let target_bounds = source_target.bounds;
-        let target_prepaint_start = window.prepaint_index();
         let target_prepaint = window.with_cached_view_traversal_context(
             &target.traversal_context,
             |window| {
