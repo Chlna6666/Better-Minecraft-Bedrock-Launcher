@@ -463,6 +463,15 @@ impl DispatchTree {
         view_path
     }
 
+    /// Iterates every view that participated in the committed dispatch tree.
+    ///
+    /// This is used by retained-view invalidation to precompute the nearest cached traversal
+    /// boundary for non-cached descendant views. The iterator intentionally exposes entity ids
+    /// only; callers still resolve ancestry through `view_path`.
+    pub(crate) fn view_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.view_node_ids.keys().copied()
+    }
+
     pub fn node(&self, node_id: DispatchNodeId) -> &DispatchNode {
         &self.nodes[node_id.0]
     }
