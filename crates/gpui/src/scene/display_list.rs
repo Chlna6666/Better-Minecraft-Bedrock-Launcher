@@ -277,6 +277,74 @@ impl Scene {
         depth == 0
     }
 
+    /// Returns whether a retained scene range can be replayed without inheriting structural
+    /// context from operations outside the range.
+    ///
+    /// A fragment that starts inside an element-blur/compositor capture may contain only ordinary
+    /// Primitive operations and therefore look "balanced" in isolation, while still depending on
+    /// the outer StartBlur that redirected those primitives into a nested Scene. Replaying such a
+    /// fragment at window-root or another cached boundary would detach the pixels from their
+    /// original capture and corrupt blur/composite output.
+    pub(crate) fn range_is_independently_replayable(&self, range: Range<usize>) -> bool {
+        if range.start > range.end || range.end > self.paint_operations.len() {
+            return false;
+        }
+        if range.is_empty() {
+            return true;
+        }
+
+        let mut blur_depth = 0usize;
+        let mut layer_depth = 0usize;
+        for operation in &self.paint_operations[..range.start] {
+            match operation {
+                PaintOperation::StartBlur(_) => blur_depth = blur_depth.saturating_add(1),
+                PaintOperation::EndBlur => {
+                    let Some(next_depth) = blur_depth.checked_sub(1) else {
+                        return false;
+                    };
+                    blur_depth = next_depth;
+                }
+                PaintOperation::StartLayer(_) => layer_depth = layer_depth.saturating_add(1),
+                PaintOperation::EndLayer => {
+                    let Some(next_depth) = layer_depth.checked_sub(1) else {
+                        return false;
+                    };
+                    layer_depth = next_depth;
+                }
+                PaintOperation::Primitive(_) => {}
+            }
+        }
+
+        // Independent replay must start at a structural boundary. In particular, a child range
+        // inside paint_element_blur/composite_layer is not standalone even if it contains no
+        // StartBlur/EndBlur itself.
+        if blur_depth != 0 || layer_depth != 0 {
+            return false;
+        }
+
+        for operation in &self.paint_operations[range] {
+            match operation {
+                PaintOperation::StartBlur(_) => blur_depth = blur_depth.saturating_add(1),
+                PaintOperation::EndBlur => {
+                    let Some(next_depth) = blur_depth.checked_sub(1) else {
+                        return false;
+                    };
+                    blur_depth = next_depth;
+                }
+                PaintOperation::StartLayer(_) => layer_depth = layer_depth.saturating_add(1),
+                PaintOperation::EndLayer => {
+                    let Some(next_depth) = layer_depth.checked_sub(1) else {
+                        return false;
+                    };
+                    layer_depth = next_depth;
+                }
+                PaintOperation::Primitive(_) => {}
+            }
+        }
+
+        blur_depth == 0 && layer_depth == 0
+    }
+
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
         let mut bounds = None::<Bounds<ScaledPixels>>;
         for operation in self.paint_operations.get(range.clone())? {
