@@ -763,6 +763,30 @@ impl Scene {
         self.animation_values.extend(values);
     }
 
+    /// Collects every atlas allocation referenced by this retained scene, including nested
+    /// element-blur/compositor scenes.
+    ///
+    /// Render backends use this immediately before submission to guarantee that an atlas
+    /// retirement can never invalidate a tile still sampled by the Scene being encoded.
+    pub(crate) fn collect_atlas_tile_ids_into(
+        &self,
+        ids: &mut FxHashSet<(crate::AtlasTextureId, u32)>,
+    ) {
+        ids.extend(
+            self.monochrome_sprites
+                .iter()
+                .map(|sprite| (sprite.tile.texture_id, sprite.tile.tile_id.0)),
+        );
+        ids.extend(
+            self.polychrome_sprites
+                .iter()
+                .map(|sprite| (sprite.tile.texture_id, sprite.tile.tile_id.0)),
+        );
+        for blur in &self.blurs {
+            blur.content.collect_atlas_tile_ids_into(ids);
+        }
+    }
+
     /// Collects atlas allocation identities referenced by image/emoji sprites in this retained
     /// scene, including nested element-blur scenes.
     ///
