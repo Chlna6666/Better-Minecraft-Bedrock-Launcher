@@ -594,7 +594,7 @@ impl NovaRenderer {
             let mut live_scene_tiles = FxHashSet::default();
             render_plan
                 .scene
-                .collect_polychrome_tile_ids_into(&mut live_scene_tiles);
+                .collect_atlas_tile_ids_into(&mut live_scene_tiles);
             if self
                 .atlas
                 .has_retirable_pending_removals(&live_scene_tiles)
