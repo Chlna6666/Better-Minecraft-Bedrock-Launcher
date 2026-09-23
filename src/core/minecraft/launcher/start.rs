@@ -1,4 +1,8 @@
 #![cfg(target_os = "windows")]
+#![expect(
+    unsafe_code,
+    reason = "UWP activation and process discovery call Windows COM and process APIs"
+)]
 use std::io;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt; // [新增] 引入 CommandExt 以支持 creation_flags
@@ -9,7 +13,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use windows::Foundation::Uri;
 use windows::System::{Launcher, LauncherOptions};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WIN32_ERROR};
+use windows::Win32::Foundation::{CloseHandle, WIN32_ERROR};
 use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -18,14 +22,14 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    CREATE_NO_WINDOW, INFINITE, OpenProcess, PROCESS_ACCESS_RIGHTS,
+    INFINITE, OpenProcess, PROCESS_ACCESS_RIGHTS,
     PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::{
     ACTIVATEOPTIONS, ApplicationActivationManager, IApplicationActivationManager,
 };
 use windows::core::PWSTR;
-use windows::core::{HRESULT, HSTRING, PCWSTR, Result as WindowsResult};
+use windows::core::{HRESULT, HSTRING, Result as WindowsResult};
 
 // 检查 PID 是否属于目标包
 pub fn is_process_in_package(pid: u32, target_family_name: &str) -> bool {
@@ -279,7 +283,6 @@ pub async fn launch_uwp(edition: &str, launch_args: Option<&str>) -> io::Result<
                 let _ = Command::new("explorer.exe")
                     .arg(format!("shell:appsFolder\\{}", app_user_model_id))
                     .spawn();
-                launched_via_uri = true;
             }
         }
     }

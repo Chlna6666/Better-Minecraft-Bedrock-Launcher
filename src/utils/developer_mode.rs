@@ -1,4 +1,5 @@
 #![cfg(target_os = "windows")]
+#![expect(unsafe_code, reason = "developer-mode detection calls native Windows APIs")]
 use std::io;
 use std::mem::size_of;
 

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "startup singleton and foreground handling use native Windows handles"
+)]
+
 use crate::launch::{LaunchMode, parse_launch_mode};
 use anyhow::Result;
 use std::path::Path;

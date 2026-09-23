@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows shell identity API consumes a process-lifetime UTF-16 pointer"
+)]
+
 use crate::http::gpui_client::create_gpui_http_client;
 use crate::i18n::Locale;
 use crate::launch::LaunchMode;

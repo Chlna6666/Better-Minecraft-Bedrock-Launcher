@@ -6,7 +6,6 @@ use once_cell::sync::Lazy;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};

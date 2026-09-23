@@ -1,4 +1,8 @@
 #![cfg(target_os = "windows")]
+#![expect(
+    unsafe_code,
+    reason = "mouse locking and foreground checks use Win32 window and input handles"
+)]
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
@@ -33,7 +37,7 @@ fn find_uwp_frame(title_substring: &str) -> Option<HWND> {
         hwnd: HWND,
     }
 
-    unsafe extern "system" fn enum_host(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe extern "system" fn enum_host(hwnd: HWND, lparam: LPARAM) -> BOOL { unsafe {
         let data = &mut *(lparam.0 as *mut D);
         if !IsWindowVisible(hwnd).as_bool() {
             return TRUE;
@@ -60,7 +64,7 @@ fn find_uwp_frame(title_substring: &str) -> Option<HWND> {
         }
 
         TRUE
-    }
+    }}
 
     let mut data = D {
         title: title_substring,

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "UDP owner rows are copied from validated Windows IP Helper output buffers"
+)]
+
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 

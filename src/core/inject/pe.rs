@@ -237,7 +237,7 @@ pub fn inject_dll_import(
 
     let size_of_init_data_off = opt_header_pos + 8;
     let section_alignment_off = opt_header_pos + 32;
-    let file_alignment_off = opt_header_pos + 36;
+    let _file_alignment_off = opt_header_pos + 36;
     let size_of_image_off = opt_header_pos + 56;
     let checksum_off = opt_header_pos + 64;
     let size_of_headers_off = opt_header_pos + 60;
@@ -341,10 +341,7 @@ pub fn inject_dll_import(
     }
 
     // 准备导入内容
-    let mut thunk_value_64 = 0u64;
-    let mut thunk_value_32 = 0u32;
-
-    if let Some(exp_name) = export_name {
+    let (thunk_value_64, thunk_value_32) = if let Some(exp_name) = export_name {
         // [方式A] 按名称导入
         let ibn_rva = new_sect_rva + new_data.len() as u32;
         new_data.write_u16::<LittleEndian>(0).unwrap(); // Hint
@@ -354,14 +351,12 @@ pub fn inject_dll_import(
             new_data.push(0);
         } // 8字节对齐
 
-        thunk_value_64 = ibn_rva as u64;
-        thunk_value_32 = ibn_rva as u32;
+        (ibn_rva as u64, ibn_rva)
     } else {
         // [方式B] 按序号导入 (Ordinal 1)
         // 最高位设置为 1，低位为序号
-        thunk_value_64 = IMAGE_ORDINAL_FLAG64 | 1;
-        thunk_value_32 = IMAGE_ORDINAL_FLAG32 | 1;
-    }
+        (IMAGE_ORDINAL_FLAG64 | 1, IMAGE_ORDINAL_FLAG32 | 1)
+    };
 
     // 写入 Thunk Table (ILT / IAT)
     let ilt_rva = new_sect_rva + new_data.len() as u32;

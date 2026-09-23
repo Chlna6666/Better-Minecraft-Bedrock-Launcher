@@ -1,3 +1,5 @@
+#![expect(unsafe_code, reason = "console logging configures native Windows output handles")]
+
 use crate::utils::diagnostics;
 use crate::utils::file_ops;
 use crate::utils::log_manager::ManagedLogWriter;
@@ -9,7 +11,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber, debug, error, info, warn};
+use tracing::{Event, Level, Subscriber, info};
+#[cfg(test)]
+use tracing::{debug, error, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::fmt::format::Writer;
@@ -335,17 +339,6 @@ fn install_unhandled_exception_hook() {
 
 #[cfg(not(windows))]
 fn install_unhandled_exception_hook() {}
-
-// 日志接口，支持多级日志写入
-pub fn log(level: &str, message: &str) {
-    match level {
-        "info" => info!("{}", message),
-        "warning" | "warn" => warn!("{}", message),
-        "error" => error!("{}", message),
-        "debug" => debug!("{}", message),
-        _ => info!("{}", message), // 默认使用 info
-    }
-}
 
 // 初始化日志系统
 pub fn init_logging(

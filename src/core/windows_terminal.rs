@@ -1,4 +1,8 @@
 #![cfg(target_os = "windows")]
+#![expect(
+    unsafe_code,
+    reason = "Windows Terminal host attaches to and manages native console handles"
+)]
 
 use serde::{Deserialize, Serialize};
 use std::ffi::c_void;

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "PaperConnect guest setup configures a native Windows socket option"
+)]
+
 use nethernet::{LanSignaling, NegotiationConfig, NethernetError, NethernetListener, ServerData};
 use raknet_tokio::prelude::{RakClient, RakSession};
 use std::net::SocketAddr;

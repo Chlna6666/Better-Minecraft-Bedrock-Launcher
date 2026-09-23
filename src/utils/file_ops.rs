@@ -137,7 +137,7 @@ pub fn prefixes_dir() -> PathBuf {
 
 pub fn create_initial_directories() {
     let root = bmcbl_dir();
-    let mut dirs = vec![
+    let dirs = vec![
         root.clone(),
         config_dir(),
         cache_dir(),

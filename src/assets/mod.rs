@@ -15,10 +15,6 @@ pub fn load_startup_fonts(_cx: &mut App) -> Result<()> {
     Ok(())
 }
 
-pub fn load_embedded_fonts(cx: &mut App) -> Result<()> {
-    load_startup_fonts(cx)
-}
-
 pub fn spawn_deferred_font_load(cx: &mut App) {
     let text_system = cx.text_system().clone();
     cx.spawn(async move |cx| {

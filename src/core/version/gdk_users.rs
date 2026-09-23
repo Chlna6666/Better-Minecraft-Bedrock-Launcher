@@ -2,7 +2,7 @@
 use serde::Serialize;
 use std::{fs, path::PathBuf};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Serialize)]
 pub struct GdkUser {

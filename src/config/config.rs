@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 use std::str::FromStr;
 
 use super::defaults::{
     default_appx_api, default_config_version, default_error_report_sentry_enabled,
     default_log_active_size_mb, default_log_archive_files, default_log_compression_level,
-    default_log_retention_days, default_log_total_size_mb, default_proton_gdk_source,
+    default_log_retention_days, default_log_total_size_mb,
     default_renderer_backend, default_true, default_update_check_interval_minutes,
 };
 pub use super::defaults::{
@@ -38,18 +39,6 @@ pub const MAX_LOG_TOTAL_SIZE_MB: u32 = 8_192;
 pub const MIN_LOG_COMPRESSION_LEVEL: i32 = 1;
 pub const MAX_LOG_COMPRESSION_LEVEL: i32 = 9;
 
-pub fn get_config_file_path() -> std::path::PathBuf {
-    super::storage::get_config_file_path()
-}
-
-pub fn ensure_config_dir() -> std::io::Result<()> {
-    super::storage::ensure_config_dir()
-}
-
-pub fn ensure_config_file() -> std::io::Result<()> {
-    super::storage::ensure_config_file()
-}
-
 pub fn initialize_config_cache() -> std::io::Result<Config> {
     super::storage::initialize_config_cache()
 }
@@ -61,14 +50,6 @@ pub fn read_config() -> std::io::Result<Config> {
 /// 只读取代理配置（避免深拷贝整个 Config）。
 pub fn read_proxy_config() -> std::io::Result<ProxyConfig> {
     super::storage::read_proxy_config()
-}
-
-pub fn reload_config() -> std::io::Result<Config> {
-    super::storage::reload_config()
-}
-
-pub fn write_config(config: &Config) -> std::io::Result<()> {
-    super::storage::write_config(config)
 }
 
 pub fn update_config<T, F>(mutator: F) -> std::io::Result<T>
@@ -100,6 +81,7 @@ pub fn resolved_error_report_sentry_dsn(launcher: &Launcher) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 pub fn error_report_sentry_auto_enabled(launcher: &Launcher) -> bool {
     launcher.error_report_sentry_auto && resolved_error_report_sentry_dsn(launcher).is_some()
 }
@@ -486,38 +468,7 @@ pub fn normalize_gpu_adapter_name(gpu_adapter_name: &str) -> String {
     }
 }
 
-pub fn get_nested_value(data: &Value, key: &str) -> Option<Value> {
-    let parts: Vec<&str> = key.split('.').collect();
-    let mut current = data;
-    for part in parts {
-        current = current.get(part)?;
-    }
-    Some(current.clone())
-}
-
-pub fn set_nested_value(data: &mut Value, key: &str, value: Value) -> Result<(), String> {
-    let parts: Vec<&str> = key.split('.').collect();
-    let mut current = data;
-
-    for i in 0..parts.len() {
-        let part = parts[i];
-        if i == parts.len() - 1 {
-            return if let Some(obj) = current.as_object_mut() {
-                obj.insert(part.to_string(), value);
-                Ok(())
-            } else {
-                Err(format!("Key '{}' is not an object", part))
-            };
-        } else {
-            current = current
-                .get_mut(part)
-                .ok_or_else(|| format!("Key '{}' not found", part))?;
-        }
-    }
-
-    Err("Invalid key".to_string())
-}
-
+#[cfg(test)]
 pub fn merge_json_values(target: &mut Value, overlay: Value) {
     match (target, overlay) {
         (Value::Object(target_map), Value::Object(overlay_map)) => {

@@ -112,20 +112,6 @@ pub fn pick_font_path() -> Option<String> {
     pick_file_path_with_filter("Font", &["ttf", "otf", "ttc"])
 }
 
-pub fn pick_file_paths_with_filter(filter_name: &str, extensions: &[&str]) -> Vec<String> {
-    let mut dialog = rfd::FileDialog::new();
-    if !extensions.is_empty() {
-        dialog = dialog.add_filter(filter_name, extensions);
-    }
-
-    dialog
-        .pick_files()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect()
-}
-
 /// Open a parent-owned native multi-file picker, suppressing repeated dialog requests.
 pub fn pick_file_paths_with_filter_for_window(
     window: &Window,

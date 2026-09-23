@@ -1,4 +1,8 @@
 #![cfg(target_os = "windows")]
+#![expect(
+    unsafe_code,
+    reason = "Windows remote-process injection uses native process handles and memory APIs"
+)]
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

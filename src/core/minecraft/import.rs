@@ -775,7 +775,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
 pub fn check_import_file(file_path: &Path, options: &GamePathOptions) -> Result<ImportCheckResult> {
     let file = File::open(file_path)?;
     let mut archive = ZipArchive::new(file)?;
-    let (target_type, internal_name, pack_uuid, scan) = analyze_archive(&mut archive, file_path)?;
+    let (target_type, internal_name, pack_uuid, _scan) = analyze_archive(&mut archive, file_path)?;
 
     if target_type == ImportTargetType::Compound {
         return Ok(ImportCheckResult {
@@ -1046,7 +1046,7 @@ fn process_single_archive(
 
     // [修改] 递归处理：如果发现多个 manifest.json，说明是复合包，需要解压处理
     // analyze_archive 只能检测根目录或第一层，如果有多层嵌套，需要更强的检测
-    let (target_type, internal_name, pack_uuid, scan) = analyze_archive(&mut archive, file_path)?;
+    let (target_type, internal_name, pack_uuid, _scan) = analyze_archive(&mut archive, file_path)?;
 
     if target_type == ImportTargetType::Compound {
         info!("Detected compound archive: {:?}", file_path);
@@ -2075,7 +2075,7 @@ fn get_world_info_from_dir(dir: &Path) -> Result<PackagePreview> {
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let mut description = "".to_string();
+    let description = "".to_string();
     let mut icon = None;
     let mut icon_found = false;
     let mut icon_decode = false;
@@ -3309,7 +3309,7 @@ fn get_world_info_from_zip<R: Read + Seek>(
     root_prefix: &str,
 ) -> Result<PackagePreview> {
     let mut name = root_prefix.trim_end_matches('/').to_string();
-    let mut description = "".to_string();
+    let description = "".to_string();
     let mut icon = None;
     let mut icon_found = false;
     let mut icon_decode = false;
@@ -3431,7 +3431,7 @@ pub fn import_archive_optimized(
                 Some(uuid) => pack_folder_name(uuid),
                 None => sanitize_filename(&strip_minecraft_formatting(&name)),
             };
-            let mut dest = parent.join(&folder_name);
+            let dest = parent.join(&folder_name);
 
             if dest.exists() && !overwrite {
                 return Err(anyhow::anyhow!("Pack exists: {}", folder_name));

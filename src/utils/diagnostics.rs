@@ -2,7 +2,7 @@ use crate::config::config::read_config;
 use crate::utils::app_info;
 use crate::utils::file_ops;
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};

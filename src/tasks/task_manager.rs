@@ -1041,8 +1041,7 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
 
 pub fn cancel_task(task_id: &str) {
     let cooperative = task_uses_cooperative_cancel(task_id);
-    let mut snapshot_to_emit: Option<TaskSnapshot> = None;
-    {
+    let snapshot_to_emit = {
         let mut map = TASKS.lock().unwrap();
         let Some(t) = map.get_mut(task_id) else {
             return;
@@ -1070,12 +1069,10 @@ pub fn cancel_task(task_id: &str) {
             }
         }
         t.touch();
-        snapshot_to_emit = Some(t.snapshot());
-    }
+        t.snapshot()
+    };
 
-    if let Some(snap) = snapshot_to_emit {
-        emit_task_update(snap);
-    }
+    emit_task_update(snapshot_to_emit);
     if let Some(control) = task_control(task_id) {
         control.cancel();
     }

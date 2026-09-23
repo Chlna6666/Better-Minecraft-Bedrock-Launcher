@@ -3,6 +3,8 @@
 //!
 //! 使用 Windows 命名互斥量确保同一时间只有一个实例运行
 
+#![expect(unsafe_code, reason = "single-instance coordination owns a native Windows mutex handle")]
+
 #[cfg(windows)]
 use std::sync::Mutex;
 

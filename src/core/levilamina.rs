@@ -14,12 +14,12 @@ mod planner;
 mod support;
 
 pub use install::{
-    LeviLaminaInstallHandle, LeviLaminaInstallRequest, LeviLaminaInstallSnapshot,
-    LeviLaminaInstallStage, LeviLaminaInstallation, inspect_installation, install_loader,
+    LeviLaminaInstallHandle, LeviLaminaInstallRequest,
+    LeviLaminaInstallStage, LeviLaminaInstallation, inspect_installation,
     start_install, start_uninstall,
 };
 pub use support::{
-    LeviLaminaSupportDatabase, clear_cache as clear_support_cache, loader_versions_for_game,
+    LeviLaminaSupportDatabase, clear_cache as clear_support_cache,
     support_database,
 };
 

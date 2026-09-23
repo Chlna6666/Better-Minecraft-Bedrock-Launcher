@@ -1,4 +1,8 @@
 #![cfg(target_os = "windows")]
+#![expect(
+    unsafe_code,
+    reason = "UWP minimize recovery initializes COM and calls Windows package APIs"
+)]
 // uwp_minimize_fix.rs
 // 使用 Rust + windows crate 启用 UWP 包的调试（等同于 C++ 中的 IPackageDebugSettings::EnableDebugging）
 

@@ -181,15 +181,6 @@ pub fn read_config() -> io::Result<Config> {
     read_cached_config().ok_or_else(config_cache_not_initialized_error)
 }
 
-pub fn reload_config() -> io::Result<Config> {
-    let _sync_guard = CONFIG_SYNC_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let config = load_config_from_disk()?;
-    store_cached_config(&config);
-    Ok(config)
-}
-
 fn read_cached_config() -> Option<Config> {
     CONFIG_CACHE
         .read()
@@ -525,31 +516,6 @@ fn merge_tables(
         }
     }
     default
-}
-
-/// 写入完整配置：立即更新内存缓存（`read_config` 马上可见），
-/// 磁盘写入由后台线程按静默期合并执行。
-pub fn write_config(config: &Config) -> std::io::Result<()> {
-    let _sync_guard = CONFIG_SYNC_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let proxy_changed = {
-        let mut cache = CONFIG_CACHE
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(cached) = cache.as_mut() else {
-            return Err(config_cache_not_initialized_error());
-        };
-        let changed = cached.launcher.download.proxy != config.launcher.download.proxy;
-        *cached = config.clone();
-        changed
-    };
-    schedule_config_flush();
-
-    if proxy_changed {
-        proxy::clear_client_cache();
-    }
-    Ok(())
 }
 
 /// 更新配置：直接在缓存上原地修改（避免多次全量 Config 克隆），

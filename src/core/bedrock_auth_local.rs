@@ -114,10 +114,6 @@ pub(crate) fn preload_at_app_startup() {
     );
 }
 
-pub(crate) fn initialize() {
-    preload_at_app_startup();
-}
-
 pub(crate) fn start_login() -> Result<(), String> {
     preload_at_app_startup();
     select_managed_account();

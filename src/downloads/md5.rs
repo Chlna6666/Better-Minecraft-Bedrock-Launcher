@@ -27,7 +27,7 @@ fn compute_md5_blocking(path: &Path) -> io::Result<(String, u64)> {
         total_bytes = total_bytes.saturating_add(n as u64);
     }
 
-    let digest = ctx.compute();
+    let digest = ctx.finalize();
     Ok((format!("{:x}", digest), total_bytes))
 }
 

@@ -725,7 +725,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         }
     }
 
-    let mut launch_gamertag: Option<String> = None;
+    let launch_gamertag: Option<String>;
     let pid = if is_win32 {
         let exe_path = find_game_executable(package_folder, &identity_name)
             .ok_or("未找到游戏 EXE".to_string())?;

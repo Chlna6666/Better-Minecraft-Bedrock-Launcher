@@ -7,7 +7,6 @@ use tracing::error;
 use zip::result::ZipError;
 
 const DEFAULT_CORE_ERROR_STAGE: &str = "core";
-const DEFAULT_APPLICATION_ERROR_STAGE: &str = "application";
 
 /// 核心错误类型
 #[derive(Debug, Error)]
@@ -93,10 +92,6 @@ pub fn show_core_error(title: &str, error: &CoreError) {
 
 pub fn show_core_error_at(stage: impl Into<String>, title: &str, error: &CoreError) {
     show_application_error(title, stage, error);
-}
-
-pub fn show_other_error(title: &str, message: impl Into<String>) {
-    show_application_error(title, DEFAULT_APPLICATION_ERROR_STAGE, message.into());
 }
 
 pub fn show_application_error(title: &str, stage: impl Into<String>, error: impl Display) {

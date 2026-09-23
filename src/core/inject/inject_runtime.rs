@@ -1,4 +1,8 @@
 #![cfg(target_os = "windows")]
+#![expect(
+    unsafe_code,
+    reason = "Windows remote-process runtime owns native handles and invokes kernel32 APIs"
+)]
 
 use anyhow::{Result, anyhow};
 use std::ffi::{OsStr, c_void};

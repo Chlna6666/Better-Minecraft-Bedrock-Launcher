@@ -1,3 +1,5 @@
+#![expect(unsafe_code, reason = "opening a path delegates to the native Windows shell API")]
+
 #[cfg(target_os = "windows")]
 use windows::{
     Win32::Foundation::HWND,

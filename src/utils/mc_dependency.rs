@@ -1,4 +1,5 @@
 #![cfg(target_os = "windows")]
+#![expect(unsafe_code, reason = "Microsoft Store dependency checks call native installer APIs")]
 use std::cmp::Ordering;
 use std::env;
 use std::future::Future;
@@ -39,7 +40,7 @@ use crate::utils::developer_mode;
 mod windows_app_sdk;
 pub use windows_app_sdk::{
     WINDOWS_APP_SDK_RELEASES_URL, WindowsAppSdkInstallPlan, WindowsAppSdkInstallerSource,
-    install_windows_app_sdk_runtime, is_windows_app_sdk_runtime_installed,
+    install_windows_app_sdk_runtime,
     plan_windows_app_sdk_install,
 };
 

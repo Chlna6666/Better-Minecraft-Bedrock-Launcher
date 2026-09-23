@@ -1,3 +1,5 @@
+#![expect(unsafe_code, reason = "system information queries native Windows CPU and memory structures")]
+
 #[cfg(target_os = "windows")]
 use windows::Win32::Globalization::{
     GetACP, GetLocaleInfoW, GetUserDefaultUILanguage, LOCALE_SNAME,

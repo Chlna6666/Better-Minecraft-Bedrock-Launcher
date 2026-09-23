@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "embedded BLoader DLL loading crosses the Windows native loader boundary"
+)]
+
 use std::sync::OnceLock;
 
 use pelite::pe64::{Pe, PeFile};

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows animation preference reads a native system parameter"
+)]
+
 use crate::utils::file_ops;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

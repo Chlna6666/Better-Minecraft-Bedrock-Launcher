@@ -19,18 +19,6 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 #[derive(Deserialize, Debug)]
-pub struct ApplyUpdateArgs {
-    #[serde(alias = "downloaded_path", alias = "downloadedPath")]
-    pub downloaded_path: String,
-    #[serde(alias = "target_exe_path", alias = "targetExePath")]
-    pub target_exe_path: Option<String>,
-    #[serde(alias = "timeout_secs", alias = "timeoutSecs")]
-    pub timeout_secs: Option<u64>,
-    #[serde(alias = "auto_quit", alias = "autoQuit")]
-    pub auto_quit: Option<bool>,
-}
-
-#[derive(Deserialize, Debug)]
 pub struct DownloadAndApplyArgs {
     pub url: String,
     pub filename_hint: Option<String>,

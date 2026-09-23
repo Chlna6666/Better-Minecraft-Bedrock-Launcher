@@ -5,7 +5,7 @@ use easytier::common::config::{
 };
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::proto::api::config::{
-    ConfigPatchAction, ConfigRpc as _, InstanceConfigPatch, PatchConfigRequest, PortForwardPatch,
+    ConfigPatchAction, InstanceConfigPatch, PatchConfigRequest, PortForwardPatch,
 };
 use easytier::proto::api::instance::{
     ListPeerRequest, ListRouteRequest, PeerConnInfo, PeerInfo, list_peer_route_pair,
@@ -456,7 +456,6 @@ fn build_embedded_easytier_config(
 
     let mut ipv4: Option<cidr::Ipv4Inet> = None;
     let mut dhcp = true;
-    let mut host_port_from_hostname: Option<u16> = None;
 
     if let Some(opts) = options.clone() {
         if let Some(v) = opts.disable_p2p {
@@ -490,7 +489,7 @@ fn build_embedded_easytier_config(
     }
 
     let hostname_value = cfg.get_hostname();
-    host_port_from_hostname = paperconnect::parse_server_hostname(hostname_value.trim())
+    let host_port_from_hostname = paperconnect::parse_server_hostname(hostname_value.trim())
         .map(|hostname| hostname.server_port);
 
     let is_paperconnect_network = network_name_for_policy.starts_with("paper-connect-");

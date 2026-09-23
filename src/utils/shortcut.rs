@@ -1,3 +1,5 @@
+#![expect(unsafe_code, reason = "shortcut creation calls native Windows Shell COM interfaces")]
+
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
