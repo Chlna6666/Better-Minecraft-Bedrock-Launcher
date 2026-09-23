@@ -549,17 +549,17 @@ impl TaffyLayoutEngine {
             .compute_layout_with_measure(
                 id.into(),
                 available_space.into(),
-                |known_dimensions, available_space, _id, node_context, _style| {
+                |inputs, _id, node_context, _style| {
                     let Some(node_context) = node_context else {
-                        return taffy::geometry::Size::default();
+                        return taffy::tree::LayoutOutput::DEFAULT;
                     };
 
                     let known_dimensions = Size {
-                        width: known_dimensions.width.map(|e| Pixels(e / scale_factor)),
-                        height: known_dimensions.height.map(|e| Pixels(e / scale_factor)),
+                        width: inputs.known_dimensions.width.map(|e| Pixels(e / scale_factor)),
+                        height: inputs.known_dimensions.height.map(|e| Pixels(e / scale_factor)),
                     };
 
-                    let available_space: Size<AvailableSpace> = available_space.into();
+                    let available_space: Size<AvailableSpace> = inputs.available_space.into();
                     let untransform = |ev: AvailableSpace| match ev {
                         AvailableSpace::Definite(pixels) => {
                             AvailableSpace::Definite(Pixels(pixels.0 / scale_factor))
@@ -575,7 +575,9 @@ impl TaffyLayoutEngine {
                     node_context.last_measure_input = Some((known_dimensions, available_space));
                     let a: Size<Pixels> =
                         (node_context.measure)(known_dimensions, available_space, window, cx);
-                    size(a.width.0 * scale_factor, a.height.0 * scale_factor).into()
+                    taffy::tree::LayoutOutput::from_outer_size(
+                        size(a.width.0 * scale_factor, a.height.0 * scale_factor).into(),
+                    )
                 },
             )
             .expect(EXPECT_MESSAGE);
