@@ -10,16 +10,29 @@ use crate::block::BlockState;
 use crate::block::version::AuthoritativeBlockStateCatalog;
 use crate::error::{BedrockWorldError, Result};
 
-pub use migration::BlockStateMigrationGraph;
+pub use migration::{BlockStateMigrationGraph, BlockStateMigrationStep};
 pub use nbt::read_block_state_nbt;
 pub use properties::{
     BlockFace, DoorBlockStates, HorizontalDirection, RedstoneBlockStates, SlabBlockStates,
     StairBlockStates, StairCorner, TrapdoorBlockStates, VerticalHalf,
 };
+pub use upgrade::{
+    BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
+    BlockStateValueRewrite,
+};
 
-/// BlockState version writer used only when a caller explicitly selects another persisted version.
+/// Converts one in-memory `BlockState` between explicitly selected Bedrock storage versions.
+///
+/// This operation does not read or write world storage. Implementations must use explicit migration
+/// evidence and reject missing paths or states they cannot safely represent; they must not relabel an
+/// old state with a target version without applying a known rule.
 pub trait BlockStateMigrator: Send + Sync {
-    /// Writes one BlockState for the requested persisted `version` value.
+    /// Migrates one semantic block state to the requested persisted schema version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when source/target version evidence cannot resolve the migration or a rewrite
+    /// is ambiguous. Implementations may report additional authoritative target-data validation errors.
     fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState>;
 }
 

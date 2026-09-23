@@ -43,9 +43,14 @@ pub struct BlockEntityRewriteOutcome {
 /// Block-entity rewrite backend for one explicitly selected persisted shape.
 ///
 /// Implementations must preserve fields they do not explicitly own. Returning an error aborts the
-/// whole chunk rewrite before storage mutation.
+/// whole chunk rewrite before storage mutation. Rewriting is limited to the parsed NBT compound and
+/// does not itself determine which game version a caller intends to target.
 pub trait BlockEntityRewriter: Send + Sync {
     /// Rewrites one parsed block-entity NBT root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the root cannot be safely represented in the selected persisted shape.
     fn rewrite(
         &self,
         nbt: &NbtTag,
@@ -57,7 +62,8 @@ pub trait BlockEntityRewriter: Send + Sync {
 ///
 /// The current built-in rule rewrites Sign text from `Text1`..`Text4` or `Text` into the
 /// `FrontText`/`BackText` representation. Unknown identifiers and unrecognised layouts are preserved
-/// unchanged.
+/// unchanged. The current rule is explicit format compatibility logic; it does not infer a target
+/// game version from the world.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VanillaBlockEntityRewriter;
 
@@ -108,6 +114,13 @@ pub struct BlockEntityChunkRewriteReport {
 /// Every consecutive NBT root is parsed and processed before any storage write is issued. Roots marked
 /// `Unchanged` or `Preserved` are copied byte-for-byte from the source payload; only `Rewritten` roots
 /// are serialized again. An empty payload is treated as corrupt rather than deleted or replaced.
+/// The resulting LevelDB value is submitted in one `StorageBatch`; this does not provide a
+/// source-version compare-and-write guard against another process modifying the same chunk concurrently.
+///
+/// # Errors
+///
+/// Returns an error when a root is malformed, a rewriter rejects a root, a result status contradicts
+/// the returned NBT, serialization fails, or the storage batch cannot be written.
 pub fn rewrite_block_entity_chunk(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
@@ -178,7 +191,19 @@ pub fn rewrite_block_entity_chunk(
     Ok(report)
 }
 
-/// Rewrites confirmed historical Sign text layouts using the built-in vanilla rules.
+/// Rewrites confirmed historical Sign text layouts in one chunk using the built-in vanilla rules.
+///
+/// The operation only converts `Text1`..`Text4` or legacy `Text` into modern `FrontText`/`BackText`
+/// fields and fills required modern sign fields. Unknown block-entity identifiers and unrecognised
+/// layouts remain byte-for-byte unchanged. The `context` parameter is part of the shared rewriter
+/// contract; the current vanilla sign rule does not use it to infer or select a target version.
+/// The rewritten chunk payload is committed in one LevelDB `StorageBatch`, without a cross-process
+/// source-version guard.
+///
+/// # Errors
+///
+/// Returns an error for malformed consecutive BlockEntity NBT, invalid sign data, serialization
+/// failure, or a failed LevelDB write.
 pub fn rewrite_block_entity_sign_text(
     storage: &dyn WorldStorage,
     pos: ChunkPos,

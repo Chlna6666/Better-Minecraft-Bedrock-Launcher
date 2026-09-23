@@ -119,6 +119,14 @@ impl BlockStateMigrationGraph {
     }
 
     /// Adds one directed migration edge.
+    ///
+    /// Each source/target pair may appear once. Identity edges are accepted only when the caller has
+    /// authoritative evidence that the schema is unchanged for unmatched states.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BedrockWorldError::Validation`] for an edge with identical endpoints or a duplicate
+    /// source/target pair.
     pub fn add_step(&mut self, step: BlockStateMigrationStep) -> Result<()> {
         if step.from_version == step.to_version {
             return Err(BedrockWorldError::Validation(
@@ -172,7 +180,16 @@ impl BlockStateMigrationGraph {
         None
     }
 
-    /// Migrates one block state along a known version path.
+    /// Migrates one in-memory `BlockState` along a known version path.
+    ///
+    /// Only the semantic block identifier, state values, and storage-version marker are transformed;
+    /// this method does not access `SubChunk` records or write LevelDB. Unknown or future source
+    /// versions are not guessed, and the original state is not mutated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source has no version, the graph has no path to the target, a path
+    /// edge cannot resolve the state, or an edge's rules conflict.
     pub fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState> {
         let source_version = state.version.ok_or_else(|| {
             BedrockWorldError::Validation(format!(
@@ -208,6 +225,14 @@ impl BlockStateMigrationGraph {
     }
 
     /// Migrates and validates the final semantic state against an authoritative target palette.
+    ///
+    /// This is an in-memory check; callers remain responsible for performing their world write through
+    /// the appropriate storage transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns the migration error from [`Self::migrate_to`] or
+    /// [`BedrockWorldError::Validation`] when `validator` rejects the migrated state.
     pub fn migrate_to_palette<F>(
         &self,
         state: &BlockState,

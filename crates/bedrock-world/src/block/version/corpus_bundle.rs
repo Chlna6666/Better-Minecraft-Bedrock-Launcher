@@ -15,6 +15,9 @@ use std::fs;
 use std::path::Path;
 
 /// One immutable file expected in the pinned BlockState migration resource bundle.
+///
+/// Downstream libraries may distribute these read-only resources separately from their executable and
+/// use this manifest to identify the exact upstream file set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PinnedCorpusFileSpec {
     /// Path relative to the corpus root.
@@ -228,6 +231,9 @@ const fn file(
 }
 
 /// Fully parsed resources needed for authoritative historical BlockState migration.
+///
+/// The bundle contains in-memory migration tables parsed from the pinned upstream corpus. It does not
+/// retain raw file bytes or access world storage after loading.
 #[derive(Debug)]
 pub struct PinnedBlockMigrationBundle {
     catalog: AuthoritativeBlockStateCatalog,
@@ -273,12 +279,29 @@ impl PinnedBlockMigrationBundle {
 }
 
 /// Verifies every file in a pinned resource directory without parsing the migration data.
+///
+/// This read-only check compares the resource paths, byte lengths, and Git blob SHA-1 values against
+/// [`PINNED_BLOCK_MIGRATION_CORPUS_FILES`].
+///
+/// # Errors
+///
+/// Returns an error if a required resource is missing, cannot be read, or differs from its pinned
+/// identity.
 pub fn verify_pinned_block_migration_corpus(root: impl AsRef<Path>) -> Result<()> {
     let _ = read_verified_corpus(root.as_ref())?;
     Ok(())
 }
 
 /// Loads, verifies and parses a bundle targeting the newest schema represented by the pinned corpus.
+///
+/// This operation reads only the specified resource directory and does not read or modify a world.
+/// The resulting bundle includes both historical numeric ID/meta tables and the newest BlockState
+/// catalog represented by those files.
+///
+/// # Errors
+///
+/// Returns an error if a resource is missing, differs from the pinned identity, or contains invalid
+/// UTF-8, JSON, or migration data.
 pub fn load_pinned_block_migration_bundle_from_dir(
     root: impl AsRef<Path>,
 ) -> Result<PinnedBlockMigrationBundle> {
@@ -288,7 +311,13 @@ pub fn load_pinned_block_migration_bundle_from_dir(
 /// Loads, verifies and parses a bundle bound to one exact historical schema endpoint.
 ///
 /// The target is subject to the same rules as [`load_pinned_block_state_catalog_for_target`]: it must
-/// be an authoritative schema endpoint represented by the complete pinned corpus.
+/// be an authoritative schema endpoint represented by the complete pinned corpus. This operation
+/// reads only the specified resource directory and does not access world storage.
+///
+/// # Errors
+///
+/// Returns an error if the target is not an exact catalog endpoint or a resource is missing, differs
+/// from the pinned identity, or contains invalid migration data.
 pub fn load_pinned_block_migration_bundle_for_target_from_dir(
     root: impl AsRef<Path>,
     target_version: BlockStateStorageVersion,

@@ -44,6 +44,9 @@ pub struct BlockStateUpgradeRule {
 
 impl BlockStateUpgradeRule {
     /// Creates a rule matching the supplied source identifier.
+    ///
+    /// The rule only affects the explicitly listed identifier and version range. Fields and state
+    /// values not selected by a configured rewrite remain unchanged.
     #[must_use]
     pub fn new(source_identifier: impl Into<String>) -> Self {
         Self {
@@ -182,6 +185,13 @@ impl BlockStateUpgrader {
     }
 
     /// Attempts to upgrade one state without guessing missing migrations.
+    ///
+    /// The input is never mutated. If no configured rule matches, the returned state is preserved
+    /// and `status` distinguishes an unresolved legacy state from an unknown-version state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when applying a matching rule would overwrite a state property during rename.
     pub fn upgrade(&self, state: &BlockState) -> Result<BlockStateUpgradeResult> {
         if let Some(version) = state.version {
             if version == self.target_version {
@@ -224,12 +234,22 @@ impl BlockStateUpgrader {
     }
 
     /// Upgrades one state and rejects unresolved, unknown, or future-version data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no rule resolves the state, its version is unknown or newer than the
+    /// target, or a rewrite is ambiguous.
     pub fn upgrade_strict(&self, state: &BlockState) -> Result<BlockState> {
         self.upgrade_strict_for_palette(state, |_| true)
     }
 
     /// Upgrades one state and requires the resulting semantic permutation to be accepted by a
     /// caller-supplied authoritative palette validator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be upgraded strictly or when `validator` rejects the
+    /// resulting permutation.
     pub fn upgrade_strict_for_palette<F>(
         &self,
         state: &BlockState,
