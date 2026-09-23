@@ -45,6 +45,30 @@ impl NovaBackend {
         }
     }
 
+    /// Returns whether the current swapchain can accept a presentation without blocking GPUI.
+    pub(super) fn can_present_without_wait(&mut self, swapchain: SwapchainId) -> Result<bool> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => Ok(device.swapchain_frame_ready(swapchain)?),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(_) => Ok(true),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(_) => Ok(true),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            Self::Unavailable => Ok(true),
+        }
+    }
+
     pub(super) fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]

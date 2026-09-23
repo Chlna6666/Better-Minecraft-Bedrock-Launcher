@@ -1765,7 +1765,20 @@ impl PlatformWindow for WindowsWindow {
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
                 return PlatformFrameResult::Deferred;
             };
-            renderer.draw(render_plan)
+            match renderer.can_present_without_wait() {
+                Ok(true) => Some(renderer.draw(render_plan)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            }
+        };
+        let Some(draw_result) = draw_result else {
+            // The CPU frame is already retained. Retry only presentation on the next platform
+            // frame; never refresh or dirty the View tree just because DXGI has no free slot yet.
+            self.request_frame(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            });
+            return PlatformFrameResult::Deferred;
         };
         match draw_result {
             Ok(()) => {
@@ -1789,7 +1802,18 @@ impl PlatformWindow for WindowsWindow {
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
                 return PlatformFrameResult::Deferred;
             };
-            renderer.present_framebuffer_only(render_plan)
+            match renderer.can_present_without_wait() {
+                Ok(true) => Some(renderer.present_framebuffer_only(render_plan)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            }
+        };
+        let Some(present_result) = present_result else {
+            self.request_frame(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            });
+            return PlatformFrameResult::Deferred;
         };
         match present_result {
             Ok(()) => {

@@ -205,6 +205,14 @@ impl NovaRenderer {
         self.atlas.clone()
     }
 
+    /// Returns whether the backend can present another frame without parking the caller.
+    ///
+    /// Windows consumes this as a platform-frame preflight. A saturated DXGI queue is therefore a
+    /// deferred presentation rather than synchronous work on GPUI's UI thread.
+    pub(crate) fn can_present_without_wait(&mut self) -> Result<bool> {
+        self.backend.can_present_without_wait(self.swapchain)
+    }
+
     pub(crate) fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
         let started_at = Instant::now();
         let result = self.draw_frame(render_plan);

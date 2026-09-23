@@ -148,7 +148,6 @@ mod platform {
 
     const BACK_BUFFER_COUNT: u32 = 3;
     const DX12_MAX_FRAME_LATENCY: u32 = 1;
-    const DX12_FRAME_LATENCY_WAIT_MILLIS: u32 = 1000;
     const DX12_UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
     const DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT: u64 = 512;
     const DX12_TEXTURE_DATA_PITCH_ALIGNMENT: u64 = 256;
@@ -364,8 +363,9 @@ mod platform {
                 config.alpha_mode,
                 CompositeAlphaMode::Premultiplied | CompositeAlphaMode::Postmultiplied
             );
-            // Frame-latency waitable objects let the frame loop block before recording
-            // instead of stalling inside Present once the queue is full.
+            // The frame-latency waitable object is polled before recording. GPUI must never block
+            // its UI thread on this handle; an unavailable slot is deferred to a later platform
+            // frame instead.
             let mut creation_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32;
             if self.allow_tearing && !uses_composition {
                 creation_flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32;
@@ -1611,7 +1611,6 @@ mod platform {
             steps: &[DrawStepDesc],
             clear_color: ClearColor,
         ) -> Result<()> {
-            self.wait_swapchain_frame_latency(swapchain);
             self.prepare_swapchain_damage(swapchain, None)?;
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
@@ -1681,7 +1680,6 @@ mod platform {
             depth_attachment: Option<RenderPassDepthAttachment>,
             damage: Option<ScissorRect>,
         ) -> Result<()> {
-            self.wait_swapchain_frame_latency(swapchain);
             let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
@@ -1822,7 +1820,6 @@ mod platform {
             depth_attachment: Option<RenderPassDepthAttachment>,
             damage: Option<ScissorRect>,
         ) -> Result<SubmissionId> {
-            self.wait_swapchain_frame_latency(swapchain);
             let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
@@ -1897,23 +1894,32 @@ mod platform {
             Ok(())
         }
 
-        /// Presents a swapchain image.
+        /// Returns whether the swapchain can accept another frame without blocking.
+        ///
+        /// The DXGI frame-latency handle is queried with a zero timeout because Nova presentation
+        /// runs on GPUI's UI thread. Parking that thread delays input dispatch, view updates, timers,
+        /// and every renderer-owned animation in the window.
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError::Unavailable`] until the DXGI present path is enabled.
-        /// Blocks until the swapchain can accept a new frame, bounded by
-        /// [`DX12_FRAME_LATENCY_WAIT_MILLIS`]. Waiting here (before recording)
-        /// keeps `Present` from stalling the UI thread mid-frame and caps
-        /// queued-frame latency at [`DX12_MAX_FRAME_LATENCY`].
-        fn wait_swapchain_frame_latency(&self, swapchain: SwapchainId) {
-            let Ok(record) = self.swapchains.get(swapchain) else {
-                return;
+        /// Returns an error if the swapchain handle is stale or the native wait query fails.
+        pub fn swapchain_frame_ready(&self, swapchain: SwapchainId) -> Result<bool> {
+            let record = self.swapchains.get(swapchain)?;
+            let Some(handle) = record.frame_latency_waitable else {
+                return Ok(true);
             };
-            if let Some(handle) = record.frame_latency_waitable {
-                // SAFETY: Handle is a live waitable object owned by the swapchain
-                // record; a timeout simply lets the frame proceed.
-                let _ = unsafe { WaitForSingleObject(handle, DX12_FRAME_LATENCY_WAIT_MILLIS) };
+
+            // SAFETY: The handle is a live waitable object owned by this swapchain record. Timeout
+            // zero is a pure readiness query and never parks the calling/UI thread.
+            let result = unsafe { WaitForSingleObject(handle, 0) };
+            if result == WAIT_OBJECT_0 {
+                Ok(true)
+            } else if result == WAIT_TIMEOUT {
+                Ok(false)
+            } else {
+                Err(GfxError::Backend(format!(
+                    "DX12 frame-latency readiness query failed: {result:?}"
+                )))
             }
         }
 
