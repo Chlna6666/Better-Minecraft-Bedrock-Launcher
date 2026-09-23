@@ -122,11 +122,11 @@ impl Window {
         if !self
             .rendered_frame
             .scene
-            .range_has_balanced_element_blurs(prefix.clone())
+            .range_is_independently_replayable(prefix.clone())
             || !self
                 .rendered_frame
                 .scene
-                .range_has_balanced_element_blurs(suffix.clone())
+                .range_is_independently_replayable(suffix.clone())
         {
             return None;
         }
