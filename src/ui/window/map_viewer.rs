@@ -29,87 +29,80 @@ mod prelude;
 // or restore removed bedrock-world crate-root APIs: every binding originates from a public 0.7 domain.
 pub(crate) mod bedrock_world_domains {
     pub(crate) use ::bedrock_world::biome::{
-        Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, BiomeStorage,
+        Biome2d, Biome3d, BiomeStorage,
     };
     pub(crate) use ::bedrock_world::block::{
-        BlockEntityRecord, BlockPalette, BlockPos, BlockState, BlockEntity,
+        BlockState,
         block_storage_index,
     };
     pub(crate) use ::bedrock_world::chunk::{
-        ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension, LevelChunk,
-        HardcodedSpawnAreaKind, LegacyTerrain, ChunkEntry,
-        ChunkValue, HardcodedSpawnArea, SubChunk, SubChunkDecodeMode,
+        ChunkKey, ChunkVersion, LevelChunk, LegacyTerrain,
+        ChunkValue, SubChunk, SubChunkDecodeMode,
         SubChunkFormat,
     };
     pub(crate) use ::bedrock_world::storage::{
-        BedrockDbKey, BedrockLevelDbStorage, MemoryStorage, PartitionedWorldStorage, StorageBatch,
-        StorageCachePolicy, StorageCancelFlag, StorageEntry, StorageEntryView, StorageOp,
-        StoragePipelineOptions, StorageProgressSink, StorageReadOptions, StorageScanMode,
-        StorageScanOutcome, StorageScanProgress, StorageThreadingOptions, StorageVisitorControl,
-        WorldStorage,
+        BedrockDbKey, StorageBatch,
     };
     pub(crate) use ::bedrock_world::editor::McStructureWritePhase;
-    pub(crate) use ::bedrock_world::entity::{
-        ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, Actor,
-    };
-    pub(crate) use ::bedrock_world::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+    pub(crate) use ::bedrock_world::entity::ActorResolution;
+    pub(crate) use ::bedrock_world::error::{BedrockWorldError, Result};
     pub(crate) use ::bedrock_world::item::ItemStack;
     pub(crate) use ::bedrock_world::level::*;
-    pub(crate) use ::bedrock_world::map_item::{KnownFields, MapItemId, Pixels, SavedData};
+    
     pub(crate) use ::bedrock_world::nbt::{NbtTag, NbtWriter};
-    pub(crate) use ::bedrock_world::player::{PlayerData, PlayerId};
+    
     pub(crate) use ::bedrock_world::query::*;
     pub(crate) use ::bedrock_world::surface::*;
     pub(crate) use ::bedrock_world::structure::{
-        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
+        McStructureFile, McStructurePaletteEntry, McStructurePlacement,
         McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
     };
     pub(crate) use ::bedrock_world::world::*;
 
     pub(crate) mod biome {
-        pub(crate) use ::bedrock_world::biome::*;
+        
     }
     pub(crate) mod block {
-        pub(crate) use ::bedrock_world::block::*;
+        
     }
     pub(crate) mod chunk {
-        pub(crate) use ::bedrock_world::chunk::*;
+        
     }
     pub(crate) mod storage {
-        pub(crate) use ::bedrock_world::storage::*;
+        
     }
     pub(crate) mod entity {
-        pub(crate) use ::bedrock_world::entity::*;
+        
     }
     pub(crate) mod error {
-        pub(crate) use ::bedrock_world::error::*;
+        
     }
     pub(crate) mod item {
-        pub(crate) use ::bedrock_world::item::*;
+        
     }
     pub(crate) mod level {
-        pub(crate) use ::bedrock_world::level::*;
+        
     }
     pub(crate) mod map_item {
-        pub(crate) use ::bedrock_world::map_item::*;
+        
     }
     pub(crate) mod nbt {
-        pub(crate) use ::bedrock_world::nbt::*;
+        
     }
     pub(crate) mod player {
-        pub(crate) use ::bedrock_world::player::*;
+        
     }
     pub(crate) mod query {
-        pub(crate) use ::bedrock_world::query::*;
+        
     }
     pub(crate) mod structure {
-        pub(crate) use ::bedrock_world::structure::*;
+        
     }
     pub(crate) mod surface {
-        pub(crate) use ::bedrock_world::surface::*;
+        
     }
     pub(crate) mod world {
-        pub(crate) use ::bedrock_world::world::*;
+        
     }
 }
 

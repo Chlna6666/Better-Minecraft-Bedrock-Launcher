@@ -1,7 +1,7 @@
 pub(super) use super::preview_3d_source::{
     Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
     Preview3dModelRotation, Preview3dMovementInput, Preview3dSelectionSignature, Preview3dSource,
-    Preview3dStatus, preview_3d_bounds_depth, preview_3d_bounds_width, preview_3d_draw_parameters,
+    Preview3dStatus, preview_3d_bounds_depth, preview_3d_bounds_width,
     preview_3d_local_draw_parameters, preview_3d_world_draw_parameters,
 };
 
@@ -13,8 +13,7 @@ use gpui::{
     WgslShaderSource,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;

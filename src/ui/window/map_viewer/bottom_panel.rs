@@ -36,7 +36,7 @@ impl MapViewerWindowView {
     /// Bottom dock header: iconified tab strip + collapse button.
     fn render_bottom_dock_header(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let active = self.ui_state.active_bottom_tab;
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let tabs: [(&'static str, SharedString, MapViewerBottomTab); 4] = [
             (
                 lucide_gpui::icon!(layers),
@@ -135,7 +135,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn render_db_tree_panel(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -209,7 +209,7 @@ impl MapViewerWindowView {
         node: &DbTreeNode,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>();
+        let _i18n = cx.global::<I18n>();
         let selected = self
             .db_tree
             .selection
@@ -291,7 +291,7 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         self.db_tree.selection.node_id = Some(id);
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         self.db_tree.selection.detail = Some(match kind {
             DbTreeNodeKind::Dimension(dimension) => {
                 let dimension_id = dimension.id().to_string();
@@ -316,7 +316,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         div().flex_1().min_h(px(0.0)).p(px(10.0)).child(
             self.professional.detail.as_ref().map_or_else(
                 || {

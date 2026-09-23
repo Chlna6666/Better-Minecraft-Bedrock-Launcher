@@ -608,6 +608,7 @@ impl RegionManager {
         dropped_images
     }
 
+    #[cfg(test)]
     pub(super) fn queued_coords(
         &self,
         center: (i32, i32),
@@ -715,6 +716,7 @@ impl RegionManager {
         candidates.into_iter().map(|(_, coord)| coord).collect()
     }
 
+    #[cfg(test)]
     pub(super) fn queued_visible_coords_limited(
         &self,
         visible_tiles: &[(i32, i32)],
@@ -914,6 +916,7 @@ impl RegionManager {
         dropped_image
     }
 
+    #[cfg(test)]
     pub(super) fn mark_loaded_from_cache(
         &mut self,
         coord: (i32, i32),
@@ -1096,10 +1099,6 @@ impl RegionManager {
 
     pub(super) fn failed_count(&self) -> usize {
         self.state_counts.failed
-    }
-
-    pub(super) fn invalid_count(&self) -> usize {
-        self.state_counts.invalid
     }
 
     pub(super) fn loaded_estimated_bytes(&self) -> usize {

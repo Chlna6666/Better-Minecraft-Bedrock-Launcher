@@ -224,7 +224,7 @@ impl MapViewerWindowView {
             .child(self.render_overlay_section(colors, cx))
     }
 
-    pub(super) fn render_viewport_inputs(&self, colors: &ThemeColors, i18n: &I18n) -> Div {
+    pub(super) fn render_viewport_inputs(&self, colors: &ThemeColors, _i18n: &I18n) -> Div {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
@@ -331,7 +331,7 @@ impl MapViewerWindowView {
     }
 
     fn render_display_options(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
@@ -373,7 +373,7 @@ impl MapViewerWindowView {
     }
 
     fn render_data_overlays(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
@@ -462,7 +462,7 @@ impl MapViewerWindowView {
     }
 
     fn render_slime_analysis(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let candidate_count = self
             .professional
             .slime_farm_candidates
@@ -638,7 +638,7 @@ impl MapViewerWindowView {
     }
 
     fn render_selection_tools(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let selection = self.professional.selection.map_or_else(
             || t!("MapViewer.no_selection").to_string(),
             |selection| {
@@ -685,7 +685,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let Some(cache) = self.professional.slime_farm_candidates.as_ref() else {
             return Vec::new();
         };
@@ -793,7 +793,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn render_status_bar(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let validation = self
             .input_fields
             .validation
@@ -948,7 +948,7 @@ pub(super) fn dimension_label(dimension: Dimension) -> String {
     }
 }
 
-pub(super) fn compact_activity_label(i18n: &I18n, view: &MapViewerWindowView) -> SharedString {
+pub(super) fn compact_activity_label(_i18n: &I18n, view: &MapViewerWindowView) -> SharedString {
     if let Some(progress) = view.professional.chunk_transfer_progress.as_ref() {
         return progress.label().to_string().into();
     }
@@ -1132,13 +1132,6 @@ pub(super) fn overlay_panel(colors: &ThemeColors) -> Div {
             cx.stop_propagation()
         })
         .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation())
-}
-
-pub(super) fn separator(colors: &ThemeColors) -> Div {
-    div().w(px(1.0)).h(px(22.0)).bg(Hsla {
-        a: CHROME_HAIRLINE_ALPHA,
-        ..colors.border
-    })
 }
 
 pub(super) fn toolbar_button(colors: &ThemeColors, label: impl Into<SharedString>) -> Div {

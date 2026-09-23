@@ -455,7 +455,7 @@ pub(super) fn dimension_buttons(
     active: Dimension,
     custom_id: i32,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<AnyElement> {
     [

@@ -3,7 +3,7 @@ use super::player_workspace::{
     PlayerInspectorMode, PlayerItemSelection, inventory_kind_capacity, parse_workspace_item_import,
     set_workspace_item_slot,
 };
-use super::players::{PlayerInventoryKind, player_id_label, player_inventory_entries};
+use super::players::{player_id_label, player_inventory_entries};
 use super::prelude::*;
 use std::fs;
 
@@ -370,7 +370,7 @@ impl MapViewerWindowView {
         menu: PlayerItemContextMenuState,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let entry = self.workspace_entry_for_selection(menu.selection);
         let has_item = entry.is_some();
         let item_name = entry

@@ -4,7 +4,7 @@ use super::panels::*;
 use super::player_workspace::*;
 use super::players::*;
 use super::prelude::*;
-pub(super) use super::query_cache::{MAP_QUERY_CONCURRENCY, MapQueryBudget};
+pub(super) use super::query_cache::MapQueryBudget;
 use super::tile_state::*;
 use super::viewport::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1260,7 +1260,7 @@ impl PlayerQuickEdit {
         }
     }
 
-    pub(super) fn localized_label(&self, i18n: &I18n) -> SharedString {
+    pub(super) fn localized_label(&self, _i18n: &I18n) -> SharedString {
         match self {
             Self::MoveToMapCenter => t!("MapViewer.move_player_to_center"),
             Self::SetDimension(dimension) => t!(

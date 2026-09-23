@@ -23,7 +23,7 @@ pub(super) struct Preview3dDetachDrag;
 impl Render for Preview3dDetachDrag {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = detached_theme_colors(window.animation_time(), cx);
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         div()
             .px(px(12.0))
             .py(px(7.0))
@@ -148,7 +148,7 @@ impl DetachedPreview3dView {
 impl Render for DetachedPreview3dView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = detached_theme_colors(window.animation_time(), cx);
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let snapshot = self.owner.upgrade().map(|owner| {
             let main = owner.read(cx);
             (

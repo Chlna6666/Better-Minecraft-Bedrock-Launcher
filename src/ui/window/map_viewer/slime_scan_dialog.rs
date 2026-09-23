@@ -25,7 +25,7 @@ pub(super) fn advanced_slime_scan_bounds(
 
 impl MapViewerWindowView {
     pub(super) fn open_slime_farm_advanced_scan_dialog(&mut self, cx: &mut Context<Self>) {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         if self.dimension != Dimension::Overworld {
             self.status = t!("MapViewer.slime_overworld_only");
             cx.notify();
@@ -110,7 +110,7 @@ impl MapViewerWindowView {
     }
 
     fn start_slime_farm_advanced_scan(&mut self, cx: &mut Context<Self>) -> bool {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let Some(dialog) = self.slime_farm_advanced_scan_dialog.clone() else {
             return false;
         };
@@ -155,7 +155,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let dialog_state = self.slime_farm_advanced_scan_dialog.clone()?;
         let center_chunk = self.slime_farm_advanced_scan_anchor_chunk(dialog_state.anchor);
         let preview_scope = center_chunk

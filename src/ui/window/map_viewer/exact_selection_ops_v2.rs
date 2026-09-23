@@ -10,7 +10,6 @@ use crate::ui::state::local_versions::LocalVersionsState;
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::ExactChunkRenderPlan;
-use std::collections::BTreeSet;
 
 impl MapViewerWindowView {
     /// Runs professional statistics against the exact selected chunk set instead

@@ -220,7 +220,7 @@ fn render_title(
 fn mode_buttons(
     active: ViewerMode,
     colors: &ThemeColors,
-    i18n: &I18n,
+    _i18n: &I18n,
     cx: &mut Context<MapTopBarView>,
 ) -> Vec<gpui::AnyElement> {
     [
@@ -354,7 +354,7 @@ fn theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     )
 }
 
-fn viewer_mode_label(i18n: &I18n, mode: ViewerMode) -> SharedString {
+fn viewer_mode_label(_i18n: &I18n, mode: ViewerMode) -> SharedString {
     match mode {
         ViewerMode::Surface => t!("MapViewer.mode_surface"),
         ViewerMode::Biome => t!("MapViewer.mode_biome"),
@@ -364,7 +364,7 @@ fn viewer_mode_label(i18n: &I18n, mode: ViewerMode) -> SharedString {
     }
 }
 
-fn dimension_label(i18n: &I18n, dimension: Dimension) -> SharedString {
+fn dimension_label(_i18n: &I18n, dimension: Dimension) -> SharedString {
     match dimension {
         Dimension::Overworld => t!("MapViewer.dimension_overworld"),
         Dimension::Nether => t!("MapViewer.dimension_nether"),

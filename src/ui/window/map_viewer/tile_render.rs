@@ -32,14 +32,14 @@ pub(super) fn render_viewport_composite_stream(
     let mut complete_event = None;
     let mut discarded_preview_frames = 0usize;
     loop {
-        match buffered_receiver.try_next() {
-            Ok(Some(ViewportCompositeEvent::Tile { .. })) => {
+        match buffered_receiver.try_recv() {
+            Ok(ViewportCompositeEvent::Tile { .. }) => {
                 discarded_preview_frames = discarded_preview_frames.saturating_add(1);
             }
-            Ok(Some(event @ ViewportCompositeEvent::Complete { .. })) => {
+            Ok(event @ ViewportCompositeEvent::Complete { .. }) => {
                 complete_event = Some(event);
             }
-            Ok(None) => break,
+            Err(futures::channel::mpsc::TryRecvError::Closed) => break,
             Err(error) => {
                 return Err(format!("视口合成事件缓冲读取失败: {error}"));
             }

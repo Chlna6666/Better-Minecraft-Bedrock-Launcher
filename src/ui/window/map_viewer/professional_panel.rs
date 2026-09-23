@@ -10,7 +10,7 @@ impl MapViewerWindowView {
         detail: &ProfessionalDetail,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>();
+        let _i18n = cx.global::<I18n>();
         overlay_panel(colors)
             .right(px(16.0))
             .top(px(86.0))

@@ -3,7 +3,7 @@ use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, GeometryBone, GeometryCube,
     ModelCuboid, ModelFamily, ModelPlane, ModelShape, ModelWarning,
     block_export_material_name_for_block, block_export_material_name_for_face,
-    block_export_material_name_for_plane, block_face_for_normal, canonical_block_name_for_state,
+    block_export_material_name_for_plane, block_face_for_normal,
     detail_material_block_name_for_state, model_family_for_block_name,
     model_family_has_detail_shape, model_shape_for_block_state,
 };
@@ -11,7 +11,7 @@ use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
 use bedrock_world::{
     World, BiomeDataRequirement, BlockState, CancelFlag, ChunkData, ChunkDataRequest,
-    ChunkLoadOptions, ChunkLoadPriority, ExactSurfaceSubchunkPolicy, BiomeStorage,
+    ChunkLoadOptions, ChunkLoadPriority, BiomeStorage,
     ChunkValue, SlimeChunkBounds, SubChunkDecodeMode, TerrainColumnBiome,
     WorldPipelineOptions, WorldThreadingOptions,
 };

@@ -24,7 +24,7 @@ impl PlayerWorkspaceCenter {
         }
     }
 
-    pub(super) fn localized_label(self, i18n: &I18n) -> SharedString {
+    pub(super) fn localized_label(self, _i18n: &I18n) -> SharedString {
         match self {
             Self::Map => t!("MapViewer.map"),
             Self::Inventory => t!("MapViewer.inventory"),
@@ -75,7 +75,7 @@ pub(super) struct PlayerWorkspaceState {
 
 impl PlayerWorkspaceState {
     pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let search = workspace_input(window, cx, t!("MapViewer.player_search_placeholder"));
         let item_id = workspace_input(window, cx, t!("MapViewer.item_id_placeholder"));
         let count = workspace_input(window, cx, t!("MapViewer.count_placeholder"));
@@ -417,7 +417,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let query = self
             .player_workspace
             .search
@@ -896,7 +896,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         entries: &[PlayerInventoryEntry],
-        i18n: &I18n,
+        _i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let metrics = self.player_workspace_metrics();
@@ -969,7 +969,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         entries: &[PlayerInventoryEntry],
-        i18n: &I18n,
+        _i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         let metrics = self.player_workspace_metrics();
@@ -1012,7 +1012,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         entries: &[PlayerInventoryEntry],
-        i18n: &I18n,
+        _i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         let armor_labels = [
@@ -1328,7 +1328,7 @@ impl MapViewerWindowView {
     }
 
     fn render_workspace_quick_catalog(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let catalog = self.player_quick_item_catalog();
         div()
             .pt(px(10.0))
@@ -2095,7 +2095,7 @@ impl MapViewerWindowView {
     fn render_player_item_raw_form(
         &self,
         colors: &ThemeColors,
-        i18n: &I18n,
+        _i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()

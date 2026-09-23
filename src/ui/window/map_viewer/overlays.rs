@@ -1077,21 +1077,6 @@ fn village_query_cache_key(view: &MapViewerWindowView) -> MapQueryCacheKey {
     )
 }
 
-fn map_info_tile_coordinates(bounds: SlimeChunkBounds, chunks_per_tile: u16) -> Vec<(i32, i32)> {
-    let edge = i32::from(chunks_per_tile).max(1);
-    let min_tile_x = bounds.min_chunk_x.div_euclid(edge);
-    let max_tile_x = bounds.max_chunk_x.div_euclid(edge);
-    let min_tile_z = bounds.min_chunk_z.div_euclid(edge);
-    let max_tile_z = bounds.max_chunk_z.div_euclid(edge);
-    let mut tiles = Vec::new();
-    for tile_z in min_tile_z..=max_tile_z {
-        for tile_x in min_tile_x..=max_tile_x {
-            tiles.push((tile_x, tile_z));
-        }
-    }
-    tiles
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct MapInfoQueryScope {
     pub(super) bounds: SlimeChunkBounds,

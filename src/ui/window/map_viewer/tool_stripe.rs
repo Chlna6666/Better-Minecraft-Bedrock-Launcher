@@ -38,7 +38,7 @@ impl EventEmitter<MapViewerAction> for MapToolStripeView {}
 impl Render for MapToolStripeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme_colors(window.animation_time(), cx);
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let snapshot = self.snapshot.unwrap_or(MapToolStripeSnapshot {
             left_panel_open: true,
             right_panel_open: false,

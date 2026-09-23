@@ -19,7 +19,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>();
+        let _i18n = cx.global::<I18n>();
         let selection = self.preview_3d_selection_status();
         let stats = self.preview_3d_stats_label();
         let mesh = self.preview_3d.mesh.clone();

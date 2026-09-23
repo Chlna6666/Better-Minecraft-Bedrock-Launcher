@@ -3,7 +3,6 @@ use super::map_history::MapHistoryCapture;
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
-use super::viewport::viewport_screen_for_block;
 use std::collections::HashMap as StdHashMap;
 use std::fs;
 
@@ -28,7 +27,7 @@ impl PlayerRecordHealth {
         }
     }
 
-    pub(super) fn localized_label(self, i18n: &I18n) -> SharedString {
+    pub(super) fn localized_label(self, _i18n: &I18n) -> SharedString {
         match self {
             Self::Complete => t!("MapViewer.health_complete"),
             Self::Partial => t!("MapViewer.health_partial"),
@@ -144,7 +143,7 @@ impl PlayerInventoryKind {
         }
     }
 
-    pub(super) fn localized_label(self, i18n: &I18n) -> SharedString {
+    pub(super) fn localized_label(self, _i18n: &I18n) -> SharedString {
         match self {
             Self::Inventory => t!("MapViewer.inventory"),
             Self::Armor => t!("MapViewer.armor"),
@@ -633,7 +632,7 @@ impl MapViewerWindowView {
         mutation: PlayerItemMutation,
         cx: &mut Context<Self>,
     ) {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let player_item_written = t!("MapViewer.player_item_written");
         let Some(id) = self.players.selected.clone() else {
             self.status = t!("MapViewer.select_player_record");
@@ -1300,7 +1299,7 @@ pub(super) fn localized_enchant_name(i18n: &I18n, id: i16) -> SharedString {
 }
 
 pub(super) fn localized_player_friendly_label(
-    i18n: &I18n,
+    _i18n: &I18n,
     id: &PlayerId,
     valid: bool,
 ) -> SharedString {

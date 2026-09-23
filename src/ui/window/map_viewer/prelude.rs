@@ -7,29 +7,25 @@ pub(super) use super::actions::{
 };
 pub(super) use super::canvas::{
     MapCanvasAction, MapCanvasSnapshot, MapCanvasView, ScreenPaintImage, TilePaintSnapshot,
-    TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot,
-    screen_image_bounds, screen_image_viewports_transformable, selection_cursor_for_target,
+    TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot, screen_image_viewports_transformable,
     take_map_tile_paint_resources_unavailable,
 };
 pub(super) use super::layout::{
-    CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_ICON_SIZE, CHROME_SECTION_GAP,
+    CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_SECTION_GAP,
     CHROME_SURFACE_ALPHA, CHROME_TAB_ICON_SIZE, CHROME_TOOLBAR_ICON_SIZE, IDE_LEFT_DOCK_WIDTH,
     IDE_STATUS_BAR_HEIGHT, center_stage_rect_for_layout,
 };
 pub(super) use super::map_history::{
-    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryChunkVisual,
-    MapHistoryChunkVisualKind, MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus,
+    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryChunkVisual, MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus,
     MapHistoryState, MapHistoryVisualFilter, MapHistoryVisualFilterKind, MapHistoryVisualization,
-    apply_redo_with_progress, apply_undo_with_progress, capture_before,
-    capture_before_with_progress, capture_before_with_world_and_progress, complete_after,
-    complete_after_with_progress, complete_after_with_world_and_progress, complete_failed,
+    apply_redo_with_progress, apply_undo_with_progress, capture_before, capture_before_with_world_and_progress, complete_after, complete_after_with_world_and_progress, complete_failed,
     create_restore_protection_point, history_dir_for_world, list_history,
     load_history_visualization, restore_history_entry_with_progress,
 };
 pub(super) use super::menu_overlay::{MapMenuOverlaySnapshot, MapMenuOverlayView};
 pub(super) use super::model::ChunkTransferProgress;
 pub(super) use super::player_workspace::{
-    PlayerInspectorMode, PlayerItemSelection, PlayerWorkspaceCenter, PlayerWorkspaceState,
+    PlayerWorkspaceCenter, PlayerWorkspaceState,
     player_workspace_subscriptions,
 };
 pub(super) use super::preview_3d::{
@@ -43,8 +39,8 @@ pub(super) use super::preview_3d::{
 };
 pub(super) use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
 pub(super) use super::selection::{
-    ChunkSelection, ExistingSelectionTarget, RightSelectionDrag, RightSelectionIntent,
-    RightSelectionReleaseAction, SelectionPointerButton, SelectionResizeHandle,
+    ChunkSelection, ExistingSelectionTarget, RightSelectionDrag,
+    RightSelectionReleaseAction, SelectionPointerButton,
     SelectionScreenBounds, chunk_from_block, existing_selection_target, right_selection_moved,
     right_selection_release_action,
 };
@@ -70,7 +66,7 @@ pub(super) use crate::ui::components::context_menu::{
     ContextMenu, ContextMenuAnchor, ContextMenuEntry, ContextMenuGroup, ContextMenuItem,
     place_context_menu_at_anchor,
 };
-pub(super) use crate::ui::components::input::{Input, InputEvent, InputSize, InputState};
+pub(super) use crate::ui::components::input::{Input, InputEvent, InputState};
 pub(super) use crate::ui::components::scroll::ScrollableElement as _;
 pub(super) use crate::ui::components::split_pane::{SplitPaneAxis, split_handle, splitter_line};
 pub(super) use crate::ui::components::toast;
@@ -99,7 +95,7 @@ pub(super) use ::bedrock_world::{
         ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
         SlimeChunkBounds, SlimeFarmCandidate, SlimeFarmQueryMode, VillageOverlay,
         VillageOverlayIndex, WriteGuard, delete_chunks, is_slime_chunk, block_tip, chunk_detail,
-        query_slime_farm_candidates_with_cancel, region_overlays, selection_stats,
+        query_slime_farm_candidates_with_cancel, selection_stats,
     },
     surface::CancelFlag,
     world::World,
@@ -132,7 +128,7 @@ pub(super) use gpui::prelude::FluentBuilder as _;
 pub(super) use gpui::*;
 pub(super) use rustc_hash::FxHashMap as HashMap;
 pub(super) use serde::{Deserialize, Serialize};
-pub(super) use std::collections::{BTreeMap, BTreeSet, VecDeque};
+pub(super) use std::collections::{BTreeMap, BTreeSet};
 pub(super) use std::hash::Hash;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::sync::{Arc, Mutex, OnceLock};

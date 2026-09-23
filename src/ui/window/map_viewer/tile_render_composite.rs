@@ -22,17 +22,6 @@ pub(super) const fn web_relief_render_layout() -> RenderLayout {
     }
 }
 
-pub(super) const fn tile_texture_render_layout(
-    _scale: f32,
-    _current: RenderLayout,
-) -> RenderLayout {
-    RenderLayout {
-        chunks_per_tile: CHUNKS_PER_TILE,
-        blocks_per_pixel: 1,
-        pixels_per_block: 1,
-    }
-}
-
 pub(super) fn render_viewport_composite_stream(
     request: core::ViewportCompositeRequest,
     event_sender: UnboundedSender<core::ViewportCompositeEvent>,

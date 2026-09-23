@@ -522,7 +522,7 @@ pub(crate) fn capture_before(spec: MapHistoryCaptureSpec) -> Result<MapHistoryCa
     capture_before_with_progress(spec, |_| {})
 }
 
-pub(crate) fn capture_before_with_progress(
+    pub(super) fn capture_before_with_progress(
     spec: MapHistoryCaptureSpec,
     progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryCapture, String> {
@@ -530,7 +530,7 @@ pub(crate) fn capture_before_with_progress(
     capture_before_with_world_and_progress(spec, &world, progress)
 }
 
-pub(crate) fn capture_before_with_world_and_progress(
+    pub(super) fn capture_before_with_world_and_progress(
     spec: MapHistoryCaptureSpec,
     world: &World,
     mut progress: impl FnMut(MapHistoryApplyProgress),
@@ -591,7 +591,7 @@ pub(crate) fn complete_after(
     complete_after_with_progress(capture, message, |_| {})
 }
 
-pub(crate) fn complete_after_with_progress(
+    pub(super) fn complete_after_with_progress(
     capture: MapHistoryCapture,
     message: impl Into<String>,
     progress: impl FnMut(MapHistoryApplyProgress),
@@ -600,7 +600,7 @@ pub(crate) fn complete_after_with_progress(
     complete_after_with_world_and_progress(capture, &world, message, progress)
 }
 
-pub(crate) fn complete_after_with_world_and_progress(
+    pub(super) fn complete_after_with_world_and_progress(
     capture: MapHistoryCapture,
     world: &World,
     message: impl Into<String>,

@@ -16,9 +16,9 @@ use super::selection::{
     set_right_selection_modifier_requested,
 };
 use super::state::MIN_CENTER_HEIGHT;
-use super::tile_state::{MapRenderRange, PaintTile, RegionManager, TileLoadState};
+use super::tile_state::{MapRenderRange, PaintTile};
 use super::viewport::{
-    TileBounds, paint_tile_bounds_for_viewport, region_render_range_for_viewport, ruler_blocks,
+    TileBounds, region_render_range_for_viewport, ruler_blocks,
     screen_x_for_block, screen_y_for_block, tile_bounds_count, tile_coords_for_paint_order,
     tile_paint_rect, tile_paint_sort_key, viewport_screen_for_block,
 };
@@ -984,7 +984,7 @@ fn render_paste_controls(
     .clamp(8.0, tools_top_max);
     let angle_label = preview.transform.label();
     let colors = snapshot.colors;
-    let i18n = cx.global::<I18n>().clone();
+    let _i18n = cx.global::<I18n>().clone();
 
     Some(
         div()

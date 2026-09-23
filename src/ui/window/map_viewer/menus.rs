@@ -8,7 +8,7 @@ use super::viewport::coordinate_text;
 impl MapViewerWindowView {
     pub(super) fn paste_copied_chunk_context_label(
         &self,
-        chunk: ChunkPos,
+        _chunk: ChunkPos,
         rotation: PasteRotation,
     ) -> String {
         let Some(copied_chunk) = self.professional.copied_chunk.as_ref() else {

@@ -34,7 +34,7 @@ impl MapViewerWindowView {
     }
 
     fn render_player_list_panel(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         div()
             .w(px(320.0))
             .flex_none()
@@ -334,7 +334,7 @@ impl MapViewerWindowView {
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         div()
             .flex()
             .flex_col()
@@ -389,7 +389,7 @@ impl MapViewerWindowView {
         entry: &PlayerInventoryEntry,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>().clone();
+        let _i18n = cx.global::<I18n>().clone();
         let kind = entry.kind;
         let list_index = entry.list_index;
         let name = entry
@@ -878,7 +878,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         catalog: &[PlayerItemTexture],
-        i18n: &I18n,
+        _i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         div()
@@ -1004,7 +1004,7 @@ impl MapViewerWindowView {
     pub(super) fn render_player_quick_actions(
         &self,
         colors: &ThemeColors,
-        i18n: &I18n,
+        _i18n: &I18n,
         cx: &mut Context<Self>,
     ) -> Div {
         let pending = self.players.pending_save_confirmation.as_ref();

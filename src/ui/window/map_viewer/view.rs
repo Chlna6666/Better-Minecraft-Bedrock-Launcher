@@ -3,7 +3,6 @@ use super::model::*;
 use super::prelude::*;
 use super::region_package;
 use super::tile_state::TileLoadState;
-use super::viewport::TileBounds;
 use crate::ui::window::map_viewer::lifecycle::VIEWPORT_COMPOSITE_ENABLED;
 use std::time::Duration;
 
@@ -213,7 +212,7 @@ impl Render for MapViewerWindowView {
         let slime_advanced_scan_modal =
             self.render_slime_farm_advanced_scan_modal(&colors, cx);
 
-        let mut root = div()
+        let root = div()
             .relative()
             .size_full()
             .overflow_hidden()
@@ -466,6 +465,7 @@ pub(super) fn map_viewer_window_size_for_display(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(super) enum MapLayerKind {
     Terrain,
     Grid,
@@ -473,6 +473,7 @@ pub(super) enum MapLayerKind {
     Markers,
 }
 
+#[cfg(test)]
 pub(super) fn map_render_layer_order() -> [MapLayerKind; 4] {
     [
         MapLayerKind::Terrain,

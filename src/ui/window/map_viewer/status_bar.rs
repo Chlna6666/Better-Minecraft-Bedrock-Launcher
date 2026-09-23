@@ -675,7 +675,7 @@ fn task_progress_numbers(snapshot: &TaskSnapshot) -> String {
     }
 }
 
-fn task_status_label(i18n: &I18n, status: &str) -> SharedString {
+fn task_status_label(_i18n: &I18n, status: &str) -> SharedString {
     match status {
         "running" => t!("MapViewer.running"),
         "paused" => t!("MapViewer.paused"),

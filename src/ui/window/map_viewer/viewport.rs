@@ -380,17 +380,6 @@ pub(super) fn tile_coords_for_paint_order(bounds: TileBounds) -> Vec<(i32, i32)>
     coords
 }
 
-pub(super) fn tile_bounds_center(bounds: TileBounds) -> (i32, i32) {
-    let center_x = i64::from(bounds.min_x)
-        .saturating_add((i64::from(bounds.max_x) - i64::from(bounds.min_x)) / 2);
-    let center_z = i64::from(bounds.min_z)
-        .saturating_add((i64::from(bounds.max_z) - i64::from(bounds.min_z)) / 2);
-    (
-        center_x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        center_z.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-    )
-}
-
 pub(super) fn tile_paint_rect(
     viewport: MapViewport,
     layout: RenderLayout,
@@ -558,14 +547,6 @@ impl RetainedTileFilter {
             && (self.radius <= 0
                 || squared_distance_to_tile_bounds(coord.0, coord.1, self.visible)
                     <= i64::from(self.radius).saturating_mul(i64::from(self.radius)))
-    }
-
-    pub(super) const fn visible_only(self) -> Self {
-        Self {
-            visible: self.visible,
-            retained: self.visible,
-            radius: 0,
-        }
     }
 
     pub(super) fn maximum_tile_count(self) -> usize {
@@ -736,6 +717,7 @@ pub(super) fn sort_tiles_center_first(coords: &mut [(i32, i32)], center: (i32, i
     coords.sort_by_key(|coord| tile_distance_sort_key(*coord, center));
 }
 
+#[cfg(test)]
 pub(super) fn tiles_are_sorted_center_first(coords: &[(i32, i32)], center: (i32, i32)) -> bool {
     coords.windows(2).all(|window| {
         tile_distance_sort_key(window[0], center) <= tile_distance_sort_key(window[1], center)
