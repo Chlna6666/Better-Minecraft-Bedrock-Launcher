@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows version-resource APIs expose fixed file info through a native pointer"
+)]
+
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
