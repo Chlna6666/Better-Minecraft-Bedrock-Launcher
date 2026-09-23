@@ -597,17 +597,13 @@ impl Window {
             }
         };
 
-        // The root participates in retained reconciliation too. Without this boundary every
-        // entity-local child notify makes the root a TraversalAncestor but still calls its Render,
-        // so a 60 Hz local visual (for example a shader background) rebuilds the entire application
-        // shell before nested caches can help.
-        let mut root_element = self
-            .root
-            .as_ref()
-            .unwrap()
-            .clone()
-            .cached_as_window_root()
-            .into_any();
+        // Keep the window root outside retained selective splice.
+        //
+        // Root-level retained splicing widened ordinary child/image invalidation into whole-window
+        // scene surgery. Nested cached AnyViews still retain/reconcile normally, but the shell root
+        // rebuilds structurally so blur/composite/image capture boundaries are re-established from
+        // a complete tree before those nested caches are consulted.
+        let mut root_element = self.root.as_ref().unwrap().clone().into_any();
         self.with_critical_draw(|window| {
             root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
         });
