@@ -382,6 +382,7 @@ impl From<TransitionSpec> for AnimationSpec {
             } else {
                 spec.driver
             },
+            presentation_interval: None,
         }
     }
 }

@@ -697,6 +697,12 @@ impl WindowsRenderer {
         }
     }
 
+    pub fn can_present_without_wait(&mut self) -> Result<bool> {
+        match self {
+            Self::Nova(renderer) => renderer.can_present_without_wait(),
+        }
+    }
+
     pub fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
         match self {
             Self::Nova(renderer) => renderer.draw(render_plan),

@@ -50,6 +50,96 @@ struct ViewCacheKey {
     fingerprint: Option<u64>,
 }
 
+impl<V: Render> Element for Entity<V> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(ElementId::View(self.entity_id()))
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        window.record_rendered_view(self.entity_id(), std::any::type_name::<V>());
+        let mut element = self.update(cx, |view, cx| view.render(window, cx).into_any_element());
+        let layout_id = window.with_rendered_view(self.entity_id(), |window| {
+            element.request_layout(window, cx)
+        });
+        (layout_id, element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.set_view_id(self.entity_id());
+        window.with_rendered_view(self.entity_id(), |window| element.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Entity is a lifecycle proxy. Its rendered element owns all actual scene primitives.
+        window.record_debug_element_traversal_only(bounds, cx);
+        window.with_rendered_view(self.entity_id(), |window| element.paint(window, cx));
+    }
+}
+
+/// A dynamically-typed handle to a view, which can be downcast to an Entity for a specific type.
+#[derive(Clone, Debug)]
+pub struct AnyView {
+    entity: AnyEntity,
+    render: fn(&AnyView, &mut Window, &mut App) -> AnyElement,
+    cached_style: Option<Rc<StyleRefinement>>,
+    cache_fingerprint: Option<u64>,
+    progressive: bool,
+    critical: bool,
+    reuse_on_window_refresh: bool,
+}
+
+impl<V: Render> From<Entity<V>> for AnyView {
+    fn from(value: Entity<V>) -> Self {
+        AnyView {
+            entity: value.into_any(),
+            render: any_view::render::<V>,
+            cached_style: None,
+            cache_fingerprint: None,
+            progressive: false,
+            critical: false,
+            reuse_on_window_refresh: false,
+        }
+    }
+}
+
+fn with_optional_critical_draw<R>(
+    _critical: bool,
+    window: &mut Window,
+    f: impl FnOnce(&mut Window) -> R,
+) -> R {
+    f(window)
+}
+
 /// Opaque paint handoff used internally by cached AnyView reconciliation.
 #[doc(hidden)]
 pub struct AnyViewPrepaintState(AnyViewPrepaintStateKind);
