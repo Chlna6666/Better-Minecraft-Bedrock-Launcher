@@ -400,6 +400,7 @@ pub trait StatefulInteractiveElement: InteractiveElement {
     }
 
     /// Bind the given callback on the hover start and end events of this element.
+    /// Layout changes beneath a stationary mouse also reconcile and emit hover transitions.
     fn on_hover(mut self, listener: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self
     where
         Self: Sized,

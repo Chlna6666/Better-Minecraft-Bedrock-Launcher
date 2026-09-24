@@ -223,13 +223,36 @@ impl Interactivity {
             if let Some(hover_listener) = self.hover_listener.take() {
                 let hitbox = hitbox.clone();
                 let was_hovered = element_state.ensure_hover_state();
-                let exit_was_hovered = was_hovered.clone();
                 let has_mouse_down = element_state.ensure_pending_mouse_down();
                 let hover_listener: Rc<dyn Fn(&bool, &mut Window, &mut App)> =
                     Rc::from(hover_listener);
-                let move_hover_listener = hover_listener.clone();
+                let hover_listener_state = was_hovered.clone();
+                let update_hover = move |is_hovered: bool, window: &mut Window, cx: &mut App| {
+                    let mut was_hovered = hover_listener_state.borrow_mut();
+                    if is_hovered != *was_hovered {
+                        *was_hovered = is_hovered;
+                        drop(was_hovered);
+                        hover_listener(&is_hovered, window, cx);
+                    }
+                };
 
-                window.on_mouse_hit_test_transition(
+                // A layout-only update can move this hitbox under or away from a stationary cursor.
+                // Reconcile against the newly painted hitbox instead of waiting for another
+                // MouseMoveEvent. Keep a pressed element stable until the mouse button resolves.
+                if has_mouse_down.borrow().is_none() {
+                    let is_hovered = !cx.has_active_drag() && hitbox.is_hovered(window);
+                    if is_hovered != *was_hovered.borrow() {
+                        let update_hover = update_hover.clone();
+                        window.defer(cx, move |window, cx| {
+                            update_hover(is_hovered, window, cx);
+                        });
+                    }
+                }
+
+                window.on_mouse_hit_test_transition({
+                    let update_hover = update_hover.clone();
+                    let has_mouse_down = has_mouse_down.clone();
+                    let hitbox = hitbox.clone();
                     move |_: &MouseMoveEvent, phase, window, cx| {
                         if phase != DispatchPhase::Bubble {
                             return;
@@ -237,25 +260,13 @@ impl Interactivity {
                         let is_hovered = has_mouse_down.borrow().is_none()
                             && !cx.has_active_drag()
                             && hitbox.is_hovered(window);
-                        let mut was_hovered = was_hovered.borrow_mut();
-
-                        if is_hovered != *was_hovered {
-                            *was_hovered = is_hovered;
-                            drop(was_hovered);
-                            move_hover_listener(&is_hovered, window, cx);
-                        }
-                    },
-                );
+                        update_hover(is_hovered, window, cx);
+                    }
+                });
 
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble {
-                        return;
-                    }
-                    let mut was_hovered = exit_was_hovered.borrow_mut();
-                    if *was_hovered {
-                        *was_hovered = false;
-                        drop(was_hovered);
-                        hover_listener(&false, window, cx);
+                    if phase == DispatchPhase::Bubble {
+                        update_hover(false, window, cx);
                     }
                 });
             }
