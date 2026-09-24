@@ -209,6 +209,7 @@ impl Window {
     /// frames. If an element with this ID existed in the rendered frame, its state will be passed
     /// to the given closure. The state returned by the closure will be stored so it can be referenced
     /// when drawing the next frame. This method should only be called as part of element drawing.
+    #[inline(always)]
     pub fn with_element_state<S, R>(
         &mut self,
         global_id: &GlobalElementId,
@@ -219,17 +220,9 @@ impl Window {
     {
         self.invalidator.debug_assert_paint_or_prepaint();
 
-        let key = (GlobalElementId(global_id.0.clone()), TypeId::of::<S>());
-        self.next_frame
-            .accessed_element_states
-            .push((key.0.clone(), TypeId::of::<S>()));
+        let (key, state) = self.take_element_state(global_id, TypeId::of::<S>());
 
-        if let Some(any) = self
-            .next_frame
-            .element_states
-            .remove(&key)
-            .or_else(|| self.rendered_frame.element_states.remove(&key))
-        {
+        if let Some(any) = state {
             let ElementStateBox {
                 inner,
                 #[cfg(debug_assertions)]
@@ -263,7 +256,7 @@ impl Window {
             );
             let (result, state) = f(Some(state), self);
             state_box.replace(state);
-            self.next_frame.element_states.insert(
+            self.insert_element_state(
                 key,
                 ElementStateBox {
                     inner: state_box,
@@ -274,7 +267,7 @@ impl Window {
             result
         } else {
             let (result, state) = f(None, self);
-            self.next_frame.element_states.insert(
+            self.insert_element_state(
                 key,
                 ElementStateBox {
                     inner: Box::new(Some(state)),
@@ -318,4 +311,31 @@ impl Window {
             result
         }
     }
+    #[inline(never)]
+    fn take_element_state(
+        &mut self,
+        global_id: &GlobalElementId,
+        state_type: TypeId,
+    ) -> ((GlobalElementId, TypeId), Option<ElementStateBox>) {
+        let key = (GlobalElementId(global_id.0.clone()), state_type);
+        self.next_frame
+            .accessed_element_states
+            .push((key.0.clone(), state_type));
+        let state = self
+            .next_frame
+            .element_states
+            .remove(&key)
+            .or_else(|| self.rendered_frame.element_states.remove(&key));
+        (key, state)
+    }
+
+    #[inline(never)]
+    fn insert_element_state(
+        &mut self,
+        key: (GlobalElementId, TypeId),
+        state: ElementStateBox,
+    ) -> Option<ElementStateBox> {
+        self.next_frame.element_states.insert(key, state)
+    }
+
 }
