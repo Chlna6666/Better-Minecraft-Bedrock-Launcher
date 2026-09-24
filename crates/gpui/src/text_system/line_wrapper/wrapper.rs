@@ -166,10 +166,21 @@ impl LineWrapper {
         // Bengali (https://en.wikipedia.org/wiki/Bengali_(Unicode_block))
         matches!(c, '\u{0980}'..='\u{09FF}') ||
         // Some other known special characters that should be treated as word characters,
-        // e.g. `a-b`, `var_name`, `I'm`/`won’t`, '@mention`, `#hashtag`, `100%`,
-        // `3.1415`, `2^3`, `a~b`, `a=1`, `Self::new`, etc. Trailing punctuation like
-        // `,`, `.`, `:`, `;` stays attached to the preceding word when wrapping.
-        matches!(c, '-' | '_' | '.' | '\'' | '’' | '‘' | '
+        // e.g. `a-b`, `var_name`, `I'm`/`won’t`, '@mention`, `#hashtag`, `100%`, `3.1415`,
+        // `2^3`, `a~b`, `a=1`, `Self::new`, etc. Trailing punctuation like `,`, `.`, `:`, `;`
+        // is included so it stays attached to the preceding word when wrapping.
+        matches!(c, '-' | '_' | '.' | '\'' | '’' | '‘' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '=' | ':' | ';') ||
+        // Closing punctuation never starts a line (UAX #14 LB13: no break
+        // before `!`, `)`, `]`, `}`, closing quotes or an ellipsis) — `plz!`,
+        // `see)`, `quoted”` wrap as one word instead of orphaning the mark on
+        // the next line. `/` and `?` stay break opportunities so long paths
+        // and URLs (`a/b`, `foo?b=2`) can wrap.
+        matches!(c, '!' | ')' | ']' | '}' | '"' | '”' | '»' | '…') ||
+        // `⋯` character is special used in Zed, to keep this at the end of the line.
+        matches!(c, '⋯') ||
+
+        // Non-breaking glue characters
+        matches!(c, '\u{202F}' | '\u{00A0}' | '\u{2011}')
     }
 
     #[inline(always)]
