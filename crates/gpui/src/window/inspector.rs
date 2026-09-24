@@ -6,31 +6,45 @@ impl Window {
     pub fn toggle_inspector(&mut self, cx: &mut App) {
         self.inspector = match self.inspector {
             None => Some(cx.new(|_| Inspector::new())),
-            Some(_) => None,
+            Some(_) => {
+                // Inspector metadata is debug-only. Drop it immediately when the inspector closes
+                // so subsequent normal frames do not retain stale picking state.
+                self.rendered_frame.next_inspector_instance_ids = FxHashMap::default();
+                self.rendered_frame.inspector_hitboxes = FxHashMap::default();
+                self.next_frame.next_inspector_instance_ids = FxHashMap::default();
+                self.next_frame.inspector_hitboxes = FxHashMap::default();
+                None
+            }
         };
         self.refresh();
     }
 
     /// Executes the provided function with mutable access to an inspector state.
+    ///
+    /// Returns `None` when the inspector is closed or this element is not the active inspected
+    /// element. This keeps inspector-only state construction off the normal debug render hot path.
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub fn with_inspector_state<T: 'static, R>(
         &mut self,
-        _inspector_id: Option<&crate::InspectorElementId>,
+        inspector_id: Option<&crate::InspectorElementId>,
         cx: &mut App,
         f: impl FnOnce(&mut Option<T>, &mut Self) -> R,
-    ) -> R {
-        if let Some(inspector_id) = _inspector_id
-            && let Some(inspector) = &self.inspector
-        {
-            let inspector = inspector.clone();
-            let active_element_id = inspector.read(cx).active_element_id();
-            if Some(inspector_id) == active_element_id {
-                return inspector.update(cx, |inspector, _cx| {
-                    inspector.with_active_element_state(self, f)
-                });
-            }
+    ) -> Option<R> {
+        let inspector_id = inspector_id?;
+        let inspector = self.inspector.as_ref()?;
+        if inspector.read(cx).active_element_id() != Some(inspector_id) {
+            return None;
         }
-        f(&mut None, self)
+
+        let inspector = inspector.clone();
+        Some(inspector.update(cx, |inspector, _cx| {
+            inspector.with_active_element_state(self, f)
+        }))
+    }
+
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    pub(crate) fn inspector_enabled(&self) -> bool {
+        self.inspector.is_some()
     }
 
     #[cfg(any(feature = "inspector", debug_assertions))]

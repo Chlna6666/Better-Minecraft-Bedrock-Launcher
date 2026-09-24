@@ -25,7 +25,7 @@ mod text_system;
 mod window;
 
 /// APIs used only by GPUI's Criterion benchmark targets.
-#[cfg(feature = "bench")]
+#[cfg(any(feature = "bench-support", feature = "bench"))]
 #[doc(hidden)]
 pub mod benchmark;
 

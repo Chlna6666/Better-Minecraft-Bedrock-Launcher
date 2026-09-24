@@ -41,7 +41,9 @@ default = [
     "nova-gfx-dx12",
     "build-shader-validation",
 ]
-bench = ["test-support", "dep:criterion"]
+bench-support = ["dep:criterion"]
+# Backward-compatible umbrella for existing benchmarks that still use TestAppContext.
+bench = ["bench-support", "test-support"]
 build-shader-validation = []
 inspector = ["gpui_macros/inspector"]
 dhat-heap = []
