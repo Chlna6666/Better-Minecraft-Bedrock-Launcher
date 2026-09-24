@@ -588,6 +588,7 @@ impl Window {
             self.scale_factor,
             activity.active,
             activity.minimized,
+            self.visibility.is_visible(),
         );
         record_window_frame_disposition(window_id, decision.disposition(presented_frame));
     }

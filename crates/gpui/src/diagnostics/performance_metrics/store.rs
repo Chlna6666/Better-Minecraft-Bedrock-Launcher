@@ -209,6 +209,7 @@ pub(super) struct WindowMetrics {
     pub(super) scale_factor_milli: u64,
     pub(super) active: bool,
     pub(super) minimized: bool,
+    pub(super) visible: bool,
     pub(super) request_redraw_count: u64,
     pub(super) draw_count: u64,
     pub(super) present_count: u64,

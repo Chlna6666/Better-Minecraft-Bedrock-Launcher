@@ -28,7 +28,7 @@ use crate::{
     Render, SharedString, SubscriberSet, Subscription, SvgRenderer, Task, TextStyle, TextSystem,
     Window, WindowHandle, WindowId, WindowInvalidator, WindowTabRegistry,
     colors::{Colors, GlobalColors},
-    init_app_menus, record_coalesced_refresh_effect,
+    init_app_menus, record_coalesced_refresh_effect, reset_present_timing_after_interruption,
 };
 
 mod events;
@@ -218,6 +218,7 @@ impl App {
             move || {
                 if let Some(app) = app.upgrade() {
                     let cx = &mut app.borrow_mut();
+                    reset_present_timing_after_interruption();
                     cx.system_sleep_observers
                         .clone()
                         .retain(&(), move |callback| (callback)(cx));
@@ -230,6 +231,7 @@ impl App {
             move || {
                 if let Some(app) = app.upgrade() {
                     let cx = &mut app.borrow_mut();
+                    reset_present_timing_after_interruption();
                     cx.system_wake_observers
                         .clone()
                         .retain(&(), move |callback| (callback)(cx));

@@ -24,6 +24,8 @@ pub struct WindowMetricsSnapshot {
     pub active: bool,
     /// Whether this window is minimized.
     pub minimized: bool,
+    /// Whether this window is currently visible to the platform compositor.
+    pub visible: bool,
     /// Redraw requests.
     pub request_redraw_count: usize,
     /// Drawn frames.
@@ -79,6 +81,7 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                         scale_factor_milli: metrics.scale_factor_milli as usize,
                         active: metrics.active,
                         minimized: metrics.minimized,
+                        visible: metrics.visible,
                         request_redraw_count: metrics.request_redraw_count as usize,
                         draw_count: metrics.draw_count as usize,
                         present_count: metrics.present_count as usize,
@@ -124,19 +127,24 @@ pub fn record_window_frame_disposition(window_id: u64, disposition: WindowFrameD
         if disposition.presented_frame {
             metrics.present_count = metrics.present_count.saturating_add(1);
 
-            let now = Instant::now();
-            if let Some(previous_present_at) = metrics.last_present_at.replace(now) {
-                let delta = now.saturating_duration_since(previous_present_at);
-                if delta >= Duration::from_micros(250) && delta <= Duration::from_secs(1) {
-                    let instant_fps_milli =
-                        (1000.0 / delta.as_secs_f32()).round().max(0.0) as u64;
-                    metrics.present_fps_milli = if metrics.present_fps_milli == 0 {
-                        instant_fps_milli
-                    } else {
-                        ((metrics.present_fps_milli as f32 * 0.85)
-                            + (instant_fps_milli as f32 * 0.15))
-                            .round() as u64
-                    };
+            if !metrics.visible {
+                metrics.last_present_at = None;
+                metrics.present_fps_milli = 0;
+            } else {
+                let now = Instant::now();
+                if let Some(previous_present_at) = metrics.last_present_at.replace(now) {
+                    let delta = now.saturating_duration_since(previous_present_at);
+                    if delta >= Duration::from_micros(250) && delta <= Duration::from_secs(1) {
+                        let instant_fps_milli =
+                            (1000.0 / delta.as_secs_f32()).round().max(0.0) as u64;
+                        metrics.present_fps_milli = if metrics.present_fps_milli == 0 {
+                            instant_fps_milli
+                        } else {
+                            ((metrics.present_fps_milli as f32 * 0.85)
+                                + (instant_fps_milli as f32 * 0.15))
+                                .round() as u64
+                        };
+                    }
                 }
             }
         }
@@ -155,6 +163,7 @@ pub fn record_window_runtime_state(
     scale_factor: f32,
     active: bool,
     minimized: bool,
+    visible: bool,
 ) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
@@ -173,6 +182,26 @@ pub fn record_window_runtime_state(
         metrics.scale_factor_milli = (scale_factor * 1000.0).round() as u64;
         metrics.active = active;
         metrics.minimized = minimized;
+        if metrics.visible && !visible {
+            metrics.last_present_at = None;
+            metrics.present_fps_milli = 0;
+        }
+        metrics.visible = visible;
+    }
+}
+
+/// Records a platform visibility transition for one window.
+///
+/// Hiding starts a new presentation timing epoch. The first frame after becoming visible establishes
+/// a fresh baseline instead of being compared with the last pre-hide presentation.
+pub fn record_window_visibility(window_id: u64, visible: bool) {
+    if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
+        let metrics = window_metrics.entry(window_id).or_default();
+        if metrics.visible != visible {
+            metrics.visible = visible;
+            metrics.last_present_at = None;
+            metrics.present_fps_milli = 0;
+        }
     }
 }
 

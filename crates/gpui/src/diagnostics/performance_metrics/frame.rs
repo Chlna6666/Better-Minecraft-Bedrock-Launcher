@@ -133,6 +133,24 @@ pub fn record_inactive_present_skip() {
         .fetch_add(1, Ordering::Relaxed);
 }
 
+/// Resets presentation-rate timing after an OS power interruption.
+///
+/// Sleeping is not a slow frame. Starting a new timing epoch prevents stale pre-suspend FPS from
+/// being reused immediately after resume and keeps the suspension interval out of smoothing.
+pub(crate) fn reset_present_timing_after_interruption() {
+    let metrics = shared_metrics();
+    if let Ok(mut last_present_at) = metrics.last_present_at.lock() {
+        *last_present_at = None;
+    }
+    metrics.present_fps_milli.store(0, Ordering::Relaxed);
+    if let Ok(mut windows) = metrics.window_metrics.lock() {
+        for window in windows.values_mut() {
+            window.last_present_at = None;
+            window.present_fps_milli = 0;
+        }
+    }
+}
+
 /// Records that the active platform renderer presented one frame.
 pub fn record_present() {
     let metrics = shared_metrics();

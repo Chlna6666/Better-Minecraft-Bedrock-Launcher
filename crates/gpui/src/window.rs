@@ -33,7 +33,7 @@ use crate::{
     record_inactive_present_skip, record_layout_cache_metrics, record_layout_frame_metrics,
     record_retained_frame_skip, record_scene_frame_metrics, record_skipped_pointer_frame,
     record_window_frame_disposition, record_window_layout_recompute, record_window_runtime_state,
-    rems, size, transparent_black,
+    record_window_visibility, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};

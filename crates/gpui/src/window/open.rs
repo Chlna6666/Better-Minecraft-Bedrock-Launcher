@@ -105,6 +105,7 @@ impl Window {
         invalidator.set_dirty_frame_diagnostics(dirty_frame_diagnostics.clone());
         let active = Rc::new(Cell::new(platform_window.is_active()));
         let visibility = platform_window.visibility();
+        record_window_visibility(handle.window_id().as_u64(), visibility.is_visible());
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
@@ -180,6 +181,10 @@ impl Window {
                         return;
                     }
                     window.visibility = visibility;
+                    record_window_visibility(
+                        window.handle.window_id().as_u64(),
+                        visibility.is_visible(),
+                    );
                     window
                         .visibility_observers
                         .clone()
