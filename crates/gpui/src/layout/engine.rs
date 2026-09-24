@@ -4,7 +4,6 @@ use crate::{
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
 use smallvec::SmallVec;
-use stacksafe::{StackSafe, stacksafe};
 use std::{
     hash::{Hash, Hasher},
     time::{Duration, Instant},
@@ -22,16 +21,14 @@ use super::{
     metrics::{AvailableSpace, LayoutId, LayoutRootCacheKey, RetainedLayoutNode},
 };
 
-pub(super) type NodeMeasureFn = StackSafe<
-    Box<
-        dyn FnMut(
-            Size<Option<Pixels>>,
-            Size<AvailableSpace>,
-            &mut Window,
-            &mut App,
-        ) -> Size<Pixels>,
-    >,
->;
+#[cfg(feature = "stacker")]
+type StackSafe<T> = stacksafe::StackSafe<T>;
+#[cfg(not(feature = "stacker"))]
+type StackSafe<T> = T;
+
+type MeasureFn =
+    dyn FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>;
+pub(super) type NodeMeasureFn = StackSafe<Box<MeasureFn>>;
 
 #[derive(Clone)]
 struct NodeLayoutMetadata {
@@ -410,7 +407,12 @@ impl TaffyLayoutEngine {
             .new_leaf_with_context(
                 taffy_style,
                 NodeContext {
-                    measure: StackSafe::new(Box::new(measure)),
+                    measure: {
+                        let measure = Box::new(measure) as Box<MeasureFn>;
+                        #[cfg(feature = "stacker")]
+                        let measure = StackSafe::new(measure);
+                        measure
+                    },
                     is_pure: fingerprint_seed.is_some(),
                     last_measure_input: None,
                 },
@@ -458,7 +460,12 @@ impl TaffyLayoutEngine {
             .new_leaf_with_context(
                 taffy_style,
                 NodeContext {
-                    measure: StackSafe::new(Box::new(measure)),
+                    measure: {
+                        let measure = Box::new(measure) as Box<MeasureFn>;
+                        #[cfg(feature = "stacker")]
+                        let measure = StackSafe::new(measure);
+                        measure
+                    },
                     is_pure: false,
                     last_measure_input: None,
                 },
@@ -478,7 +485,7 @@ impl TaffyLayoutEngine {
         layout_id
     }
 
-    #[stacksafe]
+    #[cfg_attr(feature = "stacker", stacksafe::stacksafe)]
     pub fn compute_layout(
         &mut self,
         id: LayoutId,

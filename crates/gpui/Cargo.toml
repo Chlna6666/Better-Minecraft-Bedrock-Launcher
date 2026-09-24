@@ -59,6 +59,10 @@ macos-blade = [
     "objc2-metal",
 ]
 runtime_shaders = []
+# Opt in only for applications that intentionally build unusually deep element/layout trees.
+# Keeping this out of the default feature set avoids the stacksafe proc-macro/runtime in normal
+# desktop builds and reduces GPUI codegen/compile overhead.
+stacker = ["dep:stacksafe"]
 nova-gfx = []
 nova-gfx-vulkan = ["nova-gfx", "dep:gfx-vulkan"]
 nova-gfx-dx12 = ["nova-gfx", "dep:gfx-dx12"]
@@ -482,6 +486,7 @@ version = "2.0"
 
 [dependencies.stacksafe]
 version = "1.0.1"
+optional = true
 
 [dependencies.strum]
 version = "0.28.0"
