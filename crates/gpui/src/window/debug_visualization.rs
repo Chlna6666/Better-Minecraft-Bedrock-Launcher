@@ -1,10 +1,93 @@
 use super::*;
-use crate::{AbsoluteLength, Length, Timer, rgb};
+use crate::{
+    AbsoluteLength, ContentMask, Length, Quad, ScaledPixels, Scene, Timer, point, rgb, rgba, size,
+};
+use std::collections::VecDeque;
 
 const SURFACE_FLASH_HOLD: Duration = Duration::from_millis(90);
 const ELEMENT_UPDATE_HOLD: Duration = Duration::from_millis(120);
 const MAX_ELEMENT_PAINT_MARKERS: usize = 2048;
 const MAX_VIEW_CACHE_MARKERS: usize = 512;
+const MAX_FRAME_TIME_SAMPLES: usize = 240;
+const FRAME_OVERLAY_GLYPH_WIDTH: usize = 5;
+const FRAME_OVERLAY_GLYPH_HEIGHT: usize = 7;
+const FRAME_OVERLAY_CELL: f32 = 2.0;
+const FRAME_OVERLAY_CHAR_ADVANCE: f32 = 6.0;
+const FRAME_OVERLAY_LINE_ADVANCE: f32 = 9.0;
+const FRAME_OVERLAY_PADDING: f32 = 2.0;
+const FRAME_OVERLAY_MARGIN: f32 = 4.0;
+
+/// Lightweight frame-time overlay drawn directly into the Scene.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DebugFrameOverlayMode {
+    /// Do not collect samples or paint an overlay.
+    #[default]
+    Hidden,
+    /// Show only the most recent CPU frame-build duration.
+    Minimal,
+    /// Show current, P95, P99, max, and sample count.
+    Full,
+}
+
+impl DebugFrameOverlayMode {
+    /// Advances Hidden -> Minimal -> Full -> Hidden.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Hidden => Self::Minimal,
+            Self::Minimal => Self::Full,
+            Self::Full => Self::Hidden,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct DebugFrameTimeOverlay {
+    samples: VecDeque<Duration>,
+    total_frames: u64,
+}
+
+impl DebugFrameTimeOverlay {
+    fn record(&mut self, duration: Duration) {
+        self.total_frames = self.total_frames.saturating_add(1);
+        if self.samples.len() >= MAX_FRAME_TIME_SAMPLES {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(duration);
+    }
+
+    fn reset(&mut self) {
+        self.samples.clear();
+    }
+
+    fn lines(&self, mode: DebugFrameOverlayMode) -> Vec<String> {
+        let current = self.samples.back().copied();
+        if mode == DebugFrameOverlayMode::Hidden {
+            return Vec::new();
+        }
+        if mode == DebugFrameOverlayMode::Minimal {
+            return vec![format_frame_ms(current)];
+        }
+
+        let mut sorted = self.samples.iter().copied().collect::<Vec<_>>();
+        sorted.sort_unstable();
+        let percentile = |percent: usize| {
+            if sorted.is_empty() {
+                None
+            } else {
+                let index = ((sorted.len() - 1) * percent) / 100;
+                sorted.get(index).copied()
+            }
+        };
+        let frame_count = self.total_frames.min(99_999);
+        vec![
+            format!("CUR {}", format_frame_ms(current)),
+            format!("P95 {}", format_frame_ms(percentile(95))),
+            format!("P99 {}", format_frame_ms(percentile(99))),
+            format!("MAX {}", format_frame_ms(sorted.last().copied())),
+            format!("FRAMES {frame_count:>5}"),
+        ]
+    }
+}
 
 /// Why a retained render boundary was reused or rebuilt in the current frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +120,8 @@ pub(crate) enum ViewCacheDebugStatus {
 /// rendering, caching, or layout behavior.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WindowDebugVisualization {
+    /// Paint frame-build timing directly into the Scene without creating layout/text nodes.
+    pub frame_time_overlay: DebugFrameOverlayMode,
     /// Flash the whole window whenever GPUI produces a new painted surface frame.
     pub flash_surface_updates: bool,
     /// Draw the box model and clipping boundary for styled elements.
@@ -60,6 +145,7 @@ struct ViewCacheDebugMarker {
 #[derive(Clone, Debug, Default)]
 struct WindowDebugVisualizationRuntime {
     options: WindowDebugVisualization,
+    frame_time: DebugFrameTimeOverlay,
     surface_flash_generation: u64,
     element_update_generation: u64,
     overlay_generation: u64,
@@ -108,6 +194,37 @@ impl Window {
         });
 
         // Turning an overlay on or off must also clear pixels produced by the previous state.
+        self.force_full_redraw.set(true);
+        self.refresh();
+    }
+
+    /// Sets the direct Scene frame-time overlay mode.
+    pub fn set_debug_frame_overlay_mode(
+        &mut self,
+        mode: DebugFrameOverlayMode,
+        cx: &mut App,
+    ) {
+        let mut options = self.debug_visualization(cx);
+        options.frame_time_overlay = mode;
+        self.set_debug_visualization(options, cx);
+    }
+
+    /// Cycles the frame-time overlay through hidden, minimal, and full modes.
+    pub fn cycle_debug_frame_overlay_mode(&mut self, cx: &mut App) {
+        self.set_debug_frame_overlay_mode(self.debug_visualization(cx).frame_time_overlay.next(), cx);
+    }
+
+    /// Clears the bounded frame-time sample window while keeping the overlay enabled.
+    pub fn reset_debug_frame_overlay_stats(&mut self, cx: &mut App) {
+        let window_id = self.handle.window_id().as_u64();
+        if !cx.has_global::<WindowDebugVisualizationRegistry>() {
+            return;
+        }
+        cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+            if let Some(runtime) = registry.windows.get_mut(&window_id) {
+                runtime.frame_time.reset();
+            }
+        });
         self.force_full_redraw.set(true);
         self.refresh();
     }
@@ -280,6 +397,50 @@ impl Window {
                 || runtime.cleanup_this_frame;
         });
         requires_full_redraw
+    }
+
+    /// Records one completed CPU frame build for the direct Scene overlay.
+    pub(super) fn record_debug_frame_time(&mut self, duration: Duration, cx: &mut App) {
+        let window_id = self.handle.window_id().as_u64();
+        if !cx.has_global::<WindowDebugVisualizationRegistry>() {
+            return;
+        }
+        cx.update_global(|registry: &mut WindowDebugVisualizationRegistry, _cx| {
+            let Some(runtime) = registry.windows.get_mut(&window_id) else {
+                return;
+            };
+            if runtime.options.frame_time_overlay != DebugFrameOverlayMode::Hidden {
+                runtime.frame_time.record(duration);
+            }
+        });
+    }
+
+    /// Paints timing text directly into the Scene. This deliberately bypasses GPUI text/layout and
+    /// does not request another frame, so the diagnostic cannot perturb invalidation cadence.
+    pub(super) fn paint_debug_frame_time_overlay(&mut self, cx: &App) {
+        let window_id = self.handle.window_id().as_u64();
+        if !cx.has_global::<WindowDebugVisualizationRegistry>() {
+            return;
+        }
+
+        let (mode, lines) = {
+            let registry = cx.global::<WindowDebugVisualizationRegistry>();
+            let Some(runtime) = registry.windows.get(&window_id) else {
+                return;
+            };
+            let mode = runtime.options.frame_time_overlay;
+            if mode == DebugFrameOverlayMode::Hidden {
+                return;
+            }
+            (mode, runtime.frame_time.lines(mode))
+        };
+        debug_frame_overlay_paint(
+            &mut self.next_frame.scene,
+            self.viewport_size,
+            self.scale_factor,
+            mode,
+            &lines,
+        );
     }
 
     /// Paints window-level debug overlays above the completed tree. Cache markers are painted last
@@ -554,6 +715,27 @@ mod tests {
     }
 
     #[test]
+    fn frame_overlay_has_glyphs_for_every_rendered_character() {
+        let mut overlay = DebugFrameTimeOverlay::default();
+        for duration in [
+            Duration::ZERO,
+            Duration::from_micros(4_167),
+            Duration::from_micros(16_667),
+            Duration::from_millis(123),
+        ] {
+            overlay.record(duration);
+        }
+        for line in overlay.lines(DebugFrameOverlayMode::Full) {
+            for character in line.chars() {
+                assert!(
+                    character == ' ' || debug_frame_glyph(character).is_some(),
+                    "missing debug overlay glyph for {character:?} in {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cache_status_palette_distinguishes_hit_bounds_dirty_and_traversal() {
         assert_ne!(
             cache_marker_color(ViewCacheDebugStatus::Hit).0,
@@ -572,4 +754,133 @@ mod tests {
             cache_marker_color(ViewCacheDebugStatus::SelfSceneReplay).0
         );
     }
+}
+
+
+fn format_frame_ms(duration: Option<Duration>) -> String {
+    duration
+        .map(|duration| format!("{:>5.1}MS", duration.as_secs_f64() * 1000.0))
+        .unwrap_or_else(|| "   --MS".to_owned())
+}
+
+fn debug_frame_overlay_paint(
+    scene: &mut Scene,
+    viewport_size: Size<Pixels>,
+    scale_factor: f32,
+    _mode: DebugFrameOverlayMode,
+    lines: &[String],
+) {
+    if lines.is_empty() || scale_factor <= 0.0 || !scale_factor.is_finite() {
+        return;
+    }
+
+    let max_chars = lines.iter().map(|line| line.chars().count()).max().unwrap_or(0);
+    let cell = (FRAME_OVERLAY_CELL * scale_factor).max(1.0);
+    let width = cell
+        * (max_chars as f32 * FRAME_OVERLAY_CHAR_ADVANCE + FRAME_OVERLAY_PADDING * 2.0);
+    let height = cell
+        * (lines.len() as f32 * FRAME_OVERLAY_LINE_ADVANCE + FRAME_OVERLAY_PADDING * 2.0);
+    let viewport = viewport_size.scale(scale_factor);
+    let left = (viewport.width.0 - width - cell * FRAME_OVERLAY_MARGIN).max(0.0);
+    let top = cell * FRAME_OVERLAY_MARGIN;
+    let mask = ContentMask::new(Bounds::new(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        viewport,
+    ));
+
+    insert_debug_quad(
+        scene,
+        Bounds::new(
+            point(ScaledPixels(left), ScaledPixels(top)),
+            size(ScaledPixels(width), ScaledPixels(height)),
+        ),
+        mask.clone(),
+        rgba(0x000000cc).into(),
+    );
+
+    let foreground: Hsla = rgba(0x39ff6aff).into();
+    for (line_index, line) in lines.iter().enumerate() {
+        let row_top = top
+            + cell * (FRAME_OVERLAY_PADDING + line_index as f32 * FRAME_OVERLAY_LINE_ADVANCE);
+        for (char_index, character) in line.chars().enumerate() {
+            if character == ' ' {
+                continue;
+            }
+            let Some(rows) = debug_frame_glyph(character) else {
+                continue;
+            };
+            let glyph_left = left
+                + cell * (FRAME_OVERLAY_PADDING
+                    + char_index as f32 * FRAME_OVERLAY_CHAR_ADVANCE);
+            for (glyph_row, bits) in rows.iter().copied().enumerate() {
+                let mut column = 0usize;
+                while column < FRAME_OVERLAY_GLYPH_WIDTH {
+                    if bits & (1 << (FRAME_OVERLAY_GLYPH_WIDTH - 1 - column)) == 0 {
+                        column += 1;
+                        continue;
+                    }
+                    let start = column;
+                    while column < FRAME_OVERLAY_GLYPH_WIDTH
+                        && bits & (1 << (FRAME_OVERLAY_GLYPH_WIDTH - 1 - column)) != 0
+                    {
+                        column += 1;
+                    }
+                    insert_debug_quad(
+                        scene,
+                        Bounds::new(
+                            point(
+                                ScaledPixels(glyph_left + start as f32 * cell),
+                                ScaledPixels(row_top + glyph_row as f32 * cell),
+                            ),
+                            size(ScaledPixels((column - start) as f32 * cell), ScaledPixels(cell)),
+                        ),
+                        mask.clone(),
+                        foreground,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn insert_debug_quad(
+    scene: &mut Scene,
+    bounds: Bounds<ScaledPixels>,
+    content_mask: ContentMask<ScaledPixels>,
+    background: Hsla,
+) {
+    scene.insert_primitive(Quad {
+        bounds,
+        content_mask,
+        background: background.into(),
+        ..Quad::default()
+    });
+}
+
+fn debug_frame_glyph(character: char) -> Option<[u8; FRAME_OVERLAY_GLYPH_HEIGHT]> {
+    Some(match character {
+        '0' => [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
+        '1' => [0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e],
+        '2' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f],
+        '3' => [0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e],
+        '4' => [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
+        '5' => [0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e],
+        '6' => [0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e],
+        '7' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        '8' => [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
+        '9' => [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c],
+        '.' => [0, 0, 0, 0, 0, 0x0c, 0x0c],
+        '-' => [0, 0, 0, 0x1f, 0, 0, 0],
+        'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        'C' => [0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e],
+        'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
+        'F' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
+        'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
+        'R' => [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
+        'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        'X' => [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
+        _ => return None,
+    })
 }

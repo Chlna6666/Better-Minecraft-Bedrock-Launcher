@@ -84,6 +84,7 @@ impl Window {
             cx,
         );
         phase_metrics.build = frame_started_at.elapsed();
+        self.record_debug_frame_time(phase_metrics.build, cx);
         record_draw_phase_metrics(phase_metrics);
         ArenaClearNeeded::new()
     }
@@ -694,6 +695,7 @@ impl Window {
         self.paint_inspector_hitbox(cx);
 
         self.paint_debug_surface_update_flash(cx);
+        self.paint_debug_frame_time_overlay(cx);
         FramePhaseMetrics {
             layout: self
                 .layout_engine
