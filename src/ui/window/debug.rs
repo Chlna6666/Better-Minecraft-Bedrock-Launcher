@@ -210,6 +210,7 @@ fn apply_main_window_visual_debug(
     let _ = main_window.update(cx, |_root, window, cx| {
         window.set_debug_visualization(
             WindowDebugVisualization {
+                frame_time_overlay: DebugFrameOverlayMode::Hidden,
                 flash_surface_updates,
                 show_layout_bounds,
                 show_element_updates,
