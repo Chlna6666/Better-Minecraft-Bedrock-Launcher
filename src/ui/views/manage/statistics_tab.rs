@@ -1,6 +1,7 @@
 use super::*;
 use crate::ui::animation::{
-    ease_out_cubic, raw_progress, request_layout_animation_frame_if, stat_chart_bar_motion,
+    ease_out_cubic, raw_progress, request_layout_animation_frame_if, settled_animation,
+    stat_chart_bar_motion,
 };
 use chrono::{Days, Utc};
 use std::time::{Duration, Instant};
@@ -321,22 +322,26 @@ fn animate_stat_section(
     direction: f32,
     animate: bool,
 ) -> AnyElement {
-    if !animate {
-        return section.into_any_element();
-    }
-
     let delay = Duration::from_millis(index.min(4) as u64 * 38);
     section
         .with_animation(
             SharedString::from(format!("manage-stat-section-{scope}-{sequence}")),
-            Animation::from_spec(
-                AnimationSpec::new(Duration::from_millis(360))
-                    .delay(delay)
-                    .fill_mode(FillMode::Both)
-                    .ease(Easing::OutCubic),
-            ),
+            if animate {
+                Animation::from_spec(
+                    AnimationSpec::new(Duration::from_millis(360))
+                        .delay(delay)
+                        .fill_mode(FillMode::Both)
+                        .ease(Easing::OutCubic),
+                )
+            } else {
+                settled_animation()
+            },
             move |section, progress| {
-                let progress = progress.clamp(0.0, 1.0);
+                let progress = if animate {
+                    progress.clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
                 section
                     .relative()
                     .left(px(6.0 * direction * (1.0 - progress)))
@@ -459,25 +464,38 @@ fn chart_card(
                     } else {
                         10.0 + 130.0 * current as f32 / maximum as f32
                     };
+                    let bar_inner = div()
+                        .w_full()
+                        .h(px(height))
+                        .rounded_t(px(5.))
+                        .bg(Hsla { a: 0.72, ..color })
+                        .with_animation(
+                            SharedString::from(format!(
+                                "manage-stat-{animation_scope}-{animation_sequence}-{index}"
+                            )),
+                            if animate {
+                                stat_chart_bar_motion(index)
+                            } else {
+                                settled_animation()
+                            },
+                            move |bar, progress| {
+                                let progress = if animate {
+                                    progress.clamp(0.0, 1.0)
+                                } else {
+                                    1.0
+                                };
+                                bar.relative().top(px(height * (1.0 - progress)))
+                            },
+                        );
                     let bar = div()
                         .w_full()
                         .max_w(px(30.))
                         .h(px(height))
-                        .rounded_t(px(5.))
-                        .bg(Hsla { a: 0.72, ..color });
-                    let bar = if animate {
-                        bar.composite_layer()
-                            .with_animation(
-                                SharedString::from(format!(
-                                    "manage-stat-{animation_scope}-{animation_sequence}-{index}"
-                                )),
-                                stat_chart_bar_motion(index),
-                                |bar, _progress| bar,
-                            )
-                            .into_any_element()
-                    } else {
-                        bar.into_any_element()
-                    };
+                        .overflow_hidden()
+                        .flex()
+                        .items_end()
+                        .child(bar_inner)
+                        .into_any_element();
 
                     div()
                         .flex_1()

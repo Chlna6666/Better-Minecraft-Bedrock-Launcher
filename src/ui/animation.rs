@@ -1,7 +1,6 @@
 use gpui::{
     Animation, AnimationDriver, AnimationProperty, AnimationSpec, App, Easing, FillMode,
-    HorizontalRevealEdge, RepeatMode, SharedString, Spring, SpringPhysics, VerticalRevealEdge,
-    Window, point, px,
+    HorizontalRevealEdge, RepeatMode, SharedString, Spring, SpringPhysics, Window, point, px,
 };
 use std::time::{Duration, Instant};
 
@@ -60,6 +59,14 @@ pub fn tab_toolbar_motion() -> Animation {
         AnimationSpec::new(Duration::from_millis(240))
             .fill_mode(FillMode::Both)
             .ease(Easing::OutCubic),
+    )
+}
+
+pub fn settled_animation() -> Animation {
+    Animation::from_spec(
+        AnimationSpec::new(Duration::ZERO)
+            .fill_mode(FillMode::Both)
+            .ease(Easing::Linear),
     )
 }
 
@@ -172,7 +179,7 @@ pub fn tab_underline_motion(from_index: usize, to_index: usize) -> Animation {
     .with_property(AnimationProperty::horizontal_reveal(edge, 0.0, 1.0))
 }
 
-/// Staggered bottom-up reveal for statistics bars without animating bar height/layout.
+/// Staggered chart-bar timing. Final geometry stays stable and only the inner bar moves.
 pub fn stat_chart_bar_motion(index: usize) -> Animation {
     let delay = Duration::from_millis(index.min(13) as u64 * 32);
 
@@ -182,11 +189,6 @@ pub fn stat_chart_bar_motion(index: usize) -> Animation {
             .fill_mode(FillMode::Both)
             .ease(Easing::OutCubic),
     )
-    .with_property(AnimationProperty::vertical_reveal(
-        VerticalRevealEdge::Bottom,
-        0.0,
-        1.0,
-    ))
 }
 
 /// Stable transition key helper for state-driven tab/subpage switches.

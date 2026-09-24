@@ -1,5 +1,7 @@
 use super::*;
-use crate::ui::animation::{tab_list_item_motion, tab_list_stagger_active};
+use crate::ui::animation::{
+    settled_animation, tab_list_item_motion, tab_list_stagger_active,
+};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ScreenshotListSignature {
@@ -223,26 +225,31 @@ pub(super) fn render_screenshot_list(
                 virtual_list_plan.heavy_slice.contains(virtual_index),
                 cx,
             ));
-        let row = if animate_row {
-            let direction =
-                crate::ui::animation::tab_transition_direction(animation_from, animation_to);
-            row.with_animation(
+        let direction =
+            crate::ui::animation::tab_transition_direction(animation_from, animation_to);
+        let row = row
+            .with_animation(
                 SharedString::from(format!(
                     "manage-screenshot-row-enter-{}-{}",
                     state.tab_anim_seq,
                     entry.key.as_ref()
                 )),
-                tab_list_item_motion(animation_from, animation_to, visible_index),
+                if animate_row {
+                    tab_list_item_motion(animation_from, animation_to, visible_index)
+                } else {
+                    settled_animation()
+                },
                 move |row, progress| {
-                    let progress = progress.clamp(0.0, 1.0);
+                    let progress = if animate_row {
+                        progress.clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
                     row.relative()
                         .left(px(12.0 * direction * (1.0 - progress)))
                 },
             )
-            .into_any_element()
-        } else {
-            row.into_any_element()
-        };
+            .into_any_element();
         rows = rows.child(row);
     }
 

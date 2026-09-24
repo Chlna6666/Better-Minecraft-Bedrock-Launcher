@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::animation::{
-    tab_content_animation_key, tab_toolbar_motion, tab_transition_direction,
+    settled_animation, tab_content_animation_key, tab_toolbar_motion, tab_transition_direction,
 };
 
 pub struct ManagePageView {
@@ -885,31 +885,35 @@ impl ManagePageView {
                                     .children(render_active_toolbar_actions(colors, state, cx)),
                             );
 
-                        if state.tab_animation_active(now)
-                            && !crate::core::ui_prefs::reduced_motion()
-                        {
-                            let direction = tab_transition_direction(
-                                state.tab_anim_from.index(),
-                                state.tab.index(),
-                            );
-                            toolbar
-                                .with_animation(
-                                    tab_content_animation_key(
-                                        "manage-tab-toolbar",
-                                        state.tab_anim_seq,
-                                    ),
-                                    tab_toolbar_motion(),
-                                    move |toolbar, progress| {
-                                        let progress = progress.clamp(0.0, 1.0);
-                                        toolbar
-                                            .relative()
-                                            .left(px(8.0 * direction * (1.0 - progress)))
-                                    },
-                                )
-                                .into_any_element()
-                        } else {
-                            toolbar.into_any_element()
-                        }
+                        let animating = state.tab_animation_active(now)
+                            && !crate::core::ui_prefs::reduced_motion();
+                        let direction = tab_transition_direction(
+                            state.tab_anim_from.index(),
+                            state.tab.index(),
+                        );
+                        toolbar
+                            .with_animation(
+                                tab_content_animation_key(
+                                    "manage-tab-toolbar",
+                                    state.tab_anim_seq,
+                                ),
+                                if animating {
+                                    tab_toolbar_motion()
+                                } else {
+                                    settled_animation()
+                                },
+                                move |toolbar, progress| {
+                                    let progress = if animating {
+                                        progress.clamp(0.0, 1.0)
+                                    } else {
+                                        1.0
+                                    };
+                                    toolbar
+                                        .relative()
+                                        .left(px(8.0 * direction * (1.0 - progress)))
+                                },
+                            )
+                            .into_any_element()
                     })
                     .child(
                         div()

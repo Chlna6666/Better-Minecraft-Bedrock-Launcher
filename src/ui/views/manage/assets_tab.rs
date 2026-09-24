@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::animation::{
-    tab_list_item_motion, tab_list_stagger_active, tab_stale_content_motion,
+    settled_animation, tab_list_item_motion, tab_list_stagger_active, tab_stale_content_motion,
 };
 
 #[derive(Clone, PartialEq, Eq)]
@@ -752,26 +752,17 @@ pub(super) fn render_asset_list(
             "manage-pack-subtype-list-stagger",
             state.pack_subtype_anim_seq,
         );
-    let (animate_rows, animation_from, animation_to, animation_sequence, animation_scope) =
-        if primary_rows_animating {
-            (
-                true,
-                state.tab_anim_from.index(),
-                state.tab.index(),
-                state.tab_anim_seq,
-                "manage-asset-row-enter",
-            )
-        } else if subtype_rows_animating {
-            (
-                true,
-                state.pack_subtype_anim_from.index(),
-                state.pack_subtype.index(),
-                state.pack_subtype_anim_seq,
-                "manage-pack-subtype-row-enter",
-            )
-        } else {
-            (false, 0, 0, 0, "manage-asset-row-enter")
-        };
+    let (animate_rows, animation_from, animation_to) = if primary_rows_animating {
+        (true, state.tab_anim_from.index(), state.tab.index())
+    } else if subtype_rows_animating {
+        (
+            true,
+            state.pack_subtype_anim_from.index(),
+            state.pack_subtype.index(),
+        )
+    } else {
+        (false, state.tab.index(), state.tab.index())
+    };
 
     let mut rows = div().w_full().flex().flex_col().min_w(px(0.));
     if virtual_list_plan.render_slice.top_spacer > px(0.) {
@@ -809,27 +800,32 @@ pub(super) fn render_asset_list(
                 &i18n,
                 cx,
             ));
-        let row = if animate_row {
-            let direction =
-                crate::ui::animation::tab_transition_direction(animation_from, animation_to);
-            row.with_animation(
+        let direction =
+            crate::ui::animation::tab_transition_direction(animation_from, animation_to);
+        let row = row
+            .with_animation(
                 SharedString::from(format!(
-                    "{}-{}-{}",
-                    animation_scope,
-                    animation_sequence,
+                    "manage-asset-row-{}-{}-{}",
+                    state.tab_anim_seq,
+                    state.pack_subtype_anim_seq,
                     asset.key.as_ref()
                 )),
-                tab_list_item_motion(animation_from, animation_to, visible_index),
+                if animate_row {
+                    tab_list_item_motion(animation_from, animation_to, visible_index)
+                } else {
+                    settled_animation()
+                },
                 move |row, progress| {
-                    let progress = progress.clamp(0.0, 1.0);
+                    let progress = if animate_row {
+                        progress.clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
                     row.relative()
                         .left(px(12.0 * direction * (1.0 - progress)))
                 },
             )
-            .into_any_element()
-        } else {
-            row.into_any_element()
-        };
+            .into_any_element();
         rows = rows.child(row);
     }
 

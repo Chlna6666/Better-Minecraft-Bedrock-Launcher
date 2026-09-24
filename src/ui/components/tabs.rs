@@ -1,5 +1,5 @@
 use crate::ui::animation::{
-    ease_out_cubic, ease_out_cubic_motion, raw_progress, tab_underline_motion,
+    ease_out_cubic, ease_out_cubic_motion, raw_progress, settled_animation, tab_underline_motion,
 };
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
@@ -158,26 +158,30 @@ impl RenderOnce for UnderlineTabs {
                 .rounded(px(1.))
                 .bg(colors.accent);
 
-            if snapshot.started_at.is_some() && !reduced_motion {
-                indicator
-                    .with_animation(
-                        SharedString::from(format!(
-                            "{}-shared-underline-{}",
-                            tabs_id.as_ref(),
-                            snapshot.sequence
-                        )),
-                        ease_out_cubic_motion(UNDERLINE_TAB_DURATION),
-                        move |indicator, progress| {
-                            let progress = progress.clamp(0.0, 1.0);
-                            let left =
-                                from_left_px + (target_left_px - from_left_px) * progress;
-                            indicator.left(px(left))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                indicator.left(px(target_left_px)).into_any_element()
-            }
+            let animating = snapshot.started_at.is_some() && !reduced_motion;
+            indicator
+                .with_animation(
+                    SharedString::from(format!(
+                        "{}-shared-underline-{}",
+                        tabs_id.as_ref(),
+                        snapshot.sequence
+                    )),
+                    if animating {
+                        ease_out_cubic_motion(UNDERLINE_TAB_DURATION)
+                    } else {
+                        settled_animation()
+                    },
+                    move |indicator, progress| {
+                        let progress = if animating {
+                            progress.clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        let left = from_left_px + (target_left_px - from_left_px) * progress;
+                        indicator.left(px(left))
+                    },
+                )
+                .into_any_element()
         });
 
         let mut root = div()
@@ -437,25 +441,29 @@ impl RenderOnce for AnimatedSegmentTabs {
                     }])
                 });
 
-            if snapshot.started_at.is_some() && !reduced_motion {
-                indicator
-                    .with_animation(
-                        SharedString::from(format!(
-                            "{}-indicator-{}",
-                            self.id, snapshot.sequence
-                        )),
-                        ease_out_cubic_motion(ANIMATED_TAB_DURATION),
-                        move |indicator, progress| {
-                            let progress = progress.clamp(0.0, 1.0);
-                            let left =
-                                from_left_px + (target_left_px - from_left_px) * progress;
-                            indicator.left(px(left))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                indicator.left(px(target_left_px)).into_any_element()
-            }
+            let animating = snapshot.started_at.is_some() && !reduced_motion;
+            indicator
+                .with_animation(
+                    SharedString::from(format!(
+                        "{}-indicator-{}",
+                        self.id, snapshot.sequence
+                    )),
+                    if animating {
+                        ease_out_cubic_motion(ANIMATED_TAB_DURATION)
+                    } else {
+                        settled_animation()
+                    },
+                    move |indicator, progress| {
+                        let progress = if animating {
+                            progress.clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        let left = from_left_px + (target_left_px - from_left_px) * progress;
+                        indicator.left(px(left))
+                    },
+                )
+                .into_any_element()
         } else {
             let from_left = snapshot.from_slot * segment_width;
             let target_left = snapshot.active_index as f32 * segment_width;
@@ -480,24 +488,29 @@ impl RenderOnce for AnimatedSegmentTabs {
                     }])
                 });
 
-            if snapshot.started_at.is_some() && !reduced_motion {
-                indicator
-                    .with_animation(
-                        SharedString::from(format!(
-                            "{}-indicator-{}",
-                            self.id, snapshot.sequence
-                        )),
-                        ease_out_cubic_motion(ANIMATED_TAB_DURATION),
-                        move |indicator, progress| {
-                            let progress = progress.clamp(0.0, 1.0);
-                            let left = from_left + (target_left - from_left) * progress;
-                            indicator.left(relative(left))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                indicator.left(relative(target_left)).into_any_element()
-            }
+            let animating = snapshot.started_at.is_some() && !reduced_motion;
+            indicator
+                .with_animation(
+                    SharedString::from(format!(
+                        "{}-indicator-{}",
+                        self.id, snapshot.sequence
+                    )),
+                    if animating {
+                        ease_out_cubic_motion(ANIMATED_TAB_DURATION)
+                    } else {
+                        settled_animation()
+                    },
+                    move |indicator, progress| {
+                        let progress = if animating {
+                            progress.clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        let left = from_left + (target_left - from_left) * progress;
+                        indicator.left(relative(left))
+                    },
+                )
+                .into_any_element()
         };
 
         let mut root = div()
