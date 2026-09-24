@@ -292,6 +292,17 @@ fn test_is_word_char() {
     assert_word("a=1");
     assert_word("Self::is_word_char");
     assert_word("more⋯");
+    assert_word("won’t");
+    assert_word("‘twas");
+    assert_word("plz!");
+    assert_word("see)");
+    assert_word("quoted”");
+    assert_word("well…");
+    assert_word("chào");
+    assert_word("বাংলা");
+    assert_word("a\u{202F}b");
+    assert_word("a\u{00A0}b");
+    assert_word("a\u{2011}b");
 
     assert_not_word("foo bar");
     assert_word("github.com");

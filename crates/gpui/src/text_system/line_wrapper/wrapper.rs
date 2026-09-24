@@ -160,12 +160,60 @@ impl LineWrapper {
         // Cyrillic for Russian, Ukrainian, etc.
         // https://en.wikipedia.org/wiki/Cyrillic_script_in_Unicode
         matches!(c, '\u{0400}'..='\u{04FF}') ||
+        // Vietnamese (https://vietunicode.sourceforge.net/charset/)
+        matches!(c, '\u{1E00}'..='\u{1EFF}') || // Latin Extended Additional
+        matches!(c, '\u{0300}'..='\u{036F}') || // Combining Diacritical Marks
+        // Bengali (https://en.wikipedia.org/wiki/Bengali_(Unicode_block))
+        matches!(c, '\u{0980}'..='\u{09FF}') ||
         // Some other known special characters that should be treated as word characters,
-        // e.g. `a-b`, `var_name`, `I'm`, '@mention`, `#hashtag`, `100%`, `3.1415`,
-        // `2^3`, `a~b`, `a=1`, `Self::new`, etc.
-        matches!(c, '-' | '_' | '.' | '\'' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '=' | ':') ||
+        // e.g. `a-b`, `var_name`, `I'm`/`won’t`, '@mention`, `#hashtag`, `100%`,
+        // `3.1415`, `2^3`, `a~b`, `a=1`, `Self::new`, etc. Trailing punctuation like
+        // `,`, `.`, `:`, `;` stays attached to the preceding word when wrapping.
+        matches!(c, '-' | '_' | '.' | '\'' | '’' | '‘' | '
+    }
+
+    #[inline(always)]
+    pub(super) fn width_for_char(&mut self, c: char) -> Pixels {
+        if (c as u32) < 128 {
+            if let Some(cached_width) = self.cached_ascii_char_widths[c as usize] {
+                cached_width
+            } else {
+                let width = self.compute_width_for_char(c);
+                self.cached_ascii_char_widths[c as usize] = Some(width);
+                width
+            }
+        } else if let Some(cached_width) = self.cached_other_char_widths.get(&c) {
+            *cached_width
+        } else {
+            let width = self.compute_width_for_char(c);
+            self.cached_other_char_widths.insert(c, width);
+            width
+        }
+    }
+
+    fn compute_width_for_char(&self, c: char) -> Pixels {
+        let mut buffer = [0; 4];
+        let buffer = c.encode_utf8(&mut buffer);
+        self.platform_text_system
+            .layout_line(
+                buffer,
+                self.font_size,
+                &[FontRun {
+                    len: buffer.len(),
+                    font_id: self.font_id,
+                }],
+            )
+            .width
+    }
+}
+ | '%' | '@' | '#' | '^' | '~' | ',' | '=' | ':' | ';') ||
+        // Closing punctuation should not start a wrapped line. Keep slash and question mark as
+        // break opportunities so paths and URLs can still wrap naturally.
+        matches!(c, '!' | ')' | ']' | '}' | '"' | '”' | '»' | '…') ||
         // `⋯` character is special used in Zed, to keep this at the end of the line.
-        matches!(c, '⋯')
+        matches!(c, '⋯') ||
+        // Non-breaking glue characters.
+        matches!(c, '\u{202F}' | '\u{00A0}' | '\u{2011}')
     }
 
     #[inline(always)]
