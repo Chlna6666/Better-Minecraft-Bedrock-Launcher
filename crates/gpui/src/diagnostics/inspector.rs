@@ -60,6 +60,7 @@ mod conditional {
     pub struct Inspector {
         active_element: Option<InspectedElement>,
         pub(crate) pick_depth: Option<f32>,
+        renderers: FxHashMap<TypeId, InspectorElementRenderer>,
     }
 
     struct InspectedElement {
@@ -81,6 +82,7 @@ mod conditional {
             Self {
                 active_element: None,
                 pick_depth: Some(0.0),
+                renderers: FxHashMap::default(),
             }
         }
 
@@ -161,21 +163,28 @@ mod conditional {
             let mut elements = Vec::new();
             if let Some(active_element) = self.active_element.take() {
                 for (type_id, state) in &active_element.states {
-                    if let Some(render_inspector) = cx
-                        .inspector_element_registry
-                        .renderers_by_type_id
-                        .remove(type_id)
-                    {
-                        let mut element = (render_inspector)(
+                    if !self.renderers.contains_key(type_id) {
+                        let Some(factory) = cx
+                            .inspector_element_registry
+                            .factories_by_type_id
+                            .remove(type_id)
+                        else {
+                            continue;
+                        };
+                        let renderer = factory(window, cx);
+                        cx.inspector_element_registry
+                            .factories_by_type_id
+                            .insert(*type_id, factory);
+                        self.renderers.insert(*type_id, renderer);
+                    }
+
+                    if let Some(renderer) = self.renderers.get_mut(type_id) {
+                        elements.push(renderer(
                             active_element.id.clone(),
                             state.as_ref(),
                             window,
                             cx,
-                        );
-                        elements.push(element);
-                        cx.inspector_element_registry
-                            .renderers_by_type_id
-                            .insert(*type_id, render_inspector);
+                        ));
                     }
                 }
 
@@ -198,24 +207,32 @@ mod conditional {
         }
     }
 
+    type InspectorElementRenderer =
+        Box<dyn FnMut(InspectorElementId, &dyn Any, &mut Window, &mut App) -> AnyElement>;
+
     #[derive(Default)]
     pub(crate) struct InspectorElementRegistry {
-        renderers_by_type_id: FxHashMap<
-            TypeId,
-            Box<dyn Fn(InspectorElementId, &dyn Any, &mut Window, &mut App) -> AnyElement>,
-        >,
+        factories_by_type_id:
+            FxHashMap<TypeId, Box<dyn Fn(&mut Window, &mut App) -> InspectorElementRenderer>>,
     }
 
     impl InspectorElementRegistry {
-        pub fn register<T: 'static, R: IntoElement>(
+        pub fn register<T: 'static, R: IntoElement, F>(
             &mut self,
-            f: impl 'static + Fn(InspectorElementId, &T, &mut Window, &mut App) -> R,
-        ) {
-            self.renderers_by_type_id.insert(
+            factory: impl 'static + Fn(&mut Window, &mut App) -> F,
+        ) where
+            F: 'static + FnMut(InspectorElementId, &T, &mut Window, &mut App) -> R,
+        {
+            self.factories_by_type_id.insert(
                 TypeId::of::<T>(),
-                Box::new(move |id, value, window, cx| {
-                    let value = value.downcast_ref().unwrap();
-                    f(id, value, window, cx).into_any_element()
+                Box::new(move |window, cx| {
+                    let mut renderer = factory(window, cx);
+                    Box::new(move |id, value, window, cx| {
+                        let value = value
+                            .downcast_ref()
+                            .expect("registered inspector state type");
+                        renderer(id, value, window, cx).into_any_element()
+                    })
                 }),
             );
         }

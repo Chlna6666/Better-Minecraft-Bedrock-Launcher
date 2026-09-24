@@ -82,51 +82,53 @@ fn snapshot_active_div_state(
 pub fn configure_devtools(cx: &mut App) {
     #[cfg(debug_assertions)]
     {
-        cx.register_inspector_element::<gpui::DivInspection, _>(|_id, state, _window, _cx| {
-            let background = state
-                .base_style
-                .background
-                .as_ref()
-                .and_then(|fill| fill.color())
-                .map(format_background)
-                .unwrap_or_else(|| SharedString::from("(none)"));
-            let border = state
-                .base_style
-                .border_color
-                .map(format_rgba_hex)
-                .unwrap_or_else(|| SharedString::from("(none)"));
-            let opacity = state
-                .base_style
-                .opacity
-                .map(|value| format!("{value:.2}"))
-                .unwrap_or_else(|| "1.00".to_string());
+        cx.register_inspector_element::<gpui::DivInspection, _, _>(|_window, _cx| {
+            |_id, state, _window, _cx| {
+                let background = state
+                    .base_style
+                    .background
+                    .as_ref()
+                    .and_then(|fill| fill.color())
+                    .map(format_background)
+                    .unwrap_or_else(|| SharedString::from("(none)"));
+                let border = state
+                    .base_style
+                    .border_color
+                    .map(format_rgba_hex)
+                    .unwrap_or_else(|| SharedString::from("(none)"));
+                let opacity = state
+                    .base_style
+                    .opacity
+                    .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "1.00".to_string());
 
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::BOLD)
-                        .child("Div"),
-                )
-                .child(div().text_size(px(11.)).child(format!(
-                    "bounds: {:.0}x{:.0}",
-                    f32::from(state.bounds.size.width),
-                    f32::from(state.bounds.size.height)
-                )))
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .child(format!("background: {background}")),
-                )
-                .child(div().text_size(px(11.)).child(format!("border: {border}")))
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .child(format!("opacity: {opacity}")),
-                )
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Div"),
+                    )
+                    .child(div().text_size(px(11.)).child(format!(
+                        "bounds: {:.0}x{:.0}",
+                        f32::from(state.bounds.size.width),
+                        f32::from(state.bounds.size.height)
+                    )))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .child(format!("background: {background}")),
+                    )
+                    .child(div().text_size(px(11.)).child(format!("border: {border}")))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .child(format!("opacity: {opacity}")),
+                    )
+            }
         });
 
         cx.set_inspector_renderer(Box::new(|inspector, window, cx| {
