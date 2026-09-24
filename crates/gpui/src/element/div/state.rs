@@ -1,5 +1,8 @@
 use crate::{FocusHandle, MouseDownEvent, Pixels, Point};
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use super::tooltip::ActiveTooltip;
 
@@ -14,6 +17,7 @@ pub struct InteractiveElementState {
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
     pub(crate) ongoing_scroll: Option<Rc<RefCell<crate::OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
+    pub(crate) long_press_tooltip_active: Option<Rc<Cell<bool>>>,
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.
@@ -62,5 +66,11 @@ impl InteractiveElementState {
 
     pub(crate) fn ensure_active_tooltip(&mut self) -> Rc<RefCell<Option<ActiveTooltip>>> {
         ensure_default(&mut self.active_tooltip)
+    }
+
+    pub(crate) fn ensure_long_press_tooltip_active(&mut self) -> Rc<Cell<bool>> {
+        self.long_press_tooltip_active
+            .get_or_insert_with(Default::default)
+            .clone()
     }
 }

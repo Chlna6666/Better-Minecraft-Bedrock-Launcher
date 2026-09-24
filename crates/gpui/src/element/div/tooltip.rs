@@ -1,8 +1,12 @@
 use crate::{
-    AnyTooltip, AnyView, App, Bounds, DispatchPhase, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-    Pixels, ScrollWheelEvent, Task, TooltipId, Window,
+    AnyTooltip, AnyView, App, Bounds, DispatchPhase, LongPressEvent, MouseDownEvent, MouseExitEvent,
+    MouseMoveEvent, Pixels, ScrollWheelEvent, Task, TooltipId, TouchPhase, Window,
 };
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 use super::interactivity::Interactivity;
 use super::state::InteractiveElementState;
@@ -71,6 +75,11 @@ impl Interactivity {
             if self.tooltip_builder.is_some() {
                 self.tooltip_id = set_tooltip_on_window(active_tooltip, window);
             } else {
+                if let Some(long_press_tooltip_active) =
+                    element_state.long_press_tooltip_active.as_ref()
+                {
+                    long_press_tooltip_active.set(false);
+                }
                 element_state.active_tooltip.take();
             }
         }
@@ -122,6 +131,7 @@ pub(crate) fn register_tooltip_mouse_handlers(
     build_tooltip: Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
     check_is_hovered: Rc<dyn Fn(&Window) -> bool>,
     check_is_hovered_during_prepaint: Rc<dyn Fn(&Window) -> bool>,
+    long_press_tooltip_active: Rc<Cell<bool>>,
     window: &mut Window,
 ) {
     window.on_mouse_hit_test_transition({
@@ -138,6 +148,48 @@ pub(crate) fn register_tooltip_mouse_handlers(
                 window,
                 cx,
             )
+        }
+    });
+
+    window.on_mouse_event({
+        let active_tooltip = active_tooltip.clone();
+        let build_tooltip = build_tooltip.clone();
+        let check_is_hovered = check_is_hovered.clone();
+        let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
+        let long_press_tooltip_active = long_press_tooltip_active.clone();
+        move |event: &LongPressEvent, phase, window, cx| {
+            if !phase.bubble() {
+                return;
+            }
+
+            match event.phase {
+                TouchPhase::Started
+                    if !window.default_prevented() && check_is_hovered(window) =>
+                {
+                    if show_tooltip(
+                        &active_tooltip,
+                        &build_tooltip,
+                        &check_is_hovered_during_prepaint,
+                        Some(long_press_tooltip_active.clone()),
+                        window,
+                        cx,
+                    ) {
+                        long_press_tooltip_active.set(true);
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }
+                TouchPhase::Ended | TouchPhase::Cancelled
+                    if long_press_tooltip_active.replace(false) =>
+                {
+                    clear_active_tooltip(&active_tooltip, window);
+                    cx.stop_propagation();
+                }
+                TouchPhase::Started
+                | TouchPhase::Moved
+                | TouchPhase::Ended
+                | TouchPhase::Cancelled => {}
+            }
         }
     });
 
@@ -222,31 +274,14 @@ fn handle_tooltip_mouse_move(
                 async move |cx| {
                     cx.background_executor().timer(TOOLTIP_SHOW_DELAY).await;
                     cx.update(|window, cx| {
-                        let new_tooltip =
-                            build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
-                                let active_tooltip = active_tooltip.clone();
-                                ActiveTooltip::Visible {
-                                    tooltip: AnyTooltip {
-                                        view,
-                                        mouse_position: window.mouse_position(),
-                                        check_visible_and_update: Rc::new(
-                                            move |tooltip_bounds, window, cx| {
-                                                handle_tooltip_check_visible_and_update(
-                                                    &active_tooltip,
-                                                    tooltip_is_hoverable,
-                                                    &check_is_hovered_during_prepaint,
-                                                    tooltip_bounds,
-                                                    window,
-                                                    cx,
-                                                )
-                                            },
-                                        ),
-                                    },
-                                    is_hoverable: tooltip_is_hoverable,
-                                }
-                            });
-                        *active_tooltip.borrow_mut() = new_tooltip;
-                        window.redraw_without_view_cache_refresh();
+                        show_tooltip(
+                            &active_tooltip,
+                            &build_tooltip,
+                            &check_is_hovered_during_prepaint,
+                            None,
+                            window,
+                            cx,
+                        );
                     })
                     .ok();
                 }
@@ -258,6 +293,50 @@ fn handle_tooltip_mouse_move(
                 });
         }
     }
+}
+
+fn show_tooltip(
+    active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>,
+    build_tooltip: &Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
+    check_is_hovered_during_prepaint: &Rc<dyn Fn(&Window) -> bool>,
+    long_press_tooltip_active: Option<Rc<Cell<bool>>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let new_tooltip = build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
+        let weak_active_tooltip = Rc::downgrade(active_tooltip);
+        let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
+        ActiveTooltip::Visible {
+            tooltip: AnyTooltip {
+                view,
+                mouse_position: window.mouse_position(),
+                check_visible_and_update: Rc::new(move |tooltip_bounds, window, cx| {
+                    if long_press_tooltip_active
+                        .as_ref()
+                        .is_some_and(|active| active.get())
+                    {
+                        return true;
+                    }
+                    let Some(active_tooltip) = weak_active_tooltip.upgrade() else {
+                        return false;
+                    };
+                    handle_tooltip_check_visible_and_update(
+                        &active_tooltip,
+                        tooltip_is_hoverable,
+                        &check_is_hovered_during_prepaint,
+                        tooltip_bounds,
+                        window,
+                        cx,
+                    )
+                }),
+            },
+            is_hoverable: tooltip_is_hoverable,
+        }
+    });
+    let did_show = new_tooltip.is_some();
+    *active_tooltip.borrow_mut() = new_tooltip;
+    window.redraw_without_view_cache_refresh();
+    did_show
 }
 
 fn handle_tooltip_check_visible_and_update(

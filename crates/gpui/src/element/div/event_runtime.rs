@@ -263,6 +263,8 @@ impl Interactivity {
             if let Some(tooltip_builder) = self.tooltip_builder.take() {
                 let active_tooltip = element_state.ensure_active_tooltip();
                 let pending_mouse_down = element_state.ensure_pending_mouse_down();
+                let long_press_tooltip_active =
+                    element_state.ensure_long_press_tooltip_active();
 
                 let tooltip_is_hoverable = tooltip_builder.hoverable;
                 let build_tooltip = Rc::new(move |window: &mut Window, cx: &mut App| {
@@ -288,6 +290,7 @@ impl Interactivity {
                     build_tooltip,
                     check_is_hovered,
                     check_is_hovered_during_prepaint,
+                    long_press_tooltip_active,
                     window,
                 );
             }
