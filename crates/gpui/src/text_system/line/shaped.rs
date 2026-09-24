@@ -340,3 +340,522 @@ impl ShapedLineCursor<'_> {
         self.x_offset
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FontId, GlyphId, Hsla, ShapedGlyph, ShapedRun, black};
+
+    /// Helper: build a ShapedLine from glyph descriptors without the platform text system.
+    /// Each glyph is described as (byte_index, x_position).
+    fn make_shaped_line(
+        text: &str,
+        glyphs: &[(usize, f32)],
+        width: f32,
+        decorations: &[DecorationRun],
+    ) -> ShapedLine {
+        let shaped_glyphs: Vec<ShapedGlyph> = glyphs
+            .iter()
+            .map(|&(index, x)| ShapedGlyph {
+                id: GlyphId(0),
+                position: point(px(x), px(0.0)),
+                index,
+                is_emoji: false,
+            })
+            .collect();
+
+        ShapedLine {
+            layout: Arc::new(LineLayout {
+                font_size: px(16.0),
+                width: px(width),
+                ascent: px(12.0),
+                descent: px(4.0),
+                runs: vec![ShapedRun {
+                    font_id: FontId(0),
+                    glyphs: shaped_glyphs,
+                }],
+                len: text.len(),
+            }),
+            text: SharedString::new(text),
+            decoration_runs: SmallVec::from(decorations.to_vec()),
+        }
+    }
+
+    #[test]
+    fn test_split_at_invariants() {
+        // Split "abcdef" at every possible byte index and verify structural invariants.
+        let line = make_shaped_line(
+            "abcdef",
+            &[
+                (0, 0.0),
+                (1, 10.0),
+                (2, 20.0),
+                (3, 30.0),
+                (4, 40.0),
+                (5, 50.0),
+            ],
+            60.0,
+            &[],
+        );
+
+        for i in 0..=6 {
+            let (left, right) = line.split_at(i);
+
+            assert_eq!(
+                left.width() + right.width(),
+                line.width(),
+                "widths must sum at split={i}"
+            );
+            assert_eq!(
+                left.len() + right.len(),
+                line.len(),
+                "lengths must sum at split={i}"
+            );
+            assert_eq!(
+                format!("{}{}", left.text.as_ref(), right.text.as_ref()),
+                "abcdef",
+                "text must concatenate at split={i}"
+            );
+            assert_eq!(left.font_size, line.font_size, "font_size at split={i}");
+            assert_eq!(right.ascent, line.ascent, "ascent at split={i}");
+            assert_eq!(right.descent, line.descent, "descent at split={i}");
+        }
+
+        // Edge: split at 0 produces no left runs, full content on right
+        let (left, right) = line.split_at(0);
+        assert_eq!(left.runs.len(), 0);
+        assert_eq!(right.runs[0].glyphs.len(), 6);
+
+        // Edge: split at end produces full content on left, no right runs
+        let (left, right) = line.split_at(6);
+        assert_eq!(left.runs[0].glyphs.len(), 6);
+        assert_eq!(right.runs.len(), 0);
+    }
+
+    #[test]
+    fn test_split_at_glyph_rebasing() {
+        // Two font runs (simulating a font fallback boundary at byte 3):
+        //   run A (FontId 0): glyphs at bytes 0,1,2  positions 0,10,20
+        //   run B (FontId 1): glyphs at bytes 3,4,5  positions 30,40,50
+        // Successive splits simulate the incremental splitting done during wrap.
+        let line = ShapedLine {
+            layout: Arc::new(LineLayout {
+                font_size: px(16.0),
+                width: px(60.0),
+                ascent: px(12.0),
+                descent: px(4.0),
+                runs: vec![
+                    ShapedRun {
+                        font_id: FontId(0),
+                        glyphs: vec![
+                            ShapedGlyph {
+                                id: GlyphId(0),
+                                position: point(px(0.0), px(0.0)),
+                                index: 0,
+                                is_emoji: false,
+                            },
+                            ShapedGlyph {
+                                id: GlyphId(0),
+                                position: point(px(10.0), px(0.0)),
+                                index: 1,
+                                is_emoji: false,
+                            },
+                            ShapedGlyph {
+                                id: GlyphId(0),
+                                position: point(px(20.0), px(0.0)),
+                                index: 2,
+                                is_emoji: false,
+                            },
+                        ],
+                    },
+                    ShapedRun {
+                        font_id: FontId(1),
+                        glyphs: vec![
+                            ShapedGlyph {
+                                id: GlyphId(0),
+                                position: point(px(30.0), px(0.0)),
+                                index: 3,
+                                is_emoji: false,
+                            },
+                            ShapedGlyph {
+                                id: GlyphId(0),
+                                position: point(px(40.0), px(0.0)),
+                                index: 4,
+                                is_emoji: false,
+                            },
+                            ShapedGlyph {
+                                id: GlyphId(0),
+                                position: point(px(50.0), px(0.0)),
+                                index: 5,
+                                is_emoji: false,
+                            },
+                        ],
+                    },
+                ],
+                len: 6,
+            }),
+            text: "abcdef".into(),
+            decoration_runs: SmallVec::new(),
+        };
+
+        // First split at byte 2 — mid-run in run A
+        let (first, remainder) = line.split_at(2);
+        assert_eq!(first.text.as_ref(), "ab");
+        assert_eq!(first.runs.len(), 1);
+        assert_eq!(first.runs[0].font_id, FontId(0));
+
+        // Remainder "cdef" should have two runs: tail of A (1 glyph) + all of B (3 glyphs)
+        assert_eq!(remainder.text.as_ref(), "cdef");
+        assert_eq!(remainder.runs.len(), 2);
+        assert_eq!(remainder.runs[0].font_id, FontId(0));
+        assert_eq!(remainder.runs[0].glyphs.len(), 1);
+        assert_eq!(remainder.runs[0].glyphs[0].index, 0);
+        assert_eq!(remainder.runs[0].glyphs[0].position.x, px(0.0));
+        assert_eq!(remainder.runs[1].font_id, FontId(1));
+        assert_eq!(remainder.runs[1].glyphs[0].index, 1);
+        assert_eq!(remainder.runs[1].glyphs[0].position.x, px(10.0));
+
+        // Second split at byte 2 within remainder — crosses the run boundary
+        let (second, final_part) = remainder.split_at(2);
+        assert_eq!(second.text.as_ref(), "cd");
+        assert_eq!(final_part.text.as_ref(), "ef");
+        assert_eq!(final_part.runs[0].glyphs[0].index, 0);
+        assert_eq!(final_part.runs[0].glyphs[0].position.x, px(0.0));
+
+        // Widths must sum across all three pieces
+        assert_eq!(
+            first.width() + second.width() + final_part.width(),
+            line.width()
+        );
+    }
+
+    #[test]
+    fn test_split_at_decorations() {
+        // Three decoration runs: red [0..2), green [2..5), blue [5..6).
+        // Split at byte 3 — red goes entirely left, green straddles, blue goes entirely right.
+        let red = Hsla {
+            h: 0.0,
+            s: 1.0,
+            l: 0.5,
+            a: 1.0,
+        };
+        let green = Hsla {
+            h: 0.3,
+            s: 1.0,
+            l: 0.5,
+            a: 1.0,
+        };
+        let blue = Hsla {
+            h: 0.6,
+            s: 1.0,
+            l: 0.5,
+            a: 1.0,
+        };
+
+        let line = make_shaped_line(
+            "abcdef",
+            &[
+                (0, 0.0),
+                (1, 10.0),
+                (2, 20.0),
+                (3, 30.0),
+                (4, 40.0),
+                (5, 50.0),
+            ],
+            60.0,
+            &[
+                DecorationRun {
+                    len: 2,
+                    color: red,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                },
+                DecorationRun {
+                    len: 3,
+                    color: green,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                },
+                DecorationRun {
+                    len: 1,
+                    color: blue,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                },
+            ],
+        );
+
+        let (left, right) = line.split_at(3);
+
+        // Left: red(2) + green(1) — green straddled, left portion has len 1
+        assert_eq!(left.decoration_runs.len(), 2);
+        assert_eq!(left.decoration_runs[0].len, 2);
+        assert_eq!(left.decoration_runs[0].color, red);
+        assert_eq!(left.decoration_runs[1].len, 1);
+        assert_eq!(left.decoration_runs[1].color, green);
+
+        // Right: green(2) + blue(1) — green straddled, right portion has len 2
+        assert_eq!(right.decoration_runs.len(), 2);
+        assert_eq!(right.decoration_runs[0].len, 2);
+        assert_eq!(right.decoration_runs[0].color, green);
+        assert_eq!(right.decoration_runs[1].len, 1);
+        assert_eq!(right.decoration_runs[1].color, blue);
+    }
+
+    #[test]
+    fn test_cursor_preserves_shaping_metadata_across_runs() {
+        let line = ShapedLine {
+            layout: Arc::new(LineLayout {
+                font_size: px(16.0),
+                width: px(50.0),
+                ascent: px(12.0),
+                descent: px(4.0),
+                runs: vec![
+                    ShapedRun {
+                        font_id: FontId(3),
+                        glyphs: vec![
+                            ShapedGlyph {
+                                id: GlyphId(11),
+                                position: point(px(0.0), px(1.0)),
+                                index: 0,
+                                is_emoji: true,
+                            },
+                            ShapedGlyph {
+                                id: GlyphId(12),
+                                position: point(px(17.0), px(1.0)),
+                                index: 1,
+                                is_emoji: false,
+                            },
+                            ShapedGlyph {
+                                id: GlyphId(13),
+                                position: point(px(19.0), px(-1.0)),
+                                index: 1,
+                                is_emoji: false,
+                            },
+                        ],
+                    },
+                    ShapedRun {
+                        font_id: FontId(8),
+                        glyphs: vec![
+                            ShapedGlyph {
+                                id: GlyphId(21),
+                                position: point(px(25.0), px(1.0)),
+                                index: 5,
+                                is_emoji: true,
+                            },
+                            ShapedGlyph {
+                                id: GlyphId(22),
+                                position: point(px(41.0), px(1.0)),
+                                index: 7,
+                                is_emoji: false,
+                            },
+                        ],
+                    },
+                ],
+                len: 10,
+            }),
+            text: "a😀bcdef".into(),
+            decoration_runs: SmallVec::new(),
+        };
+        let mut cursor = line.cursor();
+        let first = cursor.take_until(5);
+        assert_eq!(first.text.as_ref(), "a😀");
+        assert_eq!(first.runs[0].font_id, FontId(3));
+        assert_eq!(first.runs[0].glyphs[0].id, GlyphId(11));
+        assert!(first.runs[0].glyphs[0].is_emoji);
+        assert_eq!(first.runs[0].glyphs[1].index, 1);
+        assert_eq!(first.runs[0].glyphs[1].position, point(px(17.0), px(1.0)));
+        assert_eq!(first.runs[0].glyphs.len(), 3);
+        assert_eq!(first.runs[0].glyphs[2].index, 1);
+        assert_eq!(first.runs[0].glyphs[2].position, point(px(19.0), px(-1.0)));
+        assert_eq!(cursor.x_offset(), px(25.0));
+
+        let second = cursor.take_until(7);
+        assert_eq!(second.text.as_ref(), "bc");
+        assert_eq!(second.runs[0].font_id, FontId(8));
+        assert_eq!(second.runs[0].glyphs[0].id, GlyphId(21));
+        assert_eq!(second.runs[0].glyphs[0].index, 0);
+        assert_eq!(second.runs[0].glyphs[0].position, point(px(0.0), px(1.0)));
+        assert_eq!(cursor.x_offset(), px(41.0));
+
+        let final_part = cursor.take_until(10);
+        assert_eq!(final_part.text.as_ref(), "def");
+        assert_eq!(final_part.runs[0].font_id, FontId(8));
+        assert_eq!(final_part.runs[0].glyphs[0].id, GlyphId(22));
+        assert_eq!(final_part.runs[0].glyphs[0].index, 0);
+        assert_eq!(
+            final_part.runs[0].glyphs[0].position,
+            point(px(0.0), px(1.0))
+        );
+    }
+
+    #[test]
+    fn test_cursor_preserves_existing_visual_order_splitting() {
+        let line = make_shaped_line("abc", &[(0, 0.0), (2, 10.0), (1, 20.0)], 30.0, &[]);
+        let mut cursor = line.cursor();
+        let mut remainder = line.clone();
+        let mut previous_boundary = 0;
+        for boundary in [0, 1, 2, 3] {
+            let (expected, rest) = remainder.split_at(boundary - previous_boundary);
+            let actual = cursor.take_until(boundary);
+            assert_eq!(actual.text, expected.text);
+            assert_eq!(actual.width(), expected.width());
+            assert_eq!(actual.runs.len(), expected.runs.len());
+            for (actual, expected) in actual.runs.iter().zip(&expected.runs) {
+                assert_eq!(actual.font_id, expected.font_id);
+                assert_eq!(actual.glyphs.len(), expected.glyphs.len());
+                for (actual, expected) in actual.glyphs.iter().zip(&expected.glyphs) {
+                    assert_eq!(actual.id, expected.id);
+                    assert_eq!(actual.index, expected.index);
+                    assert_eq!(actual.position, expected.position);
+                }
+            }
+            assert_eq!(cursor.x_offset(), line.x_for_index(boundary));
+            remainder = rest;
+            previous_boundary = boundary;
+        }
+    }
+
+    #[test]
+    fn test_cursor_partitions_one_decoration_across_three_chunks() {
+        let line = make_shaped_line(
+            "abcdef",
+            &[
+                (0, 0.0),
+                (1, 10.0),
+                (2, 20.0),
+                (3, 30.0),
+                (4, 40.0),
+                (5, 50.0),
+            ],
+            60.0,
+            &[DecorationRun {
+                len: 6,
+                color: Hsla {
+                    h: 0.2,
+                    s: 0.4,
+                    l: 0.6,
+                    a: 1.0,
+                },
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+        );
+        let mut cursor = line.cursor();
+        assert_eq!(cursor.take_until(2).decoration_runs[0].len, 2);
+        assert_eq!(cursor.take_until(4).decoration_runs[0].len, 2);
+        assert_eq!(cursor.take_until(6).decoration_runs[0].len, 2);
+    }
+
+    #[test]
+    fn test_cursor_matches_successive_splits_at_ordered_boundaries() {
+        let decorations: Vec<_> = [2, 0, 3, 1]
+            .into_iter()
+            .map(|len| DecorationRun {
+                len,
+                color: Hsla {
+                    h: len as f32 / 10.0,
+                    s: 0.5,
+                    l: 0.5,
+                    a: 1.0,
+                },
+                background_color: Some(black()),
+                underline: None,
+                strikethrough: None,
+            })
+            .collect();
+        let line = make_shaped_line(
+            "abcdef",
+            &[(0, 5.0), (0, 5.0), (2, 15.0), (4, 25.0), (5, 35.0)],
+            45.0,
+            &decorations,
+        );
+        for first in 0..=line.len() {
+            for second in first..=line.len() {
+                let mut cursor = line.cursor();
+                let mut remainder = line.clone();
+                let mut previous_boundary = 0;
+                let mut total_width = px(0.0);
+                let mut text = String::new();
+                for boundary in [first, second, line.len(), line.len()] {
+                    let (expected, rest) = remainder.split_at(boundary - previous_boundary);
+                    let actual = cursor.take_until(boundary);
+                    assert_eq!(actual.text, expected.text);
+                    assert_eq!(actual.len(), expected.len());
+                    assert_eq!(actual.width(), expected.width());
+                    assert_eq!(actual.runs.len(), expected.runs.len());
+                    for (actual, expected) in actual.runs.iter().zip(&expected.runs) {
+                        assert_eq!(actual.font_id, expected.font_id);
+                        assert_eq!(actual.glyphs.len(), expected.glyphs.len());
+                        for (actual, expected) in actual.glyphs.iter().zip(&expected.glyphs) {
+                            assert_eq!(actual.id, expected.id);
+                            assert_eq!(actual.index, expected.index);
+                            assert_eq!(actual.position, expected.position);
+                        }
+                    }
+                    assert_eq!(actual.decoration_runs.len(), expected.decoration_runs.len());
+                    for (actual, expected) in
+                        actual.decoration_runs.iter().zip(&expected.decoration_runs)
+                    {
+                        assert_eq!(actual.len, expected.len);
+                        assert_eq!(actual.color, expected.color);
+                        assert_eq!(actual.background_color, expected.background_color);
+                    }
+                    total_width += actual.width();
+                    text.push_str(&actual.text);
+                    remainder = rest;
+                    previous_boundary = boundary;
+                }
+                assert_eq!(total_width, line.width());
+                assert_eq!(text, line.text.as_ref());
+            }
+        }
+    }
+
+    #[test]
+    fn test_cursor_empty_chunks_and_repeated_boundaries() {
+        let line = make_shaped_line("ab", &[(0, 5.0), (1, 15.0)], 20.0, &[]);
+        let mut cursor = line.cursor();
+        assert_eq!(cursor.take_until(0).text.as_ref(), "");
+        assert_eq!(cursor.take_until(0).text.as_ref(), "");
+        assert_eq!(cursor.take_until(1).text.as_ref(), "a");
+        assert_eq!(cursor.take_until(2).text.as_ref(), "b");
+        assert_eq!(cursor.take_until(2).text.as_ref(), "");
+        let empty = make_shaped_line("", &[], 0.0, &[]);
+        let piece = empty.cursor().take_until(0);
+        assert!(piece.text.is_empty());
+        assert!(piece.runs.is_empty());
+        assert_eq!(piece.width(), px(0.0));
+    }
+
+    #[test]
+    fn test_cursor_rejects_invalid_boundaries() {
+        let line = make_shaped_line("é", &[(0, 0.0)], 10.0, &[]);
+        let mut cursor = line.cursor();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cursor.take_until(1);
+            }))
+            .is_err()
+        );
+        let mut cursor = line.cursor();
+        cursor.take_until(2);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cursor.take_until(0);
+            }))
+            .is_err()
+        );
+        let mut cursor = line.cursor();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cursor.take_until(3);
+            }))
+            .is_err()
+        );
+    }
+}
