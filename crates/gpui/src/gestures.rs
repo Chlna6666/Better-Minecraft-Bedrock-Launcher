@@ -14,6 +14,7 @@ use crate::{
     ScrollDelta, ScrollWheelEvent, TouchEvent, TouchId, TouchPhase, point, px,
 };
 
+const SCROLL_EVENT_SEPARATION: Duration = Duration::from_millis(28);
 const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
 const VELOCITY_ASSUME_STOPPED_GAP: Duration = Duration::from_millis(40);
 const VELOCITY_MAX_SAMPLES: usize = 20;
@@ -32,6 +33,66 @@ fn lock_delta_to_axis(delta: &mut Point<Pixels>, axis: Axis) {
     match axis {
         Axis::Vertical => delta.x = px(0.0),
         Axis::Horizontal => delta.y = px(0.0),
+    }
+}
+
+
+/// Tracks the dominant axis across one precise scroll gesture.
+///
+/// Touchpads and touch-derived wheel streams often contain small motion on the orthogonal axis.
+/// Locking the gesture rather than each individual event prevents alternating X/Y jitter while
+/// still allowing a deliberate strong direction change to unlock.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OngoingScroll {
+    last_event: Option<Instant>,
+    axis: Option<Axis>,
+}
+
+impl OngoingScroll {
+    /// Filters a precise-scroll delta to the dominant axis of the current gesture.
+    pub fn filter(&mut self, delta: &mut Point<Pixels>, touch_phase: TouchPhase) {
+        const UNLOCK_PERCENT: f32 = 1.9;
+        const UNLOCK_LOWER_BOUND: Pixels = Pixels(6.0);
+
+        if matches!(touch_phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+            self.last_event = None;
+            self.axis = None;
+            return;
+        }
+
+        let x = delta.x.abs();
+        let y = delta.y.abs();
+        if x == Pixels::ZERO && y == Pixels::ZERO {
+            if touch_phase == TouchPhase::Started {
+                self.last_event = None;
+                self.axis = None;
+            }
+            return;
+        }
+
+        let now = Instant::now();
+        let starts_new_gesture = touch_phase == TouchPhase::Started
+            || self
+                .last_event
+                .map(|last| now.saturating_duration_since(last) >= SCROLL_EVENT_SEPARATION)
+                .unwrap_or(true);
+
+        let mut axis = self.axis;
+        if starts_new_gesture {
+            axis = Some(dominant_axis(*delta));
+        } else if x.max(y) >= UNLOCK_LOWER_BOUND {
+            match axis {
+                Some(Axis::Vertical) if x > y && x >= y * UNLOCK_PERCENT => axis = None,
+                Some(Axis::Horizontal) if y > x && y >= x * UNLOCK_PERCENT => axis = None,
+                _ => {}
+            }
+        }
+
+        self.last_event = Some(now);
+        self.axis = axis;
+        if let Some(axis) = axis {
+            lock_delta_to_axis(delta, axis);
+        }
     }
 }
 

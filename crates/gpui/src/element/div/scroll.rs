@@ -40,6 +40,7 @@ impl ScrollAnchor {
 #[derive(Default, Debug)]
 pub(crate) struct ScrollHandleState {
     pub(crate) offset: Rc<RefCell<Point<Pixels>>>,
+    pub(crate) ongoing_scroll: Rc<RefCell<crate::OngoingScroll>>,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) max_offset: Size<Pixels>,
     pub(crate) child_bounds: Vec<Bounds<Pixels>>,
@@ -245,12 +246,15 @@ impl Interactivity {
         element_state: Option<&mut InteractiveElementState>,
     ) {
         if let Some(scroll_handle) = self.tracked_scroll_handle.as_ref() {
-            self.scroll_offset = Some(scroll_handle.0.borrow().offset.clone());
+            let state = scroll_handle.0.borrow();
+            self.scroll_offset = Some(state.offset.clone());
+            self.ongoing_scroll = Some(state.ongoing_scroll.clone());
         } else if (self.base_style.overflow.x == Some(Overflow::Scroll)
             || self.base_style.overflow.y == Some(Overflow::Scroll))
             && let Some(element_state) = element_state
         {
             self.scroll_offset = Some(element_state.ensure_scroll_offset());
+            self.ongoing_scroll = Some(element_state.ensure_ongoing_scroll());
         }
     }
 
@@ -322,6 +326,7 @@ impl Interactivity {
         _cx: &mut App,
     ) {
         if let Some(scroll_offset) = self.scroll_offset.clone() {
+            let ongoing_scroll = self.ongoing_scroll.clone();
             let overflow = style.overflow;
             let allow_concurrent_scroll = style.allow_concurrent_scroll;
             let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
@@ -332,7 +337,14 @@ impl Interactivity {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
                     let old_scroll_offset = *scroll_offset;
-                    let delta = event.delta.pixel_delta(line_height);
+                    let mut delta = event.delta.pixel_delta(line_height);
+
+                    if restrict_scroll_to_axis
+                        && event.delta.precise()
+                        && let Some(ongoing_scroll) = &ongoing_scroll
+                    {
+                        ongoing_scroll.borrow_mut().filter(&mut delta, event.touch_phase);
+                    }
 
                     let mut delta_x = Pixels::ZERO;
                     if overflow.x == Overflow::Scroll {

@@ -12,6 +12,7 @@ pub struct InteractiveElementState {
     pub(crate) hover_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) ongoing_scroll: Option<Rc<RefCell<crate::OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
 }
 
@@ -53,6 +54,10 @@ impl InteractiveElementState {
 
     pub(crate) fn ensure_scroll_offset(&mut self) -> Rc<RefCell<Point<Pixels>>> {
         ensure_default(&mut self.scroll_offset)
+    }
+
+    pub(crate) fn ensure_ongoing_scroll(&mut self) -> Rc<RefCell<crate::OngoingScroll>> {
+        ensure_default(&mut self.ongoing_scroll)
     }
 
     pub(crate) fn ensure_active_tooltip(&mut self) -> Rc<RefCell<Option<ActiveTooltip>>> {
