@@ -153,6 +153,20 @@ impl Hitbox {
         self.id.is_hovered(window)
     }
 
+    /// Checks whether this hitbox would be hovered at `position`, independently of the current
+    /// pointer position.
+    ///
+    /// This performs a fresh hit test against the currently rendered frame and preserves normal
+    /// occlusion semantics such as [`HitboxBehavior::BlockMouse`].
+    pub fn is_hovered_at(&self, position: Point<Pixels>, window: &Window) -> bool {
+        let hit_test = window.rendered_frame.hit_test(position);
+        hit_test
+            .ids
+            .iter()
+            .take(hit_test.hover_hitbox_count)
+            .any(|id| self.id == *id)
+    }
+
     /// Checks if the hitbox contains the mouse and should handle scroll events. Typically this
     /// should only be used when handling `ScrollWheelEvent`, and otherwise `is_hovered` should be
     /// used. See the documentation of `Hitbox::is_hovered` for details about this distinction.
