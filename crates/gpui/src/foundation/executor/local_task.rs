@@ -62,6 +62,11 @@ where
                 "local task polled by a thread that didn't spawn it. Task spawned at {}",
                 self.location
             );
+            #[cfg(feature = "profiler")]
+            let _profile =
+                crate::diagnostics::foreground_profiler::ForegroundWorkSpan::task_poll(
+                    self.as_ref().get_ref().location,
+                );
             unsafe { self.map_unchecked_mut(|c| &mut *c.inner).poll(cx) }
         }
     }

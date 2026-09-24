@@ -306,6 +306,10 @@ impl Window {
         action: &dyn Action,
         cx: &mut App,
     ) {
+        #[cfg(feature = "profiler")]
+        let _profile =
+            crate::diagnostics::foreground_profiler::ForegroundWorkSpan::action(action.name());
+
         if !self.has_completed_rendered_frame {
             self.request_initial_frame();
             return;

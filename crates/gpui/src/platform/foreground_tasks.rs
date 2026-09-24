@@ -45,13 +45,20 @@ pub(crate) fn drain_foreground_tasks(
     let mut budget = ForegroundTaskBudget::new();
     while budget.can_run_next() {
         let Some(runnable) = next_runnable() else {
+            #[cfg(feature = "profiler")]
+            crate::diagnostics::foreground_profiler::record_foreground_idle();
             return false;
         };
         runnable.run();
         budget.did_run_task();
     }
 
-    has_pending_runnables()
+    let has_pending = has_pending_runnables();
+    #[cfg(feature = "profiler")]
+    if !has_pending {
+        crate::diagnostics::foreground_profiler::record_foreground_idle();
+    }
+    has_pending
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd"))]

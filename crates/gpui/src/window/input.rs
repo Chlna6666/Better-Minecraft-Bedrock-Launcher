@@ -227,6 +227,11 @@ impl Window {
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
         let event_started_at = Instant::now();
         let event_name = platform_input_name(&event);
+        #[cfg(feature = "profiler")]
+        let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::input(
+            event_name,
+            self.handle.window_id().as_u64(),
+        );
         if event.unconditionally_extends_recent_input_present() {
             self.last_input_timestamp.set(Instant::now());
             self.record_frame_request_reason(FrameRequestReason::Input);

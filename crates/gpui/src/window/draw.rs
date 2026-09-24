@@ -566,6 +566,11 @@ impl Window {
 
     #[profiling::function]
     pub(super) fn present(&self) -> PlatformFrameResult {
+        #[cfg(feature = "profiler")]
+        let _profile =
+            crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
+                self.handle.window_id().as_u64(),
+            );
         let result = self.platform_window.draw(self.render_plan());
         if result == PlatformFrameResult::Submitted {
             self.needs_present.set(false);
@@ -575,6 +580,11 @@ impl Window {
     }
 
     pub(super) fn present_framebuffer_only(&self) -> PlatformFrameResult {
+        #[cfg(feature = "profiler")]
+        let _profile =
+            crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
+                self.handle.window_id().as_u64(),
+            );
         let result = self
             .platform_window
             .present_framebuffer_only(self.render_plan());

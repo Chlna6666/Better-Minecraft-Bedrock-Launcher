@@ -27,6 +27,36 @@ fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> Bounds<Pixels>
 }
 
 impl Window {
+    fn update_visibility(&mut self, visibility: WindowVisibility, cx: &mut App) {
+        if self.visibility == visibility {
+            return;
+        }
+
+        self.visibility = visibility;
+        self.reset_dirty_to_present_timing(visibility.is_visible());
+        record_window_visibility(
+            self.handle.window_id().as_u64(),
+            visibility.is_visible(),
+        );
+        #[cfg(feature = "profiler")]
+        crate::diagnostics::foreground_profiler::record_window_visibility(
+            self.handle.window_id().as_u64(),
+            visibility.is_visible(),
+        );
+        self.visibility_observers
+            .clone()
+            .retain(&(), |callback| callback(visibility, self, cx));
+        self.presentation_visibility_changed();
+    }
+
+    /// Re-reads native window visibility after a platform lifecycle transition.
+    ///
+    /// Some platforms may not deliver ordinary visibility notifications while the system is
+    /// suspended. Wake handling uses this to re-establish the authoritative visibility epoch.
+    pub(crate) fn refresh_visibility(&mut self, cx: &mut App) {
+        self.update_visibility(self.platform_window.visibility(), cx);
+    }
+
     pub(crate) fn new(
         handle: AnyWindowHandle,
         options: WindowOptions,
@@ -107,6 +137,11 @@ impl Window {
         let visibility = platform_window.visibility();
         invalidator.reset_dirty_to_present_epoch(visibility.is_visible());
         record_window_visibility(handle.window_id().as_u64(), visibility.is_visible());
+        #[cfg(feature = "profiler")]
+        crate::diagnostics::foreground_profiler::record_window_visibility(
+            handle.window_id().as_u64(),
+            visibility.is_visible(),
+        );
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
@@ -136,6 +171,10 @@ impl Window {
             let window_id = handle.window_id();
             let mut cx = cx.to_async();
             move || {
+                #[cfg(feature = "profiler")]
+                crate::diagnostics::foreground_profiler::record_window_closed(
+                    window_id.as_u64(),
+                );
                 let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
                 let _ = cx.update(|cx| {
                     WindowTabRegistry::remove_tab(cx, window_id);
@@ -177,22 +216,11 @@ impl Window {
         platform_window.on_visibility_change(Box::new({
             let mut cx = cx.to_async();
             move |visibility| {
-                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
-                    if window.visibility == visibility {
-                        return;
-                    }
-                    window.visibility = visibility;
-                    window.reset_dirty_to_present_timing(visibility.is_visible());
-                    record_window_visibility(
-                        window.handle.window_id().as_u64(),
-                        visibility.is_visible(),
-                    );
-                    window
-                        .visibility_observers
-                        .clone()
-                        .retain(&(), |callback| callback(visibility, window, cx));
-                    window.presentation_visibility_changed();
-                }));
+                let _ = ignore_window_not_found(
+                    handle.update(&mut cx, |_, window, cx| {
+                        window.update_visibility(visibility, cx);
+                    }),
+                );
             }
         }));
         platform_window.on_active_status_change(Box::new({

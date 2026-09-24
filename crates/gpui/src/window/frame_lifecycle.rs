@@ -445,6 +445,12 @@ impl Window {
     }
 
     pub(super) fn request_platform_frame(&self, options: RequestFrameOptions) {
+        #[cfg(feature = "profiler")]
+        crate::diagnostics::foreground_profiler::record_frame_request(
+            self.handle.window_id().as_u64(),
+            self.active_dirty_to_present_started_at
+                .or_else(|| self.invalidator.pending_dirty_started_at()),
+        );
         self.platform_window.request_frame(options);
         self.arm_platform_frame_watchdog(options);
     }
@@ -583,6 +589,11 @@ impl Window {
         record_frame_decision(decision.drew_frame(), presented_frame, decision.skip_frame);
         let window_id = self.handle.window_id().as_u64();
         if presented_frame {
+            #[cfg(feature = "profiler")]
+            crate::diagnostics::foreground_profiler::record_frame_presented(
+                window_id,
+                frame_completed_at,
+            );
             if let Some(started_at) = self.active_dirty_to_present_started_at.take() {
                 record_window_dirty_to_present(
                     window_id,
@@ -592,6 +603,8 @@ impl Window {
         } else if decision.drew_frame() && !self.needs_present.get() {
             // A completed dirty draw that produced no visible change has no presentation to await.
             self.active_dirty_to_present_started_at = None;
+            #[cfg(feature = "profiler")]
+            crate::diagnostics::foreground_profiler::record_frame_no_present(window_id);
         }
         record_window_runtime_state(
             window_id,
@@ -798,7 +811,14 @@ impl Window {
         cx: &mut App,
     ) -> bool {
         let draw_started_at = Instant::now();
-        let arena_clear_needed = measure("frame generation", || self.draw(cx));
+        let arena_clear_needed = measure("frame generation", || {
+            #[cfg(feature = "profiler")]
+            let _profile =
+                crate::diagnostics::foreground_profiler::ForegroundWorkSpan::draw(
+                    self.handle.window_id().as_u64(),
+                );
+            self.draw(cx)
+        });
         let draw_elapsed = draw_started_at.elapsed();
         let presented_frame = if require_presentation || self.needs_present.get() {
             measure("frame presentation", || self.present()) == PlatformFrameResult::Submitted

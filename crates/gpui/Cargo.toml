@@ -48,6 +48,8 @@ dhat-heap = []
 font-kit = []
 leak-detection = ["backtrace"]
 mimalloc-collect = ["dep:libmimalloc-sys"]
+# Opt-in foreground performance journal and hang detector. Default builds pay no event-recording cost.
+profiler = []
 macos-blade = [
     "blade-graphics",
     "blade-macros",

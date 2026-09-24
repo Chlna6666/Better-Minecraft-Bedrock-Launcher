@@ -686,6 +686,10 @@ impl WindowInvalidator {
         self.inner.borrow_mut().dirty_to_present_started_at.take()
     }
 
+    pub(in crate::window) fn pending_dirty_started_at(&self) -> Option<Instant> {
+        self.inner.borrow().dirty_to_present_started_at
+    }
+
     pub(in crate::window) fn reset_dirty_to_present_epoch(&self, restart_if_dirty: bool) {
         let mut inner = self.inner.borrow_mut();
         inner.dirty_to_present_started_at = if restart_if_dirty && inner.dirty {

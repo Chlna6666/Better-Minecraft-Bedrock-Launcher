@@ -218,6 +218,8 @@ impl App {
             move || {
                 if let Some(app) = app.upgrade() {
                     let cx = &mut app.borrow_mut();
+                    #[cfg(feature = "profiler")]
+                    crate::diagnostics::foreground_profiler::record_power_state(false);
                     reset_present_timing_after_interruption();
                     for window in cx.windows.values_mut().flatten() {
                         window.reset_dirty_to_present_timing(false);
@@ -234,9 +236,15 @@ impl App {
             move || {
                 if let Some(app) = app.upgrade() {
                     let cx = &mut app.borrow_mut();
+                    #[cfg(feature = "profiler")]
+                    crate::diagnostics::foreground_profiler::record_power_state(true);
                     reset_present_timing_after_interruption();
-                    for window in cx.windows.values_mut().flatten() {
-                        window.reset_dirty_to_present_timing(true);
+                    let windows = cx.windows();
+                    for handle in windows {
+                        let _ = handle.update(cx, |_, window, cx| {
+                            window.reset_dirty_to_present_timing(true);
+                            window.refresh_visibility(cx);
+                        });
                     }
                     cx.system_wake_observers
                         .clone()

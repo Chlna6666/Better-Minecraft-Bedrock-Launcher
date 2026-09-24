@@ -143,6 +143,10 @@ impl App {
     }
 
     fn dispatch_global_action(&mut self, action: &dyn Action) {
+        #[cfg(feature = "profiler")]
+        let _profile =
+            crate::diagnostics::foreground_profiler::ForegroundWorkSpan::action(action.name());
+
         self.propagate_event = true;
 
         if let Some(mut global_listeners) = self
