@@ -46,6 +46,7 @@ impl ManagePackSubtype {
     }
 }
 
+const TAB_ANIMATION_WINDOW: Duration = Duration::from_millis(800);
 const PACK_SUBTYPE_ANIMATION_WINDOW: Duration = Duration::from_millis(520);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,6 +229,7 @@ pub struct ManagePageState {
     pub tab: ManageTab,
     pub tab_anim_seq: u64,
     pub tab_anim_from: ManageTab,
+    pub tab_anim_started_at: Option<Instant>,
     pub versions_revision: u64,
     pub loaded: bool,
     pub loading: bool,
@@ -289,6 +291,16 @@ impl ManagePageState {
         }
     }
 
+    pub(super) fn tab_animation_active(&self, now: Instant) -> bool {
+        self.tab_anim_seq != 0
+            && self.tab_anim_from != self.tab
+            && self
+                .tab_anim_started_at
+                .is_some_and(|started_at| {
+                    now.saturating_duration_since(started_at) <= TAB_ANIMATION_WINDOW
+                })
+    }
+
     pub(super) fn pack_subtype_animation_active(&self, now: Instant) -> bool {
         self.tab == ManageTab::ResourcePack
             && self.pack_subtype_anim_seq != 0
@@ -334,6 +346,7 @@ impl Default for ManagePageState {
             tab: ManageTab::Mod,
             tab_anim_seq: 0,
             tab_anim_from: ManageTab::Mod,
+            tab_anim_started_at: None,
             versions_revision: 0,
             loaded: false,
             loading: false,

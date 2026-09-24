@@ -899,7 +899,7 @@ impl ManagePageView {
                                 } else {
                                     match state.tab {
                                         ManageTab::Statistics => {
-                                            render_statistics_tab(colors, version, state, cx)
+                                            render_statistics_tab(colors, version, state, now, cx)
                                         }
                                         ManageTab::Mod
                                         | ManageTab::ResourcePack
@@ -944,10 +944,7 @@ impl ManagePageView {
                                 };
 
                                 let reduced_motion = crate::core::ui_prefs::reduced_motion();
-                                if state.tab_anim_seq != 0
-                                    && state.tab_anim_from != state.tab
-                                    && !reduced_motion
-                                {
+                                if state.tab_animation_active(now) && !reduced_motion {
                                     div()
                                         .size_full()
                                         .min_w(px(0.))

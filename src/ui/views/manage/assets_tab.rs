@@ -706,7 +706,7 @@ pub(super) fn render_asset_list(
 
     let render_started_at = Instant::now();
     let reduced_motion = crate::core::ui_prefs::reduced_motion();
-    let primary_rows_animating = state.tab_anim_from != state.tab
+    let primary_rows_animating = state.tab_animation_active(window.animation_time())
         && !reduced_motion
         && tab_list_stagger_active(window, cx, "manage-asset-list-stagger", state.tab_anim_seq);
     let subtype_rows_animating = !primary_rows_animating

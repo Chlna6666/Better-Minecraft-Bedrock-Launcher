@@ -169,6 +169,7 @@ pub(super) fn render_statistics_tab(
     colors: &ThemeColors,
     version: &ManagedVersionEntry,
     state: &ManagePageState,
+    now: Instant,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let i18n = cx.global::<I18n>();
@@ -176,9 +177,8 @@ pub(super) fn render_statistics_tab(
     let days = recent_days(info, 14);
     let max_sessions = days.iter().map(|day| day.sessions).max().unwrap_or(0).max(1);
     let max_play_time = days.iter().map(|day| day.play_time).max().unwrap_or(0).max(1);
-    let animate = state.tab_anim_seq != 0
-        && state.tab_anim_from != state.tab
-        && !crate::core::ui_prefs::reduced_motion();
+    let animate =
+        state.tab_animation_active(now) && !crate::core::ui_prefs::reduced_motion();
     let play_time_id = SharedString::from(format!(
         "manage-stat-total-play-time-{}",
         version.folder.as_ref()

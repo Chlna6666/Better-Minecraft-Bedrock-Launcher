@@ -178,6 +178,7 @@ impl ManagePageView {
     }
 
     pub(super) fn set_tab(&mut self, tab: ManageTab, cx: &mut Context<Self>) {
+        let started_at = Instant::now();
         let previous_tab = cx.update_global(|state: &mut ManagePageState, _cx| {
             if state.tab == tab {
                 return None;
@@ -186,6 +187,7 @@ impl ManagePageView {
             let previous_tab = state.tab;
             state.tab_anim_from = previous_tab;
             state.tab_anim_seq = state.tab_anim_seq.wrapping_add(1);
+            state.tab_anim_started_at = Some(started_at);
             state.tab = tab;
             state.selected_asset_keys.clear();
             if is_asset_tab(previous_tab) && is_asset_tab(tab) {
