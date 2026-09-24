@@ -9,7 +9,7 @@ use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::window::debug::devtools;
 use crate::ui::window::debug::state::{
-    DebugRuntimeSnapshot, DebugState, refresh_realtime_runtime_metrics, snapshot_runtime_metrics,
+    DebugRuntimeSnapshot, DebugState, refresh_realtime_window_metrics, snapshot_runtime_metrics,
 };
 use crate::utils::file_ops;
 use gpui::prelude::FluentBuilder as _;
@@ -90,7 +90,7 @@ impl DebugView {
                         debug.main_window_id,
                     );
 
-                    refresh_realtime_runtime_metrics(&mut this.runtime);
+                    refresh_realtime_window_metrics(&mut this.runtime);
                     bind_window_roles(&mut this.runtime, &debug);
 
                     let current_main = main_window_realtime_metric(

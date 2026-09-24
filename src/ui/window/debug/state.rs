@@ -1,6 +1,9 @@
 use crate::plugins::runtime::PluginMemoryReport;
 use crate::utils::memory_diagnostics::BmcblMemorySnapshot;
-use gpui::{Global, GpuSpecs, SharedString, Window, WindowMetricsSnapshot, performance_metrics_snapshot, px};
+use gpui::{
+    Global, GpuSpecs, SharedString, Window, WindowMetricsSnapshot, performance_metrics_snapshot,
+    px, window_metrics_snapshot,
+};
 use once_cell::sync::Lazy;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -467,6 +470,13 @@ pub fn record_debug_gpu_specs(gpu_specs: Option<GpuSpecs>) {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     sampler.gpu_specs = gpu_specs;
+}
+
+pub fn refresh_realtime_window_metrics(snapshot: &mut DebugRuntimeSnapshot) {
+    snapshot.gpui_window_metrics = window_metrics_snapshot()
+        .into_iter()
+        .map(DebugWindowMetrics::from)
+        .collect();
 }
 
 pub fn refresh_realtime_runtime_metrics(snapshot: &mut DebugRuntimeSnapshot) {

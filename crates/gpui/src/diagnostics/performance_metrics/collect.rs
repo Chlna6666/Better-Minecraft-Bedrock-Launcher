@@ -1,10 +1,9 @@
 use crate::RendererBackend;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
 
 use super::animation::animation_metrics_snapshot;
 use super::store::shared_metrics;
-use super::{AllocatorBucketMetricsSnapshot, PerformanceMetricsSnapshot, WindowMetricsSnapshot};
+use super::{AllocatorBucketMetricsSnapshot, PerformanceMetricsSnapshot};
 
 /// Returns a point-in-time snapshot of GPUI performance metrics.
 pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
@@ -154,49 +153,7 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         .lock()
         .map(|value| value.clone())
         .unwrap_or_default();
-    let window_metrics = shared_metrics()
-        .window_metrics
-        .lock()
-        .map(|window_metrics| {
-            let now = Instant::now();
-            window_metrics
-                .iter()
-                .map(|(&window_id, metrics)| {
-                    let present_fps_milli = if metrics
-                        .last_present_at
-                        .is_some_and(|last_present_at| {
-                            now.saturating_duration_since(last_present_at)
-                                <= Duration::from_secs(1)
-                        })
-                    {
-                        metrics.present_fps_milli as usize
-                    } else {
-                        0
-                    };
-                    WindowMetricsSnapshot {
-                        window_id,
-                        present_fps_milli,
-                        logical_width_milli: metrics.logical_width_milli as usize,
-                        logical_height_milli: metrics.logical_height_milli as usize,
-                        physical_width_px: metrics.physical_width_px as usize,
-                        physical_height_px: metrics.physical_height_px as usize,
-                        scale_factor_milli: metrics.scale_factor_milli as usize,
-                        active: metrics.active,
-                        minimized: metrics.minimized,
-                        request_redraw_count: metrics.request_redraw_count as usize,
-                        draw_count: metrics.draw_count as usize,
-                        present_count: metrics.present_count as usize,
-                        skip_count: metrics.skip_count as usize,
-                        skipped_frame_count: metrics.skipped_frame_count as usize,
-                        gpu_surface_reconfigure_count: metrics.gpu_surface_reconfigure_count as usize,
-                        gpu_surface_error_count: metrics.gpu_surface_error_count as usize,
-                        layout_recompute_count: metrics.layout_recompute_count as usize,
-                        upload_bytes: metrics.upload_bytes as usize,
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let window_metrics = super::window::window_metrics_snapshot();
 
     PerformanceMetricsSnapshot {
         renderer_backend,
