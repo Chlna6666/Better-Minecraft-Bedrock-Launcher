@@ -323,6 +323,8 @@ impl ManagePageState {
     }
 
     pub fn reset_transient_requests(&mut self) {
+        self.tab_anim_started_at = None;
+        self.pack_subtype_anim_started_at = None;
         self.loading = false;
         self.version_config_loading = false;
         self.gdk_users_loading = false;

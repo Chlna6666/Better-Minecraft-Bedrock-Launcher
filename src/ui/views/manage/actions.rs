@@ -173,6 +173,8 @@ impl ManagePageView {
     pub(super) fn select_version(&mut self, folder: SharedString, cx: &mut Context<Self>) {
         cx.update_global(|state: &mut ManagePageState, _cx| {
             state.selected_folder = Some(folder);
+            state.tab_anim_started_at = None;
+            state.pack_subtype_anim_started_at = None;
         });
         cx.notify();
     }
