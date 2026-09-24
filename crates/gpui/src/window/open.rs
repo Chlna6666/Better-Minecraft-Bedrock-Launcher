@@ -184,6 +184,7 @@ impl Window {
                         .visibility_observers
                         .clone()
                         .retain(&(), |callback| callback(visibility, window, cx));
+                    window.presentation_visibility_changed();
                 }));
             }
         }));

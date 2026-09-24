@@ -248,8 +248,30 @@ impl Window {
     /// Opt a window into retained paint/GPU animation while it is visible but inactive.
     ///
     /// This is intended for NOACTIVATE panels such as desktop lyrics or HUD windows. The default is
-    /// disabled, so ordinary inactive windows retain the existing power-saving behavior. Minimized
+    /// disabled, so ordinary inactive windows retain the existing power-saving behavior. Hidden
     /// windows never advance animation-engine frames even when this option is enabled.
+    pub(super) fn presentation_visibility_changed(&mut self) {
+        if !self.visibility.is_visible() {
+            return;
+        }
+
+        // A hidden window may have accumulated dirty state or retained animation work without a
+        // platform frame. Visibility restoration is the authoritative point to re-arm that work.
+        self.frame_throttle.clear_delay();
+        if self.animation_engine_frame_driver.get().is_some()
+            && (self.active.get() || self.inactive_animation_engine_enabled)
+        {
+            self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
+            self.request_platform_frame(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            });
+        }
+        if self.invalidator.is_dirty() && !self.refreshing {
+            self.schedule_dirty_frame();
+        }
+    }
+
     pub fn set_inactive_animation_engine_enabled(&mut self, enabled: bool) {
         if self.inactive_animation_engine_enabled == enabled {
             return;
@@ -261,7 +283,7 @@ impl Window {
         // the owning view.
         if enabled
             && !self.active.get()
-            && !self.platform_window.is_minimized()
+            && self.visibility.is_visible()
             && self.animation_engine_frame_driver.get().is_some()
         {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
@@ -309,7 +331,7 @@ impl Window {
                 self.animation_engine_frame_driver.get(),
                 driver,
             )));
-        if self.platform_window.is_minimized()
+        if !self.visibility.is_visible()
             || (!self.active.get() && !self.inactive_animation_engine_enabled)
         {
             return;
@@ -545,9 +567,9 @@ impl Window {
         let Some(entity) = self.current_view_or_root() else {
             return;
         };
-        // Animated media must not keep a minimized window alive. A restore/activation redraw will
+        // Animated media must not keep a hidden window alive. A visibility/activation redraw will
         // paint the image again and re-arm playback from the current media frame.
-        if self.platform_window.is_minimized() {
+        if !self.visibility.is_visible() {
             return;
         }
 
@@ -615,7 +637,7 @@ impl Window {
             }
             pending.borrow_mut().remove(&entity);
             let _ = ignore_window_not_found(handle.update(cx, |_, window, cx| {
-                if window.platform_window.is_minimized() {
+                if !window.visibility.is_visible() {
                     return;
                 }
                 last_frame.set(Some(Instant::now()));

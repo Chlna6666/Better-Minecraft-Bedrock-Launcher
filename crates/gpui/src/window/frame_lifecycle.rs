@@ -277,7 +277,7 @@ impl Window {
     fn should_defer_dirty_frame_at(&self, now: Instant) -> bool {
         self.invalidator.is_dirty()
             && !self.active.get()
-            && (!self.inactive_dirty_redraw_enabled || self.platform_window.is_minimized())
+            && (!self.inactive_dirty_redraw_enabled || !self.visibility.is_visible())
             && !self.needs_present.get()
             && !self.recently_received_input(now)
             && self.next_frame_callbacks.borrow().is_empty()
@@ -304,7 +304,7 @@ impl Window {
     }
 
     fn progressive_frame_retry_delay(&self) -> Duration {
-        if self.platform_window.is_minimized() {
+        if !self.visibility.is_visible() {
             MINIMIZED_PROGRESSIVE_FRAME_RETRY
         } else if !self.active.get() {
             self.inactive_dirty_frame_retry_interval
@@ -398,7 +398,7 @@ impl Window {
             return;
         }
         if self.should_defer_dirty_frame() {
-            if !self.platform_window.is_minimized() {
+            if self.visibility.is_visible() {
                 log::trace!(
                     "gpui inactive visible dirty frame retry: window={} generation={} dirty={}",
                     self.handle.window_id().as_u64(),
@@ -596,7 +596,7 @@ impl Window {
         let Some(driver) = self.animation_engine_frame_driver.take() else {
             return;
         };
-        if self.platform_window.is_minimized()
+        if !self.visibility.is_visible()
             || (!self.active.get() && !self.inactive_animation_engine_enabled)
         {
             self.animation_engine_frame_driver.set(Some(driver));
@@ -634,7 +634,7 @@ impl Window {
         );
         if tick.active_visual_count > 0
             && tick.has_gpu_or_paint
-            && !self.platform_window.is_minimized()
+            && self.visibility.is_visible()
             && (self.active.get() || self.inactive_animation_engine_enabled)
         {
             let interval = self
