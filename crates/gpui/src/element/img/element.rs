@@ -275,7 +275,9 @@ impl Element for Img {
                             let image_size: crate::Size<Pixels> = frame
                                 .size()
                                 .map(|v| (v.0 as f32 / data.scale_factor).into());
-                            style.aspect_ratio = Some(image_size.width / image_size.height);
+                            if style.aspect_ratio.is_none() {
+                                style.aspect_ratio = Some(image_size.width / image_size.height);
+                            }
 
                             if let Length::Auto = style.size.width {
                                 style.size.width = match style.size.height {
