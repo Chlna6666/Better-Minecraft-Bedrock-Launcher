@@ -484,9 +484,9 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
     let gpui_metrics = performance_metrics_snapshot();
     snapshot.gpui_renderer_backend =
         SharedString::from(gpui_metrics.renderer_backend.as_str().to_string());
-    // This process-wide metric is kept for low-level diagnostics only. The debug UI selects
-    // the main/debug window rate from gpui_window_metrics after window roles are bound.
-    snapshot.gpui_present_fps = gpui_metrics.present_fps;
+    // Never use the process-wide mixed-window present clock as a window FPS. The DebugView
+    // binds this field to the exact main-window metric by WindowId.
+    snapshot.gpui_present_fps = 0.0;
     snapshot.gpui_image_cache_items = gpui_metrics.image_cache_items;
     snapshot.gpui_image_cache_bytes = gpui_metrics.image_cache_bytes;
     snapshot.gpui_atlas_textures = gpui_metrics.atlas_textures;

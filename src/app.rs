@@ -648,6 +648,9 @@ fn debug_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
     options.window_bounds = Some(WindowBounds::centered(size(px(1100.), px(720.)), cx));
     options.window_min_size = Some(size(px(760.), px(560.)));
+    // The debug window is an observer. Auto-opening it must not change the main window's
+    // active/inactive scheduling policy (notably the 24 FPS inactive animation cap).
+    options.focus = false;
     options.is_resizable = true;
     options.is_minimizable = true;
     options.is_movable = true;

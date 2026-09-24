@@ -229,6 +229,10 @@ fn record_debug_window_metrics(window: &Window) {
 fn bind_window_roles(runtime: &mut DebugRuntimeSnapshot, debug: &DebugState) {
     runtime.main_window_id = debug.main_window_id;
     runtime.debug_window_id = debug.debug_window_id;
+    runtime.main_fps = 0.0;
+    runtime.main_frame_time_ms = 0.0;
+    runtime.debug_fps = 0.0;
+    runtime.gpui_present_fps = 0.0;
 
     let apply_window = |runtime: &mut DebugRuntimeSnapshot, window_id: Option<u64>, is_main: bool| {
         let Some(window_id) = window_id else {
@@ -290,6 +294,27 @@ fn window_size_summary(
 ) -> SharedString {
     SharedString::from(format!(
         "{logical_width:.0} x {logical_height:.0} logical · {physical_width:.0} x {physical_height:.0} physical px · {scale_factor:.2}x"
+    ))
+}
+
+fn window_runtime_state_summary(
+    runtime: &DebugRuntimeSnapshot,
+    window_id: Option<u64>,
+) -> SharedString {
+    let Some(window_id) = window_id else {
+        return SharedString::from("unavailable");
+    };
+    let Some(window) = runtime
+        .gpui_window_metrics
+        .iter()
+        .find(|window| window.window_id == window_id)
+    else {
+        return SharedString::from("unavailable");
+    };
+
+    SharedString::from(format!(
+        "active={} · minimized={} · id={}",
+        window.active, window.minimized, window.window_id
     ))
 }
 
@@ -2140,6 +2165,13 @@ impl Render for DebugView {
                                         (
                                             SharedString::from(copy.fps),
                                             SharedString::from(format!("{:.1}", runtime.main_fps)),
+                                        ),
+                                        (
+                                            SharedString::from("Main state"),
+                                            window_runtime_state_summary(
+                                                &runtime,
+                                                runtime.main_window_id,
+                                            ),
                                         ),
                                         (
                                             SharedString::from(copy.frame_ms),
