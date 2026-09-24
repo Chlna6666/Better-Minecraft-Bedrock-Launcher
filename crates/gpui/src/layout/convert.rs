@@ -16,6 +16,14 @@ fn round_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
 }
 
 #[inline]
+pub(crate) fn snap_logical_to_device_pixel(logical: Pixels, scale_factor: f32) -> Pixels {
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return logical;
+    }
+    Pixels(round_to_device_pixel(logical.0, scale_factor) / scale_factor)
+}
+
+#[inline]
 fn round_stroke_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
     if logical == 0.0 {
         0.0

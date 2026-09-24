@@ -282,7 +282,14 @@ impl Interactivity {
             }
 
             let rem_size = window.rem_size();
-            let padding = style.padding.to_pixels(bounds.size.into(), rem_size);
+            // Taffy snaps padding to the device-pixel grid before computing layout. Recompute it
+            // with the same snapping here; otherwise fractional padding can create a tiny fake
+            // overflow and leave an otherwise fitting container scrollable by a sub-pixel amount.
+            let scale_factor = window.scale_factor();
+            let padding = style
+                .padding
+                .to_pixels(bounds.size.into(), rem_size)
+                .map(|edge| crate::layout::snap_logical_to_device_pixel(*edge, scale_factor));
             let padding_size = size(padding.left + padding.right, padding.top + padding.bottom);
             let padded_content_size = self.content_size + padding_size;
             let scroll_max = (padded_content_size - bounds.size)
