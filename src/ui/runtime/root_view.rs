@@ -1,6 +1,6 @@
 use gpui::{
     AnyView, Context, InteractiveElement as _, IntoElement, ParentElement,
-    Render, StyleRefinement, Styled, Subscription, Window, div,
+    Render, Styled, Subscription, Window, div,
 };
 
 pub struct RootView {
@@ -127,29 +127,14 @@ impl RootView {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        let current_window_id = window.window_handle().window_id().as_u64();
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        let main_window_id = cx
-            .global::<crate::ui::window::debug::DebugState>()
-            .main_window_id;
-
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        let content = if main_window_id == Some(current_window_id) {
-            self.view.clone().cached_by(
-                StyleRefinement::default().size_full(),
-                &"runtime-main-window-content",
-            )
-        } else {
-            self.view.clone()
-        };
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        let content = self.view.clone();
-
-        let mut root = div().size_full().child(content);
+        let mut root = div().size_full().child(self.view.clone());
 
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
+            let current_window_id = window.window_handle().window_id().as_u64();
+            let main_window_id = cx
+                .global::<crate::ui::window::debug::DebugState>()
+                .main_window_id;
             let agreement_visible = cx
                 .global::<crate::ui::state::agreement::AgreementState>()
                 .is_visible();

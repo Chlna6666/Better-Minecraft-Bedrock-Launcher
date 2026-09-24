@@ -267,6 +267,7 @@ impl HomePageView {
             .w_full()
             .h(px(desired_list_h_px * dropdown_factor))
             .relative()
+            .top(px(10.0 * (1.0 - dropdown_factor)))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .bg(list_bg)
@@ -283,19 +284,8 @@ impl HomePageView {
                 spread_radius: px(-5.0),
                 offset: point(px(0.0), px(20.0)),
             }])
+            .opacity(dropdown_factor.min(1.0))
             .child(div().h_full().p(px(6.0)).child(versions))
-            .composite_layer()
-            .with_stable_sampled_animation(
-                "home-version-panel-motion",
-                AnimationProperty::translation_opacity(
-                    point(px(0.0), px(10.0)),
-                    Point::default(),
-                    0.0,
-                    1.0,
-                ),
-                dropdown_factor,
-                self.dropdown_animating,
-            )
             .into_any_element()
     }
 
@@ -378,6 +368,8 @@ impl HomePageView {
         div()
             .id((ElementId::from("home-version-item"), folder.clone()))
             .relative()
+            .top(px(10.0 * (1.0 - item_factor)))
+            .opacity(item_factor)
             .w_full()
             .h(px(item_height_px))
             .px(px(12.0))
@@ -475,18 +467,6 @@ impl HomePageView {
                     this.begin_dropdown_transition(false);
                     cx.notify();
                 }),
-            )
-            .composite_layer()
-            .with_stable_sampled_animation(
-                ElementId::named_usize("home-version-item-motion", index),
-                AnimationProperty::translation_opacity(
-                    point(px(0.0), px(10.0)),
-                    Point::default(),
-                    0.0,
-                    1.0,
-                ),
-                item_factor,
-                self.dropdown_animating,
             )
             .into_any_element()
     }
@@ -606,11 +586,9 @@ impl HomePageView {
             icon_path(lucide_gpui::icon!(chevron_down))
                 .size(px(16.0))
                 .text_color(rgb(0xffffff))
-                .with_stable_sampled_animation(
-                    "home-launch-chevron-motion",
+                .with_sampled_animation(
                     AnimationProperty::rotation(radians(0.0), radians(std::f32::consts::PI)),
                     dropdown_factor,
-                    self.dropdown_animating,
                 )
                 .into_any_element()
         };
