@@ -158,7 +158,7 @@ impl FrameUpload {
                             &mut summary,
                             shadow
                                 .animation_id
-                                .map(|_| crate::Primitive::Shadow(shadow.clone())),
+                                .map(|_| crate::Primitive::Shadow(*shadow)),
                             AnimatedPrimitiveKind::Shadow,
                             primitive_index,
                         );
@@ -189,7 +189,7 @@ impl FrameUpload {
                             &mut summary,
                             sprite
                                 .animation_id
-                                .map(|_| crate::Primitive::MonochromeSprite(sprite.clone())),
+                                .map(|_| crate::Primitive::MonochromeSprite(*sprite)),
                             AnimatedPrimitiveKind::MonochromeSprite,
                             primitive_index,
                         );
@@ -222,7 +222,7 @@ impl FrameUpload {
                             &mut summary,
                             sprite
                                 .animation_id
-                                .map(|_| crate::Primitive::PolychromeSprite(sprite.clone())),
+                                .map(|_| crate::Primitive::PolychromeSprite(*sprite)),
                             AnimatedPrimitiveKind::PolychromeSprite,
                             primitive_index,
                         );
@@ -343,7 +343,7 @@ impl FrameUpload {
                                 border_style: crate::BorderStyle::Solid,
                                 animation_id: blur.animation_id,
                                 bounds: blur.bounds,
-                                content_mask: blur.content_mask.clone(),
+                                content_mask: blur.content_mask,
                                 background: tint.into(),
                                 border_color: crate::Hsla::transparent_black().into(),
                                 corner_radii: blur.corner_radii,
@@ -354,7 +354,7 @@ impl FrameUpload {
                                 self,
                                 &mut summary,
                                 quad.animation_id
-                                    .map(|_| crate::Primitive::Quad(quad.clone())),
+                                    .map(|_| crate::Primitive::Quad(*quad)),
                                 AnimatedPrimitiveKind::Quad,
                                 primitive_index,
                             );
@@ -719,7 +719,7 @@ impl FrameUpload {
                 self,
                 summary,
                 quad.animation_id
-                    .map(|_| crate::Primitive::Quad(quad.clone())),
+                    .map(|_| crate::Primitive::Quad(*quad)),
                 AnimatedPrimitiveKind::Quad,
                 primitive_index,
             );

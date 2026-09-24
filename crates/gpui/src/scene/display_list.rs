@@ -932,11 +932,11 @@ impl Scene {
         match &mut primitive {
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
-                self.shadows.push(shadow.clone());
+                self.shadows.push(*shadow);
             }
             Primitive::Quad(quad) => {
                 quad.order = order;
-                self.quads.push(quad.clone());
+                self.quads.push(*quad);
             }
             Primitive::Path(path) => {
                 path.order = order;
@@ -945,15 +945,15 @@ impl Scene {
             }
             Primitive::Underline(underline) => {
                 underline.order = order;
-                self.underlines.push(underline.clone());
+                self.underlines.push(*underline);
             }
             Primitive::MonochromeSprite(sprite) => {
                 sprite.order = order;
-                self.monochrome_sprites.push(sprite.clone());
+                self.monochrome_sprites.push(*sprite);
             }
             Primitive::PolychromeSprite(sprite) => {
                 sprite.order = order;
-                self.polychrome_sprites.push(sprite.clone());
+                self.polychrome_sprites.push(*sprite);
             }
             Primitive::Surface(surface) => {
                 surface.order = order;
@@ -1023,13 +1023,13 @@ impl Scene {
     ) -> ScenePrimitiveKind {
         match primitive {
             Primitive::Shadow(shadow) => {
-                let mut shadow = shadow.clone();
+                let mut shadow = *shadow;
                 shadow.order = order;
                 self.shadows.push(shadow);
                 ScenePrimitiveKind::Shadow
             }
             Primitive::Quad(quad) => {
-                let mut quad = quad.clone();
+                let mut quad = *quad;
                 quad.order = order;
                 self.quads.push(quad);
                 ScenePrimitiveKind::Quad
@@ -1042,19 +1042,19 @@ impl Scene {
                 ScenePrimitiveKind::Path
             }
             Primitive::Underline(underline) => {
-                let mut underline = underline.clone();
+                let mut underline = *underline;
                 underline.order = order;
                 self.underlines.push(underline);
                 ScenePrimitiveKind::Underline
             }
             Primitive::MonochromeSprite(sprite) => {
-                let mut sprite = sprite.clone();
+                let mut sprite = *sprite;
                 sprite.order = order;
                 self.monochrome_sprites.push(sprite);
                 ScenePrimitiveKind::MonochromeSprite
             }
             Primitive::PolychromeSprite(sprite) => {
-                let mut sprite = sprite.clone();
+                let mut sprite = *sprite;
                 sprite.order = order;
                 self.polychrome_sprites.push(sprite);
                 ScenePrimitiveKind::PolychromeSprite

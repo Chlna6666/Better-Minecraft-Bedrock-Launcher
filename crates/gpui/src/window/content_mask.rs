@@ -3,7 +3,7 @@ use std::fmt::Debug;
 
 /// Indicates which region of the window is visible. Content falling outside of this mask will not be
 /// rendered. Corner radii describe an axis-aligned rounded rectangle.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
     /// The bounds

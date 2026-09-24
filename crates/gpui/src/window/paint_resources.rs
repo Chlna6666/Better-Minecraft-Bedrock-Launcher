@@ -569,7 +569,7 @@ impl Window {
                 crate::TransitionProperty::Translation,
             ]),
             bounds: image_sprite_bounds(bounds, context.visual_transform),
-            content_mask: context.content_mask.clone(),
+            content_mask: context.content_mask,
             corner_radii,
             tile,
             opacity: context.opacity,

@@ -304,7 +304,7 @@ impl From<PaintBlur> for Primitive {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub(crate) struct Quad {
     pub order: DrawOrder,
@@ -324,7 +324,7 @@ impl From<Quad> for Primitive {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub(crate) struct Underline {
     pub order: DrawOrder,
@@ -343,7 +343,7 @@ impl From<Underline> for Primitive {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub(crate) struct Shadow {
     pub order: DrawOrder,
@@ -372,7 +372,7 @@ pub enum BorderStyle {
     Dashed = 1,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub(crate) struct MonochromeSprite {
     pub order: DrawOrder,
@@ -407,7 +407,7 @@ impl From<MonochromeSprite> for Primitive {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub(crate) struct PolychromeSprite {
     pub order: DrawOrder,
