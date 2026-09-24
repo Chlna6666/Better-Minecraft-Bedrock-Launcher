@@ -4,12 +4,12 @@ use crate::platform::{
     MeshPackingBenchmarkCore, PathPackingBenchmarkCore,
 };
 use crate::{
-    AnimatedImageConfig, AvailableSpace, Bounds, ContentMask, EncodedImage, LayoutId,
-    PaintBackdropBlur, Path, Pixels, Quad, RenderImage, ScaledPixels, Scene, Style,
-    TaffyLayoutEngine, VisualTestContext, acquire_bitmap_buffer_capacity,
-    configure_global_bitmap_pool, global_bitmap_pool, point, px, release_bitmap_buffer, size,
-    trim_global_bitmap_pool_to,
+    AnimatedImageConfig, Bounds, ContentMask, EncodedImage, PaintBackdropBlur, Path, Pixels, Quad,
+    RenderImage, ScaledPixels, Scene, acquire_bitmap_buffer_capacity, configure_global_bitmap_pool,
+    global_bitmap_pool, point, px, release_bitmap_buffer, size, trim_global_bitmap_pool_to,
 };
+#[cfg(feature = "test-support")]
+use crate::{AvailableSpace, LayoutId, Style, TaffyLayoutEngine, VisualTestContext};
 use image::{Frame, ImageFormat, Rgba, RgbaImage};
 use std::{
     sync::Arc,
@@ -42,10 +42,12 @@ impl BitmapPoolBenchmark {
 }
 
 /// Owns retained layout state for Criterion measurements.
+#[cfg(feature = "test-support")]
 pub struct LayoutBenchmark {
     engine: TaffyLayoutEngine,
 }
 
+#[cfg(feature = "test-support")]
 impl LayoutBenchmark {
     /// Creates an empty layout benchmark state.
     pub fn new() -> Self {
@@ -92,6 +94,7 @@ impl LayoutBenchmark {
     }
 }
 
+#[cfg(feature = "test-support")]
 impl Default for LayoutBenchmark {
     fn default() -> Self {
         Self::new()

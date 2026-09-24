@@ -126,7 +126,7 @@ required-features = ["bench-support"]
 name = "layouts"
 path = "benches/layouts.rs"
 harness = false
-required-features = ["bench-support"]
+required-features = ["bench-support", "test-support"]
 
 [[bench]]
 name = "memory"
