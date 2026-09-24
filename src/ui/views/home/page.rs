@@ -368,8 +368,6 @@ impl HomePageView {
         div()
             .id((ElementId::from("home-version-item"), folder.clone()))
             .relative()
-            .top(px(10.0 * (1.0 - item_factor)))
-            .opacity(item_factor)
             .w_full()
             .h(px(item_height_px))
             .px(px(12.0))
@@ -467,6 +465,18 @@ impl HomePageView {
                     this.begin_dropdown_transition(false);
                     cx.notify();
                 }),
+            )
+            .composite_layer()
+            .with_stable_sampled_animation(
+                SharedString::from(format!("home-version-item-motion-{index}")),
+                AnimationProperty::translation_opacity(
+                    point(px(0.0), px(10.0)),
+                    Point::default(),
+                    0.0,
+                    1.0,
+                ),
+                item_factor,
+                self.dropdown_animating,
             )
             .into_any_element()
     }
@@ -586,9 +596,11 @@ impl HomePageView {
             icon_path(lucide_gpui::icon!(chevron_down))
                 .size(px(16.0))
                 .text_color(rgb(0xffffff))
-                .with_sampled_animation(
+                .with_stable_sampled_animation(
+                    "home-launch-chevron-motion",
                     AnimationProperty::rotation(radians(0.0), radians(std::f32::consts::PI)),
                     dropdown_factor,
+                    self.dropdown_animating,
                 )
                 .into_any_element()
         };
