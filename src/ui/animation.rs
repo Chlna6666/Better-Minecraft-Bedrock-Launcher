@@ -44,8 +44,8 @@ pub fn spring_bouncy() -> Spring {
 const TAB_TRANSITION_RESPONSE: f32 = 0.34;
 const TAB_TRANSITION_DAMPING: f32 = 0.92;
 const TAB_LIST_ITEM_MAX_STAGGER_SLOT: usize = 8;
-const TAB_LIST_ITEM_MAX_STAGGER_MS: u64 = 180;
-const TAB_LIST_STAGGER_WINDOW: Duration = Duration::from_millis(900);
+const TAB_LIST_ITEM_MAX_STAGGER_MS: u64 = 112;
+const TAB_LIST_STAGGER_WINDOW: Duration = Duration::from_millis(760);
 
 fn tab_transition_spring() -> Spring {
     apple_spring(TAB_TRANSITION_RESPONSE, TAB_TRANSITION_DAMPING)
@@ -81,19 +81,15 @@ pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
 ///
 /// The previous list moves opposite to the incoming direction and stays partially visible instead
 /// of being replaced by a full-panel loading placeholder.
-pub fn tab_stale_content_motion(from_index: usize, to_index: usize) -> Animation {
-    let direction = if to_index >= from_index { -1.0 } else { 1.0 };
+pub fn tab_stale_content_motion(
+    _from_index: usize,
+    _to_index: usize,
+) -> Animation {
     Animation::from_spec(
-        AnimationSpec::new(Duration::from_millis(180))
+        AnimationSpec::new(Duration::from_millis(160))
             .fill_mode(FillMode::Both)
             .ease(Easing::OutCubic),
     )
-    .with_property(AnimationProperty::translation_opacity(
-        point(px(0.0), px(0.0)),
-        point(px(8.0 * direction), px(0.0)),
-        1.0,
-        0.72,
-    ))
 }
 
 fn tab_list_item_delay(visible_index: usize) -> Duration {
@@ -103,8 +99,8 @@ fn tab_list_item_delay(visible_index: usize) -> Duration {
     }
 
     let t = slot as f32 / TAB_LIST_ITEM_MAX_STAGGER_SLOT as f32;
-    // Concave ease-out spacing: 0, 42, 79, 110, 135, 155, 169, 177, 180 ms.
-    // The first rows establish a visible rhythm; later rows quickly converge instead of queuing.
+    // Concave ease-out spacing: 0, 26, 49, 68, 84, 96, 105, 110, 112 ms.
+    // Keep the first rows distinct without leaving most of the list temporarily transparent.
     let curved = 1.0 - (1.0 - t).powi(2);
     Duration::from_millis((TAB_LIST_ITEM_MAX_STAGGER_MS as f32 * curved).round() as u64)
 }
@@ -151,21 +147,13 @@ pub fn tab_list_stagger_active(
 /// The row keeps its final layout and Nova only applies translation + opacity. Delays are capped
 /// so a long or virtualized list never turns into a long animation queue.
 pub fn tab_list_item_motion(
-    from_index: usize,
-    to_index: usize,
+    _from_index: usize,
+    _to_index: usize,
     visible_index: usize,
 ) -> Animation {
-    let direction = tab_transition_direction(from_index, to_index);
-
     spring_motion(tab_transition_spring())
         .delay(tab_list_item_delay(visible_index))
         .fill_mode(FillMode::Both)
-        .with_property(AnimationProperty::translation_opacity(
-            point(px(18.0 * direction), px(4.0)),
-            point(px(0.0), px(0.0)),
-            0.10,
-            1.0,
-        ))
 }
 
 /// Direction-aware underline reveal for variable-width primary tabs.
@@ -461,7 +449,7 @@ mod tests {
         let delays = (0..=TAB_LIST_ITEM_MAX_STAGGER_SLOT)
             .map(|index| tab_list_item_delay(index).as_millis() as u64)
             .collect::<Vec<_>>();
-        assert_eq!(delays, vec![0, 42, 79, 110, 135, 155, 169, 177, 180]);
+        assert_eq!(delays, vec![0, 26, 49, 68, 84, 96, 105, 110, 112]);
 
         let gaps = delays
             .windows(2)

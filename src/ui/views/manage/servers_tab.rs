@@ -345,13 +345,7 @@ pub(super) fn render_server_list(
     }
 
     if state.servers_loading && state.servers.is_empty() {
-        return empty_state(
-            colors,
-            "images/manage/empty.svg",
-            t!("ManagePage.server_loading"),
-            t!("ManagePage.server_loading_hint"),
-        )
-        .into_any_element();
+        return render_manage_loading_rows(colors, 6).into_any_element();
     }
 
     if let Some(error) = state.servers_error.clone() {
@@ -415,17 +409,23 @@ pub(super) fn render_server_list(
             .flex_none()
             .child(render_server_row(colors, entry, motd_status, cx));
         let row = if animate_row {
-            row.composite_layer()
-                .with_animation(
-                    SharedString::from(format!(
-                        "manage-server-row-enter-{}-{}",
-                        state.tab_anim_seq,
-                        entry.key.as_ref()
-                    )),
-                    tab_list_item_motion(animation_from, animation_to, visible_index),
-                    |row, _progress| row,
-                )
-                .into_any_element()
+            let direction =
+                crate::ui::animation::tab_transition_direction(animation_from, animation_to);
+            row.with_animation(
+                SharedString::from(format!(
+                    "manage-server-row-enter-{}-{}",
+                    state.tab_anim_seq,
+                    entry.key.as_ref()
+                )),
+                tab_list_item_motion(animation_from, animation_to, visible_index),
+                move |row, progress| {
+                    let progress = progress.clamp(0.0, 1.0);
+                    row.relative()
+                        .left(px(12.0 * direction * (1.0 - progress)))
+                        .opacity(0.78 + 0.22 * progress)
+                },
+            )
+            .into_any_element()
         } else {
             row.into_any_element()
         };

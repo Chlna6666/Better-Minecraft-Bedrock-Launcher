@@ -903,8 +903,8 @@ impl ManagePageView {
                                         let progress = progress.clamp(0.0, 1.0);
                                         toolbar
                                             .relative()
-                                            .left(px(12.0 * direction * (1.0 - progress)))
-                                            .opacity(0.72 + 0.28 * progress)
+                                            .left(px(8.0 * direction * (1.0 - progress)))
+                                            .opacity(0.92 + 0.08 * progress)
                                     },
                                 )
                                 .into_any_element()

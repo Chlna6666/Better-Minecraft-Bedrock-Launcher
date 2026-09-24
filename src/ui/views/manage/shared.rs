@@ -12,6 +12,79 @@ pub(super) const MANAGE_VERSION_ROW_GAP_PX: f32 = 4.0;
 pub(super) const MANAGE_VERSION_ROW_PITCH_PX: f32 =
     MANAGE_VERSION_ROW_HEIGHT_PX + MANAGE_VERSION_ROW_GAP_PX;
 pub(super) const MANAGE_VERSION_ROW_OVERSCAN: usize = 6;
+
+pub(super) fn render_manage_loading_rows(colors: &ThemeColors, count: usize) -> Div {
+    let row_bg = Hsla {
+        a: 0.42,
+        ..colors.surface
+    };
+    let block = Hsla {
+        a: 0.10,
+        ..colors.text_secondary
+    };
+
+    div()
+        .size_full()
+        .min_h(px(0.))
+        .flex()
+        .flex_col()
+        .children((0..count.max(1)).map(|index| {
+            let title_width = 138.0 - (index % 3) as f32 * 16.0;
+            let detail_width = 92.0 + (index % 2) as f32 * 22.0;
+            div()
+                .w_full()
+                .h(px(MANAGE_ASSET_ROW_PITCH_PX))
+                .pb(px(MANAGE_ASSET_ROW_GAP_PX))
+                .flex_none()
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(MANAGE_ASSET_ROW_HEIGHT_PX))
+                        .px(px(10.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
+                        .bg(row_bg)
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .w(px(32.))
+                                .h(px(32.))
+                                .rounded(px(MANAGE_LIST_THUMBNAIL_RADIUS_PX))
+                                .bg(block),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(7.))
+                                .child(
+                                    div()
+                                        .w(px(title_width))
+                                        .h(px(9.))
+                                        .rounded(px(4.5))
+                                        .bg(block),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(detail_width))
+                                        .h(px(7.))
+                                        .rounded(px(3.5))
+                                        .bg(Hsla { a: 0.07, ..block }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w(px(56.))
+                                .h(px(8.))
+                                .rounded(px(4.))
+                                .bg(Hsla { a: 0.06, ..block }),
+                        ),
+                )
+        }))
+}
 pub(super) fn create_text_input(
     window: &mut Window,
     cx: &mut Context<ManagePageView>,

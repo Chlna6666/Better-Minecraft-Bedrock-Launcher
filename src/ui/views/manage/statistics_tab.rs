@@ -339,9 +339,8 @@ fn animate_stat_section(
                 let progress = progress.clamp(0.0, 1.0);
                 section
                     .relative()
-                    .left(px(10.0 * direction * (1.0 - progress)))
-                    .top(px(7.0 * (1.0 - progress)))
-                    .opacity(0.38 + 0.62 * progress)
+                    .left(px(6.0 * direction * (1.0 - progress)))
+                    .opacity(0.90 + 0.10 * progress)
             },
         )
         .into_any_element()

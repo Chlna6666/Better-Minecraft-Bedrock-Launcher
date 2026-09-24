@@ -665,13 +665,7 @@ pub(super) fn render_asset_list(
     }
 
     if !state.assets_loaded && stale_transition.is_none() && state.assets_error.is_none() {
-        return empty_state(
-            colors,
-            "images/manage/empty.svg",
-            t!("AssetManager.loading_assets_title"),
-            t!("AssetManager.loading_assets_hint"),
-        )
-        .into_any_element();
+        return render_manage_loading_rows(colors, 6).into_any_element();
     }
 
     if let Some(error) = state.assets_error.clone() {
@@ -816,18 +810,24 @@ pub(super) fn render_asset_list(
                 cx,
             ));
         let row = if animate_row {
-            row.composite_layer()
-                .with_animation(
-                    SharedString::from(format!(
-                        "{}-{}-{}",
-                        animation_scope,
-                        animation_sequence,
-                        asset.key.as_ref()
-                    )),
-                    tab_list_item_motion(animation_from, animation_to, visible_index),
-                    |row, _progress| row,
-                )
-                .into_any_element()
+            let direction =
+                crate::ui::animation::tab_transition_direction(animation_from, animation_to);
+            row.with_animation(
+                SharedString::from(format!(
+                    "{}-{}-{}",
+                    animation_scope,
+                    animation_sequence,
+                    asset.key.as_ref()
+                )),
+                tab_list_item_motion(animation_from, animation_to, visible_index),
+                move |row, progress| {
+                    let progress = progress.clamp(0.0, 1.0);
+                    row.relative()
+                        .left(px(12.0 * direction * (1.0 - progress)))
+                        .opacity(0.78 + 0.22 * progress)
+                },
+            )
+            .into_any_element()
         } else {
             row.into_any_element()
         };
@@ -877,20 +877,24 @@ pub(super) fn render_asset_list(
         .child(rows);
 
     if let Some((from_index, to_index, sequence, scope, animating)) = stale_transition {
+        let direction =
+            crate::ui::animation::tab_transition_direction(from_index, to_index);
         let stale = if animating {
-            list.composite_layer()
-                .with_animation(
-                    SharedString::from(format!("{scope}-{sequence}")),
-                    tab_stale_content_motion(from_index, to_index),
-                    |list, _progress| list,
-                )
-                .into_any_element()
+            list.with_animation(
+                SharedString::from(format!("{scope}-{sequence}")),
+                tab_stale_content_motion(from_index, to_index),
+                move |list, progress| {
+                    let progress = progress.clamp(0.0, 1.0);
+                    list.relative()
+                        .left(px(-6.0 * direction * progress))
+                        .opacity(1.0 - 0.08 * progress)
+                },
+            )
+            .into_any_element()
         } else {
-            let direction =
-                crate::ui::animation::tab_transition_direction(from_index, to_index);
             list.relative()
-                .left(px(-8.0 * direction))
-                .opacity(0.72)
+                .left(px(-6.0 * direction))
+                .opacity(0.92)
                 .into_any_element()
         };
 
