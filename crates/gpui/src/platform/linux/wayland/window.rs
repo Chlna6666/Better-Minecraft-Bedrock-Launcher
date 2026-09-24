@@ -144,6 +144,12 @@ pub struct WaylandWindowState {
     client_inset: Option<Pixels>,
     pending_frame_request: RequestFrameOptions,
     frame_callback_pending: bool,
+    /// True while GPUI is synchronously servicing the compositor callback.
+    ///
+    /// Requests raised during this interval are latched and armed by completed_frame so the next
+    /// callback is committed together with the current rendered surface, rather than by an early
+    /// empty wl_surface commit.
+    frame_in_progress: bool,
     client_frame: Option<AdwaitaFrame<WaylandClientStatePtr>>,
     text_system: Arc<dyn PlatformTextSystem>,
     title: String,
@@ -273,6 +279,7 @@ impl WaylandWindowState {
             client_inset: None,
             pending_frame_request: RequestFrameOptions::default(),
             frame_callback_pending: false,
+            frame_in_progress: false,
             client_frame,
             text_system,
             title,
@@ -686,7 +693,10 @@ impl WaylandWindowStatePtr {
     pub fn request_frame(&self, options: RequestFrameOptions) {
         let mut state = self.state.borrow_mut();
         state.pending_frame_request = state.pending_frame_request.merge(options);
-        if !state.frame_callback_pending && state.pending_frame_request.requires_frame() {
+        if !state.frame_in_progress
+            && !state.frame_callback_pending
+            && state.pending_frame_request.requires_frame()
+        {
             state.surface.frame(&state.globals.qh, state.surface.id());
             state.surface.commit();
             state.frame_callback_pending = true;
@@ -704,19 +714,31 @@ impl WaylandWindowStatePtr {
         state.frame_callback_pending = false;
         state.resize_throttle = false;
         if !state.pending_frame_request.requires_frame() || !callback_registered {
+            state.frame_in_progress = false;
             return;
         }
 
         let request = std::mem::take(&mut state.pending_frame_request);
-        if request.requires_frame() {
-            state.surface.frame(&state.globals.qh, state.surface.id());
-            state.frame_callback_pending = true;
-        }
+        state.frame_in_progress = true;
         drop(state);
 
         let mut cb = self.callbacks.borrow_mut();
         if let Some(fun) = cb.request_frame.as_mut() {
             fun(request);
+        }
+        drop(cb);
+
+        // Normally Window::complete_frame reaches PlatformWindow::completed_frame synchronously.
+        // If the window vanished or the callback exited before that boundary, recover the scheduler
+        // here so a later request cannot remain permanently latched behind frame_in_progress.
+        let mut state = self.state.borrow_mut();
+        if state.frame_in_progress {
+            state.frame_in_progress = false;
+            if !state.frame_callback_pending && state.pending_frame_request.requires_frame() {
+                state.surface.frame(&state.globals.qh, state.surface.id());
+                state.surface.commit();
+                state.frame_callback_pending = true;
+            }
         }
     }
 
@@ -1401,8 +1423,13 @@ impl PlatformWindow for WaylandWindow {
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut state = self.borrow_mut();
+        if state.background_appearance == background_appearance {
+            return;
+        }
         state.background_appearance = background_appearance;
         update_window(state);
+        self.0
+            .request_frame(RequestFrameOptions::from_refresh());
     }
 
     fn minimize(&self) {
@@ -1505,7 +1532,12 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn completed_frame(&self) {
-        let state = self.borrow();
+        let mut state = self.borrow_mut();
+        state.frame_in_progress = false;
+        if !state.frame_callback_pending && state.pending_frame_request.requires_frame() {
+            state.surface.frame(&state.globals.qh, state.surface.id());
+            state.frame_callback_pending = true;
+        }
         state.surface.commit();
     }
 
@@ -1586,6 +1618,8 @@ impl PlatformWindow for WaylandWindow {
         if Some(inset) != state.client_inset {
             state.client_inset = Some(inset);
             update_window(state);
+            self.0
+                .request_frame(RequestFrameOptions::from_refresh());
         }
     }
 
