@@ -469,18 +469,7 @@ pub fn record_debug_gpu_specs(gpu_specs: Option<GpuSpecs>) {
     sampler.gpu_specs = gpu_specs;
 }
 
-pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
-    let mut snapshot = RUNTIME_METRICS
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .snapshot
-        .clone();
-    {
-        let mut sampler = RUNTIME_SAMPLER
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        sampler.sample(&mut snapshot);
-    }
+pub fn refresh_realtime_runtime_metrics(snapshot: &mut DebugRuntimeSnapshot) {
     let gpui_metrics = performance_metrics_snapshot();
     snapshot.gpui_renderer_backend =
         SharedString::from(gpui_metrics.renderer_backend.as_str().to_string());
@@ -686,6 +675,21 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
         .into_iter()
         .map(DebugWindowMetrics::from)
         .collect();
+}
+
+pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
+    let mut snapshot = RUNTIME_METRICS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .snapshot
+        .clone();
+    {
+        let mut sampler = RUNTIME_SAMPLER
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        sampler.sample(&mut snapshot);
+    }
+    refresh_realtime_runtime_metrics(&mut snapshot);
     snapshot.bmcbl_memory = crate::utils::memory_diagnostics::snapshot_bmcbl_memory();
     snapshot
 }

@@ -8,7 +8,9 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::window::debug::devtools;
-use crate::ui::window::debug::state::{DebugRuntimeSnapshot, DebugState, snapshot_runtime_metrics};
+use crate::ui::window::debug::state::{
+    DebugRuntimeSnapshot, DebugState, refresh_realtime_runtime_metrics, snapshot_runtime_metrics,
+};
 use crate::utils::file_ops;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -17,7 +19,8 @@ use std::time::{Duration, Instant};
 
 const GLOBAL_IMAGE_ASSET_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 const DEBUG_INITIAL_REFRESH_DELAY: Duration = Duration::from_millis(500);
-const DEBUG_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+const DEBUG_REALTIME_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+const DEBUG_SLOW_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const DEBUG_CONSOLE_RENDER_LINE_LIMIT: usize = 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,7 +48,8 @@ enum ConsoleSource {
 }
 
 pub struct DebugView {
-    _refresh_task: Option<Task<()>>,
+    _realtime_refresh_task: Option<Task<()>>,
+    _slow_refresh_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     log_tail: SharedString,
     log_tail_last_updated: Option<Instant>,
@@ -64,6 +68,7 @@ impl DebugView {
         let log_path = file_ops::logs_dir().join("latest.log");
         let stall_log_path = file_ops::logs_dir().join("ui_foreground_stall.log");
         record_debug_window_metrics(window);
+        window.set_inactive_dirty_frame_retry_interval(Some(DEBUG_REALTIME_REFRESH_INTERVAL));
         let subscriptions = vec![
             cx.observe_global::<I18n>(|_this, cx| cx.notify()),
             cx.observe_window_bounds(window, |_, window, _cx| {
@@ -74,11 +79,34 @@ impl DebugView {
             crate::ui::window::debug::state::record_debug_gpu_specs(window.gpu_specs());
         });
 
-        let refresh_task = cx.spawn(async move |handle, cx| {
+        let realtime_refresh_task = cx.spawn(async move |handle, cx| {
+            loop {
+                Timer::after(DEBUG_REALTIME_REFRESH_INTERVAL).await;
+                let _ = handle.update(cx, |this, cx| {
+                    refresh_realtime_runtime_metrics(&mut this.runtime);
+                    let debug = cx.global::<DebugState>().clone();
+                    bind_window_roles(&mut this.runtime, &debug);
+
+                    let frame_time_ms = this.runtime.main_frame_time_ms;
+                    if frame_time_ms > 0.0 && frame_time_ms.is_finite() {
+                        this.runtime.frame_time_history_ms.push_back(frame_time_ms);
+                        while this.runtime.frame_time_history_ms.len() > 180 {
+                            let _ = this.runtime.frame_time_history_ms.pop_front();
+                        }
+                    }
+
+                    if this.tab != DebugTab::Console {
+                        cx.notify();
+                    }
+                });
+            }
+        });
+
+        let slow_refresh_task = cx.spawn(async move |handle, cx| {
             let mut refresh_delay = DEBUG_INITIAL_REFRESH_DELAY;
             loop {
                 Timer::after(refresh_delay).await;
-                refresh_delay = DEBUG_REFRESH_INTERVAL;
+                refresh_delay = DEBUG_SLOW_REFRESH_INTERVAL;
 
                 let log_path = log_path.clone();
                 let stall_log_path = stall_log_path.clone();
@@ -98,14 +126,6 @@ impl DebugView {
                     bind_window_roles(&mut runtime, &debug);
 
                     runtime.frame_time_history_ms = this.runtime.frame_time_history_ms.clone();
-                    if runtime.main_frame_time_ms > 0.0 && runtime.main_frame_time_ms.is_finite() {
-                        runtime
-                            .frame_time_history_ms
-                            .push_back(runtime.main_frame_time_ms);
-                        while runtime.frame_time_history_ms.len() > 180 {
-                            let _ = runtime.frame_time_history_ms.pop_front();
-                        }
-                    }
 
                     if this
                         .runtime
@@ -206,7 +226,8 @@ impl DebugView {
         });
 
         Self {
-            _refresh_task: Some(refresh_task),
+            _realtime_refresh_task: Some(realtime_refresh_task),
+            _slow_refresh_task: Some(slow_refresh_task),
             _subscriptions: subscriptions,
             log_tail: SharedString::from(""),
             log_tail_last_updated: None,
