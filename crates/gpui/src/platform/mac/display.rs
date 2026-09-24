@@ -1,4 +1,4 @@
-use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, px, size};
+use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, size};
 use anyhow::Result;
 use cocoa::{
     appkit::NSScreen,
@@ -40,6 +40,26 @@ impl MacDisplay {
             let screen_number: CGDirectDisplayID = msg_send![screen_number, unsignedIntegerValue];
             Self(screen_number)
         }
+    }
+
+    /// Returns the AppKit screen corresponding to this CoreGraphics display.
+    unsafe fn get_nsscreen(&self) -> id {
+        let screens = unsafe { NSScreen::screens(nil) };
+        let count = unsafe { cocoa::foundation::NSArray::count(screens) };
+        let screen_number_key: id = unsafe { NSString::alloc(nil).init_str("NSScreenNumber") };
+
+        for index in 0..count {
+            let screen = unsafe { cocoa::foundation::NSArray::objectAtIndex(screens, index) };
+            let device_description = unsafe { NSScreen::deviceDescription(screen) };
+            let screen_number = unsafe { device_description.objectForKey_(screen_number_key) };
+            let screen_id: CGDirectDisplayID =
+                unsafe { msg_send![screen_number, unsignedIntegerValue] };
+            if screen_id == self.0 {
+                return screen;
+            }
+        }
+
+        nil
     }
 
     /// Obtains an iterator over all currently active system displays.
@@ -111,6 +131,33 @@ impl PlatformDisplay for MacDisplay {
             Bounds {
                 origin: Default::default(),
                 size: size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
+            }
+        }
+    }
+
+    fn visible_bounds(&self) -> Bounds<Pixels> {
+        unsafe {
+            let screen = self.get_nsscreen();
+            if screen == nil {
+                return self.bounds();
+            }
+
+            let frame = NSScreen::frame(screen);
+            let visible_frame = NSScreen::visibleFrame(screen);
+            let origin_y = frame.size.height
+                - visible_frame.origin.y
+                - visible_frame.size.height
+                + frame.origin.y;
+
+            Bounds {
+                origin: point(
+                    px((visible_frame.origin.x - frame.origin.x) as f32),
+                    px(origin_y as f32),
+                ),
+                size: size(
+                    px(visible_frame.size.width as f32),
+                    px(visible_frame.size.height as f32),
+                ),
             }
         }
     }

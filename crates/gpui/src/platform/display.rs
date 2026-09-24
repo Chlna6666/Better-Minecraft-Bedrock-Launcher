@@ -17,6 +17,13 @@ pub trait PlatformDisplay: Send + Sync + Debug {
     /// Get the bounds for this display
     fn bounds(&self) -> Bounds<Pixels>;
 
+    /// Get the visible work area for this display, excluding taskbars, docks, and menu bars.
+    ///
+    /// Platforms without a distinct work area may use the full display bounds.
+    fn visible_bounds(&self) -> Bounds<Pixels> {
+        self.bounds()
+    }
+
     /// Get the default bounds for this display to place a window
     fn default_bounds(&self) -> Bounds<Pixels> {
         let bounds = self.bounds();

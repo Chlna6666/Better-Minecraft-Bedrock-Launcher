@@ -1,4 +1,10 @@
 use uuid::Uuid;
+use windows::Win32::{
+    Foundation::POINT,
+    Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromPoint,
+    },
+};
 use winit::monitor::MonitorHandle;
 
 use crate::{Bounds, DevicePixels, DisplayId, Pixels, PlatformDisplay, logical_point, size};
@@ -42,6 +48,7 @@ impl DisplaySnapshotKey {
 pub(crate) struct WindowsDisplay {
     pub display_id: DisplayId,
     bounds: Bounds<Pixels>,
+    visible_bounds: Bounds<Pixels>,
     uuid: Uuid,
     key: DisplaySnapshotKey,
 }
@@ -57,12 +64,17 @@ impl WindowsDisplay {
             DevicePixels(monitor_size.height as i32),
         );
 
+        let bounds = Bounds {
+            origin: logical_point(position.x as f32, position.y as f32, scale_factor),
+            size: physical_size.to_pixels(scale_factor),
+        };
+        let visible_bounds = windows_visible_bounds(position, monitor_size, scale_factor)
+            .unwrap_or(bounds);
+
         Self {
             display_id,
-            bounds: Bounds {
-                origin: logical_point(position.x as f32, position.y as f32, scale_factor),
-                size: physical_size.to_pixels(scale_factor),
-            },
+            bounds,
+            visible_bounds,
             uuid: key.uuid(),
             key,
         }
@@ -97,4 +109,52 @@ impl PlatformDisplay for WindowsDisplay {
     fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
     }
+
+    fn visible_bounds(&self) -> Bounds<Pixels> {
+        self.visible_bounds
+    }
+}
+
+fn windows_visible_bounds(
+    position: winit::dpi::PhysicalPosition<i32>,
+    monitor_size: winit::dpi::PhysicalSize<u32>,
+    scale_factor: f32,
+) -> Option<Bounds<Pixels>> {
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return None;
+    }
+
+    let center = POINT {
+        x: position
+            .x
+            .saturating_add(i32::try_from(monitor_size.width / 2).unwrap_or(i32::MAX)),
+        y: position
+            .y
+            .saturating_add(i32::try_from(monitor_size.height / 2).unwrap_or(i32::MAX)),
+    };
+    let monitor = unsafe { MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_invalid() {
+        return None;
+    }
+
+    let mut info: MONITORINFOEXW = unsafe { std::mem::zeroed() };
+    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    let ok = unsafe {
+        GetMonitorInfoW(
+            monitor,
+            &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
+        )
+    };
+    if !ok.as_bool() {
+        return None;
+    }
+
+    let work = info.monitorInfo.rcWork;
+    Some(Bounds {
+        origin: logical_point(work.left as f32, work.top as f32, scale_factor),
+        size: size(
+            Pixels((work.right - work.left) as f32 / scale_factor),
+            Pixels((work.bottom - work.top) as f32 / scale_factor),
+        ),
+    })
 }
