@@ -1,4 +1,4 @@
-use crate::{Pixels, px};
+use crate::{Pixels, point, px};
 use smallvec::SmallVec;
 
 use super::super::LineWrapper;
@@ -70,6 +70,56 @@ impl LineLayout {
             .map_or(self.width, |glyph| glyph.position.x)
     }
 
+    /// Splits this layout at a UTF-8 byte index into prefix and suffix layouts.
+    ///
+    /// Glyph positions and byte indices in the suffix are rebased to the new origin.
+    pub fn split_at(&self, byte_index: usize) -> (LineLayout, LineLayout) {
+        assert!(byte_index <= self.len, "split boundary exceeds line length");
+        let x_offset = self.x_for_index(byte_index);
+        let mut left_runs = Vec::new();
+        let mut right_runs = Vec::new();
+
+        for run in &self.runs {
+            let split_pos = run.glyphs.partition_point(|glyph| glyph.index < byte_index);
+            if split_pos > 0 {
+                left_runs.push(ShapedRun {
+                    font_id: run.font_id,
+                    glyphs: run.glyphs[..split_pos].to_vec(),
+                });
+            }
+            if split_pos < run.glyphs.len() {
+                let glyphs = run.glyphs[split_pos..]
+                    .iter()
+                    .map(|glyph| {
+                        let mut glyph = glyph.clone();
+                        glyph.position = point(glyph.position.x - x_offset, glyph.position.y);
+                        glyph.index -= byte_index;
+                        glyph
+                    })
+                    .collect();
+                right_runs.push(ShapedRun { font_id: run.font_id, glyphs });
+            }
+        }
+
+        (
+            LineLayout {
+                font_size: self.font_size,
+                width: x_offset,
+                ascent: self.ascent,
+                descent: self.descent,
+                runs: left_runs,
+                len: byte_index,
+            },
+            LineLayout {
+                font_size: self.font_size,
+                width: self.width - x_offset,
+                ascent: self.ascent,
+                descent: self.descent,
+                runs: right_runs,
+                len: self.len - byte_index,
+            },
+        )
+    }
     /// Return the font used at a character index.
     pub fn font_id_for_index(&self, index: usize) -> Option<crate::FontId> {
         self.runs.iter().find_map(|run| {
