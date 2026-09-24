@@ -4191,7 +4191,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-router"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "gpui",
  "gpui-router-macros",
@@ -4202,9 +4202,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-router-macros"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d59a4854468fd9d5e977b0a2c56666cb0fccd0d65b696c19ba740a0237eb6401"
+checksum = "978f0e040178034b27772e6a483d6c4b7cd908e012e4d1545efaa593cbb2a3fc"
 dependencies = [
  "proc-macro2",
  "quote",

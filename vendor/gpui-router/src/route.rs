@@ -1,4 +1,5 @@
-use crate::{Layout, RouterState};
+use crate::outlet::with_outlet_scope;
+use crate::{Layout, RouterState, normalize_pathname};
 use gpui::*;
 use matchit::Router as MatchitRouter;
 use smallvec::SmallVec;
@@ -70,7 +71,12 @@ impl Route {
 
   /// The element to render when the route matches.
   /// Accepts a closure that returns an IntoElement, which will be called lazily when the route matches.
-  /// Panics if a layout is already set.
+  ///
+  /// The matched child of a route with children renders into the first
+  /// [`Outlet`](crate::Outlet) created by this element, so an outlet has to be
+  /// built inside the element closure; children render only through it. Use
+  /// [`Route::layout`] instead when the surrounding chrome needs its own type.
+  /// Panics in debug builds if a layout is already set.
   ///
   /// # Examples
   /// ```
@@ -111,6 +117,11 @@ impl Route {
   }
 
   /// Adds a `Route` as a child to the `Route`.
+  ///
+  /// The child renders into this route's outlet: the first
+  /// [`Outlet`](crate::Outlet) built inside [`Route::element`], or the layout
+  /// set with [`Route::layout`]. A child of a route that has neither renders
+  /// nothing.
   pub fn child(mut self, child: Route) -> Self {
     self.routes.push(Box::new(child));
     self
@@ -124,55 +135,110 @@ impl Route {
     self
   }
 
-  pub(crate) fn build_route_map(&self, basename: &str) -> MatchitRouter<()> {
+  pub(crate) fn full_path(&self, basename: &str) -> SharedString {
     let basename = basename.trim_end_matches('/');
-    let mut router_map = MatchitRouter::new();
-
     let path = match self.path {
       Some(ref path) => format!("{}/{}", basename, path),
       None => basename.to_string(),
     };
+    normalize_pathname(path)
+  }
 
-    let path = if path != "/" { path.trim_end_matches('/') } else { &path };
+  pub(crate) fn build_route_map(&self, basename: &str) -> MatchitRouter<SharedString> {
+    let mut router_map = MatchitRouter::new();
+    let path = self.full_path(basename);
 
-    if self.element.is_some() {
-      router_map.insert(path, ()).unwrap();
-      return router_map;
+    for route in self.routes.iter() {
+      router_map.merge(route.build_route_map(path.as_ref())).unwrap();
     }
 
-    // Recursively build the route map
-    for route in self.routes.iter() {
-      router_map.merge(route.build_route_map(path)).unwrap();
+    // A route that renders an element also matches its own path, so the element
+    // can render with an empty outlet when no child matches. A child that
+    // registers the same path wins, which is what an index route does.
+    if self.element.is_some() {
+      let _ = router_map.insert(path.as_ref(), path.clone());
     }
 
     router_map
   }
 
-  pub(crate) fn in_pattern(&self, basename: &str, path: &str) -> bool {
-    self.build_route_map(basename).at(path).is_ok()
+  pub(crate) fn contains_pattern(&self, basename: &str, pattern: &str) -> bool {
+    let path = self.full_path(basename);
+
+    if self.element.is_some() && path.as_ref() == pattern {
+      return true;
+    }
+
+    self
+      .routes
+      .iter()
+      .any(|route| route.contains_pattern(path.as_ref(), pattern))
+  }
+
+  /// Renders and removes the child that matches the current pathname.
+  fn take_matched_child(
+    routes: &mut SmallVec<[Box<Route>; 1]>,
+    basename: &str,
+    window: &mut Window,
+    cx: &mut App,
+  ) -> Option<AnyElement> {
+    let pathname = normalize_pathname(cx.global::<RouterState>().location.pathname.as_ref());
+    let mut route_map = MatchitRouter::new();
+    for route in routes.iter() {
+      route_map.merge(route.build_route_map(basename)).unwrap();
+    }
+
+    let matched = route_map.at(pathname.as_ref()).ok()?;
+    let index = routes
+      .iter()
+      .position(|route| route.contains_pattern(basename, matched.value.as_ref()))?;
+    let route = routes.remove(index);
+
+    // Fully qualified because newer GPUI releases add a `View::render` for every
+    // type, which makes the method call ambiguous.
+    Some(RenderOnce::render(route.basename(basename.to_owned()), window, cx).into_any_element())
   }
 }
 
 impl RenderOnce for Route {
   fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    let basename = self.full_path(self.basename.as_ref());
+    let mut routes = std::mem::take(&mut self.routes);
+
     if let Some(element_fn) = self.element {
-      return element_fn(window, cx);
+      let child = Route::take_matched_child(&mut routes, basename.as_ref(), window, cx);
+      return with_outlet_scope(child, || element_fn(window, cx));
     }
 
     if let Some(mut layout) = self.layout {
-      let pathname = cx.global::<RouterState>().location.pathname.clone();
-      let basename = self.basename.trim_end_matches('/');
-      let basename = match self.path {
-        Some(ref path) => format!("{}/{}", basename, path),
-        None => basename.to_string(),
-      };
-      let routes = std::mem::take(&mut self.routes);
-      let route = routes.into_iter().find(|route| route.in_pattern(&basename, &pathname));
-      if let Some(route) = route {
-        layout.outlet(route.basename(basename).render(window, cx).into_any_element());
+      if let Some(child) = Route::take_matched_child(&mut routes, basename.as_ref(), window, cx) {
+        layout.outlet(child);
       }
       return layout.render_layout(window, cx).into_any_element();
     }
     Empty {}.into_any_element()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::Route;
+
+  #[test]
+  fn test_element_route_keeps_children() {
+    let route = Route::new()
+      .element(|_, _| "home")
+      .child(Route::new().index().element(|_, _| "index"));
+
+    assert_eq!(route.routes.len(), 1);
+  }
+
+  #[test]
+  fn test_children_are_allowed_without_element() {
+    let route = Route::new()
+      .child(Route::new().index().element(|_, _| "index"))
+      .child(Route::new().path("about").element(|_, _| "about"));
+
+    assert_eq!(route.routes.len(), 2);
   }
 }

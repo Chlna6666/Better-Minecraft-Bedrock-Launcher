@@ -1,4 +1,4 @@
-use crate::use_navigate;
+use crate::{RouterState, normalize_pathname, use_navigate};
 use gpui::*;
 use smallvec::SmallVec;
 
@@ -13,7 +13,8 @@ pub struct NavLink {
   base: Div,
   children: SmallVec<[AnyElement; 1]>,
   to: SharedString,
-  // is_active: bool,
+  active_style: Option<Box<StyleRefinement>>,
+  end: bool,
 }
 
 impl Default for NavLink {
@@ -22,6 +23,8 @@ impl Default for NavLink {
       base: div(),
       children: Default::default(),
       to: Default::default(),
+      active_style: None,
+      end: false,
     }
   }
 }
@@ -56,21 +59,98 @@ impl NavLink {
   }
 
   /// Sets the style for the active state of the navigation link.
-  pub fn active(self, _f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
-    unimplemented!()
+  pub fn active(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+    debug_assert!(self.active_style.is_none(), "active style already set");
+    self.active_style = Some(Box::new(f(StyleRefinement::default())));
+    self
+  }
+
+  /// When `true`, the active style will only be applied when the pathname
+  /// matches the `to` path exactly. By default this is `false`, meaning the
+  /// link is also considered active when the current pathname is a child of
+  /// the `to` path (prefix matching).
+  ///
+  /// This is equivalent to React Router's `end` prop on `NavLink`.
+  pub fn end(mut self, end: bool) -> Self {
+    self.end = end;
+    self
+  }
+}
+
+fn is_active_path(pathname: &str, to: &str, end: bool) -> bool {
+  let pathname = normalize_pathname(pathname);
+  let to = normalize_pathname(to);
+
+  if to == "/" || end {
+    pathname.as_ref() == to.as_ref()
+  } else {
+    pathname.as_ref() == to.as_ref()
+      || pathname
+        .strip_prefix(to.as_ref())
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
   }
 }
 
 impl RenderOnce for NavLink {
-  fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+  fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    let to = normalize_pathname(self.to.as_ref());
+    let is_active = if cx.has_global::<RouterState>() {
+      is_active_path(
+        cx.global::<RouterState>().location.pathname.as_ref(),
+        to.as_ref(),
+        self.end,
+      )
+    } else {
+      debug_assert!(
+        false,
+        "NavLink rendered without initialized RouterState; \
+         ensure the router is initialized (e.g., via crate::init()) before rendering NavLink."
+      );
+      false
+    };
+
+    if is_active && let Some(active_style) = self.active_style.as_ref() {
+      self.base.style().refine(active_style);
+    }
+
     self
       .base
-      .id(ElementId::from(self.to.clone()))
+      .id(ElementId::from(to.clone()))
       .on_click(move |_, window, cx| {
         let mut navigate = use_navigate(cx);
-        navigate(self.to.clone());
+        navigate(to.clone());
         window.refresh();
       })
       .children(self.children)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_active_path;
+
+  #[test]
+  fn test_root_nav_link_is_only_active_on_exact_root() {
+    assert!(is_active_path("/", "/", false));
+    assert!(is_active_path("", "", false));
+    assert!(!is_active_path("/settings", "/", false));
+  }
+
+  #[test]
+  fn test_nav_link_matches_descendants_by_default() {
+    assert!(is_active_path("/settings/profile", "/settings", false));
+    assert!(is_active_path("/settings/profile/", "settings", false));
+  }
+
+  #[test]
+  fn test_nav_link_end_requires_exact_match() {
+    assert!(is_active_path("/settings", "/settings", true));
+    assert!(!is_active_path("/settings/profile", "/settings", true));
+  }
+
+  #[test]
+  fn test_nav_link_respects_segment_boundaries() {
+    assert!(!is_active_path("/users", "/user", false));
+    assert!(!is_active_path("/settings-and-more", "/settings", false));
   }
 }
