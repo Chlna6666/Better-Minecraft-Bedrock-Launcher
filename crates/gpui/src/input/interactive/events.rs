@@ -13,3 +13,6 @@ pub trait KeyEvent: InputEvent {}
 
 /// A mouse event from the platform.
 pub trait MouseEvent: InputEvent {}
+
+/// A semantic gesture event recognized from raw pointer or touch input.
+pub trait GestureEvent: InputEvent {}

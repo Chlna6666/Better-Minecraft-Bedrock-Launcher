@@ -5,15 +5,17 @@ use super::{InputEvent, MouseEvent, PlatformInput};
 
 /// The phase of a touch motion event.
 /// Based on the winit enum of the same name.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TouchPhase {
     /// The touch started.
     Started,
     /// The touch event is moving.
     #[default]
     Moved,
-    /// The touch phase has ended
+    /// The touch phase has ended.
     Ended,
+    /// The touch was cancelled by the platform.
+    Cancelled,
 }
 
 /// A mouse down event from the platform

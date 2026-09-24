@@ -1457,9 +1457,8 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 let touch_phase = match phase {
                     winit::event::TouchPhase::Started => TouchPhase::Started,
                     winit::event::TouchPhase::Moved => TouchPhase::Moved,
-                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                        TouchPhase::Ended
-                    }
+                    winit::event::TouchPhase::Ended => TouchPhase::Ended,
+                    winit::event::TouchPhase::Cancelled => TouchPhase::Cancelled,
                 };
                 let input_callback = state.callbacks.input.take();
                 drop(state);
@@ -1469,6 +1468,33 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                         delta,
                         modifiers: self.current_modifiers,
                         touch_phase,
+                    }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::Touch(touch) => {
+                let scale_factor = window.scale_factor();
+                let position = point(
+                    Pixels(touch.location.x as f32 / scale_factor),
+                    Pixels(touch.location.y as f32 / scale_factor),
+                );
+                let phase = match touch.phase {
+                    winit::event::TouchPhase::Started => TouchPhase::Started,
+                    winit::event::TouchPhase::Moved => TouchPhase::Moved,
+                    winit::event::TouchPhase::Ended => TouchPhase::Ended,
+                    winit::event::TouchPhase::Cancelled => TouchPhase::Cancelled,
+                };
+                let force = touch.force.map(|force| force.normalized() as f32);
+                let mut state = window.0.state.borrow_mut();
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::Touch(TouchEvent {
+                        id: TouchId(touch.id),
+                        phase,
+                        position,
+                        predicted_position: None,
+                        force,
                     }));
                     window.0.state.borrow_mut().callbacks.input = Some(callback);
                 }

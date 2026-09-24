@@ -397,6 +397,10 @@ impl Window {
             hovered,
             needs_present,
             last_input_timestamp,
+            touch_gestures: crate::gestures::TouchGestureRecognizer::new(
+                cx.platform.gesture_tuning(),
+            ),
+            long_press_timer: None,
             animation_time: Cell::new(now),
             refreshing: false,
             dirty_frame_scheduled: false,

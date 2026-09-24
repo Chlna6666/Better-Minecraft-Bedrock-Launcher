@@ -219,6 +219,7 @@ impl PlatformInput {
                             TouchPhase::Started
                         }
                         NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
+                        NSEventPhase::NSEventPhaseCancelled => TouchPhase::Cancelled,
                         _ => TouchPhase::Moved,
                     };
 

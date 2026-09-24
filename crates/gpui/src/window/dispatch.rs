@@ -13,6 +13,8 @@ pub(super) fn platform_input_name(event: &PlatformInput) -> &'static str {
         PlatformInput::MouseMove(_) => "mouse_move",
         PlatformInput::MouseExited(_) => "mouse_exited",
         PlatformInput::ScrollWheel(_) => "scroll_wheel",
+        PlatformInput::Touch(_) => "touch",
+        PlatformInput::LongPress(_) => "long_press",
         PlatformInput::FileDrop(_) => "file_drop",
     }
 }

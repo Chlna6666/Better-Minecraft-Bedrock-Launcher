@@ -1,8 +1,8 @@
 use std::any::Any;
 
 use super::{
-    FileDropEvent, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseDownEvent, MouseExitEvent,
-    MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
+    FileDropEvent, KeyDownEvent, KeyUpEvent, LongPressEvent, ModifiersChangedEvent, MouseDownEvent,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, TouchEvent,
 };
 
 /// An enum corresponding to all kinds of platform input events.
@@ -26,6 +26,10 @@ pub enum PlatformInput {
     ScrollWheel(ScrollWheelEvent),
     /// Files were dragged and dropped onto the window.
     FileDrop(FileDropEvent),
+    /// Raw touch input from a platform backend.
+    Touch(TouchEvent),
+    /// A long-press gesture recognized from touch input.
+    LongPress(LongPressEvent),
 }
 
 impl PlatformInput {
@@ -43,6 +47,9 @@ impl PlatformInput {
             | PlatformInput::KeyUp(_)
             | PlatformInput::ModifiersChanged(_) => PlatformInputDispatchClass::Keyboard,
             PlatformInput::FileDrop(_) => PlatformInputDispatchClass::DragDrop,
+            PlatformInput::Touch(_) | PlatformInput::LongPress(_) => {
+                PlatformInputDispatchClass::InteractivePointerMove
+            }
             PlatformInput::MouseExited(_) => PlatformInputDispatchClass::PassivePointerMove,
         }
     }
@@ -61,7 +68,9 @@ impl PlatformInput {
             PlatformInput::MouseMove(event) => Some(event),
             PlatformInput::MouseExited(event) => Some(event),
             PlatformInput::ScrollWheel(event) => Some(event),
+            PlatformInput::LongPress(event) => Some(event),
             PlatformInput::FileDrop(event) => Some(event),
+            PlatformInput::Touch(_) => None,
         }
     }
 
@@ -75,7 +84,17 @@ impl PlatformInput {
             PlatformInput::MouseMove(_) => None,
             PlatformInput::MouseExited(_) => None,
             PlatformInput::ScrollWheel(_) => None,
+            PlatformInput::LongPress(_) => None,
             PlatformInput::FileDrop(_) => None,
+            PlatformInput::Touch(_) => None,
+        }
+    }
+
+    /// Returns the raw touch event contained in this input, if any.
+    pub fn touch_event(&self) -> Option<&TouchEvent> {
+        match self {
+            PlatformInput::Touch(event) => Some(event),
+            _ => None,
         }
     }
 }

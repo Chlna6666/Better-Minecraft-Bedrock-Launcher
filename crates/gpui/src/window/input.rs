@@ -1,6 +1,7 @@
 use super::state::FrameRequestReason;
 use super::*;
-use crate::ExternalPaths;
+use crate::{ExternalPaths, TouchEvent, TouchPhase};
+use crate::gestures::RecognizedTouchGesture;
 
 mod window_control;
 
@@ -221,7 +222,7 @@ impl Window {
             .unwrap_or_else(|| action.name().to_string())
     }
 
-    /// Dispatch a mouse or keyboard event on the window.
+    /// Dispatch a mouse, keyboard, or touch event on the window.
     #[profiling::function]
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
         let event_started_at = Instant::now();
@@ -273,6 +274,11 @@ impl Window {
             }
             // Translate dragging and dropping of external files from the operating system
             // to internal drag and drop events.
+            PlatformInput::Touch(touch) => PlatformInput::Touch(touch),
+            PlatformInput::LongPress(long_press) => {
+                self.mouse_position = long_press.start_position;
+                PlatformInput::LongPress(long_press)
+            }
             PlatformInput::FileDrop(file_drop) => match file_drop {
                 FileDropEvent::Entered { position, paths } => {
                     self.mouse_position = position;
@@ -344,6 +350,8 @@ impl Window {
             self.dispatch_mouse_event(any_mouse_event, cx);
         } else if let Some(any_key_event) = event.keyboard_event() {
             self.dispatch_key_event(any_key_event, cx);
+        } else if let Some(touch_event) = event.touch_event() {
+            self.dispatch_touch_event(touch_event, cx);
         }
 
         // The winit-based Windows backend reports committed text through KeyEvent::text,
@@ -373,6 +381,90 @@ impl Window {
             propagate: cx.propagate_event,
             default_prevented: self.default_prevented,
         }
+    }
+
+    fn dispatch_touch_event(&mut self, event: &TouchEvent, cx: &mut App) {
+        let recognized = self.touch_gestures.handle_event(event);
+        let mut tapped = false;
+
+        for gesture in recognized {
+            tapped |= matches!(gesture, RecognizedTouchGesture::Tap { .. });
+            self.dispatch_recognized_touch_gesture(gesture, cx);
+        }
+
+        if event.phase == TouchPhase::Started {
+            self.schedule_long_press_timer(cx);
+        } else if self.touch_gestures.pending_long_press().is_none() {
+            self.long_press_timer.take();
+        }
+
+        if tapped && self.invalidator.is_dirty() {
+            self.draw(cx).clear();
+        }
+
+        if self.touch_gestures.has_momentum() {
+            self.schedule_touch_momentum_tick();
+        }
+    }
+
+    fn dispatch_recognized_touch_gesture(
+        &mut self,
+        gesture: RecognizedTouchGesture,
+        cx: &mut App,
+    ) {
+        match gesture {
+            RecognizedTouchGesture::Scroll(scroll) => {
+                self.mouse_position = scroll.position;
+                cx.propagate_event = true;
+                self.dispatch_mouse_event(&scroll, cx);
+            }
+            RecognizedTouchGesture::Tap { down, up } => {
+                self.mouse_position = up.position;
+                cx.propagate_event = true;
+                self.dispatch_mouse_event(&down, cx);
+                cx.propagate_event = true;
+                self.dispatch_mouse_event(&up, cx);
+            }
+            RecognizedTouchGesture::LongPress(long_press) => {
+                self.mouse_position = long_press.start_position;
+                cx.propagate_event = true;
+                self.default_prevented = false;
+                let started = long_press.phase == TouchPhase::Started;
+                self.dispatch_mouse_event(&long_press, cx);
+                if started {
+                    self.touch_gestures
+                        .resolve_long_press(self.default_prevented);
+                }
+            }
+        }
+    }
+
+    fn schedule_long_press_timer(&mut self, cx: &mut App) {
+        self.long_press_timer.take();
+        let Some((touch_id, duration)) = self.touch_gestures.pending_long_press() else {
+            return;
+        };
+
+        self.long_press_timer = Some(self.spawn(cx, async move |cx| {
+            cx.background_executor.timer(duration).await;
+            let _ = ignore_window_not_found(cx.update(move |window, cx| {
+                window.long_press_timer.take();
+                if let Some(gesture) = window.touch_gestures.offer_long_press(touch_id) {
+                    window.dispatch_recognized_touch_gesture(gesture, cx);
+                }
+            }));
+        }));
+    }
+
+    fn schedule_touch_momentum_tick(&mut self) {
+        self.on_next_frame(|window, cx| {
+            if let Some(gesture) = window.touch_gestures.tick_momentum() {
+                window.dispatch_recognized_touch_gesture(gesture, cx);
+            }
+            if window.touch_gestures.has_momentum() {
+                window.schedule_touch_momentum_tick();
+            }
+        });
     }
 
     pub(super) fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {

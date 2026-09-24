@@ -10,8 +10,8 @@ use super::{TestDispatcher, TestWindow};
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DevicePixels,
     DispatchEventResult, Font, FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs,
-    GpuiMemoryTrimLevel, Keymap, LineLayout, Modifiers, Pixels, PlatformInput, Point,
-    RenderGlyphParams, ShapedGlyph, ShapedRun, SharedString, Size, Task, TaskLabel,
+    GestureTuning, GpuiMemoryTrimLevel, Keymap, LineLayout, Modifiers, Pixels, PlatformInput,
+    Point, RenderGlyphParams, ShapedGlyph, ShapedRun, SharedString, Size, Task, TaskLabel,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
     WindowDecorations, WindowParams, WindowTab, point, px, size,
     window::{Decorations, ResizeEdge},
@@ -52,6 +52,11 @@ pub(crate) trait Platform: 'static {
     fn background_executor(&self) -> BackgroundExecutor;
     fn foreground_executor(&self) -> ForegroundExecutor;
     fn text_system(&self) -> Arc<dyn PlatformTextSystem>;
+
+    /// Returns platform-specific touch and fling feel constants.
+    fn gesture_tuning(&self) -> GestureTuning {
+        GestureTuning::default()
+    }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>);
     fn quit(&self);
