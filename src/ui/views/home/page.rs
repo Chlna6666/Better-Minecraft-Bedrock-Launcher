@@ -478,7 +478,7 @@ impl HomePageView {
             )
             .composite_layer()
             .with_stable_sampled_animation(
-                SharedString::from(format!("home-version-item-motion-{index}")),
+                ElementId::named_usize("home-version-item-motion", index),
                 AnimationProperty::translation_opacity(
                     point(px(0.0), px(10.0)),
                     Point::default(),
