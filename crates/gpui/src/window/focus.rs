@@ -138,6 +138,10 @@ impl Window {
 
     /// Remove focus from all elements within this context's window.
     pub fn blur(&mut self) {
+        // A partially matched multi-stroke binding belongs to the old focus context. Clear it even
+        // when focus is currently disabled so a later refocus cannot replay stale input.
+        self.clear_pending_keystrokes();
+
         if !self.focus_enabled {
             return;
         }
