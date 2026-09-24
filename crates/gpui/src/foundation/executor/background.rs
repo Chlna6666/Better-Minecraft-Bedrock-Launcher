@@ -3,6 +3,7 @@ use super::{
     task::{AnyFuture, Task, TaskLabel},
 };
 use crate::PlatformDispatcher;
+use async_task::Runnable;
 use std::{
     future::Future,
     mem,
@@ -61,11 +62,18 @@ impl BackgroundExecutor {
         future: AnyFuture<R>,
         label: Option<TaskLabel>,
     ) -> Task<R> {
-        let dispatcher = self.dispatcher.clone();
-        let (runnable, task) =
-            async_task::spawn(future, move |runnable| dispatcher.dispatch(runnable, label));
+        let schedule = self.schedule(label);
+        let (runnable, task) = async_task::spawn(future, schedule);
         runnable.schedule();
         Task::spawned(task)
+    }
+
+    fn schedule(
+        &self,
+        label: Option<TaskLabel>,
+    ) -> impl Fn(Runnable) + Send + Sync + 'static {
+        let dispatcher = self.dispatcher.clone();
+        move |runnable| dispatcher.dispatch(runnable, label)
     }
 
     /// Used by the test harness to run an async test in a synchronous fashion.

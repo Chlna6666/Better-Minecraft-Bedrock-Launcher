@@ -3,6 +3,7 @@ use super::{
     task::{AnyLocalFuture, Task},
 };
 use crate::PlatformDispatcher;
+use async_task::Runnable;
 use std::{future::Future, marker::PhantomData, rc::Rc, sync::Arc};
 
 /// A pointer to the executor that is currently running,
@@ -35,19 +36,22 @@ impl ForegroundExecutor {
     where
         R: 'static,
     {
-        let dispatcher = self.dispatcher.clone();
+        let schedule = self.schedule();
 
         #[track_caller]
         fn inner<R: 'static>(
-            dispatcher: Arc<dyn PlatformDispatcher>,
+            schedule: impl async_task::Schedule<()> + Send + Sync + 'static,
             future: AnyLocalFuture<R>,
         ) -> Task<R> {
-            let (runnable, task) = spawn_local_with_source_location(future, move |runnable| {
-                dispatcher.dispatch_on_main_thread(runnable)
-            });
+            let (runnable, task) = spawn_local_with_source_location(future, schedule);
             runnable.schedule();
             Task::spawned(task)
         }
-        inner::<R>(dispatcher, Box::pin(future))
+        inner::<R>(schedule, Box::pin(future))
+    }
+
+    fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
+        let dispatcher = self.dispatcher.clone();
+        move |runnable| dispatcher.dispatch_on_main_thread(runnable)
     }
 }
