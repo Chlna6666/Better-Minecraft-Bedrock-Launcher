@@ -177,10 +177,7 @@ impl Window {
                     (state.clone(), state)
                 } else {
                     let new_state = cx.new(|cx| init(window, cx));
-                    cx.observe(&new_state, move |_, cx| {
-                        cx.notify(current_view);
-                    })
-                    .detach();
+                    Self::observe_keyed_state(&new_state, current_view, cx);
                     (new_state.clone(), new_state)
                 }
             })
@@ -336,6 +333,14 @@ impl Window {
         state: ElementStateBox,
     ) -> Option<ElementStateBox> {
         self.next_frame.element_states.insert(key, state)
+    }
+
+    #[inline(never)]
+    fn observe_keyed_state<S: 'static>(state: &Entity<S>, current_view: EntityId, cx: &mut App) {
+        cx.observe(state, move |_, cx| {
+            cx.notify(current_view);
+        })
+        .detach();
     }
 
 }
