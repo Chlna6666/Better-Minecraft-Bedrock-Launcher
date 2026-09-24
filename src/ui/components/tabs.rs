@@ -1,4 +1,6 @@
-use crate::ui::animation::{ease_out_cubic, ease_out_cubic_motion, raw_progress};
+use crate::ui::animation::{
+    ease_out_cubic, ease_out_cubic_motion, raw_progress, tab_underline_motion,
+};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
@@ -40,16 +42,29 @@ impl TabItem {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct UnderlineTabsState {
+    previous_index: usize,
+    active_index: usize,
+    sequence: u64,
+}
+
 #[derive(IntoElement)]
 pub struct UnderlineTabs {
+    id: SharedString,
     items: Vec<TabItem>,
     colors: ThemeColors,
     gap: Pixels,
 }
 
 impl UnderlineTabs {
-    pub fn new(colors: &ThemeColors, items: Vec<TabItem>) -> Self {
+    pub fn new(
+        id: impl Into<SharedString>,
+        colors: &ThemeColors,
+        items: Vec<TabItem>,
+    ) -> Self {
         Self {
+            id: id.into(),
             items,
             colors: *colors,
             gap: px(14.),
@@ -63,10 +78,35 @@ impl UnderlineTabs {
 }
 
 impl RenderOnce for UnderlineTabs {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if self.items.is_empty() {
+            return div().into_any_element();
+        }
+
         let colors = self.colors;
+        let selected_index = self.items.iter().position(|item| item.active).unwrap_or(0);
+        let state = window.use_keyed_state(self.id.clone(), cx, |_, _| UnderlineTabsState {
+            previous_index: selected_index,
+            active_index: selected_index,
+            sequence: 0,
+        });
+
+        if state.read(cx).active_index != selected_index {
+            state.update(cx, |tab_state, _| {
+                tab_state.previous_index = tab_state.active_index;
+                tab_state.active_index = selected_index;
+                tab_state.sequence = tab_state.sequence.wrapping_add(1);
+            });
+        }
+
+        let snapshot = *state.read(cx);
+        let animate_indicator = snapshot.sequence != 0
+            && snapshot.previous_index != snapshot.active_index
+            && !crate::core::ui_prefs::reduced_motion();
+        let tabs_id = self.id.clone();
 
         div()
+            .id(self.id)
             .min_w(px(0.))
             .overflow_x_scrollbar()
             .scrollbar_width(px(0.))
@@ -90,17 +130,45 @@ impl RenderOnce for UnderlineTabs {
                         ));
                 }
 
+                let underline = active.then(|| {
+                    let indicator = div()
+                        .absolute()
+                        .left(px(2.))
+                        .right(px(2.))
+                        .bottom(px(0.))
+                        .h(px(2.))
+                        .rounded(px(1.))
+                        .bg(colors.accent);
+
+                    if animate_indicator {
+                        indicator
+                            .composite_layer()
+                            .with_animation(
+                                SharedString::from(format!(
+                                    "{}-underline-{}",
+                                    tabs_id.as_ref(),
+                                    snapshot.sequence
+                                )),
+                                tab_underline_motion(
+                                    snapshot.previous_index,
+                                    snapshot.active_index,
+                                ),
+                                |indicator, _progress| indicator,
+                            )
+                            .into_any_element()
+                    } else {
+                        indicator.into_any_element()
+                    }
+                });
+
                 div()
                     .id(item.id.clone())
+                    .relative()
                     .flex_shrink_0()
                     .px(px(4.))
                     .py(px(6.))
                     .border_b_2()
-                    .border_color(if active {
-                        colors.accent
-                    } else {
-                        hsla(0., 0., 0., 0.)
-                    })
+                    .border_color(hsla(0., 0., 0., 0.))
                     .cursor_pointer()
                     .child(
                         content.child(
@@ -115,18 +183,33 @@ impl RenderOnce for UnderlineTabs {
                                 .child(label),
                         ),
                     )
+                    .when_some(underline, |tab, underline| tab.child(underline))
                     .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
                         (on_select)(window, cx);
                     })
             }))
+            .into_any_element()
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 struct AnimatedTabsState {
-    previous_index: usize,
+    from_slot: f32,
     active_index: usize,
     started_at: Option<Instant>,
+    sequence: u64,
+}
+
+fn sample_animated_tab_slot(state: AnimatedTabsState, now: Instant) -> (f32, bool) {
+    let Some(started_at) = state.started_at else {
+        return (state.active_index as f32, false);
+    };
+    let progress = raw_progress(now, started_at, ANIMATED_TAB_DURATION);
+    let eased = ease_out_cubic(progress);
+    (
+        state.from_slot + (state.active_index as f32 - state.from_slot) * eased,
+        progress < 1.0,
+    )
 }
 
 #[derive(IntoElement)]
@@ -207,57 +290,46 @@ impl RenderOnce for AnimatedSegmentTabs {
             ..colors.text_secondary
         };
 
+        let reduced_motion = crate::core::ui_prefs::reduced_motion();
         let state = window.use_keyed_state(self.id.clone(), cx, |_, _| AnimatedTabsState {
-            previous_index: selected_index,
+            from_slot: selected_index as f32,
             active_index: selected_index,
             started_at: None,
+            sequence: 0,
         });
 
-        if state.read(cx).active_index != selected_index {
+        let mut snapshot = *state.read(cx);
+        if snapshot.active_index != selected_index {
+            let (current_slot, _) = sample_animated_tab_slot(snapshot, now);
             state.update(cx, |tab_state, _| {
-                tab_state.previous_index = tab_state.active_index;
+                tab_state.from_slot = if reduced_motion {
+                    selected_index as f32
+                } else {
+                    current_slot
+                };
                 tab_state.active_index = selected_index;
-                tab_state.started_at = Some(now);
+                tab_state.started_at = (!reduced_motion).then_some(now);
+                tab_state.sequence = tab_state.sequence.wrapping_add(1);
             });
+            snapshot = *state.read(cx);
         }
 
-        let mut snapshot = *state.read(cx);
-        // Fixed-width segment tabs can lay the indicator out directly at its destination and hand
-        // only the visual offset to Nova. The transition then owns its own renderer frame cadence;
-        // the labels, icons, track and parent flex tree do not become a 60/120 Hz layout target.
-        // Keep the caller-sampled path only for the percentage-width fallback, whose absolute pixel
-        // travel is not known until layout has resolved the parent width.
+        let (_, animating) = sample_animated_tab_slot(snapshot, now);
+        if snapshot.started_at.is_some() && !animating {
+            state.update(cx, |tab_state, _| {
+                tab_state.from_slot = tab_state.active_index as f32;
+                tab_state.started_at = None;
+            });
+            snapshot = *state.read(cx);
+        }
+
+        // Fixed-width tabs still hand translation to Nova. On interruption, sample the old
+        // in-flight curve first so the new animation starts at the currently visible position.
         let (indicator_slot, layout_indicator_animating) = if item_width.is_some() {
-            if snapshot
-                .started_at
-                .is_some_and(|started_at| raw_progress(now, started_at, ANIMATED_TAB_DURATION) >= 1.0)
-            {
-                state.update(cx, |tab_state, _| {
-                    tab_state.previous_index = tab_state.active_index;
-                    tab_state.started_at = None;
-                });
-                snapshot = *state.read(cx);
-            }
             (snapshot.active_index as f32, false)
-        } else if let Some(started_at) = snapshot.started_at {
-            let progress = raw_progress(now, started_at, ANIMATED_TAB_DURATION);
-            let eased = ease_out_cubic(progress);
-            let animating = progress < 1.0;
-
-            if !animating {
-                state.update(cx, |tab_state, _| {
-                    tab_state.previous_index = tab_state.active_index;
-                    tab_state.started_at = None;
-                });
-            }
-
-            (
-                snapshot.previous_index as f32
-                    + (snapshot.active_index as f32 - snapshot.previous_index as f32) * eased,
-                animating,
-            )
         } else {
-            (snapshot.active_index as f32, false)
+            let (slot, animating) = sample_animated_tab_slot(snapshot, now);
+            (slot, animating && !reduced_motion)
         };
 
         let indicator = if let Some(item_width) = item_width {
@@ -284,14 +356,14 @@ impl RenderOnce for AnimatedSegmentTabs {
                     }])
                 });
 
-            if snapshot.previous_index != snapshot.active_index && snapshot.started_at.is_some() {
-                let from_x = item_width_px
-                    * (snapshot.previous_index as f32 - snapshot.active_index as f32);
+            if snapshot.started_at.is_some() && !reduced_motion {
+                let from_x =
+                    item_width_px * (snapshot.from_slot - snapshot.active_index as f32);
                 indicator
                     .with_animation(
                         SharedString::from(format!(
-                            "{}-indicator-{}-{}",
-                            self.id, snapshot.previous_index, snapshot.active_index
+                            "{}-indicator-{}",
+                            self.id, snapshot.sequence
                         )),
                         ease_out_cubic_motion(ANIMATED_TAB_DURATION).with_property(
                             AnimationProperty::translation(

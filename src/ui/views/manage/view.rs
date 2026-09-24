@@ -906,7 +906,7 @@ impl ManagePageView {
                                 } else {
                                     match state.tab {
                                         ManageTab::Statistics => {
-                                            render_statistics_tab(colors, version, cx)
+                                            render_statistics_tab(colors, version, state, cx)
                                         }
                                         ManageTab::Mod
                                         | ManageTab::ResourcePack
@@ -916,6 +916,7 @@ impl ManagePageView {
                                             state,
                                             filtered_assets,
                                             &self.asset_scroll_handle,
+                                            window,
                                             cx,
                                         ),
                                         ManageTab::SkinPack => render_skin_pack_management(
@@ -934,6 +935,7 @@ impl ManagePageView {
                                             state,
                                             filtered_screenshots,
                                             &self.screenshot_scroll_handle,
+                                            window,
                                             cx,
                                         ),
                                         ManageTab::Server => render_server_list(
@@ -942,6 +944,7 @@ impl ManagePageView {
                                             state,
                                             filtered_servers,
                                             &self.server_scroll_handle,
+                                            window,
                                             cx,
                                         ),
                                     }

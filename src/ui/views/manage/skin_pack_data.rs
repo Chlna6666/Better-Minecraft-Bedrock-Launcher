@@ -6,7 +6,7 @@ pub(super) fn render_skin_pack_management(
     state: &ManagePageState,
     filtered_asset_indices: &[usize],
     asset_scroll_handle: &ScrollHandle,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     div()
@@ -20,6 +20,7 @@ pub(super) fn render_skin_pack_management(
             state,
             filtered_asset_indices,
             asset_scroll_handle,
+            window,
             cx,
         )))
         .into_any_element()

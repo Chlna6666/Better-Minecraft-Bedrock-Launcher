@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::animation::{tab_list_item_motion, tab_list_stagger_active};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ServerListSignature {
@@ -320,6 +321,7 @@ pub(super) fn render_server_list(
     state: &ManagePageState,
     filtered_indices: &[usize],
     scroll_handle: &ScrollHandle,
+    window: &mut Window,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     if state.gdk_users_loading && state.gdk_users.is_empty() && version.is_gdk() {
@@ -376,6 +378,12 @@ pub(super) fn render_server_list(
         MANAGE_ASSET_HEAVY_BUDGET,
     );
 
+    let animate_rows = state.tab_anim_from != state.tab
+        && !crate::core::ui_prefs::reduced_motion()
+        && tab_list_stagger_active(window, cx, "manage-server-list-stagger", state.tab_anim_seq);
+    let animation_from = state.tab_anim_from.index();
+    let animation_to = state.tab.index();
+
     let mut rows = div().w_full().flex().flex_col().min_w(px(0.));
     if virtual_list_plan.render_slice.top_spacer > px(0.) {
         rows = rows.child(div().h(virtual_list_plan.render_slice.top_spacer));
@@ -394,14 +402,28 @@ pub(super) fn render_server_list(
             continue;
         };
         let motd_status = state.server_motd.get(&entry.key);
-        rows = rows.child(
-            div()
+        let animate_row =
+            animate_rows && virtual_list_plan.visible_slice.contains(virtual_index);
+        let visible_index =
+            virtual_index.saturating_sub(virtual_list_plan.visible_slice.start_index);
+        let row = div()
                 .w_full()
                 .h(px(MANAGE_ASSET_ROW_PITCH_PX))
                 .pb(px(MANAGE_ASSET_ROW_GAP_PX))
                 .flex_none()
-                .child(render_server_row(colors, entry, motd_status, cx)),
-        );
+                .child(render_server_row(colors, entry, motd_status, cx));
+        let row = if animate_row {
+            row.composite_layer()
+                .with_animation(
+                    SharedString::from(format!("manage-server-row-enter-{}-{}", state.tab_anim_seq, entry.key.as_ref())),
+                    tab_list_item_motion(animation_from, animation_to, visible_index),
+                    |row, _progress| row,
+                )
+                .into_any_element()
+        } else {
+            row.into_any_element()
+        };
+        rows = rows.child(row);
     }
 
     if virtual_list_plan.render_slice.bottom_spacer > px(0.) {

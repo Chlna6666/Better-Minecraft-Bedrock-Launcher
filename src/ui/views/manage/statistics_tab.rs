@@ -1,26 +1,192 @@
 use super::*;
+use crate::ui::animation::{ease_out_cubic, raw_progress, stat_chart_bar_motion};
 use chrono::{Days, Utc};
+use std::time::{Duration, Instant};
+
+const STAT_NUMBER_DURATION: Duration = Duration::from_millis(420);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatMetricKind {
+    Duration,
+    Count,
+}
+
+struct AnimatedStatMetricView {
+    sequence: u64,
+    from: f64,
+    to: f64,
+    started_at: Instant,
+    kind: StatMetricKind,
+    colors: ThemeColors,
+    animate: bool,
+}
+
+impl AnimatedStatMetricView {
+    fn new(
+        sequence: u64,
+        target: u64,
+        kind: StatMetricKind,
+        colors: ThemeColors,
+        animate: bool,
+        now: Instant,
+    ) -> Self {
+        let target = target as f64;
+        Self {
+            sequence,
+            from: if animate { 0.0 } else { target },
+            to: target,
+            started_at: now,
+            kind,
+            colors,
+            animate,
+        }
+    }
+
+    fn sample(&self, now: Instant) -> (f64, bool) {
+        if !self.animate {
+            return (self.to, false);
+        }
+
+        let progress = raw_progress(now, self.started_at, STAT_NUMBER_DURATION);
+        let eased = f64::from(ease_out_cubic(progress));
+        (
+            self.from + (self.to - self.from) * eased,
+            progress < 1.0,
+        )
+    }
+
+    fn sync(
+        &mut self,
+        sequence: u64,
+        target: u64,
+        kind: StatMetricKind,
+        colors: ThemeColors,
+        animate: bool,
+        now: Instant,
+        cx: &mut Context<Self>,
+    ) {
+        let target = target as f64;
+        let sequence_changed = self.sequence != sequence;
+        let target_changed = (self.to - target).abs() > f64::EPSILON;
+        let motion_changed =
+            sequence_changed || target_changed || self.kind != kind || self.animate != animate;
+        let colors_changed = self.colors != colors;
+
+        if motion_changed {
+            let current = self.sample(now).0;
+            self.from = if !animate {
+                target
+            } else if sequence_changed {
+                0.0
+            } else {
+                current
+            };
+            self.to = target;
+            self.sequence = sequence;
+            self.kind = kind;
+            self.animate = animate;
+            self.started_at = now;
+        }
+        if colors_changed {
+            self.colors = colors;
+        }
+        if motion_changed || colors_changed {
+            cx.notify();
+        }
+    }
+}
+
+impl Render for AnimatedStatMetricView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (sample, animating) = self.sample(window.animation_time());
+        let value = sample.max(0.0).round() as u64;
+        let i18n = cx.global::<I18n>();
+        let text = match self.kind {
+            StatMetricKind::Duration => format_duration(i18n, value),
+            StatMetricKind::Count => t!("ManagePage.stats_count", count = value),
+        };
+
+        div()
+            .w_full()
+            .text_size(px(20.))
+            .font_weight(FontWeight::BOLD)
+            .text_color(self.colors.text_primary)
+            .child(text)
+            .with_layout_animation_target(animating)
+    }
+}
+
+#[derive(IntoElement)]
+struct AnimatedStatValue {
+    id: SharedString,
+    sequence: u64,
+    target: u64,
+    kind: StatMetricKind,
+    colors: ThemeColors,
+    animate: bool,
+}
+
+impl AnimatedStatValue {
+    fn new(
+        id: impl Into<SharedString>,
+        sequence: u64,
+        target: u64,
+        kind: StatMetricKind,
+        colors: &ThemeColors,
+        animate: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            sequence,
+            target,
+            kind,
+            colors: *colors,
+            animate,
+        }
+    }
+}
+
+impl RenderOnce for AnimatedStatValue {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let now = window.animation_time();
+        let sequence = self.sequence;
+        let target = self.target;
+        let kind = self.kind;
+        let colors = self.colors;
+        let animate = self.animate;
+        let metric = window.use_keyed_state(self.id, cx, move |_, _| {
+            AnimatedStatMetricView::new(sequence, target, kind, colors, animate, now)
+        });
+        metric.update(cx, |metric, cx| {
+            metric.sync(sequence, target, kind, colors, animate, now, cx);
+        });
+
+        div().w_full().child(metric)
+    }
+}
 
 pub(super) fn render_statistics_tab(
     colors: &ThemeColors,
     version: &ManagedVersionEntry,
+    state: &ManagePageState,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let i18n = cx.global::<I18n>();
     let info = &version.game_info;
     let days = recent_days(info, 14);
-    let max_sessions = days
-        .iter()
-        .map(|day| day.sessions)
-        .max()
-        .unwrap_or(0)
-        .max(1);
-    let max_play_time = days
-        .iter()
-        .map(|day| day.play_time)
-        .max()
-        .unwrap_or(0)
-        .max(1);
+    let max_sessions = days.iter().map(|day| day.sessions).max().unwrap_or(0).max(1);
+    let max_play_time = days.iter().map(|day| day.play_time).max().unwrap_or(0).max(1);
+    let animate = state.tab_anim_seq != 0
+        && state.tab_anim_from != state.tab
+        && !crate::core::ui_prefs::reduced_motion();
+    let play_time_id = SharedString::from(format!(
+        "manage-stat-total-play-time-{}",
+        version.folder.as_ref()
+    ));
+    let launch_count_id = SharedString::from(format!(
+        "manage-stat-launch-count-{}",
+        version.folder.as_ref()
+    ));
 
     div()
         .size_full()
@@ -37,19 +203,36 @@ pub(super) fn render_statistics_tab(
                 .child(stat_card(
                     colors,
                     t!("ManagePage.stats_total_play_time"),
-                    format_duration(i18n, info.total_play_time),
+                    AnimatedStatValue::new(
+                        play_time_id,
+                        state.tab_anim_seq,
+                        info.total_play_time,
+                        StatMetricKind::Duration,
+                        colors,
+                        animate,
+                    ),
                 ))
                 .child(stat_card(
                     colors,
                     t!("ManagePage.stats_launch_count"),
-                    t!("ManagePage.stats_count", count = info.total_sessions),
+                    AnimatedStatValue::new(
+                        launch_count_id,
+                        state.tab_anim_seq,
+                        info.total_sessions,
+                        StatMetricKind::Count,
+                        colors,
+                        animate,
+                    ),
                 ))
                 .child(stat_card(
                     colors,
                     t!("ManagePage.stats_last_launch"),
-                    info.last_play_time.map_or_else(
-                        || t!("ManagePage.stats_never_launched"),
-                        |time| SharedString::from(time.format("%Y-%m-%d %H:%M").to_string()),
+                    stat_text(
+                        colors,
+                        info.last_play_time.map_or_else(
+                            || t!("ManagePage.stats_never_launched"),
+                            |time| SharedString::from(time.format("%Y-%m-%d %H:%M").to_string()),
+                        ),
                     ),
                 )),
         )
@@ -57,6 +240,9 @@ pub(super) fn render_statistics_tab(
             colors,
             t!("ManagePage.stats_daily_launches"),
             t!("ManagePage.stats_last_14_days"),
+            "launches",
+            state.tab_anim_seq,
+            animate,
             &days,
             max_sessions,
             |day| day.sessions,
@@ -67,6 +253,9 @@ pub(super) fn render_statistics_tab(
             colors,
             t!("ManagePage.stats_daily_play_time"),
             t!("ManagePage.stats_last_14_days"),
+            "play-time",
+            state.tab_anim_seq,
+            animate,
             &days,
             max_play_time,
             |day| day.play_time,
@@ -99,7 +288,7 @@ fn recent_days(info: &crate::core::version::game_info::GameInfo, count: u64) -> 
         .collect()
 }
 
-fn stat_card(colors: &ThemeColors, label: SharedString, value: SharedString) -> Div {
+fn stat_card(colors: &ThemeColors, label: SharedString, value: impl IntoElement) -> Div {
     div()
         .min_h(px(86.))
         .p(px(14.))
@@ -119,19 +308,26 @@ fn stat_card(colors: &ThemeColors, label: SharedString, value: SharedString) -> 
                 .text_color(colors.text_secondary)
                 .child(label),
         )
-        .child(
-            div()
-                .text_size(px(20.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(colors.text_primary)
-                .child(value),
-        )
+        .child(value)
 }
 
+fn stat_text(colors: &ThemeColors, value: SharedString) -> Div {
+    div()
+        .w_full()
+        .text_size(px(20.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(colors.text_primary)
+        .child(value)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn chart_card(
     colors: &ThemeColors,
     title: SharedString,
     subtitle: SharedString,
+    animation_scope: &'static str,
+    animation_sequence: u64,
+    animate: bool,
     days: &[DailyPoint],
     maximum: u64,
     value: impl Fn(&DailyPoint) -> u64,
@@ -175,13 +371,33 @@ fn chart_card(
                 .flex()
                 .items_end()
                 .gap(px(6.))
-                .children(days.iter().map(|day| {
+                .children(days.iter().enumerate().map(|(index, day)| {
                     let current = value(day);
                     let height = if current == 0 {
                         2.0
                     } else {
                         10.0 + 130.0 * current as f32 / maximum as f32
                     };
+                    let bar = div()
+                        .w_full()
+                        .max_w(px(30.))
+                        .h(px(height))
+                        .rounded_t(px(5.))
+                        .bg(Hsla { a: 0.72, ..color });
+                    let bar = if animate {
+                        bar.composite_layer()
+                            .with_animation(
+                                SharedString::from(format!(
+                                    "manage-stat-{animation_scope}-{animation_sequence}-{index}"
+                                )),
+                                stat_chart_bar_motion(index),
+                                |bar, _progress| bar,
+                            )
+                            .into_any_element()
+                    } else {
+                        bar.into_any_element()
+                    };
+
                     div()
                         .flex_1()
                         .h_full()
@@ -196,14 +412,7 @@ fn chart_card(
                                 .text_color(colors.text_secondary)
                                 .child(value_label(current)),
                         )
-                        .child(
-                            div()
-                                .w_full()
-                                .max_w(px(30.))
-                                .h(px(height))
-                                .rounded_t(px(5.))
-                                .bg(Hsla { a: 0.72, ..color }),
-                        )
+                        .child(bar)
                         .child(
                             div()
                                 .text_size(px(9.))

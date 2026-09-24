@@ -160,6 +160,7 @@ pub(super) fn render_tab_bar(
     let _i18n = cx.global::<I18n>().clone();
 
     UnderlineTabs::new(
+        "manage-primary-tabs",
         colors,
         vec![
             TabItem::new(

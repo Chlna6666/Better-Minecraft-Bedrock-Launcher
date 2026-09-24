@@ -1,6 +1,7 @@
 use gpui::{
-    Animation, AnimationDriver, AnimationProperty, AnimationSpec, Easing, RepeatMode, SharedString,
-    Spring, SpringPhysics, Window, point, px,
+    Animation, AnimationDriver, AnimationProperty, AnimationSpec, App, Easing, FillMode,
+    HorizontalRevealEdge, RepeatMode, SharedString, Spring, SpringPhysics, VerticalRevealEdge,
+    Window, point, px,
 };
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,108 @@ pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
         point(px(16.0 * direction), px(0.0)),
         point(px(0.0), px(0.0)),
         0.90,
+        1.0,
+    ))
+}
+
+const TAB_LIST_ITEM_STAGGER_MS: u64 = 20;
+const TAB_LIST_ITEM_MAX_STAGGER_SLOT: usize = 8;
+const TAB_LIST_STAGGER_WINDOW: Duration = Duration::from_millis(460);
+
+#[derive(Clone, Copy, Debug)]
+struct TabListStaggerState {
+    sequence: u64,
+    started_at: Instant,
+}
+
+/// Keep a tab-entry stagger alive only long enough for its renderer-owned row animations.
+///
+/// The keyed owner survives row virtualization, so scrolling later does not restart the entrance
+/// animation with the direction of an old tab switch.
+pub fn tab_list_stagger_active(
+    window: &mut Window,
+    cx: &mut App,
+    id: &'static str,
+    sequence: u64,
+) -> bool {
+    if sequence == 0 {
+        return false;
+    }
+
+    let now = window.animation_time();
+    let state = window.use_keyed_state(id, cx, |_, _| TabListStaggerState {
+        sequence,
+        started_at: now,
+    });
+    let mut snapshot = *state.read(cx);
+    if snapshot.sequence != sequence {
+        state.update(cx, |state, _| {
+            state.sequence = sequence;
+            state.started_at = now;
+        });
+        snapshot = *state.read(cx);
+    }
+
+    now.saturating_duration_since(snapshot.started_at) <= TAB_LIST_STAGGER_WINDOW
+}
+
+/// Direction-aware row entrance used by management lists.
+///
+/// The row keeps its final layout and Nova only applies translation + opacity. Delays are capped
+/// so a long or virtualized list never turns into a long animation queue.
+pub fn tab_list_item_motion(
+    from_index: usize,
+    to_index: usize,
+    visible_index: usize,
+) -> Animation {
+    let direction = if to_index >= from_index { 1.0 } else { -1.0 };
+    let delay = Duration::from_millis(
+        visible_index.min(TAB_LIST_ITEM_MAX_STAGGER_SLOT) as u64 * TAB_LIST_ITEM_STAGGER_MS,
+    );
+
+    Animation::from_spec(
+        AnimationSpec::new(Duration::from_millis(220))
+            .delay(delay)
+            .fill_mode(FillMode::Both)
+            .ease(Easing::OutCubic),
+    )
+    .with_property(AnimationProperty::translation_opacity(
+        point(px(10.0 * direction), px(0.0)),
+        point(px(0.0), px(0.0)),
+        0.0,
+        1.0,
+    ))
+}
+
+/// Direction-aware underline reveal for variable-width primary tabs.
+pub fn tab_underline_motion(from_index: usize, to_index: usize) -> Animation {
+    let edge = if to_index >= from_index {
+        HorizontalRevealEdge::Left
+    } else {
+        HorizontalRevealEdge::Right
+    };
+
+    Animation::from_spec(
+        AnimationSpec::new(Duration::from_millis(180))
+            .fill_mode(FillMode::Both)
+            .ease(Easing::OutCubic),
+    )
+    .with_property(AnimationProperty::horizontal_reveal(edge, 0.0, 1.0))
+}
+
+/// Staggered bottom-up reveal for statistics bars without animating bar height/layout.
+pub fn stat_chart_bar_motion(index: usize) -> Animation {
+    let delay = Duration::from_millis(index.min(13) as u64 * 18);
+
+    Animation::from_spec(
+        AnimationSpec::new(Duration::from_millis(320))
+            .delay(delay)
+            .fill_mode(FillMode::Both)
+            .ease(Easing::OutCubic),
+    )
+    .with_property(AnimationProperty::vertical_reveal(
+        VerticalRevealEdge::Bottom,
+        0.0,
         1.0,
     ))
 }
