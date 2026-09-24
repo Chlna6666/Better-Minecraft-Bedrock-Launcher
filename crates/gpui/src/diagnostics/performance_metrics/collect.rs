@@ -1,6 +1,6 @@
 use crate::RendererBackend;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::animation::animation_metrics_snapshot;
 use super::store::shared_metrics;
@@ -155,6 +155,16 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         .map(|value| value.clone())
         .unwrap_or_default();
     let window_metrics = super::window::window_metrics_snapshot();
+    let present_fps = shared_metrics()
+        .last_present_at
+        .lock()
+        .ok()
+        .and_then(|last_present_at| *last_present_at)
+        .filter(|last_present_at| {
+            Instant::now().saturating_duration_since(*last_present_at) <= Duration::from_secs(1)
+        })
+        .map(|_| shared_metrics().present_fps_milli.load(Ordering::Relaxed) as f32 / 1000.0)
+        .unwrap_or(0.0);
 
     PerformanceMetricsSnapshot {
         renderer_backend,
@@ -162,7 +172,7 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         image_cache_bytes,
         atlas_textures: shared_metrics().atlas_textures.load(Ordering::Relaxed) as usize,
         last_draw_time: (last_draw_micros > 0).then(|| Duration::from_micros(last_draw_micros)),
-        present_fps: shared_metrics().present_fps_milli.load(Ordering::Relaxed) as f32 / 1000.0,
+        present_fps,
         atlas_upload_bytes: shared_metrics().atlas_upload_bytes.load(Ordering::Relaxed) as usize,
         atlas_upload_tiles: shared_metrics().atlas_upload_tiles.load(Ordering::Relaxed) as usize,
         prepared_command_count: shared_metrics()
