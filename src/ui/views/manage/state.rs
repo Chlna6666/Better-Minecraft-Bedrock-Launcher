@@ -47,7 +47,7 @@ impl ManagePackSubtype {
 }
 
 const TAB_ANIMATION_WINDOW: Duration = Duration::from_millis(800);
-const PACK_SUBTYPE_ANIMATION_WINDOW: Duration = Duration::from_millis(520);
+const PACK_SUBTYPE_ANIMATION_WINDOW: Duration = Duration::from_millis(800);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManageAssetSortKey {

@@ -25,8 +25,21 @@ pub(super) fn sample_element_animation(
         };
         let elapsed = now.saturating_duration_since(timeline.started_at);
         if let Some(spring) = animation.spring {
-            let sample = spring.sample_with_velocity(elapsed.as_secs_f32(), 0.0);
             let index = timeline.animation_index;
+            if elapsed < animation.spec.delay {
+                return (
+                    index,
+                    animation
+                        .spec
+                        .fill_mode
+                        .fills_backwards()
+                        .then_some(0.0),
+                    false,
+                );
+            }
+
+            let active_elapsed = elapsed.saturating_sub(animation.spec.delay);
+            let sample = spring.sample_with_velocity(active_elapsed.as_secs_f32(), 0.0);
             let repeats = matches!(animation.spec.repeat, RepeatMode::Forever);
             if sample.done && !repeats && index + 1 < animations.len() {
                 timeline.animation_index += 1;
@@ -37,9 +50,11 @@ pub(super) fn sample_element_animation(
                 timeline.started_at = now;
                 return (index, Some(1.0), false);
             }
+
+            let applies = !sample.done || animation.spec.fill_mode.fills_forwards();
             return (
                 index,
-                Some(if sample.done { 1.0 } else { sample.progress }),
+                applies.then_some(if sample.done { 1.0 } else { sample.progress }),
                 sample.done,
             );
         }
@@ -102,6 +117,42 @@ mod tests {
         );
         assert!(
             sample_element_animation(&mut timeline, &animations, start + Duration::from_secs(30)).2
+        );
+    }
+
+    #[test]
+    fn physical_spring_respects_delay_and_backwards_fill() {
+        let start = Instant::now();
+        let spring = crate::Spring::default();
+        let animations = [Animation::spring(spring)
+            .delay(Duration::from_millis(60))
+            .fill_mode(crate::FillMode::Both)];
+        let mut timeline = ElementAnimationTimeline::new(start);
+
+        assert_eq!(
+            sample_element_animation(
+                &mut timeline,
+                &animations,
+                start + Duration::from_millis(30)
+            ),
+            (0, Some(0.0), false)
+        );
+
+        let active_elapsed = Duration::from_millis(90);
+        let expected = spring.sample_with_velocity(active_elapsed.as_secs_f32(), 0.0);
+        let (_, progress, done) = sample_element_animation(
+            &mut timeline,
+            &animations,
+            start + Duration::from_millis(150),
+        );
+        assert_eq!(done, expected.done);
+        assert_eq!(
+            progress,
+            Some(if expected.done {
+                1.0
+            } else {
+                expected.progress
+            })
         );
     }
 

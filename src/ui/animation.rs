@@ -41,14 +41,23 @@ pub fn spring_bouncy() -> Spring {
     apple_spring(0.42, 0.62)
 }
 
+const TAB_TRANSITION_RESPONSE: f32 = 0.34;
+const TAB_TRANSITION_DAMPING: f32 = 0.92;
+const TAB_LIST_ITEM_MAX_STAGGER_SLOT: usize = 8;
+const TAB_LIST_ITEM_MAX_STAGGER_MS: u64 = 120;
+const TAB_LIST_STAGGER_WINDOW: Duration = Duration::from_millis(800);
+
+fn tab_transition_spring() -> Spring {
+    apple_spring(TAB_TRANSITION_RESPONSE, TAB_TRANSITION_DAMPING)
+}
+
 /// Shared renderer-owned transition for tab/subpage content.
 ///
-/// Callers keep their subtree at final geometry and only provide the previous/current logical
-/// indices. Nova owns translation + opacity sampling, so virtual lists, text and images are not
-/// relaid out on every animation frame.
+/// Main content and visible list rows intentionally use the same physical spring so their velocity
+/// profile stays coherent. Rows add only a short nonlinear start delay.
 pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
     let direction = if to_index >= from_index { 1.0 } else { -1.0 };
-    spring_motion(spring_snappy()).with_property(AnimationProperty::translation_opacity(
+    spring_motion(tab_transition_spring()).with_property(AnimationProperty::translation_opacity(
         point(px(16.0 * direction), px(0.0)),
         point(px(0.0), px(0.0)),
         0.90,
@@ -56,9 +65,18 @@ pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
     ))
 }
 
-const TAB_LIST_ITEM_STAGGER_MS: u64 = 20;
-const TAB_LIST_ITEM_MAX_STAGGER_SLOT: usize = 8;
-const TAB_LIST_STAGGER_WINDOW: Duration = Duration::from_millis(460);
+fn tab_list_item_delay(visible_index: usize) -> Duration {
+    let slot = visible_index.min(TAB_LIST_ITEM_MAX_STAGGER_SLOT);
+    if slot == 0 {
+        return Duration::ZERO;
+    }
+
+    let t = slot as f32 / TAB_LIST_ITEM_MAX_STAGGER_SLOT as f32;
+    // Concave ease-out spacing: 0, 28, 52, 73, 90, 103, 112, 118, 120 ms.
+    // Early rows are clearly separated while later rows converge instead of forming a long queue.
+    let curved = 1.0 - (1.0 - t).powi(2);
+    Duration::from_millis((TAB_LIST_ITEM_MAX_STAGGER_MS as f32 * curved).round() as u64)
+}
 
 #[derive(Clone, Copy, Debug)]
 struct TabListStaggerState {
@@ -107,22 +125,16 @@ pub fn tab_list_item_motion(
     visible_index: usize,
 ) -> Animation {
     let direction = if to_index >= from_index { 1.0 } else { -1.0 };
-    let delay = Duration::from_millis(
-        visible_index.min(TAB_LIST_ITEM_MAX_STAGGER_SLOT) as u64 * TAB_LIST_ITEM_STAGGER_MS,
-    );
 
-    Animation::from_spec(
-        AnimationSpec::new(Duration::from_millis(220))
-            .delay(delay)
-            .fill_mode(FillMode::Both)
-            .ease(Easing::OutCubic),
-    )
-    .with_property(AnimationProperty::translation_opacity(
-        point(px(10.0 * direction), px(0.0)),
-        point(px(0.0), px(0.0)),
-        0.0,
-        1.0,
-    ))
+    spring_motion(tab_transition_spring())
+        .delay(tab_list_item_delay(visible_index))
+        .fill_mode(FillMode::Both)
+        .with_property(AnimationProperty::translation_opacity(
+            point(px(10.0 * direction), px(0.0)),
+            point(px(0.0), px(0.0)),
+            0.0,
+            1.0,
+        ))
 }
 
 /// Direction-aware underline reveal for variable-width primary tabs.
@@ -412,6 +424,38 @@ fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_list_stagger_front_loads_spacing_then_converges() {
+        let delays = (0..=TAB_LIST_ITEM_MAX_STAGGER_SLOT)
+            .map(|index| tab_list_item_delay(index).as_millis() as u64)
+            .collect::<Vec<_>>();
+        assert_eq!(delays, vec![0, 28, 52, 73, 90, 103, 112, 118, 120]);
+
+        let gaps = delays
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect::<Vec<_>>();
+        assert!(
+            gaps.windows(2).all(|pair| pair[0] > pair[1]),
+            "stagger gaps should shrink monotonically: {gaps:?}"
+        );
+        assert_eq!(
+            tab_list_item_delay(TAB_LIST_ITEM_MAX_STAGGER_SLOT + 20),
+            Duration::from_millis(TAB_LIST_ITEM_MAX_STAGGER_MS)
+        );
+    }
+
+    #[test]
+    fn tab_list_stagger_window_outlives_the_last_delayed_spring() {
+        let latest_delay = tab_list_item_delay(TAB_LIST_ITEM_MAX_STAGGER_SLOT);
+        let remaining = TAB_LIST_STAGGER_WINDOW.saturating_sub(latest_delay);
+        let sample = tab_transition_spring().sample_with_velocity(remaining.as_secs_f32(), 0.0);
+        assert!(
+            sample.done,
+            "stagger owner must remain active until the last row spring settles"
+        );
+    }
 
     #[test]
     fn eased_progress_applies_default_easing() {

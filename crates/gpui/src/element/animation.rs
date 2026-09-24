@@ -439,6 +439,21 @@ impl Animation {
         }
     }
 
+    /// Delay the start of this animation.
+    ///
+    /// This applies to both duration-based animations and physical springs. Use a backwards fill
+    /// mode when the animated property must remain at its declared start value during the delay.
+    pub fn delay(mut self, delay: Duration) -> Self {
+        self.spec.delay = delay;
+        self
+    }
+
+    /// Set how the animation behaves before its delay and after completion.
+    pub fn fill_mode(mut self, fill_mode: crate::FillMode) -> Self {
+        self.spec.fill_mode = fill_mode;
+        self
+    }
+
     /// Set the animation to loop when it finishes.
     pub fn repeat(mut self) -> Self {
         self.spec.repeat = RepeatMode::Forever;

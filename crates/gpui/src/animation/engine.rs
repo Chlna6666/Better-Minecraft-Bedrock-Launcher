@@ -37,12 +37,22 @@ impl AnimationTimeline {
     fn sample(&self, now: Instant) -> TimelineSample {
         let elapsed = now.saturating_duration_since(self.started_at);
         if let Some(spring) = self.spring {
-            let sample = spring.sample_with_velocity(elapsed.as_secs_f32(), 0.0);
+            if elapsed < self.spec.delay {
+                return TimelineSample {
+                    raw_progress: 0.0,
+                    eased_progress: 0.0,
+                    done: false,
+                    applies: self.spec.fill_mode.fills_backwards(),
+                };
+            }
+
+            let active_elapsed = elapsed.saturating_sub(self.spec.delay);
+            let sample = spring.sample_with_velocity(active_elapsed.as_secs_f32(), 0.0);
             return TimelineSample {
                 raw_progress: sample.progress,
                 eased_progress: if sample.done { 1.0 } else { sample.progress },
                 done: sample.done,
-                applies: true,
+                applies: !sample.done || self.spec.fill_mode.fills_forwards(),
             };
         }
         self.spec.sample_elapsed(elapsed)

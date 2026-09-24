@@ -599,6 +599,46 @@ mod tests {
     }
 
     #[test]
+    fn engine_spring_respects_delay_and_fill_mode() {
+        let now = Instant::now();
+        let spring = Spring::default();
+        let element = test_global_element_id("delayed-spring");
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element,
+            TransitionProperty::Translation,
+            AnimationSpec::new(Duration::ZERO)
+                .delay(Duration::from_millis(60))
+                .fill_mode(FillMode::Both)
+                .driver(AnimationDriver::Paint),
+            now,
+        );
+        engine.set_transition_spring(&element, TransitionProperty::Translation, spring);
+
+        let delayed = engine
+            .sample_transition(
+                &element,
+                TransitionProperty::Translation,
+                now + Duration::from_millis(30),
+            )
+            .expect("delayed spring timeline should exist");
+        assert!(delayed.applies);
+        assert_eq!(delayed.raw_progress, 0.0);
+        assert!(!delayed.done);
+
+        let expected = spring.sample_with_velocity(0.09, 0.0);
+        let active = engine
+            .sample_transition(
+                &element,
+                TransitionProperty::Translation,
+                now + Duration::from_millis(150),
+            )
+            .expect("active spring timeline should exist");
+        assert!((active.raw_progress - expected.progress).abs() < 0.0001);
+        assert_eq!(active.done, expected.done);
+    }
+
+    #[test]
     fn completed_scene_animation_holds_its_endpoint_without_scheduling_more_frames() {
         let now = Instant::now();
         let element = test_global_element_id("retained-endpoint");
