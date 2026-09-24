@@ -255,7 +255,11 @@ impl RenderOnce for UnderlineTabs {
                 .border_color(hsla(0., 0., 0., 0.))
                 .cursor_pointer()
                 .when_some(item_width, |tab, width| {
-                    tab.w(width).px(px(2.)).justify_center()
+                    tab.w(width)
+                        .px(px(2.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                 })
                 .child(
                     content.child(
