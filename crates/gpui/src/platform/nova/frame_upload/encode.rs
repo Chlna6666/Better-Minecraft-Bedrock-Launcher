@@ -354,7 +354,7 @@ impl FrameUpload {
                                 self,
                                 &mut summary,
                                 quad.animation_id
-                                    .map(|_| crate::Primitive::Quad(*quad)),
+                                    .map(|_| crate::Primitive::Quad(quad)),
                                 AnimatedPrimitiveKind::Quad,
                                 primitive_index,
                             );

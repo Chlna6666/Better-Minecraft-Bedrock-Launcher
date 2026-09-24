@@ -241,7 +241,7 @@ impl App {
                     reset_present_timing_after_interruption();
                     let windows = cx.windows();
                     for handle in windows {
-                        let _ = handle.update(cx, |_, window, cx| {
+                        let _ = handle.update(&mut **cx, |_, window, cx| {
                             window.reset_dirty_to_present_timing(true);
                             window.refresh_visibility(cx);
                         });

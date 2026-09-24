@@ -1,7 +1,7 @@
 use crate::{
     AnyView, AnyWindowHandle, AppContext, AsyncApp, DispatchPhase, Effect, EntityId, EventEmitter,
     FocusHandle, FocusOutEvent, Focusable, Global, KeystrokeObserver, Reservation, SubscriberSet,
-    Subscription, Task, WeakEntity, WeakFocusHandle, Window, WindowHandle,
+    Subscription, Task, WeakEntity, WeakFocusHandle, Window, WindowHandle, WindowVisibility,
 };
 use anyhow::Result;
 use futures::{FutureExt, Stream, StreamExt};

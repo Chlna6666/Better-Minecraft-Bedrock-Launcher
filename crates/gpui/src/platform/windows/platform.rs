@@ -31,8 +31,7 @@ use windows::{
             Com::*,
             Ole::*,
             Power::{
-                PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, PowerClearRequest, PowerCreateRequest,
-                PowerRequestSystemRequired, PowerSetRequest,
+                PowerClearRequest, PowerCreateRequest, PowerRequestSystemRequired, PowerSetRequest,
             },
             ProcessStatus::K32EmptyWorkingSet,
             SystemInformation::*,

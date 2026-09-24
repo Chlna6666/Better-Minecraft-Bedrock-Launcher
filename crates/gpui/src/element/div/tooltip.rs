@@ -138,6 +138,7 @@ pub(crate) fn register_tooltip_mouse_handlers(
         let active_tooltip = active_tooltip.clone();
         let build_tooltip = build_tooltip.clone();
         let check_is_hovered = check_is_hovered.clone();
+        let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
         move |_: &MouseMoveEvent, phase, window, cx| {
             handle_tooltip_mouse_move(
                 &active_tooltip,

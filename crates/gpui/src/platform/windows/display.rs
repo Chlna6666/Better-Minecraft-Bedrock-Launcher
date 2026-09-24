@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the Windows display boundary queries Win32 monitor work areas"
+)]
+
 use uuid::Uuid;
 use windows::Win32::{
     Foundation::POINT,

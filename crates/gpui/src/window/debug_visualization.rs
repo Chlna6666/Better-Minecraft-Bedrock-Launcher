@@ -40,7 +40,7 @@ impl DebugFrameOverlayMode {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct DebugFrameTimeOverlay {
     samples: VecDeque<Duration>,
     total_frames: u64,

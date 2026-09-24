@@ -19,7 +19,7 @@ use crate::{
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine,
     Task, TextStyle, TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle,
-    WindowFrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem,
+    WindowFrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem, WindowVisibility,
     animation::{
         AnimationDriver, AnimationEngine, AnimationGroupId, AnimationGroupSample,
         AnimationParallel, AnimationSequence, AnimationStagger, merge_requested_drivers,
