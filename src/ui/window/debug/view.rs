@@ -220,9 +220,19 @@ impl DebugView {
 }
 
 fn record_debug_window_metrics(window: &Window) {
-    let width_px = window.bounds().size.width / px(1.);
-    let height_px = window.bounds().size.height / px(1.);
-    crate::ui::window::debug::state::record_debug_window_frame(width_px, height_px);
+    crate::ui::window::debug::state::record_debug_window_geometry(window);
+}
+
+fn window_size_summary(
+    logical_width: f32,
+    logical_height: f32,
+    physical_width: f32,
+    physical_height: f32,
+    scale_factor: f32,
+) -> SharedString {
+    SharedString::from(format!(
+        "{logical_width:.0} x {logical_height:.0} logical · {physical_width:.0} x {physical_height:.0} physical px · {scale_factor:.2}x"
+    ))
 }
 
 fn apply_log_tail_refresh(
@@ -338,19 +348,27 @@ fn bytes_to_human(bytes: u64) -> String {
     }
 }
 
-fn window_metrics_summary(
-    metrics: &[crate::ui::window::debug::state::DebugWindowMetrics],
-) -> String {
-    if metrics.is_empty() {
+fn window_metrics_summary(runtime: &DebugRuntimeSnapshot) -> String {
+    if runtime.gpui_window_metrics.is_empty() {
         return "No active window metrics".to_string();
     }
 
-    metrics
+    runtime
+        .gpui_window_metrics
         .iter()
         .map(|window| {
+            let role = if Some(window.window_id) == runtime.main_window_id {
+                "main"
+            } else if Some(window.window_id) == runtime.debug_window_id {
+                "debug"
+            } else {
+                "other"
+            };
             format!(
-                "#{} redraw={} draw={} present={} skip={} skipped={} reconfig={} errors={} layout={} upload={}",
+                "#{} ({}) fps={:.1} redraw={} draw={} present={} skip={} skipped={} reconfig={} errors={} layout={} upload={}",
                 window.window_id,
+                role,
+                window.present_fps_milli as f32 / 1000.0,
                 window.request_redraw_count,
                 window.draw_count,
                 window.present_count,
@@ -586,9 +604,7 @@ fn render_window_metrics_panel(
                 .line_height(px(17.))
                 .whitespace_normal()
                 .text_color(muted)
-                .child(SharedString::from(window_metrics_summary(
-                    &runtime.gpui_window_metrics,
-                ))),
+                .child(SharedString::from(window_metrics_summary(runtime))),
         ),
     )
 }
@@ -1265,20 +1281,36 @@ impl Render for DebugView {
                                     ))
                                     .child(line(
                                         copy.window,
-                                        SharedString::from(format!(
-                                            "{:.0} x {:.0} px",
+                                        window_size_summary(
                                             runtime.main_window_width_px,
-                                            runtime.main_window_height_px
-                                        )),
+                                            runtime.main_window_height_px,
+                                            runtime.main_window_physical_width_px,
+                                            runtime.main_window_physical_height_px,
+                                            runtime.main_window_scale_factor,
+                                        ),
                                         muted,
                                     ))
                                     .child(line(
                                         copy.debug_window,
-                                        SharedString::from(format!(
-                                            "{:.0} x {:.0} px",
+                                        window_size_summary(
                                             displayed_debug_window_width,
-                                            displayed_debug_window_height
-                                        )),
+                                            displayed_debug_window_height,
+                                            if runtime.debug_window_physical_width_px > 0.0 {
+                                                runtime.debug_window_physical_width_px
+                                            } else {
+                                                displayed_debug_window_width * window.scale_factor()
+                                            },
+                                            if runtime.debug_window_physical_height_px > 0.0 {
+                                                runtime.debug_window_physical_height_px
+                                            } else {
+                                                displayed_debug_window_height * window.scale_factor()
+                                            },
+                                            if runtime.debug_window_scale_factor > 0.0 {
+                                                runtime.debug_window_scale_factor
+                                            } else {
+                                                window.scale_factor()
+                                            },
+                                        ),
                                         muted,
                                     ))
                                     .child(line(
@@ -2030,11 +2062,13 @@ impl Render for DebugView {
                                     vec![
                                         (
                                             SharedString::from(copy.window),
-                                            SharedString::from(format!(
-                                                "{:.0} x {:.0} px",
+                                            window_size_summary(
                                                 runtime.main_window_width_px,
-                                                runtime.main_window_height_px
-                                            )),
+                                                runtime.main_window_height_px,
+                                                runtime.main_window_physical_width_px,
+                                                runtime.main_window_physical_height_px,
+                                                runtime.main_window_scale_factor,
+                                            ),
                                         ),
                                         (
                                             SharedString::from(copy.fps),
@@ -2086,11 +2120,15 @@ impl Render for DebugView {
                                             )),
                                         ),
                                         (
-                                            SharedString::from("Present FPS"),
+                                            SharedString::from("Main Present FPS"),
                                             SharedString::from(format!(
                                                 "{:.1}",
                                                 runtime.gpui_present_fps
                                             )),
+                                        ),
+                                        (
+                                            SharedString::from("Debug Present FPS"),
+                                            SharedString::from(format!("{:.1}", runtime.debug_fps)),
                                         ),
                                     ],
                                     muted,

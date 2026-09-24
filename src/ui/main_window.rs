@@ -1753,14 +1753,6 @@ impl Render for MainWindowView {
             cx.notify();
         }
 
-        if model.debug_enabled {
-            crate::ui::window::debug::state::record_main_window_frame(
-                model.now,
-                model.window_width_px,
-                model.window_height / px(1.),
-            );
-        }
-
         let page = self.render_active_page(&model.route, model.route_transition_direction);
         let (root, mut auth_blocked) = self.compose_root(&model, page, window, cx);
         let root = self

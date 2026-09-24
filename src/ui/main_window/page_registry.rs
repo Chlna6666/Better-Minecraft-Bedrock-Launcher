@@ -295,6 +295,9 @@ impl MainWindowView {
         self._window_subscriptions
             .push(cx.observe_window_bounds(window, |this, window, cx| {
                 this.maybe_trim_working_set_on_minimize(window, cx);
+                if cx.global::<DebugState>().enabled {
+                    crate::ui::window::debug::state::record_main_window_geometry(window);
+                }
             }));
         self._window_subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
@@ -304,6 +307,9 @@ impl MainWindowView {
                 }
             }));
         self.maybe_trim_working_set_on_minimize(window, cx);
+        if cx.global::<DebugState>().enabled {
+            crate::ui::window::debug::state::record_main_window_geometry(window);
+        }
     }
 
     pub(super) fn release_download_page(&mut self, cx: &mut Context<Self>) {

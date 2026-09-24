@@ -1,8 +1,8 @@
 use crate::plugins::runtime::PluginMemoryReport;
 use crate::utils::memory_diagnostics::BmcblMemorySnapshot;
-use gpui::{Global, GpuSpecs, SharedString, WindowMetricsSnapshot, performance_metrics_snapshot};
+use gpui::{Global, GpuSpecs, SharedString, Window, WindowMetricsSnapshot, performance_metrics_snapshot, px};
 use once_cell::sync::Lazy;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use sysinfo::{MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
@@ -24,11 +24,20 @@ pub struct DebugInspectorSnapshot {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DebugRuntimeSnapshot {
+    pub main_window_id: Option<u64>,
     pub main_window_width_px: f32,
     pub main_window_height_px: f32,
+    pub main_window_physical_width_px: f32,
+    pub main_window_physical_height_px: f32,
+    pub main_window_scale_factor: f32,
+    pub debug_window_id: Option<u64>,
     pub debug_window_width_px: f32,
     pub debug_window_height_px: f32,
+    pub debug_window_physical_width_px: f32,
+    pub debug_window_physical_height_px: f32,
+    pub debug_window_scale_factor: f32,
     pub main_fps: f32,
+    pub debug_fps: f32,
     pub main_frame_time_ms: f32,
     pub main_render_time_ms: f32,
     pub main_render_time_avg_ms: f32,
@@ -235,6 +244,7 @@ pub struct DebugRuntimeSnapshot {
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct DebugWindowMetrics {
     pub window_id: u64,
+    pub present_fps_milli: usize,
     pub request_redraw_count: usize,
     pub draw_count: usize,
     pub present_count: usize,
@@ -250,6 +260,7 @@ impl From<WindowMetricsSnapshot> for DebugWindowMetrics {
     fn from(metrics: WindowMetricsSnapshot) -> Self {
         Self {
             window_id: metrics.window_id,
+            present_fps_milli: 0,
             request_redraw_count: metrics.request_redraw_count,
             draw_count: metrics.draw_count,
             present_count: metrics.present_count,
@@ -266,10 +277,11 @@ impl From<WindowMetricsSnapshot> for DebugWindowMetrics {
 #[derive(Debug, Default)]
 struct RuntimeMetricsState {
     snapshot: DebugRuntimeSnapshot,
-    last_main_frame_at: Option<Instant>,
     main_window_first_render_finished: bool,
-    main_fps_ema: f32,
     render_time_ema: f32,
+    last_window_metrics_sample_at: Option<Instant>,
+    window_present_counts: HashMap<u64, usize>,
+    window_present_fps_milli: HashMap<u64, usize>,
 }
 
 #[derive(Debug)]
@@ -384,31 +396,20 @@ fn duration_to_ms(duration: Option<Duration>) -> f32 {
     duration.map_or(0.0, |duration| duration.as_secs_f32() * 1000.0)
 }
 
-pub fn record_main_window_frame(now: Instant, width_px: f32, height_px: f32) {
+pub fn record_main_window_geometry(window: &Window) {
+    let viewport = window.viewport_size();
+    let scale_factor = window.scale_factor().max(f32::EPSILON);
+    let width_px = viewport.width / px(1.0);
+    let height_px = viewport.height / px(1.0);
     let mut metrics = RUNTIME_METRICS
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    metrics.snapshot.main_window_id = Some(window.window_handle().window_id().as_u64());
     metrics.snapshot.main_window_width_px = width_px;
     metrics.snapshot.main_window_height_px = height_px;
-
-    if let Some(previous_frame) = metrics.last_main_frame_at.replace(now) {
-        let delta = now.saturating_duration_since(previous_frame);
-        if delta >= Duration::from_millis(1) && delta <= Duration::from_secs(1) {
-            let frame_time_ms = delta.as_secs_f32() * 1000.0;
-            metrics.snapshot.main_frame_time_ms = frame_time_ms;
-            let instant_fps = 1000.0 / frame_time_ms;
-            if metrics.main_fps_ema <= 0.0 {
-                metrics.main_fps_ema = instant_fps;
-            } else {
-                metrics.main_fps_ema = metrics.main_fps_ema * 0.9 + instant_fps * 0.1;
-            }
-            metrics.snapshot.main_fps = metrics.main_fps_ema;
-            RuntimeMetricsState::push_history(
-                &mut metrics.snapshot.frame_time_history_ms,
-                frame_time_ms,
-            );
-        }
-    }
+    metrics.snapshot.main_window_physical_width_px = width_px * scale_factor;
+    metrics.snapshot.main_window_physical_height_px = height_px * scale_factor;
+    metrics.snapshot.main_window_scale_factor = scale_factor;
 }
 
 pub fn record_main_window_render_finished(render_time: Duration) {
@@ -434,12 +435,20 @@ pub fn main_window_first_render_finished() -> bool {
     metrics.main_window_first_render_finished
 }
 
-pub fn record_debug_window_frame(width_px: f32, height_px: f32) {
+pub fn record_debug_window_geometry(window: &Window) {
+    let viewport = window.viewport_size();
+    let scale_factor = window.scale_factor().max(f32::EPSILON);
+    let width_px = viewport.width / px(1.0);
+    let height_px = viewport.height / px(1.0);
     let mut metrics = RUNTIME_METRICS
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    metrics.snapshot.debug_window_id = Some(window.window_handle().window_id().as_u64());
     metrics.snapshot.debug_window_width_px = width_px;
     metrics.snapshot.debug_window_height_px = height_px;
+    metrics.snapshot.debug_window_physical_width_px = width_px * scale_factor;
+    metrics.snapshot.debug_window_physical_height_px = height_px * scale_factor;
+    metrics.snapshot.debug_window_scale_factor = scale_factor;
 }
 
 pub fn record_debug_gpu_specs(gpu_specs: Option<GpuSpecs>) {
@@ -447,6 +456,77 @@ pub fn record_debug_gpu_specs(gpu_specs: Option<GpuSpecs>) {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     sampler.gpu_specs = gpu_specs;
+}
+
+fn sample_window_present_rates(
+    now: Instant,
+    window_metrics: &[WindowMetricsSnapshot],
+) -> HashMap<u64, usize> {
+    const MIN_SAMPLE: Duration = Duration::from_millis(100);
+    const MAX_SAMPLE: Duration = Duration::from_secs(5);
+
+    let mut metrics = RUNTIME_METRICS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let elapsed = metrics
+        .last_window_metrics_sample_at
+        .replace(now)
+        .map(|previous| now.saturating_duration_since(previous));
+
+    let valid_interval = elapsed.is_some_and(|elapsed| elapsed >= MIN_SAMPLE && elapsed <= MAX_SAMPLE);
+    if !valid_interval {
+        metrics.window_present_fps_milli.clear();
+    }
+
+    if let Some(elapsed) = elapsed.filter(|_| valid_interval) {
+        let elapsed_secs = elapsed.as_secs_f64();
+        for window in window_metrics {
+            let fps_milli = metrics
+                .window_present_counts
+                .get(&window.window_id)
+                .map(|previous| window.present_count.saturating_sub(*previous))
+                .map(|presented| ((presented as f64 / elapsed_secs) * 1000.0).round() as usize)
+                .unwrap_or(0);
+            metrics
+                .window_present_fps_milli
+                .insert(window.window_id, fps_milli);
+        }
+    }
+
+    metrics.window_present_counts.clear();
+    for window in window_metrics {
+        metrics
+            .window_present_counts
+            .insert(window.window_id, window.present_count);
+    }
+    metrics
+        .window_present_fps_milli
+        .retain(|window_id, _| window_metrics.iter().any(|window| window.window_id == *window_id));
+
+    let main_fps_milli = metrics
+        .snapshot
+        .main_window_id
+        .and_then(|window_id| metrics.window_present_fps_milli.get(&window_id).copied())
+        .unwrap_or(0);
+    let debug_fps_milli = metrics
+        .snapshot
+        .debug_window_id
+        .and_then(|window_id| metrics.window_present_fps_milli.get(&window_id).copied())
+        .unwrap_or(0);
+
+    metrics.snapshot.main_fps = main_fps_milli as f32 / 1000.0;
+    metrics.snapshot.debug_fps = debug_fps_milli as f32 / 1000.0;
+    metrics.snapshot.main_frame_time_ms = if main_fps_milli > 0 {
+        1_000_000.0 / main_fps_milli as f32
+    } else {
+        0.0
+    };
+    if main_fps_milli > 0 {
+        let frame_time_ms = metrics.snapshot.main_frame_time_ms;
+        RuntimeMetricsState::push_history(&mut metrics.snapshot.frame_time_history_ms, frame_time_ms);
+    }
+
+    metrics.window_present_fps_milli.clone()
 }
 
 pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
@@ -462,9 +542,24 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
         sampler.sample(&mut snapshot);
     }
     let gpui_metrics = performance_metrics_snapshot();
+    let window_present_fps_milli =
+        sample_window_present_rates(Instant::now(), &gpui_metrics.window_metrics);
+    {
+        let metrics = RUNTIME_METRICS
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        snapshot.main_fps = metrics.snapshot.main_fps;
+        snapshot.debug_fps = metrics.snapshot.debug_fps;
+        snapshot.main_frame_time_ms = metrics.snapshot.main_frame_time_ms;
+        snapshot.frame_time_history_ms = metrics.snapshot.frame_time_history_ms.clone();
+        snapshot.main_window_id = metrics.snapshot.main_window_id;
+        snapshot.debug_window_id = metrics.snapshot.debug_window_id;
+    }
     snapshot.gpui_renderer_backend =
         SharedString::from(gpui_metrics.renderer_backend.as_str().to_string());
-    snapshot.gpui_present_fps = gpui_metrics.present_fps;
+    // The process-wide GPUI present clock is polluted when multiple windows present between
+    // samples. BMCBL's debug UI reports the main window's isolated present rate instead.
+    snapshot.gpui_present_fps = snapshot.main_fps;
     snapshot.gpui_image_cache_items = gpui_metrics.image_cache_items;
     snapshot.gpui_image_cache_bytes = gpui_metrics.image_cache_bytes;
     snapshot.gpui_atlas_textures = gpui_metrics.atlas_textures;
@@ -662,7 +757,13 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
     snapshot.gpui_window_metrics = gpui_metrics
         .window_metrics
         .into_iter()
-        .map(DebugWindowMetrics::from)
+        .map(|metrics| {
+            let window_id = metrics.window_id;
+            let mut metrics = DebugWindowMetrics::from(metrics);
+            metrics.present_fps_milli =
+                window_present_fps_milli.get(&window_id).copied().unwrap_or(0);
+            metrics
+        })
         .collect();
     snapshot.bmcbl_memory = crate::utils::memory_diagnostics::snapshot_bmcbl_memory();
     snapshot
