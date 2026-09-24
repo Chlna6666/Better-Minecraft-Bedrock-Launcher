@@ -245,11 +245,10 @@ impl Window {
         self.inactive_dirty_redraw_enabled = enabled;
     }
 
-    /// Opt a window into retained paint/GPU animation while it is visible but inactive.
+    /// Re-arms deferred dirty or retained animation work after the window becomes visible.
     ///
-    /// This is intended for NOACTIVATE panels such as desktop lyrics or HUD windows. The default is
-    /// disabled, so ordinary inactive windows retain the existing power-saving behavior. Hidden
-    /// windows never advance animation-engine frames even when this option is enabled.
+    /// Hidden windows intentionally stop presentation work. When visibility is restored, this hook
+    /// clears any stale throttle delay and schedules the pending work without rebuilding the view.
     pub(super) fn presentation_visibility_changed(&mut self) {
         if !self.visibility.is_visible() {
             return;
@@ -272,6 +271,11 @@ impl Window {
         }
     }
 
+    /// Opts this window into retained paint/GPU animation while it is visible but inactive.
+    ///
+    /// This is intended for NOACTIVATE panels such as desktop lyrics or HUD windows. The default is
+    /// disabled, so ordinary inactive windows retain the existing power-saving behavior. Hidden
+    /// windows never advance animation-engine frames even when this option is enabled.
     pub fn set_inactive_animation_engine_enabled(&mut self, enabled: bool) {
         if self.inactive_animation_engine_enabled == enabled {
             return;
