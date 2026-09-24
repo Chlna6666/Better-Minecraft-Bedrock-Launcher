@@ -256,6 +256,7 @@ pub struct Callbacks {
     request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     input: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
     active_status_change: Option<Box<dyn FnMut(bool)>>,
+    visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
     hovered_status_change: Option<Box<dyn FnMut(bool)>>,
     resize: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved: Option<Box<dyn FnMut()>>,
@@ -951,7 +952,19 @@ impl X11WindowStatePtr {
     pub fn property_notify(&self, event: xproto::PropertyNotifyEvent) -> anyhow::Result<()> {
         let mut state = self.state.borrow_mut();
         if event.atom == state.atoms._NET_WM_STATE {
+            let was_hidden = state.hidden;
             self.set_wm_properties(state)?;
+            let hidden = self.state.borrow().hidden;
+            if hidden != was_hidden {
+                let visibility = if hidden {
+                    WindowVisibility::Hidden
+                } else {
+                    WindowVisibility::Visible
+                };
+                if let Some(ref mut callback) = self.callbacks.borrow_mut().visibility_change {
+                    callback(visibility);
+                }
+            }
         } else if event.atom == state.atoms._GTK_EDGE_CONSTRAINTS {
             self.set_edge_constraints(state)?;
         }
@@ -1205,6 +1218,18 @@ impl PlatformWindow for X11Window {
 
         // A maximized window that gets minimized will still retain its maximized state.
         !state.hidden && state.maximized_vertical && state.maximized_horizontal
+    }
+
+    fn is_minimized(&self) -> bool {
+        self.0.state.borrow().hidden
+    }
+
+    fn visibility(&self) -> WindowVisibility {
+        if self.0.state.borrow().hidden {
+            WindowVisibility::Hidden
+        } else {
+            WindowVisibility::Visible
+        }
     }
 
     fn window_bounds(&self) -> WindowBounds {
@@ -1524,6 +1549,10 @@ impl PlatformWindow for X11Window {
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         self.0.callbacks.borrow_mut().active_status_change = Some(callback);
+    }
+
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        self.0.callbacks.borrow_mut().visibility_change = Some(callback);
     }
 
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
