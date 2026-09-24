@@ -11,7 +11,7 @@ rtk cargo fmt --manifest-path Cargo.toml --all
 rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 rtk cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --lib -- -D warnings
 rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
-rtk cargo bench --manifest-path Cargo.toml --features bench --no-run
+rtk cargo bench --manifest-path Cargo.toml --features bench-support --no-run
 ```
 
 修复 GPUI scope 内的 warnings。只有 intentional compatibility 或 diagnostic code 才使

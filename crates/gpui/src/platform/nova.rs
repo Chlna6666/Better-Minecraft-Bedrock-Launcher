@@ -67,19 +67,19 @@ use targets::*;
 use upload_metrics::*;
 use upload_packing::*;
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(crate) use frame_upload::{
     upload_encoding::AtlasPixelEncodingBenchmarkCore, upload_queue::AtlasUploadBenchmarkCore,
 };
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(crate) struct FrameUploadBenchmarkCore {
     scene: crate::Scene,
     upload: FrameUpload,
     rendering_parameters: RenderingParameters,
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 impl FrameUploadBenchmarkCore {
     pub(crate) fn new(scene: crate::Scene) -> Self {
         Self {
@@ -112,14 +112,14 @@ impl FrameUploadBenchmarkCore {
     }
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(crate) struct PathPackingBenchmarkCore {
     scene: crate::Scene,
     upload: FrameUpload,
     rendering_parameters: RenderingParameters,
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 impl PathPackingBenchmarkCore {
     pub(crate) fn new(scene: crate::Scene) -> Self {
         Self {
@@ -147,7 +147,7 @@ impl PathPackingBenchmarkCore {
     }
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(crate) struct MeshPackingBenchmarkCore {
     vertices: Vec<crate::GpuMesh3dVertex>,
     indices: Vec<u32>,
@@ -156,7 +156,7 @@ pub(crate) struct MeshPackingBenchmarkCore {
     uses_u16: bool,
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 impl MeshPackingBenchmarkCore {
     pub(crate) fn new(vertex_count: usize, uses_u16: bool) -> Self {
         let vertices = (0..vertex_count)

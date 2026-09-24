@@ -1,8 +1,8 @@
 use super::upload_encoding::{atlas_source_byte_len, encode_bgra_upload_with_padding};
 use super::*;
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 use std::borrow::Cow;
 
 const NOVA_ATLAS_RETAINED_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -32,12 +32,12 @@ struct AtlasUploadBatch {
     uploads: Vec<PendingAtlasUpload>,
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(crate) struct AtlasUploadBenchmarkCore {
     atlas: NovaAtlas,
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 impl AtlasUploadBenchmarkCore {
     pub(crate) fn rgba_tiles(upload_count: usize, tile_size: u32) -> Self {
         let atlas = NovaAtlas::new();

@@ -12,7 +12,7 @@ rtk cargo fmt --manifest-path Cargo.toml --all
 rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 rtk cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --lib -- -D warnings
 rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
-rtk cargo bench --manifest-path Cargo.toml --features bench --no-run
+rtk cargo bench --manifest-path Cargo.toml --features bench-support --no-run
 ```
 
 Fix warnings in GPUI scope. Use local `#[expect(..., reason = "...")]` only for

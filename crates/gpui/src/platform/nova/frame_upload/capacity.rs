@@ -1,7 +1,7 @@
 use super::*;
 
 impl FrameUpload {
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "bench-support")]
     pub(in crate::platform::nova) fn retained_byte_capacity(&self) -> usize {
         let stream_capacity = [
             self.globals.capacity(),

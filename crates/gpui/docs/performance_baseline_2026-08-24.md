@@ -7,7 +7,7 @@ same machine and power profile in the same session, or record a new environment 
 ## Environment
 
 - Repository revision: `2780c973977f10dbfa5b5b3de9f7641a45d95e89` with a dirty worktree.
-- Command: `rtk cargo bench --manifest-path crates/gpui/Cargo.toml --features bench`.
+- Command: `rtk cargo bench --manifest-path crates/gpui/Cargo.toml --features bench-support`.
 - Result: exit code 0; 18 Criterion inputs completed.
 - OS: Windows 11 IoT Enterprise LTSC, version `10.0.26100`, build `26100`.
 - CPU: AMD Ryzen 7 7840H, 8 cores / 16 logical processors.

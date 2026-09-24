@@ -1,12 +1,12 @@
 use super::*;
 use crate::swap_rgba_to_bgra_rows;
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 use crate::{swap_rgba_to_bgra_rows_scalar, swap_rgba_to_bgra_rows_simd};
 
 const NOVA_ATLAS_TRANSPARENT_COVERAGE: [u8; 1] = [0];
 const NOVA_ATLAS_TRANSPARENT_COLOR: [u8; 4] = [0, 0, 0, 0];
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(crate) struct AtlasPixelEncodingBenchmarkCore {
     destination: Vec<u8>,
     source: Vec<u8>,
@@ -15,7 +15,7 @@ pub(crate) struct AtlasPixelEncodingBenchmarkCore {
     padding: u32,
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 impl AtlasPixelEncodingBenchmarkCore {
     pub(crate) fn rgba(width: u32, height: u32, padding: u32) -> Self {
         Self::new(width, height, padding, AtlasTextureKind::Rgba)
@@ -63,12 +63,12 @@ impl AtlasPixelEncodingBenchmarkCore {
         self.encode_with(encode_bgra_upload_with_padding)
     }
 
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "bench-support")]
     pub(crate) fn encode_scalar(&mut self) -> usize {
         self.encode_with(encode_bgra_upload_with_padding_scalar)
     }
 
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "bench-support")]
     pub(crate) fn encode_simd(&mut self) -> usize {
         self.encode_with(encode_bgra_upload_with_padding_simd)
     }
@@ -189,7 +189,7 @@ pub(in crate::platform::nova) fn encode_bgra_upload_with_padding(
     }
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 fn encode_bgra_upload_with_padding_scalar(
     pixels: &mut [u8],
     size: Size<DevicePixels>,
@@ -225,7 +225,7 @@ fn encode_bgra_upload_with_padding_scalar(
     )
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 fn encode_bgra_upload_with_padding_simd(
     pixels: &mut [u8],
     size: Size<DevicePixels>,
@@ -372,7 +372,7 @@ fn encode_rgba_upload(
     )
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 fn encode_rgba_upload_scalar(
     pixels: &mut [u8],
     bytes: &[u8],
@@ -394,7 +394,7 @@ fn encode_rgba_upload_scalar(
     )
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 fn encode_rgba_upload_simd(
     pixels: &mut [u8],
     bytes: &[u8],

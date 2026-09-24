@@ -151,7 +151,7 @@ pub(crate) fn swap_rgba_to_bgra_rows(buffer: &mut [u8], row_bytes: usize, row_co
     dispatch_rgba_rows(buffer, row_bytes, row_count);
 }
 
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(test, feature = "bench-support"))]
 pub(crate) fn swap_rgba_to_bgra_rows_scalar(buffer: &mut [u8], row_bytes: usize, row_count: usize) {
     let Some(total_bytes) = row_bytes.checked_mul(row_count) else {
         return;
@@ -162,7 +162,7 @@ pub(crate) fn swap_rgba_to_bgra_rows_scalar(buffer: &mut [u8], row_bytes: usize,
     scalar_rgba_rows(buffer, row_bytes, row_count);
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(crate) fn swap_rgba_to_bgra_rows_simd(buffer: &mut [u8], row_bytes: usize, row_count: usize) {
     if row_bytes == 0 || row_count == 0 {
         return;

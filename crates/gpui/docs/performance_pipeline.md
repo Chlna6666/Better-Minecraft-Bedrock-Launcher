@@ -32,7 +32,7 @@ The Criterion suites under `benches/` are the source of truth for CPU-side
 microbenchmarks. Run them in release mode with the explicit benchmark feature:
 
 ```powershell
-rtk cargo bench --manifest-path crates/gpui/Cargo.toml --features bench
+rtk cargo bench --manifest-path crates/gpui/Cargo.toml --features bench-support
 ```
 
 The first recorded Windows CPU baseline is

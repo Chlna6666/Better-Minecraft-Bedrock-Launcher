@@ -105,7 +105,7 @@ pub(super) fn write_custom_mesh_3d_indices(
     write_custom_mesh_3d_indices_with(bytes, indices, uses_u16, pack_mesh_indices_selected, true)
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(super) fn write_custom_mesh_3d_indices_simd(
     bytes: &mut Vec<u8>,
     indices: &[u32],
@@ -114,7 +114,7 @@ pub(super) fn write_custom_mesh_3d_indices_simd(
     write_custom_mesh_3d_indices_with(bytes, indices, uses_u16, pack_mesh_indices_selected, false)
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "bench-support")]
 pub(super) fn write_custom_mesh_3d_indices_scalar(
     bytes: &mut Vec<u8>,
     indices: &[u32],

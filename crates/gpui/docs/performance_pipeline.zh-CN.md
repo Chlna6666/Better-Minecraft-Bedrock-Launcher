@@ -32,7 +32,7 @@ state。
 feature 并以 release 模式运行：
 
 ```powershell
-rtk cargo bench --manifest-path crates/gpui/Cargo.toml --features bench
+rtk cargo bench --manifest-path crates/gpui/Cargo.toml --features bench-support
 ```
 
 首份已记录的 Windows CPU 基线见

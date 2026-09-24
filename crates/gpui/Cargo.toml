@@ -42,8 +42,6 @@ default = [
     "build-shader-validation",
 ]
 bench-support = ["dep:criterion"]
-# Backward-compatible umbrella for existing benchmarks that still use TestAppContext.
-bench = ["bench-support", "test-support"]
 build-shader-validation = []
 inspector = ["gpui_macros/inspector"]
 dhat-heap = []
@@ -116,31 +114,31 @@ doctest = false
 name = "images"
 path = "benches/images.rs"
 harness = false
-required-features = ["bench"]
+required-features = ["bench-support"]
 
 [[bench]]
 name = "frame_upload"
 path = "benches/frame_upload.rs"
 harness = false
-required-features = ["bench"]
+required-features = ["bench-support"]
 
 [[bench]]
 name = "layouts"
 path = "benches/layouts.rs"
 harness = false
-required-features = ["bench"]
+required-features = ["bench-support"]
 
 [[bench]]
 name = "memory"
 path = "benches/memory.rs"
 harness = false
-required-features = ["bench"]
+required-features = ["bench-support"]
 
 [[bench]]
 name = "paths"
 path = "benches/paths.rs"
 harness = false
-required-features = ["bench"]
+required-features = ["bench-support"]
 
 [[example]]
 name = "animation"

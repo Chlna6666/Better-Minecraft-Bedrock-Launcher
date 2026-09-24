@@ -233,7 +233,7 @@ impl Path<Pixels> {
         )
     }
 
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "bench-support")]
     pub(crate) fn scale_and_transform_for_paint_scalar(
         &self,
         device_scale: f32,
@@ -248,7 +248,7 @@ impl Path<Pixels> {
         )
     }
 
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "bench-support")]
     pub(crate) fn scale_and_transform_for_paint_simd(
         &self,
         device_scale: f32,
