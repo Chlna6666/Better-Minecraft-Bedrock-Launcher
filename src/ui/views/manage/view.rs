@@ -415,7 +415,6 @@ impl ManagePageView {
                                     .py(px(9.))
                                     .rounded(px(crate::ui::theme::tokens::radius::SM))
                                     .cursor_pointer()
-                                    .active(|style| style.scale(0.98))
                                     .border_1()
                                     .border_color(if selected {
                                         Hsla {
@@ -438,12 +437,6 @@ impl ManagePageView {
                                             a: 0.0,
                                             ..colors.surface
                                         }
-                                    })
-                                    .hover(|style| {
-                                        style.bg(Hsla {
-                                            a: 0.06,
-                                            ..colors.surface_hover
-                                        })
                                     })
                                     .child(
                                         div()
@@ -606,7 +599,7 @@ impl ManagePageView {
         window: &mut Window,
         colors: &ThemeColors,
         state: &ManagePageState,
-        _now: Instant,
+        now: Instant,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let i18n = cx.global::<I18n>().clone();
@@ -950,9 +943,10 @@ impl ManagePageView {
                                     }
                                 };
 
+                                let reduced_motion = crate::core::ui_prefs::reduced_motion();
                                 if state.tab_anim_seq != 0
                                     && state.tab_anim_from != state.tab
-                                    && !crate::core::ui_prefs::reduced_motion()
+                                    && !reduced_motion
                                 {
                                     div()
                                         .size_full()
@@ -968,6 +962,27 @@ impl ManagePageView {
                                             tab_content_motion(
                                                 state.tab_anim_from.index(),
                                                 state.tab.index(),
+                                            ),
+                                            |content, _progress| content,
+                                        )
+                                        .into_any_element()
+                                } else if state.pack_subtype_animation_active(now)
+                                    && !reduced_motion
+                                {
+                                    div()
+                                        .size_full()
+                                        .min_w(px(0.))
+                                        .min_h(px(0.))
+                                        .child(content)
+                                        .composite_layer()
+                                        .with_animation(
+                                            tab_content_animation_key(
+                                                "manage-pack-subtype-content",
+                                                state.pack_subtype_anim_seq,
+                                            ),
+                                            tab_content_motion(
+                                                state.pack_subtype_anim_from.index(),
+                                                state.pack_subtype.index(),
                                             ),
                                             |content, _progress| content,
                                         )

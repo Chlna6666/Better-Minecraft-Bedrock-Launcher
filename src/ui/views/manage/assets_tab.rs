@@ -79,10 +79,21 @@ impl ManagePageView {
         pack_subtype: ManagePackSubtype,
         cx: &mut Context<Self>,
     ) {
-        cx.update_global(|state: &mut ManagePageState, _cx| {
+        let started_at = Instant::now();
+        let changed = cx.update_global(|state: &mut ManagePageState, _cx| {
+            if state.pack_subtype == pack_subtype {
+                return false;
+            }
+            state.pack_subtype_anim_from = state.pack_subtype;
             state.pack_subtype = pack_subtype;
+            state.pack_subtype_anim_seq = state.pack_subtype_anim_seq.wrapping_add(1);
+            state.pack_subtype_anim_started_at = Some(started_at);
             state.selected_asset_keys.clear();
+            true
         });
+        if !changed {
+            return;
+        }
         self.last_assets_signature = None;
         self.reset_asset_list_view();
         cx.notify();
@@ -694,11 +705,39 @@ pub(super) fn render_asset_list(
         .collect::<HashSet<_>>();
 
     let render_started_at = Instant::now();
-    let animate_rows = state.tab_anim_from != state.tab
-        && !crate::core::ui_prefs::reduced_motion()
+    let reduced_motion = crate::core::ui_prefs::reduced_motion();
+    let primary_rows_animating = state.tab_anim_from != state.tab
+        && !reduced_motion
         && tab_list_stagger_active(window, cx, "manage-asset-list-stagger", state.tab_anim_seq);
-    let animation_from = state.tab_anim_from.index();
-    let animation_to = state.tab.index();
+    let subtype_rows_animating = !primary_rows_animating
+        && !reduced_motion
+        && state.pack_subtype_animation_active(window.animation_time())
+        && tab_list_stagger_active(
+            window,
+            cx,
+            "manage-pack-subtype-list-stagger",
+            state.pack_subtype_anim_seq,
+        );
+    let (animate_rows, animation_from, animation_to, animation_sequence, animation_scope) =
+        if primary_rows_animating {
+            (
+                true,
+                state.tab_anim_from.index(),
+                state.tab.index(),
+                state.tab_anim_seq,
+                "manage-asset-row-enter",
+            )
+        } else if subtype_rows_animating {
+            (
+                true,
+                state.pack_subtype_anim_from.index(),
+                state.pack_subtype.index(),
+                state.pack_subtype_anim_seq,
+                "manage-pack-subtype-row-enter",
+            )
+        } else {
+            (false, 0, 0, 0, "manage-asset-row-enter")
+        };
 
     let mut rows = div().w_full().flex().flex_col().min_w(px(0.));
     if virtual_list_plan.render_slice.top_spacer > px(0.) {
@@ -740,8 +779,9 @@ pub(super) fn render_asset_list(
             row.composite_layer()
                 .with_animation(
                     SharedString::from(format!(
-                        "manage-asset-row-enter-{}-{}",
-                        state.tab_anim_seq,
+                        "{}-{}-{}",
+                        animation_scope,
+                        animation_sequence,
                         asset.key.as_ref()
                     )),
                     tab_list_item_motion(animation_from, animation_to, visible_index),

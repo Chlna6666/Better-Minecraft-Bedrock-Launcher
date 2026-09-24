@@ -1,6 +1,7 @@
 use gpui::{Entity, Global, SharedString};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::core::minecraft::paths::{BuildType, Edition};
 use crate::ui::components::input::InputState;
@@ -35,6 +36,17 @@ pub enum ManagePackSubtype {
     Resource,
     Behavior,
 }
+
+impl ManagePackSubtype {
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Resource => 0,
+            Self::Behavior => 1,
+        }
+    }
+}
+
+const PACK_SUBTYPE_ANIMATION_WINDOW: Duration = Duration::from_millis(520);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManageAssetSortKey {
@@ -227,6 +239,9 @@ pub struct ManagePageState {
 
     pub asset_search_query: SharedString,
     pub pack_subtype: ManagePackSubtype,
+    pub pack_subtype_anim_seq: u64,
+    pub pack_subtype_anim_from: ManagePackSubtype,
+    pub pack_subtype_anim_started_at: Option<Instant>,
     pub asset_sort_key: ManageAssetSortKey,
     pub asset_sort_desc: bool,
     pub selected_asset_keys: Vec<SharedString>,
@@ -274,6 +289,17 @@ impl ManagePageState {
         }
     }
 
+    pub(super) fn pack_subtype_animation_active(&self, now: Instant) -> bool {
+        self.tab == ManageTab::ResourcePack
+            && self.pack_subtype_anim_seq != 0
+            && self.pack_subtype_anim_from != self.pack_subtype
+            && self
+                .pack_subtype_anim_started_at
+                .is_some_and(|started_at| {
+                    now.saturating_duration_since(started_at) <= PACK_SUBTYPE_ANIMATION_WINDOW
+                })
+    }
+
     pub fn has_transient_requests(&self) -> bool {
         self.loading
             || self.version_config_loading
@@ -318,6 +344,9 @@ impl Default for ManagePageState {
             search_query: SharedString::from(""),
             asset_search_query: SharedString::from(""),
             pack_subtype: ManagePackSubtype::Resource,
+            pack_subtype_anim_seq: 0,
+            pack_subtype_anim_from: ManagePackSubtype::Resource,
+            pack_subtype_anim_started_at: None,
             asset_sort_key: ManageAssetSortKey::Name,
             asset_sort_desc: false,
             selected_asset_keys: Vec::new(),
