@@ -120,6 +120,17 @@ impl PlatformInputHandler {
             .flatten()
     }
 
+    /// Returns the contiguous UTF-16 range that platform IME edits may modify.
+    ///
+    /// `None` means the entire document may be considered editable.
+    #[allow(dead_code)]
+    pub(crate) fn text_input_editable_range(&mut self) -> Option<Range<usize>> {
+        self.cx
+            .update(|window, cx| self.handler.text_input_editable_range(window, cx))
+            .ok()
+            .flatten()
+    }
+
     #[allow(dead_code)]
     fn apple_press_and_hold_enabled(&mut self) -> bool {
         self.handler.apple_press_and_hold_enabled()
@@ -252,6 +263,20 @@ pub trait InputHandler: 'static {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<usize>;
+
+    /// The contiguous range of text, in UTF-16 code units, that platform text input may read and
+    /// edit around the current selection.
+    ///
+    /// Platforms that mirror document text into an IME-editable buffer should clamp that mirror to
+    /// this range so multi-step IME edits cannot reach content outside the logical editable region.
+    /// The range should contain the current selection. `None` places no bound.
+    fn text_input_editable_range(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<Range<usize>> {
+        None
+    }
 
     /// Allows a given input context to opt into getting raw key repeats instead of
     /// sending these to the platform.

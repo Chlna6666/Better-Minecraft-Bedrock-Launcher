@@ -70,6 +70,15 @@ pub trait EntityInputHandler: 'static + Sized {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize>;
+
+    /// See [`InputHandler::text_input_editable_range`] for details.
+    fn text_input_editable_range(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        None
+    }
 }
 
 /// The canonical implementation of [`crate::PlatformInputHandler`]. Call [`Window::set_input_handler`]
@@ -176,5 +185,14 @@ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
         self.view.update(cx, |view, cx| {
             view.character_index_for_point(point, window, cx)
         })
+    }
+
+    fn text_input_editable_range(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.view
+            .update(cx, |view, cx| view.text_input_editable_range(window, cx))
     }
 }
