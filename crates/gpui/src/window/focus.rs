@@ -34,24 +34,44 @@ thread_local! {
     pub(crate) static ELEMENT_ARENA: RefCell<Arena> = RefCell::new(Arena::new(64 * 1024));
 }
 
+pub(crate) struct ElementArenaScope;
+
+impl ElementArenaScope {
+    pub(crate) fn enter() -> Self {
+        ELEMENT_ARENA.with_borrow_mut(Arena::begin_scope);
+        Self
+    }
+}
+
+impl Drop for ElementArenaScope {
+    fn drop(&mut self) {
+        ELEMENT_ARENA.with_borrow_mut(Arena::end_scope);
+    }
+}
+
 /// Returned when the element arena has been used and so must be cleared before the next draw.
 #[must_use]
-pub struct ArenaClearNeeded;
+pub struct ArenaClearNeeded {
+    cleared: bool,
+}
 
 impl ArenaClearNeeded {
+    pub(crate) fn new() -> Self {
+        Self { cleared: false }
+    }
+
     /// Clear the element arena.
-    pub fn clear(self) {
-        ELEMENT_ARENA.with_borrow_mut(|element_arena| {
-            element_arena.clear();
-        });
+    pub fn clear(mut self) {
+        ELEMENT_ARENA.with_borrow_mut(Arena::clear);
+        self.cleared = true;
     }
 }
 
 impl Drop for ArenaClearNeeded {
     fn drop(&mut self) {
-        ELEMENT_ARENA.with_borrow_mut(|element_arena| {
-            element_arena.clear();
-        });
+        if !self.cleared {
+            ELEMENT_ARENA.with_borrow_mut(Arena::clear);
+        }
     }
 }
 

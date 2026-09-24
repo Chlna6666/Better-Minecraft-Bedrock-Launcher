@@ -65,15 +65,19 @@ impl Chunk {
     }
 
     fn allocate(&mut self, layout: alloc::Layout) -> Option<NonNull<u8>> {
-        let aligned = unsafe { self.offset.add(self.offset.align_offset(layout.align())) };
-        let next = unsafe { aligned.add(layout.size()) };
-
-        if next <= self.end {
-            self.offset = next;
-            NonNull::new(aligned)
-        } else {
-            None
+        // Keep pointer arithmetic inside the allocation. Constructing an out-of-bounds pointer
+        // with `ptr::add` is UB even when that pointer is only used to decide that this chunk is
+        // full. Compute addresses first and materialize pointers only after the bounds check.
+        let base = self.offset.addr();
+        let aligned_addr = base.checked_add(self.offset.align_offset(layout.align()))?;
+        let next_addr = aligned_addr.checked_add(layout.size())?;
+        if next_addr > self.end.addr() {
+            return None;
         }
+
+        let aligned = self.offset.with_addr(aligned_addr);
+        self.offset = self.offset.with_addr(next_addr);
+        NonNull::new(aligned)
     }
 
     fn reset(&mut self) {
@@ -87,11 +91,13 @@ pub struct Arena {
     valid: Rc<Cell<bool>>,
     current_chunk_index: usize,
     chunk_size: NonZeroUsize,
+    /// Number of active draw scopes using allocations from this arena.
+    scope_depth: usize,
 }
 
 impl Drop for Arena {
     fn drop(&mut self) {
-        self.clear();
+        self.force_clear();
     }
 }
 
@@ -104,6 +110,7 @@ impl Arena {
             valid: Rc::new(Cell::new(true)),
             current_chunk_index: 0,
             chunk_size,
+            scope_depth: 0,
         }
     }
 
@@ -111,7 +118,36 @@ impl Arena {
         self.chunks.iter().map(Chunk::size).sum()
     }
 
+    /// Marks the start of a draw whose arena allocations must remain valid until it exits.
+    pub(crate) fn begin_scope(&mut self) {
+        self.scope_depth = self.scope_depth.saturating_add(1);
+    }
+
+    /// Marks the end of the innermost draw scope.
+    pub(crate) fn end_scope(&mut self) {
+        self.scope_depth = self
+            .scope_depth
+            .checked_sub(1)
+            .expect("Arena::end_scope called without a matching begin_scope");
+    }
+
+    /// Clears completed-frame allocations unless an enclosing draw is still using them.
+    ///
+    /// A nested draw may finish and drop its `ArenaClearNeeded` while the outer draw still owns
+    /// `AnyElement` values in this arena. Deferring that clear keeps those references valid; the
+    /// outer draw's token performs the real clear after the final scope exits.
     pub fn clear(&mut self) {
+        if self.scope_depth == 0 {
+            self.force_clear();
+        } else {
+            log::trace!(
+                "deferring element arena clear while {} draw scope(s) remain active",
+                self.scope_depth
+            );
+        }
+    }
+
+    fn force_clear(&mut self) {
         self.valid.set(false);
         self.valid = Rc::new(Cell::new(true));
         self.elements.clear();
@@ -305,6 +341,35 @@ mod tests {
         arena.trim();
         assert_eq!(arena.capacity(), 8);
         assert_eq!(*arena.alloc(|| 3u64), 3);
+    }
+
+    #[test]
+    fn clear_is_deferred_while_an_enclosing_scope_is_active() {
+        let mut arena = Arena::new(64);
+        arena.begin_scope();
+        let outer = arena.alloc(|| 42u64);
+
+        arena.begin_scope();
+        let inner = arena.alloc(|| 7u64);
+        arena.end_scope();
+        arena.clear();
+
+        assert_eq!(*outer, 42);
+        assert_eq!(*inner, 7);
+
+        arena.end_scope();
+        arena.clear();
+        assert!(!outer.valid.get());
+        assert!(!inner.valid.get());
+    }
+
+    #[test]
+    #[should_panic(expected = "Arena::end_scope called without a matching begin_scope")]
+    fn unbalanced_arena_scope_panics() {
+        let mut arena = Arena::new(64);
+        arena.begin_scope();
+        arena.end_scope();
+        arena.end_scope();
     }
 
     #[test]

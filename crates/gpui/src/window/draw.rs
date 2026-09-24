@@ -50,6 +50,7 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        let _element_arena_scope = ElementArenaScope::enter();
         let frame_started_at = Instant::now();
         let previous_scene_was_empty = self.rendered_frame.scene.len() == 0;
         let debug_force_full_redraw = self.begin_debug_visualization_frame(cx);
@@ -84,7 +85,7 @@ impl Window {
         );
         phase_metrics.build = frame_started_at.elapsed();
         record_draw_phase_metrics(phase_metrics);
-        ArenaClearNeeded
+        ArenaClearNeeded::new()
     }
 
     fn begin_draw_cycle(&mut self, cx: &mut App) -> (Option<usize>, SmallVec<[EntityId; 8]>) {
@@ -165,7 +166,7 @@ impl Window {
         self.force_view_cache_refresh = true;
         self.recovering_degraded_draw = true;
         self.draw_deadline = None;
-        ArenaClearNeeded
+        ArenaClearNeeded::new()
     }
 
     fn finish_completed_draw(
