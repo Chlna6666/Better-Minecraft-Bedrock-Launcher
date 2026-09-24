@@ -904,7 +904,6 @@ impl ManagePageView {
                                         toolbar
                                             .relative()
                                             .left(px(8.0 * direction * (1.0 - progress)))
-                                            .opacity(0.92 + 0.08 * progress)
                                     },
                                 )
                                 .into_any_element()

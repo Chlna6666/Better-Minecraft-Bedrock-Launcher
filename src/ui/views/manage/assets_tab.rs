@@ -824,7 +824,6 @@ pub(super) fn render_asset_list(
                     let progress = progress.clamp(0.0, 1.0);
                     row.relative()
                         .left(px(12.0 * direction * (1.0 - progress)))
-                        .opacity(0.78 + 0.22 * progress)
                 },
             )
             .into_any_element()
@@ -886,15 +885,13 @@ pub(super) fn render_asset_list(
                 move |list, progress| {
                     let progress = progress.clamp(0.0, 1.0);
                     list.relative()
-                        .left(px(-6.0 * direction * progress))
-                        .opacity(1.0 - 0.08 * progress)
+                        .left(px(-4.0 * direction * progress))
                 },
             )
             .into_any_element()
         } else {
             list.relative()
-                .left(px(-6.0 * direction))
-                .opacity(0.92)
+                .left(px(-4.0 * direction))
                 .into_any_element()
         };
 

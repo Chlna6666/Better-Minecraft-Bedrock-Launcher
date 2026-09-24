@@ -340,7 +340,6 @@ fn animate_stat_section(
                 section
                     .relative()
                     .left(px(6.0 * direction * (1.0 - progress)))
-                    .opacity(0.90 + 0.10 * progress)
             },
         )
         .into_any_element()

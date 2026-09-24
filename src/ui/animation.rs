@@ -142,9 +142,9 @@ pub fn tab_list_stagger_active(
     now.saturating_duration_since(snapshot.started_at) <= TAB_LIST_STAGGER_WINDOW
 }
 
-/// Direction-aware row entrance used by management lists.
+/// Direction-aware row entrance timeline used by management lists.
 ///
-/// The row keeps its final layout and Nova only applies translation + opacity. Delays are capped
+/// Callers keep final row geometry and apply only a small relative paint offset. Delays are capped
 /// so a long or virtualized list never turns into a long animation queue.
 pub fn tab_list_item_motion(
     _from_index: usize,

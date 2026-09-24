@@ -422,7 +422,6 @@ pub(super) fn render_server_list(
                     let progress = progress.clamp(0.0, 1.0);
                     row.relative()
                         .left(px(12.0 * direction * (1.0 - progress)))
-                        .opacity(0.78 + 0.22 * progress)
                 },
             )
             .into_any_element()
