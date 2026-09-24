@@ -725,6 +725,23 @@ fn pure_window_move_does_not_dirty_window(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn test_window_reports_missing_raw_handles_without_panicking(cx: &mut TestAppContext) {
+    use winit::raw_window_handle::{HandleError, HasDisplayHandle as _, HasWindowHandle as _};
+
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        assert!(matches!(
+            window.platform_window.window_handle(),
+            Err(HandleError::NotSupported)
+        ));
+        assert!(matches!(
+            window.platform_window.display_handle(),
+            Err(HandleError::NotSupported)
+        ));
+    });
+}
+
+#[gpui::test]
 fn set_window_origin_updates_test_window_without_resizing(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {

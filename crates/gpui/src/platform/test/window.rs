@@ -55,7 +55,7 @@ impl HasWindowHandle for TestWindow {
         &self,
     ) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError>
     {
-        unimplemented!("Test Windows are not backed by a real platform window")
+        Err(winit::raw_window_handle::HandleError::NotSupported)
     }
 }
 
@@ -64,7 +64,7 @@ impl HasDisplayHandle for TestWindow {
         &self,
     ) -> Result<winit::raw_window_handle::DisplayHandle<'_>, winit::raw_window_handle::HandleError>
     {
-        unimplemented!("Test Windows are not backed by a real platform window")
+        Err(winit::raw_window_handle::HandleError::NotSupported)
     }
 }
 
