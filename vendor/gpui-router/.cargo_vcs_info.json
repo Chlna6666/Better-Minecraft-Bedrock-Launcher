@@ -1,7 +1,7 @@
 {
   "git": {
-    "sha1": "950e1c8686956304e27e65887755e56430f660d9",
-    "dirty": true
+    "sha1": "d219ae44d4a2dcb572c8585a15e5649ce76b805d",
+    "dirty": false
   },
   "path_in_vcs": "crates/router"
 }
