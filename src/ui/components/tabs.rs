@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const ANIMATED_TAB_DURATION: Duration = Duration::from_millis(180);
+const UNDERLINE_TAB_DURATION: Duration = Duration::from_millis(220);
 
 #[derive(Clone)]
 pub struct TabItem {
@@ -44,9 +45,22 @@ impl TabItem {
 
 #[derive(Clone, Copy, Debug)]
 struct UnderlineTabsState {
-    previous_index: usize,
+    from_slot: f32,
     active_index: usize,
+    started_at: Option<Instant>,
     sequence: u64,
+}
+
+fn sample_underline_tab_slot(state: UnderlineTabsState, now: Instant) -> (f32, bool) {
+    let Some(started_at) = state.started_at else {
+        return (state.active_index as f32, false);
+    };
+    let progress = raw_progress(now, started_at, UNDERLINE_TAB_DURATION);
+    let eased = ease_out_cubic(progress);
+    (
+        state.from_slot + (state.active_index as f32 - state.from_slot) * eased,
+        progress < 1.0,
+    )
 }
 
 #[derive(IntoElement)]
@@ -55,6 +69,7 @@ pub struct UnderlineTabs {
     items: Vec<TabItem>,
     colors: ThemeColors,
     gap: Pixels,
+    item_width: Option<Pixels>,
 }
 
 impl UnderlineTabs {
@@ -68,11 +83,18 @@ impl UnderlineTabs {
             items,
             colors: *colors,
             gap: px(14.),
+            item_width: None,
         }
     }
 
     pub fn gap(mut self, gap: Pixels) -> Self {
         self.gap = gap;
+        self
+    }
+
+    /// Use equal-width tab slots so the underline can move as one continuous retained indicator.
+    pub fn item_width(mut self, item_width: Pixels) -> Self {
+        self.item_width = Some(item_width);
         self
     }
 }
@@ -83,112 +105,177 @@ impl RenderOnce for UnderlineTabs {
             return div().into_any_element();
         }
 
+        let now = window.animation_time();
         let colors = self.colors;
         let selected_index = self.items.iter().position(|item| item.active).unwrap_or(0);
+        let reduced_motion = crate::core::ui_prefs::reduced_motion();
         let state = window.use_keyed_state(self.id.clone(), cx, |_, _| UnderlineTabsState {
-            previous_index: selected_index,
+            from_slot: selected_index as f32,
             active_index: selected_index,
+            started_at: None,
             sequence: 0,
         });
 
-        if state.read(cx).active_index != selected_index {
+        let mut snapshot = *state.read(cx);
+        if snapshot.active_index != selected_index {
+            let (current_slot, _) = sample_underline_tab_slot(snapshot, now);
             state.update(cx, |tab_state, _| {
-                tab_state.previous_index = tab_state.active_index;
+                tab_state.from_slot = if reduced_motion {
+                    selected_index as f32
+                } else {
+                    current_slot
+                };
                 tab_state.active_index = selected_index;
+                tab_state.started_at = (!reduced_motion).then_some(now);
                 tab_state.sequence = tab_state.sequence.wrapping_add(1);
             });
+            snapshot = *state.read(cx);
         }
 
-        let snapshot = *state.read(cx);
-        let animate_indicator = snapshot.sequence != 0
-            && snapshot.previous_index != snapshot.active_index
-            && !crate::core::ui_prefs::reduced_motion();
-        let tabs_id = self.id.clone();
+        let (_, animating) = sample_underline_tab_slot(snapshot, now);
+        if snapshot.started_at.is_some() && !animating {
+            state.update(cx, |tab_state, _| {
+                tab_state.from_slot = tab_state.active_index as f32;
+                tab_state.started_at = None;
+            });
+            snapshot = *state.read(cx);
+        }
 
-        div()
+        let tabs_id = self.id.clone();
+        let item_width = self.item_width;
+        let gap = self.gap;
+        let shared_underline = item_width.map(|item_width| {
+            let item_width_px: f32 = item_width.into();
+            let gap_px: f32 = gap.into();
+            let step_px = item_width_px + gap_px;
+            let target_left_px = step_px * snapshot.active_index as f32 + 4.0;
+            let indicator = div()
+                .absolute()
+                .left(px(target_left_px))
+                .bottom(px(0.))
+                .w(px((item_width_px - 8.0).max(8.0)))
+                .h(px(2.))
+                .rounded(px(1.))
+                .bg(colors.accent);
+
+            if snapshot.started_at.is_some() && !reduced_motion {
+                let from_x = step_px * (snapshot.from_slot - snapshot.active_index as f32);
+                indicator
+                    .composite_layer()
+                    .with_animation(
+                        SharedString::from(format!(
+                            "{}-shared-underline-{}",
+                            tabs_id.as_ref(),
+                            snapshot.sequence
+                        )),
+                        ease_out_cubic_motion(UNDERLINE_TAB_DURATION).with_property(
+                            AnimationProperty::translation(
+                                point(px(from_x), px(0.0)),
+                                Point::default(),
+                            ),
+                        ),
+                        |indicator, _progress| indicator,
+                    )
+                    .into_any_element()
+            } else {
+                indicator.into_any_element()
+            }
+        });
+
+        let mut root = div()
             .id(self.id)
+            .relative()
             .min_w(px(0.))
             .overflow_x_scrollbar()
             .scrollbar_width(px(0.))
             .flex()
-            .gap(self.gap)
-            .children(self.items.into_iter().map(move |item| {
-                let active = item.active;
-                let label = item.label.clone();
-                let icon_path = item.icon_path;
-                let on_select = item.on_select.clone();
-                let mut content = div().flex().items_center().gap(px(8.));
+            .gap(gap);
 
-                if let Some(icon_path) = icon_path {
-                    content =
-                        content.child(svg().path(icon_path).w(px(15.)).h(px(15.)).text_color(
-                            if active {
+        if let Some(shared_underline) = shared_underline {
+            root = root.child(shared_underline);
+        }
+
+        root.children(self.items.into_iter().map(move |item| {
+            let active = item.active;
+            let label = item.label.clone();
+            let icon_path = item.icon_path;
+            let on_select = item.on_select.clone();
+            let mut content = div().flex().items_center().gap(px(8.));
+
+            if let Some(icon_path) = icon_path {
+                content = content.child(
+                    svg()
+                        .path(icon_path)
+                        .w(px(15.))
+                        .h(px(15.))
+                        .text_color(if active {
+                            colors.accent
+                        } else {
+                            colors.text_secondary
+                        }),
+                );
+            }
+
+            let local_underline = (item_width.is_none() && active).then(|| {
+                let indicator = div()
+                    .absolute()
+                    .left(px(2.))
+                    .right(px(2.))
+                    .bottom(px(0.))
+                    .h(px(2.))
+                    .rounded(px(1.))
+                    .bg(colors.accent);
+
+                if snapshot.started_at.is_some() && !reduced_motion {
+                    let from_index = snapshot.from_slot.round().max(0.0) as usize;
+                    indicator
+                        .composite_layer()
+                        .with_animation(
+                            SharedString::from(format!(
+                                "{}-underline-{}",
+                                tabs_id.as_ref(),
+                                snapshot.sequence
+                            )),
+                            tab_underline_motion(from_index, snapshot.active_index),
+                            |indicator, _progress| indicator,
+                        )
+                        .into_any_element()
+                } else {
+                    indicator.into_any_element()
+                }
+            });
+
+            div()
+                .id(item.id.clone())
+                .relative()
+                .flex_shrink_0()
+                .px(px(4.))
+                .py(px(6.))
+                .border_b_2()
+                .border_color(hsla(0., 0., 0., 0.))
+                .cursor_pointer()
+                .when_some(item_width, |tab, width| {
+                    tab.w(width).px(px(2.)).justify_center()
+                })
+                .child(
+                    content.child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if active {
                                 colors.accent
                             } else {
                                 colors.text_secondary
-                            },
-                        ));
-                }
-
-                let underline = active.then(|| {
-                    let indicator = div()
-                        .absolute()
-                        .left(px(2.))
-                        .right(px(2.))
-                        .bottom(px(0.))
-                        .h(px(2.))
-                        .rounded(px(1.))
-                        .bg(colors.accent);
-
-                    if animate_indicator {
-                        indicator
-                            .composite_layer()
-                            .with_animation(
-                                SharedString::from(format!(
-                                    "{}-underline-{}",
-                                    tabs_id.as_ref(),
-                                    snapshot.sequence
-                                )),
-                                tab_underline_motion(
-                                    snapshot.previous_index,
-                                    snapshot.active_index,
-                                ),
-                                |indicator, _progress| indicator,
-                            )
-                            .into_any_element()
-                    } else {
-                        indicator.into_any_element()
-                    }
-                });
-
-                div()
-                    .id(item.id.clone())
-                    .relative()
-                    .flex_shrink_0()
-                    .px(px(4.))
-                    .py(px(6.))
-                    .border_b_2()
-                    .border_color(hsla(0., 0., 0., 0.))
-                    .cursor_pointer()
-                    .child(
-                        content.child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(if active {
-                                    colors.accent
-                                } else {
-                                    colors.text_secondary
-                                })
-                                .child(label),
-                        ),
-                    )
-                    .when_some(underline, |tab, underline| tab.child(underline))
-                    .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
-                        (on_select)(window, cx);
-                    })
-            }))
-            .into_any_element()
+                            })
+                            .child(label),
+                    ),
+                )
+                .when_some(local_underline, |tab, underline| tab.child(underline))
+                .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
+                    (on_select)(window, cx);
+                })
+        }))
+        .into_any_element()
     }
 }
 

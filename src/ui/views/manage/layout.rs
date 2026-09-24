@@ -260,7 +260,8 @@ pub(super) fn render_tab_bar(
             .icon(lucide_gpui::icon!(server)),
         ],
     )
-    .gap(px(14.))
+    .gap(px(8.))
+    .item_width(px(72.))
     .into_any_element()
 }
 
