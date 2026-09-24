@@ -26,7 +26,9 @@ fn main() {
             macos::build();
         }
         Ok("windows") => {
-            #[cfg(target_os = "windows")]
+            // Build scripts execute on the host, so target-specific work must follow
+            // CARGO_CFG_TARGET_OS rather than cfg!(target_os). This keeps manifest embedding active
+            // when cross-compiling Windows artifacts from Linux.
             windows::build();
         }
         _ => (),
@@ -471,7 +473,6 @@ mod macos {
     }
 }
 
-#[cfg(target_os = "windows")]
 mod windows {
     use std::path::Path;
 
@@ -482,12 +483,16 @@ mod windows {
 
     #[cfg(feature = "windows-manifest")]
     fn embed_resource() {
-        let manifest = std::path::Path::new("resources/windows/gpui.manifest.xml");
-        let rc_file = std::path::Path::new("resources/windows/gpui.rc");
+        let resource_dir = std::path::Path::new("resources/windows");
+        let manifest = resource_dir.join("gpui.manifest.xml");
+        let rc_file = resource_dir.join("gpui.rc");
         println!("cargo:rerun-if-changed={}", manifest.display());
         println!("cargo:rerun-if-changed={}", rc_file.display());
-        embed_resource::compile(rc_file, embed_resource::NONE)
-            .manifest_required()
-            .unwrap();
+        embed_resource::compile(
+            rc_file,
+            embed_resource::ParamsIncludeDirs([resource_dir]),
+        )
+        .manifest_required()
+        .unwrap();
     }
 }
