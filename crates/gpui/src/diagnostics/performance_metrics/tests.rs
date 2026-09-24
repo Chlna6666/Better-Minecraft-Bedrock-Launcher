@@ -417,9 +417,20 @@ fn records_window_scoped_metrics() {
         .into_iter()
         .find(|window| window.window_id == 10)
         .expect("window metrics should be tracked");
+    let lightweight_window = window_metrics_snapshot()
+        .into_iter()
+        .find(|window| window.window_id == 10)
+        .expect("lightweight window metrics should be tracked");
 
     assert_eq!(window.logical_width_milli, 972_000);
     assert_eq!(window.logical_height_milli, 600_000);
+    assert_eq!(lightweight_window.logical_width_milli, window.logical_width_milli);
+    assert_eq!(lightweight_window.logical_height_milli, window.logical_height_milli);
+    assert_eq!(lightweight_window.physical_width_px, window.physical_width_px);
+    assert_eq!(lightweight_window.physical_height_px, window.physical_height_px);
+    assert_eq!(lightweight_window.scale_factor_milli, window.scale_factor_milli);
+    assert_eq!(lightweight_window.active, window.active);
+    assert_eq!(lightweight_window.minimized, window.minimized);
     assert_eq!(window.physical_width_px, 1_215);
     assert_eq!(window.physical_height_px, 750);
     assert_eq!(window.scale_factor_milli, 1_250);

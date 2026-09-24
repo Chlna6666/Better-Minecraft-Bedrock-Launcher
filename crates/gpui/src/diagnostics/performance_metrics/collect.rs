@@ -1,5 +1,6 @@
 use crate::RendererBackend;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use super::animation::animation_metrics_snapshot;
 use super::store::shared_metrics;
