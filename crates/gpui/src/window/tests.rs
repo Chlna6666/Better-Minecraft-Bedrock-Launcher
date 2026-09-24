@@ -1297,6 +1297,35 @@ fn inactive_visible_dirty_frames_refresh_after_background_delay(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn inactive_dirty_redraw_opt_in_bypasses_background_defer(cx: &mut TestAppContext) {
+    let (_view, cx) = cx.add_window_view(|_, _| PaintedTestView);
+    cx.update(|window, _| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let baseline = test_window.requested_frame_count();
+
+        window.active.set(false);
+        window.needs_present.set(false);
+        window
+            .last_input_timestamp
+            .set(Instant::now() - Duration::from_secs(2));
+        window.invalidator.set_dirty(false);
+        window.set_inactive_dirty_redraw_enabled(true);
+        window.refresh();
+
+        assert!(
+            !window.test_dirty_frame_deferred_pending(),
+            "opted-in visible inactive window should not enter the defer/retry path"
+        );
+        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+        assert_eq!(
+            test_window.last_requested_frame(),
+            Some(RequestFrameOptions::from_refresh())
+        );
+    });
+}
+
+
+#[gpui::test]
 fn notify_on_rendered_view_requests_dirty_frame(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|_, _| EmptyTestView);
     let (test_window, baseline) = cx.update(|window, _| {

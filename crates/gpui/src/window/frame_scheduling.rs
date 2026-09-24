@@ -237,6 +237,14 @@ impl Window {
             interval.map(|interval| interval.max(Duration::from_millis(16)));
     }
 
+    /// Allows this window to redraw ordinary dirty UI while visible but inactive.
+    ///
+    /// Intended for diagnostics/monitor windows whose content must continue reflecting another
+    /// window in real time. Minimized windows still use the normal background defer policy.
+    pub fn set_inactive_dirty_redraw_enabled(&mut self, enabled: bool) {
+        self.inactive_dirty_redraw_enabled = enabled;
+    }
+
     /// Opt a window into retained paint/GPU animation while it is visible but inactive.
     ///
     /// This is intended for NOACTIVATE panels such as desktop lyrics or HUD windows. The default is

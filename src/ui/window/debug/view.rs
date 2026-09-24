@@ -69,6 +69,7 @@ impl DebugView {
         let stall_log_path = file_ops::logs_dir().join("ui_foreground_stall.log");
         record_debug_window_metrics(window);
         window.set_inactive_dirty_frame_retry_interval(Some(DEBUG_REALTIME_REFRESH_INTERVAL));
+        window.set_inactive_dirty_redraw_enabled(true);
         let subscriptions = vec![
             cx.observe_global::<I18n>(|_this, cx| cx.notify()),
             cx.observe_window_bounds(window, |_, window, _cx| {

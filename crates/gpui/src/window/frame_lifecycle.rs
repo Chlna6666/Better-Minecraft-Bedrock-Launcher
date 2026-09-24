@@ -277,6 +277,7 @@ impl Window {
     fn should_defer_dirty_frame_at(&self, now: Instant) -> bool {
         self.invalidator.is_dirty()
             && !self.active.get()
+            && (!self.inactive_dirty_redraw_enabled || self.platform_window.is_minimized())
             && !self.needs_present.get()
             && !self.recently_received_input(now)
             && self.next_frame_callbacks.borrow().is_empty()
@@ -877,6 +878,7 @@ impl Window {
             && !options.require_presentation
             && !load.pending_present
             && !load.active
+            && (!self.inactive_dirty_redraw_enabled || load.minimized)
             && !had_frame_callbacks
             && !self.recently_received_input(now)
             && (self.rendered_frame.scene.len() != 0 || load.minimized)

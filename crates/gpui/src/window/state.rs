@@ -455,6 +455,9 @@ pub struct Window {
     /// Ordinary windows keep the framework default. Tool and diagnostic windows may opt into a
     /// tighter interval without changing the process-wide inactive-window policy.
     pub(super) inactive_dirty_frame_retry_interval: Option<Duration>,
+    /// Allows a visible inactive window to publish ordinary dirty redraws without first entering
+    /// the background defer/retry path. Minimized windows still use the normal deferred policy.
+    pub(super) inactive_dirty_redraw_enabled: bool,
     pub(super) async_app: AsyncApp,
     pub(super) frame_watchdog: Rc<Cell<FrameWatchdog>>,
     pub(super) platform_frame_watchdog_task: RefCell<Option<Task<()>>>,
