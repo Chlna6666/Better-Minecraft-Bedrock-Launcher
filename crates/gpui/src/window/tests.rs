@@ -738,6 +738,26 @@ fn set_window_origin_updates_test_window_without_resizing(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn scale_factor_change_preserves_logical_bounds_and_viewport(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+
+    let (initial_bounds, initial_viewport) = window.update(|window, _cx| {
+        assert_eq!(window.scale_factor(), 2.0);
+        (window.bounds(), window.viewport_size())
+    });
+    assert_eq!(initial_bounds.size, initial_viewport);
+
+    for scale_factor in [1.0, 1.25, 2.0] {
+        window.simulate_scale_factor_change(scale_factor);
+        window.update(|window, _cx| {
+            assert_eq!(window.scale_factor(), scale_factor);
+            assert_eq!(window.bounds(), initial_bounds);
+            assert_eq!(window.viewport_size(), initial_viewport);
+        });
+    }
+}
+
+#[gpui::test]
 fn content_bounds_change_still_dirties_window(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

@@ -44,6 +44,7 @@ pub(crate) struct TestWindowState {
     input_handler: Option<PlatformInputHandler>,
     is_maximized: bool,
     is_fullscreen: bool,
+    scale_factor: f32,
 }
 
 #[derive(Clone)]
@@ -102,6 +103,8 @@ impl TestWindow {
             input_handler: None,
             is_maximized: false,
             is_fullscreen: false,
+            // Preserve the test platform's historical 2x default.
+            scale_factor: 2.0,
         })))
     }
 
@@ -115,6 +118,21 @@ impl TestWindow {
         drop(lock);
         callback(size, scale_factor);
         self.0.lock().resize_callback = Some(callback);
+    }
+
+    /// Simulates moving this test window to a display with a different scale factor while
+    /// preserving its logical bounds.
+    pub fn simulate_scale_factor_change(&mut self, scale_factor: f32) {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "test scale factor must be finite and positive"
+        );
+        let size = {
+            let mut lock = self.0.lock();
+            lock.scale_factor = scale_factor;
+            lock.bounds.size
+        };
+        self.simulate_resize(size);
     }
 
     pub(crate) fn simulate_active_status_change(&self, is_active: bool) {
@@ -222,7 +240,7 @@ impl PlatformWindow for TestWindow {
     }
 
     fn scale_factor(&self) -> f32 {
-        2.0
+        self.0.lock().scale_factor
     }
 
     fn appearance(&self) -> WindowAppearance {
