@@ -84,20 +84,36 @@ impl DebugView {
             loop {
                 Timer::after(DEBUG_REALTIME_REFRESH_INTERVAL).await;
                 let _ = handle.update(cx, |this, cx| {
-                    refresh_realtime_runtime_metrics(&mut this.runtime);
                     let debug = cx.global::<DebugState>().clone();
+                    let previous_main = main_window_realtime_metric(
+                        &this.runtime,
+                        debug.main_window_id,
+                    );
+
+                    refresh_realtime_runtime_metrics(&mut this.runtime);
                     bind_window_roles(&mut this.runtime, &debug);
 
-                    let frame_time_ms = this.runtime.main_frame_time_ms;
-                    if frame_time_ms > 0.0 && frame_time_ms.is_finite() {
-                        this.runtime.frame_time_history_ms.push_back(frame_time_ms);
-                        while this.runtime.frame_time_history_ms.len() > 180 {
-                            let _ = this.runtime.frame_time_history_ms.pop_front();
-                        }
-                    }
+                    let current_main = main_window_realtime_metric(
+                        &this.runtime,
+                        debug.main_window_id,
+                    );
+                    let main_changed = previous_main != current_main;
 
-                    if this.tab != DebugTab::Console {
-                        cx.notify();
+                    // A debug-window redraw updates its own request/draw counters. Never use those
+                    // counters to trigger another redraw, otherwise the diagnostics window becomes
+                    // a self-sustaining foreground render loop while the observed main window is idle.
+                    if main_changed {
+                        let frame_time_ms = this.runtime.main_frame_time_ms;
+                        if frame_time_ms > 0.0 && frame_time_ms.is_finite() {
+                            this.runtime.frame_time_history_ms.push_back(frame_time_ms);
+                            while this.runtime.frame_time_history_ms.len() > 180 {
+                                let _ = this.runtime.frame_time_history_ms.pop_front();
+                            }
+                        }
+
+                        if matches!(this.tab, DebugTab::Overview | DebugTab::Performance) {
+                            cx.notify();
+                        }
                     }
                 });
             }
@@ -246,6 +262,60 @@ impl DebugView {
 
 fn record_debug_window_metrics(window: &Window) {
     crate::ui::window::debug::state::record_debug_window_geometry(window);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RealtimeWindowMetric {
+    window_id: u64,
+    present_fps_milli: usize,
+    logical_width_milli: usize,
+    logical_height_milli: usize,
+    physical_width_px: usize,
+    physical_height_px: usize,
+    scale_factor_milli: usize,
+    active: bool,
+    minimized: bool,
+    request_redraw_count: usize,
+    draw_count: usize,
+    present_count: usize,
+    skip_count: usize,
+    skipped_frame_count: usize,
+    surface_reconfigure_count: usize,
+    present_error_count: usize,
+    layout_recompute_count: usize,
+    upload_bytes: usize,
+}
+
+fn main_window_realtime_metric(
+    runtime: &DebugRuntimeSnapshot,
+    main_window_id: Option<u64>,
+) -> Option<RealtimeWindowMetric> {
+    let window_id = main_window_id?;
+    let window = runtime
+        .gpui_window_metrics
+        .iter()
+        .find(|window| window.window_id == window_id)?;
+
+    Some(RealtimeWindowMetric {
+        window_id: window.window_id,
+        present_fps_milli: window.present_fps_milli,
+        logical_width_milli: window.logical_width_milli,
+        logical_height_milli: window.logical_height_milli,
+        physical_width_px: window.physical_width_px,
+        physical_height_px: window.physical_height_px,
+        scale_factor_milli: window.scale_factor_milli,
+        active: window.active,
+        minimized: window.minimized,
+        request_redraw_count: window.request_redraw_count,
+        draw_count: window.draw_count,
+        present_count: window.present_count,
+        skip_count: window.skip_count,
+        skipped_frame_count: window.skipped_frame_count,
+        surface_reconfigure_count: window.surface_reconfigure_count,
+        present_error_count: window.present_error_count,
+        layout_recompute_count: window.layout_recompute_count,
+        upload_bytes: window.upload_bytes,
+    })
 }
 
 fn bind_window_roles(runtime: &mut DebugRuntimeSnapshot, debug: &DebugState) {
@@ -3362,5 +3432,53 @@ impl Render for DebugView {
                         ),
                 ),
         )
+    }
+}
+
+
+#[cfg(test)]
+mod realtime_refresh_tests {
+    use super::{DebugRuntimeSnapshot, DebugWindowMetrics, main_window_realtime_metric};
+
+    fn metrics(window_id: u64, draw_count: usize) -> DebugWindowMetrics {
+        DebugWindowMetrics {
+            window_id,
+            draw_count,
+            ..DebugWindowMetrics::default()
+        }
+    }
+
+    #[test]
+    fn debug_window_draws_do_not_change_main_realtime_metric() {
+        let mut before = DebugRuntimeSnapshot {
+            main_window_id: Some(1),
+            debug_window_id: Some(2),
+            gpui_window_metrics: vec![metrics(1, 10), metrics(2, 100)],
+            ..DebugRuntimeSnapshot::default()
+        };
+        let main_before = main_window_realtime_metric(&before, before.main_window_id);
+
+        before.gpui_window_metrics[1].draw_count = 101;
+        before.gpui_window_metrics[1].request_redraw_count = 101;
+
+        let main_after = main_window_realtime_metric(&before, before.main_window_id);
+        assert_eq!(main_before, main_after);
+    }
+
+    #[test]
+    fn main_window_draw_changes_realtime_metric() {
+        let mut runtime = DebugRuntimeSnapshot {
+            main_window_id: Some(1),
+            debug_window_id: Some(2),
+            gpui_window_metrics: vec![metrics(1, 10), metrics(2, 100)],
+            ..DebugRuntimeSnapshot::default()
+        };
+        let before = main_window_realtime_metric(&runtime, runtime.main_window_id);
+
+        runtime.gpui_window_metrics[0].draw_count = 11;
+        runtime.gpui_window_metrics[0].present_count = 11;
+
+        let after = main_window_realtime_metric(&runtime, runtime.main_window_id);
+        assert_ne!(before, after);
     }
 }
