@@ -145,7 +145,31 @@ impl Window {
         color: Hsla,
         cx: &App,
     ) -> Result<()> {
-        self.paint_svg_animated(bounds, path, transformation, color, None, cx)
+        self.paint_svg_source(bounds, path, None, transformation, color, None, cx)
+    }
+
+    /// Paints raw monochrome SVG bytes using cache_key as the atlas identity.
+    ///
+    /// Callers should keep the key stable for identical bytes. The Svg element does this
+    /// automatically through Svg::data.
+    pub fn paint_svg_data(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        cache_key: SharedString,
+        data: &[u8],
+        transformation: TransformationMatrix,
+        color: Hsla,
+        cx: &App,
+    ) -> Result<()> {
+        self.paint_svg_source(
+            bounds,
+            cache_key,
+            Some(data),
+            transformation,
+            color,
+            None,
+            cx,
+        )
     }
 
     pub(crate) fn paint_svg_animated(
@@ -157,10 +181,29 @@ impl Window {
         animation_id: Option<SceneAnimationId>,
         cx: &App,
     ) -> Result<()> {
+        self.paint_svg_source(
+            bounds,
+            path,
+            None,
+            transformation,
+            color,
+            animation_id,
+            cx,
+        )
+    }
+
+    fn paint_svg_source(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        path: SharedString,
+        data: Option<&[u8]>,
+        transformation: TransformationMatrix,
+        color: Hsla,
+        animation_id: Option<SceneAnimationId>,
+        cx: &App,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
-        // A zero-sized element can occur while layout is settling or while its
-        // parent is hidden. There is no pixel to rasterize in that state.
         if bounds.size.is_zero() {
             return Ok(());
         }
@@ -179,7 +222,11 @@ impl Window {
         let Some(tile) = self
             .sprite_atlas
             .ensure_tile_with(&params.clone().into(), &mut || {
-                let Some((size, bytes)) = cx.svg_renderer.render(&params)? else {
+                let rendered = match data {
+                    Some(data) => Some(cx.svg_renderer.render_bytes(&params, data)?),
+                    None => cx.svg_renderer.render(&params)?,
+                };
+                let Some((size, bytes)) = rendered else {
                     return Ok(None);
                 };
                 Ok(Some((size, Cow::Owned(bytes))))

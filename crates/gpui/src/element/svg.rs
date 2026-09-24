@@ -1,3 +1,8 @@
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
+
 use crate::{
     App, Bounds, Element, GlobalElementId, Hitbox, InspectorElementId, InteractiveElement,
     Interactivity, IntoElement, LayoutId, Pixels, Point, Radians, SharedString, Size,
@@ -11,6 +16,7 @@ pub struct Svg {
     interactivity: Interactivity,
     transformation: Option<Transformation>,
     path: Option<SharedString>,
+    data: Option<Arc<[u8]>>,
 }
 
 /// Create a new SVG element.
@@ -20,6 +26,7 @@ pub fn svg() -> Svg {
         interactivity: Interactivity::new(),
         transformation: None,
         path: None,
+        data: None,
     }
 }
 
@@ -27,6 +34,22 @@ impl Svg {
     /// Set the path to the SVG file for this element.
     pub fn path(mut self, path: impl Into<SharedString>) -> Self {
         self.path = Some(path.into());
+        self.data = None;
+        self
+    }
+
+    /// Sets raw SVG bytes as this element's source.
+    ///
+    /// The bytes are retained by the element and rasterized directly on an atlas cache miss. A
+    /// deterministic synthetic path is generated once here so normal atlas lookups never need to
+    /// hash the SVG payload again.
+    pub fn data(mut self, data: impl Into<Arc<[u8]>>) -> Self {
+        let data = data.into();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        data.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.path = Some(format!("__gpui_binary_svg_{}_{hash:016x}", data.len()).into());
+        self.data = Some(data);
         self
     }
 
@@ -116,9 +139,22 @@ impl Element for Svg {
                         })
                         .unwrap_or_default();
 
-                    window
-                        .paint_svg(bounds, path.clone(), transformation, color, cx)
-                        .log_err();
+                    if let Some(data) = self.data.as_deref() {
+                        window
+                            .paint_svg_data(
+                                bounds,
+                                path.clone(),
+                                data,
+                                transformation,
+                                color,
+                                cx,
+                            )
+                            .log_err();
+                    } else {
+                        window
+                            .paint_svg(bounds, path.clone(), transformation, color, cx)
+                            .log_err();
+                    }
                 }
             },
         )

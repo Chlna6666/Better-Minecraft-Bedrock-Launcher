@@ -70,9 +70,17 @@ impl SvgRenderer {
             return Ok(None);
         };
 
-        let pixmap = self.render_pixmap(&bytes, SvgSize::Size(params.size))?;
+        Ok(Some(self.render_bytes(params, &bytes)?))
+    }
 
-        // Convert the pixmap's pixels into an alpha mask.
+    /// Renders in-memory SVG bytes for an existing atlas request.
+    pub(crate) fn render_bytes(
+        &self,
+        params: &RenderSvgParams,
+        bytes: &[u8],
+    ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
+        let pixmap = self.render_pixmap(bytes, SvgSize::Size(params.size))?;
+
         let size = Size::new(
             DevicePixels(pixmap.width() as i32),
             DevicePixels(pixmap.height() as i32),
@@ -82,7 +90,7 @@ impl SvgRenderer {
             .iter()
             .map(|p| p.alpha())
             .collect::<Vec<_>>();
-        Ok(Some((size, alpha_mask)))
+        Ok((size, alpha_mask))
     }
 
     /// Renders SVG bytes into a pixmap using the provided target size.
