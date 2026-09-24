@@ -19,6 +19,22 @@ pub struct WindowMetricsSnapshot {
     pub dirty_to_present_max_micros: usize,
     /// Number of dirty-to-present samples recorded for this window.
     pub dirty_to_present_count: usize,
+    /// Median recent drawn-frame duration, in microseconds.
+    pub frame_duration_p50_micros: usize,
+    /// 95th percentile recent drawn-frame duration, in microseconds.
+    pub frame_duration_p95_micros: usize,
+    /// 99th percentile recent drawn-frame duration, in microseconds.
+    pub frame_duration_p99_micros: usize,
+    /// Number of recent drawn-frame duration samples retained.
+    pub frame_duration_sample_count: usize,
+    /// Median recent interval between submitted presentations, in microseconds.
+    pub present_interval_p50_micros: usize,
+    /// 95th percentile recent interval between submitted presentations, in microseconds.
+    pub present_interval_p95_micros: usize,
+    /// 99th percentile recent interval between submitted presentations, in microseconds.
+    pub present_interval_p99_micros: usize,
+    /// Number of recent presentation-interval samples retained.
+    pub present_interval_sample_count: usize,
     /// Logical drawable width in milli logical-pixels.
     pub logical_width_milli: usize,
     /// Logical drawable height in milli logical-pixels.
@@ -87,6 +103,8 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                             metrics.dirty_to_present_total_micros
                                 / metrics.dirty_to_present_count
                         };
+                    let frame_duration = metrics.frame_duration_samples.percentiles();
+                    let present_interval = metrics.present_interval_samples.percentiles();
 
                     WindowMetricsSnapshot {
                         window_id,
@@ -96,6 +114,14 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                         dirty_to_present_max_micros:
                             metrics.dirty_to_present_max_micros as usize,
                         dirty_to_present_count: metrics.dirty_to_present_count as usize,
+                        frame_duration_p50_micros: frame_duration.p50_micros as usize,
+                        frame_duration_p95_micros: frame_duration.p95_micros as usize,
+                        frame_duration_p99_micros: frame_duration.p99_micros as usize,
+                        frame_duration_sample_count: frame_duration.count,
+                        present_interval_p50_micros: present_interval.p50_micros as usize,
+                        present_interval_p95_micros: present_interval.p95_micros as usize,
+                        present_interval_p99_micros: present_interval.p99_micros as usize,
+                        present_interval_sample_count: present_interval.count,
                         logical_width_milli: metrics.logical_width_milli as usize,
                         logical_height_milli: metrics.logical_height_milli as usize,
                         physical_width_px: metrics.physical_width_px as usize,
@@ -125,6 +151,8 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
 pub struct WindowFrameDisposition {
     /// Whether the frame produced freshly drawn scene content.
     pub drew_frame: bool,
+    /// End-to-end duration of this platform frame callback when it drew fresh scene content.
+    pub frame_duration: Option<Duration>,
     /// Whether the frame submitted visible content for presentation.
     pub presented_frame: bool,
     /// Whether the frame decision skipped visible work entirely.
@@ -145,6 +173,9 @@ pub fn record_window_frame_disposition(window_id: u64, disposition: WindowFrameD
         let metrics = window_metrics.entry(window_id).or_default();
         if disposition.drew_frame {
             metrics.draw_count = metrics.draw_count.saturating_add(1);
+            if let Some(frame_duration) = disposition.frame_duration {
+                metrics.frame_duration_samples.record(frame_duration);
+            }
         }
         if disposition.presented_frame {
             metrics.present_count = metrics.present_count.saturating_add(1);
@@ -157,6 +188,7 @@ pub fn record_window_frame_disposition(window_id: u64, disposition: WindowFrameD
                 if let Some(previous_present_at) = metrics.last_present_at.replace(now) {
                     let delta = now.saturating_duration_since(previous_present_at);
                     if delta >= Duration::from_micros(250) && delta <= Duration::from_secs(1) {
+                        metrics.present_interval_samples.record(delta);
                         let instant_fps_milli =
                             (1000.0 / delta.as_secs_f32()).round().max(0.0) as u64;
                         metrics.present_fps_milli = if metrics.present_fps_milli == 0 {

@@ -201,6 +201,62 @@ pub(super) struct SharedMetrics {
     pub(super) window_metrics: Mutex<HashMap<u64, WindowMetrics>>,
 }
 
+const WINDOW_TIMING_SAMPLE_CAPACITY: usize = 256;
+
+#[derive(Clone, Debug)]
+pub(super) struct WindowTimingSamples {
+    values_micros: VecDeque<u64>,
+}
+
+impl Default for WindowTimingSamples {
+    fn default() -> Self {
+        Self {
+            values_micros: VecDeque::with_capacity(WINDOW_TIMING_SAMPLE_CAPACITY),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct WindowTimingPercentiles {
+    pub(super) p50_micros: u64,
+    pub(super) p95_micros: u64,
+    pub(super) p99_micros: u64,
+    pub(super) count: usize,
+}
+
+impl WindowTimingSamples {
+    pub(super) fn record(&mut self, duration: std::time::Duration) {
+        let micros = duration.as_micros().min(u64::MAX as u128) as u64;
+        if self.values_micros.len() == WINDOW_TIMING_SAMPLE_CAPACITY {
+            self.values_micros.pop_front();
+        }
+        self.values_micros.push_back(micros);
+    }
+
+    pub(super) fn percentiles(&self) -> WindowTimingPercentiles {
+        if self.values_micros.is_empty() {
+            return WindowTimingPercentiles::default();
+        }
+
+        let mut sorted = self.values_micros.iter().copied().collect::<Vec<_>>();
+        sorted.sort_unstable();
+        let percentile = |percent: usize| {
+            let rank = percent
+                .saturating_mul(sorted.len())
+                .saturating_add(99)
+                / 100;
+            sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+        };
+
+        WindowTimingPercentiles {
+            p50_micros: percentile(50),
+            p95_micros: percentile(95),
+            p99_micros: percentile(99),
+            count: sorted.len(),
+        }
+    }
+}
+
 #[derive(Default, Clone)]
 pub(super) struct WindowMetrics {
     pub(super) last_present_at: Option<Instant>,
@@ -208,6 +264,8 @@ pub(super) struct WindowMetrics {
     pub(super) dirty_to_present_total_micros: u64,
     pub(super) dirty_to_present_max_micros: u64,
     pub(super) dirty_to_present_count: u64,
+    pub(super) frame_duration_samples: WindowTimingSamples,
+    pub(super) present_interval_samples: WindowTimingSamples,
     pub(super) logical_width_milli: u64,
     pub(super) logical_height_milli: u64,
     pub(super) physical_width_px: u64,
@@ -237,4 +295,41 @@ pub(super) fn shared_metrics() -> &'static Arc<SharedMetrics> {
     SHARED_METRICS
         .get()
         .expect("shared metrics should be initialized")
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{WINDOW_TIMING_SAMPLE_CAPACITY, WindowTimingSamples};
+    use std::time::Duration;
+
+    #[test]
+    fn window_timing_samples_report_nearest_rank_percentiles() {
+        let mut samples = WindowTimingSamples::default();
+        for micros in 1..=100 {
+            samples.record(Duration::from_micros(micros));
+        }
+
+        let percentiles = samples.percentiles();
+        assert_eq!(percentiles.count, 100);
+        assert_eq!(percentiles.p50_micros, 50);
+        assert_eq!(percentiles.p95_micros, 95);
+        assert_eq!(percentiles.p99_micros, 99);
+    }
+
+    #[test]
+    fn window_timing_samples_keep_only_the_recent_fixed_window() {
+        let mut samples = WindowTimingSamples::default();
+        for micros in 1..=(WINDOW_TIMING_SAMPLE_CAPACITY as u64 + 16) {
+            samples.record(Duration::from_micros(micros));
+        }
+
+        let percentiles = samples.percentiles();
+        assert_eq!(percentiles.count, WINDOW_TIMING_SAMPLE_CAPACITY);
+        assert!(percentiles.p50_micros > 16);
+        assert_eq!(
+            percentiles.p99_micros,
+            WINDOW_TIMING_SAMPLE_CAPACITY as u64 + 14
+        );
+    }
 }

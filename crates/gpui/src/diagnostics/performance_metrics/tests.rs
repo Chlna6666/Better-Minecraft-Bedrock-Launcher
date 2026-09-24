@@ -394,6 +394,7 @@ fn records_window_scoped_metrics() {
         10,
         WindowFrameDisposition {
             drew_frame: true,
+            frame_duration: Some(Duration::from_micros(4_000)),
             presented_frame: true,
             skipped_frame: false,
         },
@@ -402,6 +403,7 @@ fn records_window_scoped_metrics() {
         10,
         WindowFrameDisposition {
             drew_frame: false,
+            frame_duration: None,
             presented_frame: false,
             skipped_frame: true,
         },
@@ -443,6 +445,18 @@ fn records_window_scoped_metrics() {
     assert_eq!(
         lightweight_window.dirty_to_present_count,
         window.dirty_to_present_count
+    );
+    assert_eq!(window.frame_duration_p50_micros, 4_000);
+    assert_eq!(window.frame_duration_p95_micros, 4_000);
+    assert_eq!(window.frame_duration_p99_micros, 4_000);
+    assert_eq!(window.frame_duration_sample_count, 1);
+    assert_eq!(
+        lightweight_window.frame_duration_p95_micros,
+        window.frame_duration_p95_micros
+    );
+    assert_eq!(
+        lightweight_window.present_interval_p95_micros,
+        window.present_interval_p95_micros
     );
     assert_eq!(window.physical_width_px, 1_215);
     assert_eq!(window.physical_height_px, 750);
