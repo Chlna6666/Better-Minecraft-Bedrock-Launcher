@@ -71,14 +71,9 @@ impl<'a, T: 'static> Context<'a, T> {
         T: 'static,
         W: 'static,
     {
-        let this = self.weak_entity();
-        self.app.observe_internal(entity, move |e, cx| {
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |this, cx| on_notify(this, e, cx));
-                true
-            } else {
-                false
-            }
+        let observer = self.weak_entity();
+        self.app.observe_internal(entity, move |entity, cx| {
+            invoke_observer(&observer, entity, cx, &mut on_notify)
         })
     }
 
@@ -107,15 +102,11 @@ impl<'a, T: 'static> Context<'a, T> {
         T2: 'static + EventEmitter<Evt>,
         Evt: 'static,
     {
-        let this = self.weak_entity();
-        self.app.subscribe_internal(entity, move |e, event, cx| {
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |this, cx| on_event(this, e, event, cx));
-                true
-            } else {
-                false
-            }
-        })
+        let subscriber = self.weak_entity();
+        self.app
+            .subscribe_internal(entity, move |entity, event, cx| {
+                invoke_subscriber(&subscriber, entity, event, cx, &mut on_event)
+            })
     }
 
     /// Subscribe to an event type from ourself
@@ -236,6 +227,7 @@ impl<'a, T: 'static> Context<'a, T> {
     /// The function is provided a weak handle to the entity owned by this context and a context that can be held across await points.
     /// The returned task must be held or detached.
     #[track_caller]
+    #[inline(always)]
     pub fn spawn<AsyncFn, R>(&self, f: AsyncFn) -> Task<R>
     where
         T: 'static,
@@ -385,6 +377,39 @@ impl<T> AppContext for Context<'_, T> {
         G: Global,
     {
         self.app.read_global(callback)
+    }
+}
+
+#[inline(never)]
+fn invoke_observer<T: 'static, W: 'static>(
+    observer: &WeakEntity<T>,
+    observed: Entity<W>,
+    cx: &mut App,
+    on_notify: &mut dyn FnMut(&mut T, Entity<W>, &mut Context<T>),
+) -> bool {
+    if let Some(observer) = observer.upgrade() {
+        observer.update(cx, |observer, cx| on_notify(observer, observed, cx));
+        true
+    } else {
+        false
+    }
+}
+
+#[inline(never)]
+fn invoke_subscriber<T: 'static, Emitter: 'static, Event: 'static>(
+    subscriber: &WeakEntity<T>,
+    emitter: Entity<Emitter>,
+    event: &Event,
+    cx: &mut App,
+    on_event: &mut dyn FnMut(&mut T, Entity<Emitter>, &Event, &mut Context<T>),
+) -> bool {
+    if let Some(subscriber) = subscriber.upgrade() {
+        subscriber.update(cx, |subscriber, cx| {
+            on_event(subscriber, emitter, event, cx)
+        });
+        true
+    } else {
+        false
     }
 }
 
