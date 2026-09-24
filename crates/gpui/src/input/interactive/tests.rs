@@ -51,8 +51,8 @@ fn test_on_events(cx: &mut TestAppContext) {
     });
 
     window
-        .update(cx, |test_view, window, _cx| {
-            window.focus(&test_view.focus_handle)
+        .update(cx, |test_view, window, cx| {
+            window.focus(&test_view.focus_handle, cx)
         })
         .unwrap();
 

@@ -18,9 +18,9 @@ pub(super) fn navigate_focus(event: &KeyDownEvent, window: &mut Window, cx: &mut
         }
     });
     if event.keystroke.modifiers.shift {
-        window.focus_prev();
+        window.focus_prev(cx);
     } else {
-        window.focus_next();
+        window.focus_next(cx);
     }
 }
 
@@ -295,7 +295,7 @@ impl AuthChromeView {
         let panel_focus = cx.focus_handle();
         let was_open = cx.global::<BedrockAuthState>().dialog_open;
         if was_open {
-            window.focus(&panel_focus);
+            window.focus(&panel_focus, cx);
         }
         let glass_effect_enabled = cx
             .global::<crate::ui::views::settings::state::SettingsPageState>()
@@ -306,9 +306,9 @@ impl AuthChromeView {
                 if open != this.was_open {
                     this.was_open = open;
                     if open && !this.blocked {
-                        window.focus(&this.panel_focus);
+                        window.focus(&this.panel_focus, cx);
                     } else if !this.blocked && this.panel_focus.contains_focused(window, cx) {
-                        window.focus(&this.trigger_focus);
+                        window.focus(&this.trigger_focus, cx);
                     }
                 }
                 cx.notify();

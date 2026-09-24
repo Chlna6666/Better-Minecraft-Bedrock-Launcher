@@ -218,8 +218,28 @@ impl Window {
         self.pending_input.is_some()
     }
 
-    pub(crate) fn clear_pending_keystrokes(&mut self) {
-        self.pending_input.take();
+    #[cfg(test)]
+    pub(crate) fn pending_input_is_none(&self) -> bool {
+        self.pending_input.is_none()
+    }
+
+    pub(crate) fn clear_pending_keystrokes(&mut self, cx: &mut App) {
+        if self.pending_input.take().is_some() {
+            self.defer_pending_input_changed(cx);
+        }
+    }
+
+    fn defer_pending_input_changed(&self, cx: &mut App) {
+        // Pending-input observers can update entities, so notify at the end of the current effect
+        // cycle rather than re-entering them from focus/blur or app-menu handling.
+        let window_handle = self.handle;
+        cx.defer(move |cx| {
+            window_handle
+                .update(cx, |_, window, cx| {
+                    window.pending_input_changed(cx);
+                })
+                .ok();
+        });
     }
 
     /// Returns the currently pending input keystrokes that might result in a multi-stroke key binding.

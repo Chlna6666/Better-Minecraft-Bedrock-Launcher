@@ -474,7 +474,7 @@ impl VisualContext for AsyncWindowContext {
         V: Focusable,
     {
         self.window.update(self, |_, window, cx| {
-            view.read(cx).focus_handle(cx).focus(window);
+            view.read(cx).focus_handle(cx).focus(window, cx);
         })
     }
 }

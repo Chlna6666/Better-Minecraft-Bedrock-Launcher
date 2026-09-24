@@ -172,7 +172,7 @@ impl MapViewerWindowView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.preview_3d_focus_handle.focus(window);
+                    this.preview_3d_focus_handle.focus(window, cx);
                     this.cancel_pointer_captures_for_panel_interaction("preview_3d mouse down", cx);
                     this.preview_3d_begin_drag(Preview3dDragMode::RotateModel, event.position, cx);
                     cx.stop_propagation();
@@ -181,7 +181,7 @@ impl MapViewerWindowView {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.preview_3d_focus_handle.focus(window);
+                    this.preview_3d_focus_handle.focus(window, cx);
                     this.cancel_pointer_captures_for_panel_interaction(
                         "preview_3d right mouse down",
                         cx,

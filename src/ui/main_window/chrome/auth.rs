@@ -429,7 +429,7 @@ pub(in crate::ui::main_window) fn panel(
                     state.keyboard_navigation = true;
                     state.close_dialog();
                 });
-                window.focus(&close_focus);
+                window.focus(&close_focus, cx);
             }
         })
         .child(material)

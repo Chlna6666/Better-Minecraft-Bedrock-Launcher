@@ -165,11 +165,7 @@ impl App {
                         window_handle
                             .update(self, |_, window, cx| {
                                 if window.focus == Some(handle_id) {
-                                    let had_pending_input = window.has_pending_keystrokes();
-                                    window.blur();
-                                    if had_pending_input {
-                                        window.pending_input_changed(cx);
-                                    }
+                                    window.blur(cx);
                                 }
                             })
                             .unwrap();

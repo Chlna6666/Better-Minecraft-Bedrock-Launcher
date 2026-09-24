@@ -254,7 +254,7 @@ impl Render for CurseForgeResourcePanelView {
             let focus_handle = self.focus_handle.clone();
             move |_event, window, cx| {
                 if !focus_handle.contains_focused(window, cx) {
-                    focus_handle.focus(window);
+                    focus_handle.focus(window, cx);
                 }
             }
         })

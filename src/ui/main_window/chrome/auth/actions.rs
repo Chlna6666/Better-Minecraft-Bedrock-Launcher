@@ -72,7 +72,7 @@ pub(super) fn button_with_disabled_opacity(
                 let focus_panel = event.is_keyboard() && action.changes_content(cx);
                 action.run(event.is_keyboard(), window, cx);
                 if focus_panel {
-                    window.focus(&panel_focus);
+                    window.focus(&panel_focus, cx);
                 }
             }
         })
@@ -98,14 +98,14 @@ impl Action {
             Self::Toggle { panel, trigger } => {
                 cx.update_global(|state: &mut BedrockAuthState, _| state.toggle_dialog());
                 if cx.global::<BedrockAuthState>().dialog_open {
-                    window.focus(panel);
+                    window.focus(panel, cx);
                 } else {
-                    window.focus(trigger);
+                    window.focus(trigger, cx);
                 }
             }
             Self::Close(focus) => {
                 cx.update_global(|state: &mut BedrockAuthState, _| state.close_dialog());
-                window.focus(focus);
+                window.focus(focus, cx);
             }
             Self::CancelDeletion => {
                 cx.update_global(|state: &mut BedrockAuthState, _| state.clear_account_deletion())

@@ -695,7 +695,7 @@ impl InputState {
     ) {
         self.is_selecting = true;
         self.reset_cursor_blink();
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         if event.modifiers.shift {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         } else {

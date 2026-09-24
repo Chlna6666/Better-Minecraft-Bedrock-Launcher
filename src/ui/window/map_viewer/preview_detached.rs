@@ -267,7 +267,7 @@ impl Render for DetachedPreview3dView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.focus.focus(window);
+                            this.focus.focus(window, cx);
                             this.begin_drag(Preview3dDragMode::RotateModel, event.position);
                             cx.stop_propagation();
                         }),
@@ -275,7 +275,7 @@ impl Render for DetachedPreview3dView {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.focus.focus(window);
+                            this.focus.focus(window, cx);
                             this.begin_drag(Preview3dDragMode::OrbitCamera, event.position);
                             cx.stop_propagation();
                         }),

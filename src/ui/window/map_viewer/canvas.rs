@@ -798,7 +798,7 @@ fn render_interaction_layer(
         .cursor(cursor)
         .on_scroll_wheel(
             cx.listener(move |_this, event: &ScrollWheelEvent, window, cx| {
-                focus_for_scroll.focus(window);
+                focus_for_scroll.focus(window, cx);
                 let delta = event.delta.pixel_delta(px(48.0));
                 let factor = if delta.y > px(0.0) { 1.15 } else { 0.87 };
                 cx.emit(MapCanvasAction::ZoomAt(event.position, factor));
@@ -808,7 +808,7 @@ fn render_interaction_layer(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |_this, event: &MouseDownEvent, window, cx| {
-                focus_for_left_down.focus(window);
+                focus_for_left_down.focus(window, cx);
                 cx.emit(MapCanvasAction::BeginDrag(event.position));
                 cx.stop_propagation();
             }),
@@ -816,7 +816,7 @@ fn render_interaction_layer(
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |_this, event: &MouseDownEvent, window, cx| {
-                focus_for_right_down.focus(window);
+                focus_for_right_down.focus(window, cx);
                 set_right_selection_modifier_requested(
                     event.modifiers.control,
                     event.modifiers.alt,

@@ -2,7 +2,7 @@ use crate::{
     self as gpui, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId, Style,
 };
 use core::panic;
-use std::{cell::RefCell, ops::Range, rc::Rc};
+use std::{cell::{Cell, RefCell}, ops::Range, rc::Rc};
 
 use crate::{
     Action, ActionRegistry, App, Bounds, Context, DispatchTree, FocusHandle, InputHandler,
@@ -221,9 +221,33 @@ fn test_input_handler_pending(cx: &mut TestAppContext) {
     });
     let (test, cx) = cx.add_window_view(|_, cx| CustomElement::new(cx));
     cx.update(|window, cx| {
-        window.focus(&test.read(cx).focus_handle);
+        window.focus(&test.read(cx).focus_handle, cx);
         window.activate_window();
     });
     cx.simulate_keystrokes("ctrl-b [");
-    test.update(cx, |test, _| assert_eq!(test.text.borrow().as_str(), "["))
+    test.update(cx, |test, _| assert_eq!(test.text.borrow().as_str(), "["));
+
+    let pending_input_changed_count = Rc::new(Cell::new(0usize));
+    let _subscription = test.update_in(cx, {
+        let pending_input_changed_count = pending_input_changed_count.clone();
+        move |_, window, cx| {
+            cx.observe_pending_input(window, move |_, _, _| {
+                pending_input_changed_count.set(pending_input_changed_count.get() + 1);
+            })
+        }
+    });
+
+    cx.simulate_keystrokes("ctrl-b");
+    let count_before_blur = pending_input_changed_count.get();
+    cx.update(|window, cx| {
+        assert!(window.has_pending_keystrokes());
+        window.blur(cx);
+        assert!(!window.has_pending_keystrokes());
+        assert!(window.pending_input_is_none());
+    });
+
+    // The clear notification is deferred so observers can safely update entities.
+    cx.update(|_, _| {
+        assert!(pending_input_changed_count.get() > count_before_blur);
+    });
 }

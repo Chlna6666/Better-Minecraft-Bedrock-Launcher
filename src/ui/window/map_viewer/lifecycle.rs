@@ -354,7 +354,7 @@ impl MapViewerWindowView {
         let tool_stripe_view = cx.new(|_cx| MapToolStripeView::default());
         let menu_overlay_view = cx.new(|_cx| MapMenuOverlayView::default());
         let map_focus_handle = cx.focus_handle().tab_stop(true);
-        map_focus_handle.focus(window);
+        map_focus_handle.focus(window, cx);
         let canvas_view = cx.new({
             let map_focus_handle = map_focus_handle.clone();
             |cx| MapCanvasView::new(map_focus_handle, cx)

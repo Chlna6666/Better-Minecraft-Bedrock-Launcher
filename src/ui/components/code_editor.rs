@@ -925,7 +925,7 @@ impl CodeEditorState {
     ) {
         cx.emit(CodeEditorEvent::PointerInteractionStarted);
         self.cursor_blink_started_at = Some(Instant::now());
-        self.focus_handle.focus(window);
+        self.focus_handle.focus(window, cx);
         self.mouse_over = self
             .last_bounds
             .is_some_and(|bounds| bounds.contains(&event.position));
