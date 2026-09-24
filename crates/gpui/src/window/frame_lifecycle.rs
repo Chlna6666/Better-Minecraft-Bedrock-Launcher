@@ -578,10 +578,16 @@ impl Window {
         self.log_frame_work_decision(frame_options, decision, cx);
         let presented_frame = self.execute_frame_work(frame_options, decision, frame_budget, cx);
         record_frame_decision(decision.drew_frame(), presented_frame, decision.skip_frame);
-        record_window_frame_disposition(
-            self.handle.window_id().as_u64(),
-            decision.disposition(presented_frame),
+        let window_id = self.handle.window_id().as_u64();
+        record_window_runtime_state(
+            window_id,
+            self.viewport_size.width / px(1.0),
+            self.viewport_size.height / px(1.0),
+            self.scale_factor,
+            activity.active,
+            activity.minimized,
         );
+        record_window_frame_disposition(window_id, decision.disposition(presented_frame));
     }
 
     fn run_animation_engine_frame(&mut self) {

@@ -200,6 +200,15 @@ pub(super) struct SharedMetrics {
 
 #[derive(Default, Clone)]
 pub(super) struct WindowMetrics {
+    pub(super) last_present_at: Option<Instant>,
+    pub(super) present_fps_milli: u64,
+    pub(super) logical_width_milli: u64,
+    pub(super) logical_height_milli: u64,
+    pub(super) physical_width_px: u64,
+    pub(super) physical_height_px: u64,
+    pub(super) scale_factor_milli: u64,
+    pub(super) active: bool,
+    pub(super) minimized: bool,
     pub(super) request_redraw_count: u64,
     pub(super) draw_count: u64,
     pub(super) present_count: u64,

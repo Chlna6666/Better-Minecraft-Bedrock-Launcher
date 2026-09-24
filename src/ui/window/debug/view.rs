@@ -12,14 +12,12 @@ use crate::ui::window::debug::state::{DebugRuntimeSnapshot, DebugState, snapshot
 use crate::utils::file_ops;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use std::cell::Cell;
 use std::io::{Read, Seek, SeekFrom};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const GLOBAL_IMAGE_ASSET_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 const DEBUG_INITIAL_REFRESH_DELAY: Duration = Duration::from_millis(500);
-const DEBUG_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+const DEBUG_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const DEBUG_CONSOLE_RENDER_LINE_LIMIT: usize = 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,15 +64,10 @@ impl DebugView {
         let log_path = file_ops::logs_dir().join("latest.log");
         let stall_log_path = file_ops::logs_dir().join("ui_foreground_stall.log");
         record_debug_window_metrics(window);
-        let window_active = Rc::new(Cell::new(window.is_window_active()));
         let subscriptions = vec![
             cx.observe_global::<I18n>(|_this, cx| cx.notify()),
             cx.observe_window_bounds(window, |_, window, _cx| {
                 record_debug_window_metrics(window);
-            }),
-            cx.observe_window_activation(window, {
-                let window_active = window_active.clone();
-                move |_, window, _cx| window_active.set(window.is_window_active())
             }),
         ];
         cx.on_next_frame(window, |_, window, _cx| {
@@ -86,9 +79,6 @@ impl DebugView {
             loop {
                 Timer::after(refresh_delay).await;
                 refresh_delay = DEBUG_REFRESH_INTERVAL;
-                if !window_active.get() {
-                    continue;
-                }
 
                 let log_path = log_path.clone();
                 let stall_log_path = stall_log_path.clone();
@@ -104,6 +94,8 @@ impl DebugView {
                 let _ = handle.update(cx, |this, cx| {
                     let now = Instant::now();
                     let mut runtime = runtime;
+                    let debug = cx.global::<DebugState>().clone();
+                    bind_window_roles(&mut runtime, &debug);
                     if this
                         .runtime
                         .gpui_global_image_assets_sampled_at
@@ -221,6 +213,37 @@ impl DebugView {
 
 fn record_debug_window_metrics(window: &Window) {
     crate::ui::window::debug::state::record_debug_window_geometry(window);
+}
+
+fn bind_window_roles(runtime: &mut DebugRuntimeSnapshot, debug: &DebugState) {
+    runtime.main_window_id = debug.main_window_id;
+    runtime.debug_window_id = debug.debug_window_id;
+
+    let apply_window = |runtime: &mut DebugRuntimeSnapshot, window_id: Option<u64>, is_main: bool| {
+        let Some(window_id) = window_id else {
+            return;
+        };
+        let Some(window) = runtime
+            .gpui_window_metrics
+            .iter()
+            .find(|window| window.window_id == window_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let fps = window.present_fps_milli as f32 / 1000.0;
+        if is_main {
+            runtime.main_fps = fps;
+            runtime.main_frame_time_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
+            runtime.gpui_present_fps = fps;
+        } else {
+            runtime.debug_fps = fps;
+        }
+    };
+
+    apply_window(runtime, debug.main_window_id, true);
+    apply_window(runtime, debug.debug_window_id, false);
 }
 
 fn window_size_summary(
